@@ -27,6 +27,7 @@ use runtimed_client::singleton::query_daemon_info;
 use tokio::sync::{broadcast, RwLock};
 use tracing::{info, warn};
 
+use crate::attachments::AttachmentRegistry;
 use crate::cloud::{self, NotebookTarget};
 use crate::session::{
     query_current_daemon_incarnation, DaemonIncarnation, NotebookSession, SessionDropInfo,
@@ -249,6 +250,14 @@ fn local_session_matches<S: RecoverySession>(
     )
 }
 
+fn reconcile_attachments(
+    attachments: &AttachmentRegistry,
+    live_incarnation: Option<&DaemonIncarnation>,
+) {
+    let mut entries = attachments.write_entries();
+    entries.retain(|_, entry| local_session_matches(&entry.session, live_incarnation));
+}
+
 /// Reconcile all local handles with the one daemon incarnation currently
 /// reported live. This contains no disconnect latch: ownership is the entire
 /// stale-session predicate.
@@ -302,6 +311,7 @@ pub struct WatchResources {
     pub daemon_conn: Arc<DaemonConnection>,
     pub socket_path: PathBuf,
     pub session: Arc<RwLock<Option<NotebookSession>>>,
+    pub attachments: Arc<AttachmentRegistry>,
     pub peer_label: Arc<RwLock<String>>,
     pub operator: Arc<RwLock<String>>,
     pub last_session_drop: Arc<RwLock<Option<SessionDropInfo>>>,
@@ -317,6 +327,7 @@ pub async fn watch(resources: WatchResources) -> i32 {
         daemon_conn,
         socket_path,
         session,
+        attachments,
         peer_label,
         operator,
         last_session_drop,
@@ -344,12 +355,15 @@ pub async fn watch(resources: WatchResources) -> i32 {
             &session_intent_epoch,
             |domain, notebook_id, expected_epoch| {
                 rejoin_hosted(
-                    &session,
-                    &peer_label,
-                    &last_session_drop,
+                    HostedRejoinResources {
+                        session: &session,
+                        attachments: &attachments,
+                        peer_label: &peer_label,
+                        last_session_drop: &last_session_drop,
+                        session_intent_epoch: &session_intent_epoch,
+                    },
                     domain,
                     notebook_id,
-                    &session_intent_epoch,
                     expected_epoch,
                 )
             },
@@ -399,6 +413,11 @@ pub async fn watch(resources: WatchResources) -> i32 {
         }
         let live_incarnation = live_info.as_ref().map(DaemonIncarnation::from);
 
+        // Registry membership owns explicit handles independently of the legacy
+        // selection/cache. Entry removal signals expiry even when an admitted
+        // operation or a cached session still retains its sync peer.
+        reconcile_attachments(&attachments, live_incarnation.as_ref());
+
         reconcile_sessions(
             live_incarnation.as_ref(),
             &session,
@@ -435,6 +454,7 @@ pub async fn watch(resources: WatchResources) -> i32 {
             RejoinResources {
                 socket_path: &socket_path,
                 session: &session,
+                attachments: &attachments,
                 peer_label: &peer_label,
                 operator: &operator,
                 last_session_drop: &last_session_drop,
@@ -476,6 +496,7 @@ async fn publish_rejoined_session<S>(
     new_session: S,
     session_intent_epoch: &AtomicU64,
     expected_intent_epoch: u64,
+    register: impl FnOnce(&S),
 ) -> PublicationResult {
     let mut guard = session.write().await;
     if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
@@ -484,6 +505,7 @@ async fn publish_rejoined_session<S>(
     if guard.is_some() {
         return PublicationResult::Superseded;
     }
+    register(&new_session);
     *guard = Some(new_session);
     PublicationResult::Installed
 }
@@ -494,9 +516,9 @@ async fn publish_rejoined_session<S>(
 /// currently stored — this is how the proxy hands off the previous
 /// notebook_id to a freshly respawned child via `NTERACT_MCP_REJOIN_NOTEBOOK`.
 ///
-/// For file-backed notebooks, uses `connect_open(path)` so the daemon
-/// reloads from disk (the UUID-only path would yield an empty document
-/// because file-backed rooms' `.automerge` persist files are deleted).
+/// For file-backed notebooks, prefers `connect_open(path)` after checking the
+/// saved source. UUID-only attachment may also recover through the daemon's
+/// persistent identity binding; neither path authorizes an empty fallback.
 ///
 /// For untitled (UUID-only) notebooks, the rejoin is daemon-authoritative: it
 /// just attempts the reconnect and trusts the daemon, which attaches a resident
@@ -512,6 +534,7 @@ async fn publish_rejoined_session<S>(
 struct RejoinResources<'a> {
     socket_path: &'a Path,
     session: &'a Arc<RwLock<Option<NotebookSession>>>,
+    attachments: &'a Arc<AttachmentRegistry>,
     peer_label: &'a Arc<RwLock<String>>,
     operator: &'a Arc<RwLock<String>>,
     last_session_drop: &'a Arc<RwLock<Option<SessionDropInfo>>>,
@@ -543,6 +566,7 @@ async fn rejoin(
     let RejoinResources {
         socket_path,
         session,
+        attachments,
         peer_label,
         operator,
         last_session_drop,
@@ -551,6 +575,13 @@ async fn rejoin(
     if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
         return true;
     }
+    let reservation = match attachments.reserve() {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            warn!(%error, "Legacy rejoin waiting for attachment capacity");
+            return false;
+        }
+    };
     match cloud::parse_connect_target(Some(&target), None, None, None) {
         // Hosted recovery is exclusively owned by attempt_hosted_recovery.
         Ok(NotebookTarget::Hosted { .. }) => return false,
@@ -685,6 +716,7 @@ async fn rejoin(
                     new_session,
                     session_intent_epoch,
                     expected_intent_epoch,
+                    |session| attachments.insert_legacy(session.clone(), reservation),
                 )
                 .await
                 {
@@ -752,15 +784,34 @@ async fn rejoin(
     false // All retries exhausted
 }
 
+struct HostedRejoinResources<'a> {
+    session: &'a Arc<RwLock<Option<NotebookSession>>>,
+    attachments: &'a Arc<AttachmentRegistry>,
+    peer_label: &'a Arc<RwLock<String>>,
+    last_session_drop: &'a Arc<RwLock<Option<SessionDropInfo>>>,
+    session_intent_epoch: &'a Arc<AtomicU64>,
+}
+
 async fn rejoin_hosted(
-    session: &Arc<RwLock<Option<NotebookSession>>>,
-    peer_label: &Arc<RwLock<String>>,
-    last_session_drop: &Arc<RwLock<Option<SessionDropInfo>>>,
+    resources: HostedRejoinResources<'_>,
     domain: String,
     notebook_id: String,
-    session_intent_epoch: &Arc<AtomicU64>,
     expected_intent_epoch: u64,
 ) -> bool {
+    let HostedRejoinResources {
+        session,
+        attachments,
+        peer_label,
+        last_session_drop,
+        session_intent_epoch,
+    } = resources;
+    let reservation = match attachments.reserve() {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            warn!(%error, "Hosted legacy rejoin waiting for attachment capacity");
+            return false;
+        }
+    };
     let target = cloud::hosted_notebook_url(&domain, &notebook_id);
     let registry = match cloud::CloudRegistry::load_default() {
         Ok(Some(registry)) => registry,
@@ -808,6 +859,7 @@ async fn rejoin_hosted(
                     new_session,
                     session_intent_epoch,
                     expected_intent_epoch,
+                    |session| attachments.insert_legacy(session.clone(), reservation),
                 )
                 .await
                 {
@@ -865,6 +917,142 @@ mod tests {
             pid,
             started_at: Utc.timestamp_opt(pid.into(), 0).single().unwrap(),
         }
+    }
+
+    struct IdleFrames;
+    impl notebook_protocol::connection::FrameSource for IdleFrames {
+        async fn recv_frame(
+            &mut self,
+        ) -> Option<std::io::Result<notebook_protocol::connection::TypedNotebookFrame>> {
+            std::future::pending().await
+        }
+    }
+    async fn test_peer() -> notebook_sync::handle::DocHandle {
+        notebook_sync::connect::connect_frame_io(
+            "same-notebook".into(),
+            "agent:watch-test",
+            IdleFrames,
+            notebook_protocol::connection::WriterFrameSink::new(tokio::io::sink()),
+        )
+        .await
+        .unwrap()
+        .handle
+    }
+
+    #[tokio::test]
+    async fn registry_reconciliation_expires_every_stale_local_lifetime_without_rebinding() {
+        let registry = AttachmentRegistry::default();
+        let peer = test_peer().await;
+        let stale = NotebookSession::local(
+            peer.clone(),
+            "same-notebook".into(),
+            None,
+            Some(incarnation(1)),
+        );
+        // A captured access/cache peer cannot keep the attachment alive.
+        let captured = stale.clone();
+        let stale_handle = stale.notebook_handle.clone();
+        registry.insert(stale, registry.reserve().unwrap());
+        let expired = registry.read_entries()[&stale_handle].expiration();
+        let current = NotebookSession::local(
+            peer.clone(),
+            "same-notebook".into(),
+            None,
+            Some(incarnation(2)),
+        );
+        let current_handle = current.notebook_handle.clone();
+        registry.insert(current, registry.reserve().unwrap());
+        let current_expired = registry.read_entries()[&current_handle].expiration();
+        let hosted =
+            NotebookSession::hosted(peer, "same-notebook".into(), "https://example.com".into());
+        let hosted_handle = hosted.notebook_handle.clone();
+        registry.insert(hosted, registry.reserve().unwrap());
+        let hosted_expired = registry.read_entries()[&hosted_handle].expiration();
+
+        reconcile_attachments(&registry, Some(&incarnation(2)));
+        assert!(*expired.borrow());
+        assert!(!*current_expired.borrow());
+        assert!(!*hosted_expired.borrow());
+        assert!(!registry
+            .read_entries()
+            .contains_key(&captured.notebook_handle));
+        assert_eq!(registry.read_entries().len(), 2);
+        reconcile_attachments(&registry, Some(&incarnation(2)));
+        assert_eq!(registry.read_entries().len(), 2);
+        reconcile_attachments(&registry, None);
+        assert!(*current_expired.borrow());
+        assert!(!*hosted_expired.borrow());
+        assert_eq!(registry.read_entries().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn legacy_rejoin_registers_a_fresh_handle_only_when_publication_is_current() {
+        let registry = AttachmentRegistry::default();
+        let peer = test_peer().await;
+        let old = NotebookSession::local(
+            peer.clone(),
+            "same-notebook".into(),
+            None,
+            Some(incarnation(1)),
+        );
+        let old_handle = old.notebook_handle.clone();
+        registry.insert(old, registry.reserve().unwrap());
+        reconcile_attachments(&registry, Some(&incarnation(2)));
+        let new = NotebookSession::local(
+            peer.clone(),
+            "same-notebook".into(),
+            None,
+            Some(incarnation(2)),
+        );
+        let new_handle = new.notebook_handle.clone();
+        let slot = Arc::new(RwLock::new(None));
+        let epoch = AtomicU64::new(4);
+        let reservation = registry.reserve().unwrap();
+        assert_eq!(
+            publish_rejoined_session(&slot, new, &epoch, 4, |session| registry
+                .insert_legacy(session.clone(), reservation))
+            .await,
+            PublicationResult::Installed
+        );
+        assert_ne!(old_handle, new_handle);
+        assert!(!registry.read_entries().contains_key(&old_handle));
+        assert!(registry.read_entries().contains_key(&new_handle));
+        assert_eq!(
+            registry.read_entries()[&new_handle].origin(),
+            crate::attachments::AttachmentOrigin::Legacy,
+        );
+        assert_eq!(
+            slot.read().await.as_ref().unwrap().notebook_handle,
+            new_handle
+        );
+        let replacement = NotebookSession::local(
+            peer.clone(),
+            "same-notebook".into(),
+            None,
+            Some(incarnation(2)),
+        );
+        let replacement_handle = replacement.notebook_handle.clone();
+        let reservation = registry.reserve().unwrap();
+        assert_eq!(
+            publish_rejoined_session(&slot, replacement, &epoch, 4, |session| registry
+                .insert_legacy(session.clone(), reservation))
+            .await,
+            PublicationResult::Superseded
+        );
+        assert!(!registry.read_entries().contains_key(&replacement_handle));
+        *slot.write().await = None;
+        epoch.store(5, Ordering::Release);
+        let cancelled =
+            NotebookSession::local(peer, "same-notebook".into(), None, Some(incarnation(2)));
+        let cancelled_handle = cancelled.notebook_handle.clone();
+        let reservation = registry.reserve().unwrap();
+        assert_eq!(
+            publish_rejoined_session(&slot, cancelled, &epoch, 4, |session| registry
+                .insert_legacy(session.clone(), reservation))
+            .await,
+            PublicationResult::Cancelled
+        );
+        assert!(!registry.read_entries().contains_key(&cancelled_handle));
     }
 
     #[tokio::test]
@@ -1054,6 +1242,7 @@ mod tests {
                         FakeSession::hosted(&notebook_id),
                         epoch_ref,
                         expected_epoch,
+                        |_| {},
                     )
                     .await,
                     PublicationResult::Installed
@@ -1141,6 +1330,7 @@ mod tests {
                         FakeSession::hosted("background"),
                         epoch_ref,
                         expected_epoch,
+                        |_| {},
                     )
                     .await,
                     PublicationResult::Cancelled
@@ -1385,6 +1575,7 @@ mod tests {
             FakeSession::local("background", None, 2),
             &epoch,
             4,
+            |_| {},
         )
         .await;
         assert_eq!(result, PublicationResult::Superseded);
@@ -1400,6 +1591,7 @@ mod tests {
             FakeSession::local("background", None, 2),
             &epoch,
             4,
+            |_| {},
         )
         .await;
         assert_eq!(result, PublicationResult::Cancelled);

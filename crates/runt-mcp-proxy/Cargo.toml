@@ -12,12 +12,17 @@ mcp-transport = { path = "../mcp-transport" }
 rmcp = { workspace = true, features = ["server", "client", "transport-async-rw", "transport-io"] }
 tokio = { workspace = true, features = ["full"] }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
 rmcp_legacy = { package = "rmcp", version = "=1.5.0", default-features = false, features = ["server", "client", "transport-io"] }
 runt-mcp = { path = "../runt-mcp" }
+runtimed = { path = "../runtimed" }
+runtimed-client = { path = "../runtimed-client" }
+notebook-protocol = { path = "../notebook-protocol" }
 tempfile = { workspace = true }
 
 [lints]

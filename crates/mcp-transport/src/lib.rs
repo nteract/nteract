@@ -58,6 +58,9 @@ pub fn suppress_progress(request: &mut rmcp::model::ClientRequest) {
     request.extensions_mut().insert(SuppressProgress);
 }
 impl ConnectionLifetime {
+    pub fn is_closed(&self) -> bool {
+        self.0.is_cancelled()
+    }
     pub async fn closed(&self) {
         self.0.cancelled().await;
     }
@@ -136,6 +139,58 @@ impl<T: Transport<rmcp::service::RoleClient>> Transport<rmcp::service::RoleClien
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    #[test]
+    fn catalog_interests_are_accepted_only_by_proxy_filter() {
+        let requested: rmcp::model::SubscriptionFilter = serde_json::from_value(serde_json::json!({
+            "toolsListChanged":true,"resourcesListChanged":true,"promptsListChanged":true,
+            "resourceSubscriptions":["nteract://sessions/explicit/cells","nteract://notebooks/current/cells"]
+        })).unwrap();
+        let worker = super::notebook_subscription_filter(&requested);
+        assert_eq!(worker.tools_list_changed, None);
+        assert_eq!(worker.resources_list_changed, None);
+        let proxy = super::proxy_subscription_filter(&requested);
+        assert_eq!(proxy.tools_list_changed, Some(true));
+        assert_eq!(proxy.resources_list_changed, Some(true));
+        assert_eq!(proxy.prompts_list_changed, None);
+        assert_eq!(
+            proxy.resource_subscriptions,
+            Some(vec!["nteract://sessions/explicit/cells".into()])
+        );
+    }
+
+    #[test]
+    fn missing_handle_error_requires_refresh_and_explicit_resubmission() {
+        let error = super::validate_tool_target_params(&rmcp::model::CallToolRequestParams::new(
+            "create_cell",
+        ))
+        .unwrap_err();
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(error.message.contains("refresh tools/list"));
+        assert!(error.message.contains("reconnect"));
+        assert!(error.message.contains("intended notebook"));
+        assert_eq!(error.data.unwrap()["kind"], "missing_notebook_handle");
+    }
+    #[test]
+    fn target_feedback_preserves_machine_markers_without_classifying_other_protocol_errors() {
+        let error = super::validate_tool_target_params(&rmcp::model::CallToolRequestParams::new(
+            "set_cell",
+        ))
+        .unwrap_err();
+        assert!(super::is_tool_target_error(&error));
+        let result = super::tool_target_error(error);
+        assert_eq!(result.is_error, Some(true));
+        let details = result.structured_content.unwrap();
+        assert_eq!(details["error"]["kind"], "missing_notebook_handle");
+        assert_eq!(details["error"]["code"], "missing_notebook_handle");
+        assert_eq!(details["error"]["refresh"], "tools/list");
+        assert_eq!(details["error"]["resubmit_required"], true);
+        assert!(!super::is_tool_target_error(
+            &rmcp::ErrorData::invalid_params("Unknown tool", None)
+        ));
+        assert!(!super::is_tool_target_error(
+            &rmcp::ErrorData::invalid_params("Invalid cell_type", None)
+        ));
+    }
     use super::*;
     use rmcp::model::*;
     struct Mock {
@@ -220,6 +275,7 @@ pub fn notebook_scoped_tool(name: &str) -> bool {
         "save_notebook"
             | "show_notebook"
             | "launch_app"
+            | "resolve_notebook_launch"
             | "disconnect_notebook"
             | "get_cell"
             | "get_all_cells"
@@ -249,9 +305,10 @@ pub fn notebook_scoped_tool(name: &str) -> bool {
             | "reply_comment"
             | "resolve_comment"
             | "reopen_comment"
+            | "wait_for_notebook_change"
     )
 }
-pub fn attachment_tool_schemas(tools: &mut [rmcp::model::Tool], required: bool) {
+pub fn attachment_tool_schemas(tools: &mut [rmcp::model::Tool]) {
     for tool in tools {
         if !notebook_scoped_tool(&tool.name) {
             continue;
@@ -262,27 +319,33 @@ pub fn attachment_tool_schemas(tools: &mut [rmcp::model::Tool], required: bool) 
             .or_insert_with(|| serde_json::json!({}))
             .as_object_mut()
         {
-            properties.insert("notebook_handle".into(), serde_json::json!({"type":"string","description":"Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks."}));
+            properties.remove("notebook_id");
+            properties.insert("notebook_handle".into(), serde_json::json!({"type":"string","minLength":1,"description":"Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks."}));
         }
-        if required {
-            if let Some(fields) = schema
-                .entry("required")
-                .or_insert_with(|| serde_json::json!([]))
-                .as_array_mut()
-            {
-                if !fields.iter().any(|field| field == "notebook_handle") {
-                    fields.push(serde_json::json!("notebook_handle"));
-                }
+        if let Some(fields) = schema
+            .entry("required")
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+        {
+            fields.retain(|field| field != "notebook_id");
+            if !fields.iter().any(|field| field == "notebook_handle") {
+                fields.push(serde_json::json!("notebook_handle"));
             }
         }
     }
 }
 pub fn validate_tool_target(
     request: &rmcp::model::CallToolRequestParams,
-    context: &RequestContext<RoleServer>,
+    _context: &RequestContext<RoleServer>,
 ) -> Result<(), rmcp::ErrorData> {
-    if is_native(context)
-        && notebook_scoped_tool(&request.name)
+    validate_tool_target_params(request)
+}
+
+/// Require request-local notebook ownership on every MCP protocol.
+pub fn validate_tool_target_params(
+    request: &rmcp::model::CallToolRequestParams,
+) -> Result<(), rmcp::ErrorData> {
+    if notebook_scoped_tool(&request.name)
         && request
             .arguments
             .as_ref()
@@ -291,11 +354,73 @@ pub fn validate_tool_target(
             .is_none_or(|handle| handle.is_empty())
     {
         return Err(rmcp::ErrorData::invalid_params(
-            "notebook_handle is required; use connect_notebook or create_notebook to obtain one",
-            None,
+            "notebook_handle is required; refresh tools/list (reconnect the MCP client if it retains old definitions), then use connect_notebook or create_notebook for the intended notebook to obtain a current handle and explicitly resubmit the request",
+            Some(serde_json::json!({"kind":"missing_notebook_handle","refresh":"tools/list","reconnect_if_cached":true,"resubmit_required":true})),
+        ));
+    }
+    if notebook_scoped_tool(&request.name)
+        && request.arguments.as_ref().is_some_and(|args| {
+            args.get("notebook_id")
+                .is_some_and(|value| !value.is_null())
+                || (matches!(
+                    request.name.as_ref(),
+                    "show_notebook" | "launch_app" | "resolve_notebook_launch"
+                ) && args.contains_key("path"))
+        })
+    {
+        return Err(rmcp::ErrorData::invalid_params(
+            "Use only the notebook_handle returned for the intended notebook; omit alternate notebook_id/path selectors and explicitly resubmit",
+            Some(serde_json::json!({"code":"invalid_notebook_target","resubmit_required":true})),
         ));
     }
     Ok(())
+}
+
+/// Target admission is actionable tool feedback, not a malformed MCP request.
+/// Keep this conversion at known target boundaries; unrelated protocol and
+/// runtime failures must retain their original channel and uncertainty.
+pub fn tool_target_error(error: rmcp::ErrorData) -> rmcp::model::CallToolResult {
+    let mut details = error
+        .data
+        .and_then(|data| data.as_object().cloned())
+        .unwrap_or_default();
+    let code = details
+        .get("code")
+        .or_else(|| details.get("kind"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!("invalid_notebook_target"));
+    details.insert("code".into(), code);
+    details.insert(
+        "message".into(),
+        serde_json::Value::String(error.message.into_owned()),
+    );
+    let payload = serde_json::json!({"error":details});
+    let mut result = rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+        payload.to_string(),
+    )]);
+    result.structured_content = Some(payload);
+    result.result_type = Some(rmcp::model::ResultType::COMPLETE);
+    result
+}
+
+/// Recognize only explicit child target markers, never infer from error text.
+pub fn is_tool_target_error(error: &rmcp::ErrorData) -> bool {
+    error
+        .data
+        .as_ref()
+        .and_then(|data| data.get("code").or_else(|| data.get("kind")))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|code| {
+            matches!(
+                code,
+                "attachment_expired"
+                    | "attachment_unavailable"
+                    | "missing_notebook_handle"
+                    | "invalid_notebook_target"
+                    | "unsupported_notebook_target"
+                    | "attachment_limit"
+            )
+        })
 }
 pub fn is_native(context: &RequestContext<RoleServer>) -> bool {
     context.peer.peer_info().is_none()
@@ -334,6 +459,24 @@ pub fn notebook_subscription_filter(
         }
     }
     accepted.build()
+}
+/// Proxy catalogs can change when their child is replaced. Static workers keep
+/// using the resource-only filter above.
+pub fn proxy_subscription_filter(
+    requested: &rmcp::model::SubscriptionFilter,
+) -> rmcp::model::SubscriptionFilter {
+    let mut accepted = notebook_subscription_filter(requested);
+    accepted.tools_list_changed = requested.tools_list_changed.filter(|v| *v);
+    accepted.resources_list_changed = requested.resources_list_changed.filter(|v| *v);
+    accepted
+}
+
+/// End background legacy observation when this upstream connection closes.
+pub async fn notification_cancelled(context: &rmcp::service::NotificationContext<RoleServer>) {
+    match context.extensions.get::<ConnectionClosed>() {
+        Some(closed) => closed.0.cancelled().await,
+        None => std::future::pending().await,
+    }
 }
 /// Keep legacy handshakes and native per-request negotiation distinct.
 pub fn require_protocol(context: &RequestContext<RoleServer>) -> Result<(), rmcp::ErrorData> {
@@ -603,6 +746,12 @@ impl<T: Transport<RoleServer>> Transport<RoleServer> for ServerTransport<T> {
                         return Some(prime);
                     }
                 }
+            }
+            Some(JsonRpcMessage::Notification(notification)) => {
+                notification
+                    .notification
+                    .extensions_mut()
+                    .insert(ConnectionClosed(self.closed.clone()));
             }
             None => self.closed.cancel(),
             _ => {}

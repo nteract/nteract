@@ -4,42 +4,32 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use rmcp::model::Tool;
+use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
-const TOOL_CACHE_FILENAME: &str = "tool-cache.json";
+fn tool_cache_path(cache_dir: &Path) -> std::path::PathBuf {
+    let fingerprint = hex::encode(Sha256::digest(BUILTIN_TOOL_CACHE.as_bytes()));
+    cache_dir.join(format!("tool-cache-{fingerprint}.json"))
+}
 
 /// Checked-in tool definitions, embedded at compile time.
 /// Used as a fallback when no runtime cache exists on disk (e.g., fresh worktrees).
 const BUILTIN_TOOL_CACHE: &str = include_str!("../tool-cache.json");
 
-/// Load cached child tool definitions from disk, falling back to the
-/// checked-in tool cache if no runtime cache exists.
+/// Load this embedded catalog revision's disk cache. Missing, corrupt, or empty
+/// entries fall back to checked-in definitions; older revision files are ignored.
 pub fn load_cached_tools(cache_dir: &Path) -> Option<Vec<Tool>> {
-    let path = cache_dir.join(TOOL_CACHE_FILENAME);
-    let data = std::fs::read_to_string(&path).ok();
-
-    let source = if let Some(ref data) = data {
-        ("disk", data.as_str())
-    } else {
-        ("builtin", BUILTIN_TOOL_CACHE)
-    };
-
-    match serde_json::from_str::<Vec<Tool>>(source.1) {
-        Ok(tools) => {
-            if data.is_none() {
-                info!(
-                    "Loaded {} tools from built-in cache (no runtime cache at {})",
-                    tools.len(),
-                    path.display()
-                );
-            }
-            Some(tools)
-        }
-        Err(e) => {
-            warn!("Failed to parse tool cache from {}: {e}", source.0);
-            None
+    let path = tool_cache_path(cache_dir);
+    if let Ok(data) = std::fs::read_to_string(&path) {
+        match serde_json::from_str::<Vec<Tool>>(&data) {
+            Ok(tools) if !tools.is_empty() => return Some(tools),
+            _ => warn!(
+                "Invalid or empty tool cache at {}; using built-in definitions",
+                path.display()
+            ),
         }
     }
+    load_builtin_tools()
 }
 
 /// Load the built-in tool cache (compiled into the binary).
@@ -59,15 +49,21 @@ pub fn load_builtin_tools() -> Option<Vec<Tool>> {
 
 /// Save child tool definitions to disk for optimistic serving on next startup.
 ///
-/// Refuses to persist an empty list — an empty cache on disk outranks the
-/// built-in fallback in [`load_cached_tools`], so writing `[]` would poison
-/// every future start. Callers should treat empty results as "keep prior".
+/// The embedded catalog fingerprint namespaces the cache across schema revisions.
+/// Legacy caches are left untouched. Empty results keep the prior cache.
 pub fn save_tool_cache(cache_dir: &Path, tools: &[Tool]) {
     if tools.is_empty() {
         warn!("Refusing to save empty tool cache to disk");
         return;
     }
-    let path = cache_dir.join(TOOL_CACHE_FILENAME);
+    let path = tool_cache_path(cache_dir);
+    if let Err(e) = std::fs::create_dir_all(cache_dir) {
+        warn!(
+            "Failed to create tool cache directory {}: {e}",
+            cache_dir.display()
+        );
+        return;
+    }
     match serde_json::to_string_pretty(tools) {
         Ok(json) => {
             if let Err(e) = std::fs::write(&path, json) {
@@ -83,12 +79,13 @@ pub fn save_tool_cache(cache_dir: &Path, tools: &[Tool]) {
 /// Result of comparing old and new tool lists after a child restart.
 #[derive(Debug, PartialEq)]
 pub enum ToolDivergence {
-    /// Tool lists are identical.
+    /// Tool names are unchanged. Schema changes refresh in place via catalog
+    /// publication; this policy only handles removal or renaming of tools.
     Same,
     /// New tools were added but none removed — safe to continue.
     Superset { added: Vec<String> },
     /// Tools were removed or renamed — MCP client's schema is stale.
-    /// The proxy should exit cleanly so the client restarts fresh.
+    /// Publish the live catalog and continue so clients can relist in place.
     Incompatible {
         removed: Vec<String>,
         added: Vec<String>,
@@ -320,21 +317,48 @@ mod tests {
     }
 
     #[test]
-    fn load_returns_none_for_invalid_json() {
+    fn invalid_and_empty_cache_fall_back_to_builtin() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(TOOL_CACHE_FILENAME), "not json").unwrap();
-        assert!(load_cached_tools(dir.path()).is_none());
+        for content in ["not json", "[]"] {
+            std::fs::write(tool_cache_path(dir.path()), content).unwrap();
+            assert_eq!(load_cached_tools(dir.path()), load_builtin_tools());
+        }
+    }
+
+    #[test]
+    fn old_revision_and_legacy_cache_are_ignored_and_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["tool-cache.json", "tool-cache-old-revision.json"] {
+            let path = dir.path().join(name);
+            std::fs::write(
+                &path,
+                serde_json::to_string(&vec![tool("obsolete")]).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(load_cached_tools(dir.path()), load_builtin_tools());
+            save_tool_cache(dir.path(), &[tool("current")]);
+            assert!(std::fs::read_to_string(path).unwrap().contains("obsolete"));
+            std::fs::remove_file(tool_cache_path(dir.path())).unwrap();
+        }
+    }
+
+    #[test]
+    fn save_creates_nested_cache_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("cli/headless");
+        let expected = vec![tool("current")];
+        save_tool_cache(&nested, &expected);
+        assert_eq!(load_cached_tools(&nested), Some(expected));
     }
 
     #[test]
     fn save_refuses_empty_cache() {
-        // Empty saves would poison future starts — `load_cached_tools` would
-        // hit the empty file and skip the built-in fallback.
+        // Empty discovery must not replace a previously useful disk cache.
         let dir = tempfile::tempdir().unwrap();
         let tools: Vec<Tool> = vec![];
         save_tool_cache(dir.path(), &tools);
         assert!(
-            !dir.path().join(TOOL_CACHE_FILENAME).exists(),
+            !tool_cache_path(dir.path()).exists(),
             "empty cache must not be persisted"
         );
     }

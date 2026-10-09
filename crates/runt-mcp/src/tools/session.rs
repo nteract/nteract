@@ -12,6 +12,7 @@ use notebook_sync::status::ConnectionState;
 use runtimed_client::client::{ClientError, PoolClient};
 use runtimed_client::protocol::{NotebookCellProjection, NotebookProjection};
 
+use crate::attachments::AttachmentOrigin;
 use crate::cloud::{self, CloudRegistry, NotebookTarget};
 use crate::formatting;
 use crate::session::{
@@ -71,21 +72,19 @@ async fn resolve_room_notebook_path(server: &NteractMcp, notebook_id: &str) -> O
         .and_then(|room| room.notebook_path)
 }
 
-/// Maximum number of parked sessions. When this limit is reached, the
-/// parked session chosen by HashMap iteration order is evicted to make room. This
-/// bounds the resource footprint of a long-lived MCP process that touches
-/// many notebooks - without a cap, every notebook ever opened keeps its
-/// peer connection and kernel alive indefinitely.
+/// Maximum number of compatibility-cache entries. Explicit attachment
+/// ownership lives in the registry and is unaffected by cache eviction. The
+/// parked session chosen by HashMap iteration order is evicted to make room.
+/// This bounds cached selection copies, not retained attachment ownership or
+/// daemon kernel lifetime. Retained legacy entries remain reachable by ID.
 const MAX_PARKED_SESSIONS: usize = 8;
 
 /// Park a replaced active session after an atomic activation publication.
 ///
-/// Instead of dropping the old session (which would decrement the daemon's
-/// peer count and start the eviction timer), we move it into a parked
-/// sessions map. The daemon peer connection stays alive, so the room and
-/// kernel survive. Hosted sessions can reuse the parked peer when the agent
-/// switches back. Local sessions are retained only for keepalive and are
-/// rebuilt from their durable identity after daemon replacement.
+/// The registry retains ownership independently of this bounded cache. Healthy
+/// local and hosted switch-back selects the retained legacy registry entry,
+/// even after its cached copy is evicted. Daemon replacement expires stale
+/// local lifetimes; only the selected legacy target is automatically rejoined.
 ///
 /// If parking would exceed [`MAX_PARKED_SESSIONS`], one existing parked
 /// session is evicted to keep the cache bounded.
@@ -105,6 +104,13 @@ async fn park_session(server: &NteractMcp, old: NotebookSession) {
     });
     // Park the session: peer connection stays alive, no eviction.
     let mut parked = server.parked_sessions.write().await;
+    if !server
+        .attachments
+        .read_entries()
+        .contains_key(&old.notebook_handle)
+    {
+        return; // Release won the race with compatibility-cache insertion.
+    }
 
     // Arbitrary-order eviction: if at capacity, drop an existing parked session.
     if parked.len() >= MAX_PARKED_SESSIONS {
@@ -119,14 +125,6 @@ async fn park_session(server: &NteractMcp, old: NotebookSession) {
     }
 
     parked.insert(session_key, old);
-}
-
-/// Try to resume a parked hosted session for the given notebook URL.
-///
-/// Returns `Some(session)` if a parked session was found and removed from
-/// the parked map. The caller should install it as the active session.
-async fn take_parked_session(server: &NteractMcp, notebook_id: &str) -> Option<NotebookSession> {
-    server.parked_sessions.write().await.remove(notebook_id)
 }
 
 /// Resolve a user-provided path: expand ~ to home dir and resolve relative paths
@@ -215,7 +213,9 @@ async fn canonical_local_id_target_for_server(
     // the room. While that narrow window is open, wait for publication (or
     // for the leader to register the UUID alias) instead of treating the UUID
     // as a competing target generation.
-    let mut attempts = if server.session_activation.has_current_local_path_flight() {
+    let mut attempts = if !crate::targets::explicit_attachment_mode()
+        && server.session_activation.has_current_local_path_flight()
+    {
         40
     } else {
         1
@@ -642,17 +642,17 @@ fn superseded_result(lease: &ActivationLease) -> CallToolResult {
     lease.superseded_result()
 }
 
-fn session_matches_target(session: &NotebookSession, requested: &CanonicalNotebookTarget) -> bool {
-    if session.activation_target == requested.as_str() {
-        return true;
-    }
-
+fn session_matches_target(
+    session: &NotebookSession,
+    requested: &CanonicalNotebookTarget,
+    room_paths: &std::collections::HashMap<String, Option<String>>,
+) -> bool {
     match &session.source {
         NotebookSessionSource::Local => {
             canonical_local_id_target(&session.notebook_id).is_ok_and(|target| target == *requested)
-                || session
-                    .notebook_path
-                    .as_deref()
+                || room_paths
+                    .get(&session.notebook_id)
+                    .and_then(|path| path.as_deref())
                     .is_some_and(|path| canonical_local_path_target(path) == *requested)
         }
         NotebookSessionSource::Hosted { domain } => {
@@ -660,6 +660,37 @@ fn session_matches_target(session: &NotebookSession, requested: &CanonicalNotebo
             CanonicalNotebookTarget::new(format!("hosted:{url}")) == *requested
         }
     }
+}
+
+/// Saved/renamed paths are daemon-owned metadata. Cached session locators are
+/// recovery hints and cannot authorize selecting a room for a path open.
+async fn legacy_reuse_context(
+    server: &NteractMcp,
+    requested: &CanonicalNotebookTarget,
+) -> (
+    Option<DaemonIncarnation>,
+    std::collections::HashMap<String, Option<String>>,
+) {
+    if requested.as_str().starts_with("hosted:") {
+        return (None, Default::default());
+    }
+    let before = current_daemon_incarnation(server).await;
+    if before.is_none() {
+        return (None, Default::default());
+    }
+    let Ok(rooms) = PoolClient::new(server.socket_path.clone())
+        .list_rooms()
+        .await
+    else {
+        return (None, Default::default());
+    };
+    let incarnation =
+        unchanged_daemon_incarnation(before, current_daemon_incarnation(server).await);
+    let paths = rooms
+        .into_iter()
+        .map(|room| (room.notebook_id, room.notebook_path))
+        .collect();
+    (incarnation, paths)
 }
 
 fn has_reusable_replica(
@@ -676,10 +707,15 @@ async fn reuse_active_session(
 ) -> Option<CallToolResult> {
     // Sample the local daemon before taking the session lock. The lock is only
     // used for synchronous validation and response construction.
-    let current_incarnation = current_daemon_incarnation(server).await;
-    let guard = server.session.read().await;
-    let session = guard.as_ref()?;
-    if !session_matches_target(session, requested)
+    let (current_incarnation, room_paths) = legacy_reuse_context(server, requested).await;
+    let mut guard = server.session.write().await;
+    let session = guard.as_mut()?;
+    let mut entries = server.attachments.write_entries();
+    let entry = entries.get_mut(&session.notebook_handle)?;
+    if entry.origin() != AttachmentOrigin::Legacy {
+        return None;
+    }
+    if !session_matches_target(session, requested, &room_paths)
         || !server
             .session_activation
             .can_reuse_installed(session.activation_generation, &session.activation_target)
@@ -691,21 +727,37 @@ async fn reuse_active_session(
         return None;
     }
 
-    let readiness = session.readiness();
-    if !has_reusable_replica(
-        session.handle.status().connection,
-        readiness.interactive,
-        readiness.projection_ready,
-    ) {
-        return None;
+    if !session.is_hosted() {
+        if let Some(path) = room_paths.get(&session.notebook_id) {
+            session.notebook_path = path.clone();
+            entry.session.notebook_path = path.clone();
+        }
     }
-    let projection = if readiness.interactive {
+
+    Some(match reused_session_response(session) {
+        Ok(response) => response,
+        Err(error) => *error,
+    })
+}
+
+fn reused_session_response(
+    session: &NotebookSession,
+) -> Result<CallToolResult, Box<CallToolResult>> {
+    let access_error = |error: crate::session::SessionAccessError| {
+        Box::new(activation_error(
+            error.code,
+            &error.message,
+            session.activation_generation,
+            &CanonicalNotebookTarget::new(session.activation_target.clone()),
+        ))
+    };
+    let access = session
+        .access(SessionRequirement::ProjectionRead)
+        .map_err(access_error)?;
+    let projection = if access.readiness.interactive {
         None
     } else {
-        session
-            .access(SessionRequirement::ProjectionRead)
-            .ok()
-            .and_then(|access| access.projection)
+        access.projection
     };
     let (runtime, dependencies, project_context, cells) = match projection {
         Some(projection) => (
@@ -715,12 +767,51 @@ async fn reuse_active_session(
                 .unwrap_or(serde_json::Value::Null),
             format_projected_cell_summaries(&projection.cells),
         ),
-        None => (
-            read_runtime_info(&session.handle),
-            get_dependencies(&session.handle),
-            read_project_context(&session.handle),
-            format_cell_summaries(&session.handle),
-        ),
+        None => {
+            session
+                .access(SessionRequirement::DocumentRead)
+                .map_err(access_error)?;
+            let (runtime, project_context, cells) =
+                if session.access(SessionRequirement::RuntimeRead).is_ok() {
+                    (
+                        read_runtime_info(&session.handle),
+                        read_project_context(&session.handle),
+                        format_cell_summaries(&session.handle),
+                    )
+                } else {
+                    let cells = session
+                        .handle
+                        .get_cells()
+                        .iter()
+                        .map(|cell| {
+                            formatting::format_cell_summary(
+                                &cell.id,
+                                &cell.cell_type,
+                                &cell.source,
+                                formatting::CellSummaryContext {
+                                    execution_count: None,
+                                    status: None,
+                                    execution_id: None,
+                                },
+                                60,
+                                &[],
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    (
+                        serde_json::json!({"kernel_status": "unknown"}),
+                        serde_json::Value::Null,
+                        cells,
+                    )
+                };
+            (
+                runtime,
+                get_dependencies(&session.handle),
+                project_context,
+                cells,
+            )
+        }
     };
 
     let mut response = serde_json::json!({
@@ -743,7 +834,71 @@ async fn reuse_active_session(
             serde_json::json!(cloud::hosted_notebook_url(domain, &session.notebook_id));
     }
     add_progressive_session_fields(&mut response, session);
-    Some(notebook_session_response(response, &session.notebook_id))
+    Ok(notebook_session_response(response, &session.notebook_id))
+}
+
+/// Select an existing legacy lifetime under the same slot-to-registry ordering
+/// used for release. Reuse consumes no reservation and never replaces an entry.
+async fn reuse_retained_legacy_session(
+    server: &NteractMcp,
+    lease: &ActivationLease,
+) -> Option<CallToolResult> {
+    let (current_incarnation, room_paths) = legacy_reuse_context(server, lease.target()).await;
+    let (response, previous, session_key) = {
+        let mut active = server.session.write().await;
+        let mut entries = server.attachments.write_entries();
+        if !lease.is_current() {
+            return Some(superseded_result(lease));
+        }
+        let handle = entries
+            .iter()
+            .filter(|(_, entry)| {
+                let session = &entry.session;
+                let readiness = session.readiness();
+                entry.origin() == AttachmentOrigin::Legacy
+                    && session_matches_target(session, lease.target(), &room_paths)
+                    && (session.is_hosted()
+                        || current_incarnation.as_ref().is_some_and(|current| {
+                            session.local_daemon_incarnation.as_ref() == Some(current)
+                        }))
+                    && has_reusable_replica(
+                        session.handle.status().connection,
+                        readiness.interactive,
+                        readiness.projection_ready,
+                    )
+            })
+            .max_by_key(|(handle, entry)| (entry.session.activation_generation, *handle))
+            .map(|(handle, _)| handle.clone())?;
+        let entry = entries.get_mut(&handle)?;
+        let mut selected = entry.session.clone();
+        selected.reactivate(lease.generation(), lease.target());
+        if !selected.is_hosted() {
+            if let Some(path) = room_paths.get(&selected.notebook_id) {
+                selected.notebook_path = path.clone();
+            }
+        }
+        let response = match reused_session_response(&selected) {
+            Ok(response) => response,
+            Err(error) => return Some(*error),
+        };
+        // Both membership and the slot are protected at the commit point.
+        // Failed/superseded activation leaves the retained lifetime untouched.
+        if !lease.mark_installed() {
+            return Some(superseded_result(lease));
+        }
+        let session_key = selected.session_key();
+        entry.session.reactivate(lease.generation(), lease.target());
+        entry.session.notebook_path = selected.notebook_path.clone();
+        let previous = active.replace(selected);
+        (response, previous, session_key)
+    };
+    if let Some(old) = previous {
+        if old.session_key() != session_key {
+            park_session(server, old).await;
+        }
+    }
+    server.parked_sessions.write().await.remove(&session_key);
+    Some(response)
 }
 
 async fn install_activated_session(
@@ -765,20 +920,46 @@ async fn install_activated_session(
             ));
         }
     }
-    let session_key = session.session_key();
-    let previous = lease.install_in_slot(&server.session, session).await?;
-
-    // A different target may begin immediately after publication. This
-    // session remains the installed, usable identity until that newer attempt
-    // actually publishes; failed attempts never poison the active slot.
-    if !lease.is_current() {
-        if let Some(old) = previous {
-            if old.session_key() != session_key {
-                park_session(server, old).await;
-            }
-        }
-        return Err(superseded_result(lease));
+    let reservation = crate::targets::take_reservation(server).map_err(|message| {
+        activation_error(
+            "attachment_limit",
+            message,
+            lease.generation(),
+            lease.target(),
+        )
+    })?;
+    if crate::targets::explicit_attachment_mode() {
+        let mut session = session;
+        let operator = server.get_operator().await;
+        session.backing_key = crate::targets::backing_key()
+            .or_else(|| {
+                session.local_daemon_incarnation.clone().map(|incarnation| {
+                    crate::attachments::BackingPeerKey {
+                        target: format!("local:id:{}", session.notebook_id),
+                        incarnation,
+                        operator,
+                    }
+                })
+            })
+            .filter(|key| {
+                session.local_daemon_incarnation.as_ref() == Some(&key.incarnation)
+                    && session.handle.get_actor_id().is_ok_and(|actor| {
+                        actor
+                            .rsplit_once('/')
+                            .is_some_and(|(_, operator)| operator == key.operator)
+                    })
+            });
+        server.attachments.insert(session, reservation);
+        return Ok(());
     }
+    let session_key = session.session_key();
+    let previous = lease
+        .install_in_slot_with(&server.session, session, |session| {
+            server
+                .attachments
+                .insert_legacy(session.clone(), reservation);
+        })
+        .await?;
 
     if let Some(old) = previous {
         if old.session_key() != session_key {
@@ -953,178 +1134,149 @@ pub struct SaveNotebookParams {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DisconnectNotebookParams {
-    /// Notebook ID to disconnect and release. If omitted, disconnects the
-    /// active session. Pass a notebook_id to release a specific parked session
-    /// without switching away from the current one.
+    /// Notebook ID whose retained legacy attachments should be released.
+    /// If omitted, releases the active legacy target. Independent explicit
+    /// attachments require their exact notebook_handle instead.
     #[serde(default)]
     pub notebook_id: Option<String>,
 }
 
-/// Disconnect a notebook session, releasing its peer connection and allowing
-/// the daemon to evict the room normally. Works on both the active session
-/// and parked sessions.
+/// Release an exact handle or the deliberately named legacy target. Cache
+/// eviction does not prevent ID-only legacy release; explicit owners remain
+/// independent. Daemon room eviction depends on all remaining peer owners.
 pub async fn disconnect_notebook(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
     if let Some(handle) = crate::targets::current() {
-        let removed = {
+        let removed = server.attachments.remove(&handle);
+        if removed.is_none() {
+            return Err(McpError::invalid_params(
+                "Notebook attachment expired",
+                None,
+            ));
+        }
+        {
             let mut active = server.session.write().await;
             if active
                 .as_ref()
                 .is_some_and(|session| session.notebook_handle == handle)
             {
                 server.advance_session_intent_epoch();
-                active.take()
-            } else {
-                None
+                active.take();
             }
-        };
-        if let Some(session) = removed {
-            *server.last_session_drop.write().await = Some(SessionDropInfo {
-                reason: SessionDropReason::Disconnected,
-                notebook_id: session.notebook_id.clone(),
-                notebook_path: session.notebook_path.clone(),
-                rejoin_target: Some(session.rejoin_target()),
-            });
-            drop(session);
-            return tool_success(
-                "Released the notebook attachment. Connect again to obtain a new handle.",
-            );
         }
-        let removed = {
-            let mut parked = server.parked_sessions.write().await;
-            let key = parked
-                .iter()
-                .find(|(_, session)| session.notebook_handle == handle)
-                .map(|(key, _)| key.clone());
-            key.and_then(|key| parked.remove(&key))
-        };
-        if removed.is_some() {
-            drop(removed);
-            return tool_success("Released the parked notebook attachment.");
-        }
-        return Err(McpError::invalid_params(
-            "Notebook attachment expired",
-            None,
-        ));
+        server
+            .parked_sessions
+            .write()
+            .await
+            .retain(|_, session| session.notebook_handle != handle);
+        return tool_success(
+            "Released the notebook attachment. Connect again to obtain a new handle.",
+        );
     }
     let target_id = arg_str(request, "notebook_id");
-
-    match target_id {
-        Some(id) => {
-            // Try parked sessions first.
-            let removed = server.parked_sessions.write().await.remove(id);
-            if let Some(session) = removed {
-                tracing::info!("[mcp] Disconnecting parked session {}", id);
-                drop(session);
-                return tool_success(&format!(
-                    "Disconnected parked session {}. Peer connection released; \
-                     daemon eviction timer will start.",
-                    id
-                ));
+    let matches_pending_rejoin =
+        server
+            .last_session_drop
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|drop| {
+                matches!(drop.reason, SessionDropReason::Disconnected)
+                    && target_id.is_none_or(|id| drop.notebook_id == id)
+            });
+    let (removed_handles, old, cancelled_pending_rejoin) = {
+        let mut active = server.session.write().await;
+        let mut entries = server.attachments.write_entries();
+        let active_key = active.as_ref().and_then(|session| {
+            entries.get(&session.notebook_handle).and_then(|entry| {
+                (entry.origin() == AttachmentOrigin::Legacy
+                    && target_id
+                        .is_none_or(|id| session.notebook_id == id || session.session_key() == id))
+                .then(|| session.session_key())
+            })
+        });
+        let target_key = if active_key.is_some() || target_id.is_none() {
+            active_key
+        } else {
+            let id = target_id.unwrap_or_default();
+            let mut keys = entries
+                .values()
+                .filter(|entry| {
+                    entry.origin() == AttachmentOrigin::Legacy
+                        && (entry.session.notebook_id == id || entry.session.session_key() == id)
+                })
+                .map(|entry| entry.session.session_key());
+            let first = keys.next();
+            if keys.any(|key| Some(&key) != first.as_ref()) {
+                return tool_error(
+                    "Ambiguous legacy notebook ID across sources; release an exact notebook_handle instead.",
+                );
             }
-
-            let matches_pending_rejoin = server
-                .last_session_drop
-                .read()
-                .await
-                .as_ref()
-                .is_some_and(|drop| {
-                    drop.notebook_id == id && matches!(drop.reason, SessionDropReason::Disconnected)
-                });
-            let (old, cancelled_pending_rejoin) = {
-                let mut guard = server.session.write().await;
-                let is_active = guard
-                    .as_ref()
-                    .is_some_and(|session| session.notebook_id == id);
-                if is_active {
-                    server.advance_session_intent_epoch();
-                    (guard.take(), false)
-                } else if guard.is_none() && matches_pending_rejoin {
-                    server.advance_session_intent_epoch();
-                    (None, true)
-                } else {
-                    (None, false)
-                }
-            };
-
-            if let Some(session) = old {
-                *server.last_session_drop.write().await = Some(SessionDropInfo {
-                    reason: SessionDropReason::Disconnected,
-                    notebook_id: session.notebook_id.clone(),
-                    notebook_path: session.notebook_path.clone(),
-                    rejoin_target: Some(session.rejoin_target()),
-                });
-                tracing::info!("[mcp] Disconnecting active session {}", id);
-                drop(session);
-                return tool_success(&format!(
-                    "Disconnected active session {}. No active session now; \
-                     use connect_notebook or create_notebook to start a new one.",
-                    id
-                ));
-            }
-            if cancelled_pending_rejoin {
-                tracing::info!("[mcp] Cancelled automatic rejoin for session {}", id);
-                return tool_success(&format!(
-                    "Cancelled automatic reconnect for session {}. No active session now; \
-                     use connect_notebook or create_notebook to start a new one.",
-                    id
-                ));
-            }
-
-            tool_error(&format!(
-                "No active or parked session with notebook_id '{}'. \
-                 Use list_active_notebooks to see available sessions.",
-                id
-            ))
-        }
-        None => {
-            // No ID specified — disconnect the active session.
-            let old = {
-                let mut guard = server.session.write().await;
-                server.advance_session_intent_epoch();
-                guard.take()
-            };
-            match old {
-                Some(session) => {
-                    let notebook_id = session.notebook_id.clone();
-                    *server.last_session_drop.write().await = Some(SessionDropInfo {
-                        reason: SessionDropReason::Disconnected,
-                        notebook_id: session.notebook_id.clone(),
-                        notebook_path: session.notebook_path.clone(),
-                        rejoin_target: Some(session.rejoin_target()),
-                    });
-                    tracing::info!("[mcp] Disconnecting active session {}", notebook_id);
-                    drop(session);
-                    tool_success(&format!(
-                        "Disconnected active session {}. No active session now; \
-                         use connect_notebook or create_notebook to start a new one.",
-                        notebook_id
-                    ))
-                }
-                None => {
-                    let pending_rejoin = server
-                        .last_session_drop
-                        .read()
-                        .await
+            first
+        };
+        let removed_handles: std::collections::HashSet<String> = entries
+            .iter()
+            .filter(|(_, entry)| {
+                entry.origin() == AttachmentOrigin::Legacy
+                    && target_key
                         .as_ref()
-                        .is_some_and(|drop| matches!(drop.reason, SessionDropReason::Disconnected));
-                    if pending_rejoin {
-                        tool_success(
-                            "Cancelled automatic reconnect. No active session now; \
-                             use connect_notebook or create_notebook to start a new one.",
-                        )
-                    } else {
-                        tool_error(
-                            "No active session to disconnect. \
-                             Pass notebook_id to disconnect a specific parked session.",
-                        )
-                    }
-                }
-            }
+                        .is_some_and(|key| entry.session.session_key() == *key)
+            })
+            .map(|(handle, _)| handle.clone())
+            .collect();
+        // Retention is ended deliberately for the legacy target named by this
+        // request. Independent explicit owners of that notebook are excluded.
+        entries.retain(|handle, _| !removed_handles.contains(handle));
+        let old = if active
+            .as_ref()
+            .is_some_and(|session| removed_handles.contains(&session.notebook_handle))
+        {
+            server.advance_session_intent_epoch();
+            active.take()
+        } else {
+            None
+        };
+        let cancelled = old.is_none() && active.is_none() && matches_pending_rejoin;
+        if cancelled || (target_id.is_none() && old.is_none()) {
+            server.advance_session_intent_epoch();
         }
+        (removed_handles, old, cancelled)
+    };
+    server
+        .parked_sessions
+        .write()
+        .await
+        .retain(|_, session| !removed_handles.contains(&session.notebook_handle));
+    if let Some(session) = &old {
+        *server.last_session_drop.write().await = Some(SessionDropInfo {
+            reason: SessionDropReason::Disconnected,
+            notebook_id: session.notebook_id.clone(),
+            notebook_path: session.notebook_path.clone(),
+            rejoin_target: Some(session.rejoin_target()),
+        });
     }
+    if !removed_handles.is_empty() {
+        return tool_success(&format!(
+            "Disconnected notebook {}. Released {} legacy attachment(s); independent explicit attachments remain usable.",
+            target_id.or_else(|| old.as_ref().map(|session| session.notebook_id.as_str())).unwrap_or_default(),
+            removed_handles.len(),
+        ));
+    }
+    if cancelled_pending_rejoin {
+        return tool_success(
+            "Cancelled automatic reconnect. No active session now; use connect_notebook or create_notebook to start a new one.",
+        );
+    }
+    if target_id.is_none() {
+        return tool_error(
+            "No active session to disconnect. Pass notebook_id to disconnect a retained legacy session.",
+        );
+    }
+    tool_error(
+        "No matching retained legacy session to disconnect. Pass notebook_handle to release an explicit attachment.",
+    )
 }
 
 /// List all active notebook sessions.
@@ -1256,76 +1408,6 @@ async fn connect_hosted_notebook(
     if !lease.is_current() {
         return Ok(superseded_result(lease));
     }
-    if let Some(mut parked) = take_parked_session(server, &session_key).await {
-        if !lease.is_current() {
-            // Put the peer back instead of dropping a healthy parked session
-            // merely because another target won during the map lookup.
-            server
-                .parked_sessions
-                .write()
-                .await
-                .insert(session_key.clone(), parked);
-            return Ok(superseded_result(lease));
-        }
-        tracing::info!("[mcp] Resuming parked hosted session {}", session_key);
-        parked.reactivate(lease.generation(), lease.target());
-        let handle = &parked.handle;
-        let runtime_info = read_runtime_info(handle);
-        let deps = get_dependencies(handle);
-        let cells_summary = format_cell_summaries(handle);
-        let project_context = read_project_context(handle);
-
-        let mut response = serde_json::json!({
-            "notebook_id": handle.notebook_id(),
-            "connected": true,
-            "resumed": true,
-            "source": "hosted",
-            "domain": domain_config.base_url,
-            "target": session_key,
-            "runtime": runtime_info,
-            "dependencies": deps,
-            "project_context": project_context,
-            "cells": cells_summary,
-        });
-
-        if let Some(ref prev_id) = prev {
-            if *prev_id != notebook_id {
-                response["switched_from"] = serde_json::json!(prev_id);
-            }
-        }
-
-        add_progressive_session_fields(&mut response, &parked);
-        let previous = match lease
-            .install_in_slot_recovering(&server.session, parked)
-            .await
-        {
-            Ok(previous) => previous,
-            Err((result, rejected)) => {
-                server
-                    .parked_sessions
-                    .write()
-                    .await
-                    .insert(session_key.clone(), rejected);
-                return Ok(result);
-            }
-        };
-        if !lease.is_current() {
-            if let Some(old) = previous {
-                if old.session_key() != session_key {
-                    park_session(server, old).await;
-                }
-            }
-            return Ok(superseded_result(lease));
-        }
-        if let Some(old) = previous {
-            if old.session_key() != session_key {
-                park_session(server, old).await;
-            }
-        }
-        server.parked_sessions.write().await.remove(&session_key);
-        return Ok(notebook_session_response(response, &notebook_id));
-    }
-
     match cloud::connect_hosted_notebook(&domain_config, &notebook_id).await {
         Ok(result) => {
             let handle = &result.handle;
@@ -1551,7 +1633,256 @@ async fn connect_local_id_progressive(
     Ok(notebook_session_response(response, &notebook_id))
 }
 
-/// Open a notebook through a monotonic, same-target-coalescing activation.
+/// Format a newly owned attachment to an existing peer without weakening its
+/// retained projection or causal head evidence.
+fn shared_attachment_response(
+    session: &NotebookSession,
+) -> Result<CallToolResult, Box<CallToolResult>> {
+    let access = session
+        .access(SessionRequirement::ProjectionRead)
+        .map_err(|error| {
+            activation_error(
+                error.code,
+                &error.message,
+                session.activation_generation,
+                &CanonicalNotebookTarget::new(session.activation_target.clone()),
+            )
+        })?;
+    let projection = if access.readiness.interactive {
+        None
+    } else {
+        access.projection
+    };
+    let (runtime, dependencies, project_context, cells) = match projection {
+        Some(projection) => (
+            projected_runtime_info(&projection),
+            projection.dependencies.clone(),
+            serde_json::to_value(&projection.runtime.project_context).unwrap_or_default(),
+            format_projected_cell_summaries(&projection.cells),
+        ),
+        None => {
+            session
+                .access(SessionRequirement::DocumentRead)
+                .map_err(|error| {
+                    activation_error(
+                        error.code,
+                        &error.message,
+                        session.activation_generation,
+                        &CanonicalNotebookTarget::new(session.activation_target.clone()),
+                    )
+                })?;
+            // Document readiness does not imply runtime readiness. A shared
+            // open may safely report an unknown runtime without a kernel.
+            let (runtime, project_context, cells) =
+                if session.access(SessionRequirement::RuntimeRead).is_ok() {
+                    (
+                        read_runtime_info(&session.handle),
+                        read_project_context(&session.handle),
+                        format_cell_summaries(&session.handle),
+                    )
+                } else {
+                    let cells = session
+                        .handle
+                        .get_cells()
+                        .iter()
+                        .map(|cell| {
+                            formatting::format_cell_summary(
+                                &cell.id,
+                                &cell.cell_type,
+                                &cell.source,
+                                formatting::CellSummaryContext::default(),
+                                60,
+                                &[],
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    (
+                        serde_json::json!({"kernel_status": "unknown"}),
+                        serde_json::Value::Null,
+                        cells,
+                    )
+                };
+            (
+                runtime,
+                get_dependencies(&session.handle),
+                project_context,
+                cells,
+            )
+        }
+    };
+    let mut response = serde_json::json!({
+        "notebook_id": session.notebook_id,
+        "connected": true,
+        "runtime": runtime,
+        "dependencies": dependencies,
+        "project_context": project_context,
+        "cells": cells,
+    });
+    if let Some(path) = &session.notebook_path {
+        response["path"] = serde_json::json!(path);
+        response["notebook_path"] = serde_json::json!(path);
+    }
+    add_progressive_session_fields(&mut response, session);
+    Ok(notebook_session_response(response, &session.notebook_id))
+}
+
+async fn open_explicit_attachment(
+    server: &NteractMcp,
+    target: NotebookTarget,
+    requested: CanonicalNotebookTarget,
+) -> Result<CallToolResult, McpError> {
+    // Direct hosted transport has no daemon incarnation and resolves mutable
+    // credentials on connect. Do not share it without an authenticated key.
+    let key = if matches!(target, NotebookTarget::Hosted { .. }) {
+        None
+    } else {
+        if let Err(error) = server.admit_local_runtime().await {
+            return tool_error(&error);
+        }
+        let canonical = match &target {
+            NotebookTarget::LocalNotebookId(id) => {
+                canonical_local_id_target_for_server(server, id)
+                    .await
+                    .unwrap_or_else(|error| {
+                        tracing::debug!(?error, "Cannot resolve backing-peer path alias; retaining requested notebook identity");
+                        requested.clone()
+                    })
+            }
+            _ => requested.clone(),
+        };
+        current_daemon_incarnation(server).await.map(|incarnation| {
+            crate::attachments::BackingPeerKey {
+                target: canonical.as_str().to_string(),
+                incarnation,
+                operator: String::new(),
+            }
+        })
+    };
+    let key = match key {
+        Some(mut key) => {
+            key.operator = server.get_operator().await;
+            Some(key)
+        }
+        None => None,
+    };
+    let gate = key
+        .as_ref()
+        .map(|key| server.attachments.acquisition_gate(key.clone()));
+    let _permit = match &gate {
+        Some(gate) => Some(
+            std::sync::Arc::clone(gate)
+                .acquire_owned()
+                .await
+                .map_err(|_| McpError::internal_error("Notebook acquisition gate closed", None))?,
+        ),
+        None => None,
+    };
+    let activation = std::sync::Arc::new(crate::session_activation::SessionActivation::default());
+    let mut lease = match activation.begin(requested) {
+        ActivationTicket::Leader(lease) => lease,
+        ActivationTicket::Follower(_) => unreachable!("fresh activation has no follower"),
+    };
+
+    if let Some(key) = &key {
+        if current_daemon_incarnation(server).await.as_ref() != Some(&key.incarnation) {
+            return Ok(activation_error(
+                "daemon_replaced",
+                "The local daemon changed while waiting to acquire a backing peer; retry the connection",
+                lease.generation(), lease.target(),
+            ));
+        }
+        if server.get_operator().await != key.operator {
+            return Ok(activation_error(
+                "source_identity_changed",
+                "The operator changed while waiting to acquire a backing peer; retry the connection",
+                lease.generation(), lease.target(),
+            ));
+        }
+        // Resolve from current daemon room metadata, never activation aliases:
+        // saving a shared notebook can move its path while its old activation
+        // target still names the original file.
+        let rooms = PoolClient::new(server.socket_path.clone())
+            .list_rooms()
+            .await
+            .unwrap_or_else(|error| {
+                tracing::debug!(%error, "Cannot resolve backing peer; opening a fresh connection");
+                Vec::new()
+            });
+        let mut matches = rooms.into_iter().filter(|room| match &target {
+            NotebookTarget::LocalPath(path) => {
+                room.notebook_path.as_deref().is_some_and(|room_path| {
+                    canonical_local_path_target(room_path) == canonical_local_path_target(path)
+                })
+            }
+            NotebookTarget::LocalNotebookId(id) => room.notebook_id == *id,
+            NotebookTarget::Hosted { .. } => false,
+        });
+        let resolved = matches.next().filter(|_| matches.next().is_none());
+        let candidate = resolved.as_ref().and_then(|room| {
+            server
+                .attachments
+                .read_entries()
+                .values()
+                .find_map(|entry| {
+                    let session = &entry.session;
+                    let compatible = session.backing_key.as_ref().is_some_and(|existing| {
+                        existing.incarnation == key.incarnation && existing.operator == key.operator
+                    });
+                    let readiness = session.readiness();
+                    (compatible
+                        && !session.is_hosted()
+                        && session.notebook_id == room.notebook_id
+                        && session.local_daemon_incarnation.as_ref() == Some(&key.incarnation)
+                        && session.handle.status().connection == ConnectionState::Connected
+                        && readiness.source_state["phase"] == "ready"
+                        && (readiness.interactive || readiness.projection_ready))
+                        .then(|| session.fresh_attachment(lease.generation(), lease.target()))
+                })
+        });
+        if let Some(mut session) = candidate {
+            session.notebook_path = resolved.and_then(|room| room.notebook_path);
+            let response = match shared_attachment_response(&session) {
+                Ok(response) => response,
+                Err(error) => return Ok(*error),
+            };
+            if let Err(result) = crate::targets::with_backing_key(
+                Some(key.clone()),
+                install_activated_session(server, &lease, session),
+            )
+            .await
+            {
+                return Ok(result);
+            }
+            lease.complete(&response);
+            return Ok(response);
+        }
+    }
+
+    let outcome = crate::targets::with_backing_key(key, async {
+        match target {
+            NotebookTarget::LocalPath(path) => {
+                connect_local_path_progressive(server, path, None, &lease).await
+            }
+            NotebookTarget::LocalNotebookId(id) => {
+                connect_local_id_progressive(server, id, None, &lease).await
+            }
+            NotebookTarget::Hosted {
+                domain,
+                notebook_id,
+                ..
+            } => connect_hosted_notebook(server, domain, notebook_id, None, &lease).await,
+        }
+    })
+    .await;
+    if let Ok(result) = &outcome {
+        lease.complete(result);
+    }
+    outcome
+}
+
+/// Acquire an independent attachment for client requests on every protocol.
+/// Internal recovery helpers can still use the monotonic selection adapter.
 pub async fn open_notebook(
     server: &NteractMcp,
     request: &CallToolRequestParams,
@@ -1594,7 +1925,11 @@ pub async fn open_notebook(
             (NotebookTarget::LocalPath(path), canonical)
         }
         NotebookTarget::LocalNotebookId(notebook_id) => {
-            let canonical = canonical_local_id_target_for_server(server, &notebook_id).await?;
+            let canonical = if crate::targets::explicit_attachment_mode() {
+                canonical_local_id_target(&notebook_id)?
+            } else {
+                canonical_local_id_target_for_server(server, &notebook_id).await?
+            };
             let normalized = uuid::Uuid::parse_str(&notebook_id)
                 .map_err(|_| McpError::invalid_params("Invalid notebook_id", None))?
                 .hyphenated()
@@ -1619,15 +1954,34 @@ pub async fn open_notebook(
         }
     };
 
-    if let Some(result) = reuse_active_session(server, &canonical_target).await {
-        return Ok(result);
+    if crate::targets::explicit_attachment_mode() {
+        return open_explicit_attachment(server, target, canonical_target).await;
     }
-
-    let mut lease = match server.session_activation.begin(canonical_target) {
+    if !crate::targets::explicit_attachment_mode() {
+        if let Some(result) = reuse_active_session(server, &canonical_target).await {
+            return Ok(result);
+        }
+    }
+    let activation = if crate::targets::explicit_attachment_mode() {
+        std::sync::Arc::new(crate::session_activation::SessionActivation::default())
+    } else {
+        server.session_activation.clone()
+    };
+    let mut lease = match activation.begin(canonical_target) {
         ActivationTicket::Follower(follower) => return Ok(follower.wait().await),
         ActivationTicket::Leader(lease) => lease,
     };
-    let prev = previous_notebook_id(server).await;
+    let prev = if crate::targets::explicit_attachment_mode() {
+        None
+    } else {
+        previous_notebook_id(server).await
+    };
+    if !crate::targets::explicit_attachment_mode() {
+        if let Some(result) = reuse_retained_legacy_session(server, &lease).await {
+            lease.complete(&result);
+            return Ok(result);
+        }
+    }
     let outcome = match target {
         NotebookTarget::LocalPath(path) => {
             connect_local_path_progressive(server, path, prev, &lease).await
@@ -1694,11 +2048,20 @@ pub async fn create_notebook(
         "local:create:{}",
         uuid::Uuid::new_v4().hyphenated()
     ));
-    let mut activation_lease = match server.session_activation.begin(create_target) {
+    let activation = if crate::targets::explicit_attachment_mode() {
+        std::sync::Arc::new(crate::session_activation::SessionActivation::default())
+    } else {
+        server.session_activation.clone()
+    };
+    let mut activation_lease = match activation.begin(create_target) {
         ActivationTicket::Follower(follower) => return Ok(follower.wait().await),
         ActivationTicket::Leader(lease) => lease,
     };
-    let prev = previous_notebook_id(server).await;
+    let prev = if crate::targets::explicit_attachment_mode() {
+        None
+    } else {
+        previous_notebook_id(server).await
+    };
 
     let outcome = async {
         if let Err(error) = server.admit_local_runtime().await {
@@ -1945,6 +2308,80 @@ pub async fn save_notebook(
     }
 }
 
+/// Read the exact attachment's local launch identity without opening an app.
+/// The supervisor launches by UUID and socket, so file-path aliases cannot
+/// redirect a dev launch to another room. This tool is intentionally hidden.
+pub(crate) async fn resolve_notebook_launch(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    resolve_notebook_launch_with_incarnation(
+        server,
+        request,
+        query_current_daemon_incarnation(server.socket_path.clone()),
+    )
+    .await
+}
+
+async fn resolve_notebook_launch_with_incarnation(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+    live_incarnation: impl std::future::Future<Output = Option<DaemonIncarnation>>,
+) -> Result<CallToolResult, McpError> {
+    // A null legacy selector is harmless; nonnull notebook_id is rejected by
+    // targets::dispatch. Paths and all other alternate selectors are rejected.
+    // Target selectors were validated at admission. Other unknown arguments
+    // keep their original error channel; they are not attachment failures.
+    super::reject_unknown_args(request, &["notebook_id"])?;
+    let Some(handle) = crate::targets::current() else {
+        return Ok(mcp_transport::tool_target_error(McpError::invalid_params("notebook_handle is required; connect the intended notebook and explicitly resubmit with its handle", None)));
+    };
+    let session = {
+        let entries = server.attachments.read_entries();
+        let Some(entry) = entries.get(&handle) else {
+            return Ok(mcp_transport::tool_target_error(
+                crate::attachments::expired_resource_error(&handle),
+            ));
+        };
+        entry.session.clone()
+    };
+    if session.is_hosted() {
+        return tool_error("A hosted notebook cannot be opened by the local dev launcher");
+    }
+    if let Err(error) = session.access(crate::session::SessionRequirement::KernelControl) {
+        return super::session_access_error(error);
+    }
+    let live = live_incarnation.await;
+    if live.is_none() || live != session.local_daemon_incarnation {
+        return Ok(mcp_transport::tool_target_error(McpError::internal_error(
+            "The attachment's local runtime is unavailable or has been replaced; reconnect before opening Desktop",
+            Some(crate::attachments::unavailable_resource_data(&handle)),
+        )));
+    }
+    // Recheck membership and readiness after sampling the daemon. Release the
+    // registry guard before returning; the common completion fence also checks
+    // expiry. No launch side effect occurs in this read.
+    let entries = server.attachments.read_entries();
+    let Some(current) = entries.get(&handle) else {
+        return Ok(mcp_transport::tool_target_error(
+            crate::attachments::expired_resource_error(&handle),
+        ));
+    };
+    if let Err(error) = current
+        .session
+        .access(crate::session::SessionRequirement::KernelControl)
+    {
+        return super::session_access_error(error);
+    }
+    Ok(CallToolResult::structured(serde_json::json!({
+        "notebook_handle":handle,
+        "notebook_id":session.notebook_id,
+        "socket_path":server.socket_path,
+        "source":"local",
+        "has_display":has_display(),
+    })))
+}
+
 /// Open the notebook in the nteract desktop app.
 pub async fn show_notebook(
     server: &NteractMcp,
@@ -1952,10 +2389,12 @@ pub async fn show_notebook(
 ) -> Result<CallToolResult, McpError> {
     // Resolve notebook_id (and optional path) from param or current session
     let (target, session_path) = if let Some(handle) = crate::targets::current() {
-        server
-            .attachment_identity(&handle)
-            .await
-            .ok_or_else(|| McpError::invalid_params("Notebook attachment expired", None))?
+        let Some(identity) = server.attachment_identity(&handle).await else {
+            return Ok(mcp_transport::tool_target_error(
+                crate::attachments::expired_resource_error(&handle),
+            ));
+        };
+        identity
     } else {
         match arg_str(request, "notebook_id") {
             Some(id) => (id.to_string(), None),
@@ -2023,14 +2462,9 @@ pub async fn show_notebook(
         return Ok(readable_notebook_session_response(server, result, &target).await);
     }
 
-    let (app_path, app_args) = if let Some(path) = resolved_path {
-        (Some(std::path::Path::new(path)), Vec::new())
-    } else if std::path::Path::new(&target).is_absolute() {
-        (Some(std::path::Path::new(&target)), Vec::new())
-    } else {
-        (None, vec!["--notebook-id", target.as_str()])
-    };
-    let opened = if server.uses_local_runtime_admission() {
+    let (app_path, app_args) = notebook_app_launch_target(&target, resolved_path);
+    let opened = if uuid::Uuid::parse_str(&target).is_ok() || server.uses_local_runtime_admission()
+    {
         runt_workspace::open_notebook_app_for_endpoint_strict(
             &server.socket_path,
             app_path,
@@ -2056,16 +2490,742 @@ pub async fn show_notebook(
     Ok(readable_notebook_session_response(server, result, &target).await)
 }
 
+/// An acquired canonical room keeps its UUID and endpoint, including after
+/// save/rename. Reopening its path could select a different room or alias.
+fn notebook_app_launch_target<'a>(
+    target: &'a str,
+    resolved_path: Option<&'a str>,
+) -> (Option<&'a std::path::Path>, Vec<&'a str>) {
+    if uuid::Uuid::parse_str(target).is_ok() {
+        (None, vec!["--attach-notebook-id", target])
+    } else if let Some(path) = resolved_path {
+        (Some(std::path::Path::new(path)), Vec::new())
+    } else if std::path::Path::new(target).is_absolute() {
+        (Some(std::path::Path::new(target)), Vec::new())
+    } else {
+        (None, vec!["--notebook-id", target])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
+
+    #[test]
+    fn attach_only_bundled_launch_keeps_saved_and_untitled_canonical_room_identity() {
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        for path in [
+            None,
+            Some("/project/saved.ipynb"),
+            Some("/other/alias.ipynb"),
+        ] {
+            let (app_path, args) = notebook_app_launch_target(id, path);
+            assert!(
+                app_path.is_none(),
+                "an attached saved room must not reopen a path alias"
+            );
+            assert_eq!(args, ["--attach-notebook-id", id]);
+        }
+        let (path, args) = notebook_app_launch_target("/legacy/saved.ipynb", None);
+        assert_eq!(path, Some(std::path::Path::new("/legacy/saved.ipynb")));
+        assert!(args.is_empty());
+    }
+
+    struct IdleFrames;
+    impl notebook_protocol::connection::FrameSource for IdleFrames {
+        async fn recv_frame(
+            &mut self,
+        ) -> Option<std::io::Result<notebook_protocol::connection::TypedNotebookFrame>> {
+            std::future::pending().await
+        }
+    }
+
+    async fn hosted_test_peer() -> notebook_sync::handle::DocHandle {
+        notebook_sync::connect::connect_frame_io(
+            "hosted-test".into(),
+            "agent:legacy-test",
+            IdleFrames,
+            notebook_protocol::connection::WriterFrameSink::new(tokio::io::sink()),
+        )
+        .await
+        .unwrap()
+        .handle
+    }
+
+    fn begin_legacy_selection(server: &NteractMcp, id: &str, domain: &str) -> ActivationLease {
+        let target = CanonicalNotebookTarget::new(format!(
+            "hosted:{}",
+            cloud::hosted_notebook_url(domain, id)
+        ));
+        match server.session_activation.begin(target) {
+            ActivationTicket::Leader(lease) => lease,
+            ActivationTicket::Follower(_) => panic!("expected a fresh legacy selection"),
+        }
+    }
+
+    async fn launch_test_session(
+        id: &str,
+        ready: bool,
+        incarnation: DaemonIncarnation,
+    ) -> NotebookSession {
+        use notebook_protocol::connection::{
+            FrameSource, NotebookFrameType, TypedNotebookFrame, WriterFrameSink,
+        };
+        use notebook_protocol::protocol::{
+            InitialLoadPhaseWire, NotebookDocPhaseWire, RuntimeStatePhaseWire,
+            SessionControlMessage, SessionSyncStatusWire,
+        };
+        struct Frames(Option<TypedNotebookFrame>);
+        impl FrameSource for Frames {
+            async fn recv_frame(&mut self) -> Option<std::io::Result<TypedNotebookFrame>> {
+                if let Some(frame) = self.0.take() {
+                    Some(Ok(frame))
+                } else {
+                    std::future::pending().await
+                }
+            }
+        }
+        let frame = ready.then(|| TypedNotebookFrame {
+            frame_type: NotebookFrameType::SessionControl,
+            payload: serde_json::to_vec(&SessionControlMessage::SyncStatus(
+                SessionSyncStatusWire {
+                    notebook_doc: NotebookDocPhaseWire::Interactive,
+                    runtime_state: RuntimeStatePhaseWire::Ready,
+                    initial_load: InitialLoadPhaseWire::NotNeeded,
+                },
+            ))
+            .unwrap(),
+        });
+        let handle = notebook_sync::connect::connect_frame_io(
+            id.into(),
+            "launch-test",
+            Frames(frame),
+            WriterFrameSink::new(tokio::io::sink()),
+        )
+        .await
+        .unwrap()
+        .handle;
+        if ready {
+            handle
+                .await_session_ready_timeout(Duration::from_secs(1))
+                .await
+                .unwrap();
+        }
+        NotebookSession::local(
+            handle,
+            id.into(),
+            Some("/same-path.ipynb".into()),
+            Some(incarnation),
+        )
+    }
+
+    #[tokio::test]
+    async fn launch_identity_keeps_exact_owner_and_rechecks_release_and_runtime() {
+        let server = NteractMcp::new("/private/tmp/exact-runtime.sock".into(), None, None);
+        let incarnation = DaemonIncarnation {
+            pid: 42,
+            started_at: Utc::now(),
+        };
+        let a = launch_test_session(
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            true,
+            incarnation.clone(),
+        )
+        .await;
+        let b = launch_test_session(
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            true,
+            incarnation.clone(),
+        )
+        .await;
+        let h = a.notebook_handle.clone();
+        let id = a.notebook_id.clone();
+        server
+            .attachments
+            .insert(a, server.attachments.reserve().unwrap());
+        server
+            .attachments
+            .insert(b.clone(), server.attachments.reserve().unwrap());
+        *server.session.write().await = Some(b);
+        let request = make_request("resolve_notebook_launch", serde_json::json!({}));
+        for args in [
+            serde_json::json!({}),
+            serde_json::json!({"notebook_handle":""}),
+        ] {
+            assert!(
+                crate::targets::dispatch(&server, &make_request("resolve_notebook_launch", args),)
+                    .await
+                    .unwrap()
+                    .is_error
+                    == Some(true)
+            );
+        }
+        let result = crate::targets::with_handle(
+            h.clone(),
+            resolve_notebook_launch_with_incarnation(
+                &server,
+                &request,
+                std::future::ready(Some(incarnation.clone())),
+            ),
+        )
+        .await
+        .unwrap();
+        let identity = result.structured_content.unwrap();
+        assert_eq!(identity["notebook_handle"], h);
+        assert_eq!(identity["notebook_id"], id);
+        assert_eq!(identity["socket_path"], "/private/tmp/exact-runtime.sock");
+        assert_eq!(identity["source"], "local");
+        let unavailable = crate::targets::with_handle(
+            h.clone(),
+            resolve_notebook_launch_with_incarnation(&server, &request, std::future::ready(None)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            unavailable.structured_content.unwrap()["error"]["code"],
+            "attachment_unavailable"
+        );
+        let replaced = crate::targets::with_handle(
+            h.clone(),
+            resolve_notebook_launch_with_incarnation(
+                &server,
+                &request,
+                std::future::ready(Some(DaemonIncarnation {
+                    pid: incarnation.pid + 1,
+                    started_at: incarnation.started_at,
+                })),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            replaced.structured_content.unwrap()["error"]["code"],
+            "attachment_unavailable"
+        );
+        let removed = crate::targets::with_handle(
+            h.clone(),
+            resolve_notebook_launch_with_incarnation(&server, &request, async {
+                drop(server.attachments.remove(&h));
+                Some(incarnation)
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            removed.structured_content.unwrap()["error"]["code"],
+            "attachment_expired"
+        );
+    }
+
+    #[tokio::test]
+    async fn launch_identity_rejects_unready_hosted_and_alternate_selectors() {
+        let server = NteractMcp::new("/unused.sock".into(), None, None);
+        let incarnation = DaemonIncarnation {
+            pid: 42,
+            started_at: Utc::now(),
+        };
+        let session = launch_test_session(
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            false,
+            incarnation.clone(),
+        )
+        .await;
+        let h = session.notebook_handle.clone();
+        server
+            .attachments
+            .insert(session, server.attachments.reserve().unwrap());
+        let request = make_request("resolve_notebook_launch", serde_json::json!({}));
+        let result = crate::targets::with_handle(
+            h.clone(),
+            resolve_notebook_launch_with_incarnation(&server, &request, async {
+                panic!("unready attachment must not query runtime")
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        for args in [
+            serde_json::json!({"path":"/other.ipynb"}),
+            serde_json::json!({"notebook_id":"other"}),
+        ] {
+            let mut args = args.as_object().unwrap().clone();
+            args.insert("notebook_handle".into(), h.clone().into());
+            assert!(
+                crate::targets::dispatch(
+                    &server,
+                    &CallToolRequestParams::new("resolve_notebook_launch").with_arguments(args)
+                )
+                .await
+                .unwrap()
+                .is_error
+                    == Some(true)
+            );
+        }
+        let hosted = NotebookSession::hosted(
+            hosted_test_peer().await,
+            "remote".into(),
+            "https://example.com".into(),
+        );
+        let h = hosted.notebook_handle.clone();
+        server
+            .attachments
+            .insert(hosted, server.attachments.reserve().unwrap());
+        let result = crate::targets::with_handle(
+            h,
+            resolve_notebook_launch_with_incarnation(&server, &request, async {
+                panic!("hosted attachment must not query local runtime")
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(first_text(&result).contains("hosted"));
+    }
+
+    #[tokio::test]
+    async fn legacy_path_reuse_requires_current_daemon_metadata_instead_of_cached_aliases() {
+        let peer = hosted_test_peer().await;
+        let id = "12345678-1234-1234-1234-123456789abc";
+        let old = canonical_local_path_target("/tmp/legacy-before.ipynb");
+        let new = canonical_local_path_target("/tmp/legacy-after.ipynb");
+        let mut session = NotebookSession::local(
+            peer,
+            id.into(),
+            Some("/tmp/legacy-before.ipynb".into()),
+            Some(test_incarnation(1)),
+        );
+        session.reactivate(1, &old);
+        let paths =
+            std::collections::HashMap::from([(id.into(), Some("/tmp/legacy-after.ipynb".into()))]);
+        assert!(!session_matches_target(&session, &old, &paths));
+        assert!(session_matches_target(&session, &new, &paths));
+        assert!(session_matches_target(
+            &session,
+            &canonical_local_id_target(id).unwrap(),
+            &paths
+        ));
+        assert!(!session_matches_target(&session, &old, &Default::default()));
+    }
+
+    #[tokio::test]
+    async fn legacy_reuse_response_preserves_document_and_runtime_readiness_gates() {
+        let peer = hosted_test_peer().await;
+        let local =
+            NotebookSession::local(peer.clone(), "a".into(), None, Some(test_incarnation(1)));
+        let denied = reused_session_response(&local).unwrap_err();
+        assert!(first_text(&denied).contains("notebook_not_ready"));
+        let hosted = NotebookSession::hosted(peer, "a".into(), "https://example.com".into());
+        let response = reused_session_response(&hosted).unwrap();
+        let data: serde_json::Value = serde_json::from_str(first_text(&response)).unwrap();
+        assert_eq!(data["runtime"]["kernel_status"], "unknown");
+        assert!(data["project_context"].is_null());
+    }
+
+    #[tokio::test]
+    async fn retained_hosted_switch_back_reuses_handles_and_expiry_at_full_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = NteractMcp::new(dir.path().join("missing.sock"), None, None);
+        let peer = hosted_test_peer().await;
+        let a = NotebookSession::hosted(peer.clone(), "a".into(), "https://example.com".into());
+        let b = NotebookSession::hosted(peer.clone(), "b".into(), "https://example.com".into());
+        let handles = [a.notebook_handle.clone(), b.notebook_handle.clone()];
+        for session in [a, b] {
+            server
+                .attachments
+                .insert_legacy(session, server.attachments.reserve().unwrap());
+        }
+        let expirations = handles
+            .each_ref()
+            .map(|handle| server.attachments.read_entries()[handle].expiration());
+        for index in 0..crate::attachments::MAX_ATTACHMENTS - 2 {
+            let id = if index == 0 {
+                "a".into()
+            } else {
+                format!("explicit-{index}")
+            };
+            let session = NotebookSession::hosted(peer.clone(), id, "https://example.com".into());
+            server
+                .attachments
+                .insert(session, server.attachments.reserve().unwrap());
+        }
+        assert!(server.attachments.reserve().is_err());
+        for _ in 0..129 {
+            for (index, id) in ["a", "b"].into_iter().enumerate() {
+                let mut lease = begin_legacy_selection(&server, id, "https://example.com");
+                let response = reuse_retained_legacy_session(&server, &lease)
+                    .await
+                    .unwrap();
+                lease.complete(&response);
+                let data: serde_json::Value = serde_json::from_str(first_text(&response)).unwrap();
+                assert_eq!(data["notebook_handle"], handles[index]);
+                assert_eq!(
+                    server
+                        .session
+                        .read()
+                        .await
+                        .as_ref()
+                        .unwrap()
+                        .notebook_handle,
+                    handles[index]
+                );
+                assert!(!*expirations[index].borrow());
+                assert_eq!(
+                    server.attachments.read_entries().len(),
+                    crate::attachments::MAX_ATTACHMENTS
+                );
+            }
+        }
+        // A is now parked, and an explicit A also exists. ID routing still
+        // resolves the retained legacy owner after its cache copy is evicted.
+        server.parked_sessions.write().await.clear();
+        let (_, handle, _, _) = crate::resources::resource_session(&server, "a", false)
+            .await
+            .unwrap();
+        assert_eq!(handle, handles[0]);
+        let response = disconnect_notebook(
+            &server,
+            &make_request(
+                "disconnect_notebook",
+                serde_json::json!({"notebook_id":"a"}),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.is_error, Some(false));
+        assert!(*expirations[0].borrow());
+        assert!(!*expirations[1].borrow());
+        assert_eq!(
+            server.attachments.read_entries().len(),
+            crate::attachments::MAX_ATTACHMENTS - 1
+        );
+        assert_eq!(
+            server
+                .session
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .notebook_handle,
+            handles[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_id_release_removes_older_generations_without_releasing_explicit_owners() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = NteractMcp::new(dir.path().join("missing.sock"), None, None);
+        let peer = hosted_test_peer().await;
+        let first = NotebookSession::hosted(peer.clone(), "a".into(), "https://example.com".into());
+        let selected =
+            NotebookSession::hosted(peer.clone(), "a".into(), "https://example.com".into());
+        let explicit = NotebookSession::hosted(peer, "a".into(), "https://example.com".into());
+        let handles = [
+            first.notebook_handle.clone(),
+            selected.notebook_handle.clone(),
+            explicit.notebook_handle.clone(),
+        ];
+        server
+            .attachments
+            .insert_legacy(first, server.attachments.reserve().unwrap());
+        server
+            .attachments
+            .insert_legacy(selected.clone(), server.attachments.reserve().unwrap());
+        server
+            .attachments
+            .insert(explicit, server.attachments.reserve().unwrap());
+        *server.session.write().await = Some(selected);
+        let (_, handle, _, _) = crate::resources::resource_session(&server, "a", false)
+            .await
+            .unwrap();
+        assert_eq!(handle, handles[1]);
+        disconnect_notebook(
+            &server,
+            &make_request(
+                "disconnect_notebook",
+                serde_json::json!({"notebook_id":"a"}),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(server.attachment_identity(&handles[0]).await.is_none());
+        assert!(server.attachment_identity(&handles[1]).await.is_none());
+        assert!(server.attachment_identity(&handles[2]).await.is_some());
+        assert!(server.session.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn legacy_id_routing_rejects_source_ambiguity_until_active_selection_disambiguates() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = NteractMcp::new(dir.path().join("missing.sock"), None, None);
+        let peer = hosted_test_peer().await;
+        let first =
+            NotebookSession::hosted(peer.clone(), "a".into(), "https://one.example.com".into());
+        let other = NotebookSession::hosted(peer, "a".into(), "https://two.example.com".into());
+        let first_handle = first.notebook_handle.clone();
+        let other_handle = other.notebook_handle.clone();
+        server
+            .attachments
+            .insert_legacy(first.clone(), server.attachments.reserve().unwrap());
+        server
+            .attachments
+            .insert_legacy(other, server.attachments.reserve().unwrap());
+        assert!(crate::resources::resource_session(&server, "a", false)
+            .await
+            .is_err());
+        let rejected = disconnect_notebook(
+            &server,
+            &make_request(
+                "disconnect_notebook",
+                serde_json::json!({"notebook_id":"a"}),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(rejected.is_error, Some(true));
+        assert_eq!(server.attachments.read_entries().len(), 2);
+        *server.session.write().await = Some(first);
+        let (_, handle, _, _) = crate::resources::resource_session(&server, "a", false)
+            .await
+            .unwrap();
+        assert_eq!(handle, first_handle);
+        disconnect_notebook(
+            &server,
+            &make_request(
+                "disconnect_notebook",
+                serde_json::json!({"notebook_id":"a"}),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(server.attachment_identity(&first_handle).await.is_none());
+        assert!(server.attachment_identity(&other_handle).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn retained_legacy_publication_does_not_restore_released_or_superseded_handles() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = NteractMcp::new(dir.path().join("missing.sock"), None, None);
+        let peer = hosted_test_peer().await;
+        let a = NotebookSession::hosted(peer, "a".into(), "https://example.com".into());
+        let handle = a.notebook_handle.clone();
+        server
+            .attachments
+            .insert_legacy(a.clone(), server.attachments.reserve().unwrap());
+        let expiration = server.attachments.read_entries()[&handle].expiration();
+        let stale = begin_legacy_selection(&server, "a", "https://example.com");
+        let mut pending = Box::pin(reuse_retained_legacy_session(&server, &stale));
+        {
+            let _slot = server.session.write().await;
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(std::future::Future::poll(pending.as_mut(), &mut context).is_pending());
+            let _newer = begin_legacy_selection(&server, "b", "https://example.com");
+        }
+        let rejected = pending.await.unwrap();
+        assert_eq!(rejected.is_error, Some(true));
+        assert!(!*expiration.borrow());
+        assert_eq!(
+            server.attachments.read_entries()[&handle]
+                .session
+                .activation_generation,
+            0
+        );
+        let lease = begin_legacy_selection(&server, "a", "https://example.com");
+        let mut pending = Box::pin(reuse_retained_legacy_session(&server, &lease));
+        {
+            let mut slot = server.session.write().await;
+            *slot = Some(a); // Cached peer cannot restore membership.
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(std::future::Future::poll(pending.as_mut(), &mut context).is_pending());
+            server.attachments.remove(&handle);
+        }
+        assert!(pending.await.is_none());
+        assert!(reuse_active_session(&server, lease.target())
+            .await
+            .is_none());
+        assert!(*expiration.borrow());
+        assert!(server.attachments.read_entries().is_empty());
+    }
 
     fn test_incarnation(pid: u32) -> DaemonIncarnation {
         DaemonIncarnation {
             pid,
             started_at: Utc.timestamp_opt(pid.into(), 0).single().unwrap(),
         }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn native_open_tries_fresh_transport_when_optional_pool_room_queries_fail() {
+        use notebook_protocol::connection::{self, Handshake};
+        use runtimed_client::protocol::{Request, Response};
+
+        for by_id in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let socket = root.path().join("daemon.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let (opened, attempted) = tokio::sync::oneshot::channel();
+            let daemon = tokio::spawn(async move {
+                let mut failed_lists = 0;
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    connection::recv_preamble(&mut stream).await.unwrap();
+                    let handshake = connection::recv_json_frame::<_, Handshake>(&mut stream)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    match handshake {
+                        Handshake::Pool => {
+                            let request = connection::recv_json_frame::<_, Request>(&mut stream)
+                                .await
+                                .unwrap()
+                                .unwrap();
+                            let response = match request {
+                                Request::GetDaemonInfo => Response::DaemonInfo {
+                                    host_telemetry: false,
+                                    host_telemetry_enabled: false,
+                                    protocol_version: connection::PROTOCOL_VERSION.into(),
+                                    daemon_api_version:
+                                        runtimed_client::protocol::DAEMON_API_VERSION,
+                                    daemon_version: "test".into(),
+                                    pid: 1,
+                                    started_at: test_incarnation(1).started_at,
+                                    blob_port: None,
+                                    execution_store_dir: None,
+                                    worktree_path: None,
+                                    workspace_description: None,
+                                },
+                                Request::ListRooms => {
+                                    failed_lists += 1;
+                                    Response::Error {
+                                        message: "injected optional room lookup failure".into(),
+                                    }
+                                }
+                                _ => panic!("unexpected pool request: {request:?}"),
+                            };
+                            connection::send_json_frame(&mut stream, &response)
+                                .await
+                                .unwrap();
+                        }
+                        handshake @ (Handshake::OpenNotebook { .. }
+                        | Handshake::NotebookSync { .. }) => {
+                            opened.send(handshake).unwrap();
+                            // Deliberately fail only the fresh transport bootstrap.
+                            // Its error must replace neither admission nor lookup
+                            // outcomes with a cached attachment or false success.
+                            drop(stream);
+                            return failed_lists;
+                        }
+                        _ => panic!("unexpected channel: {handshake:?}"),
+                    }
+                }
+            });
+            let server = NteractMcp::new_no_show(socket, None, None);
+            let path = root.path().join("requested.ipynb");
+            let notebook_id = "12345678-1234-1234-1234-123456789abc";
+            let arguments = if by_id {
+                serde_json::json!({"notebook_id":notebook_id})
+            } else {
+                serde_json::json!({"path":path})
+            };
+            let response = tokio::time::timeout(
+                Duration::from_secs(2),
+                crate::targets::dispatch(&server, &make_request("connect_notebook", arguments)),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(response.is_error, Some(true));
+            assert!(first_text(&response).contains(if by_id {
+                "Failed to join notebook"
+            } else {
+                "Failed to open notebook"
+            }));
+            assert!(!first_text(&response).contains("injected optional room lookup failure"));
+            let handshake = attempted.await.unwrap();
+            match handshake {
+                Handshake::NotebookSync {
+                    notebook_id: actual,
+                    ..
+                } if by_id => assert_eq!(actual, notebook_id),
+                Handshake::OpenNotebook { path: actual, .. } if !by_id => {
+                    assert_eq!(PathBuf::from(actual), path)
+                }
+                _ => panic!("wrong fresh transport target: {handshake:?}"),
+            }
+            assert_eq!(daemon.await.unwrap(), if by_id { 2 } else { 1 });
+            assert!(server.attachments.read_entries().is_empty());
+            let reservations = (0..crate::attachments::MAX_ATTACHMENTS)
+                .map(|_| server.attachments.reserve().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(reservations.len(), crate::attachments::MAX_ATTACHMENTS);
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_response_propagates_pending_and_disconnected_access_failure() {
+        struct Frames(
+            tokio::sync::mpsc::UnboundedReceiver<notebook_protocol::connection::TypedNotebookFrame>,
+        );
+        impl notebook_protocol::connection::FrameSource for Frames {
+            async fn recv_frame(
+                &mut self,
+            ) -> Option<std::io::Result<notebook_protocol::connection::TypedNotebookFrame>>
+            {
+                self.0.recv().await.map(Ok)
+            }
+        }
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let handle = notebook_sync::connect::connect_frame_io(
+            "test".into(),
+            "local:test/agent:test",
+            Frames(receiver),
+            notebook_protocol::connection::WriterFrameSink::new(tokio::io::sink()),
+        )
+        .await
+        .unwrap()
+        .handle;
+        let mut status = handle.subscribe_status();
+        let local = NotebookSession::local(
+            handle.clone(),
+            "test".into(),
+            None,
+            Some(test_incarnation(1)),
+        );
+        let error = shared_attachment_response(&local).unwrap_err();
+        assert!(first_text(&error).contains("notebook_not_ready"));
+        let hosted =
+            NotebookSession::hosted(handle.clone(), "test".into(), "https://example.com".into());
+        handle
+            .add_cell_with_source("cell-pending", "code", None, "pending runtime sentinel")
+            .unwrap();
+        assert!(hosted.access(SessionRequirement::RuntimeRead).is_err());
+        let response = shared_attachment_response(&hosted).unwrap();
+        let body: serde_json::Value = serde_json::from_str(first_text(&response)).unwrap();
+        assert_eq!(
+            body["runtime"],
+            serde_json::json!({"kernel_status":"unknown"})
+        );
+        assert!(body["project_context"].is_null());
+        let cells = body["cells"].as_str().unwrap();
+        assert!(cells.contains("pending runtime sentinel"));
+        assert!(!cells.contains("never_run"));
+        assert!(!cells.contains("exec="));
+        drop(sender);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while status.borrow_and_update().connection != ConnectionState::Disconnected {
+                status.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        let error = shared_attachment_response(&hosted).unwrap_err();
+        assert!(first_text(&error).contains("sync_failed"));
+        let observer = hosted.observer().unwrap();
+        assert_eq!(
+            observer.read(None).unwrap().outcome,
+            crate::observation::ChangeOutcome::Unavailable
+        );
     }
 
     fn make_request(name: &str, arguments: serde_json::Value) -> CallToolRequestParams {

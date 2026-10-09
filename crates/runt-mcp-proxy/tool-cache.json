@@ -38,10 +38,10 @@
     },
     "annotations": {
       "destructiveHint": false,
-      "idempotentHint": true,
+      "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Attach to a notebook. Pass path (.ipynb) or notebook_id (UUID) — not both.",
+    "description": "Attach by path or notebook_id, not both. Handle: no TTL; ends on explicit release or worker/daemon membership expiry.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -72,7 +72,7 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Create a notebook. Ephemeral by default; save_notebook(path) to persist.",
+    "description": "Create an ephemeral notebook; save_notebook(path) persists. Handle: no TTL; ends on explicit release or worker/daemon membership expiry.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -147,12 +147,13 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Save notebook to disk. For notebooks created with create_notebook(), you must provide a path.",
+    "description": "Save to disk; path required for notebooks from create_notebook.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         },
         "path": {
@@ -164,6 +165,9 @@
           ]
         }
       },
+      "required": [
+        "notebook_handle"
+      ],
       "title": "SaveNotebookParams",
       "type": "object"
     },
@@ -174,23 +178,19 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Open the notebook in the nteract app for the user. Headless: returns a structured no-display reason.",
+    "description": "Open in nteract for the user. Headless: returns a structured no-display reason.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
-        },
-        "notebook_id": {
-          "default": null,
-          "description": "Notebook ID to show. Defaults to current session's notebook.",
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
+      "required": [
+        "notebook_handle"
+      ],
       "title": "ShowNotebookParams",
       "type": "object"
     },
@@ -201,23 +201,19 @@
       "destructiveHint": true,
       "openWorldHint": false
     },
-    "description": "Release a notebook session's peer connection. Omit notebook_id to disconnect the active session.",
+    "description": "Release only the attachment named by notebook_handle.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
-        },
-        "notebook_id": {
-          "default": null,
-          "description": "Notebook ID to disconnect and release. If omitted, disconnects the\nactive session. Pass a notebook_id to release a specific parked session\nwithout switching away from the current one.",
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
+      "required": [
+        "notebook_handle"
+      ],
       "title": "DisconnectNotebookParams",
       "type": "object"
     },
@@ -248,7 +244,8 @@
           ]
         },
         "notebook_handle": {
-          "description": "Attachment handle returned by connect_notebook or create_notebook.",
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         },
         "timeout_secs": {
@@ -278,7 +275,7 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Create a cell anchored by after_cell_id; omit after_cell_id to append.",
+    "description": "Create after after_cell_id; omit it to append.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -308,6 +305,7 @@
         },
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         },
         "source": {
@@ -328,6 +326,9 @@
           ]
         }
       },
+      "required": [
+        "notebook_handle"
+      ],
       "title": "CreateCellParams",
       "type": "object"
     },
@@ -343,7 +344,7 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Replace a cell's source or type, optionally executing it and returning execution_id/output summary.",
+    "description": "Set source/type; optionally execute and return execution_id/output summary.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -370,6 +371,7 @@
         },
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         },
         "source": {
@@ -391,7 +393,8 @@
         }
       },
       "required": [
-        "cell_id"
+        "cell_id",
+        "notebook_handle"
       ],
       "title": "SetCellParams",
       "type": "object"
@@ -414,11 +417,13 @@
         },
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         }
       },
       "required": [
-        "cell_id"
+        "cell_id",
+        "notebook_handle"
       ],
       "title": "DeleteCellParams",
       "type": "object"
@@ -450,11 +455,13 @@
         },
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         }
       },
       "required": [
-        "cell_id"
+        "cell_id",
+        "notebook_handle"
       ],
       "title": "MoveCellParams",
       "type": "object"
@@ -481,6 +488,7 @@
         },
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         },
         "timeout_secs": {
@@ -494,7 +502,8 @@
         }
       },
       "required": [
-        "cell_id"
+        "cell_id",
+        "notebook_handle"
       ],
       "title": "ExecuteCellParams",
       "type": "object"
@@ -517,6 +526,7 @@
       "properties": {
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         },
         "timeout_secs": {
@@ -537,6 +547,9 @@
           ]
         }
       },
+      "required": [
+        "notebook_handle"
+      ],
       "title": "RunAllCellsParams",
       "type": "object"
     },
@@ -570,11 +583,13 @@
         },
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         }
       },
       "required": [
-        "execution_id"
+        "execution_id",
+        "notebook_handle"
       ],
       "title": "GetResultsParams",
       "type": "object"
@@ -594,9 +609,13 @@
       "properties": {
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         }
       },
+      "required": [
+        "notebook_handle"
+      ],
       "title": "EmptyParams",
       "type": "object"
     },
@@ -614,9 +633,13 @@
       "properties": {
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         }
       },
+      "required": [
+        "notebook_handle"
+      ],
       "title": "EmptyParams",
       "type": "object"
     },
@@ -663,6 +686,7 @@
         },
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         },
         "remove": {
@@ -679,6 +703,9 @@
           "type": "boolean"
         }
       },
+      "required": [
+        "notebook_handle"
+      ],
       "title": "ManageDependenciesParams",
       "type": "object"
     },
@@ -736,6 +763,7 @@
         },
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         },
         "timeout_secs": {
@@ -751,7 +779,8 @@
       "required": [
         "cell_id",
         "match",
-        "content"
+        "content",
+        "notebook_handle"
       ],
       "title": "ReplaceMatchParams",
       "type": "object"
@@ -790,6 +819,7 @@
         },
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         },
         "pattern": {
@@ -809,7 +839,8 @@
       "required": [
         "cell_id",
         "pattern",
-        "content"
+        "content",
+        "notebook_handle"
       ],
       "title": "ReplaceRegexParams",
       "type": "object"
@@ -864,12 +895,14 @@
         },
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         }
       },
       "required": [
         "anchor",
-        "body"
+        "body",
+        "notebook_handle"
       ],
       "title": "CreateCommentParams",
       "type": "object"
@@ -892,6 +925,7 @@
         },
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         },
         "thread_id": {
@@ -901,7 +935,8 @@
       },
       "required": [
         "thread_id",
-        "body"
+        "body",
+        "notebook_handle"
       ],
       "title": "ReplyCommentParams",
       "type": "object"
@@ -921,6 +956,7 @@
       "properties": {
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         },
         "thread_id": {
@@ -929,7 +965,8 @@
         }
       },
       "required": [
-        "thread_id"
+        "thread_id",
+        "notebook_handle"
       ],
       "title": "ResolveCommentParams",
       "type": "object"
@@ -949,6 +986,7 @@
       "properties": {
         "notebook_handle": {
           "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "minLength": 1,
           "type": "string"
         },
         "thread_id": {
@@ -957,7 +995,8 @@
         }
       },
       "required": [
-        "thread_id"
+        "thread_id",
+        "notebook_handle"
       ],
       "title": "ReopenCommentParams",
       "type": "object"

@@ -209,28 +209,47 @@ impl ActivationLease {
     /// teardown) is the caller's decision. Generic over the slot payload so
     /// tests exercise the exact production lock/check ordering against a stub
     /// payload instead of mirroring it.
+    #[cfg(test)]
     pub async fn install_in_slot<S>(
         &self,
         slot: &tokio::sync::RwLock<Option<S>>,
         session: S,
     ) -> Result<Option<S>, CallToolResult> {
-        self.install_in_slot_recovering(slot, session)
-            .await
-            .map_err(|(result, _rejected)| result)
+        self.install_in_slot_with(slot, session, |_| {}).await
     }
 
-    /// Variant of [`Self::install_in_slot`] that returns a rejected payload to
-    /// the caller. Hosted-session resume uses this to put a healthy parked peer
-    /// back when a newer activation wins during slot publication.
+    #[cfg(test)]
     pub async fn install_in_slot_recovering<S>(
         &self,
         slot: &tokio::sync::RwLock<Option<S>>,
         session: S,
     ) -> Result<Option<S>, (CallToolResult, S)> {
+        self.install_in_slot_recovering_with(slot, session, |_| {})
+            .await
+    }
+
+    /// Publish compatibility selection and retained attachment atomically.
+    /// The synchronous callback must not await; rejected generations publish nothing.
+    pub async fn install_in_slot_with<S>(
+        &self,
+        slot: &tokio::sync::RwLock<Option<S>>,
+        session: S,
+        retain: impl FnOnce(&S),
+    ) -> Result<Option<S>, CallToolResult> {
+        self.install_in_slot_recovering_with(slot, session, retain)
+            .await
+            .map_err(|(result, _)| result)
+    }
+
+    async fn install_in_slot_recovering_with<S>(
+        &self,
+        slot: &tokio::sync::RwLock<Option<S>>,
+        session: S,
+        retain: impl FnOnce(&S),
+    ) -> Result<Option<S>, (CallToolResult, S)> {
         if !self.is_current() {
             return Err((self.superseded_result(), session));
         }
-
         let mut guard = slot.write().await;
         if !self.is_current() {
             return Err((self.superseded_result(), session));
@@ -243,6 +262,10 @@ impl ActivationLease {
             *guard = previous;
             return Err((self.superseded_result(), stale));
         }
+        let Some(installed) = guard.as_ref() else {
+            unreachable!("slot contains the session installed immediately above");
+        };
+        retain(installed);
         Ok(previous)
     }
 

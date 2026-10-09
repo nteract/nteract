@@ -253,7 +253,29 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     // Notification-only: the reconnect governor's host-level listener owns
     // the automatic redial, so N subscribers never means N reconnect loops.
     onDisconnected: (cb) => listenWebview<void>("daemon:disconnected", () => cb()),
-    onUnavailable: (cb) => listenWebview<DaemonUnavailablePayload>("daemon:unavailable", cb),
+    onUnavailable: (cb) => {
+      let cancelled = false;
+      let backfillCurrent = true;
+      const unlistenLive = listenWebview<DaemonUnavailablePayload>("daemon:unavailable", (p) => {
+        backfillCurrent = false;
+        if (!cancelled) cb(p);
+      });
+      // A reconnect may succeed while the cached refusal lookup is pending.
+      // Don't let that older response restore an error after daemon:ready.
+      const unlistenReady = listenWebview<DaemonReadyPayload>("daemon:ready", () => {
+        backfillCurrent = false;
+      });
+      invoke<DaemonUnavailablePayload | null>("get_daemon_unavailable_info")
+        .then((info) => {
+          if (!cancelled && backfillCurrent && info) cb(info);
+        })
+        .catch(() => {});
+      return () => {
+        cancelled = true;
+        unlistenLive();
+        unlistenReady();
+      };
+    },
   };
 
   const relay: HostRelay = {

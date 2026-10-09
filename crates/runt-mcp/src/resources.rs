@@ -115,6 +115,16 @@ pub(crate) async fn list_resources_for_mode(
         NOTEBOOK_CONTEXT_PRIORITY,
     ));
 
+    let attachments = server
+        .attachments
+        .read_entries()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    for handle in attachments {
+        resources.push(attachment_cells_resource_link(&handle));
+    }
+
     let notebook_ids = if native {
         Vec::new()
     } else {
@@ -233,7 +243,7 @@ pub async fn read_resource(
             let (notebook_id, handle_id, _handle, observer) =
                 resource_session(server, &notebook_id, uri.starts_with("nteract://sessions/"))
                     .await?;
-            let snapshot = observed_read(&observer)?;
+            let snapshot = observed_attachment_read(server, &observer, &handle_id)?;
             let text = cells_json(&notebook_id, &snapshot.snapshot, &handle_id);
             observed_resource(uri, text, &handle_id, &snapshot)
         }
@@ -244,7 +254,7 @@ pub async fn read_resource(
             let (notebook_id, handle_id, _handle, observer) =
                 resource_session(server, &notebook_id, uri.starts_with("nteract://sessions/"))
                     .await?;
-            let snapshot = observed_read(&observer)?;
+            let snapshot = observed_attachment_read(server, &observer, &handle_id)?;
             let text = cell_json(&notebook_id, &snapshot.snapshot, &cell_id, &handle_id)?;
             observed_resource(uri, text, &handle_id, &snapshot)
         }
@@ -255,7 +265,7 @@ pub async fn read_resource(
             // Settle pending comments/state frames so a read right after join
             // does not race the daemon's initial CommentsDocSync.
             let _ = handle.confirm_state_sync().await;
-            let snapshot = observed_read(&observer)?;
+            let snapshot = observed_attachment_read(server, &observer, &handle_id)?;
             let projection =
                 snapshot.snapshot.comments.as_ref().ok_or_else(|| {
                     McpError::internal_error("Comments are not available yet", None)
@@ -346,9 +356,9 @@ async fn known_session_notebook_ids(server: &NteractMcp) -> Vec<String> {
     if let Some(session) = server.session.read().await.as_ref() {
         notebook_ids.push(session.notebook_id.clone());
     }
-    for notebook_id in server.parked_sessions.read().await.keys() {
-        if !notebook_ids.iter().any(|known_id| known_id == notebook_id) {
-            notebook_ids.push(notebook_id.clone());
+    for entry in server.attachments.read_entries().values() {
+        if !notebook_ids.contains(&entry.session.notebook_id) {
+            notebook_ids.push(entry.session.notebook_id.clone());
         }
     }
     notebook_ids
@@ -370,7 +380,17 @@ pub(crate) async fn resource_session(
     let capture = |session: &crate::session::NotebookSession| {
         let access = session
             .access(crate::session::SessionRequirement::DocumentRead)
-            .map_err(resource_session_access_error)?;
+            .map_err(|error| {
+                let mut error = resource_session_access_error(error);
+                if session.handle.status().connection
+                    == notebook_sync::status::ConnectionState::Disconnected
+                {
+                    error.data = Some(crate::attachments::unavailable_resource_data(
+                        &session.notebook_handle,
+                    ));
+                }
+                error
+            })?;
         let observer = session
             .observer()
             .map_err(|error| McpError::internal_error(error, None))?;
@@ -381,33 +401,65 @@ pub(crate) async fn resource_session(
             observer,
         ))
     };
-    let matches = |session: &crate::session::NotebookSession| {
-        if by_handle {
-            session.notebook_handle == notebook_id
-        } else {
-            session.notebook_id == notebook_id
-        }
-    };
-    let mut found = {
-        let active = server.session.read().await;
-        active
-            .as_ref()
-            .filter(|session| matches(session))
-            .map(capture)
-            .transpose()?
-    };
-    {
-        let parked = server.parked_sessions.read().await;
-        for session in parked.values().filter(|session| matches(session)) {
-            if let Some((_, handle, _, _)) = &found {
-                if *handle == session.notebook_handle {
-                    continue;
-                }
-                return Err(McpError::invalid_params("Ambiguous notebook ID; read its nteract://sessions/{notebook_handle} resource instead", None));
-            }
-            found = Some(capture(session)?);
-        }
+    if by_handle {
+        let entries = server.attachments.read_entries();
+        return entries
+            .get(notebook_id)
+            .map(|entry| capture(&entry.session))
+            .unwrap_or_else(|| Err(crate::attachments::expired_resource_error(notebook_id)));
     }
+    let found = {
+        // ID resources are compatibility addressing. A live legacy selection
+        // wins without changing any subscription's previously captured handle.
+        let active = server.session.read().await;
+        let entries = server.attachments.read_entries();
+        if let Some(entry) = active
+            .as_ref()
+            .filter(|session| session.notebook_id == notebook_id)
+            .and_then(|session| entries.get(&session.notebook_handle))
+            .filter(|entry| entry.origin() == crate::attachments::AttachmentOrigin::Legacy)
+        {
+            return capture(&entry.session);
+        }
+        let mut legacy = entries.values().filter(|entry| {
+            entry.origin() == crate::attachments::AttachmentOrigin::Legacy
+                && entry.session.notebook_id == notebook_id
+        });
+        if let Some(first) = legacy.next() {
+            let key = first.session.session_key();
+            let mut selected = first;
+            for entry in legacy {
+                if entry.session.session_key() != key {
+                    return Err(McpError::invalid_params(
+                        "Ambiguous legacy notebook ID across sources; use its exact notebook_handle resource",
+                        None,
+                    ));
+                }
+                let rank = |entry: &crate::attachments::AttachmentEntry| {
+                    (
+                        entry
+                            .session
+                            .access(crate::session::SessionRequirement::DocumentRead)
+                            .is_ok(),
+                        entry.session.activation_generation,
+                        entry.session.notebook_handle.clone(),
+                    )
+                };
+                if rank(entry) > rank(selected) {
+                    selected = entry;
+                }
+            }
+            return capture(&selected.session);
+        }
+        let mut explicit = entries
+            .values()
+            .filter(|entry| entry.session.notebook_id == notebook_id);
+        let first = explicit.next();
+        if explicit.next().is_some() {
+            return Err(McpError::invalid_params("Ambiguous notebook ID; read its nteract://sessions/{notebook_handle} resource instead", None));
+        }
+        first.map(|entry| capture(&entry.session)).transpose()?
+    };
     if let Some(found) = found {
         return Ok(found);
     }
@@ -418,6 +470,26 @@ pub(crate) async fn resource_session(
         ),
         None,
     ))
+}
+
+fn observed_attachment_read(
+    server: &NteractMcp,
+    observer: &ObservationReader,
+    handle: &str,
+) -> Result<ChangeRead, McpError> {
+    observed_read(observer).map_err(|mut error| {
+        // This reader's resource-not-found is specifically terminal observation
+        // loss. Preserve its original wire code/message and classify membership
+        // separately; missing cells are resolved later and never pass here.
+        if error.code == rmcp::model::ErrorCode::RESOURCE_NOT_FOUND {
+            error.data = if server.attachments.read_entries().contains_key(handle) {
+                Some(crate::attachments::unavailable_resource_data(handle))
+            } else {
+                crate::attachments::expired_resource_error(handle).data
+            };
+        }
+        error
+    })
 }
 
 fn observed_read(observer: &ObservationReader) -> Result<ChangeRead, McpError> {

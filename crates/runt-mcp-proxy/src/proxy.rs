@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, GetMeta, Implementation,
     ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, ProtocolVersion,
     ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ServerCapabilities,
     ServerInfo, Tool,
@@ -128,7 +128,7 @@ pub struct ProxyConfig {
     /// Lower values detect child exit faster but use more CPU.
     pub monitor_poll_interval_ms: u64,
     /// Recovery action appended to terminal failure messages (circuit-breaker
-    /// trip, incompatible tool-list divergence). The launcher knows how its
+    /// trip). The launcher knows how its
     /// child is installed and what restores it; the proxy does not. The MCPB
     /// bundle points at reinstalling the extension, the dev supervisor at
     /// relaunching the worktree daemon.
@@ -164,6 +164,8 @@ pub struct ProxyState {
     /// both forms to recognize an explicit disconnect by notebook id.
     last_notebook_session_id: Option<String>,
     last_notebook_handle: Option<String>,
+    /// Release intent fences late session responses from restoring a handoff.
+    handoff_revision: u64,
     /// Upstream MCP client name (forwarded to child).
     pub upstream_name: String,
     /// Upstream MCP client title (forwarded to child).
@@ -174,7 +176,7 @@ pub struct ProxyState {
     pub reconnection_message: Option<String>,
     /// Channel to notify that the tool list has changed.
     pub tool_list_changed_tx: Option<mpsc::Sender<()>>,
-    /// Whether the proxy should exit (set on incompatible tool divergence).
+    /// Reserved explicit stop state; catalog divergence does not set it.
     pub should_exit: bool,
     /// Timestamp when the current child was spawned (for uptime tracking).
     pub child_spawn_time: Option<Instant>,
@@ -191,7 +193,7 @@ pub struct McpProxy {
     pub config: Arc<ProxyConfig>,
     /// Signaled when the child client is first connected.
     pub child_ready: Arc<Notify>,
-    /// Signaled when the proxy should exit (incompatible tool divergence).
+    /// Reserved explicit exit notification; catalog divergence does not signal it.
     pub exit_signal: Arc<Notify>,
     /// Shared completion for one owned restart (monitor and requests may join).
     restart_in_progress: Arc<std::sync::Mutex<Option<RestartCompletion>>>,
@@ -201,6 +203,123 @@ pub struct McpProxy {
     observation_bridge: Arc<crate::observation_bridge::ObservationBridge>,
     native_subscriptions: Arc<crate::native_subscriptions::Registry>,
     native_startup: Arc<std::sync::Mutex<Option<RestartCompletion>>>,
+    /// Retained invalidation from a successfully discovered current child.
+    catalog_changed: Arc<tokio::sync::watch::Sender<Option<u64>>>,
+    legacy_catalog_started: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// One listener's resource ownership; dropping it releases only its leases.
+struct CapturedResources {
+    peer: Peer<rmcp::service::RoleClient>,
+    uris: Vec<String>,
+    notifications: tokio::sync::broadcast::Receiver<rmcp::model::ResourceUpdatedNotificationParam>,
+    lifetime: mcp_transport::ConnectionLifetime,
+    lease: crate::native_subscriptions::Lease,
+    reconciliation_pending: bool,
+}
+impl CapturedResources {
+    async fn next(&mut self) -> Option<Vec<rmcp::model::ResourceUpdatedNotificationParam>> {
+        loop {
+            if self.reconciliation_pending {
+                // The outer select may interrupt reads to deliver a catalog
+                // event. Retain the consumed lag marker until reads complete.
+                return tokio::select! {
+                    _ = self.lifetime.closed() => None,
+                    updates = reconcile_listener_updates(&self.peer, &self.uris) => {
+                        self.reconciliation_pending = false;
+                        Some(updates)
+                    },
+                };
+            }
+            tokio::select! {
+                _ = self.lifetime.closed() => return None,
+                update = self.notifications.recv() => match update {
+                    Ok(update) => return Some(vec![update]),
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => self.reconciliation_pending = true,
+                }
+            }
+        }
+    }
+}
+
+fn catalog_notifications(tools: bool, resources: bool) -> Vec<rmcp::model::ServerNotification> {
+    let mut notifications = Vec::new();
+    if tools {
+        notifications
+            .push(rmcp::model::ServerNotification::ToolListChangedNotification(Default::default()));
+    }
+    if resources {
+        notifications.push(
+            rmcp::model::ServerNotification::ResourceListChangedNotification(Default::default()),
+        );
+    }
+    notifications
+}
+
+async fn send_catalog_notification(
+    context: &rmcp::service::SubscriptionContext,
+    notification: rmcp::model::ServerNotification,
+    resource: &mut Option<CapturedResources>,
+    ended_uris: &mut Vec<String>,
+) -> Result<(), McpError> {
+    let send = context.sink().send(notification);
+    tokio::pin!(send);
+    loop {
+        let lifetime = resource.as_ref().map(|active| active.lifetime.clone());
+        tokio::select! {
+            _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
+            _ = async {
+                match lifetime {
+                    Some(lifetime) => lifetime.closed().await,
+                    None => std::future::pending().await,
+                }
+            }, if resource.is_some() => {
+                // Child expiry releases resource capacity independently of a
+                // slow catalog sink. Keep the same pending send; never rebind.
+                if let Some(expired) = resource.take() {
+                    ended_uris.extend(expired.uris.iter().cloned());
+                }
+            }
+            result = &mut send => {
+                return result.map_err(|error| McpError::internal_error(error.to_string(), None));
+            }
+        }
+    }
+}
+
+/// Catalog interest outlives the child, but the client must still learn that
+/// each captured resource watch ended. These are observed old URIs, not targets
+/// admitted to the replacement child.
+async fn send_ended_resource_updates(
+    context: &rmcp::service::SubscriptionContext,
+    uris: Vec<String>,
+) -> Result<(), McpError> {
+    for uri in uris {
+        let handle = uri
+            .strip_prefix("nteract://sessions/")
+            .and_then(|tail| tail.split('/').next())
+            .unwrap_or_default()
+            .to_owned();
+        let mut notification = rmcp::model::ServerNotification::ResourceUpdatedNotification(
+            rmcp::model::ResourceUpdatedNotification::new(
+                rmcp::model::ResourceUpdatedNotificationParam::new(uri),
+            ),
+        );
+        notification.get_meta_mut().insert("io.nteract/attachmentUnavailable".into(), serde_json::json!({
+            "code":"attachment_unavailable", "notebook_handle":handle,
+            "message":"The subscription's MCP child disconnected; acquire a current notebook_handle and subscribe again"
+        }));
+        // Keep the existing resource-delivery failure policy. No closed child
+        // lifetime can suppress the terminal observation about that child.
+        tokio::select! {
+            _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
+            result = tokio::time::timeout(Duration::from_secs(1), context.sink().send(notification)) => {
+                result.map_err(|_| McpError::internal_error("Subscription delivery timed out; read a fresh baseline", None))?.map_err(|error| McpError::internal_error(error.to_string(), None))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 impl McpProxy {
@@ -229,6 +348,7 @@ impl McpProxy {
                 last_notebook_id: None,
                 last_notebook_session_id: None,
                 last_notebook_handle: None,
+                handoff_revision: 0,
                 upstream_name: "unknown".to_string(),
                 upstream_title: None,
                 last_daemon_version: None,
@@ -246,6 +366,8 @@ impl McpProxy {
             observation_bridge: Arc::default(),
             native_subscriptions: Arc::default(),
             native_startup: Arc::default(),
+            catalog_changed: Arc::new(tokio::sync::watch::channel(None).0),
+            legacy_catalog_started: Arc::default(),
         }
     }
 
@@ -266,50 +388,129 @@ impl McpProxy {
         &self,
         context: rmcp::service::SubscriptionContext,
     ) -> Result<(), McpError> {
-        let uris = context
+        let tools = context.accepted().tools_list_changed == Some(true);
+        let resources = context.accepted().resources_list_changed == Some(true);
+        let catalogs = tools || resources;
+        // Install both interests before acknowledgment. Catalog changes coalesce;
+        // resource ownership remains captured in this generation's lease.
+        let mut changes = self.catalog_changed.subscribe();
+        let mut uris = context
             .accepted()
             .resource_subscriptions
             .clone()
             .unwrap_or_default();
-        if uris.is_empty() {
-            mcp_transport::acknowledge(context.request_context()).await?;
-            return Ok(());
-        }
-        let (peer, generation, mut notifications, lifetime) = {
-            let state = self.state.read().await;
-            let child = state.child_client.as_ref().ok_or_else(|| {
-                McpError::internal_error("Child not ready; reconnect and subscribe again", None)
-            })?;
-            (
-                child.peer().clone(),
-                state.child_generation,
-                child.service().notifications.subscribe(),
-                child.service().lifetime.clone(),
-            )
-        };
-        let _lease = tokio::select! {
-            _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
-            _ = lifetime.closed() => return Ok(()),
-            lease = self.native_subscriptions.acquire(generation, uris.clone(), peer) => lease?,
+        uris.sort();
+        uris.dedup();
+        let mut ended_uris = Vec::new();
+        let mut resource = if uris.is_empty() {
+            None
+        } else {
+            let (peer, generation, notifications, lifetime) = {
+                let state = self.state.read().await;
+                let child = state.child_client.as_ref().ok_or_else(|| {
+                    McpError::internal_error("Child not ready; reconnect and subscribe again", None)
+                })?;
+                (
+                    child.peer().clone(),
+                    state.child_generation,
+                    child.service().notifications.subscribe(),
+                    child.service().lifetime.clone(),
+                )
+            };
+            let lease = tokio::select! {
+                _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
+                _ = lifetime.closed() => {
+                    if !catalogs { return Ok(()); }
+                    None
+                },
+                lease = self.native_subscriptions.acquire(generation, uris.clone(), peer.clone()) => {
+                    match lease {
+                        Ok(lease) => Some(lease),
+                        Err(_) if catalogs && (lifetime.is_closed() || peer.is_transport_closed()) => None,
+                        Err(error) => return Err(error),
+                    }
+                },
+            };
+            match lease {
+                Some(lease) => Some(CapturedResources {
+                    peer,
+                    uris,
+                    notifications,
+                    lifetime,
+                    lease,
+                    reconciliation_pending: false,
+                }),
+                None => {
+                    // Admission belonged to the lost child. The actor cleans up
+                    // partial watches; catalog interest still belongs to us.
+                    ended_uris = uris;
+                    None
+                }
+            }
         };
         mcp_transport::acknowledge(context.request_context()).await?;
         loop {
-            let changed = tokio::select! {
+            if !ended_uris.is_empty() {
+                send_ended_resource_updates(&context, std::mem::take(&mut ended_uris)).await?;
+            }
+            if resource.is_none() && !catalogs {
+                return Ok(());
+            }
+            tokio::select! {
                 _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
-                _ = lifetime.closed() => return Ok(()),
-                update = notifications.recv() => match update {
-                    Ok(update) => vec![update.uri],
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => uris.clone(),
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
-                },
-            };
-            for uri in changed {
-                if uris.contains(&uri) {
-                    tokio::select! {
-                        _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
-                        result = tokio::time::timeout(Duration::from_secs(1), context.sink().notify_resource_updated(uri)) => {
-                            result.map_err(|_| McpError::internal_error("Subscription delivery timed out; read a fresh baseline", None))?.map_err(|error| McpError::internal_error(error.to_string(), None))?;
+                changed = changes.changed(), if catalogs => {
+                    if changed.is_err() { return Ok(()); }
+                    let generation = *changes.borrow_and_update();
+                    if self.current_catalog_publication(generation).await {
+                        for notification in catalog_notifications(tools, resources) {
+                            send_catalog_notification(&context, notification, &mut resource, &mut ended_uris).await?;
                         }
+                    }
+                }
+                updates = async {
+                    match resource.as_mut() {
+                        Some(resource) => resource.next().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    let Some(updates) = updates else {
+                        // The old resource watches end here. Never acquire new
+                        // handles or rebind their URIs to a replacement child.
+                        if let Some(expired) = resource.take() {
+                            if catalogs { ended_uris.extend(expired.uris.iter().cloned()); }
+                        }
+                        continue;
+                    };
+                    if let Some(active) = resource.as_mut() {
+                        for mut update in updates {
+                            if !active.uris.contains(&update.uri) { continue; }
+                            let terminal = attachment_terminal(update.meta.as_ref()).map(|(key, signal)| (key, signal.clone()));
+                            update.meta = terminal.as_ref().map(|(key, terminal)| {
+                                let mut meta = rmcp::model::NotificationMetaObject::default();
+                                meta.insert((*key).into(), terminal.clone());
+                                meta
+                            });
+                            let uri = update.uri.clone();
+                            let meta = update.meta.take().unwrap_or_default();
+                            let mut notification = rmcp::model::ServerNotification::ResourceUpdatedNotification(rmcp::model::ResourceUpdatedNotification::new(update));
+                            *notification.get_meta_mut() = meta;
+                            tokio::select! {
+                                _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
+                                _ = active.lifetime.closed() => {
+                                    if catalogs { ended_uris.extend(active.uris.iter().cloned()); }
+                                    active.uris.clear();
+                                    break;
+                                },
+                                result = tokio::time::timeout(Duration::from_secs(1), context.sink().send(notification)) => {
+                                    result.map_err(|_| McpError::internal_error("Subscription delivery timed out; read a fresh baseline", None))?.map_err(|error| McpError::internal_error(error.to_string(), None))?;
+                                }
+                            }
+                            if terminal.is_some() {
+                                active.uris.retain(|active| active != &uri);
+                                active.lease.release_uri(&uri);
+                            }
+                        }
+                        if active.uris.is_empty() { resource = None; }
                     }
                 }
             }
@@ -661,7 +862,7 @@ impl McpProxy {
                 // Refresh tool cache and check for divergence
                 self.refresh_tool_cache_for_generation(generation).await;
 
-                let tool_list_changed_tx = {
+                {
                     let mut state = self.state.write().await;
                     if let (Some(ref old), Some(ref new)) = (&old_tools, &state.cached_tools) {
                         match tools::detect_divergence(old, new) {
@@ -674,12 +875,9 @@ impl McpProxy {
                                 ref added,
                             } => {
                                 warn!(
-                                    "Tool list incompatible after restart — removed: {removed:?}, added: {added:?}. \
-                                     Exiting so the MCP client can restart with the new tool set."
+                                    "Tool catalog changed after restart — removed: {removed:?}, added: {added:?}. \
+                                     Published the current catalog for in-place relisting."
                                 );
-                                state.should_exit = true;
-                                // Signal the exit so nteract-mcp can shut down
-                                self.exit_signal.notify_waiters();
                             }
                         }
                     }
@@ -709,17 +907,11 @@ impl McpProxy {
                         },
                     };
                     state.reconnection_message = Some(reconnection_event.message());
-                    state.tool_list_changed_tx.clone()
                 };
 
                 // Spawn new monitor for the restarted child
                 self.spawn_child_monitor();
 
-                // Notify upstream client to keep connection alive
-                if let Some(tx) = tool_list_changed_tx {
-                    let _ = tx.send(()).await;
-                    info!("Notified upstream client of tool list change to keep connection alive");
-                }
                 self.child_ready.notify_waiters();
                 info!("Child restarted successfully");
                 Ok(())
@@ -861,6 +1053,9 @@ impl McpProxy {
         &self,
         params: CallToolRequestParams,
     ) -> Result<CallToolResult, McpError> {
+        if let Err(error) = mcp_transport::validate_tool_target_params(&params) {
+            return Ok(mcp_transport::tool_target_error(error));
+        }
         // Record release intent before sending: a lost disconnect reply must
         // not cause the replacement child to rejoin the notebook just released.
         if params.name.as_ref() == "disconnect_notebook" {
@@ -868,13 +1063,18 @@ impl McpProxy {
         }
         // First attempt
         let failure = match self.try_forward_tool_call(&params).await {
-            Ok(mut result) => {
-                self.track_session(&params, &result).await;
+            Ok(success) => {
+                self.track_session_for_call(&params, &success).await;
+                let mut result = success.result;
                 self.prepend_reconnection_message(&mut result).await;
                 return Ok(result);
             }
             Err(failure) => {
                 if !failure.transport_closed {
+                    if !failure.may_have_run && mcp_transport::is_tool_target_error(&failure.error)
+                    {
+                        return Ok(mcp_transport::tool_target_error(failure.error));
+                    }
                     if failure.may_have_run && !tool_can_be_replayed(&params.name) {
                         return Ok(unknown_tool_outcome(&params.name, &failure, None));
                     }
@@ -913,15 +1113,13 @@ impl McpProxy {
             ));
         }
 
-        // Check if we should exit due to tool divergence
+        // Preserve the explicit stop gate; catalog divergence does not set it.
         {
             let state = self.state.read().await;
             if state.should_exit {
                 return Err(McpError::internal_error(
                     format!(
-                        "Tool list changed incompatibly after daemon upgrade. \
-                         The MCP server will exit so your client can reconnect \
-                         with the updated tools. {}",
+                        "The MCP server has been requested to stop. {}",
                         self.config.recovery_hint
                     ),
                     None,
@@ -930,16 +1128,74 @@ impl McpProxy {
         }
 
         // Second attempt after restart
-        let mut result = match self.try_forward_tool_call(&params).await {
-            Ok(result) => result,
+        let success = match self.try_forward_tool_call(&params).await {
+            Ok(success) => success,
             Err(failure) if failure.may_have_run && !tool_can_be_replayed(&params.name) => {
                 return Ok(unknown_tool_outcome(&params.name, &failure, None));
             }
+            Err(failure)
+                if !failure.may_have_run && mcp_transport::is_tool_target_error(&failure.error) =>
+            {
+                return Ok(mcp_transport::tool_target_error(failure.error))
+            }
             Err(failure) => return Err(failure.error),
         };
-        self.track_session(&params, &result).await;
+        self.track_session_for_call(&params, &success).await;
+        let mut result = success.result;
         self.prepend_reconnection_message(&mut result).await;
         Ok(result)
+    }
+
+    /// Resolve a local attachment without a GUI side effect, then admit exactly
+    /// one synchronous launch on the same child generation. Never retry the
+    /// callback. Release after admission can expire the handle while the app is
+    /// already opening, just as with other admitted notebook side effects.
+    pub async fn admit_notebook_launch(
+        &self,
+        mut params: CallToolRequestParams,
+        launch: impl FnOnce(NotebookLaunchIdentity) -> Result<CallToolResult, McpError>,
+    ) -> Result<CallToolResult, McpError> {
+        params.name = "resolve_notebook_launch".into();
+        if let Err(error) = mcp_transport::validate_tool_target_params(&params) {
+            return Ok(mcp_transport::tool_target_error(error));
+        }
+        let handle = params
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("notebook_handle"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| McpError::invalid_params("notebook_handle is required", None))?
+            .to_owned();
+        let success = match self.try_forward_tool_call(&params).await {
+            Ok(success) => success,
+            Err(failure)
+                if !failure.may_have_run && mcp_transport::is_tool_target_error(&failure.error) =>
+            {
+                return Ok(mcp_transport::tool_target_error(failure.error));
+            }
+            Err(failure) => return Err(failure.error),
+        };
+        if success.result.is_error == Some(true) {
+            return Ok(success.result);
+        }
+        let identity = NotebookLaunchIdentity::from_result(&success.result, &handle)?;
+        {
+            let state = self.state.read().await;
+            if state.child_generation != success.generation
+                || state
+                    .child_client
+                    .as_ref()
+                    .is_none_or(|child| child.is_transport_closed())
+            {
+                return Ok(mcp_transport::tool_target_error(McpError::invalid_params(
+                    "Child changed before Desktop launch; reconnect the intended notebook, obtain a new handle, and explicitly resubmit",
+                    Some(serde_json::json!({"code":"attachment_unavailable","notebook_handle":handle})),
+                )));
+            }
+            // Holding this guard only during the synchronous callback prevents
+            // a replacement generation from being published before admission.
+            launch(identity)
+        }
     }
 
     /// Forward a resource read to the child, restarting if disconnected.
@@ -991,7 +1247,12 @@ impl McpProxy {
                         start.elapsed(),
                     )
                     .await;
-                    return result.tools;
+                    if self
+                        .publish_tool_cache(snapshot.generation, result.tools.clone())
+                        .await
+                    {
+                        return result.tools;
+                    }
                 }
                 Ok(_) => {
                     self.log_child_call_if_slow(
@@ -1090,7 +1351,7 @@ impl McpProxy {
         ListResourceTemplatesResult::default()
     }
 
-    /// Check whether the proxy should exit (due to incompatible tool divergence).
+    /// Read the reserved explicit proxy stop state.
     pub async fn should_exit(&self) -> bool {
         self.state.read().await.should_exit
     }
@@ -1145,7 +1406,7 @@ impl McpProxy {
     async fn try_forward_tool_call(
         &self,
         params: &CallToolRequestParams,
-    ) -> Result<CallToolResult, ForwardToolFailure> {
+    ) -> Result<ForwardToolSuccess, ForwardToolFailure> {
         let snapshot = self
             .child_peer_snapshot()
             .await
@@ -1164,6 +1425,49 @@ impl McpProxy {
                 may_have_run: false,
             });
         }
+        if mcp_transport::notebook_scoped_tool(&params.name)
+            || matches!(
+                params.name.as_ref(),
+                "connect_notebook" | "open_notebook" | "create_notebook"
+            )
+        {
+            // Use this exact child's live catalog, never our rewritten or disk-cached
+            // schemas. A legacy child may ignore an unknown handle and mutate its
+            // implicit current notebook. Reject before dispatch if routing is unproven.
+            let admission = crate::request_scope::observe(async {
+                let tools = tokio::time::timeout(Duration::from_secs(10), snapshot.peer.list_all_tools())
+                    .await
+                    .map_err(|_| McpError::internal_error("Timed out verifying child notebook-handle routing", None))?
+                    .map_err(|error| McpError::internal_error(format!("Cannot verify child notebook-handle routing: {error}"), None))?;
+                // create_cell is advertised even when compatibility read tools
+                // (get_cell/get_all_cells) are dispatch-only. Its required handle
+                // schema identifies the child's all-protocol routing contract.
+                if tools.iter().any(|tool| tool.name == "create_cell" && child_requires_handle(tool)) {
+                    Ok(())
+                } else {
+                    Err(McpError::invalid_params("This child does not advertise required notebook_handle routing; upgrade the child before using notebook tools", Some(serde_json::json!({"code":"unsupported_notebook_target"}))))
+                }
+            }).await;
+            if let Err(error) = admission {
+                return Err(ForwardToolFailure {
+                    error,
+                    generation: Some(generation),
+                    transport_closed: snapshot.peer.is_transport_closed(),
+                    may_have_run: false,
+                });
+            }
+        }
+        if self.state.read().await.child_generation != generation {
+            return Err(ForwardToolFailure {
+                error: McpError::internal_error(
+                    "Child changed during notebook-handle admission",
+                    None,
+                ),
+                generation: Some(generation),
+                transport_closed: true,
+                may_have_run: false,
+            });
+        }
         let start = Instant::now();
 
         let result = match crate::request_scope::call_child(
@@ -1173,12 +1477,18 @@ impl McpProxy {
         )
         .await
         {
-            Ok(response) => complete_tool_response(response).map_err(|error| ForwardToolFailure {
-                error,
-                generation: Some(generation),
-                transport_closed: false,
-                may_have_run: true,
-            }),
+            Ok(response) => complete_tool_response(response)
+                .map(|result| ForwardToolSuccess {
+                    result,
+                    generation,
+                    handoff_revision: snapshot.handoff_revision,
+                })
+                .map_err(|error| ForwardToolFailure {
+                    error,
+                    generation: Some(generation),
+                    transport_closed: false,
+                    may_have_run: true,
+                }),
             Err(rmcp::service::ServiceError::McpError(error)) => Err(ForwardToolFailure {
                 error,
                 generation: Some(generation),
@@ -1247,6 +1557,20 @@ impl McpProxy {
     }
 
     async fn clear_disconnect_handoff(&self, params: &CallToolRequestParams) {
+        if mcp_transport::validate_tool_target_params(params).is_err() {
+            return;
+        }
+        // Invalid/conflicting selectors are rejected by the child, not intent.
+        if params.arguments.as_ref().is_some_and(|args| {
+            args.get("notebook_handle").is_some_and(|value| {
+                value.as_str().is_none_or(str::is_empty)
+                    || args.get("notebook_id").is_some_and(|id| !id.is_null())
+            }) || args
+                .get("notebook_id")
+                .is_some_and(|id| !id.is_null() && id.as_str().is_none())
+        }) {
+            return;
+        }
         let requested_id = params
             .arguments
             .as_ref()
@@ -1271,17 +1595,55 @@ impl McpProxy {
             state.last_notebook_id = None;
             state.last_notebook_session_id = None;
             state.last_notebook_handle = None;
+            state.handoff_revision = state.handoff_revision.wrapping_add(1);
         }
     }
 
+    #[cfg(test)]
     async fn track_session(&self, params: &CallToolRequestParams, result: &CallToolResult) {
-        if params.name.as_ref() == "disconnect_notebook" && result.is_error != Some(true) {
+        if params.name == "disconnect_notebook" && result.is_error != Some(true) {
             self.clear_disconnect_handoff(params).await;
+        }
+        let (generation, handoff_revision) = {
+            let state = self.state.read().await;
+            (state.child_generation, state.handoff_revision)
+        };
+        self.track_session_for_call(
+            params,
+            &ForwardToolSuccess {
+                result: result.clone(),
+                generation,
+                handoff_revision,
+            },
+        )
+        .await;
+    }
+
+    async fn track_session_for_call(
+        &self,
+        params: &CallToolRequestParams,
+        success: &ForwardToolSuccess,
+    ) {
+        // Acquisitions own independent attachments and never select a restart target.
+        if matches!(
+            params.name.as_ref(),
+            "connect_notebook" | "open_notebook" | "create_notebook"
+        ) {
+            return;
+        }
+        let result = &success.result;
+        if params.name.as_ref() == "disconnect_notebook" && result.is_error != Some(true) {
+            // Intent was recorded before dispatch, including lost replies.
             return;
         }
 
         if let Some(id) = session::extract_session_id(params, result) {
             let mut state = self.state.write().await;
+            if state.child_generation != success.generation
+                || state.handoff_revision != success.handoff_revision
+            {
+                return;
+            }
             if params.name == "save_notebook" {
                 if let Some(handle) = params
                     .arguments
@@ -1339,23 +1701,7 @@ impl McpProxy {
         let start = Instant::now();
         match snapshot.peer.list_tools(None).await {
             Ok(child_tools) => {
-                // Never enshrine an empty list. An old/broken child that
-                // transiently returns `{tools: []}` would otherwise poison
-                // the on-disk cache — `load_cached_tools` treats an empty
-                // file as valid, so every subsequent start would read
-                // zero tools and skip the built-in fallback.
-                if child_tools.tools.is_empty() {
-                    warn!("Child returned empty tool list — keeping prior cache");
-                } else {
-                    let tools = child_tools.tools;
-                    let mut state = self.state.write().await;
-                    if state.child_generation == generation {
-                        if let Some(ref cache_dir) = self.config.cache_dir {
-                            tools::save_tool_cache(cache_dir, &tools);
-                        }
-                        state.cached_tools = Some(tools);
-                    }
-                }
+                self.publish_tool_cache(generation, child_tools.tools).await;
             }
             Err(e) => {
                 warn!("Failed to refresh tool cache: {e}");
@@ -1363,6 +1709,85 @@ impl McpProxy {
         }
         self.log_child_call_if_slow("refresh_tool_cache", None, generation, start.elapsed())
             .await;
+    }
+
+    /// Cache advertisement is never evidence for actual-child target admission.
+    /// Publish only nonempty discovery from the current, still connected child.
+    /// Tools and resource-catalog invalidations share this validated publication:
+    /// failed discovery retains optimistic fallback without signaling readiness.
+    /// Resource reads and actual-child admission remain independently validated.
+    async fn publish_tool_cache(&self, generation: u64, discovered: Vec<Tool>) -> bool {
+        if discovered.is_empty() {
+            warn!("Child returned empty tool list — keeping prior cache");
+            return false;
+        }
+        let mut state = self.state.write().await;
+        if state.child_generation != generation
+            || state.child_client.as_ref().is_none_or(|child| {
+                child.is_transport_closed() || child.service().lifetime.is_closed()
+            })
+        {
+            return false;
+        }
+        // A live tools/list must not cause an invalidation/relist feedback loop.
+        if *self.catalog_changed.borrow() != Some(generation)
+            || state.cached_tools.as_ref() != Some(&discovered)
+        {
+            if let Some(ref cache_dir) = self.config.cache_dir {
+                tools::save_tool_cache(cache_dir, &discovered);
+            }
+            state.cached_tools = Some(discovered);
+            self.catalog_changed.send_replace(Some(generation));
+            if let Some(tx) = &state.tool_list_changed_tx {
+                // This older embedding API is a coalesced invalidation too.
+                let _ = tx.try_send(());
+            }
+        }
+        true
+    }
+
+    async fn current_catalog_publication(&self, generation: Option<u64>) -> bool {
+        let state = self.state.read().await;
+        generation == Some(state.child_generation)
+            && state.child_client.as_ref().is_some_and(|child| {
+                !child.is_transport_closed() && !child.service().lifetime.is_closed()
+            })
+    }
+
+    /// Called only after legacy notifications/initialized. The retained source
+    /// covers startup and restart, including installed proxies with no mpsc receiver.
+    pub async fn forward_catalog_notifications(&self, context: NotificationContext<RoleServer>) {
+        if context.peer.peer_info().is_none()
+            || self
+                .legacy_catalog_started
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        let mut changes = self.catalog_changed.subscribe();
+        loop {
+            let generation = *changes.borrow_and_update();
+            if self.current_catalog_publication(generation).await {
+                for notification in catalog_notifications(true, true) {
+                    tokio::select! {
+                        _ = mcp_transport::notification_cancelled(&context) => return,
+                        // One owned send can wait under backpressure. The watch
+                        // coalesces later publications and teardown still cancels
+                        // promptly; a healthy slow client must not lose forwarding.
+                        result = context.peer.send_notification(notification) => {
+                            if let Err(error) = result {
+                                warn!("Legacy catalog notification failed: {error}");
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            tokio::select! {
+                _ = mcp_transport::notification_cancelled(&context) => return,
+                result = changes.changed() => if result.is_err() { return; },
+            }
+        }
     }
 
     async fn child_peer_snapshot(&self) -> Result<ChildPeerSnapshot, McpError> {
@@ -1375,6 +1800,7 @@ impl McpProxy {
             peer: client.peer().clone(),
             progress: client.service().progress.clone(),
             generation: state.child_generation,
+            handoff_revision: state.handoff_revision,
         })
     }
 
@@ -1415,6 +1841,160 @@ struct ChildPeerSnapshot {
     peer: Peer<child::RoleChild>,
     progress: tokio::sync::broadcast::Sender<rmcp::model::ProgressNotificationParam>,
     generation: u64,
+    handoff_revision: u64,
+}
+
+#[derive(Debug)]
+struct ForwardToolSuccess {
+    result: CallToolResult,
+    generation: u64,
+    handoff_revision: u64,
+}
+
+/// Authoritative local identity returned by the exact child attachment.
+#[derive(Debug)]
+pub struct NotebookLaunchIdentity {
+    pub notebook_handle: String,
+    pub notebook_id: String,
+    pub socket_path: PathBuf,
+    pub has_display: bool,
+}
+
+impl NotebookLaunchIdentity {
+    fn from_result(result: &CallToolResult, requested: &str) -> Result<Self, McpError> {
+        let invalid = || {
+            McpError::invalid_params(
+                "Child did not return a valid attachment launch identity",
+                result.structured_content.clone(),
+            )
+        };
+        if result.is_error == Some(true) {
+            return Err(invalid());
+        }
+        let value = result.structured_content.as_ref().ok_or_else(invalid)?;
+        let handle = value
+            .get("notebook_handle")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(invalid)?;
+        let id = value
+            .get("notebook_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(invalid)?;
+        let socket = value
+            .get("socket_path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(invalid)?;
+        let has_display = value
+            .get("has_display")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(invalid)?;
+        if value.get("source").and_then(serde_json::Value::as_str) != Some("local")
+            || handle != requested
+            || uuid::Uuid::parse_str(id).is_err()
+            || !std::path::Path::new(socket).is_absolute()
+        {
+            return Err(invalid());
+        }
+        Ok(Self {
+            notebook_handle: handle.into(),
+            notebook_id: id.into(),
+            socket_path: socket.into(),
+            has_display,
+        })
+    }
+}
+
+fn child_requires_handle(tool: &Tool) -> bool {
+    tool.input_schema
+        .get("properties")
+        .and_then(|properties| properties.get("notebook_handle"))
+        .and_then(|handle| handle.get("type"))
+        .is_some_and(|kind| kind == "string")
+        && tool
+            .input_schema
+            .get("required")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|fields| fields.iter().any(|field| field == "notebook_handle"))
+}
+
+pub(crate) fn attachment_expiry(data: Option<&serde_json::Value>) -> Option<&serde_json::Value> {
+    attachment_terminal_data(data, "attachment_expired")
+}
+
+fn attachment_unavailability(data: Option<&serde_json::Value>) -> Option<&serde_json::Value> {
+    attachment_terminal_data(data, "attachment_unavailable")
+}
+
+fn attachment_terminal_data<'a>(
+    data: Option<&'a serde_json::Value>,
+    code: &str,
+) -> Option<&'a serde_json::Value> {
+    data.filter(|data| {
+        data["code"] == code
+            && data["notebook_handle"]
+                .as_str()
+                .is_some_and(|handle| !handle.is_empty())
+    })
+}
+
+pub(crate) fn attachment_terminal(
+    meta: Option<&rmcp::model::NotificationMetaObject>,
+) -> Option<(&'static str, &serde_json::Value)> {
+    let meta = meta?;
+    attachment_expiry(meta.get("io.nteract/attachmentExpired"))
+        .map(|data| ("io.nteract/attachmentExpired", data))
+        .or_else(|| {
+            attachment_unavailability(meta.get("io.nteract/attachmentUnavailable"))
+                .map(|data| ("io.nteract/attachmentUnavailable", data))
+        })
+}
+
+fn attachment_terminal_error(
+    data: Option<&serde_json::Value>,
+) -> Option<(&'static str, &serde_json::Value)> {
+    attachment_expiry(data)
+        .map(|data| ("io.nteract/attachmentExpired", data))
+        .or_else(|| {
+            attachment_unavailability(data).map(|data| ("io.nteract/attachmentUnavailable", data))
+        })
+}
+
+/// A terminal notification may have been dropped by the bounded relay. Read
+/// each remaining URI against the same child; only a structured attachment
+/// expiry or unavailable observation is terminal. Missing cells and transient
+/// errors without those typed reasons still invalidate.
+pub(crate) async fn reconcile_listener_updates(
+    peer: &Peer<child::RoleChild>,
+    uris: &[String],
+) -> Vec<rmcp::model::ResourceUpdatedNotificationParam> {
+    let mut reads = tokio::task::JoinSet::new();
+    for uri in uris {
+        let peer = peer.clone();
+        let uri = uri.clone();
+        reads.spawn(async move {
+            let mut update = rmcp::model::ResourceUpdatedNotificationParam::new(&uri);
+            if let Ok(Err(rmcp::service::ServiceError::McpError(error))) = tokio::time::timeout(
+                Duration::from_secs(5),
+                peer.read_resource_once(ReadResourceRequestParams::new(uri)),
+            )
+            .await
+            {
+                if let Some((key, signal)) = attachment_terminal_error(error.data.as_ref()) {
+                    let mut meta = rmcp::model::NotificationMetaObject::default();
+                    meta.insert(key.into(), signal.clone());
+                    update.meta = Some(meta);
+                }
+            }
+            update
+        });
+    }
+    let mut updates = Vec::new();
+    while let Some(result) = reads.join_next().await {
+        if let Ok(update) = result {
+            updates.push(update);
+        }
+    }
+    updates
 }
 
 #[derive(Debug)]
@@ -1434,6 +2014,7 @@ fn tool_can_be_replayed(name: &str) -> bool {
         name,
         "list_active_notebooks"
             | "list_notebooks"
+            | "resolve_notebook_launch"
             | "get_cell"
             | "get_all_cells"
             | "get_results"
@@ -1507,7 +2088,7 @@ impl ServerHandler for McpProxy {
         &self,
         requested: &rmcp::model::SubscriptionFilter,
     ) -> Option<rmcp::model::SubscriptionFilter> {
-        Some(mcp_transport::notebook_subscription_filter(requested))
+        Some(mcp_transport::proxy_subscription_filter(requested))
     }
     async fn listen(&self, context: rmcp::service::SubscriptionContext) -> Result<(), McpError> {
         mcp_transport::require_protocol(context.request_context())?;
@@ -1560,10 +2141,12 @@ impl ServerHandler for McpProxy {
         ))
         .with_instructions(
             "nteract MCP server for Jupyter notebooks. \
-             Each connection has one active notebook session. \
-             Use list_active_notebooks to discover open notebooks, \
-             then connect_notebook or create_notebook to set your active session. \
-             Calling these again switches your active session.",
+             Notebook operations use the notebook_handle returned by \
+             connect_notebook or create_notebook for that independent attachment. \
+             Release affects only the named attachment. Daemon replacement expires \
+             local attachments; child replacement expires all attachments. Connect \
+             again, read a fresh baseline, and resubscribe. Every notebook tool requires \
+             a nonempty notebook_handle on every supported protocol.",
         )
     }
 
@@ -1618,7 +2201,7 @@ impl ServerHandler for McpProxy {
             cached
         };
         tools.push(reconnect_tool());
-        mcp_transport::attachment_tool_schemas(&mut tools, mcp_transport::is_native(&context));
+        mcp_transport::attachment_tool_schemas(&mut tools);
         Ok(ListToolsResult::with_all_items(tools)
             .with_ttl_ms(0)
             .with_cache_scope(rmcp::model::CacheScope::Private))
@@ -1716,7 +2299,9 @@ impl ServerHandler for McpProxy {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         require_protocol(&context)?;
-        mcp_transport::validate_tool_target(&request, &context)?;
+        if let Err(error) = mcp_transport::validate_tool_target(&request, &context) {
+            return Ok(mcp_transport::tool_target_error(error).into());
+        }
         crate::request_scope::scope(context.clone(), async {
         // Intercept the built-in reconnect tool before waiting on child
         // readiness — reconnect is the escape hatch when the child is
@@ -1753,21 +2338,18 @@ impl ServerHandler for McpProxy {
         if context.peer.peer_info().is_none() {
             return;
         }
+        let proxy = self.clone();
+        tokio::spawn(async move {
+            proxy.forward_catalog_notifications(context).await;
+        });
         if self.state.read().await.child_client.is_some() {
             return;
         }
         let proxy = self.clone();
-        let peer = context.peer;
         tokio::spawn(async move {
             if let Err(e) = proxy.init_child().await {
                 error!("Failed to initialize child: {e}");
                 return;
-            }
-            if let Err(e) = peer.notify_tool_list_changed().await {
-                warn!("Failed to send tools/list_changed: {e}");
-            }
-            if let Err(e) = peer.notify_resource_list_changed().await {
-                warn!("Failed to send resources/list_changed: {e}");
             }
             info!("Child initialized after client-initialized, tools available");
         });
@@ -1792,8 +2374,9 @@ fn reconnect_tool() -> Tool {
         RECONNECT_TOOL_NAME,
         "Restart the nteract MCP child process and reconnect to the daemon. \
          Use when tools are hanging, returning stale errors, or after a daemon \
-         upgrade. Child-only — the daemon itself is managed by the installed \
-         nteract app.",
+         upgrade. All existing attachment handles expire; connect again, read a \
+         fresh baseline, and resubscribe. Internal locator recovery does not restore \
+         expired handles. The daemon is managed by the installed nteract app.",
         schema,
     )
 }
@@ -2395,7 +2978,216 @@ mod tests {
     // ── Session tracking via track_session ────────────────────────────
 
     #[tokio::test]
-    async fn track_session_captures_connect_notebook() {
+    async fn stale_child_or_release_revision_cannot_restore_legacy_handoff() {
+        let proxy = McpProxy::new(test_config(), None);
+        let params = CallToolRequestParams::new("connect_notebook").with_arguments(
+            serde_json::from_value(serde_json::json!({"target":"old-notebook"})).unwrap(),
+        );
+        let success = ForwardToolSuccess {
+            result: CallToolResult::success(vec![ContentBlock::text(
+                r#"{"notebook_id":"old-notebook","notebook_handle":"old-handle"}"#,
+            )]),
+            generation: 0,
+            handoff_revision: 0,
+        };
+        proxy.state.write().await.child_generation = 1;
+        proxy.track_session_for_call(&params, &success).await;
+        assert!(proxy.state.read().await.last_notebook_id.is_none());
+        proxy.state.write().await.child_generation = 0;
+        proxy
+            .clear_disconnect_handoff(&CallToolRequestParams::new("disconnect_notebook"))
+            .await;
+        proxy.track_session_for_call(&params, &success).await;
+        assert!(proxy.state.read().await.last_notebook_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn explicit_opens_do_not_set_handoff_and_invalid_releases_do_not_clear_it() {
+        let proxy = McpProxy::new(test_config(), None);
+        let params = serde_json::from_value(serde_json::json!({"name":"connect_notebook","arguments":{"target":"native-notebook"},"_meta":{}})).unwrap();
+        let result = CallToolResult::success(vec![ContentBlock::text(
+            r#"{"notebook_id":"native-notebook"}"#,
+        )]);
+        proxy.track_session(&params, &result).await;
+        assert!(proxy.state.read().await.last_notebook_id.is_none());
+        {
+            let mut state = proxy.state.write().await;
+            state.last_notebook_id = Some("legacy-notebook".into());
+            state.last_notebook_handle = Some("legacy-handle".into());
+        }
+        for arguments in [
+            serde_json::json!({"notebook_handle":"legacy-handle","notebook_id":"conflict"}),
+            serde_json::json!({"notebook_handle":null}),
+            serde_json::json!({"notebook_id":12}),
+        ] {
+            let params = CallToolRequestParams::new("disconnect_notebook")
+                .with_arguments(serde_json::from_value(arguments).unwrap());
+            proxy.clear_disconnect_handoff(&params).await;
+            assert_eq!(
+                proxy.state.read().await.last_notebook_id.as_deref(),
+                Some("legacy-notebook")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn lag_reconciliation_distinguishes_terminal_attachments_from_nonterminal_errors() {
+        struct ReadChild;
+        impl ServerHandler for ReadChild {
+            async fn read_resource(
+                &self,
+                request: ReadResourceRequestParams,
+                _: RequestContext<RoleServer>,
+            ) -> Result<ReadResourceResponse, McpError> {
+                if request.uri.contains("expired") {
+                    Err(McpError::resource_not_found(
+                        "Expired",
+                        Some(
+                            serde_json::json!({"code":"attachment_expired","notebook_handle":"expired"}),
+                        ),
+                    ))
+                } else if request.uri.contains("unavailable") {
+                    Err(McpError::internal_error(
+                        "sync_failed",
+                        Some(
+                            serde_json::json!({"code":"attachment_unavailable","notebook_handle":"unavailable"}),
+                        ),
+                    ))
+                } else if request.uri.contains("pending") {
+                    Err(McpError::internal_error("notebook_not_ready", None))
+                } else {
+                    Err(McpError::resource_not_found("Missing cell", None))
+                }
+            }
+        }
+        use rmcp::ServiceExt;
+        let (server_pipe, client_pipe) = tokio::io::duplex(65536);
+        let task = tokio::spawn(async move { ReadChild.serve(server_pipe).await.unwrap() });
+        let mut client = ().serve(client_pipe).await.unwrap();
+        let mut server = task.await.unwrap();
+        let uris = vec![
+            "nteract://sessions/expired/cells".into(),
+            "nteract://sessions/live/cells/missing".into(),
+            "nteract://sessions/unavailable/cells".into(),
+            "nteract://sessions/pending/cells".into(),
+        ];
+        let updates = reconcile_listener_updates(client.peer(), &uris).await;
+        assert_eq!(updates.len(), 4);
+        for update in updates {
+            let terminal = attachment_terminal(update.meta.as_ref());
+            if update.uri.contains("expired") {
+                assert_eq!(terminal.unwrap().0, "io.nteract/attachmentExpired");
+            } else if update.uri.contains("unavailable") {
+                assert_eq!(terminal.unwrap().0, "io.nteract/attachmentUnavailable");
+            } else {
+                assert!(terminal.is_none());
+            }
+        }
+        client.close().await.unwrap();
+        server.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn catalog_delivery_during_lag_recovery_retains_terminal_reconciliation() {
+        use rmcp::ServiceExt;
+        struct GatedReadChild {
+            entered: Arc<Notify>,
+            release: Arc<Notify>,
+            reads: Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl ServerHandler for GatedReadChild {
+            #[allow(deprecated)]
+            async fn subscribe(
+                &self,
+                _: rmcp::model::SubscribeRequestParams,
+                _: RequestContext<RoleServer>,
+            ) -> Result<(), McpError> {
+                Ok(())
+            }
+            async fn read_resource(
+                &self,
+                _: ReadResourceRequestParams,
+                _: RequestContext<RoleServer>,
+            ) -> Result<rmcp::model::ReadResourceResponse, McpError> {
+                if self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                }
+                Err(McpError::resource_not_found(
+                    "expired",
+                    Some(
+                        serde_json::json!({"code":"attachment_expired","notebook_handle":"expired"}),
+                    ),
+                ))
+            }
+        }
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (server_pipe, client_pipe) = tokio::io::duplex(65536);
+        let fixture = GatedReadChild {
+            entered: entered.clone(),
+            release: release.clone(),
+            reads: reads.clone(),
+        };
+        let task = tokio::spawn(async move { fixture.serve(server_pipe).await.unwrap() });
+        let mut client = ().serve(client_pipe).await.unwrap();
+        let mut server = task.await.unwrap();
+        let registry = crate::native_subscriptions::Registry::default();
+        let uri = "nteract://sessions/expired/cells".to_owned();
+        let lease = registry
+            .acquire(0, vec![uri.clone()], client.peer().clone())
+            .await
+            .unwrap();
+        let (notifications, receiver) = tokio::sync::broadcast::channel(1);
+        let mut resource = CapturedResources {
+            peer: client.peer().clone(),
+            uris: vec![uri.clone()],
+            notifications: receiver,
+            lifetime: Default::default(),
+            lease,
+            reconciliation_pending: false,
+        };
+        for _ in 0..2 {
+            notifications
+                .send(rmcp::model::ResourceUpdatedNotificationParam::new(&uri))
+                .unwrap();
+        }
+        let (catalog, mut changes) = tokio::sync::watch::channel(false);
+        let publication = tokio::spawn(async move {
+            entered.notified().await;
+            catalog.send_replace(true);
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::select! {
+                _ = changes.changed() => {},
+                _ = resource.next() => panic!("reconciliation must be gated until catalog publication"),
+            }
+        }).await.unwrap();
+        publication.await.unwrap();
+        assert!(
+            resource.reconciliation_pending,
+            "catalog delivery must not consume the only lag marker"
+        );
+        let updates = tokio::time::timeout(Duration::from_secs(2), resource.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            attachment_terminal(updates[0].meta.as_ref()).unwrap().0,
+            "io.nteract/attachmentExpired"
+        );
+        assert!(!resource.reconciliation_pending);
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 2);
+        resource.lease.release_uri(&uri);
+        release.notify_one();
+        client.close().await.unwrap();
+        server.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_does_not_select_a_restart_target() {
         let proxy = McpProxy::new(test_config(), None);
 
         let params: CallToolRequestParams = serde_json::from_value(serde_json::json!({
@@ -2408,13 +3200,14 @@ mod tests {
         proxy.track_session(&params, &result).await;
 
         let state = proxy.state.read().await;
-        assert_eq!(state.last_notebook_id, Some("/tmp/test.ipynb".to_string()));
+        assert!(state.last_notebook_id.is_none());
     }
 
     #[tokio::test]
-    async fn track_session_updates_on_new_notebook() {
+    async fn independent_opens_preserve_existing_recovery_target() {
         let proxy = McpProxy::new(test_config(), None);
 
+        proxy.state.write().await.last_notebook_id = Some("internal-recovery".into());
         // Open first notebook
         let params1: CallToolRequestParams = serde_json::from_value(serde_json::json!({
             "name": "connect_notebook",
@@ -2428,7 +3221,7 @@ mod tests {
             )
             .await;
 
-        // Open second notebook — should replace
+        // Opening another owner must not replace internal recovery state
         let params2: CallToolRequestParams = serde_json::from_value(serde_json::json!({
             "name": "connect_notebook",
             "arguments": { "path": "/tmp/second.ipynb" }
@@ -2444,7 +3237,7 @@ mod tests {
         let state = proxy.state.read().await;
         assert_eq!(
             state.last_notebook_id,
-            Some("/tmp/second.ipynb".to_string())
+            Some("internal-recovery".to_string())
         );
     }
 
@@ -2452,23 +3245,14 @@ mod tests {
     async fn track_session_promotes_saved_notebook_from_uuid_to_path() {
         let proxy = McpProxy::new(test_config(), None);
 
-        let create: CallToolRequestParams = serde_json::from_value(serde_json::json!({
-            "name": "create_notebook",
-            "arguments": {}
-        }))
-        .unwrap();
-        proxy
-            .track_session(
-                &create,
-                &CallToolResult::success(vec![ContentBlock::text(
-                    r#"{"notebook_id":"38582ef2-a117-4ce6-83d2-20c2c45d33d7"}"#,
-                )]),
-            )
-            .await;
-
+        {
+            let mut state = proxy.state.write().await;
+            state.last_notebook_id = Some("38582ef2-a117-4ce6-83d2-20c2c45d33d7".into());
+            state.last_notebook_handle = Some("recovery-owner".into());
+        }
         let save: CallToolRequestParams = serde_json::from_value(serde_json::json!({
             "name": "save_notebook",
-            "arguments": { "path": "analysis.ipynb" }
+            "arguments": { "path": "analysis.ipynb", "notebook_handle": "recovery-owner" }
         }))
         .unwrap();
         proxy
@@ -2492,10 +3276,11 @@ mod tests {
         let proxy = McpProxy::new(test_config(), None);
         let hosted_target = "https://preview.runt.run/n/01KTZA152886TK1WAHYA48G7HJ";
         proxy.state.write().await.last_notebook_id = Some(hosted_target.to_string());
+        proxy.state.write().await.last_notebook_handle = Some("recovery-owner".into());
 
         let save: CallToolRequestParams = serde_json::from_value(serde_json::json!({
             "name": "save_notebook",
-            "arguments": { "path": "analysis.ipynb" }
+            "arguments": { "path": "analysis.ipynb", "notebook_handle": "recovery-owner" }
         }))
         .unwrap();
         proxy
@@ -2519,12 +3304,13 @@ mod tests {
         {
             let mut state = proxy.state.write().await;
             state.last_notebook_id = Some("/tmp/analysis.ipynb".to_string());
+            state.last_notebook_handle = Some("recovery-owner".into());
             state.last_notebook_session_id =
                 Some("38582ef2-a117-4ce6-83d2-20c2c45d33d7".to_string());
         }
         let disconnect: CallToolRequestParams = serde_json::from_value(serde_json::json!({
             "name": "disconnect_notebook",
-            "arguments": { "notebook_id": "38582ef2-a117-4ce6-83d2-20c2c45d33d7" }
+            "arguments": { "notebook_handle": "recovery-owner" }
         }))
         .unwrap();
 
@@ -2550,7 +3336,7 @@ mod tests {
         }
         let disconnect: CallToolRequestParams = serde_json::from_value(serde_json::json!({
             "name": "disconnect_notebook",
-            "arguments": { "notebook_id": "parked-id" }
+            "arguments": { "notebook_handle": "parked-owner" }
         }))
         .unwrap();
 
@@ -2606,6 +3392,110 @@ mod tests {
     }
 
     // ── try_forward_tool_call without child ───────────────────────────
+
+    #[tokio::test]
+    async fn live_legacy_child_routing_is_required_even_with_new_cached_schemas() {
+        use rmcp::ServiceExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        fn routing_tool(required: bool) -> Tool {
+            serde_json::from_value(serde_json::json!({
+                "name":"create_cell",
+                "inputSchema": {
+                    "type":"object", "properties":{"notebook_handle":{"type":"string"}},
+                    "required":if required {vec!["notebook_handle"]} else {vec![]},
+                },
+            }))
+            .unwrap()
+        }
+        struct RoutingChild {
+            required: bool,
+            calls: Arc<AtomicUsize>,
+        }
+        impl ServerHandler for RoutingChild {
+            async fn list_tools(
+                &self,
+                _: Option<rmcp::model::PaginatedRequestParams>,
+                _: RequestContext<RoleServer>,
+            ) -> Result<ListToolsResult, McpError> {
+                Ok(ListToolsResult::with_all_items(vec![routing_tool(
+                    self.required,
+                )]))
+            }
+            async fn call_tool(
+                &self,
+                _: CallToolRequestParams,
+                _: RequestContext<RoleServer>,
+            ) -> Result<CallToolResponse, McpError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(CallToolResult::success(vec![ContentBlock::text("routed")]).into())
+            }
+        }
+        for required in [false, true] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let (server_pipe, client_pipe) = tokio::io::duplex(65536);
+            let server_calls = calls.clone();
+            let task = tokio::spawn(async move {
+                RoutingChild {
+                    required,
+                    calls: server_calls,
+                }
+                .serve(server_pipe)
+                .await
+                .unwrap()
+            });
+            let handler = crate::child::ChildClientHandler {
+                upstream_name: "legacy-caller".into(),
+                upstream_title: None,
+                notifications: tokio::sync::broadcast::channel(256).0,
+                progress: tokio::sync::broadcast::channel(256).0,
+                lifetime: Default::default(),
+            };
+            let child = handler.serve(client_pipe).await.unwrap();
+            let mut serving = task.await.unwrap();
+            let proxy = McpProxy::new(test_config(), None);
+            {
+                let mut state = proxy.state.write().await;
+                state.child_client = Some(child);
+                state.cached_tools = Some(vec![routing_tool(true)]);
+            }
+            let missing = proxy
+                .forward_tool_call(CallToolRequestParams::new("create_cell"))
+                .await
+                .unwrap();
+            assert_eq!(missing.is_error, Some(true));
+            let error = &missing.structured_content.as_ref().unwrap()["error"];
+            assert_eq!(error["code"], "missing_notebook_handle");
+            assert!(error["message"]
+                .as_str()
+                .unwrap()
+                .contains("notebook_handle is required"));
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            for (name, arguments) in [
+                ("connect_notebook", serde_json::json!({"target":"a"})),
+                (
+                    "create_cell",
+                    serde_json::json!({"notebook_handle":"a", "source":"effect"}),
+                ),
+                // Hidden readers must use the same live routing proof.
+                ("get_all_cells", serde_json::json!({"notebook_handle":"a"})),
+            ] {
+                let request = CallToolRequestParams::new(name)
+                    .with_arguments(arguments.as_object().unwrap().clone());
+                let result = proxy.try_forward_tool_call(&request).await;
+                if required {
+                    assert!(result.is_ok());
+                } else {
+                    let failure = result.unwrap_err();
+                    assert!(failure.error.message.contains("upgrade the child"));
+                    assert!(!failure.may_have_run);
+                }
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), if required { 3 } else { 0 });
+            proxy.shutdown_child().await;
+            serving.close().await.unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn forward_fails_without_child() {

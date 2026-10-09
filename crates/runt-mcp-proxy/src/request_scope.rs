@@ -21,6 +21,20 @@ struct ScopedRequest {
     last_progress: Arc<Mutex<Option<tokio::time::Instant>>>,
 }
 
+/// Admission reads observe the same cancellation as the subsequent tool call.
+pub(crate) async fn observe<T>(
+    future: impl Future<Output = Result<T, rmcp::ErrorData>>,
+) -> Result<T, rmcp::ErrorData> {
+    let Ok(scope) = UPSTREAM_REQUEST.try_with(Clone::clone) else {
+        return future.await;
+    };
+    tokio::select! {
+        biased;
+        _ = mcp_transport::cancelled(&scope.context) => Err(mcp_transport::cancellation_error()),
+        result = future => result,
+    }
+}
+
 /// Preserve the upstream request while supervisor helpers forward to the child.
 /// The scope follows this future only; independent requests have separate state.
 pub async fn scope<T>(

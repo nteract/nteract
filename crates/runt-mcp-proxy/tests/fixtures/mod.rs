@@ -10,6 +10,7 @@ use rmcp_legacy::model::{
 use rmcp_legacy::service::{NotificationContext, RequestContext, RoleServer};
 use rmcp_legacy::{ClientHandler, ErrorData, ServerHandler};
 use serde_json::json;
+mod attachments;
 
 pub const CHILD_MODE: &str = "NTERACT_COMPATIBILITY_CHILD";
 pub const READY: &str = "nteract-compatibility-fixture-ready";
@@ -109,12 +110,39 @@ impl ServerHandler for LegacyChild {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
+        let mode = std::env::var(CHILD_MODE).unwrap();
+        let root = std::path::PathBuf::from(std::env::var("NTERACT_COMPATIBILITY_ROOT").unwrap());
+        if mode == "catalog" {
+            let revision = std::fs::read_to_string(root.join("catalog-revision"))
+                .unwrap_or_else(|_| "first".into());
+            std::fs::write(root.join("tools-entered"), "entered").unwrap();
+            while root.join("block-tools").exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            return match revision.as_str() {
+                "empty" => Ok(serde_json::from_value(json!({"tools":[]})).unwrap()),
+                "error" => Err(ErrorData::internal_error("Catalog unavailable", None)),
+                _ => Ok(serde_json::from_value(json!({"tools":[{"name":if revision == "renamed" {"compatibility_echo_v2"} else {"compatibility_echo"},"description":revision,"inputSchema":{"type":"object","properties":{(revision.as_str()):{"type":"string"}},"required":[revision]}}]})).unwrap()),
+            };
+        }
+        if mode == "unsafe-implicit" || mode == "legacy-attachments" {
+            let capable = mode == "legacy-attachments";
+            let names = if capable {
+                vec!["create_cell", "set_cell", "get_cell"]
+            } else {
+                vec!["set_cell", "get_cell"]
+            };
+            return Ok(serde_json::from_value(json!({"tools": (names.into_iter().map(|name| json!({
+                "name":name, "description":"Controlled old SDK routing fixture",
+                "inputSchema": if capable { json!({"type":"object","properties":{"notebook_handle":{"type":"string"},"cell_id":{"type":"string"},"source":{"type":"string"}},"required":["notebook_handle","cell_id"]}) } else { json!({"type":"object","properties":{"cell_id":{"type":"string"},"source":{"type":"string"}},"required":["cell_id"]}) }
+            })).collect::<Vec<_>>())})).unwrap());
+        }
         if self.lose_first_response {
             return Ok(serde_json::from_value(json!({
-                "tools": (["execute_cell", "get_results", "future_mutation", "disconnect_notebook", "definitive_error"].map(|name| json!({
+                "tools": (["connect_notebook", "create_cell", "execute_cell", "get_results", "future_mutation", "disconnect_notebook", "definitive_error"].map(|name| json!({
                     "name": name,
                     "description": "Accept a call, then lose the first response",
-                    "inputSchema": {"type": "object"},
+                    "inputSchema": if matches!(name, "connect_notebook" | "definitive_error") { json!({"type":"object"}) } else { json!({"type": "object", "properties":{"notebook_handle":{"type":"string"}}, "required":["notebook_handle"]}) },
                     "annotations": {"readOnlyHint": true, "idempotentHint": true}
                 })))
             }))
@@ -182,6 +210,9 @@ impl ServerHandler for LegacyChild {
             .open(root.join("subscription-calls"))
             .unwrap();
         writeln!(log, "{}", request.uri).unwrap();
+        while root.join("block-subscribe").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
         context
             .peer
             .notify_resource_updated(rmcp_legacy::model::ResourceUpdatedNotificationParam {
@@ -205,6 +236,61 @@ impl ServerHandler for LegacyChild {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
+        let mode = std::env::var(CHILD_MODE).unwrap();
+        if mode == "catalog" {
+            let root =
+                std::path::PathBuf::from(std::env::var("NTERACT_COMPATIBILITY_ROOT").unwrap());
+            let renamed = std::fs::read_to_string(root.join("catalog-revision"))
+                .is_ok_and(|revision| revision == "renamed");
+            let name = if renamed {
+                "compatibility_echo_v2"
+            } else {
+                "compatibility_echo"
+            };
+            if request.name.as_ref() != name {
+                return Err(ErrorData::invalid_params(
+                    format!("Unknown tool: {}", request.name),
+                    None,
+                ));
+            }
+        }
+        if mode == "unsafe-implicit" || mode == "legacy-attachments" {
+            let root =
+                std::path::PathBuf::from(std::env::var("NTERACT_COMPATIBILITY_ROOT").unwrap());
+            let args = request.arguments.as_ref().unwrap();
+            let supplied = args
+                .get("notebook_handle")
+                .and_then(serde_json::Value::as_str);
+            let filename = if mode == "legacy-attachments" {
+                let handle = supplied
+                    .ok_or_else(|| ErrorData::invalid_params("notebook_handle required", None))?;
+                if !matches!(handle, "handle-a" | "handle-b") {
+                    return Err(ErrorData::invalid_params(
+                        "attachment expired; connect again for a new handle",
+                        Some(json!({"code":"attachment_expired","notebook_handle":handle})),
+                    ));
+                }
+                handle
+            } else {
+                "current-notebook-source"
+            };
+            if request.name == "set_cell" || request.name == "create_cell" {
+                std::fs::write(
+                    root.join(filename),
+                    args.get("source")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap(),
+                )
+                .unwrap();
+            } else if request.name != "get_cell" {
+                return Err(ErrorData::invalid_params("Unknown fixture tool", None));
+            }
+            let source = std::fs::read_to_string(root.join(filename)).unwrap_or_default();
+            let details = json!({"source":source,"notebook_handle":supplied,"protocolVersion":context.peer.peer_info().unwrap().protocol_version});
+            return Ok(CallToolResult::success(vec![
+                rmcp_legacy::model::Content::text(details.to_string()),
+            ]));
+        }
         if request.name == "progress_job" {
             let job = request
                 .arguments
@@ -240,6 +326,22 @@ impl ServerHandler for LegacyChild {
             return Ok(CallToolResult::success(vec![]));
         }
         if self.lose_first_response {
+            if request.name == "connect_notebook" {
+                return Ok(CallToolResult::success(vec![rmcp_legacy::model::Content::text(json!({"notebook_handle":"fixture-handle","notebook_id":"released-notebook"}).to_string())]));
+            }
+            if request.name != "definitive_error"
+                && request
+                    .arguments
+                    .as_ref()
+                    .and_then(|args| args.get("notebook_handle"))
+                    .and_then(serde_json::Value::as_str)
+                    != Some("fixture-handle")
+            {
+                return Err(ErrorData::invalid_params(
+                    "Fixture attachment expired",
+                    None,
+                ));
+            }
             if request.name == "definitive_error" {
                 return Err(ErrorData::invalid_params(
                     "Definitive fixture rejection",
@@ -292,7 +394,9 @@ impl ServerHandler for LegacyChild {
                 rmcp_legacy::model::Content::text("accepted"),
             ]));
         }
-        if request.name != "compatibility_echo" {
+        if request.name != "compatibility_echo"
+            && !(mode == "catalog" && request.name == "compatibility_echo_v2")
+        {
             return Err(ErrorData::invalid_params("Unknown fixture tool", None));
         }
         let info = context
@@ -349,7 +453,17 @@ pub fn run_child_if_requested() {
         .expect("fixture runtime");
     runtime.block_on(async {
         match mode.as_str() {
-            "legacy" | "response-loss" => {
+            "attachments" => {
+                use rmcp::ServiceExt;
+                attachments::Child::default()
+                    .serve(rmcp::transport::stdio())
+                    .await
+                    .unwrap()
+                    .waiting()
+                    .await
+                    .unwrap();
+            }
+            "legacy" | "catalog" | "response-loss" | "unsafe-implicit" | "legacy-attachments" => {
                 use rmcp_legacy::ServiceExt;
                 LegacyChild {
                     initialized: std::sync::atomic::AtomicBool::new(false),
@@ -362,10 +476,14 @@ pub fn run_child_if_requested() {
                 .await
                 .expect("legacy child service");
             }
-            "new" => {
+            "new" | "new-relay" => {
                 use rmcp::ServiceExt;
                 runt_mcp::NteractMcp::new_no_show(
-                    root.join("daemon.sock"),
+                    root.join(if mode == "new-relay" {
+                        "relay.sock"
+                    } else {
+                        "daemon.sock"
+                    }),
                     None,
                     Some(root.join("blobs")),
                 )

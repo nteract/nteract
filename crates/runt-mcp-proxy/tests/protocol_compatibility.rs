@@ -62,11 +62,83 @@ fn isolated_proxy_with_mode(mode: &str) -> (tempfile::TempDir, McpProxy, Arc<Ato
 }
 
 #[tokio::test]
+async fn old_child_without_attachment_support_cannot_ignore_handle_and_mutate_current_notebook() {
+    for native in [false, true] {
+        let (dir, proxy, _) = isolated_proxy_with_mode("unsafe-implicit");
+        std::fs::write(
+            dir.path().join("current-notebook-source"),
+            "protected implicit notebook",
+        )
+        .unwrap();
+        let mut wire = Wire::start(proxy.clone());
+        if !native {
+            wire.initialize("2025-11-25").await;
+            wire.initialized().await;
+        }
+        let mut params = json!({"name":"set_cell","arguments":{"notebook_handle":"handle-a","cell_id":"sentinel","source":"must not route implicitly"}});
+        if native {
+            params["_meta"] = modern_meta("2026-07-28", false);
+        }
+        let response = wire.request(10, "tools/call", Some(params)).await;
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("current-notebook-source")).unwrap(),
+            "protected implicit notebook",
+            "old child must never receive a routed mutation it cannot honor"
+        );
+        assert!(
+            response.get("error").is_some() || response["result"]["isError"] == true,
+            "unsupported child must fail clearly"
+        );
+        assert!(
+            response.to_string().contains("attachment")
+                || response.to_string().contains("notebook_handle")
+        );
+        stop_child(&proxy).await;
+        wire.finish().await;
+    }
+}
+
+#[tokio::test]
+async fn capable_old_sdk_child_preserves_explicit_handles_over_initialize_protocol() {
+    for version in LEGACY_VERSIONS {
+        let (dir, proxy, _) = isolated_proxy_with_mode("legacy-attachments");
+        let mut wire = Wire::start(proxy.clone());
+        wire.initialize(version).await;
+        wire.initialized().await;
+        for (id, name, handle, source) in [
+            (10, "create_cell", "handle-a", "A write"),
+            (11, "set_cell", "handle-b", "B write"),
+            (12, "set_cell", "handle-a", "A final"),
+        ] {
+            let response = wire.request(id, "tools/call", Some(json!({"name":name,"arguments":{"notebook_handle":handle,"cell_id":"sentinel","source":source}}))).await;
+            let data: Value = serde_json::from_str(
+                legacy_result(&response)["content"][0]["text"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(data["notebook_handle"], handle);
+            assert_eq!(data["protocolVersion"], "2025-11-25");
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("handle-a")).unwrap(),
+            "A final"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("handle-b")).unwrap(),
+            "B write"
+        );
+        stop_child(&proxy).await;
+        wire.finish().await;
+    }
+}
+
+#[tokio::test]
 async fn native_first_listen_installs_child_watch_before_ack_and_closes_on_child_loss() {
     let (dir, proxy, resolves) = isolated_proxy();
     let mut wire = Wire::start(proxy.clone());
     let uri = "nteract://sessions/fixture/cells";
-    wire.send(json!({"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"_meta":modern_meta("2026-07-28",false),"notifications":{"resourceSubscriptions":[uri,"compatibility://unsupported"],"toolsListChanged":true}}})).await;
+    wire.send(json!({"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"_meta":modern_meta("2026-07-28",false),"notifications":{"resourceSubscriptions":[uri,"compatibility://unsupported"]}}})).await;
     let ack = wire.receive().await;
     assert_eq!(
         ack["method"], "notifications/subscriptions/acknowledged",
@@ -117,11 +189,127 @@ async fn native_tool_uses_a_private_legacy_child_with_empty_capabilities() {
 }
 
 #[tokio::test]
+async fn native_attachment_bridge_preserves_b_listener_when_a_expires() {
+    async fn take_update(wire: &mut Wire, uri: &str) -> Value {
+        loop {
+            if let Some(index) = wire.notifications.iter().position(|message| {
+                message["method"] == "notifications/resources/updated"
+                    && message["params"]["uri"] == uri
+            }) {
+                return wire.notifications.remove(index);
+            }
+            let message = wire.receive().await;
+            assert!(message.get("id").is_none(), "{message}");
+            wire.notifications.push(message);
+        }
+    }
+    let (_dir, proxy, _) = isolated_proxy_with_mode("attachments");
+    let mut wire = Wire::start(proxy.clone());
+    let mut handles = Vec::new();
+    for id in [1, 2] {
+        let response = wire.request(id, "tools/call", Some(json!({"name":"connect_notebook","arguments":{"target":"same-notebook"},"_meta":modern_meta("2026-07-28",false)}))).await;
+        let data = &response["result"]["structuredContent"];
+        assert_eq!(data["protocolVersion"], "2025-11-25");
+        handles.push(data["notebook_handle"].as_str().unwrap().to_owned());
+    }
+    assert_ne!(handles[0], handles[1]);
+    assert!(proxy.state.read().await.last_notebook_id.is_none());
+    let uris: Vec<_> = handles
+        .iter()
+        .map(|handle| format!("nteract://sessions/{handle}/cells"))
+        .collect();
+    wire.send(json!({"jsonrpc":"2.0","id":10,"method":"subscriptions/listen","params":{"_meta":modern_meta("2026-07-28",false),"notifications":{"resourceSubscriptions":uris}}})).await;
+    let ack = wire.receive().await;
+    assert_eq!(
+        ack["method"], "notifications/subscriptions/acknowledged",
+        "{ack}"
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            wire.receive().await["method"],
+            "notifications/resources/updated"
+        );
+    }
+    let mut listener_completed = false;
+    for (index, handle) in handles.iter().enumerate() {
+        let id = 20 + index as u64;
+        wire.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"disconnect_notebook","arguments":{"notebook_handle":handle},"_meta":modern_meta("2026-07-28",false)}})).await;
+        let released = loop {
+            let message = wire.receive().await;
+            if message["id"] == id {
+                break message;
+            }
+            if message["id"] == 10 {
+                assert_eq!(index, 1, "A release must not complete B's listener");
+                assert_eq!(message["result"]["resultType"], "complete");
+                listener_completed = true;
+            } else {
+                wire.notifications.push(message);
+            }
+        };
+        assert_ne!(released["result"]["isError"], true, "{released}");
+        let terminal = take_update(&mut wire, &uris[index]).await;
+        assert_eq!(terminal["params"]["uri"], uris[index]);
+        assert_eq!(
+            terminal["params"]["_meta"]["io.nteract/attachmentExpired"]["notebook_handle"], *handle,
+            "{terminal}"
+        );
+        assert_eq!(
+            terminal["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+            10
+        );
+        if index == 0 {
+            let edited = wire.request(30, "tools/call", Some(json!({"name":"fixture_edit","arguments":{"notebook_handle":handles[1]},"_meta":modern_meta("2026-07-28",false)}))).await;
+            assert_ne!(edited["result"]["isError"], true);
+            let update = take_update(&mut wire, &uris[1]).await;
+            assert_eq!(update["params"]["uri"], uris[1]);
+            assert!(update["params"]["_meta"]
+                .get("io.nteract/attachmentExpired")
+                .is_none());
+        }
+    }
+    if !listener_completed {
+        let completed = wire.receive().await;
+        assert_eq!(completed["id"], 10);
+        assert_eq!(completed["result"]["resultType"], "complete");
+    }
+    assert!(proxy.state.read().await.last_notebook_id.is_none());
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
+async fn native_child_restart_requires_fresh_handles_and_does_not_seed_rejoin() {
+    let (_dir, proxy, _) = isolated_proxy_with_mode("attachments");
+    let mut wire = Wire::start(proxy.clone());
+    let request = json!({"name":"connect_notebook","arguments":{"target":"same-notebook"},"_meta":modern_meta("2026-07-28",false)});
+    let first = wire.request(1, "tools/call", Some(request.clone())).await;
+    let old = first["result"]["structuredContent"]["notebook_handle"]
+        .as_str()
+        .unwrap();
+    assert!(proxy.state.read().await.last_notebook_id.is_none());
+    proxy.restart_child().await.unwrap();
+    let expired = wire.request(2, "tools/call", Some(json!({"name":"fixture_edit","arguments":{"notebook_handle":old},"_meta":modern_meta("2026-07-28",false)}))).await;
+    support::assert_target_tool_error(&expired, "attachment_expired");
+    let second = wire.request(3, "tools/call", Some(request)).await;
+    assert_ne!(
+        second["result"]["structuredContent"]["notebook_handle"],
+        old
+    );
+    assert!(proxy.state.read().await.last_notebook_id.is_none());
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
 async fn lost_mutation_response_is_not_replayed_even_with_read_only_hints() {
     for name in ["execute_cell", "future_mutation"] {
         let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
         proxy.init_child().await.expect("start response-loss child");
-        let request = serde_json::from_value(json!({"name": name, "arguments": {}})).unwrap();
+        let request = serde_json::from_value(
+            json!({"name": name, "arguments": {"notebook_handle":"fixture-handle"}}),
+        )
+        .unwrap();
         let result = timeout(DEADLINE, proxy.forward_tool_call(request))
             .await
             .expect("bounded recovery")
@@ -138,7 +326,10 @@ async fn lost_mutation_response_is_not_replayed_even_with_read_only_hints() {
             format!("{name}\n")
         );
 
-        let read = serde_json::from_value(json!({"name": "get_results", "arguments": {}})).unwrap();
+        let read = serde_json::from_value(
+            json!({"name": "get_results", "arguments": {"notebook_handle":"fixture-handle"}}),
+        )
+        .unwrap();
         let next = timeout(DEADLINE, proxy.forward_tool_call(read))
             .await
             .expect("recovered child responds")
@@ -152,7 +343,10 @@ async fn lost_mutation_response_is_not_replayed_even_with_read_only_hints() {
 async fn lost_read_response_is_retried_once() {
     let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
     proxy.init_child().await.expect("start response-loss child");
-    let request = serde_json::from_value(json!({"name": "get_results", "arguments": {}})).unwrap();
+    let request = serde_json::from_value(
+        json!({"name": "get_results", "arguments": {"notebook_handle":"fixture-handle"}}),
+    )
+    .unwrap();
     let result = timeout(DEADLINE, proxy.forward_tool_call(request))
         .await
         .expect("bounded recovery")
@@ -174,7 +368,10 @@ async fn mutation_can_run_once_when_the_stored_child_was_already_closed() {
     proxy.state.write().await.child_client = Some(child);
     // Disable the fault for the replacement: no request has been accepted.
     std::fs::write(dir.path().join("accepted-calls"), "").unwrap();
-    let request = serde_json::from_value(json!({"name":"execute_cell","arguments":{}})).unwrap();
+    let request = serde_json::from_value(
+        json!({"name":"execute_cell","arguments":{"notebook_handle":"fixture-handle"}}),
+    )
+    .unwrap();
     let result = timeout(DEADLINE, proxy.forward_tool_call(request))
         .await
         .unwrap()
@@ -206,7 +403,10 @@ async fn unknown_outcome_includes_failed_recovery_in_text() {
     let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
     proxy.init_child().await.unwrap();
     std::fs::write(dir.path().join("fail-resolution"), "fail").unwrap();
-    let request = serde_json::from_value(json!({"name":"execute_cell","arguments":{}})).unwrap();
+    let request = serde_json::from_value(
+        json!({"name":"execute_cell","arguments":{"notebook_handle":"fixture-handle"}}),
+    )
+    .unwrap();
     let result = proxy.forward_tool_call(request).await.unwrap();
     assert_eq!(
         result.structured_content.as_ref().unwrap()["error"]["code"],
@@ -228,9 +428,25 @@ async fn unknown_outcome_includes_failed_recovery_in_text() {
 async fn lost_disconnect_response_does_not_restore_the_release_target() {
     let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
     proxy.init_child().await.unwrap();
-    proxy.state.write().await.last_notebook_id = Some("released-notebook".into());
-    let request =
-        serde_json::from_value(json!({"name":"disconnect_notebook","arguments":{}})).unwrap();
+    // Acquisition retains an owner without selecting an implicit restart target.
+    // Use the real call path instead of seeding an unowned legacy handoff.
+    let acquisition = proxy
+        .forward_tool_call(
+            serde_json::from_value(
+                json!({"name":"connect_notebook","arguments":{"notebook_id":"released-notebook"}}),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = serde_json::to_value(&acquisition.content).unwrap();
+    let acquired: Value = serde_json::from_str(body[0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(acquired["notebook_handle"], "fixture-handle");
+    assert!(proxy.state.read().await.last_notebook_id.is_none());
+    let request = serde_json::from_value(
+        json!({"name":"disconnect_notebook","arguments":{"notebook_handle":"fixture-handle"}}),
+    )
+    .unwrap();
     let result = proxy.forward_tool_call(request).await.unwrap();
     assert_eq!(
         result.structured_content.as_ref().unwrap()["error"]["code"],
@@ -250,7 +466,10 @@ async fn mutation_sent_after_initial_child_recovery_still_reports_lost_response(
     // No previously advertised catalog: exercise startup, not incompatible
     // replacement of the deliberately unrelated optimistic test cache.
     proxy.state.write().await.cached_tools = None;
-    let request = serde_json::from_value(json!({"name": "execute_cell", "arguments": {}})).unwrap();
+    let request = serde_json::from_value(
+        json!({"name": "execute_cell", "arguments": {"notebook_handle":"fixture-handle"}}),
+    )
+    .unwrap();
     let result = timeout(DEADLINE, proxy.forward_tool_call(request))
         .await
         .expect("bounded startup")
@@ -455,7 +674,7 @@ async fn safe_retry_retains_one_progress_clock_and_upstream_token() {
     let mut wire = Wire::start(proxy.clone());
     wire.initialize("2025-11-25").await;
     wire.initialized().await;
-    wire.send(json!({"jsonrpc":"2.0","id":104,"method":"tools/call","params":{"name":"get_results","arguments":{"probe_progress":true},"_meta":{"progressToken":"retry"}}})).await;
+    wire.send(json!({"jsonrpc":"2.0","id":104,"method":"tools/call","params":{"name":"get_results","arguments":{"notebook_handle":"fixture-handle","probe_progress":true},"_meta":{"progressToken":"retry"}}})).await;
     let mut updates = Vec::new();
     for attempt in 1..=2 {
         wire.notification("notifications/progress").await;
@@ -484,7 +703,7 @@ async fn upstream_disconnect_while_waiting_for_startup_ends_promptly() {
     wire.initialize("2025-11-25").await;
     // Deliberately omit notifications/initialized so no child starts.
     wire.send(
-        json!({"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"get_results"}}),
+        json!({"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"get_results","arguments":{"notebook_handle":"fixture-handle"}}}),
     )
     .await;
     timeout(std::time::Duration::from_secs(1), wire.finish())
@@ -776,14 +995,14 @@ async fn reject_future_without_handshake(anonymous: bool) {
     for version in ["2099-01-01"] {
         for (method, mut params) in modern_requests() {
             let (dir, proxy, resolves) = isolated_proxy();
-            let cached = std::fs::read(dir.path().join("tool-cache.json")).expect("cached tools");
+            let cached = std::fs::read(revision_cache_file(dir.path())).expect("cached tools");
             let mut wire = Wire::start(proxy.clone());
             params["_meta"] = modern_meta(version, anonymous);
             assert_unsupported(&wire.request(42, method, Some(params)).await, version);
             assert_no_child(&proxy, &resolves, dir.path()).await;
             assert_eq!(proxy.state.read().await.upstream_name, "unknown");
             assert_eq!(
-                std::fs::read(dir.path().join("tool-cache.json")).expect("unchanged cache"),
+                std::fs::read(revision_cache_file(dir.path())).expect("unchanged cache"),
                 cached
             );
             assert!(wire.notifications.is_empty());
@@ -999,18 +1218,19 @@ async fn version_skew_old_rmcp_client_to_new_production_child() {
             .as_str()
             .expect("HTML resource")
             .is_empty());
-        let call = serde_json::from_value(json!({"name": "disconnect_notebook", "arguments": {}}))
-            .expect("legacy tool params");
-        let result = timeout(DEADLINE, client.call_tool(call))
+        let call = serde_json::from_value(
+            json!({"name": "disconnect_notebook", "arguments": {"notebook_handle":"expired"}}),
+        )
+        .expect("legacy tool params");
+        let refusal = timeout(DEADLINE, client.call_tool(call))
             .await
             .expect("call timeout")
-            .expect("legacy tool result");
-        assert_eq!(result.is_error, Some(true));
-        let result = serde_json::to_value(result).expect("tool JSON");
-        assert!(result["content"][0]["text"]
-            .as_str()
-            .expect("legacy text content")
-            .contains("No active session"));
+            .expect("expired explicit owner must return actionable tool feedback");
+        assert_eq!(refusal.is_error, Some(true));
+        assert_eq!(
+            refusal.structured_content.unwrap()["error"]["code"],
+            "attachment_expired"
+        );
         timeout(DEADLINE, client.cancel())
             .await
             .expect("client cancellation timeout")
@@ -1126,4 +1346,954 @@ async fn repeated_native_start_failures_are_bounded_by_the_circuit_breaker() {
     }
     assert_eq!(resolves.load(Ordering::SeqCst), 5);
     wire.finish().await;
+}
+
+fn revision_cache_file(dir: &std::path::Path) -> std::path::PathBuf {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("tool-cache-")
+        })
+        .unwrap()
+}
+
+fn catalog_schema(response: &Value) -> &Value {
+    &response["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "compatibility_echo")
+        .unwrap()["inputSchema"]
+}
+
+#[tokio::test]
+async fn installed_legacy_catalog_refreshes_same_name_schema_without_reconnecting() {
+    // This is the installed entry point's McpProxy::new(config, None) wiring.
+    let (dir, proxy, resolves) = isolated_proxy_with_mode("catalog");
+    let mut wire = Wire::start(proxy.clone());
+    wire.initialize("2025-11-25").await;
+    wire.request(2, "tools/list", None).await;
+    assert!(wire.notifications.is_empty());
+    assert_eq!(resolves.load(Ordering::SeqCst), 0);
+    wire.initialized().await;
+    wire.notification("notifications/tools/list_changed").await;
+    wire.notification("notifications/resources/list_changed")
+        .await;
+    let first = wire.request(3, "tools/list", None).await;
+    assert_eq!(catalog_schema(&first)["required"], json!(["first"]));
+    let marker = wire.notifications.len();
+    std::fs::write(dir.path().join("catalog-revision"), "second").unwrap();
+    proxy.restart_child().await.unwrap();
+    for method in [
+        "notifications/tools/list_changed",
+        "notifications/resources/list_changed",
+    ] {
+        wire.notification_after(marker, |n| n["method"] == method)
+            .await;
+    }
+    let second = wire.request(4, "tools/list", None).await;
+    assert_eq!(catalog_schema(&second)["required"], json!(["second"]));
+    assert!(!proxy.state.read().await.should_exit);
+    assert_eq!(resolves.load(Ordering::SeqCst), 2);
+    let cached = runt_mcp_proxy::tools::load_cached_tools(dir.path()).unwrap();
+    assert_eq!(cached[0].input_schema["required"], json!(["second"]));
+    assert!(
+        timeout(std::time::Duration::from_millis(100), wire.receive())
+            .await
+            .is_err(),
+        "unchanged listing must not cause refresh loops"
+    );
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
+async fn native_catalog_only_and_mixed_listeners_survive_child_loss_and_cancel_independently() {
+    let (dir, proxy, _) = isolated_proxy_with_mode("catalog");
+    let mut wire = Wire::start(proxy.clone());
+    let meta = modern_meta("2026-07-28", false);
+    let first = wire
+        .request(1, "tools/list", Some(json!({"_meta":meta})))
+        .await;
+    assert_eq!(catalog_schema(&first)["required"], json!(["first"]));
+    let uri = "nteract://sessions/fixture/cells";
+    wire.send(json!({"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"_meta":meta,"notifications":{"toolsListChanged":true,"promptsListChanged":true,"resourceSubscriptions":["compatibility://unsupported"]}}})).await;
+    let ack = wire.receive().await;
+    assert_eq!(
+        ack["params"]["notifications"],
+        json!({"toolsListChanged":true})
+    );
+    assert_eq!(
+        ack["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        7
+    );
+    wire.send(json!({"jsonrpc":"2.0","id":8,"method":"subscriptions/listen","params":{"_meta":meta,"notifications":{"resourcesListChanged":true,"resourceSubscriptions":[uri]}}})).await;
+    let ack = wire.receive().await;
+    assert_eq!(
+        ack["params"]["notifications"],
+        json!({"resourcesListChanged":true,"resourceSubscriptions":[uri]})
+    );
+    let update = wire.receive().await;
+    assert_eq!(update["method"], "notifications/resources/updated");
+    assert_eq!(
+        update["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        8
+    );
+    stop_child(&proxy).await;
+    std::fs::write(dir.path().join("catalog-revision"), "second").unwrap();
+    proxy.restart_child().await.unwrap();
+    let mut ended = false;
+    let mut tools_changed = false;
+    let mut resources_changed = false;
+    for _ in 0..3 {
+        let event = wire.receive().await;
+        let id = &event["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"];
+        match event["method"].as_str().unwrap() {
+            "notifications/tools/list_changed" => {
+                assert_eq!(id, 7);
+                tools_changed = true;
+            }
+            "notifications/resources/list_changed" => {
+                assert_eq!(id, 8);
+                resources_changed = true;
+            }
+            "notifications/resources/updated" => {
+                assert_eq!(id, 8);
+                assert_eq!(event["params"]["uri"], uri);
+                assert_eq!(
+                    event["params"]["_meta"]["io.nteract/attachmentUnavailable"]["notebook_handle"],
+                    "fixture"
+                );
+                ended = true;
+            }
+            _ => panic!("unexpected event {event}"),
+        }
+    }
+    assert!(ended && tools_changed && resources_changed);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("subscription-calls"))
+            .unwrap()
+            .lines()
+            .count(),
+        1,
+        "old resource watch must not rebind"
+    );
+    wire.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}))
+        .await;
+    // rmcp suppresses responses for explicitly cancelled requests.
+    wire.request(77, "ping", Some(json!({"_meta":meta}))).await;
+    let marker = wire.notifications.len();
+    std::fs::write(dir.path().join("catalog-revision"), "third").unwrap();
+    // Same-generation live discovery uses the same publication source.
+    let third = wire
+        .request(9, "tools/list", Some(json!({"_meta":meta})))
+        .await;
+    assert_eq!(catalog_schema(&third)["required"], json!(["third"]));
+    let event = wire
+        .notification_after(marker, |n| {
+            n["method"] == "notifications/resources/list_changed"
+        })
+        .await;
+    assert_eq!(
+        event["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        8
+    );
+    assert!(!wire
+        .notifications
+        .iter()
+        .skip(marker)
+        .any(|n| n["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"] == 7));
+    // Closing the transport also completes the remaining catalog stream.
+    wire.finish().await;
+    stop_child(&proxy).await;
+}
+
+#[tokio::test]
+async fn failed_catalog_discovery_keeps_fallback_without_publishing_current_child() {
+    for revision in ["empty", "error"] {
+        let (dir, proxy, _) = isolated_proxy_with_mode("catalog");
+        let mut wire = Wire::start(proxy.clone());
+        let meta = modern_meta("2026-07-28", false);
+        let first = wire
+            .request(1, "tools/list", Some(json!({"_meta":meta})))
+            .await;
+        wire.send(json!({"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"_meta":meta,"notifications":{"toolsListChanged":true,"resourcesListChanged":true}}})).await;
+        assert_eq!(
+            wire.receive().await["method"],
+            "notifications/subscriptions/acknowledged"
+        );
+        std::fs::write(dir.path().join("catalog-revision"), revision).unwrap();
+        proxy.restart_child().await.unwrap();
+        let fallback = wire
+            .request(2, "tools/list", Some(json!({"_meta":meta})))
+            .await;
+        assert_eq!(catalog_schema(&fallback), catalog_schema(&first));
+        assert!(
+            wire.notifications.is_empty(),
+            "failed refresh must not signal successful publication"
+        );
+        assert!(
+            timeout(std::time::Duration::from_millis(100), wire.receive())
+                .await
+                .is_err()
+        );
+        wire.finish().await;
+        stop_child(&proxy).await;
+    }
+}
+
+#[tokio::test]
+async fn stale_live_catalog_response_cannot_replace_cache_or_publish() {
+    let (dir, proxy, _) = isolated_proxy_with_mode("catalog");
+    proxy.init_child().await.unwrap();
+    let mut wire = Wire::start(proxy.clone());
+    wire.send(json!({"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"_meta":modern_meta("2026-07-28",false),"notifications":{"toolsListChanged":true}}})).await;
+    assert_eq!(
+        wire.receive().await["method"],
+        "notifications/subscriptions/acknowledged"
+    );
+    std::fs::write(dir.path().join("catalog-revision"), "stale").unwrap();
+    std::fs::write(dir.path().join("block-tools"), "blocked").unwrap();
+    std::fs::remove_file(dir.path().join("tools-entered")).unwrap();
+    let listing = tokio::spawn({
+        let proxy = proxy.clone();
+        async move { proxy.child_tools().await }
+    });
+    timeout(DEADLINE, async {
+        while !dir.path().join("tools-entered").exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // Simulate generation supersession while an old request is in flight.
+    proxy.state.write().await.child_generation += 1;
+    std::fs::remove_file(dir.path().join("block-tools")).unwrap();
+    let returned = timeout(DEADLINE, listing).await.unwrap().unwrap();
+    assert_eq!(returned[0].input_schema["required"], json!(["first"]));
+    assert_eq!(
+        runt_mcp_proxy::tools::load_cached_tools(dir.path()).unwrap()[0].input_schema["required"],
+        json!(["first"])
+    );
+    assert!(
+        timeout(std::time::Duration::from_millis(100), wire.receive())
+            .await
+            .is_err()
+    );
+    wire.finish().await;
+    stop_child(&proxy).await;
+}
+
+#[tokio::test]
+async fn mixed_catalog_listener_retains_catalog_interest_after_attachment_terminal_update() {
+    let (_dir, proxy, _) = isolated_proxy_with_mode("attachments");
+    let mut wire = Wire::start(proxy.clone());
+    let meta = modern_meta("2026-07-28", false);
+    let connected = wire.request(1, "tools/call", Some(json!({"name":"connect_notebook","arguments":{"target":"same-notebook"},"_meta":meta}))).await;
+    let handle = connected["result"]["structuredContent"]["notebook_handle"]
+        .as_str()
+        .unwrap();
+    let uri = format!("nteract://sessions/{handle}/cells");
+    wire.send(json!({"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"_meta":meta,"notifications":{"toolsListChanged":true,"resourceSubscriptions":[uri]}}})).await;
+    assert_eq!(
+        wire.receive().await["method"],
+        "notifications/subscriptions/acknowledged"
+    );
+    wire.request(2, "tools/call", Some(json!({"name":"disconnect_notebook","arguments":{"notebook_handle":handle},"_meta":meta}))).await;
+    let terminal = wire
+        .notification_after(0, |n| {
+            n["params"]["uri"] == uri
+                && n["params"]["_meta"]["io.nteract/attachmentExpired"]["code"]
+                    == "attachment_expired"
+        })
+        .await;
+    assert_eq!(
+        terminal["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        7
+    );
+    let marker = wire.notifications.len();
+    proxy.restart_child().await.unwrap();
+    let catalog = wire
+        .notification_after(marker, |n| {
+            n["method"] == "notifications/tools/list_changed"
+        })
+        .await;
+    assert_eq!(
+        catalog["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        7
+    );
+    assert!(!wire
+        .notifications
+        .iter()
+        .skip(marker)
+        .any(|n| n["params"]["uri"] == uri));
+    wire.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}))
+        .await;
+    // rmcp suppresses responses for explicitly cancelled requests.
+    wire.request(77, "ping", Some(json!({"_meta":meta}))).await;
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+struct GatedCatalogTransport<T> {
+    inner: T,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    block_once: Arc<std::sync::atomic::AtomicBool>,
+    resource_update: bool,
+}
+impl<T: rmcp::transport::Transport<rmcp::service::RoleServer>>
+    rmcp::transport::Transport<rmcp::service::RoleServer> for GatedCatalogTransport<T>
+{
+    type Error = T::Error;
+    fn send(
+        &mut self,
+        message: rmcp::service::TxJsonRpcMessage<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
+        let block = matches!(&message, rmcp::model::JsonRpcMessage::Notification(notification) if if self.resource_update {
+            matches!(notification.notification, rmcp::model::ServerNotification::ResourceUpdatedNotification(_))
+        } else {
+            matches!(notification.notification, rmcp::model::ServerNotification::ToolListChangedNotification(_))
+        }) && self.block_once.swap(false, Ordering::SeqCst);
+        let send = self.inner.send(message);
+        let entered = self.entered.clone();
+        let release = self.release.clone();
+        async move {
+            if block {
+                entered.notify_one();
+                release.notified().await;
+            }
+            send.await
+        }
+    }
+    async fn receive(
+        &mut self,
+    ) -> Option<rmcp::service::RxJsonRpcMessage<rmcp::service::RoleServer>> {
+        self.inner.receive().await
+    }
+    async fn close(&mut self) -> Result<(), Self::Error> {
+        self.inner.close().await
+    }
+}
+
+#[tokio::test]
+async fn legacy_catalog_forwarding_survives_a_slow_transport_send() {
+    use rmcp::transport::IntoTransport;
+    use rmcp::ServiceExt;
+    use tokio::io::AsyncWriteExt;
+    let (_dir, proxy, _) = isolated_proxy_with_mode("catalog");
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let transport = GatedCatalogTransport {
+        inner: server_io.into_transport(),
+        entered: entered.clone(),
+        release: release.clone(),
+        block_once: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        resource_update: false,
+    };
+    let serving = tokio::spawn({
+        let proxy = proxy.clone();
+        async move {
+            proxy
+                .serve(mcp_transport::server(transport))
+                .await
+                .unwrap()
+                .waiting()
+                .await
+                .unwrap();
+        }
+    });
+    let (reader, mut writer) = tokio::io::split(client_io);
+    let mut reader = BufReader::new(reader).lines();
+    writer.write_all(format!("{}\n", json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"slow-client","version":"1"}}})).as_bytes()).await.unwrap();
+    let initialized: Value = serde_json::from_str(
+        &timeout(DEADLINE, reader.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(initialized["id"], 1);
+    writer
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n")
+        .await
+        .unwrap();
+    timeout(DEADLINE, entered.notified()).await.unwrap();
+    // Exceed the previous timeout with a deterministic gated write.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    release.notify_one();
+    for method in [
+        "notifications/tools/list_changed",
+        "notifications/resources/list_changed",
+    ] {
+        let event: Value = serde_json::from_str(
+            &timeout(DEADLINE, reader.next_line())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(event["method"], method);
+    }
+    proxy.restart_child().await.unwrap();
+    for method in [
+        "notifications/tools/list_changed",
+        "notifications/resources/list_changed",
+    ] {
+        let event: Value = serde_json::from_str(
+            &timeout(DEADLINE, reader.next_line())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            event["method"], method,
+            "future publications must still be forwarded"
+        );
+    }
+    writer.shutdown().await.unwrap();
+    timeout(DEADLINE, serving).await.unwrap().unwrap();
+    stop_child(&proxy).await;
+}
+
+struct NativeCatalogCompletionProbe {
+    proxy: McpProxy,
+    completed: Arc<std::sync::atomic::AtomicBool>,
+}
+impl rmcp::ServerHandler for NativeCatalogCompletionProbe {
+    fn get_info(&self) -> rmcp::model::ServerInfo {
+        rmcp::ServerHandler::get_info(&self.proxy)
+    }
+    fn accepted_subscription_filter(
+        &self,
+        requested: &rmcp::model::SubscriptionFilter,
+    ) -> Option<rmcp::model::SubscriptionFilter> {
+        rmcp::ServerHandler::accepted_subscription_filter(&self.proxy, requested)
+    }
+    async fn discover(
+        &self,
+        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> Result<rmcp::model::DiscoverResult, rmcp::ErrorData> {
+        rmcp::ServerHandler::discover(&self.proxy, context).await
+    }
+    async fn listen(
+        &self,
+        context: rmcp::service::SubscriptionContext,
+    ) -> Result<(), rmcp::ErrorData> {
+        let observed = serde_json::to_value(context.sink().id()).unwrap() == json!(7);
+        let result = rmcp::ServerHandler::listen(&self.proxy, context).await;
+        if observed {
+            self.completed.store(true, Ordering::SeqCst);
+        }
+        result
+    }
+}
+
+#[tokio::test]
+async fn native_catalog_backpressure_preserves_stream_until_explicit_cancellation() {
+    use rmcp::transport::IntoTransport;
+    use rmcp::ServiceExt;
+    use tokio::io::AsyncWriteExt;
+    let (dir, proxy, _) = isolated_proxy_with_mode("catalog");
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let block = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let transport = GatedCatalogTransport {
+        inner: server_io.into_transport(),
+        entered: entered.clone(),
+        release: release.clone(),
+        block_once: block.clone(),
+        resource_update: false,
+    };
+    let handler = NativeCatalogCompletionProbe {
+        proxy: proxy.clone(),
+        completed: completed.clone(),
+    };
+    let serving = tokio::spawn(async move {
+        handler
+            .serve(mcp_transport::server(transport))
+            .await
+            .unwrap()
+            .waiting()
+            .await
+            .unwrap();
+    });
+    let (reader, mut writer) = tokio::io::split(client_io);
+    let mut reader = BufReader::new(reader).lines();
+    let meta = modern_meta("2026-07-28", false);
+    writer.write_all(format!("{}\n", json!({"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"_meta":meta,"notifications":{"toolsListChanged":true,"resourceSubscriptions":["nteract://sessions/old/cells"]}}})).as_bytes()).await.unwrap();
+    let ack: Value = serde_json::from_str(
+        &timeout(DEADLINE, reader.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(ack["method"], "notifications/subscriptions/acknowledged");
+    let initial: Value = serde_json::from_str(
+        &timeout(DEADLINE, reader.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(initial["method"], "notifications/resources/updated");
+    std::fs::write(dir.path().join("catalog-revision"), "second").unwrap();
+    proxy.child_tools().await;
+    timeout(DEADLINE, entered.notified()).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    assert!(
+        !completed.load(Ordering::SeqCst),
+        "healthy backpressure must not complete a catalog stream"
+    );
+    release.notify_one();
+    let notification: Value = serde_json::from_str(
+        &timeout(DEADLINE, reader.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(notification["method"], "notifications/tools/list_changed");
+    assert_eq!(
+        notification["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        7
+    );
+    // Block another publication, then cancel the request without releasing the sink.
+    block.store(true, Ordering::SeqCst);
+    std::fs::write(dir.path().join("catalog-revision"), "third").unwrap();
+    proxy.child_tools().await;
+    timeout(DEADLINE, entered.notified()).await.unwrap();
+    stop_child(&proxy).await;
+    proxy.restart_child().await.unwrap();
+    // The old resource lease must release even while its catalog send is blocked.
+    // A new listener can then use all 128 slots on the replacement child.
+    let uris: Vec<_> = (0..128)
+        .map(|index| format!("nteract://sessions/new-{index}/cells"))
+        .collect();
+    let mut admitted = false;
+    for id in 8..18 {
+        writer.write_all(format!("{}\n", json!({"jsonrpc":"2.0","id":id,"method":"subscriptions/listen","params":{"_meta":meta,"notifications":{"resourceSubscriptions":uris}}})).as_bytes()).await.unwrap();
+        let response: Value = serde_json::from_str(
+            &timeout(DEADLINE, reader.next_line())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        if response["method"] == "notifications/subscriptions/acknowledged" {
+            assert_eq!(
+                response["params"]["notifications"]["resourceSubscriptions"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                128
+            );
+            admitted = true;
+            break;
+        }
+        assert_eq!(response["id"], id);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        admitted,
+        "child loss must release old resource capacity during a blocked catalog send"
+    );
+    assert!(
+        !completed.load(Ordering::SeqCst),
+        "request 7 must still be open immediately before cancellation while its sink is gated"
+    );
+    writer.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":7}}\n").await.unwrap();
+    timeout(DEADLINE, async {
+        while !completed.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    writer
+        .write_all(
+            format!(
+                "{}\n",
+                json!({"jsonrpc":"2.0","id":77,"method":"ping","params":{"_meta":meta}})
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let ping = loop {
+        let message: Value = serde_json::from_str(
+            &timeout(DEADLINE, reader.next_line())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        if message["id"] == 77 {
+            break message;
+        }
+        assert_eq!(message["method"], "notifications/resources/updated");
+    };
+    assert_eq!(
+        ping["id"], 77,
+        "the connection remains usable after cancelling one blocked catalog stream"
+    );
+    release.notify_one();
+    writer.shutdown().await.unwrap();
+    timeout(DEADLINE, serving).await.unwrap().unwrap();
+    stop_child(&proxy).await;
+}
+
+#[tokio::test]
+async fn mixed_tools_catalog_listener_signals_each_old_uri_ended_on_child_loss() {
+    let (_dir, proxy, _) = isolated_proxy_with_mode("catalog");
+    let mut wire = Wire::start(proxy.clone());
+    let meta = modern_meta("2026-07-28", false);
+    let uris = [
+        "nteract://sessions/owner-a/cells",
+        "nteract://sessions/owner-b/cells",
+    ];
+    wire.send(json!({"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"_meta":meta,"notifications":{"toolsListChanged":true,"resourceSubscriptions":uris}}})).await;
+    assert_eq!(
+        wire.receive().await["method"],
+        "notifications/subscriptions/acknowledged"
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            wire.receive().await["method"],
+            "notifications/resources/updated"
+        );
+    }
+    let marker = wire.notifications.len();
+    stop_child(&proxy).await;
+    proxy.restart_child().await.unwrap();
+    for (uri, handle) in uris.into_iter().zip(["owner-a", "owner-b"]) {
+        let event = wire
+            .notification_after(marker, |n| {
+                n["params"]["uri"] == uri
+                    && n["params"]["_meta"]["io.nteract/attachmentUnavailable"]["code"]
+                        == "attachment_unavailable"
+            })
+            .await;
+        assert_eq!(
+            event["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+            7
+        );
+        assert_eq!(
+            event["params"]["_meta"]["io.nteract/attachmentUnavailable"]["notebook_handle"],
+            handle
+        );
+    }
+    let catalog = wire
+        .notification_after(marker, |n| {
+            n["method"] == "notifications/tools/list_changed"
+        })
+        .await;
+    assert_eq!(
+        catalog["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        7
+    );
+    wire.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}))
+        .await;
+    wire.request(77, "ping", Some(json!({"_meta":meta}))).await;
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
+async fn mixed_catalog_survives_child_loss_during_resource_admission() {
+    let (dir, proxy, _) = isolated_proxy_with_mode("catalog");
+    std::fs::write(dir.path().join("block-subscribe"), "blocked").unwrap();
+    let mut wire = Wire::start(proxy.clone());
+    let meta = modern_meta("2026-07-28", false);
+    let uri = "nteract://sessions/admitting/cells";
+    wire.send(json!({"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"_meta":meta,"notifications":{"toolsListChanged":true,"resourceSubscriptions":[uri]}}})).await;
+    timeout(DEADLINE, async {
+        while !dir.path().join("subscription-calls").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    stop_child(&proxy).await;
+    assert_eq!(
+        wire.receive().await["method"],
+        "notifications/subscriptions/acknowledged"
+    );
+    let ended = wire
+        .notification_after(0, |n| {
+            n["params"]["uri"] == uri
+                && n["params"]["_meta"]["io.nteract/attachmentUnavailable"]["code"]
+                    == "attachment_unavailable"
+        })
+        .await;
+    assert_eq!(
+        ended["params"]["_meta"]["io.nteract/attachmentUnavailable"]["notebook_handle"],
+        "admitting"
+    );
+    assert_eq!(
+        ended["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        7
+    );
+    std::fs::remove_file(dir.path().join("block-subscribe")).unwrap();
+    let marker = wire.notifications.len();
+    proxy.restart_child().await.unwrap();
+    let catalog = wire
+        .notification_after(marker, |n| {
+            n["method"] == "notifications/tools/list_changed"
+        })
+        .await;
+    assert_eq!(
+        catalog["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        7
+    );
+    wire.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}))
+        .await;
+    wire.request(77, "ping", Some(json!({"_meta":meta}))).await;
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
+async fn mixed_catalog_survives_child_loss_during_resource_send() {
+    use rmcp::transport::IntoTransport;
+    use rmcp::ServiceExt;
+    use tokio::io::AsyncWriteExt;
+    let (_dir, proxy, _) = isolated_proxy_with_mode("catalog");
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let transport = GatedCatalogTransport {
+        inner: server_io.into_transport(),
+        entered: entered.clone(),
+        release: release.clone(),
+        block_once: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        resource_update: true,
+    };
+    let handler = NativeCatalogCompletionProbe {
+        proxy: proxy.clone(),
+        completed: completed.clone(),
+    };
+    let serving = tokio::spawn(async move {
+        handler
+            .serve(mcp_transport::server(transport))
+            .await
+            .unwrap()
+            .waiting()
+            .await
+            .unwrap();
+    });
+    let (reader, mut writer) = tokio::io::split(client_io);
+    let mut reader = BufReader::new(reader).lines();
+    let meta = modern_meta("2026-07-28", false);
+    let uri = "nteract://sessions/sending/cells";
+    writer.write_all(format!("{}\n", json!({"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"_meta":meta,"notifications":{"toolsListChanged":true,"resourceSubscriptions":[uri]}}})).as_bytes()).await.unwrap();
+    let ack: Value = serde_json::from_str(
+        &timeout(DEADLINE, reader.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(ack["method"], "notifications/subscriptions/acknowledged");
+    timeout(DEADLINE, entered.notified()).await.unwrap();
+    stop_child(&proxy).await;
+    // Release the transport only after the original child's lifetime has closed.
+    release.notify_one();
+    let ended = loop {
+        let event: Value = serde_json::from_str(
+            &timeout(DEADLINE, reader.next_line())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        if event["params"]["_meta"]["io.nteract/attachmentUnavailable"]["code"]
+            == "attachment_unavailable"
+        {
+            break event;
+        }
+        assert_eq!(event["method"], "notifications/resources/updated");
+    };
+    assert_eq!(ended["params"]["uri"], uri);
+    assert_eq!(
+        ended["params"]["_meta"]["io.nteract/attachmentUnavailable"]["notebook_handle"],
+        "sending"
+    );
+    assert_eq!(
+        ended["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        7
+    );
+    proxy.restart_child().await.unwrap();
+    let catalog = loop {
+        let event: Value = serde_json::from_str(
+            &timeout(DEADLINE, reader.next_line())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        if event["method"] == "notifications/tools/list_changed" {
+            break event;
+        }
+        // The original update was already queued in the gated transport. It
+        // may drain after the terminal marker, but never belongs to a new URI.
+        assert_eq!(event["method"], "notifications/resources/updated");
+        assert_eq!(event["params"]["uri"], uri);
+        assert!(event["params"]["_meta"]["io.nteract/attachmentUnavailable"].is_null());
+    };
+    assert_eq!(catalog["method"], "notifications/tools/list_changed");
+    assert_eq!(
+        catalog["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        7
+    );
+    assert!(!completed.load(Ordering::SeqCst));
+    writer.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":7}}\n").await.unwrap();
+    timeout(DEADLINE, async {
+        while !completed.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    writer.shutdown().await.unwrap();
+    timeout(DEADLINE, serving).await.unwrap().unwrap();
+    stop_child(&proxy).await;
+}
+
+#[tokio::test]
+async fn removed_and_renamed_catalog_tools_relist_and_dispatch_on_same_connection() {
+    for native in [false, true] {
+        let (dir, proxy, _) = isolated_proxy_with_mode("catalog");
+        proxy.init_child().await.unwrap();
+        let mut wire = Wire::start(proxy.clone());
+        let meta = modern_meta("2026-07-28", false);
+        if native {
+            wire.send(json!({"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"_meta":meta,"notifications":{"toolsListChanged":true,"resourcesListChanged":true}}})).await;
+            assert_eq!(
+                wire.receive().await["method"],
+                "notifications/subscriptions/acknowledged"
+            );
+        } else {
+            wire.initialize("2025-11-25").await;
+            wire.initialized().await;
+            for method in [
+                "notifications/tools/list_changed",
+                "notifications/resources/list_changed",
+            ] {
+                wire.notification_after(0, |event| event["method"] == method)
+                    .await;
+            }
+        }
+        for (index, revision, name, removed) in [
+            (0, "renamed", "compatibility_echo_v2", "compatibility_echo"),
+            (1, "first", "compatibility_echo", "compatibility_echo_v2"),
+        ] {
+            let marker = wire.notifications.len();
+            std::fs::write(dir.path().join("catalog-revision"), revision).unwrap();
+            proxy.restart_child().await.unwrap();
+            assert!(
+                !proxy.should_exit().await,
+                "catalog removal must not stop stdio"
+            );
+            for method in [
+                "notifications/tools/list_changed",
+                "notifications/resources/list_changed",
+            ] {
+                let event = wire
+                    .notification_after(marker, |event| event["method"] == method)
+                    .await;
+                if native {
+                    assert_eq!(
+                        event["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+                        7
+                    );
+                }
+            }
+            let params = if native {
+                Some(json!({"_meta":meta}))
+            } else {
+                None
+            };
+            let listed = wire.request(100 + index * 10, "tools/list", params).await;
+            let tools = listed["result"]["tools"].as_array().unwrap();
+            assert!(tools.iter().any(|tool| tool["name"] == name));
+            assert!(!tools.iter().any(|tool| tool["name"] == removed));
+            let mut old = json!({"name":removed,"arguments":{}});
+            let mut new = json!({"name":name,"arguments":{(revision):"live"}});
+            if native {
+                old["_meta"] = meta.clone();
+                new["_meta"] = meta.clone();
+            }
+            let rejected = wire
+                .request(101 + index * 10, "tools/call", Some(old))
+                .await;
+            assert_eq!(rejected["error"]["code"], -32602);
+            assert!(rejected["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Unknown tool"));
+            let accepted = wire
+                .request(102 + index * 10, "tools/call", Some(new))
+                .await;
+            assert!(accepted.get("error").is_none(), "{accepted}");
+            assert_ne!(accepted["result"]["isError"], true);
+        }
+        if native {
+            wire.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}})).await;
+        }
+        stop_child(&proxy).await;
+        wire.finish().await;
+    }
+}
+
+#[tokio::test]
+async fn invalid_target_is_tool_feedback_before_proxy_readiness_on_both_protocols() {
+    for native in [false, true] {
+        let (dir, proxy, resolves) = isolated_proxy();
+        let mut wire = Wire::start(proxy.clone());
+        if !native {
+            wire.initialize("2025-11-25").await;
+        }
+        for (id, handle) in [None, Some(json!("")), Some(json!(42)), Some(Value::Null)]
+            .into_iter()
+            .enumerate()
+        {
+            let mut params = json!({"name":"set_cell","arguments":{"cell_id":"sentinel","source":"must not dispatch"}});
+            if let Some(handle) = handle {
+                params["arguments"]["notebook_handle"] = handle;
+            }
+            if native {
+                params["_meta"] = modern_meta("2026-07-28", false);
+            }
+            let response = wire
+                .request(id as u64 + 10, "tools/call", Some(params))
+                .await;
+            let error = support::assert_target_tool_error(&response, "missing_notebook_handle");
+            assert_eq!(error["resubmit_required"], true);
+            assert_eq!(error["refresh"], "tools/list");
+            assert_no_child(&proxy, &resolves, dir.path()).await;
+        }
+        wire.finish().await;
+    }
 }

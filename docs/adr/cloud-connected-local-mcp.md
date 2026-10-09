@@ -227,14 +227,19 @@ the document reader/writer and would hide the local Automerge peer from the
 agent. The first-class path is a local stdio MCP server syncing directly with
 the hosted room.
 
-Hosted sessions should preserve the existing MCP semantics:
+Hosted attachments follow
+[the explicit MCP attachment contract](mcp-explicit-notebook-attachments.md):
 
-- one active notebook session per MCP connection;
-- bounded parked sessions for recently touched notebooks;
-- `show_notebook`, cell CRUD, dependency inspection, and read-only resources
-  operate over the active session;
-- `disconnect_notebook` drops this MCP process's peer without implying room or
-  kernel shutdown.
+- each connect/create returns independently retained `notebook_handle` ownership;
+- every notebook-scoped tool requires that handle, including initialize-based clients;
+- `show_notebook`, cell CRUD and dependency inspection target the named attachment;
+- resource reads/subscriptions capture explicit identity and never select a tool target;
+- `disconnect_notebook` releases only the named owner, without implying room or
+  kernel shutdown while another peer or owner remains.
+
+Hosted attachments do not expire merely because the local daemon is replaced.
+Logical retention is separate from any compatibility cache or physical peer;
+hosted backing peers are not pooled without a stable authenticated identity key.
 
 The implementation may need a session-handle abstraction because existing tools
 assume a local `DocHandle`. That abstraction should represent the same stable

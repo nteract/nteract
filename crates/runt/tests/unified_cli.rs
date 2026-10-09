@@ -122,24 +122,69 @@ async fn exercise_supervised_mcp(native: bool) {
         !tools.iter().any(|tool| tool["name"] == "show_notebook"),
         "--no-show must reach the worker"
     );
-    // Legacy tools/list may legitimately return the initial cached catalog.
-    // A session-free worker call waits for actual child startup without
-    // opening a notebook or starting a runtime.
-    let mut call = json!({"name":"disconnect_notebook", "arguments":{}});
+    let mut untargeted = json!({"name":"disconnect_notebook", "arguments":{}});
     if native {
-        call["_meta"] = meta;
-        // Native notebook-scoped calls need a handle. Use list_notebooks with
-        // a deliberately unknown hosted domain to reach the worker read-only.
-        call["name"] = json!("list_notebooks");
-        call["arguments"] = json!({"domain":"https://unconfigured.invalid"});
+        untargeted["_meta"] = meta.clone();
     }
     send(
         &mut stdin,
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":call}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":untargeted}),
     )
     .await;
-    let called = response(&mut stdout, 2).await;
+    let rejected = response(&mut stdout, 2).await;
+    assert!(rejected.get("error").is_none(), "{rejected}");
+    assert_eq!(rejected["result"]["isError"], true, "{rejected}");
+    let target_error = &rejected["result"]["structuredContent"]["error"];
+    assert_eq!(
+        target_error["code"], "missing_notebook_handle",
+        "{rejected}"
+    );
+    assert!(
+        target_error["message"]
+            .as_str()
+            .unwrap()
+            .contains("notebook_handle"),
+        "{rejected}"
+    );
+    assert_eq!(target_error["refresh"], "tools/list", "{rejected}");
+    assert_eq!(target_error["resubmit_required"], true, "{rejected}");
+
+    // Legacy tools/list may return the initial cached catalog. Missing-handle
+    // rejection can happen before child startup, so use a session-free worker
+    // call in both protocols to exercise actual options without opening a
+    // notebook or starting a runtime.
+    let mut call =
+        json!({"name":"list_notebooks", "arguments":{"domain":"https://unconfigured.invalid"}});
+    if native {
+        call["_meta"] = meta;
+    }
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":call}),
+    )
+    .await;
+    let called = response(&mut stdout, 3).await;
     assert_eq!(called["result"]["isError"], true, "{called}");
+    // The worker is now ready: check its refreshed catalog as well as the
+    // supervisor's initial catalog so --no-show is observed on the child.
+    send(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/list","params":params}),
+    )
+    .await;
+    let refreshed = response(&mut stdout, 4).await;
+    let worker_tools = refreshed["result"]["tools"]
+        .as_array()
+        .expect("worker catalog");
+    assert!(worker_tools
+        .iter()
+        .any(|tool| tool["name"] == "create_notebook"));
+    assert!(
+        !worker_tools
+            .iter()
+            .any(|tool| tool["name"] == "show_notebook"),
+        "--no-show must reach the actual worker"
+    );
     assert!(
         probes.load(Ordering::SeqCst) >= 2,
         "worker metadata queries must use explicit --socket"

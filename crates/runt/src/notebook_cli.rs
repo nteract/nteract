@@ -140,6 +140,15 @@ async fn call_tool(
     local_runtime: crate::local_runtime::LocalRuntimeOptions,
 ) -> Result<()> {
     validate_create_options(&args)?;
+    let mut request = request(args.tool.clone(), read_arguments(&args)?)?;
+    if runt_mcp::cli::notebook_scoped_tool(&request.name)
+        && (args.target.is_some()
+            || args.path.is_some()
+            || args.notebook_id.is_some()
+            || args.create)
+    {
+        reject_bootstrap_selectors(&request)?;
+    }
 
     let selected_runtime = crate::local_runtime::select(local_runtime, args.socket.clone()).await;
     let socket_path = selected_runtime.endpoint;
@@ -166,9 +175,16 @@ async fn call_tool(
         })
         .await;
 
-    bootstrap_session(&server, &args).await?;
+    let handle = bootstrap_session(&server, &args).await?;
 
-    let request = request(args.tool.clone(), read_arguments(&args)?)?;
+    if let Some(handle) = handle {
+        if runt_mcp::cli::notebook_scoped_tool(&request.name) {
+            request
+                .arguments
+                .get_or_insert_default()
+                .insert("notebook_handle".into(), Value::String(handle));
+        }
+    }
     let result = runt_mcp::cli::dispatch(&server, &request)
         .await
         .map_err(|e| anyhow!("tool call failed: {e}"))?;
@@ -177,6 +193,17 @@ async fn call_tool(
     server.shutdown().await;
     if result.is_error.unwrap_or(false) {
         std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn reject_bootstrap_selectors(request: &CallToolRequestParams) -> Result<()> {
+    if request.arguments.as_ref().is_some_and(|args| {
+        ["notebook_handle", "notebook_id"]
+            .iter()
+            .any(|key| args.get(*key).is_some_and(|value| !value.is_null()))
+    }) {
+        bail!("Tool arguments cannot supply notebook_handle or notebook_id together with a CLI notebook selector; the selected notebook supplies the attachment handle");
     }
     Ok(())
 }
@@ -196,7 +223,10 @@ fn validate_create_options(args: &NotebookCallArgs) -> Result<()> {
     Ok(())
 }
 
-async fn bootstrap_session(server: &runt_mcp::NteractMcp, args: &NotebookCallArgs) -> Result<()> {
+async fn bootstrap_session(
+    server: &runt_mcp::NteractMcp,
+    args: &NotebookCallArgs,
+) -> Result<Option<String>> {
     let bootstrap = if let Some(target) = &args.target {
         Some(request(
             "connect_notebook",
@@ -252,7 +282,7 @@ async fn bootstrap_session(server: &runt_mcp::NteractMcp, args: &NotebookCallArg
     };
 
     if let Some(request) = bootstrap {
-        let result = runt_mcp::tools::dispatch(server, &request)
+        let result = runt_mcp::cli::dispatch(server, &request)
             .await
             .map_err(|e| anyhow!("session bootstrap failed: {e}"))?;
         if result.is_error.unwrap_or(false) {
@@ -263,8 +293,11 @@ async fn bootstrap_session(server: &runt_mcp::NteractMcp, args: &NotebookCallArg
                 eprintln!("Created persistent notebook: {notebook_id}");
             }
         }
+        return result_string_field(&result, "notebook_handle")
+            .map(Some)
+            .ok_or_else(|| anyhow!("session bootstrap returned no notebook_handle"));
     }
-    Ok(())
+    Ok(None)
 }
 
 fn read_arguments(args: &NotebookCallArgs) -> Result<Value> {
@@ -412,33 +445,59 @@ fn result_text(result: &CallToolResult) -> String {
 }
 
 fn result_notebook_id(result: &CallToolResult) -> Option<String> {
-    if let Some(structured) = &result.structured_content {
-        if let Some(notebook_id) = structured
-            .get("notebook_id")
-            .and_then(serde_json::Value::as_str)
-        {
-            return Some(notebook_id.to_string());
-        }
-    }
-
-    for content in &result.content {
-        let ContentBlock::Text(text) = content else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_str::<Value>(&text.text) else {
-            continue;
-        };
-        if let Some(notebook_id) = value.get("notebook_id").and_then(Value::as_str) {
-            return Some(notebook_id.to_string());
-        }
-    }
-
-    None
+    result_string_field(result, "notebook_id")
 }
 
+fn result_string_field(result: &CallToolResult, field: &str) -> Option<String> {
+    if let Some(value) = result
+        .structured_content
+        .as_ref()
+        .and_then(|value| value.get(field))
+        .and_then(Value::as_str)
+    {
+        return Some(value.to_owned());
+    }
+    result.content.iter().find_map(|content| {
+        let ContentBlock::Text(text) = content else {
+            return None;
+        };
+        let value = serde_json::from_str::<Value>(&text.text).ok()?;
+        value.get(field).and_then(Value::as_str).map(str::to_owned)
+    })
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bootstrap_rejects_conflicting_tool_selectors() {
+        for args in [
+            serde_json::json!({"notebook_handle":"other"}),
+            serde_json::json!({"notebook_id":"other"}),
+        ] {
+            assert!(reject_bootstrap_selectors(&request("create_cell", args).unwrap()).is_err());
+        }
+        assert!(reject_bootstrap_selectors(
+            &request("create_cell", serde_json::json!({"source":"x"})).unwrap()
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn bootstrap_handle_is_read_from_structured_or_legacy_content() {
+        let structured =
+            CallToolResult::structured(serde_json::json!({"notebook_handle":"structured"}));
+        let legacy =
+            CallToolResult::success(vec![ContentBlock::text(r#"{"notebook_handle":"legacy"}"#)]);
+        assert_eq!(
+            result_string_field(&structured, "notebook_handle").as_deref(),
+            Some("structured")
+        );
+        assert_eq!(
+            result_string_field(&legacy, "notebook_handle").as_deref(),
+            Some("legacy")
+        );
+    }
 
     #[test]
     fn legacy_result_content_preserves_cli_text_and_notebook_identity() -> Result<()> {

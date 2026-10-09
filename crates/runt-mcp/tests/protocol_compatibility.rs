@@ -57,8 +57,8 @@ async fn legacy_wire(version: &str) {
     }
     let response = wire.request(202, "tools/call", Some(json!({"name":"wait_for_notebook_change","arguments":{"notebook_handle":"expired"}}))).await;
     assert_eq!(
-        legacy_result(&response)["structuredContent"]["outcome"],
-        "unavailable"
+        legacy_result(&response)["structuredContent"]["error"]["code"],
+        "attachment_expired"
     );
     let response = wire.request(3, "resources/list", None).await;
     let resources = legacy_result(&response)["resources"]
@@ -95,14 +95,12 @@ async fn legacy_wire(version: &str) {
             Some(json!({"name": "disconnect_notebook", "arguments": {}})),
         )
         .await;
-    let result = legacy_result(&response);
-    assert_eq!(result["isError"], true);
-    assert_eq!(result["content"][0]["type"], "text");
-    assert!(result["content"][0]["text"]
+    let error = support::assert_target_tool_error(&response, "missing_notebook_handle");
+    assert!(error["message"]
         .as_str()
-        .expect("tool error text")
-        .contains("No active session"));
-    assert_eq!(server.session_intent_epoch().load(Ordering::Acquire), 1);
+        .unwrap()
+        .contains("notebook_handle"));
+    assert_eq!(server.session_intent_epoch().load(Ordering::Acquire), 0);
 
     let response = wire
         .request(
@@ -229,6 +227,20 @@ async fn repeated_initialize_cannot_change_notebook_protocol_or_identity() {
         let (_dir, server) = isolated_server();
         let mut wire = Wire::start(server.clone());
         assert_initialize(&wire.initialize(version).await, version, "nteract");
+        // Identity is captured lazily by global discovery. The isolated
+        // missing daemon returns a tool error without changing notebook state.
+        let identified = wire
+            .request(
+                90,
+                "tools/call",
+                Some(json!({"name":"list_active_notebooks","arguments":{}})),
+            )
+            .await;
+        assert_eq!(legacy_result(&identified)["isError"], true);
+        assert_eq!(
+            *server.peer_label_shared().read().await,
+            "Compatibility Client"
+        );
         support::assert_reinitialize_preserves_legacy_peer(&mut wire, version).await;
         let response = wire
             .request(
@@ -237,7 +249,12 @@ async fn repeated_initialize_cannot_change_notebook_protocol_or_identity() {
                 Some(json!({"name": "disconnect_notebook", "arguments": {}})),
             )
             .await;
-        assert_eq!(legacy_result(&response)["isError"], true);
+        let error = support::assert_target_tool_error(&response, "missing_notebook_handle");
+        assert!(error["message"]
+            .as_str()
+            .unwrap()
+            .contains("notebook_handle"));
+        assert_eq!(server.session_intent_epoch().load(Ordering::Acquire), 0);
         assert_eq!(
             *server.peer_label_shared().read().await,
             "Compatibility Client"
@@ -297,5 +314,76 @@ async fn initialize_never_negotiates_a_modern_no_handshake_revision() {
         let response = wire.request(2, "tools/list", None).await;
         assert!(legacy_result(&response)["tools"].is_array());
         assert!(wire.finish().await);
+    }
+}
+
+#[tokio::test]
+async fn target_admission_errors_reach_models_without_notebook_effects_on_both_protocols() {
+    for native in [false, true] {
+        let (_dir, server) = isolated_server();
+        let mut wire = Wire::start(server.clone());
+        if !native {
+            wire.initialize("2025-11-25").await;
+            wire.initialized().await;
+        }
+        let mut id = 100;
+        for name in [
+            "create_cell",
+            "get_cell",
+            "show_notebook",
+            "resolve_notebook_launch",
+            "wait_for_notebook_change",
+        ] {
+            for handle in [
+                None,
+                Some(json!("")),
+                Some(json!(42)),
+                Some(json!("unknown")),
+            ] {
+                let mut params = json!({"name":name,"arguments":{"cell_id":"sentinel"}});
+                if name == "wait_for_notebook_change" {
+                    params["arguments"] = json!({});
+                }
+                let code = if handle == Some(json!("unknown")) {
+                    "attachment_expired"
+                } else {
+                    "missing_notebook_handle"
+                };
+                if let Some(handle) = handle {
+                    params["arguments"]["notebook_handle"] = handle;
+                }
+                if native {
+                    params["_meta"] = modern_meta("2026-07-28", false);
+                }
+                let response = wire.request(id, "tools/call", Some(params)).await;
+                support::assert_target_tool_error(&response, code);
+                id += 1;
+            }
+        }
+        for mut params in [
+            json!({"name":"no_such_tool","arguments":{}}),
+            json!({"name":42,"arguments":{}}),
+        ] {
+            if native {
+                params["_meta"] = modern_meta("2026-07-28", false);
+            }
+            let named_tool = params["name"].is_string();
+            let response = wire.request(id, "tools/call", Some(params)).await;
+            if named_tool {
+                assert_eq!(response["error"]["code"], -32602, "{response}");
+            } else {
+                // rmcp's malformed-request dispatch may use MethodNotFound;
+                // the boundary under test is the protocol-error channel.
+                assert!(
+                    matches!(response["error"]["code"].as_i64(), Some(-32601 | -32602)),
+                    "{response}"
+                );
+            }
+            id += 1;
+        }
+        assert!(server.session().read().await.is_none());
+        assert!(server.attachments().read_entries().is_empty());
+        assert_eq!(server.session_intent_epoch().load(Ordering::Acquire), 0);
+        wire.finish().await;
     }
 }

@@ -849,6 +849,30 @@ impl SupervisorState {
     }
 }
 
+struct DevNotebookLaunch {
+    binary: PathBuf,
+    workspace_path: PathBuf,
+    vite_port: u16,
+    identity: runt_mcp_proxy::proxy::NotebookLaunchIdentity,
+}
+
+impl DevNotebookLaunch {
+    fn command(&self) -> std::process::Command {
+        let mut command = std::process::Command::new(&self.binary);
+        command
+            .arg("--attach-notebook-id")
+            .arg(&self.identity.notebook_id)
+            .env("RUNTIMED_DEV", "1")
+            .env("RUNTIMED_WORKSPACE_PATH", &self.workspace_path)
+            .env("RUNTIMED_SOCKET_PATH", &self.identity.socket_path)
+            .env("RUNTIMED_VITE_PORT", self.vite_port.to_string())
+            .env("PATH", augmented_path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command
+    }
+}
+
 #[derive(Clone)]
 struct Supervisor {
     state: Arc<RwLock<SupervisorState>>,
@@ -1237,94 +1261,91 @@ impl Supervisor {
         Ok(port)
     }
 
-    /// Launch the notebook app in dev mode connected to the managed Vite server.
+    /// Resolve the exact child attachment, then open it with the managed Vite UI.
     async fn show_notebook_dev(
         &self,
         request: &CallToolRequestParams,
         vite_port: u16,
     ) -> Result<CallToolResult, McpError> {
-        if request
-            .arguments
-            .as_ref()
-            .is_some_and(|args| args.contains_key("notebook_handle"))
-        {
-            return self.forward_tool_call(request.clone()).await;
-        }
-        let state = self.state.read().await;
-
-        let binary = runt_workspace::cargo_binary_path_for_workspace(
-            &state.project_root,
-            "debug",
-            "notebook",
-        );
-        if !binary.exists() {
-            return Ok(CallToolResult::success(vec![ContentBlock::text(
-                "No notebook binary found. Run `cargo build -p notebook --no-default-features` first.",
-            )]));
-        }
-
-        // Resolve notebook path from arguments
-        let notebook_id = request
-            .arguments
-            .as_ref()
-            .and_then(|args| args.get("notebook_id"))
-            .and_then(Value::as_str);
-
-        let path = match notebook_id {
-            Some(id) => {
-                if !std::path::Path::new(id).is_absolute() {
-                    return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                        "Notebook '{id}' is untitled (not saved to disk). \
-                         Use save_notebook(path) first, then call show_notebook()."
-                    ))]));
-                }
-                id.to_string()
+        self.show_notebook_dev_with_launcher(request, vite_port, |plan| {
+            if !plan.binary.exists() {
+                return Err(McpError::internal_error(
+                    "No notebook binary found. Run cargo build -p notebook --no-default-features first.", None,
+                ));
             }
-            None => {
-                // No notebook_id — fall through to the child's show_notebook
-                // which can resolve the current session's notebook.
-                drop(state);
-                return self.forward_tool_call(request.clone()).await;
-            }
+            plan.command().spawn().map(Some).map_err(|error| {
+                McpError::internal_error(format!("Failed to launch dev notebook app: {error}"), None)
+            })
+        }).await
+    }
+
+    async fn show_notebook_dev_with_launcher(
+        &self,
+        request: &CallToolRequestParams,
+        vite_port: u16,
+        launch: impl FnOnce(&DevNotebookLaunch) -> Result<Option<std::process::Child>, McpError>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Err(error) = mcp_transport::validate_tool_target_params(request) {
+            return Ok(mcp_transport::tool_target_error(error));
+        }
+        let (proxy, project_root, workspace_path) = {
+            let state = self.state.read().await;
+            (
+                Self::get_proxy(&state)?.clone(),
+                state.project_root.clone(),
+                state.daemon_workspace_path.clone(),
+            )
         };
-
-        // Launch the dev binary with Vite URL
-        let daemon_workspace_path = state.daemon_workspace_path.clone();
-        let mut cmd = std::process::Command::new(&binary);
-        cmd.arg(&path)
-            .env("RUNTIMED_DEV", "1")
-            .env("RUNTIMED_WORKSPACE_PATH", &daemon_workspace_path)
-            .env("RUNTIMED_VITE_PORT", vite_port.to_string())
-            .env("PATH", augmented_path())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-
-        drop(state);
-
-        match cmd.spawn() {
-            Ok(child) => {
-                info!(
-                    "Launched notebook app (PID {}, Vite port {vite_port}): {path}",
-                    child.id()
-                );
-                // Track as a managed process, stopping any existing instance first
-                let mut state = self.state.write().await;
-                if let Some(mut old) = state.managed.remove("notebook-app") {
-                    info!("Stopping previous notebook-app (PID {})...", old.child.id());
-                    let _ = old.child.kill();
-                    let _ = old.child.wait();
+        proxy
+            .admit_notebook_launch(request.clone(), |identity| {
+                // No await while either guard is held. try_write avoids a reversed
+                // supervisor/proxy lock wait; a busy supervisor admits no launch.
+                let mut state = self.state.try_write().map_err(|_| {
+                    McpError::internal_error("Supervisor is busy; Desktop was not opened", None)
+                })?;
+                if state.project_root != project_root
+                    || state.daemon_workspace_path != workspace_path
+                {
+                    return Ok(mcp_transport::tool_target_error(McpError::invalid_params(
+                        "Dev workspace changed before Desktop launch; reconnect the intended notebook and explicitly resubmit with a current handle",
+                        Some(serde_json::json!({"code":"attachment_unavailable","notebook_handle":identity.notebook_handle})),
+                    )));
                 }
-                state
-                    .managed
-                    .insert("notebook-app".into(), ManagedProcess { child, port: None });
-                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                    "Opened notebook in nteract (dev, Vite port {vite_port}): {path}"
-                ))]))
-            }
-            Err(e) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                "Failed to launch notebook app: {e}"
-            ))])),
-        }
+                let plan = DevNotebookLaunch {
+                    binary: runt_workspace::cargo_binary_path_for_workspace(
+                        &project_root,
+                        "debug",
+                        "notebook",
+                    ),
+                    workspace_path,
+                    vite_port,
+                    identity,
+                };
+                if !plan.identity.has_display {
+                    return Ok(CallToolResult::structured(serde_json::json!({
+                        "notebook_handle":plan.identity.notebook_handle,
+                        "notebook_id":plan.identity.notebook_id,
+                        "opened":false, "reason":"No display available (headless environment)",
+                    })));
+                }
+                // One synchronous callback, never replayed. The child read had no
+                // GUI side effect, including for old children that lack the resolver.
+                if let Some(child) = launch(&plan)? {
+                    if let Some(mut old) = state.managed.remove("notebook-app") {
+                        let _ = old.child.kill();
+                        let _ = old.child.wait();
+                    }
+                    state
+                        .managed
+                        .insert("notebook-app".into(), ManagedProcess { child, port: None });
+                }
+                Ok(CallToolResult::structured(serde_json::json!({
+                    "notebook_handle":plan.identity.notebook_handle,
+                    "notebook_id":plan.identity.notebook_id,
+                    "opened":true, "dev":true, "vite_port":vite_port,
+                })))
+            })
+            .await
     }
 
     /// Stop a managed process by name.
@@ -1422,11 +1443,6 @@ impl Supervisor {
         match self.restart_child().await {
             Ok(()) => {
                 info!("Child restarted after file change ({kind:?})");
-                // Signal that the tool list may have changed
-                let tx = { self.state.read().await.tool_list_changed_tx.clone() };
-                if let Some(tx) = tx {
-                    let _ = tx.send(()).await;
-                }
             }
             Err(e) => {
                 error!("Failed to restart child after file change: {e}");
@@ -1998,12 +2014,34 @@ impl ServerHandler for Supervisor {
         &self,
         requested: &rmcp::model::SubscriptionFilter,
     ) -> Option<rmcp::model::SubscriptionFilter> {
-        Some(mcp_transport::notebook_subscription_filter(requested))
+        Some(mcp_transport::proxy_subscription_filter(requested))
     }
     async fn listen(&self, context: rmcp::service::SubscriptionContext) -> Result<(), McpError> {
         mcp_transport::require_protocol(context.request_context())?;
         let proxy = self.native_proxy_ready(context.request_context()).await?;
         proxy.forward_listen(context).await
+    }
+    async fn on_initialized(&self, context: rmcp::service::NotificationContext<RoleServer>) {
+        if context.peer.peer_info().is_none() {
+            return;
+        }
+        let supervisor = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let ready = supervisor.child_ready.notified();
+                tokio::pin!(ready);
+                ready.as_mut().enable();
+                let proxy = { supervisor.state.read().await.proxy.clone() };
+                if let Some(proxy) = proxy {
+                    proxy.forward_catalog_notifications(context).await;
+                    return;
+                }
+                tokio::select! {
+                    _ = mcp_transport::notification_cancelled(&context) => return,
+                    _ = ready => {},
+                }
+            }
+        });
     }
     async fn initialize(
         &self,
@@ -2155,7 +2193,7 @@ impl ServerHandler for Supervisor {
             tools.extend(builtin);
         }
 
-        mcp_transport::attachment_tool_schemas(&mut tools, mcp_transport::is_native(&context));
+        mcp_transport::attachment_tool_schemas(&mut tools);
         Ok(ListToolsResult::with_all_items(tools)
             .with_ttl_ms(0)
             .with_cache_scope(rmcp::model::CacheScope::Private))
@@ -2227,7 +2265,9 @@ impl ServerHandler for Supervisor {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         require_protocol(&context)?;
-        mcp_transport::validate_tool_target(&request, &context)?;
+        if let Err(error) = mcp_transport::validate_tool_target(&request, &context) {
+            return Ok(mcp_transport::tool_target_error(error).into());
+        }
         if mcp_transport::is_native(&context) {
             self.native_proxy_ready(&context).await?;
         }
@@ -3262,7 +3302,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // time out waiting for the initialize response. The child process and
     // daemon are connected in a background task — until then, the supervisor
     // returns only its own tools and empty resource lists.
-    let (tool_list_changed_tx, mut tool_list_changed_rx) = mpsc::channel::<()>(4);
+    let (tool_list_changed_tx, _tool_list_changed_rx) = mpsc::channel::<()>(4);
     let supervisor = Supervisor::new_empty(
         project_root.clone(),
         mode,
@@ -3304,8 +3344,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state_for_watcher = state_for_init.clone();
     let state_for_cleanup = state_for_init.clone();
     let child_ready = server.service().child_ready.clone();
-    let peer = server.peer().clone();
-    let peer_for_init = peer.clone();
 
     // Step 2: Spawn background task to do the heavy setup (daemon, build,
     // child spawn, file watcher). When done, populates state and notifies
@@ -3553,17 +3591,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Unblock any call_tool waiting for the child
         child_ready.notify_waiters();
 
-        // 2e: Notify the client that tools/resources are now available.
-        // Even if cached tools matched, the child is now live so tool calls work.
-        if let Err(e) = peer_for_init.notify_tool_list_changed().await {
-            warn!("Failed to send tools/list_changed after init: {e}");
-        } else {
-            info!("Background init complete — sent tools/list_changed to client");
-        }
-        if let Err(e) = peer_for_init.notify_resource_list_changed().await {
-            warn!("Failed to send resources/list_changed after init: {e}");
-        }
-
         // 2f: Start file watcher (opt-in). Off by default. Watching the
         // six source roots and kicking cargo + maturin on every edit
         // invalidated sccache keys at a rate that showed up as ~2%
@@ -3595,23 +3622,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Step 3: Handle tool_list_changed notifications from restarts
-    let peer_for_notify = peer.clone();
-    tokio::spawn(async move {
-        while let Some(()) = tool_list_changed_rx.recv().await {
-            if let Err(e) = peer_for_notify.notify_tool_list_changed().await {
-                warn!("Failed to send tools/list_changed: {e}");
-            } else {
-                info!("Sent tools/list_changed notification to client");
-            }
-            if let Err(e) = peer_for_notify.notify_resource_list_changed().await {
-                warn!("Failed to send resources/list_changed: {e}");
-            } else {
-                info!("Sent resources/list_changed notification to client");
-            }
-        }
-    });
-
     info!("MCP supervisor running, waiting for client disconnect...");
     let reason = server.waiting().await?;
     info!("Supervisor shutting down: {reason:?}");
@@ -3633,7 +3643,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(test)]
+#[path = "../../runt-mcp/tests/support/mod.rs"]
+mod wire_support;
+
+#[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn supervisor_catalog_publication_waits_for_initialized_and_uses_shared_source() {
+        use crate::wire_support::Wire;
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let supervisor = Supervisor::new_empty(
+            dir.path().into(),
+            DevMode::Attach,
+            dir.path().into(),
+            None,
+            tx,
+        );
+        let child = LaunchIdentityChild {
+            calls: Default::default(),
+            entered: Default::default(),
+            release: Default::default(),
+            socket: dir.path().join("daemon.sock"),
+        };
+        let (server_io, client_io) = tokio::io::duplex(65536);
+        let (server, client) = tokio::join!(
+            child.serve(server_io),
+            catalog_test_client().serve(client_io)
+        );
+        let server = server.unwrap();
+        let proxy = unavailable_test_proxy();
+        {
+            let mut state = proxy.state.write().await;
+            state.child_client = Some(client.unwrap());
+            state.child_generation = 1;
+        }
+        proxy.child_tools().await;
+        supervisor.state.write().await.proxy = Some(proxy.clone());
+        let mut wire = Wire::start(supervisor);
+        wire.initialize("2025-11-25").await;
+        wire.request(2, "tools/list", None).await;
+        assert!(wire.notifications.is_empty());
+        wire.initialized().await;
+        wire.notification("notifications/tools/list_changed").await;
+        wire.notification("notifications/resources/list_changed")
+            .await;
+        let marker = wire.notifications.len();
+        proxy.state.write().await.child_generation += 1;
+        proxy.child_tools().await;
+        wire.notification_after(marker, |n| {
+            n["method"] == "notifications/tools/list_changed"
+        })
+        .await;
+        wire.notification_after(marker, |n| {
+            n["method"] == "notifications/resources/list_changed"
+        })
+        .await;
+        wire.finish().await;
+        proxy.shutdown_child().await;
+        server.cancel().await.unwrap();
+    }
     use super::*;
     use std::time::UNIX_EPOCH;
 
@@ -3834,7 +3903,7 @@ mod tests {
         for arguments in [
             serde_json::json!({"notebook_handle":"active"}),
             serde_json::json!({"notebook_handle":"parked","notebook_id":null}),
-            serde_json::json!({"notebook_handle":"expired","notebook_id":"/another.ipynb"}),
+            serde_json::json!({"notebook_handle":"expired","notebook_id":null}),
         ] {
             let request: CallToolRequestParams = serde_json::from_value(
                 serde_json::json!({"name":"show_notebook","arguments":arguments}),
@@ -3848,6 +3917,386 @@ mod tests {
                 error.message.contains("not yet initialized"),
                 "request must reach the child, not bypass it with the dev binary fallback: {error}"
             );
+        }
+    }
+
+    #[derive(Clone)]
+    struct LaunchIdentityChild {
+        calls: Arc<std::sync::Mutex<Vec<CallToolRequestParams>>>,
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+        socket: PathBuf,
+    }
+
+    impl ServerHandler for LaunchIdentityChild {
+        async fn list_tools(
+            &self,
+            _: Option<rmcp::model::PaginatedRequestParams>,
+            _: RequestContext<RoleServer>,
+        ) -> Result<ListToolsResult, McpError> {
+            Ok(ListToolsResult::with_all_items(vec![
+                serde_json::from_value(serde_json::json!({"name":"create_cell","inputSchema":{
+                    "type":"object","properties":{"notebook_handle":{"type":"string"}},
+                    "required":["notebook_handle"]
+                }}))
+                .unwrap(),
+            ]))
+        }
+
+        async fn call_tool(
+            &self,
+            request: CallToolRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, McpError> {
+            self.calls.lock().unwrap().push(request.clone());
+            assert_eq!(request.name, "resolve_notebook_launch");
+            let args = request.arguments.unwrap();
+            if args.get("notebook_id").is_some_and(|v| !v.is_null()) || args.contains_key("path") {
+                return Err(McpError::invalid_params("conflicting selector", None));
+            }
+            let handle = args["notebook_handle"].as_str().unwrap();
+            if matches!(handle, "expired" | "unavailable" | "unsupported") {
+                return Err(McpError::invalid_params(
+                    handle.to_owned(),
+                    if handle == "unsupported" {
+                        None
+                    } else {
+                        Some(
+                            serde_json::json!({"code":if handle == "expired" {"attachment_expired"} else {"attachment_unavailable"}, "notebook_handle":handle}),
+                        )
+                    },
+                ));
+            }
+            if handle == "blocked" {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            let mut identity = serde_json::json!({
+                "notebook_handle":handle,
+                "notebook_id":if handle == "B" {"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"} else {"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
+                "socket_path":self.socket,"source":"local","has_display":handle != "headless"
+            });
+            match handle {
+                "wrong_handle" => identity["notebook_handle"] = "B".into(),
+                "bad_uuid" => identity["notebook_id"] = "not-a-uuid".into(),
+                "relative_socket" => identity["socket_path"] = "daemon.sock".into(),
+                "hosted" => identity["source"] = "hosted".into(),
+                "missing_display" => {
+                    identity.as_object_mut().unwrap().remove("has_display");
+                }
+                "tool_error" => {
+                    let mut refusal = CallToolResult::error(vec![ContentBlock::text(
+                        "notebook is still loading",
+                    )]);
+                    refusal.structured_content = Some(
+                        serde_json::json!({"error":{"code":"document_not_ready","notebook_handle":handle}}),
+                    );
+                    return Ok(refusal.into());
+                }
+                "hosted_refusal" => {
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        "A hosted notebook cannot be opened by the local dev launcher",
+                    )])
+                    .into())
+                }
+                _ => {}
+            }
+            Ok(CallToolResult::structured(identity).into())
+        }
+    }
+
+    fn dev_launch_request(handle: &str) -> CallToolRequestParams {
+        CallToolRequestParams::new("show_notebook").with_arguments(
+            serde_json::json!({"notebook_handle":handle})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+    }
+
+    #[tokio::test]
+    async fn dev_launch_uses_exact_child_identity_and_never_launches_rejected_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let supervisor = Supervisor::new_empty(
+            dir.path().into(),
+            DevMode::Attach,
+            dir.path().into(),
+            None,
+            tx,
+        );
+        let child = LaunchIdentityChild {
+            calls: Default::default(),
+            entered: Default::default(),
+            release: Default::default(),
+            socket: dir.path().join("daemon.sock"),
+        };
+        let (server_io, client_io) = tokio::io::duplex(65536);
+        let (server, client) = tokio::join!(
+            child.clone().serve(server_io),
+            catalog_test_client().serve(client_io)
+        );
+        let server = server.unwrap();
+        let proxy = unavailable_test_proxy();
+        {
+            let mut state = proxy.state.write().await;
+            state.child_client = Some(client.unwrap());
+            state.child_generation = 1;
+        }
+        supervisor.state.write().await.proxy = Some(proxy.clone());
+        let mut launches = Vec::new();
+        for (handle, id) in [
+            ("A", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            ("B", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+        ] {
+            let result = supervisor
+                .show_notebook_dev_with_launcher(&dev_launch_request(handle), 5173, |plan| {
+                    assert_eq!(plan.identity.notebook_handle, handle);
+                    assert_eq!(plan.identity.notebook_id, id);
+                    let command = plan.command();
+                    assert_eq!(command.get_program(), plan.binary);
+                    assert_eq!(
+                        command.get_args().collect::<Vec<_>>(),
+                        vec![
+                            std::ffi::OsStr::new("--attach-notebook-id"),
+                            std::ffi::OsStr::new(id)
+                        ]
+                    );
+                    let env: HashMap<_, _> = command.get_envs().collect();
+                    assert_eq!(
+                        env[std::ffi::OsStr::new("RUNTIMED_SOCKET_PATH")],
+                        Some(child.socket.as_os_str())
+                    );
+                    assert_eq!(
+                        env[std::ffi::OsStr::new("RUNTIMED_WORKSPACE_PATH")],
+                        Some(dir.path().as_os_str())
+                    );
+                    assert_eq!(
+                        env[std::ffi::OsStr::new("RUNTIMED_DEV")],
+                        Some(std::ffi::OsStr::new("1"))
+                    );
+                    assert_eq!(
+                        env[std::ffi::OsStr::new("RUNTIMED_VITE_PORT")],
+                        Some(std::ffi::OsStr::new("5173"))
+                    );
+                    launches.push(handle.to_owned());
+                    Ok(None)
+                })
+                .await
+                .unwrap();
+            assert_eq!(result.structured_content.unwrap()["opened"], true);
+        }
+        assert_eq!(launches, ["A", "B"]);
+        let calls_before = child.calls.lock().unwrap().len();
+        assert!(
+            supervisor
+                .show_notebook_dev_with_launcher(
+                    &CallToolRequestParams::new("show_notebook"),
+                    5173,
+                    |_| panic!("missing handle launched")
+                )
+                .await
+                .unwrap()
+                .is_error
+                == Some(true)
+        );
+        assert_eq!(child.calls.lock().unwrap().len(), calls_before);
+        assert!(
+            proxy
+                .admit_notebook_launch(
+                    CallToolRequestParams::new("list_tools"),
+                    |_| -> Result<CallToolResult, McpError> {
+                        panic!("unscoped caller bypassed launch handle validation")
+                    }
+                )
+                .await
+                .unwrap()
+                .is_error
+                == Some(true)
+        );
+        assert_eq!(child.calls.lock().unwrap().len(), calls_before);
+        for (handle, code) in [
+            ("expired", "attachment_expired"),
+            ("unavailable", "attachment_unavailable"),
+        ] {
+            let result = supervisor
+                .show_notebook_dev_with_launcher(&dev_launch_request(handle), 5173, |_| {
+                    panic!("expired target launched")
+                })
+                .await
+                .unwrap();
+            assert_eq!(result.is_error, Some(true));
+            assert_eq!(result.structured_content.unwrap()["error"]["code"], code);
+        }
+        for handle in [
+            "unsupported",
+            "wrong_handle",
+            "bad_uuid",
+            "relative_socket",
+            "hosted",
+            "missing_display",
+        ] {
+            assert!(
+                supervisor
+                    .show_notebook_dev_with_launcher(&dev_launch_request(handle), 5173, |_| panic!(
+                        "rejected identity launched"
+                    ))
+                    .await
+                    .is_err(),
+                "{handle}"
+            );
+        }
+        for (handle, reason) in [
+            (
+                "hosted_refusal",
+                "A hosted notebook cannot be opened by the local dev launcher",
+            ),
+            ("tool_error", "notebook is still loading"),
+        ] {
+            let result = supervisor
+                .show_notebook_dev_with_launcher(&dev_launch_request(handle), 5173, |_| {
+                    panic!("child refusal launched")
+                })
+                .await
+                .unwrap();
+            assert_eq!(result.is_error, Some(true));
+            assert_eq!(result.content, vec![ContentBlock::text(reason)]);
+            assert_eq!(
+                result.structured_content,
+                if handle == "tool_error" {
+                    Some(
+                        serde_json::json!({"error":{"code":"document_not_ready","notebook_handle":handle}}),
+                    )
+                } else {
+                    None
+                }
+            );
+        }
+        for (key, value) in [
+            ("path", "/another.ipynb"),
+            ("notebook_id", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+        ] {
+            let mut request = dev_launch_request("A");
+            request
+                .arguments
+                .as_mut()
+                .unwrap()
+                .insert(key.into(), value.into());
+            assert!(
+                supervisor
+                    .show_notebook_dev_with_launcher(&request, 5173, |_| panic!(
+                        "conflicting selector launched"
+                    ))
+                    .await
+                    .unwrap()
+                    .is_error
+                    == Some(true)
+            );
+        }
+        let result = supervisor
+            .show_notebook_dev_with_launcher(&dev_launch_request("headless"), 5173, |_| {
+                panic!("headless launched")
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.structured_content.unwrap()["opened"], false);
+        let failed_launches = std::sync::atomic::AtomicUsize::new(0);
+        assert!(supervisor
+            .show_notebook_dev_with_launcher(&dev_launch_request("A"), 5173, |_| {
+                failed_launches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(McpError::internal_error("fake spawn failure", None))
+            })
+            .await
+            .is_err());
+        assert_eq!(failed_launches.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let pending_supervisor = supervisor.clone();
+        let pending = tokio::spawn(async move {
+            pending_supervisor
+                .show_notebook_dev_with_launcher(&dev_launch_request("blocked"), 5173, |_| {
+                    panic!("superseded child launched")
+                })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), child.entered.notified())
+            .await
+            .unwrap();
+        assert!(
+            supervisor.state.try_write().is_ok(),
+            "child RPC must not lock supervisor state"
+        );
+        proxy.state.write().await.child_generation += 1;
+        child.release.notify_one();
+        let result = pending.await.unwrap().unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let error = result.structured_content.unwrap();
+        assert!(error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Child changed"));
+        let pending_supervisor = supervisor.clone();
+        let pending = tokio::spawn(async move {
+            pending_supervisor
+                .show_notebook_dev_with_launcher(&dev_launch_request("blocked"), 5173, |_| {
+                    panic!("superseded workspace launched")
+                })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), child.entered.notified())
+            .await
+            .unwrap();
+        supervisor.state.write().await.daemon_workspace_path = dir.path().join("changed");
+        child.release.notify_one();
+        let result = pending.await.unwrap().unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let error = result.structured_content.unwrap();
+        assert!(error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("workspace changed"));
+        assert!(child
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|request| request.name == "resolve_notebook_launch"));
+        let client = proxy.state.write().await.child_client.take().unwrap();
+        client.cancel().await.unwrap();
+        server.cancel().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn supervisor_target_preflight_returns_tool_errors_before_readiness() {
+        for native in [false, true] {
+            let mut requests = Vec::new();
+            if !native {
+                requests.push(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}));
+            }
+            for (id, arguments) in [
+                serde_json::json!({}),
+                serde_json::json!({"notebook_handle":42}),
+                serde_json::json!({"notebook_handle":"A","notebook_id":"other"}),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut params = serde_json::json!({"name":"show_notebook","arguments":arguments});
+                if native {
+                    params["_meta"] = wire_support::modern_meta("2026-07-28", false);
+                }
+                requests.push(serde_json::json!({"jsonrpc":"2.0","id":id+10,"method":"tools/call","params":params}));
+            }
+            let responses = supervisor_responses(requests).await;
+            for (index, response) in responses.iter().skip(usize::from(!native)).enumerate() {
+                wire_support::assert_target_tool_error(
+                    response,
+                    if index == 2 {
+                        "invalid_notebook_target"
+                    } else {
+                        "missing_notebook_handle"
+                    },
+                );
+            }
         }
     }
 

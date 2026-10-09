@@ -390,7 +390,8 @@ async fn serve_proxy(config: ProxyConfig, no_show: bool) -> ExitCode {
     // Claude Code drops notifications received before it has finished initializing,
     // leaving its tool list empty.
 
-    // Wait for client disconnect OR exit signal from incompatible tool divergence.
+    // Wait for client disconnect or the reserved explicit exit notification.
+    // Catalog changes keep this connection live and do not signal an exit.
     let exit_signal = proxy_ref.exit_signal.clone();
     let cancel_token = server.cancellation_token();
     tokio::select! {
@@ -401,10 +402,7 @@ async fn serve_proxy(config: ProxyConfig, no_show: bool) -> ExitCode {
             }
         }
         _ = exit_signal.notified() => {
-            info!(
-                "Exiting due to incompatible tool list change after daemon upgrade. \
-                 The MCP client will restart us with the updated tools."
-            );
+            info!("Exiting after an explicit proxy stop request.");
             cancel_token.cancel();
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }

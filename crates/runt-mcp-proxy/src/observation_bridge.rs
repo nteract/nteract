@@ -130,6 +130,17 @@ fn child_error(error: rmcp::service::ServiceError) -> McpError {
 }
 
 #[allow(deprecated)]
+async fn admit_subscription(child: &Peer<RoleClient>, uri: &str) -> Result<(), McpError> {
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        child.subscribe(SubscribeRequestParams::new(uri)),
+    )
+    .await
+    .map_err(|_| McpError::internal_error("Child resource subscription timed out", None))?
+    .map_err(child_error)
+}
+
+#[allow(deprecated)]
 async fn run(mut operations: mpsc::Receiver<Operation>) {
     let mut watches: HashMap<String, Watch> = HashMap::new();
     let mut cleanup = tokio::time::interval(Duration::from_secs(1));
@@ -177,7 +188,9 @@ async fn run(mut operations: mpsc::Receiver<Operation>) {
                     .get(&uri)
                     .is_some_and(|watch| watch.generation == generation)
                 {
-                    let _ = reply.send(Ok(()));
+                    // A cached relay can outlive its terminal notification.
+                    // Repeat idempotent child admission before acknowledging.
+                    let _ = reply.send(admit_subscription(&child, &uri).await);
                     continue;
                 }
                 if let Some(previous) = watches.remove(&uri) {
@@ -196,15 +209,7 @@ async fn run(mut operations: mpsc::Receiver<Operation>) {
                     )));
                     continue;
                 }
-                let result = tokio::time::timeout(
-                    Duration::from_secs(5),
-                    child.subscribe(SubscribeRequestParams::new(&uri)),
-                )
-                .await
-                .map_err(|_| {
-                    McpError::internal_error("Child resource subscription timed out", None)
-                })
-                .and_then(|result| result.map_err(child_error));
+                let result = admit_subscription(&child, &uri).await;
                 match result {
                     Ok(_) => {
                         if reply.send(Ok(())).is_err() {
@@ -274,8 +279,12 @@ async fn relay(
             break;
         }
         let update = match notifications.recv().await {
-            Ok(event) => event.uri == uri,
-            Err(broadcast::error::RecvError::Lagged(_)) => true,
+            Ok(event) => (event.uri == uri).then_some(event),
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                crate::proxy::reconcile_listener_updates(&child, std::slice::from_ref(&uri))
+                    .await
+                    .pop()
+            }
             Err(broadcast::error::RecvError::Closed) => {
                 let _ = upstream
                     .notify_resource_updated(ResourceUpdatedNotificationParam::new(&uri))
@@ -283,13 +292,137 @@ async fn relay(
                 break;
             }
         };
-        if update
-            && upstream
-                .notify_resource_updated(ResourceUpdatedNotificationParam::new(&uri))
-                .await
-                .is_err()
-        {
-            break;
+        if let Some(update) = update {
+            let terminal = crate::proxy::attachment_terminal(update.meta.as_ref()).is_some();
+            if upstream.notify_resource_updated(update).await.is_err() || terminal {
+                break;
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rmcp::model::*;
+    use rmcp::service::{NotificationContext, RequestContext};
+    use rmcp::{ClientHandler, ServerHandler, ServiceExt};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct Child {
+        dead: Arc<AtomicBool>,
+        admissions: Arc<AtomicUsize>,
+    }
+    impl ServerHandler for Child {
+        #[allow(deprecated)]
+        async fn subscribe(
+            &self,
+            _: SubscribeRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<(), McpError> {
+            self.admissions.fetch_add(1, Ordering::SeqCst);
+            if self.dead.load(Ordering::SeqCst) {
+                return Err(McpError::internal_error("sync_failed", Some(signal())));
+            }
+            Ok(())
+        }
+    }
+    struct Notifications(mpsc::UnboundedSender<ResourceUpdatedNotificationParam>);
+    impl ClientHandler for Notifications {
+        async fn on_resource_updated(
+            &self,
+            mut params: ResourceUpdatedNotificationParam,
+            context: NotificationContext<RoleClient>,
+        ) {
+            let mut meta = params.meta.take().unwrap_or_default();
+            if let Some(extracted) = context.extensions.get::<NotificationMetaObject>() {
+                meta.extend(extracted.clone());
+            }
+            meta.extend(context.meta);
+            params.meta = Some(meta);
+            let _ = self.0.send(params);
+        }
+    }
+    fn signal() -> serde_json::Value {
+        serde_json::json!({"code":"attachment_unavailable","notebook_handle":"retained"})
+    }
+    fn terminal(uri: &str) -> ResourceUpdatedNotificationParam {
+        let mut update = ResourceUpdatedNotificationParam::new(uri);
+        let mut meta = NotificationMetaObject::default();
+        meta.insert("io.nteract/attachmentUnavailable".into(), signal());
+        update.meta = Some(meta);
+        update
+    }
+
+    #[tokio::test]
+    async fn cached_legacy_relay_rechecks_admission_and_unavailable_signal_ends_relay() {
+        let dead = Arc::new(AtomicBool::new(false));
+        let admissions = Arc::new(AtomicUsize::new(0));
+        let child = Child {
+            dead: dead.clone(),
+            admissions: admissions.clone(),
+        };
+        let (server_pipe, client_pipe) = tokio::io::duplex(65536);
+        let task = tokio::spawn(async move { child.serve(server_pipe).await.unwrap() });
+        let (sent, mut received) = mpsc::unbounded_channel();
+        let mut client = Notifications(sent).serve(client_pipe).await.unwrap();
+        let mut server = task.await.unwrap();
+        let (updates, _) = broadcast::channel(16);
+        let bridge = ObservationBridge::default();
+        let uri = "nteract://sessions/retained/cells";
+        bridge
+            .subscribe(
+                uri.into(),
+                client.peer().clone(),
+                1,
+                updates.subscribe(),
+                server.peer().clone(),
+            )
+            .await
+            .unwrap();
+        // No terminal notification has reached the cached relay yet.
+        dead.store(true, Ordering::SeqCst);
+        let error = bridge
+            .subscribe(
+                uri.into(),
+                client.peer().clone(),
+                1,
+                updates.subscribe(),
+                server.peer().clone(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(admissions.load(Ordering::SeqCst), 2);
+        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+        assert_eq!(error.message, "sync_failed");
+        assert_eq!(error.data, Some(signal()));
+
+        // Exercise the production relay directly so task completion is observed
+        // independently of the actor's periodic finished-task cleanup.
+        let other_uri = "nteract://sessions/retained/comments";
+        let relay_task = tokio::spawn(relay(
+            other_uri.into(),
+            client.peer().clone(),
+            updates.subscribe(),
+            server.peer().clone(),
+        ));
+        updates.send(terminal(other_uri)).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), relay_task)
+            .await
+            .unwrap()
+            .unwrap();
+        let update = tokio::time::timeout(Duration::from_secs(2), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(update.uri, other_uri);
+        assert_eq!(
+            crate::proxy::attachment_terminal(update.meta.as_ref()),
+            Some(("io.nteract/attachmentUnavailable", &signal()))
+        );
+        drop(bridge);
+        client.close().await.unwrap();
+        server.close().await.unwrap();
     }
 }
