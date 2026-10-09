@@ -128,7 +128,7 @@ pub struct ProxyConfig {
     /// Lower values detect child exit faster but use more CPU.
     pub monitor_poll_interval_ms: u64,
     /// Recovery action appended to terminal failure messages (circuit-breaker
-    /// trip, incompatible tool-list divergence). The launcher knows how its
+    /// trip). The launcher knows how its
     /// child is installed and what restores it; the proxy does not. The MCPB
     /// bundle points at reinstalling the extension, the dev supervisor at
     /// relaunching the worktree daemon.
@@ -176,7 +176,7 @@ pub struct ProxyState {
     pub reconnection_message: Option<String>,
     /// Channel to notify that the tool list has changed.
     pub tool_list_changed_tx: Option<mpsc::Sender<()>>,
-    /// Whether the proxy should exit (set on incompatible tool divergence).
+    /// Reserved explicit stop state; catalog divergence does not set it.
     pub should_exit: bool,
     /// Timestamp when the current child was spawned (for uptime tracking).
     pub child_spawn_time: Option<Instant>,
@@ -193,7 +193,7 @@ pub struct McpProxy {
     pub config: Arc<ProxyConfig>,
     /// Signaled when the child client is first connected.
     pub child_ready: Arc<Notify>,
-    /// Signaled when the proxy should exit (incompatible tool divergence).
+    /// Reserved explicit exit notification; catalog divergence does not signal it.
     pub exit_signal: Arc<Notify>,
     /// Shared completion for one owned restart (monitor and requests may join).
     restart_in_progress: Arc<std::sync::Mutex<Option<RestartCompletion>>>,
@@ -875,12 +875,9 @@ impl McpProxy {
                                 ref added,
                             } => {
                                 warn!(
-                                    "Tool list incompatible after restart — removed: {removed:?}, added: {added:?}. \
-                                     Exiting so the MCP client can restart with the new tool set."
+                                    "Tool catalog changed after restart — removed: {removed:?}, added: {added:?}. \
+                                     Published the current catalog for in-place relisting."
                                 );
-                                state.should_exit = true;
-                                // Signal the exit so nteract-mcp can shut down
-                                self.exit_signal.notify_waiters();
                             }
                         }
                     }
@@ -1056,7 +1053,9 @@ impl McpProxy {
         &self,
         params: CallToolRequestParams,
     ) -> Result<CallToolResult, McpError> {
-        mcp_transport::validate_tool_target_params(&params)?;
+        if let Err(error) = mcp_transport::validate_tool_target_params(&params) {
+            return Ok(mcp_transport::tool_target_error(error));
+        }
         // Record release intent before sending: a lost disconnect reply must
         // not cause the replacement child to rejoin the notebook just released.
         if params.name.as_ref() == "disconnect_notebook" {
@@ -1072,6 +1071,10 @@ impl McpProxy {
             }
             Err(failure) => {
                 if !failure.transport_closed {
+                    if !failure.may_have_run && mcp_transport::is_tool_target_error(&failure.error)
+                    {
+                        return Ok(mcp_transport::tool_target_error(failure.error));
+                    }
                     if failure.may_have_run && !tool_can_be_replayed(&params.name) {
                         return Ok(unknown_tool_outcome(&params.name, &failure, None));
                     }
@@ -1110,15 +1113,13 @@ impl McpProxy {
             ));
         }
 
-        // Check if we should exit due to tool divergence
+        // Preserve the explicit stop gate; catalog divergence does not set it.
         {
             let state = self.state.read().await;
             if state.should_exit {
                 return Err(McpError::internal_error(
                     format!(
-                        "Tool list changed incompatibly after daemon upgrade. \
-                         The MCP server will exit so your client can reconnect \
-                         with the updated tools. {}",
+                        "The MCP server has been requested to stop. {}",
                         self.config.recovery_hint
                     ),
                     None,
@@ -1131,6 +1132,11 @@ impl McpProxy {
             Ok(success) => success,
             Err(failure) if failure.may_have_run && !tool_can_be_replayed(&params.name) => {
                 return Ok(unknown_tool_outcome(&params.name, &failure, None));
+            }
+            Err(failure)
+                if !failure.may_have_run && mcp_transport::is_tool_target_error(&failure.error) =>
+            {
+                return Ok(mcp_transport::tool_target_error(failure.error))
             }
             Err(failure) => return Err(failure.error),
         };
@@ -1150,7 +1156,9 @@ impl McpProxy {
         launch: impl FnOnce(NotebookLaunchIdentity) -> Result<CallToolResult, McpError>,
     ) -> Result<CallToolResult, McpError> {
         params.name = "resolve_notebook_launch".into();
-        mcp_transport::validate_tool_target_params(&params)?;
+        if let Err(error) = mcp_transport::validate_tool_target_params(&params) {
+            return Ok(mcp_transport::tool_target_error(error));
+        }
         let handle = params
             .arguments
             .as_ref()
@@ -1158,10 +1166,15 @@ impl McpProxy {
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| McpError::invalid_params("notebook_handle is required", None))?
             .to_owned();
-        let success = self
-            .try_forward_tool_call(&params)
-            .await
-            .map_err(|failure| failure.error)?;
+        let success = match self.try_forward_tool_call(&params).await {
+            Ok(success) => success,
+            Err(failure)
+                if !failure.may_have_run && mcp_transport::is_tool_target_error(&failure.error) =>
+            {
+                return Ok(mcp_transport::tool_target_error(failure.error));
+            }
+            Err(failure) => return Err(failure.error),
+        };
         if success.result.is_error == Some(true) {
             return Ok(success.result);
         }
@@ -1174,10 +1187,10 @@ impl McpProxy {
                     .as_ref()
                     .is_none_or(|child| child.is_transport_closed())
             {
-                return Err(McpError::invalid_params(
-                    "Child changed before Desktop launch; reconnect the notebook",
-                    None,
-                ));
+                return Ok(mcp_transport::tool_target_error(McpError::invalid_params(
+                    "Child changed before Desktop launch; reconnect the intended notebook, obtain a new handle, and explicitly resubmit",
+                    Some(serde_json::json!({"code":"attachment_unavailable","notebook_handle":handle})),
+                )));
             }
             // Holding this guard only during the synchronous callback prevents
             // a replacement generation from being published before admission.
@@ -1338,7 +1351,7 @@ impl McpProxy {
         ListResourceTemplatesResult::default()
     }
 
-    /// Check whether the proxy should exit (due to incompatible tool divergence).
+    /// Read the reserved explicit proxy stop state.
     pub async fn should_exit(&self) -> bool {
         self.state.read().await.should_exit
     }
@@ -1432,7 +1445,7 @@ impl McpProxy {
                 if tools.iter().any(|tool| tool.name == "create_cell" && child_requires_handle(tool)) {
                     Ok(())
                 } else {
-                    Err(McpError::invalid_params("This child does not advertise required notebook_handle routing; upgrade the child before using notebook tools", None))
+                    Err(McpError::invalid_params("This child does not advertise required notebook_handle routing; upgrade the child before using notebook tools", Some(serde_json::json!({"code":"unsupported_notebook_target"}))))
                 }
             }).await;
             if let Err(error) = admission {
@@ -2286,7 +2299,9 @@ impl ServerHandler for McpProxy {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         require_protocol(&context)?;
-        mcp_transport::validate_tool_target(&request, &context)?;
+        if let Err(error) = mcp_transport::validate_tool_target(&request, &context) {
+            return Ok(mcp_transport::tool_target_error(error).into());
+        }
         crate::request_scope::scope(context.clone(), async {
         // Intercept the built-in reconnect tool before waiting on child
         // readiness — reconnect is the escape hatch when the child is
@@ -3447,8 +3462,14 @@ mod tests {
             let missing = proxy
                 .forward_tool_call(CallToolRequestParams::new("create_cell"))
                 .await
-                .unwrap_err();
-            assert!(missing.message.contains("notebook_handle is required"));
+                .unwrap();
+            assert_eq!(missing.is_error, Some(true));
+            let error = &missing.structured_content.as_ref().unwrap()["error"];
+            assert_eq!(error["code"], "missing_notebook_handle");
+            assert!(error["message"]
+                .as_str()
+                .unwrap()
+                .contains("notebook_handle is required"));
             assert_eq!(calls.load(Ordering::SeqCst), 0);
             for (name, arguments) in [
                 ("connect_notebook", serde_json::json!({"target":"a"})),

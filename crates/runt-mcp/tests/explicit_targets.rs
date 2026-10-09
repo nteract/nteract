@@ -103,11 +103,8 @@ async fn ordinary_legacy_same_target_acquisitions_release_independently_and_expi
     assert_ne!(a3, a2);
     fixture.ready(&a3).await;
     let stale_write = wire.request(17, "tools/call", Some(tool_params("set_cell", json!({"notebook_handle":a1,"cell_id":"sentinel","source":"expired owner must not rebind"}), false))).await;
-    assert_eq!(stale_write["error"]["code"], -32602);
-    assert!(stale_write["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("expired"));
+    let error = support::assert_target_tool_error(&stale_write, "attachment_expired");
+    assert!(error["message"].as_str().unwrap().contains("expired"));
     for (id, handle) in [(18, &a2), (19, &a3)] {
         assert_eq!(
             read(&mut wire, id, handle, false).await["cells"][0]["source_preview"],
@@ -138,6 +135,56 @@ async fn every_initialize_protocol_advertises_required_handles() {
                 );
             }
         }
+        fixture.stop(wire).await;
+    }
+}
+
+#[tokio::test]
+async fn launch_selectors_are_target_feedback_but_unrelated_arguments_keep_protocol_errors() {
+    for native in [false, true] {
+        let fixture = Fixture::start().await;
+        let path = fixture.notebook("launch-admission", "unchanged source");
+        let mut wire = fixture.wire();
+        if !native {
+            wire.initialize("2025-11-25").await;
+            wire.initialized().await;
+        }
+        let handle = open(&mut wire, 10, &path, native).await;
+        fixture.ready(&handle).await;
+        for (index, (extra, target_error)) in [
+            (json!({"path":"/wrong.ipynb"}), true),
+            (json!({"notebook_id":"wrong"}), true),
+            (json!({"timeout_secs":1}), false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut arguments = json!({"notebook_handle":handle});
+            arguments
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let response = wire
+                .request(
+                    20 + index as u64,
+                    "tools/call",
+                    Some(tool_params("resolve_notebook_launch", arguments, native)),
+                )
+                .await;
+            if target_error {
+                support::assert_target_tool_error(&response, "invalid_notebook_target");
+            } else {
+                assert_eq!(response["error"]["code"], -32602, "{response}");
+                assert!(response["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("timeout_secs"));
+            }
+        }
+        assert_eq!(
+            read(&mut wire, 30, &handle, native).await["cells"][0]["source_preview"],
+            "unchanged source"
+        );
         fixture.stop(wire).await;
     }
 }

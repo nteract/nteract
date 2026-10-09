@@ -290,7 +290,7 @@ async fn native_child_restart_requires_fresh_handles_and_does_not_seed_rejoin() 
     assert!(proxy.state.read().await.last_notebook_id.is_none());
     proxy.restart_child().await.unwrap();
     let expired = wire.request(2, "tools/call", Some(json!({"name":"fixture_edit","arguments":{"notebook_handle":old},"_meta":modern_meta("2026-07-28",false)}))).await;
-    assert_eq!(expired["error"]["code"], -32602, "{expired}");
+    support::assert_target_tool_error(&expired, "attachment_expired");
     let second = wire.request(3, "tools/call", Some(request)).await;
     assert_ne!(
         second["result"]["structuredContent"]["notebook_handle"],
@@ -1222,11 +1222,15 @@ async fn version_skew_old_rmcp_client_to_new_production_child() {
             json!({"name": "disconnect_notebook", "arguments": {"notebook_handle":"expired"}}),
         )
         .expect("legacy tool params");
-        let error = timeout(DEADLINE, client.call_tool(call))
+        let refusal = timeout(DEADLINE, client.call_tool(call))
             .await
             .expect("call timeout")
-            .expect_err("expired explicit owner must reject");
-        assert!(error.to_string().contains("expired"), "{error}");
+            .expect("expired explicit owner must return actionable tool feedback");
+        assert_eq!(refusal.is_error, Some(true));
+        assert_eq!(
+            refusal.structured_content.unwrap()["error"]["code"],
+            "attachment_expired"
+        );
         timeout(DEADLINE, client.cancel())
             .await
             .expect("client cancellation timeout")
@@ -2175,4 +2179,121 @@ async fn mixed_catalog_survives_child_loss_during_resource_send() {
     writer.shutdown().await.unwrap();
     timeout(DEADLINE, serving).await.unwrap().unwrap();
     stop_child(&proxy).await;
+}
+
+#[tokio::test]
+async fn removed_and_renamed_catalog_tools_relist_and_dispatch_on_same_connection() {
+    for native in [false, true] {
+        let (dir, proxy, _) = isolated_proxy_with_mode("catalog");
+        proxy.init_child().await.unwrap();
+        let mut wire = Wire::start(proxy.clone());
+        let meta = modern_meta("2026-07-28", false);
+        if native {
+            wire.send(json!({"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"_meta":meta,"notifications":{"toolsListChanged":true,"resourcesListChanged":true}}})).await;
+            assert_eq!(
+                wire.receive().await["method"],
+                "notifications/subscriptions/acknowledged"
+            );
+        } else {
+            wire.initialize("2025-11-25").await;
+            wire.initialized().await;
+            for method in [
+                "notifications/tools/list_changed",
+                "notifications/resources/list_changed",
+            ] {
+                wire.notification_after(0, |event| event["method"] == method)
+                    .await;
+            }
+        }
+        for (index, revision, name, removed) in [
+            (0, "renamed", "compatibility_echo_v2", "compatibility_echo"),
+            (1, "first", "compatibility_echo", "compatibility_echo_v2"),
+        ] {
+            let marker = wire.notifications.len();
+            std::fs::write(dir.path().join("catalog-revision"), revision).unwrap();
+            proxy.restart_child().await.unwrap();
+            assert!(
+                !proxy.should_exit().await,
+                "catalog removal must not stop stdio"
+            );
+            for method in [
+                "notifications/tools/list_changed",
+                "notifications/resources/list_changed",
+            ] {
+                let event = wire
+                    .notification_after(marker, |event| event["method"] == method)
+                    .await;
+                if native {
+                    assert_eq!(
+                        event["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+                        7
+                    );
+                }
+            }
+            let params = if native {
+                Some(json!({"_meta":meta}))
+            } else {
+                None
+            };
+            let listed = wire.request(100 + index * 10, "tools/list", params).await;
+            let tools = listed["result"]["tools"].as_array().unwrap();
+            assert!(tools.iter().any(|tool| tool["name"] == name));
+            assert!(!tools.iter().any(|tool| tool["name"] == removed));
+            let mut old = json!({"name":removed,"arguments":{}});
+            let mut new = json!({"name":name,"arguments":{(revision):"live"}});
+            if native {
+                old["_meta"] = meta.clone();
+                new["_meta"] = meta.clone();
+            }
+            let rejected = wire
+                .request(101 + index * 10, "tools/call", Some(old))
+                .await;
+            assert_eq!(rejected["error"]["code"], -32602);
+            assert!(rejected["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Unknown tool"));
+            let accepted = wire
+                .request(102 + index * 10, "tools/call", Some(new))
+                .await;
+            assert!(accepted.get("error").is_none(), "{accepted}");
+            assert_ne!(accepted["result"]["isError"], true);
+        }
+        if native {
+            wire.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}})).await;
+        }
+        stop_child(&proxy).await;
+        wire.finish().await;
+    }
+}
+
+#[tokio::test]
+async fn invalid_target_is_tool_feedback_before_proxy_readiness_on_both_protocols() {
+    for native in [false, true] {
+        let (dir, proxy, resolves) = isolated_proxy();
+        let mut wire = Wire::start(proxy.clone());
+        if !native {
+            wire.initialize("2025-11-25").await;
+        }
+        for (id, handle) in [None, Some(json!("")), Some(json!(42)), Some(Value::Null)]
+            .into_iter()
+            .enumerate()
+        {
+            let mut params = json!({"name":"set_cell","arguments":{"cell_id":"sentinel","source":"must not dispatch"}});
+            if let Some(handle) = handle {
+                params["arguments"]["notebook_handle"] = handle;
+            }
+            if native {
+                params["_meta"] = modern_meta("2026-07-28", false);
+            }
+            let response = wire
+                .request(id as u64 + 10, "tools/call", Some(params))
+                .await;
+            let error = support::assert_target_tool_error(&response, "missing_notebook_handle");
+            assert_eq!(error["resubmit_required"], true);
+            assert_eq!(error["refresh"], "tools/list");
+            assert_no_child(&proxy, &resolves, dir.path()).await;
+        }
+        wire.finish().await;
+    }
 }

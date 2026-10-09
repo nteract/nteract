@@ -177,7 +177,7 @@ async fn selectively_lost_peer_retains_ownership_and_preserves_other_target(nati
         )
         .await;
     assert!(
-        refused["error"]["message"]
+        support::assert_target_tool_error(&refused, "attachment_limit")["message"]
             .as_str()
             .unwrap()
             .contains("attachment_limit"),

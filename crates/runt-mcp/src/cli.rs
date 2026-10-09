@@ -21,17 +21,19 @@ pub async fn dispatch(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, ErrorData> {
-    mcp_transport::validate_tool_target_params(request)?;
+    if let Err(error) = mcp_transport::validate_tool_target_params(request) {
+        return Ok(mcp_transport::tool_target_error(error));
+    }
     if let Some(handle) = request
         .arguments
         .as_ref()
         .and_then(|args| args.get("notebook_handle"))
         .and_then(serde_json::Value::as_str)
+        .filter(|_| notebook_scoped_tool(&request.name))
     {
         if server.attachment_identity(handle).await.is_none() {
-            return Err(ErrorData::invalid_params(
-                "Notebook attachment expired; connect again and obtain a new handle",
-                None,
+            return Ok(mcp_transport::tool_target_error(
+                crate::attachments::expired_resource_error(handle),
             ));
         }
         let error = crate::targets::with_handle(
@@ -161,6 +163,26 @@ async fn wait_until_ready(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn target_feedback_does_not_convert_unknown_cli_tools() {
+        let server = crate::NteractMcp::new("unused.sock".into(), None, None);
+        let unknown = rmcp::model::CallToolRequestParams::new("no_such_tool").with_arguments(
+            serde_json::json!({"notebook_handle":"unknown"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let error = super::dispatch(&server, &unknown).await.unwrap_err();
+        assert!(error.message.contains("Unknown tool"));
+        let invalid = rmcp::model::CallToolRequestParams::new("set_cell");
+        let result = super::dispatch(&server, &invalid).await.unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.structured_content.unwrap()["error"]["code"],
+            "missing_notebook_handle"
+        );
+        assert!(server.attachments().read_entries().is_empty());
+    }
     use super::*;
     use crate::session::NotebookSession;
     use crate::session_activation::CanonicalNotebookTarget;

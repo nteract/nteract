@@ -317,3 +317,15 @@ pub fn assert_unsupported(response: &Value, version: &str) {
     }
     assert_eq!(supported, expected);
 }
+
+pub fn assert_target_tool_error<'a>(response: &'a Value, code: &str) -> &'a Value {
+    assert!(response.get("error").is_none(), "{response}");
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    let error = &response["result"]["structuredContent"]["error"];
+    assert_eq!(error["code"], code, "{response}");
+    assert!(response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains(error["message"].as_str().unwrap()));
+    error
+}

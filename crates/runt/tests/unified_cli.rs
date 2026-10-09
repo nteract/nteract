@@ -132,14 +132,22 @@ async fn exercise_supervised_mcp(native: bool) {
     )
     .await;
     let rejected = response(&mut stdout, 2).await;
-    assert_eq!(rejected["error"]["code"], -32602, "{rejected}");
+    assert!(rejected.get("error").is_none(), "{rejected}");
+    assert_eq!(rejected["result"]["isError"], true, "{rejected}");
+    let target_error = &rejected["result"]["structuredContent"]["error"];
+    assert_eq!(
+        target_error["code"], "missing_notebook_handle",
+        "{rejected}"
+    );
     assert!(
-        rejected["error"]["message"]
+        target_error["message"]
             .as_str()
             .unwrap()
             .contains("notebook_handle"),
         "{rejected}"
     );
+    assert_eq!(target_error["refresh"], "tools/list", "{rejected}");
+    assert_eq!(target_error["resubmit_required"], true, "{rejected}");
 
     // Legacy tools/list may return the initial cached catalog. Missing-handle
     // rejection can happen before child startup, so use a session-free worker

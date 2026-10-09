@@ -158,7 +158,18 @@ async fn native_requires_handles_and_rejects_expired_subscriptions_before_ack() 
     ] {
         params["_meta"] = modern_meta("2026-07-28", false);
         let response = wire.request(id, method, Some(params)).await;
-        assert!(response.get("error").is_some(), "{response}");
+        if method == "tools/call" {
+            support::assert_target_tool_error(
+                &response,
+                if id == 1 {
+                    "missing_notebook_handle"
+                } else {
+                    "attachment_expired"
+                },
+            );
+        } else {
+            assert!(response.get("error").is_some(), "{response}");
+        }
     }
     assert!(!wire
         .notifications

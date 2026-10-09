@@ -800,7 +800,9 @@ impl ServerHandler for NteractMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         require_protocol(&context)?;
-        mcp_transport::validate_tool_target_params(&request)?;
+        if let Err(error) = mcp_transport::validate_tool_target_params(&request) {
+            return Ok(mcp_transport::tool_target_error(error).into());
+        }
         // Sniff client name on first call for use as the notebook peer label.
         // The title (e.g., "Claude Desktop") is preferred over the raw
         // implementation name ("claude-ai"), then known names are canonicalized.
@@ -1499,7 +1501,10 @@ mod tests {
                 .notebook_handle,
             b_handle
         );
-        assert!(targets::dispatch(&server, &request).await.is_err());
+        assert_eq!(
+            targets::dispatch(&server, &request).await.unwrap().is_error,
+            Some(true)
+        );
         targets::with_handle(b_handle, async {
             // Ownership does not bypass runtime readiness: this fixture has no ready runtime.
             assert!(server
@@ -1527,8 +1532,14 @@ mod tests {
                 .insert(session, server.attachments.reserve().unwrap());
         }
         let request = CallToolRequestParams::new("create_notebook");
-        let error = targets::dispatch(&server, &request).await.unwrap_err();
-        assert!(error.message.contains("attachment_limit"));
+        let result = targets::dispatch(&server, &request).await.unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let error = result.structured_content.unwrap();
+        assert_eq!(error["error"]["code"], "attachment_limit");
+        assert!(error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unneeded exact notebook_handle"));
         for handle in &handles {
             assert!(server.attachment_identity(handle).await.is_some());
         }
@@ -1589,11 +1600,12 @@ mod tests {
         let mut client = Notifications(tx).serve(client_pipe).await.unwrap();
         let mut serving = task.await.unwrap();
         let explicit_release = CallToolRequestParams::new("disconnect_notebook");
-        let error = client.call_tool(explicit_release).await.unwrap_err();
-        let rmcp::ServiceError::McpError(error) = error else {
-            panic!("expected mandatory-handle error")
-        };
-        assert!(error.message.contains("notebook_handle is required"));
+        let result = client.call_tool(explicit_release).await.unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.structured_content.unwrap()["error"]["code"],
+            "missing_notebook_handle"
+        );
         client
             .subscribe(SubscribeRequestParams::new(&a_uri))
             .await
@@ -1683,8 +1695,12 @@ mod tests {
             "wait_for_notebook_change",
         ] {
             let request = CallToolRequestParams::new(name);
-            let error = targets::dispatch(&server, &request).await.unwrap_err();
-            assert!(error.message.contains("notebook_handle is required"));
+            let result = targets::dispatch(&server, &request).await.unwrap();
+            assert_eq!(result.is_error, Some(true));
+            assert_eq!(
+                result.structured_content.unwrap()["error"]["code"],
+                "missing_notebook_handle"
+            );
         }
     }
 

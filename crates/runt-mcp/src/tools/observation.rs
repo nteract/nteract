@@ -47,19 +47,20 @@ pub async fn wait_for_notebook_change(
             None,
         )
     })?;
-    let Some((notebook_id, observer)) = server.observer_for_handle(&params.notebook_handle).await?
-    else {
-        return Ok(CallToolResult::structured(serde_json::json!({
-            "outcome":"unavailable", "notebook_handle":params.notebook_handle,
-            "message":"This notebook attachment is no longer available. Connect again and obtain a new handle."
-        })));
-    };
+    // Capture valid ownership at admission. Unknown input is a tool error;
+    // release after this point retains the normal unavailable wait outcome.
     let expiration = server
         .attachments
         .read_entries()
         .get(&params.notebook_handle)
         .map(|entry| entry.expiration());
     let Some(mut expiration) = expiration else {
+        return Ok(mcp_transport::tool_target_error(
+            crate::attachments::expired_resource_error(&params.notebook_handle),
+        ));
+    };
+    let Some((notebook_id, observer)) = server.observer_for_handle(&params.notebook_handle).await?
+    else {
         return Ok(unavailable_attachment(&params));
     };
     let result = tokio::select! {
@@ -461,8 +462,8 @@ mod tests {
                 .await
                 .unwrap()
                 .structured_content
-                .unwrap()["outcome"],
-            "unavailable"
+                .unwrap()["error"]["code"],
+            "attachment_expired"
         );
     }
 

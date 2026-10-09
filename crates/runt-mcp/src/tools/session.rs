@@ -2330,15 +2330,20 @@ async fn resolve_notebook_launch_with_incarnation(
 ) -> Result<CallToolResult, McpError> {
     // A null legacy selector is harmless; nonnull notebook_id is rejected by
     // targets::dispatch. Paths and all other alternate selectors are rejected.
+    // Target selectors were validated at admission. Other unknown arguments
+    // keep their original error channel; they are not attachment failures.
     super::reject_unknown_args(request, &["notebook_id"])?;
-    let handle = crate::targets::current()
-        .ok_or_else(|| McpError::invalid_params("notebook_handle is required", None))?;
+    let Some(handle) = crate::targets::current() else {
+        return Ok(mcp_transport::tool_target_error(McpError::invalid_params("notebook_handle is required; connect the intended notebook and explicitly resubmit with its handle", None)));
+    };
     let session = {
         let entries = server.attachments.read_entries();
-        entries
-            .get(&handle)
-            .map(|entry| entry.session.clone())
-            .ok_or_else(|| crate::attachments::expired_resource_error(&handle))?
+        let Some(entry) = entries.get(&handle) else {
+            return Ok(mcp_transport::tool_target_error(
+                crate::attachments::expired_resource_error(&handle),
+            ));
+        };
+        entry.session.clone()
     };
     if session.is_hosted() {
         return tool_error("A hosted notebook cannot be opened by the local dev launcher");
@@ -2348,18 +2353,20 @@ async fn resolve_notebook_launch_with_incarnation(
     }
     let live = live_incarnation.await;
     if live.is_none() || live != session.local_daemon_incarnation {
-        return Err(McpError::internal_error(
+        return Ok(mcp_transport::tool_target_error(McpError::internal_error(
             "The attachment's local runtime is unavailable or has been replaced; reconnect before opening Desktop",
             Some(crate::attachments::unavailable_resource_data(&handle)),
-        ));
+        )));
     }
     // Recheck membership and readiness after sampling the daemon. Release the
     // registry guard before returning; the common completion fence also checks
     // expiry. No launch side effect occurs in this read.
     let entries = server.attachments.read_entries();
-    let current = entries
-        .get(&handle)
-        .ok_or_else(|| crate::attachments::expired_resource_error(&handle))?;
+    let Some(current) = entries.get(&handle) else {
+        return Ok(mcp_transport::tool_target_error(
+            crate::attachments::expired_resource_error(&handle),
+        ));
+    };
     if let Err(error) = current
         .session
         .access(crate::session::SessionRequirement::KernelControl)
@@ -2382,10 +2389,12 @@ pub async fn show_notebook(
 ) -> Result<CallToolResult, McpError> {
     // Resolve notebook_id (and optional path) from param or current session
     let (target, session_path) = if let Some(handle) = crate::targets::current() {
-        server
-            .attachment_identity(&handle)
-            .await
-            .ok_or_else(|| McpError::invalid_params("Notebook attachment expired", None))?
+        let Some(identity) = server.attachment_identity(&handle).await else {
+            return Ok(mcp_transport::tool_target_error(
+                crate::attachments::expired_resource_error(&handle),
+            ));
+        };
+        identity
     } else {
         match arg_str(request, "notebook_id") {
             Some(id) => (id.to_string(), None),
@@ -2644,12 +2653,13 @@ mod tests {
             serde_json::json!({}),
             serde_json::json!({"notebook_handle":""}),
         ] {
-            assert!(crate::targets::dispatch(
-                &server,
-                &make_request("resolve_notebook_launch", args),
-            )
-            .await
-            .is_err());
+            assert!(
+                crate::targets::dispatch(&server, &make_request("resolve_notebook_launch", args),)
+                    .await
+                    .unwrap()
+                    .is_error
+                    == Some(true)
+            );
         }
         let result = crate::targets::with_handle(
             h.clone(),
@@ -2671,8 +2681,11 @@ mod tests {
             resolve_notebook_launch_with_incarnation(&server, &request, std::future::ready(None)),
         )
         .await
-        .unwrap_err();
-        assert_eq!(unavailable.data.unwrap()["code"], "attachment_unavailable");
+        .unwrap();
+        assert_eq!(
+            unavailable.structured_content.unwrap()["error"]["code"],
+            "attachment_unavailable"
+        );
         let replaced = crate::targets::with_handle(
             h.clone(),
             resolve_notebook_launch_with_incarnation(
@@ -2685,8 +2698,11 @@ mod tests {
             ),
         )
         .await
-        .unwrap_err();
-        assert_eq!(replaced.data.unwrap()["code"], "attachment_unavailable");
+        .unwrap();
+        assert_eq!(
+            replaced.structured_content.unwrap()["error"]["code"],
+            "attachment_unavailable"
+        );
         let removed = crate::targets::with_handle(
             h.clone(),
             resolve_notebook_launch_with_incarnation(&server, &request, async {
@@ -2695,8 +2711,11 @@ mod tests {
             }),
         )
         .await
-        .unwrap_err();
-        assert_eq!(removed.data.unwrap()["code"], "attachment_expired");
+        .unwrap();
+        assert_eq!(
+            removed.structured_content.unwrap()["error"]["code"],
+            "attachment_expired"
+        );
     }
 
     #[tokio::test]
@@ -2732,12 +2751,16 @@ mod tests {
         ] {
             let mut args = args.as_object().unwrap().clone();
             args.insert("notebook_handle".into(), h.clone().into());
-            assert!(crate::targets::dispatch(
-                &server,
-                &CallToolRequestParams::new("resolve_notebook_launch").with_arguments(args)
-            )
-            .await
-            .is_err());
+            assert!(
+                crate::targets::dispatch(
+                    &server,
+                    &CallToolRequestParams::new("resolve_notebook_launch").with_arguments(args)
+                )
+                .await
+                .unwrap()
+                .is_error
+                    == Some(true)
+            );
         }
         let hosted = NotebookSession::hosted(
             hosted_test_peer().await,

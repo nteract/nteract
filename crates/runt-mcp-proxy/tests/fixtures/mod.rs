@@ -122,7 +122,7 @@ impl ServerHandler for LegacyChild {
             return match revision.as_str() {
                 "empty" => Ok(serde_json::from_value(json!({"tools":[]})).unwrap()),
                 "error" => Err(ErrorData::internal_error("Catalog unavailable", None)),
-                _ => Ok(serde_json::from_value(json!({"tools":[{"name":"compatibility_echo","description":revision,"inputSchema":{"type":"object","properties":{(revision.as_str()):{"type":"string"}},"required":[revision]}}]})).unwrap()),
+                _ => Ok(serde_json::from_value(json!({"tools":[{"name":if revision == "renamed" {"compatibility_echo_v2"} else {"compatibility_echo"},"description":revision,"inputSchema":{"type":"object","properties":{(revision.as_str()):{"type":"string"}},"required":[revision]}}]})).unwrap()),
             };
         }
         if mode == "unsafe-implicit" || mode == "legacy-attachments" {
@@ -237,6 +237,23 @@ impl ServerHandler for LegacyChild {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let mode = std::env::var(CHILD_MODE).unwrap();
+        if mode == "catalog" {
+            let root =
+                std::path::PathBuf::from(std::env::var("NTERACT_COMPATIBILITY_ROOT").unwrap());
+            let renamed = std::fs::read_to_string(root.join("catalog-revision"))
+                .is_ok_and(|revision| revision == "renamed");
+            let name = if renamed {
+                "compatibility_echo_v2"
+            } else {
+                "compatibility_echo"
+            };
+            if request.name.as_ref() != name {
+                return Err(ErrorData::invalid_params(
+                    format!("Unknown tool: {}", request.name),
+                    None,
+                ));
+            }
+        }
         if mode == "unsafe-implicit" || mode == "legacy-attachments" {
             let root =
                 std::path::PathBuf::from(std::env::var("NTERACT_COMPATIBILITY_ROOT").unwrap());
@@ -248,7 +265,10 @@ impl ServerHandler for LegacyChild {
                 let handle = supplied
                     .ok_or_else(|| ErrorData::invalid_params("notebook_handle required", None))?;
                 if !matches!(handle, "handle-a" | "handle-b") {
-                    return Err(ErrorData::invalid_params("attachment expired", None));
+                    return Err(ErrorData::invalid_params(
+                        "attachment expired; connect again for a new handle",
+                        Some(json!({"code":"attachment_expired","notebook_handle":handle})),
+                    ));
                 }
                 handle
             } else {
@@ -374,7 +394,9 @@ impl ServerHandler for LegacyChild {
                 rmcp_legacy::model::Content::text("accepted"),
             ]));
         }
-        if request.name != "compatibility_echo" {
+        if request.name != "compatibility_echo"
+            && !(mode == "catalog" && request.name == "compatibility_echo_v2")
+        {
             return Err(ErrorData::invalid_params("Unknown fixture tool", None));
         }
         let info = context

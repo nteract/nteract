@@ -69,19 +69,19 @@
       "name": "list_notebooks"
     },
     {
-      "description": "Attach to a notebook. Pass path (.ipynb) or notebook_id (UUID) — not both.",
+      "description": "Attach by path or notebook_id, not both. Handle: no TTL; ends on explicit release or worker/daemon membership expiry.",
       "name": "connect_notebook"
     },
     {
-      "description": "Create a notebook. Ephemeral by default; save_notebook(path) to persist.",
+      "description": "Create an ephemeral notebook; save_notebook(path) persists. Handle: no TTL; ends on explicit release or worker/daemon membership expiry.",
       "name": "create_notebook"
     },
     {
-      "description": "Save notebook to disk. For notebooks created with create_notebook(), you must provide a path.",
+      "description": "Save to disk; path required for notebooks from create_notebook.",
       "name": "save_notebook"
     },
     {
-      "description": "Open the notebook in the nteract app for the user. Headless: returns a structured no-display reason.",
+      "description": "Open in nteract for the user. Headless: returns a structured no-display reason.",
       "name": "show_notebook"
     },
     {
@@ -93,11 +93,11 @@
       "name": "wait_for_notebook_change"
     },
     {
-      "description": "Create a cell anchored by after_cell_id; omit after_cell_id to append.",
+      "description": "Create after after_cell_id; omit it to append.",
       "name": "create_cell"
     },
     {
-      "description": "Replace a cell's source or type, optionally executing it and returning execution_id/output summary.",
+      "description": "Set source/type; optionally execute and return execution_id/output summary.",
       "name": "set_cell"
     },
     {

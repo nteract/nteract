@@ -57,8 +57,8 @@ impl ServerHandler for Child {
             .unwrap_or_default();
         if !self.handles.lock().unwrap().contains(handle) {
             return Err(ErrorData::invalid_params(
-                "Notebook attachment expired",
-                None,
+                "Notebook attachment expired; connect again and obtain a current handle",
+                Some(json!({"code":"attachment_expired","notebook_handle":handle})),
             ));
         }
         let terminal = request.name == "disconnect_notebook";

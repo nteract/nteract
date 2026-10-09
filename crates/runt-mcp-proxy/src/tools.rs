@@ -85,7 +85,7 @@ pub enum ToolDivergence {
     /// New tools were added but none removed — safe to continue.
     Superset { added: Vec<String> },
     /// Tools were removed or renamed — MCP client's schema is stale.
-    /// The proxy should exit cleanly so the client restarts fresh.
+    /// Publish the live catalog and continue so clients can relist in place.
     Incompatible {
         removed: Vec<String>,
         added: Vec<String>,

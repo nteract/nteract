@@ -141,12 +141,8 @@ pub async fn missing_targets(wire: &mut Wire, first_id: u64) -> Vec<Value> {
 
 pub fn assert_missing_targets(responses: &[Value]) {
     for response in responses {
-        assert_eq!(
-            response["error"]["code"], -32602,
-            "missing target must reject before dispatch: id={}",
-            response["id"]
-        );
-        assert!(response["error"]["message"]
+        let error = crate::support::assert_target_tool_error(response, "missing_notebook_handle");
+        assert!(error["message"]
             .as_str()
             .unwrap()
             .contains("notebook_handle"));

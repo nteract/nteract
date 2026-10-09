@@ -141,25 +141,25 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(always_load_meta()),
         Tool::new(
             "connect_notebook",
-            "Attach to a notebook. Pass path (.ipynb) or notebook_id (UUID) — not both.",
+            "Attach by path or notebook_id, not both. Handle: no TTL; ends on explicit release or worker/daemon membership expiry.",
             schema_for::<session::OpenNotebookParams>(),
         )
         .annotate(
             ToolAnnotations::new()
                 .destructive(false)
-                .idempotent(true)
+                .idempotent(false)
                 .open_world(true),
         )
         .with_meta(always_load_meta()),
         Tool::new(
             "create_notebook",
-            "Create a notebook. Ephemeral by default; save_notebook(path) to persist.",
+            "Create an ephemeral notebook; save_notebook(path) persists. Handle: no TTL; ends on explicit release or worker/daemon membership expiry.",
             schema_for::<session::CreateNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
         Tool::new(
             "save_notebook",
-            "Save notebook to disk. For notebooks created with create_notebook(), you must provide a path.",
+            "Save to disk; path required for notebooks from create_notebook.",
             schema_for::<session::SaveNotebookParams>(),
         )
         .annotate(
@@ -170,7 +170,7 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "show_notebook",
-            "Open the notebook in the nteract app for the user. Headless: returns a structured no-display reason.",
+            "Open in nteract for the user. Headless: returns a structured no-display reason.",
             schema_for::<session::ShowNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
@@ -189,14 +189,14 @@ pub fn all_tools() -> Vec<Tool> {
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         Tool::new(
             "create_cell",
-            "Create a cell anchored by after_cell_id; omit after_cell_id to append.",
+            "Create after after_cell_id; omit it to append.",
             schema_for::<cell_crud::CreateCellParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false))
         .with_meta(app_tool_meta()),
         Tool::new(
             "set_cell",
-            "Replace a cell's source or type, optionally executing it and returning execution_id/output summary.",
+            "Set source/type; optionally execute and return execution_id/output summary.",
             schema_for::<cell_crud::SetCellParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false))

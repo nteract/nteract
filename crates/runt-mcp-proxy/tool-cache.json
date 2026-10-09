@@ -38,10 +38,10 @@
     },
     "annotations": {
       "destructiveHint": false,
-      "idempotentHint": true,
+      "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Attach to a notebook. Pass path (.ipynb) or notebook_id (UUID) — not both.",
+    "description": "Attach by path or notebook_id, not both. Handle: no TTL; ends on explicit release or worker/daemon membership expiry.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -72,7 +72,7 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Create a notebook. Ephemeral by default; save_notebook(path) to persist.",
+    "description": "Create an ephemeral notebook; save_notebook(path) persists. Handle: no TTL; ends on explicit release or worker/daemon membership expiry.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -147,7 +147,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Save notebook to disk. For notebooks created with create_notebook(), you must provide a path.",
+    "description": "Save to disk; path required for notebooks from create_notebook.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -178,7 +178,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Open the notebook in the nteract app for the user. Headless: returns a structured no-display reason.",
+    "description": "Open in nteract for the user. Headless: returns a structured no-display reason.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -275,7 +275,7 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Create a cell anchored by after_cell_id; omit after_cell_id to append.",
+    "description": "Create after after_cell_id; omit it to append.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -344,7 +344,7 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Replace a cell's source or type, optionally executing it and returning execution_id/output summary.",
+    "description": "Set source/type; optionally execute and return execution_id/output summary.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,

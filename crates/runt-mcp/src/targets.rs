@@ -41,17 +41,20 @@ pub(crate) async fn dispatch(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, ErrorData> {
-    mcp_transport::validate_tool_target_params(request)?;
+    if let Err(error) = mcp_transport::validate_tool_target_params(request) {
+        return Ok(mcp_transport::tool_target_error(error));
+    }
     let reservation = if matches!(
         request.name.as_ref(),
         "connect_notebook" | "open_notebook" | "create_notebook"
     ) {
-        Some(
-            server
-                .attachments
-                .reserve()
-                .map_err(|message| ErrorData::invalid_params(message, None))?,
-        )
+        Some(match server.attachments.reserve() {
+            Ok(reservation) => reservation,
+            Err(message) => return Ok(mcp_transport::tool_target_error(ErrorData::invalid_params(
+                format!("{message}; deliberately disconnect_notebook with an unneeded exact notebook_handle, then explicitly acquire again"),
+                Some(serde_json::json!({"code":"attachment_limit","resubmit_required":true})),
+            ))),
+        })
     } else {
         None
     };
@@ -82,24 +85,23 @@ async fn dispatch_inner(
         .and_then(|arguments| arguments.remove("notebook_handle"));
     let target = match value {
         Some(serde_json::Value::String(handle)) if !handle.is_empty() => Some(handle),
-        Some(_) => return Err(ErrorData::invalid_params("notebook_handle must be a nonempty attachment handle", None)),
-        None => return Err(ErrorData::invalid_params("notebook_handle is required; use the handle returned by connect_notebook or create_notebook", None)),
+        Some(_) => return Ok(mcp_transport::tool_target_error(ErrorData::invalid_params("notebook_handle must be a nonempty attachment handle", None))),
+        None => return Ok(mcp_transport::tool_target_error(ErrorData::invalid_params("notebook_handle is required; use the handle returned by connect_notebook or create_notebook", None))),
     };
     if let Some(handle) = target.as_ref() {
         if server.attachment_identity(handle).await.is_none() {
-            return Err(ErrorData::invalid_params(
-                "Notebook attachment expired; connect again and obtain a new handle",
-                None,
+            return Ok(mcp_transport::tool_target_error(
+                crate::attachments::expired_resource_error(handle),
             ));
         }
         if request.arguments.as_ref().is_some_and(|args| {
             args.get("notebook_id")
                 .is_some_and(|value| !value.is_null())
         }) {
-            return Err(ErrorData::invalid_params(
+            return Ok(mcp_transport::tool_target_error(ErrorData::invalid_params(
                 "Use notebook_handle without notebook_id",
                 None,
-            ));
+            )));
         }
     }
     let outcome = TARGET

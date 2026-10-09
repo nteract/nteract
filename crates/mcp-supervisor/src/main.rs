@@ -1285,7 +1285,9 @@ impl Supervisor {
         vite_port: u16,
         launch: impl FnOnce(&DevNotebookLaunch) -> Result<Option<std::process::Child>, McpError>,
     ) -> Result<CallToolResult, McpError> {
-        mcp_transport::validate_tool_target_params(request)?;
+        if let Err(error) = mcp_transport::validate_tool_target_params(request) {
+            return Ok(mcp_transport::tool_target_error(error));
+        }
         let (proxy, project_root, workspace_path) = {
             let state = self.state.read().await;
             (
@@ -1304,10 +1306,10 @@ impl Supervisor {
                 if state.project_root != project_root
                     || state.daemon_workspace_path != workspace_path
                 {
-                    return Err(McpError::invalid_params(
-                        "Dev workspace changed before Desktop launch",
-                        None,
-                    ));
+                    return Ok(mcp_transport::tool_target_error(McpError::invalid_params(
+                        "Dev workspace changed before Desktop launch; reconnect the intended notebook and explicitly resubmit with a current handle",
+                        Some(serde_json::json!({"code":"attachment_unavailable","notebook_handle":identity.notebook_handle})),
+                    )));
                 }
                 let plan = DevNotebookLaunch {
                     binary: runt_workspace::cargo_binary_path_for_workspace(
@@ -2263,7 +2265,9 @@ impl ServerHandler for Supervisor {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         require_protocol(&context)?;
-        mcp_transport::validate_tool_target(&request, &context)?;
+        if let Err(error) = mcp_transport::validate_tool_target(&request, &context) {
+            return Ok(mcp_transport::tool_target_error(error).into());
+        }
         if mcp_transport::is_native(&context) {
             self.native_proxy_ready(&context).await?;
         }
@@ -3899,7 +3903,7 @@ mod tests {
         for arguments in [
             serde_json::json!({"notebook_handle":"active"}),
             serde_json::json!({"notebook_handle":"parked","notebook_id":null}),
-            serde_json::json!({"notebook_handle":"expired","notebook_id":"/another.ipynb"}),
+            serde_json::json!({"notebook_handle":"expired","notebook_id":null}),
         ] {
             let request: CallToolRequestParams = serde_json::from_value(
                 serde_json::json!({"name":"show_notebook","arguments":arguments}),
@@ -3952,7 +3956,16 @@ mod tests {
             }
             let handle = args["notebook_handle"].as_str().unwrap();
             if matches!(handle, "expired" | "unavailable" | "unsupported") {
-                return Err(McpError::invalid_params(handle.to_owned(), None));
+                return Err(McpError::invalid_params(
+                    handle.to_owned(),
+                    if handle == "unsupported" {
+                        None
+                    } else {
+                        Some(
+                            serde_json::json!({"code":if handle == "expired" {"attachment_expired"} else {"attachment_unavailable"}, "notebook_handle":handle}),
+                        )
+                    },
+                ));
             }
             if handle == "blocked" {
                 self.entered.notify_one();
@@ -4075,28 +4088,47 @@ mod tests {
         }
         assert_eq!(launches, ["A", "B"]);
         let calls_before = child.calls.lock().unwrap().len();
-        assert!(supervisor
-            .show_notebook_dev_with_launcher(
-                &CallToolRequestParams::new("show_notebook"),
-                5173,
-                |_| panic!("missing handle launched")
-            )
-            .await
-            .is_err());
+        assert!(
+            supervisor
+                .show_notebook_dev_with_launcher(
+                    &CallToolRequestParams::new("show_notebook"),
+                    5173,
+                    |_| panic!("missing handle launched")
+                )
+                .await
+                .unwrap()
+                .is_error
+                == Some(true)
+        );
         assert_eq!(child.calls.lock().unwrap().len(), calls_before);
-        assert!(proxy
-            .admit_notebook_launch(
-                CallToolRequestParams::new("list_tools"),
-                |_| -> Result<CallToolResult, McpError> {
-                    panic!("unscoped caller bypassed launch handle validation")
-                }
-            )
-            .await
-            .is_err());
+        assert!(
+            proxy
+                .admit_notebook_launch(
+                    CallToolRequestParams::new("list_tools"),
+                    |_| -> Result<CallToolResult, McpError> {
+                        panic!("unscoped caller bypassed launch handle validation")
+                    }
+                )
+                .await
+                .unwrap()
+                .is_error
+                == Some(true)
+        );
         assert_eq!(child.calls.lock().unwrap().len(), calls_before);
+        for (handle, code) in [
+            ("expired", "attachment_expired"),
+            ("unavailable", "attachment_unavailable"),
+        ] {
+            let result = supervisor
+                .show_notebook_dev_with_launcher(&dev_launch_request(handle), 5173, |_| {
+                    panic!("expired target launched")
+                })
+                .await
+                .unwrap();
+            assert_eq!(result.is_error, Some(true));
+            assert_eq!(result.structured_content.unwrap()["error"]["code"], code);
+        }
         for handle in [
-            "expired",
-            "unavailable",
             "unsupported",
             "wrong_handle",
             "bad_uuid",
@@ -4150,12 +4182,16 @@ mod tests {
                 .as_mut()
                 .unwrap()
                 .insert(key.into(), value.into());
-            assert!(supervisor
-                .show_notebook_dev_with_launcher(&request, 5173, |_| panic!(
-                    "conflicting selector launched"
-                ))
-                .await
-                .is_err());
+            assert!(
+                supervisor
+                    .show_notebook_dev_with_launcher(&request, 5173, |_| panic!(
+                        "conflicting selector launched"
+                    ))
+                    .await
+                    .unwrap()
+                    .is_error
+                    == Some(true)
+            );
         }
         let result = supervisor
             .show_notebook_dev_with_launcher(&dev_launch_request("headless"), 5173, |_| {
@@ -4191,8 +4227,13 @@ mod tests {
         );
         proxy.state.write().await.child_generation += 1;
         child.release.notify_one();
-        let error = pending.await.unwrap().unwrap_err();
-        assert!(error.message.contains("Child changed"));
+        let result = pending.await.unwrap().unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let error = result.structured_content.unwrap();
+        assert!(error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Child changed"));
         let pending_supervisor = supervisor.clone();
         let pending = tokio::spawn(async move {
             pending_supervisor
@@ -4206,8 +4247,13 @@ mod tests {
             .unwrap();
         supervisor.state.write().await.daemon_workspace_path = dir.path().join("changed");
         child.release.notify_one();
-        let error = pending.await.unwrap().unwrap_err();
-        assert!(error.message.contains("workspace changed"));
+        let result = pending.await.unwrap().unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let error = result.structured_content.unwrap();
+        assert!(error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("workspace changed"));
         assert!(child
             .calls
             .lock()
@@ -4217,6 +4263,41 @@ mod tests {
         let client = proxy.state.write().await.child_client.take().unwrap();
         client.cancel().await.unwrap();
         server.cancel().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn supervisor_target_preflight_returns_tool_errors_before_readiness() {
+        for native in [false, true] {
+            let mut requests = Vec::new();
+            if !native {
+                requests.push(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}));
+            }
+            for (id, arguments) in [
+                serde_json::json!({}),
+                serde_json::json!({"notebook_handle":42}),
+                serde_json::json!({"notebook_handle":"A","notebook_id":"other"}),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut params = serde_json::json!({"name":"show_notebook","arguments":arguments});
+                if native {
+                    params["_meta"] = wire_support::modern_meta("2026-07-28", false);
+                }
+                requests.push(serde_json::json!({"jsonrpc":"2.0","id":id+10,"method":"tools/call","params":params}));
+            }
+            let responses = supervisor_responses(requests).await;
+            for (index, response) in responses.iter().skip(usize::from(!native)).enumerate() {
+                wire_support::assert_target_tool_error(
+                    response,
+                    if index == 2 {
+                        "invalid_notebook_target"
+                    } else {
+                        "missing_notebook_handle"
+                    },
+                );
+            }
+        }
     }
 
     async fn supervisor_responses(requests: Vec<Value>) -> Vec<Value> {

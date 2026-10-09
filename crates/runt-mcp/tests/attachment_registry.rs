@@ -8,6 +8,86 @@ use attachments::*;
 use serde_json::json;
 
 #[tokio::test]
+async fn admitted_wait_becomes_unavailable_when_its_exact_handle_is_released() {
+    use std::future::Future;
+    use std::task::Poll;
+
+    for native in [false, true] {
+        let fixture = Fixture::start().await;
+        let path = fixture.notebook("wait-release", "retained source");
+        let mut wire = fixture.wire();
+        if !native {
+            wire.initialize("2025-11-25").await;
+            wire.initialized().await;
+        }
+        let handle = open(&mut wire, 10, &path, native).await;
+        let retained = open(&mut wire, 11, &path, native).await;
+        fixture.ready(&handle).await;
+        fixture.ready(&retained).await;
+        fixture.synced(&handle).await;
+        let baseline = payload(
+            &wire
+                .request(
+                    12,
+                    "tools/call",
+                    Some(tool_params(
+                        "wait_for_notebook_change",
+                        json!({"notebook_handle":handle}),
+                        native,
+                    )),
+                )
+                .await,
+        );
+        let request = rmcp::model::CallToolRequestParams::new("wait_for_notebook_change")
+            .with_arguments(
+                json!({"notebook_handle":handle,"after":baseline["cursor"],"timeout_secs":50})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
+        {
+            let wait = runt_mcp::tools::dispatch(&fixture.server, &request);
+            tokio::pin!(wait);
+            // Poll the full tool entry point to pending before release, rather
+            // than relying on scheduling or sleeping to assume admission.
+            std::future::poll_fn(|context| {
+                assert!(wait.as_mut().poll(context).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            release(&mut wire, 13, &handle, native).await;
+            let waited = tokio::time::timeout(support::DEADLINE, wait)
+                .await
+                .expect("released ownership must end the admitted wait")
+                .unwrap();
+            assert_ne!(waited.is_error, Some(true));
+            let data = waited.structured_content.unwrap();
+            assert_eq!(data["outcome"], "unavailable");
+            assert_eq!(data["notebook_handle"], handle);
+        }
+        // The retained owner keeps the backing peer available: this wait ended
+        // because its logical handle was released, not because the peer died.
+        assert_eq!(
+            read(&mut wire, 14, &retained, native).await["cells"][0]["source_preview"],
+            "retained source"
+        );
+        let expired = wire
+            .request(
+                15,
+                "tools/call",
+                Some(tool_params(
+                    "wait_for_notebook_change",
+                    json!({"notebook_handle":handle}),
+                    native,
+                )),
+            )
+            .await;
+        support::assert_target_tool_error(&expired, "attachment_expired");
+        fixture.stop(wire).await;
+    }
+}
+
+#[tokio::test]
 async fn native_distinct_opens_finish_independently_in_both_orders() {
     for reverse in [false, true] {
         let fixture = Fixture::start().await;
@@ -108,7 +188,7 @@ async fn explicit_a_mutation_remains_on_a_while_b_is_opening() {
             Some(tool_params("get_cell", json!({"cell_id":"sentinel"}), true)),
         )
         .await;
-    assert_eq!(response["error"]["code"], -32602);
+    support::assert_target_tool_error(&response, "missing_notebook_handle");
     fixture.stop(wire).await;
 }
 
@@ -205,7 +285,7 @@ async fn same_notebook_opens_have_independent_handles_and_release() {
             )),
         )
         .await;
-    assert_eq!(stale["error"]["code"], -32602);
+    support::assert_target_tool_error(&stale, "attachment_expired");
     let third_response = wire
         .request(
             16,
@@ -252,7 +332,7 @@ async fn same_notebook_opens_have_independent_handles_and_release() {
             )),
         )
         .await;
-    assert_eq!(payload(&stale_wait)["outcome"], "unavailable");
+    support::assert_target_tool_error(&stale_wait, "attachment_expired");
     fixture.stop(wire).await;
 }
 
@@ -372,7 +452,7 @@ async fn ordinary_legacy_acquisitions_retain_independent_owners() {
             )),
         )
         .await;
-    assert_eq!(missing["error"]["code"], -32602);
+    support::assert_target_tool_error(&missing, "missing_notebook_handle");
     let selected = wire
         .request(
             14,
@@ -625,7 +705,7 @@ async fn admission_counts_pending_opens_without_evicting_retained_handles() {
         )
         .await;
     assert!(
-        refused["error"]["message"]
+        support::assert_target_tool_error(&refused, "attachment_limit")["message"]
             .as_str()
             .unwrap()
             .contains("attachment_limit"),
@@ -659,7 +739,7 @@ async fn admission_counts_pending_opens_without_evicting_retained_handles() {
         )
         .await;
     assert!(
-        refused["error"]["message"]
+        support::assert_target_tool_error(&refused, "attachment_limit")["message"]
             .as_str()
             .unwrap()
             .contains("attachment_limit"),
