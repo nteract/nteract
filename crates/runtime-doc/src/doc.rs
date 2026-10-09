@@ -1680,7 +1680,7 @@ impl RuntimeStateDoc {
                     }
                     let status = self.doc.get(item.id(), "status").ok().flatten().and_then(
                         |(v, _)| match v {
-                            Value::Scalar(s) => s.to_str().map(|s| s.to_string()),
+                            Value::Scalar(s) => s.as_str().map(|s| s.to_string()),
                             _ => None,
                         },
                     );

@@ -276,7 +276,7 @@ impl PoolDoc {
                 .ok()
                 .flatten()
                 .and_then(|(v, _)| match v {
-                    Value::Scalar(s) => s.to_u64(),
+                    Value::Scalar(s) => s.as_u64(),
                     _ => None,
                 })
                 .unwrap_or(0)
@@ -288,7 +288,7 @@ impl PoolDoc {
                 .ok()
                 .flatten()
                 .and_then(|(v, _)| match v {
-                    Value::Scalar(s) => s.to_str().map(|s| s.to_string()),
+                    Value::Scalar(s) => s.as_str().map(|s| s.to_string()),
                     _ => None,
                 })
         };
