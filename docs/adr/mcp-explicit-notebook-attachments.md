@@ -52,6 +52,11 @@ server retention, not per-chat ownership. Its release handle is returned under
 admitted requests own their captured replica through completion. Existing
 connect/create handles remain independently releasable. There is no TTL or
 pressure eviction, and address owners count toward the same capacity limit.
+A terminal disconnected physical connection ends its shared address retention
+at the next valid tool admission, releasing that capacity. This does not expire
+explicit/legacy handles, evict live peers, or discard a connected source-recovery
+session. A credential change alone is not connection loss. Retained handles
+remain discoverable through `resources/list` for deliberate release.
 
 Connect/create still return a fresh logical attachment and its opaque handle.
 Opening another notebook cannot alter a handle or an admitted request's target.
@@ -134,7 +139,9 @@ subscription ID.
 Release or membership expiry uses `attachment_expired` and
 `io.nteract/attachmentExpired`. Terminal backing loss uses
 `attachment_unavailable` and `io.nteract/attachmentUnavailable`. The latter ends
-observation of that peer while retaining logical ownership and capacity. Read
+observation of that peer while retaining explicit/legacy logical ownership and
+capacity. Shared address retention follows the terminal-connection cleanup rule
+above. Read
 and admission errors preserve original code/message/readiness and add typed
 code/handle data. Already-signaled expiry wins.
 

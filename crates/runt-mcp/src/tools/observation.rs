@@ -173,6 +173,24 @@ pub(super) async fn observe_execution(
     ),
     McpError,
 > {
+    observe_execution_with_progress(observer, execution_id, after, deadline, |_| {}).await
+}
+
+/// Report each observed runtime state before a surrounding deadline can cancel
+/// the wait, so callers can retain truthful partial execution status.
+pub(super) async fn observe_execution_with_progress(
+    observer: &ObservationReader,
+    execution_id: &str,
+    after: Option<&str>,
+    deadline: tokio::time::Instant,
+    mut on_progress: impl FnMut(&notebook_sync::execution_watch::ExecutionProgressState),
+) -> Result<
+    (
+        ChangeRead,
+        Option<notebook_sync::execution_watch::ExecutionProgressState>,
+    ),
+    McpError,
+> {
     let initial = observer.read(after).map_err(sync_error)?;
     if matches!(
         initial.outcome,
@@ -185,6 +203,7 @@ pub(super) async fn observe_execution(
         .map_err(sync_error)?;
     let terminal = async {
         while let Some(progress) = watcher.next().await {
+            on_progress(&progress);
             crate::progress::status(format!("Execution {execution_id}: {}", progress.status));
             if progress.terminal {
                 return Some(progress);

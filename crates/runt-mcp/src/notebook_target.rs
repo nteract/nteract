@@ -84,7 +84,7 @@ pub(crate) async fn acquire(
         NotebookTarget::LocalPath(_) => unreachable!("ID parser cannot return a path"),
     };
     acquired.map_err(|code| target_error(code, match code {
-        "attachment_limit" => "Notebook retention is at capacity; release an unneeded exact notebook_handle before retrying",
+        "attachment_limit" => "Notebook retention is at capacity; release an unneeded exact notebook_handle before retrying; resources/list lists retained handles",
         "ambiguous_notebook_authority" => "Connected replicas disagree on authenticated authority; use an exact notebook_handle",
         _ => "No connected replica matches this notebook and current authority. Call connect_notebook with this exact notebook_id/domain, then retry; no notebook was opened or created",
     }, notebook_id, domain))
@@ -149,6 +149,15 @@ mod tests {
     impl FrameSource for IdleFrames {
         async fn recv_frame(&mut self) -> Option<std::io::Result<TypedNotebookFrame>> {
             std::future::pending().await
+        }
+    }
+
+    struct ClosingFrames(tokio::sync::oneshot::Receiver<()>);
+
+    impl FrameSource for ClosingFrames {
+        async fn recv_frame(&mut self) -> Option<std::io::Result<TypedNotebookFrame>> {
+            let _ = (&mut self.0).await;
+            None
         }
     }
 
@@ -230,6 +239,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_address_connection_releases_capacity_without_expiring_other_owners() {
+        let server = server();
+        let current = credentials(DOMAIN, OPERATOR, api_key("synthetic-token"));
+        let (close, closed) = tokio::sync::oneshot::channel();
+        let handle = notebook_sync::connect::connect_frame_io(
+            NOTEBOOK.into(),
+            &format!("anaconda:alice/{OPERATOR}:{}", uuid::Uuid::new_v4()),
+            ClosingFrames(closed),
+            WriterFrameSink::new(tokio::io::sink()),
+        )
+        .await
+        .unwrap()
+        .handle;
+        let mut connected = NotebookSession::hosted(handle, NOTEBOOK.into(), DOMAIN.into());
+        connected.hosted_authority = Some(HostedAuthority {
+            credentials: current.clone(),
+            principal: "anaconda:alice".into(),
+            requested_scope: "editor",
+        });
+        let explicit = connected.notebook_handle.clone();
+        let legacy = connected.fresh_attachment(
+            0,
+            &CanonicalNotebookTarget::new(crate::cloud::hosted_notebook_url(DOMAIN, NOTEBOOK)),
+        );
+        let legacy_handle = legacy.notebook_handle.clone();
+        retain(&server, connected);
+        server
+            .attachments
+            .insert_legacy(legacy, server.attachments.reserve().unwrap());
+        let address = acquire_hosted(&server, DOMAIN, NOTEBOOK, &current).unwrap();
+        let expiration = server.attachments.read_entries()[&address.notebook_handle].expiration();
+        retain(
+            &server,
+            session(DOMAIN, "live-notebook", "anaconda:alice", current.clone()).await,
+        );
+        let live = acquire_hosted(&server, DOMAIN, "live-notebook", &current).unwrap();
+        let _reservations: Vec<_> =
+            std::iter::from_fn(|| server.attachments.reserve().ok()).collect();
+        assert!(server.attachments.reserve().is_err());
+        server.attachments.reap_disconnected_addresses();
+        assert!(
+            server.attachments.reserve().is_err(),
+            "live retention must not be evicted"
+        );
+        assert!(!*expiration.borrow());
+
+        close.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while address.handle.status().connection != notebook_sync::ConnectionState::Disconnected
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // A valid tool admission runs this cleanup before reserving any new owner.
+        let request = rmcp::model::CallToolRequestParams::new("list_active_notebooks");
+        let _ = crate::targets::dispatch(&server, &request).await;
+        let entries = server.attachments.read_entries();
+        assert!(!entries.contains_key(&address.notebook_handle));
+        assert!(
+            entries.contains_key(&explicit),
+            "exact handles keep their observation-loss contract"
+        );
+        assert!(entries.contains_key(&legacy_handle));
+        assert!(entries.contains_key(&live.notebook_handle));
+        assert!(*expiration.borrow());
+        assert!(
+            server.attachments.reserve().is_ok(),
+            "dead server retention must release its capacity"
+        );
+    }
+
+    #[tokio::test]
     async fn rotated_tokens_and_auth_kinds_cannot_reuse_a_retained_hosted_owner() {
         let auths = [
             CloudAuth::OidcBearer {
@@ -262,6 +345,16 @@ mod tests {
                     assert_not_connected(acquire_hosted(&server, DOMAIN, NOTEBOOK, &changed));
                 }
             }
+            server.attachments.reap_disconnected_addresses();
+            let resources = crate::resources::list_resources_for_mode(&server, true)
+                .await
+                .unwrap();
+            assert!(
+                resources.resources.iter().any(|resource| {
+                    resource.uri == crate::resources::attachment_cells_uri(&address.notebook_handle)
+                }),
+                "live owners remain discoverable after credentials change"
+            );
             assert_eq!(server.attachments.read_entries().len(), count);
             assert_eq!(
                 acquire_hosted(&server, DOMAIN, NOTEBOOK, &current)

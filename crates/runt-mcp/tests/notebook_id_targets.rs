@@ -15,6 +15,122 @@ fn notebook_id(fixture: &Fixture, handle: &str) -> String {
 }
 
 #[tokio::test]
+async fn id_retention_preserves_legacy_alias_owner_and_subscription_lifetime() {
+    let fixture = Fixture::start().await;
+    let path = fixture.notebook("legacy-alias", "before ID retention");
+    let mut wire = fixture.wire();
+    wire.initialize("2025-11-25").await;
+    wire.initialized().await;
+    let explicit = open(&mut wire, 10, &path, false).await;
+    fixture.ready(&explicit).await;
+    fixture.synced(&explicit).await;
+    let id = notebook_id(&fixture, &explicit);
+    let inspected = payload(
+        &wire
+            .request(
+                11,
+                "tools/call",
+                Some(tool_params(
+                    "inspect_notebook",
+                    json!({"notebook_id":id}),
+                    false,
+                )),
+            )
+            .await,
+    );
+    let address = inspected["target"]["notebook_handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(address, explicit);
+    assert_eq!(fixture.server.attachments().read_entries().len(), 2);
+    let uri = format!("nteract://notebooks/{id}/cells");
+
+    let read = wire
+        .request(12, "resources/read", Some(json!({"uri":uri})))
+        .await;
+    let snapshot: serde_json::Value =
+        serde_json::from_str(result(&read)["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(snapshot["notebook_handle"], explicit);
+    assert_eq!(
+        snapshot["cells"][0]["source_preview"],
+        "before ID retention"
+    );
+    result(
+        &wire
+            .request(13, "resources/subscribe", Some(json!({"uri":uri})))
+            .await,
+    );
+
+    // The alias watch captures the Explicit owner, not the redundant Address
+    // owner. Releasing that exact handle must end this watch even though the
+    // replica and the Address owner's independently retained alias survive.
+    let marker = wire.notifications.len();
+    release(&mut wire, 14, &explicit, false).await;
+    wire.notification_after(marker, |notification| {
+        notification["method"] == "notifications/resources/updated"
+            && notification["params"]["uri"] == uri
+            && notification["params"]["_meta"]["io.nteract/attachmentExpired"]["notebook_handle"]
+                == explicit
+    })
+    .await;
+
+    let read = wire
+        .request(15, "resources/read", Some(json!({"uri":uri})))
+        .await;
+    let snapshot: serde_json::Value =
+        serde_json::from_str(result(&read)["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(snapshot["notebook_handle"], address);
+    assert_eq!(
+        snapshot["cells"][0]["source_preview"],
+        "before ID retention"
+    );
+    result(
+        &wire
+            .request(16, "resources/subscribe", Some(json!({"uri":uri})))
+            .await,
+    );
+    let marker = wire.notifications.len();
+    result(
+        &mutate(
+            &mut wire,
+            17,
+            &address,
+            "Address owner remains writable",
+            false,
+        )
+        .await,
+    );
+    let update = wire
+        .notification_after(marker, |notification| {
+            notification["method"] == "notifications/resources/updated"
+                && notification["params"]["uri"] == uri
+        })
+        .await;
+    assert!(update["params"]["_meta"]["io.nteract/attachmentExpired"].is_null());
+    let read = wire
+        .request(18, "resources/read", Some(json!({"uri":uri})))
+        .await;
+    let snapshot: serde_json::Value =
+        serde_json::from_str(result(&read)["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(snapshot["notebook_handle"], address);
+    assert_eq!(
+        snapshot["cells"][0]["source_preview"],
+        "Address owner remains writable"
+    );
+    let marker = wire.notifications.len();
+    release(&mut wire, 19, &address, false).await;
+    wire.notification_after(marker, |notification| {
+        notification["method"] == "notifications/resources/updated"
+            && notification["params"]["uri"] == uri
+            && notification["params"]["_meta"]["io.nteract/attachmentExpired"]["notebook_handle"]
+                == address
+    })
+    .await;
+    fixture.stop(wire).await;
+}
+
+#[tokio::test]
 async fn overlapping_same_cell_ids_stay_in_their_notebook_during_another_open() {
     for native in [false, true] {
         let fixture = Fixture::start().await;

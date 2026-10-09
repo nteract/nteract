@@ -49,6 +49,7 @@ pub(crate) async fn dispatch(
     if let Err(error) = mcp_transport::validate_tool_target_params(request) {
         return Ok(mcp_transport::tool_target_error(error));
     }
+    server.attachments.reap_disconnected_addresses();
     let reservation = if matches!(
         request.name.as_ref(),
         "connect_notebook" | "open_notebook" | "create_notebook"
@@ -56,7 +57,7 @@ pub(crate) async fn dispatch(
         Some(match server.attachments.reserve() {
             Ok(reservation) => reservation,
             Err(message) => return Ok(mcp_transport::tool_target_error(ErrorData::invalid_params(
-                format!("{message}; deliberately disconnect_notebook with an unneeded exact notebook_handle, then explicitly acquire again"),
+                format!("{message}; deliberately disconnect_notebook with an unneeded exact notebook_handle, then explicitly acquire again; resources/list lists retained handles"),
                 Some(serde_json::json!({"code":"attachment_limit","resubmit_required":true})),
             ))),
         })
@@ -192,4 +193,18 @@ pub(crate) async fn with_handle<T>(
     future: impl std::future::Future<Output = T>,
 ) -> T {
     TARGET.scope(Some(handle), future).await
+}
+
+/// Exercise an already-admitted ID call without a daemon/network resolver.
+#[cfg(test)]
+pub(crate) async fn with_captured_session<T>(
+    session: crate::session::NotebookSession,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    TARGET
+        .scope(
+            Some(session.notebook_handle.clone()),
+            CAPTURED_SESSION.scope(Some(session), future),
+        )
+        .await
 }

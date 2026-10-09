@@ -1,7 +1,7 @@
 # MCP direction: notebook identity and realtime collaboration
 
 Date: 2026-10-09. Status: staged implementation and remaining research direction.
-Source check: `3a83bd2684c76367434cbc409a3a9b2db4b27ede` (2026-10-09 main). The inspected MCP, sync, runtime, hosted transport, and MCP App implementations match the earlier investigation checkpoint; intervening differences in those directories are version manifests.
+Investigation baseline: `3a83bd2684c76367434cbc409a3a9b2db4b27ede` (2026-10-09 main). Source line anchors below refer to that baseline. The first implementation described here changes the MCP surface and replica identity after that checkpoint.
 Prepared from source and standards research with an independent Kilo Fable architecture consultation. The [attachment contract](../adr/mcp-explicit-notebook-attachments.md) now records the approved first migration: ID/domain or handle targeting and separate retained address ownership. Existing logical handles keep their deliberate-release/no-TTL contract; any ownerless-pool eviction policy is a new contract, not retroactive handle expiry.
 
 ## First implementation
@@ -10,7 +10,9 @@ The first slice fixes local replica actor identity and adds bounded
 `inspect_notebook`. Ordinary operations accept notebook ID/domain or an existing
 handle. ID requests retain and capture already connected, authorized replicas;
 a cold target still requires explicit connect. Shared address owners have no
-TTL/eviction, count toward capacity, and are separate from explicit handle
+TTL/pressure eviction, count toward capacity, and release their capacity after
+a terminal physical disconnection is observed at tool admission. They are
+separate from explicit handle
 ownership. This is a staged subset of the full resolver below: cold projection
 inspection, bridge canonical-address metadata and broader hosted readiness
 qualification remain future work.
@@ -79,7 +81,7 @@ execute_cell(notebook_id, cell_id, domain?, ...)
 get_results(notebook_id, execution_id, domain?, timeout_secs=0, full_output=false)
 ```
 
-The inspection tool is advertised and bounded, using the same projection/read code as resources. Sharing projections does not imply acquiring an ordinary peer for every read: use an already-authorized replica or a daemon-owned snapshot that cannot auto-launch a kernel. For cold rooms where that is insufficient, return explicit unavailability until a non-launching observer admission is available. Do not silently connect an ordinary peer to satisfy a read. Defaults return a useful summary, stable cell IDs, effective capabilities, heads, truncation/pagination, and a matching cursor when observation is available; otherwise report that observation is unavailable. Do not assume every host discovers resource templates or hidden tools. Current hidden reads are in `crates/runt-mcp/src/tools/mod.rs:329`.
+The inspection tool is advertised and bounded, using the same projection/read code as resources. Sharing projections does not imply acquiring an ordinary peer for every read: use an already-authorized replica or a daemon-owned snapshot that cannot auto-launch a kernel. For cold rooms where that is insufficient, return explicit unavailability until a non-launching observer admission is available. Do not silently connect an ordinary peer to satisfy a read. The implemented defaults return a summary, stable cell IDs, admission-time readiness, truncation/pagination, and a matching cursor when observation is available. A retained projection carries projection heads and previews with no observation cursor. A fuller authority-backed capability and document-head response remains part of the later resolver work. Do not assume every host discovers resource templates or hidden tools. Current hidden reads are in `crates/runt-mcp/src/tools/mod.rs:329`.
 
 Current pagination uses offsets over live snapshots, with explicit next offsets/truncation. Compare observation cursors before combining pages; it is not a pinned historical snapshot. Future stable pagination tokens must remain distinct from observation cursors. Mutation receipts distinguish locally applied, authority-synced, and file-saved outcomes; a successful edit receipt must not imply a disk checkpoint.
 

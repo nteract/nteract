@@ -233,6 +233,12 @@ impl NotebookSession {
         attachment
     }
 
+    /// Logical owners cloned from one replica share its observation state.
+    /// Equal notebook IDs or actor labels do not establish replica identity.
+    pub(crate) fn shares_replica_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.observation, &other.observation)
+    }
+
     pub fn observer(&self) -> Result<crate::observation::ObservationReader, String> {
         self.observation
             .get_or_init(|| {

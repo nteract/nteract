@@ -1,5 +1,6 @@
 //! Execution tools: execute_cell, run_all_cells, get_results.
 
+use std::sync::Mutex;
 use std::time::Duration;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
@@ -405,6 +406,9 @@ pub async fn get_results(
         Some(super::observation::wait_permit(server)?)
     };
 
+    // Kept outside the deadline future so cancellation cannot erase evidence
+    // already observed in this notebook while loading outputs or waiting.
+    let deadline_result = Mutex::new(not_observed_result(execution_id, None));
     let read = async {
         // Durable results still require one readable, explicitly selected notebook.
         // A global execution UUID is not proof that it belongs to this target.
@@ -424,12 +428,25 @@ pub async fn get_results(
                 Some(error),
             ),
         };
+        *deadline_result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            not_observed_result(execution_id, Some(&access.notebook_id));
         let metadata = server.local_metadata_for_access(&access);
         if let Some(handle) = runtime_handle.as_ref() {
             let state = handle
                 .get_runtime_state()
                 .map_err(|_| McpError::internal_error("Failed to read RuntimeStateDoc", None))?;
             if let Some(exec) = state.executions.get(execution_id) {
+                *deadline_result
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = partial_execution_result(
+                    execution_id,
+                    &exec.status,
+                    exec.cell_id.as_deref(),
+                    exec.execution_count,
+                    exec.outputs.len(),
+                );
                 if timeout.is_zero() {
                     return render_execution_result(
                         &metadata,
@@ -450,6 +467,15 @@ pub async fn get_results(
             )
             .await
             {
+                *deadline_result
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = partial_execution_result(
+                    execution_id,
+                    &record.status,
+                    record.cell_id.as_deref(),
+                    record.execution_count,
+                    record.outputs.len(),
+                );
                 return render_durable_result(&metadata, execution_id, record, full_output).await;
             }
             if !timeout.is_zero() {
@@ -464,7 +490,7 @@ pub async fn get_results(
                     return Ok(unavailable_result(execution_id, "attachment_unavailable"));
                 };
                 let result = tokio::select! {
-                    result = wait_existing_result(&metadata, &observer, execution_id, deadline, full_output) => result?,
+                    result = wait_existing_result_with_evidence(&metadata, &observer, execution_id, deadline, full_output, &deadline_result) => result?,
                     _ = super::observation::expired(&mut expiration) => return Ok(unavailable_result(execution_id, "attachment_expired")),
                 };
                 if super::observation::is_expired(&expiration) {
@@ -481,6 +507,15 @@ pub async fn get_results(
         )
         .await
         {
+            *deadline_result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = partial_execution_result(
+                execution_id,
+                &record.status,
+                record.cell_id.as_deref(),
+                record.execution_count,
+                record.outputs.len(),
+            );
             return render_durable_result(&metadata, execution_id, record, full_output).await;
         }
         if let Some(error) = access_error {
@@ -493,9 +528,10 @@ pub async fn get_results(
     } else {
         match tokio::time::timeout_at(deadline, read).await {
             Ok(result) => result,
-            Err(_) => Ok(CallToolResult::structured(
-                serde_json::json!({"execution_id":execution_id,"outcome":"timed_out","execution_status":null,"outputs_pending":true}),
-            )),
+            Err(_) => Ok(deadline_result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()),
         }
     }
 }
@@ -558,6 +594,27 @@ fn unavailable_result(execution_id: &str, reason: &str) -> CallToolResult {
     )
 }
 
+fn not_observed_result(execution_id: &str, notebook_id: Option<&str>) -> CallToolResult {
+    CallToolResult::structured(serde_json::json!({
+        "execution_id":execution_id,"notebook_id":notebook_id,"outcome":"not_observed","execution_status":null,
+        "message":"This execution was not observed in the selected notebook before the wait ended. Synchronization or result loading may still be catching up. Verify the notebook target and the execution_id returned by submission, then retry get_results. This result does not establish that the execution is absent or needs to be submitted again.",
+    }))
+}
+
+fn partial_execution_result(
+    execution_id: &str,
+    status: &str,
+    cell_id: Option<&str>,
+    execution_count: Option<i64>,
+    output_count: usize,
+) -> CallToolResult {
+    CallToolResult::structured(serde_json::json!({
+        "execution_id":execution_id,"outcome":"timed_out","execution_status":status,
+        "cell_id":cell_id,"execution_count":execution_count,"output_count":output_count,"outputs_pending":true,
+    }))
+}
+
+#[cfg(test)]
 async fn wait_existing_result(
     metadata: &crate::LocalRuntimeMetadata,
     observer: &crate::observation::ObservationReader,
@@ -565,10 +622,52 @@ async fn wait_existing_result(
     deadline: tokio::time::Instant,
     full_output: bool,
 ) -> Result<CallToolResult, McpError> {
+    wait_existing_result_with_evidence(
+        metadata,
+        observer,
+        execution_id,
+        deadline,
+        full_output,
+        &Mutex::new(not_observed_result(execution_id, None)),
+    )
+    .await
+}
+
+async fn wait_existing_result_with_evidence(
+    metadata: &crate::LocalRuntimeMetadata,
+    observer: &crate::observation::ObservationReader,
+    execution_id: &str,
+    deadline: tokio::time::Instant,
+    full_output: bool,
+    deadline_result: &Mutex<CallToolResult>,
+) -> Result<CallToolResult, McpError> {
     use crate::observation::ChangeOutcome;
     use notebook_sync::execution_watch::ExecutionTerminalReason;
-    let (read, progress) =
-        super::observation::observe_execution(observer, execution_id, None, deadline).await?;
+    let (read, progress) = super::observation::observe_execution_with_progress(
+        observer,
+        execution_id,
+        None,
+        deadline,
+        |progress| {
+            // Synthetic kernel/connection terminal events do not establish that
+            // this execution was ever present in RuntimeStateDoc.
+            if matches!(
+                progress.status.as_str(),
+                "queued" | "running" | "done" | "error" | "cancelled"
+            ) {
+                *deadline_result
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = partial_execution_result(
+                    execution_id,
+                    &progress.status,
+                    (!progress.cell_id.is_empty()).then_some(progress.cell_id.as_str()),
+                    progress.execution_count,
+                    progress.output_manifests.len(),
+                );
+            }
+        },
+    )
+    .await?;
     if read.outcome == ChangeOutcome::Unavailable {
         return Ok(unavailable_result(execution_id, "attachment_unavailable"));
     }
@@ -587,9 +686,10 @@ async fn wait_existing_result(
         return Ok(unavailable_result(execution_id, reason.as_str()));
     }
     let Some(exec) = read.snapshot.runtime.executions.get(execution_id) else {
-        return Ok(CallToolResult::structured(
-            serde_json::json!({"execution_id":execution_id,"outcome":"timed_out","execution_status":null}),
-        ));
+        return Ok(deadline_result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone());
     };
     let outcome = if read.outcome == ChangeOutcome::TimedOut {
         "timed_out"
@@ -598,12 +698,20 @@ async fn wait_existing_result(
     };
     // Keep partial state available even when the wait used its deadline. Do not
     // begin potentially slow output resolution after the deadline has elapsed.
+    *deadline_result
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = partial_execution_result(
+        execution_id,
+        &exec.status,
+        exec.cell_id.as_deref(),
+        exec.execution_count,
+        exec.outputs.len(),
+    );
     let partial = || {
-        CallToolResult::structured(serde_json::json!({
-            "execution_id":execution_id,"outcome":"timed_out","execution_status":exec.status,
-            "cell_id":exec.cell_id,"execution_count":exec.execution_count,
-            "output_count":exec.outputs.len(),"outputs_pending":true,
-        }))
+        deadline_result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     };
     if tokio::time::Instant::now() >= deadline {
         return Ok(partial());
@@ -1194,6 +1302,151 @@ mod tests {
         };
         assert!(text_content(&full).contains("line 500:"));
         assert!(text_content(&full).len() > text_content(&preview).len());
+    }
+
+    #[tokio::test]
+    async fn get_results_deadline_distinguishes_absent_and_wrong_notebook_runs() {
+        let (tmp, _) = durable_fixture().await;
+        let server = NteractMcp::new("unused.sock".into(), None, None)
+            .with_execution_store_path(Some(tmp.path().into()));
+        let session = ready_test_session("notebook-b").await;
+        let handle = session.notebook_handle.clone();
+        server
+            .attachments
+            .insert(session, server.attachments.reserve().unwrap());
+        for execution_id in ["never-observed", "run-a"] {
+            let start = tokio::time::Instant::now();
+            let result=crate::targets::dispatch(&server,&make_request(serde_json::json!({"notebook_handle":handle,"execution_id":execution_id,"timeout_secs":0.02}))).await.unwrap();
+            let elapsed = start.elapsed();
+            assert!(elapsed >= Duration::from_millis(15));
+            assert!(elapsed < Duration::from_secs(1));
+            let text = serde_json::to_string(&result).unwrap();
+            assert!(!text.contains("notebook A secret"));
+            let data = result.structured_content.unwrap();
+            assert_eq!(data["outcome"], "not_observed");
+            assert_eq!(data["execution_status"], serde_json::Value::Null);
+            assert_eq!(data["notebook_id"], "notebook-b");
+            let message = data["message"].as_str().unwrap();
+            assert!(message.contains("retry get_results"));
+            assert!(message.contains("Verify the notebook target"));
+        }
+    }
+
+    #[tokio::test]
+    async fn get_results_accepts_a_run_that_propagates_during_the_wait() {
+        let fixture = crate::observation::tests::fixture();
+        let publisher = fixture.runtime.clone();
+        let update = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            publisher.send_modify(|state| {
+                let mut exec = execution_state(Some("late source"));
+                exec.outputs.clear();
+                exec.status = "running".into();
+                state.executions.insert("late-run".into(), exec);
+            });
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            publisher.send_modify(|state| {
+                state.executions.get_mut("late-run").unwrap().status = "done".into();
+            });
+        });
+        let metadata = NteractMcp::new("unused.sock".into(), None, None)
+            .local_runtime_metadata()
+            .await;
+        let result = wait_existing_result(
+            &metadata,
+            &fixture.owner.reader(),
+            "late-run",
+            tokio::time::Instant::now() + Duration::from_secs(1),
+            false,
+        )
+        .await
+        .unwrap();
+        update.await.unwrap();
+        let data = result.structured_content.unwrap();
+        assert_eq!(data["outcome"], "completed");
+        assert_eq!(data["execution_status"], "done");
+        assert_eq!(data["execution_id"], "late-run");
+    }
+
+    #[tokio::test]
+    async fn get_results_deadline_keeps_last_observed_run_after_eviction() {
+        let fixture = crate::observation::tests::fixture();
+        let publisher = fixture.runtime.clone();
+        let update = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            publisher.send_modify(|state| {
+                let mut exec = execution_state(Some("observed"));
+                exec.status = "running".into();
+                state.executions.insert("evicted-run".into(), exec);
+            });
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            publisher.send_modify(|state| {
+                state.executions.remove("evicted-run");
+            });
+        });
+        let metadata = NteractMcp::new("unused.sock".into(), None, None)
+            .local_runtime_metadata()
+            .await;
+        let result = wait_existing_result(
+            &metadata,
+            &fixture.owner.reader(),
+            "evicted-run",
+            tokio::time::Instant::now() + Duration::from_millis(40),
+            false,
+        )
+        .await
+        .unwrap();
+        update.await.unwrap();
+        let data = result.structured_content.unwrap();
+        assert_eq!(data["outcome"], "timed_out");
+        assert_eq!(data["execution_status"], "running");
+        assert_eq!(data["output_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn get_results_outer_deadline_preserves_known_status_during_output_loading() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stalled = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    {
+                        let mut buffer = [0; 1024];
+                        let _ = stream.read(&mut buffer).await;
+                    }
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+        let (tmp, _) = durable_fixture().await;
+        let store = runtimed_client::execution_store::ExecutionStore::new(tmp.path());
+        let server = NteractMcp::new("unused.sock".into(), Some(format!("http://{addr}")), None)
+            .with_execution_store_path(Some(tmp.path().into()));
+        let session = ready_test_session("notebook-a").await;
+        let handle = session.notebook_handle.clone();
+        server
+            .attachments
+            .insert(session, server.attachments.reserve().unwrap());
+        for status in ["running", "done"] {
+            let mut record = store.read_record("run-a").await.unwrap();
+            record.status = status.into();
+            record.outputs = vec![
+                serde_json::json!({"output_type":"stream","name":"stdout","text":{"blob":"unresolved","size":100}}),
+            ];
+            store.write_record(record).await.unwrap();
+            let start = tokio::time::Instant::now();
+            let result=crate::targets::dispatch(&server,&make_request(serde_json::json!({"notebook_handle":handle,"execution_id":"run-a","timeout_secs":0.03,"full_output":true}))).await.unwrap();
+            assert!(start.elapsed() < Duration::from_secs(1));
+            let data = result.structured_content.unwrap();
+            assert_eq!(data["outcome"], "timed_out");
+            assert_eq!(data["execution_status"], status);
+            assert_eq!(data["cell_id"], "cell-1");
+            assert_eq!(data["output_count"], 1);
+        }
+        stalled.abort();
+        let _ = stalled.await;
     }
 
     #[test]

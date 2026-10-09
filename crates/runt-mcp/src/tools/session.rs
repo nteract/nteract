@@ -2304,6 +2304,19 @@ pub async fn save_notebook(
     }
 }
 
+// ID admission owns its captured replica even after its Address owner is
+// released. Exact-handle calls still require that exact registry membership.
+fn scoped_launch_session(server: &NteractMcp, handle: &str) -> Option<NotebookSession> {
+    if let Some(session) = crate::targets::captured_session() {
+        return (session.notebook_handle == handle).then_some(session);
+    }
+    server
+        .attachments
+        .read_entries()
+        .get(handle)
+        .map(|entry| entry.session.clone())
+}
+
 /// Read the exact attachment's local launch identity without opening an app.
 /// The supervisor launches by UUID and socket, so file-path aliases cannot
 /// redirect a dev launch to another room. This tool is intentionally hidden.
@@ -2324,22 +2337,16 @@ async fn resolve_notebook_launch_with_incarnation(
     request: &CallToolRequestParams,
     live_incarnation: impl std::future::Future<Output = Option<DaemonIncarnation>>,
 ) -> Result<CallToolResult, McpError> {
-    // A null legacy selector is harmless; nonnull notebook_id is rejected by
-    // targets::dispatch. Paths and all other alternate selectors are rejected.
     // Target selectors were validated at admission. Other unknown arguments
     // keep their original error channel; they are not attachment failures.
     super::reject_unknown_args(request, &["notebook_id"])?;
     let Some(handle) = crate::targets::current() else {
         return Ok(mcp_transport::tool_target_error(McpError::invalid_params("notebook_handle is required; connect the intended notebook and explicitly resubmit with its handle", None)));
     };
-    let session = {
-        let entries = server.attachments.read_entries();
-        let Some(entry) = entries.get(&handle) else {
-            return Ok(mcp_transport::tool_target_error(
-                crate::attachments::expired_resource_error(&handle),
-            ));
-        };
-        entry.session.clone()
+    let Some(session) = scoped_launch_session(server, &handle) else {
+        return Ok(mcp_transport::tool_target_error(
+            crate::attachments::expired_resource_error(&handle),
+        ));
     };
     if session.is_hosted() {
         return tool_error("A hosted notebook cannot be opened by the local dev launcher");
@@ -2354,19 +2361,15 @@ async fn resolve_notebook_launch_with_incarnation(
             Some(crate::attachments::unavailable_resource_data(&handle)),
         )));
     }
-    // Recheck membership and readiness after sampling the daemon. Release the
-    // registry guard before returning; the common completion fence also checks
-    // expiry. No launch side effect occurs in this read.
-    let entries = server.attachments.read_entries();
-    let Some(current) = entries.get(&handle) else {
+    // Recheck live replica readiness after sampling the daemon. ID admission
+    // retains the captured session; exact handles still require membership.
+    // No launch side effect occurs in this read.
+    let Some(current) = scoped_launch_session(server, &handle) else {
         return Ok(mcp_transport::tool_target_error(
             crate::attachments::expired_resource_error(&handle),
         ));
     };
-    if let Err(error) = current
-        .session
-        .access(crate::session::SessionRequirement::KernelControl)
-    {
+    if let Err(error) = current.access(crate::session::SessionRequirement::KernelControl) {
         return super::session_access_error(error);
     }
     Ok(CallToolResult::structured(serde_json::json!({
@@ -2383,14 +2386,18 @@ pub async fn show_notebook(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    // Resolve notebook_id (and optional path) from param or current session
+    // Resolve the admitted target without falling back to another owner's
+    // registry entry or treating a hosted ID as a local daemon room.
     let (target, session_path) = if let Some(handle) = crate::targets::current() {
-        let Some(identity) = server.attachment_identity(&handle).await else {
+        let Some(session) = scoped_launch_session(server, &handle) else {
             return Ok(mcp_transport::tool_target_error(
                 crate::attachments::expired_resource_error(&handle),
             ));
         };
-        identity
+        if session.is_hosted() {
+            return tool_error("A hosted notebook cannot be opened by the local dev launcher");
+        }
+        (session.notebook_id, session.notebook_path)
     } else {
         match arg_str(request, "notebook_id") {
             Some(id) => (id.to_string(), None),
@@ -2712,6 +2719,138 @@ mod tests {
             removed.structured_content.unwrap()["error"]["code"],
             "attachment_expired"
         );
+    }
+
+    #[tokio::test]
+    async fn captured_launch_identity_survives_owner_release_during_runtime_probe() {
+        let server = NteractMcp::new("/private/tmp/captured-runtime.sock".into(), None, None);
+        let incarnation = test_incarnation(42);
+        let session = launch_test_session(
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            true,
+            incarnation.clone(),
+        )
+        .await;
+        let explicit_handle = session.notebook_handle.clone();
+        let id = session.notebook_id.clone();
+        server
+            .attachments
+            .insert(session, server.attachments.reserve().unwrap());
+        let captured = server
+            .attachments
+            .acquire_address(
+                &CanonicalNotebookTarget::new(format!("local:id:{id}")),
+                |session| session.notebook_id == id,
+            )
+            .unwrap();
+        let address_handle = captured.notebook_handle.clone();
+        assert_ne!(address_handle, explicit_handle);
+        // The legacy selection is unrelated to the ID request being resolved.
+        let unrelated = launch_test_session(
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            true,
+            incarnation.clone(),
+        )
+        .await;
+        *server.session.write().await = Some(unrelated);
+        let request = make_request("resolve_notebook_launch", serde_json::json!({}));
+        let result = crate::targets::with_captured_session(
+            captured.clone(),
+            resolve_notebook_launch_with_incarnation(&server, &request, async {
+                // This future runs after initial target/readiness capture and
+                // before the resolver's final check: no timing assumption.
+                drop(server.attachments.remove(&explicit_handle));
+                drop(server.attachments.remove(&address_handle));
+                Some(incarnation.clone())
+            }),
+        )
+        .await
+        .unwrap();
+        assert_ne!(result.is_error, Some(true));
+        let identity = result.structured_content.unwrap();
+        assert_eq!(identity["notebook_id"], id);
+        assert_eq!(identity["notebook_handle"], address_handle);
+        assert_eq!(identity["source"], "local");
+        assert_eq!(
+            identity["socket_path"],
+            "/private/tmp/captured-runtime.sock"
+        );
+        assert!(server.attachments.read_entries().is_empty());
+
+        // Capture also survives release before the tool begins. It does not
+        // suppress the authority check or turn a replacement into the old room.
+        for live in [Some(incarnation.clone()), None, Some(test_incarnation(43))] {
+            let expected_live = live.as_ref() == Some(&incarnation);
+            let result = crate::targets::with_captured_session(
+                captured.clone(),
+                resolve_notebook_launch_with_incarnation(
+                    &server,
+                    &request,
+                    std::future::ready(live),
+                ),
+            )
+            .await
+            .unwrap();
+            if expected_live {
+                assert_ne!(result.is_error, Some(true));
+                assert_eq!(result.structured_content.unwrap()["notebook_id"], id);
+            } else {
+                assert_eq!(
+                    result.structured_content.unwrap()["error"]["code"],
+                    "attachment_unavailable"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn captured_launch_still_rejects_unready_and_hosted_sessions_without_side_effects() {
+        let server = NteractMcp::new("/unused-captured-launch.sock".into(), None, None);
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let unready = launch_test_session(id, false, test_incarnation(42)).await;
+        let request = make_request("resolve_notebook_launch", serde_json::json!({}));
+        let result = crate::targets::with_captured_session(
+            unready,
+            resolve_notebook_launch_with_incarnation(&server, &request, async {
+                panic!("unready captured session must not query the daemon")
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(first_text(&result).contains("notebook_not_ready"));
+
+        // A hosted UUID must not resolve through a local room with the same ID.
+        let local = launch_test_session(id, true, test_incarnation(42)).await;
+        server
+            .attachments
+            .insert(local, server.attachments.reserve().unwrap());
+        let hosted = NotebookSession::hosted(
+            hosted_test_peer().await,
+            id.into(),
+            "https://example.com".into(),
+        );
+        let result = crate::targets::with_captured_session(
+            hosted.clone(),
+            resolve_notebook_launch_with_incarnation(&server, &request, async {
+                panic!("hosted captured session must not query the local daemon")
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(first_text(&result).contains("hosted"));
+        let result = crate::targets::with_captured_session(
+            hosted,
+            show_notebook(
+                &server,
+                &make_request("show_notebook", serde_json::json!({})),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(first_text(&result).contains("hosted"));
     }
 
     #[tokio::test]

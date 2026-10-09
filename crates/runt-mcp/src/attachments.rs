@@ -137,6 +137,18 @@ impl AttachmentRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Reclaim server-owned retention after its physical connection has ended.
+    /// Explicit/legacy owners keep their existing observation-loss contract.
+    /// Connected peers, including failed bootstrap or changed credentials, are
+    /// never evicted here; source recovery and deliberate release still apply.
+    pub(crate) fn reap_disconnected_addresses(&self) {
+        self.write_entries().retain(|_, entry| {
+            entry.origin != AttachmentOrigin::Address
+                || entry.session.handle.status().connection
+                    != notebook_sync::ConnectionState::Disconnected
+        });
+    }
+
     pub fn reserve(&self) -> Result<AttachmentReservation, &'static str> {
         Arc::clone(&self.capacity)
             .try_acquire_owned()

@@ -451,11 +451,22 @@ pub(crate) async fn resource_session(
             }
             return capture(&selected.session);
         }
-        let mut explicit = entries
+        let mut owners = entries
             .values()
-            .filter(|entry| entry.session.notebook_id == notebook_id);
-        let first = explicit.next();
-        if explicit.next().is_some() {
+            .filter(|entry| entry.session.notebook_id == notebook_id)
+            .filter(|entry| {
+                // ID calls retain an Address owner of an existing replica.
+                // Prefer its Explicit owner for compatibility aliases, so that
+                // reads and new watches keep the original attachment lifetime.
+                // Independent Explicit owners remain deliberately ambiguous.
+                entry.origin() != crate::attachments::AttachmentOrigin::Address
+                    || !entries.values().any(|other| {
+                        other.origin() == crate::attachments::AttachmentOrigin::Explicit
+                            && entry.session.shares_replica_with(&other.session)
+                    })
+            });
+        let first = owners.next();
+        if owners.next().is_some() {
             return Err(McpError::invalid_params("Ambiguous notebook ID; read its nteract://sessions/{notebook_handle} resource instead", None));
         }
         first.map(|entry| capture(&entry.session)).transpose()?
@@ -892,6 +903,61 @@ mod tests {
 
     use super::*;
     use crate::NteractMcp;
+
+    struct IdleAliasFrames;
+
+    impl notebook_protocol::connection::FrameSource for IdleAliasFrames {
+        async fn recv_frame(
+            &mut self,
+        ) -> Option<std::io::Result<notebook_protocol::connection::TypedNotebookFrame>> {
+            std::future::pending().await
+        }
+    }
+
+    async fn hosted_alias_session(domain: &str) -> crate::session::NotebookSession {
+        let handle = notebook_sync::connect::connect_frame_io(
+            "same-notebook".into(),
+            &format!("local:alias-test/agent:test:{}", uuid::Uuid::new_v4()),
+            IdleAliasFrames,
+            notebook_protocol::connection::WriterFrameSink::new(tokio::io::sink()),
+        )
+        .await
+        .unwrap()
+        .handle;
+        crate::session::NotebookSession::hosted(handle, "same-notebook".into(), domain.into())
+    }
+
+    #[tokio::test]
+    async fn notebook_alias_keeps_independent_address_and_explicit_replicas_ambiguous() {
+        for other_domain in ["https://first.invalid", "https://second.invalid"] {
+            let server = NteractMcp::new("/unused-alias-test.sock".into(), None, None);
+            let original = hosted_alias_session("https://first.invalid").await;
+            let handle = original.notebook_handle.clone();
+            let target = crate::session_activation::CanonicalNotebookTarget::new(
+                original.activation_target.clone(),
+            );
+            server
+                .attachments
+                .insert(original, server.attachments.reserve().unwrap());
+            let address = server
+                .attachments
+                .acquire_address(&target, |session| session.notebook_handle == handle)
+                .unwrap();
+            drop(server.attachments.remove(&handle));
+            let independent = hosted_alias_session(other_domain).await;
+            assert!(!address.shares_replica_with(&independent));
+            server
+                .attachments
+                .insert(independent, server.attachments.reserve().unwrap());
+
+            let error = resource_session(&server, "same-notebook", false)
+                .await
+                .err()
+                .unwrap();
+            assert!(error.message.contains("Ambiguous notebook ID"), "{error}");
+            assert_eq!(server.attachments.read_entries().len(), 2);
+        }
+    }
 
     fn ui_meta(meta: &MetaObject) -> &serde_json::Value {
         meta.0.get("ui").expect("ui metadata")
