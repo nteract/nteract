@@ -1,6 +1,6 @@
 {
   "name": "@runtimed/node-linux-arm64-gnu",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Linux ARM64 GNU native N-API binding for @runtimed/node.",
   "type": "commonjs",
   "main": "./runtimed-node.linux-arm64-gnu.node",
