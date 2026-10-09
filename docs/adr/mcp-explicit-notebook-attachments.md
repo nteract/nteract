@@ -42,6 +42,15 @@ supersede one another. Repeated acquisitions of the same notebook also produce
 independent handles. Continuing an existing attachment uses its retained handle
 rather than repeatedly acquiring more owners.
 
+Missing, malformed, unknown or expired tool handles return actionable
+[tool execution errors](https://modelcontextprotocol.io/specification/2026-07-28/server/tools#error-handling)
+(`isError: true`) with explicit recovery guidance. This keeps
+the correction available to the model while rejecting the operation before
+effects. Protocol negotiation, malformed MCP requests and unknown tool names
+retain their protocol error handling; resource errors retain their resource
+contract. A valid observation may still finish with its documented unavailable
+outcome if its captured attachment ends during the wait.
+
 This application contract is independent of initialize-based or per-request
 protocol negotiation. Client/process labels and optional metadata cannot stand
 in for a notebook target. Older workers that lack attachment routing must not
@@ -62,6 +71,8 @@ The worker registry retains a handle until deliberate release or definitive
 membership expiry. At most 128 logical attachments plus pending acquisitions
 are retained; capacity refusal is explicit. Canceled/failed acquisitions return
 their reservations. There is no TTL or arbitrary registry eviction.
+Acquisition tool descriptions state this retention policy. Connecting again
+creates another owner, so acquisition is not advertised as idempotent.
 
 A compatible healthy local backing peer may serve multiple logical handles.
 Its reuse key includes canonical target, fixed endpoint, live daemon incarnation
@@ -145,6 +156,11 @@ successful, nonempty discovery from the current connected child. Failed, empty,
 stale or disconnected discovery retains prior definitions without publishing a
 change or proving child capabilities. Cache freshness hints do not force a host
 to replace schemas already supplied to its model.
+
+Adding, removing or renaming tools, or changing their schemas, refreshes the
+catalog without forcing the proxy's stdio connection to exit. A call using a
+removed name receives an unknown-tool protocol error. Fatal process failures
+and crash-budget exhaustion retain their separate recovery policies.
 
 A stale call without a handle must fail before effects and explain the required
 target and catalog refresh. It must not be translated using the last-opened

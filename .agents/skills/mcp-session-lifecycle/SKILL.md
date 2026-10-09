@@ -54,6 +54,12 @@ before awaits. Successful handle-scoped completions revalidate membership;
 expired completion does not claim rollback of already-admitted side effects.
 Original failures, including unknown outcomes, remain intact.
 
+Missing, malformed, unknown or expired tool handles use `isError: true` tool
+results so the model can see the target/refresh correction. Protocol negotiation,
+malformed MCP requests and unknown tool names still use protocol errors;
+resource errors keep their resource contract. A valid captured observation can
+finish with its documented unavailable outcome if its attachment ends.
+
 Tool schemas advertise the required handle, including the startup cache. A
 proxy must not silently discard it when forwarding to an older worker that
 cannot route attachments. Read the proxy's admission checks and version-skew
@@ -71,6 +77,11 @@ mutations before retry. Configuration reload alone does not prove a catalog
 refresh. Catalog publication requires successful discovery from the current
 connected child; fallback or rewritten schemas never prove child capability.
 
+Tool additions, removals, renames and schema changes publish catalog invalidation
+without forcing a stdio exit. Relist to discover the current names; removed names
+receive unknown-tool protocol errors. Fatal failures and crash-budget exhaustion
+retain their own recovery policies.
+
 Relevant source: `crates/runt-mcp/src/targets.rs`, `attachments.rs`, `lib.rs`,
 `session.rs`, and `crates/mcp-transport/src/lib.rs`.
 
@@ -80,6 +91,8 @@ The registry retains at most 128 logical attachments plus pending acquisitions.
 Reservations count toward that limit and return on cancellation or failure.
 There is no TTL or arbitrary ownership eviction. Release removes only the named
 handle, signals its expiry immediately, and returns its capacity slot.
+Acquisition descriptions state retention; repeated connect creates a new owner
+and must not advertise idempotence.
 
 Logical ownership is separate from a physical peer. Compatible healthy local
 acquisitions may share backing by canonical target, fixed endpoint, live daemon
