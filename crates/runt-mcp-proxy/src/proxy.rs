@@ -1881,12 +1881,7 @@ impl NotebookLaunchIdentity {
         if args
             .and_then(|args| args.get("domain"))
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|domain| {
-                !matches!(
-                    domain.trim().to_ascii_lowercase().as_str(),
-                    "local" | "desktop"
-                )
-            })
+            .is_some_and(|domain| !mcp_transport::is_local_domain_alias(domain))
         {
             return Err(invalid());
         }

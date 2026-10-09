@@ -140,6 +140,45 @@ impl<T: Transport<rmcp::service::RoleClient>> Transport<rmcp::service::RoleClien
 #[allow(clippy::unwrap_used)]
 mod tests {
     #[test]
+    fn local_domain_aliases_preserve_case_and_whitespace_semantics() {
+        for domain in [
+            "local",
+            "desktop",
+            "LOCAL",
+            "DeSkToP",
+            " local ",
+            "\tDesktop\n",
+            "\u{2003}local\u{2003}",
+        ] {
+            assert!(super::is_local_domain_alias(domain), "{domain:?}");
+        }
+    }
+
+    #[test]
+    fn local_domain_aliases_reject_lookalikes_and_hosted_origins() {
+        for domain in [
+            "",
+            " \t\n",
+            "localhost",
+            "local.",
+            "local/",
+            "local:80",
+            "local.example",
+            "desktop.example",
+            "desktop://",
+            "lo cal",
+            "localdesktop",
+            "https://local",
+            "http://desktop",
+            "https://notebooks.example",
+            "ｌｏｃａｌ",
+            "locаl",
+        ] {
+            assert!(!super::is_local_domain_alias(domain), "{domain:?}");
+        }
+    }
+
+    #[test]
     fn catalog_interests_are_accepted_only_by_proxy_filter() {
         let requested: rmcp::model::SubscriptionFilter = serde_json::from_value(serde_json::json!({
             "toolsListChanged":true,"resourcesListChanged":true,"promptsListChanged":true,
@@ -349,6 +388,13 @@ pub const SUPPORTED_VERSIONS: &[ProtocolVersion] = &[
     ProtocolVersion::V_2025_11_25,
     ProtocolVersion::V_2026_07_28,
 ];
+/// Reserved domain selectors for this MCP server's configured local daemon.
+/// Hosted origins and lookalike hostnames must retain their own authority.
+pub fn is_local_domain_alias(domain: &str) -> bool {
+    let domain = domain.trim();
+    domain.eq_ignore_ascii_case("local") || domain.eq_ignore_ascii_case("desktop")
+}
+
 pub fn notebook_scoped_tool(name: &str) -> bool {
     matches!(
         name,

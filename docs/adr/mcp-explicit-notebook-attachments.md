@@ -73,6 +73,15 @@ Neither notebook IDs nor handles are authentication credentials. Daemon/hosted
 admission, source recovery, readiness and causal execution gates remain in force.
 Execution references a synced `cell_id`, never an independent code string.
 
+Durable execution results carry a daemon-written `notebook_id` separately from
+the path context used for validated file reload. Tool and blob-resource reads
+require this identity, or an exact UUID context in an older record; a matching
+path alone never grants access. The daemon can qualify a recovered execution
+for its current room after validating and restoring its cell/source/output
+state, preserving the execution ID. Older path-only records remain unavailable
+to scoped durable reads until the daemon qualifies them; live runtime results
+remain readable through their admitted notebook.
+
 Relevant source: `targets.rs`, `notebook_target.rs`, `attachments.rs`, `session.rs`,
 `crates/mcp-transport/src/lib.rs`, and proxy `proxy.rs`.
 
@@ -98,12 +107,29 @@ backing peer alive and continue reads, sync, edits and subscriptions. The last
 owner releases the physical backing. The active slot and bounded parked cache
 used by internal recovery are not the ownership registry.
 
+An address owner retains that backing too. Releasing every explicit handle can
+leave the MCP peer connected through the address owner, postponing the local
+daemon's last-client idle teardown. To release this shared retention, call
+`disconnect_notebook` with the ID result's `target.notebook_handle`; retained
+handles are also listed by `resources/list`. Switching notebook targets does
+not release other owners or disconnect their runtime peers.
+
+Kernel lifetime remains daemon-owned. The runtime agent that owns a Python
+kernel is a separate sync peer, handled outside the ordinary client-peer count.
+When the last counted client leaves, the local daemon waits its keepalive delay
+and rechecks connections, generation and persistence before requesting kernel
+shutdown through that runtime peer. Other client peers, retained owners and
+already-admitted requests can still hold a connection. Releasing an address
+owner therefore releases MCP retention; it does not unconditionally stop a
+kernel. Hosted kernel lifetime remains the room host's policy.
+
 Notebook-ID resource URIs identify a notebook explicitly and remain compatibility
 addressing. Ambiguous identities require an exact handle. They never provide an
 implicit target for tool calls; explicit ID arguments use the address resolver.
 
 Relevant source: `crates/runt-mcp/src/attachments.rs`, `tools/session.rs`, and
-`resources.rs`.
+`resources.rs`; daemon `notebook_sync_server/peer_connection.rs`,
+`peer_runtime_agent.rs`, and `peer_eviction.rs`.
 
 ## Decision 3: Handles expire without rebinding
 

@@ -98,6 +98,12 @@ or a stale saved-path alias. A failed optional room listing skips reuse and
 attempts guarded fresh admission. Hosted peers are not pooled without a stable
 authenticated principal/source key. Dropping the last owner releases the backing.
 
+An address owner also retains the MCP peer after explicit handles are released.
+This can postpone the local daemon's last-client idle teardown. Release that
+shared retention with `disconnect_notebook(notebook_handle=target.notebook_handle)`
+from the ID result, or find its handle through `resources/list`. Switching
+request targets does not release another notebook's owners or runtime peer.
+
 The bounded parked cache is not the ownership registry. Dropping a cache entry
 must not release an independently retained attachment. Legacy notebook-ID
 resource URIs still identify a notebook explicitly; ambiguous identities require
@@ -193,10 +199,16 @@ Relevant source: `daemon_watch.rs`, `session_activation.rs`, proxy `proxy.rs`,
 
 ## Daemon Room Lifetime and Protocol Limits
 
-Only the last physical peer leaving schedules kernel teardown after keepalive.
-Teardown and room reaping separately revalidate ownership/generation and
-persistence. Kernel teardown is not proof that notebook source is unavailable.
-See `runtimed/src/notebook_sync_server/peer_eviction.rs` and `runtimed/src/daemon.rs`.
+The local daemon schedules idle kernel teardown when the last counted client
+peer leaves. The runtime agent that owns a Python kernel is a separate sync
+peer, outside that ordinary client-peer count. After keepalive, the daemon
+rechecks connections, generation and persistence before requesting shutdown
+through the runtime peer. Releasing an MCP handle does not unconditionally stop
+the kernel: other owners, admitted requests or client peers may retain a
+connection, and hosted lifetime follows the room host's policy. Room reaping is
+a separate decision; kernel teardown does not prove source unavailability.
+See `runtimed/src/notebook_sync_server/peer_connection.rs`, `peer_runtime_agent.rs`,
+`peer_eviction.rs`, and `runtimed/src/daemon.rs`.
 
 The transport supports initialize-based MCP revisions through `2025-11-25` and
 native per-request `2026-07-28` metadata. The private worker handshake uses

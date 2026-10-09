@@ -550,10 +550,9 @@ async fn read_durable_execution(
     )
     .read_record(execution_id)
     .await?;
-    // Old path-only contexts cannot establish identity after a path is rebound.
-    (record.context_kind == "notebook"
-        && record.context_id == notebook_id
-        && record.execution_id == execution_id)
+    // Only daemon-qualified room identity (or a legacy UUID context) grants
+    // access. A matching saved path can have been rebound to another notebook.
+    (record.belongs_to_notebook(notebook_id) && record.execution_id == execution_id)
         .then_some(record)
 }
 
@@ -940,6 +939,9 @@ mod tests {
 
     use super::*;
 
+    const NOTEBOOK_A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const NOTEBOOK_B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
     fn make_request(args: serde_json::Value) -> CallToolRequestParams {
         serde_json::from_value(serde_json::json!({
             "name": "get_results",
@@ -994,14 +996,11 @@ mod tests {
     async fn durable_fixture() -> (tempfile::TempDir, crate::LocalRuntimeMetadata) {
         let tmp = tempfile::TempDir::new().unwrap();
         let store = runtimed_client::execution_store::ExecutionStore::new(tmp.path());
-        for (id, context) in [
-            ("run-a", "notebook-a"),
-            ("path-only", "/tmp/notebook.ipynb"),
-        ] {
+        for (id, context) in [("run-a", NOTEBOOK_A), ("path-only", "/tmp/notebook.ipynb")] {
             store.write_record(runtimed_client::execution_store::ExecutionRecord {
                 schema_version: runtimed_client::execution_store::EXECUTION_RECORD_SCHEMA_VERSION,
                 execution_id: id.into(), context_kind:"notebook".into(), context_id:context.into(),
-                notebook_path:Some("/tmp/notebook.ipynb".into()), cell_id:Some("cell-1".into()),
+                notebook_id:None, notebook_path:Some("/tmp/notebook.ipynb".into()), cell_id:Some("cell-1".into()),
                 status:"done".into(),success:Some(true),execution_count:Some(3),source:Some("print('notebook A secret')".into()),
                 seq:Some(0),submitted_by_actor_label:None,
                 outputs:vec![serde_json::json!({"output_type":"stream","name":"stdout","text":{"inline":"notebook A secret"}})],
@@ -1018,7 +1017,7 @@ mod tests {
     #[tokio::test]
     async fn durable_results_require_exact_local_notebook_identity() {
         let (_tmp, metadata) = durable_fixture().await;
-        let record = read_durable_execution(&metadata, "notebook-a", false, "run-a")
+        let record = read_durable_execution(&metadata, NOTEBOOK_A, false, "run-a")
             .await
             .unwrap();
         let result = render_durable_result(&metadata, "run-a", record, false)
@@ -1029,25 +1028,162 @@ mod tests {
             .contains("notebook A secret"));
         // A known execution ID does not grant access through B or a hosted notebook.
         assert!(
-            read_durable_execution(&metadata, "notebook-b", false, "run-a")
+            read_durable_execution(&metadata, NOTEBOOK_B, false, "run-a")
+                .await
+                .is_none()
+        );
+        assert!(read_durable_execution(&metadata, NOTEBOOK_A, true, "run-a")
+            .await
+            .is_none());
+        assert!(
+            read_durable_execution(&metadata, NOTEBOOK_A, false, "path-only")
                 .await
                 .is_none()
         );
         assert!(
-            read_durable_execution(&metadata, "notebook-a", true, "run-a")
+            read_durable_execution(&metadata, NOTEBOOK_A, false, "missing")
                 .await
                 .is_none()
         );
-        assert!(
-            read_durable_execution(&metadata, "notebook-a", false, "path-only")
-                .await
-                .is_none()
+    }
+
+    #[tokio::test]
+    async fn saved_notebook_durable_results_survive_absent_live_execution() {
+        use runtimed_client::execution_store::{ExecutionRecord, ExecutionStore};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = ExecutionStore::new(tmp.path());
+        let path = "/tmp/rebound-notebook.ipynb";
+        // Use the same constructor as both daemon persistence paths. Saved
+        // notebooks keep a path context, with independent room qualification.
+        let record = ExecutionRecord::from_notebook_execution_state(
+            "saved-run",
+            NOTEBOOK_A,
+            Some(path.into()),
+            &execution_state(Some("historical saved source")),
         );
-        assert!(
-            read_durable_execution(&metadata, "notebook-a", false, "missing")
-                .await
-                .is_none()
+        assert_eq!(record.context_id, path);
+        store.write_record(record.clone()).await.unwrap();
+        let server = NteractMcp::new("unused.sock".into(), None, None)
+            .with_execution_store_path(Some(tmp.path().into()));
+        let mut handles = Vec::new();
+        for (id, allowed) in [(NOTEBOOK_B, false), (NOTEBOOK_A, true)] {
+            let mut session = ready_test_session(id).await;
+            session.notebook_path = Some(path.into());
+            assert!(session
+                .handle
+                .get_runtime_state()
+                .unwrap()
+                .executions
+                .is_empty());
+            let handle = session.notebook_handle.clone();
+            server
+                .attachments
+                .insert(session, server.attachments.reserve().unwrap());
+            let result = crate::targets::dispatch(
+                &server,
+                &make_request(serde_json::json!({
+                    "notebook_handle":handle,"execution_id":"saved-run"
+                })),
+            )
+            .await
+            .unwrap();
+            let text = serde_json::to_string(&result).unwrap();
+            assert_eq!(text.contains("historical saved source"), allowed, "{text}");
+            assert_eq!(result.is_error, Some(!allowed), "{text}");
+            handles.push(handle);
+        }
+        // Historical path-only records remain readable by the store, but the
+        // MCP reader cannot establish which room owns them from the path alone.
+        let mut legacy = record;
+        legacy.notebook_id = None;
+        store.write_record(legacy).await.unwrap();
+        let result = crate::targets::dispatch(
+            &server,
+            &make_request(serde_json::json!({
+                "notebook_handle":handles[1],"execution_id":"saved-run"
+            })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(!serde_json::to_string(&result)
+            .unwrap()
+            .contains("historical saved source"));
+    }
+
+    #[tokio::test]
+    async fn durable_blob_resources_require_the_same_notebook_identity_as_results() {
+        use runtimed_client::execution_store::{ExecutionRecord, ExecutionStore};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = ExecutionStore::new(tmp.path());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let hash = "a".repeat(64);
+        let expected_path = format!("/blob/{hash}");
+        let transfer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            {
+                let mut request = [0; 4096];
+                let count = stream.read(&mut request).await.unwrap();
+                assert!(String::from_utf8_lossy(&request[..count]).contains(&expected_path));
+            }
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 9\r\nConnection: close\r\n\r\nsafe blob").await.unwrap();
+        });
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let path = "/tmp/rebound-blob-notebook.ipynb";
+        let mut exec = execution_state(Some("saved plot"));
+        exec.outputs = vec![serde_json::json!({
+            "output_type":"display_data","data":{"image/png":{"blob":hash,"size":9}}
+        })];
+        let record = ExecutionRecord::from_notebook_execution_state(
+            &execution_id,
+            NOTEBOOK_A,
+            Some(path.into()),
+            &exec,
         );
+        store.write_record(record.clone()).await.unwrap();
+        let server = NteractMcp::new("unused.sock".into(), Some(base), None)
+            .with_execution_store_path(Some(tmp.path().into()));
+        let mut original_uri = String::new();
+        for (id, allowed) in [(NOTEBOOK_B, false), (NOTEBOOK_A, true)] {
+            let mut session = ready_test_session(id).await;
+            session.notebook_path = Some(path.into());
+            let uri = format!(
+                "nteract://sessions/{}/executions/{execution_id}/blobs/{hash}",
+                session.notebook_handle
+            );
+            server
+                .attachments
+                .insert(session, server.attachments.reserve().unwrap());
+            let result = crate::resources::read_resource(
+                &server,
+                &rmcp::model::ReadResourceRequestParams::new(&uri),
+            )
+            .await;
+            if allowed {
+                let result = result.unwrap();
+                let data = serde_json::to_value(result).unwrap();
+                assert_eq!(data["contents"][0]["blob"], "c2FmZSBibG9i");
+                original_uri = uri;
+            } else {
+                assert!(result.unwrap_err().message.contains("does not belong"));
+            }
+        }
+        tokio::time::timeout(Duration::from_secs(1), transfer)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut legacy = record;
+        legacy.notebook_id = None;
+        store.write_record(legacy).await.unwrap();
+        let error = crate::resources::read_resource(
+            &server,
+            &rmcp::model::ReadResourceRequestParams::new(original_uri),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.message.contains("does not belong"));
     }
 
     #[tokio::test]
@@ -1116,7 +1252,7 @@ mod tests {
         let (tmp, _) = durable_fixture().await;
         let server = NteractMcp::new("unused.sock".into(), None, None)
             .with_execution_store_path(Some(tmp.path().into()));
-        for (id, allowed) in [("notebook-b", false), ("notebook-a", true)] {
+        for (id, allowed) in [(NOTEBOOK_B, false), (NOTEBOOK_A, true)] {
             let session = ready_test_session(id).await;
             let handle = session.notebook_handle.clone();
             server
@@ -1309,7 +1445,7 @@ mod tests {
         let (tmp, _) = durable_fixture().await;
         let server = NteractMcp::new("unused.sock".into(), None, None)
             .with_execution_store_path(Some(tmp.path().into()));
-        let session = ready_test_session("notebook-b").await;
+        let session = ready_test_session(NOTEBOOK_B).await;
         let handle = session.notebook_handle.clone();
         server
             .attachments
@@ -1325,7 +1461,7 @@ mod tests {
             let data = result.structured_content.unwrap();
             assert_eq!(data["outcome"], "not_observed");
             assert_eq!(data["execution_status"], serde_json::Value::Null);
-            assert_eq!(data["notebook_id"], "notebook-b");
+            assert_eq!(data["notebook_id"], NOTEBOOK_B);
             let message = data["message"].as_str().unwrap();
             assert!(message.contains("retry get_results"));
             assert!(message.contains("Verify the notebook target"));
@@ -1424,7 +1560,7 @@ mod tests {
         let store = runtimed_client::execution_store::ExecutionStore::new(tmp.path());
         let server = NteractMcp::new("unused.sock".into(), Some(format!("http://{addr}")), None)
             .with_execution_store_path(Some(tmp.path().into()));
-        let session = ready_test_session("notebook-a").await;
+        let session = ready_test_session(NOTEBOOK_A).await;
         let handle = session.notebook_handle.clone();
         server
             .attachments

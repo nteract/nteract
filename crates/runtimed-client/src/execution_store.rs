@@ -18,6 +18,12 @@ pub struct ExecutionRecord {
     pub execution_id: String,
     pub context_kind: String,
     pub context_id: String,
+    /// Room identity that most recently persisted this daemon-authorized snapshot.
+    /// This is not immutable submission provenance: validated file reload can
+    /// admit the same execution ID into a new room before that room persists it.
+    /// Readers must never infer this qualification from a notebook path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notebook_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notebook_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,6 +59,7 @@ impl ExecutionRecord {
             execution_id: execution_id.to_string(),
             context_kind: context_kind.into(),
             context_id: context_id.into(),
+            notebook_id: None,
             notebook_path,
             cell_id: None,
             status: exec.status.clone(),
@@ -65,6 +72,36 @@ impl ExecutionRecord {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// Capture a notebook execution using the room's independent identity while
+    /// preserving the path context used by validated file-reload lookups.
+    pub fn from_notebook_execution_state(
+        execution_id: &str,
+        notebook_id: impl Into<String>,
+        notebook_path: Option<String>,
+        exec: &runtime_doc::ExecutionState,
+    ) -> Self {
+        let notebook_id = notebook_id.into();
+        let context_id = notebook_path.clone().unwrap_or_else(|| notebook_id.clone());
+        let mut record =
+            Self::from_execution_state(execution_id, "notebook", context_id, notebook_path, exec);
+        record.notebook_id = Some(notebook_id);
+        record
+    }
+
+    /// Whether this record is qualified for reads through this notebook target.
+    /// An explicit daemon-written identity takes precedence. Legacy UUID
+    /// contexts establish identity; path-only contexts never do.
+    pub fn belongs_to_notebook(&self, notebook_id: &str) -> bool {
+        self.context_kind == "notebook"
+            && match self.notebook_id.as_deref() {
+                Some(id) => id == notebook_id,
+                None => {
+                    self.context_id == notebook_id
+                        && uuid::Uuid::parse_str(&self.context_id).is_ok()
+                }
+            }
     }
 
     pub fn is_terminal(&self) -> bool {
@@ -80,6 +117,7 @@ impl ExecutionRecord {
             && self.execution_id == other.execution_id
             && self.context_kind == other.context_kind
             && self.context_id == other.context_id
+            && self.notebook_id == other.notebook_id
             && self.notebook_path == other.notebook_path
             && self.cell_id == other.cell_id
             && self.status == other.status
@@ -397,6 +435,7 @@ mod tests {
             execution_id: id.to_string(),
             context_kind: "notebook".to_string(),
             context_id: "/tmp/a.ipynb".to_string(),
+            notebook_id: None,
             notebook_path: Some("/tmp/a.ipynb".to_string()),
             cell_id: Some("cell-1".to_string()),
             status: "done".to_string(),
@@ -413,6 +452,100 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
+    }
+
+    const NOTEBOOK_A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const NOTEBOOK_B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+    #[test]
+    fn notebook_record_constructor_separates_identity_from_path_context() {
+        let exec: runtime_doc::ExecutionState = serde_json::from_value(
+            serde_json::json!({"status":"done","source":"1 + 1","outputs":[]}),
+        )
+        .unwrap();
+        let saved = ExecutionRecord::from_notebook_execution_state(
+            "saved",
+            NOTEBOOK_A,
+            Some("/tmp/shared.ipynb".into()),
+            &exec,
+        );
+        assert_eq!(saved.notebook_id.as_deref(), Some(NOTEBOOK_A));
+        assert_eq!(saved.context_id, "/tmp/shared.ipynb");
+        assert_eq!(saved.notebook_path.as_deref(), Some("/tmp/shared.ipynb"));
+        let untitled =
+            ExecutionRecord::from_notebook_execution_state("untitled", NOTEBOOK_A, None, &exec);
+        assert_eq!(untitled.context_id, NOTEBOOK_A);
+        assert_eq!(untitled.notebook_id.as_deref(), Some(NOTEBOOK_A));
+        let generic =
+            ExecutionRecord::from_execution_state("generic", "notebook", NOTEBOOK_A, None, &exec);
+        assert_eq!(generic.notebook_id, None);
+        let mut requalified = saved.clone();
+        requalified.notebook_id = Some(NOTEBOOK_B.into());
+        assert!(!saved.payload_matches(&requalified));
+    }
+
+    #[test]
+    fn belongs_to_notebook_prefers_explicit_identity_and_never_uses_paths() {
+        let mut record = record("exec-1");
+        assert!(!record.belongs_to_notebook("/tmp/a.ipynb"));
+        record.context_id = NOTEBOOK_A.into();
+        assert!(record.belongs_to_notebook(NOTEBOOK_A));
+        assert!(!record.belongs_to_notebook(NOTEBOOK_B));
+        record.context_id = "not-a-uuid".into();
+        assert!(!record.belongs_to_notebook("not-a-uuid"));
+        record.context_id = NOTEBOOK_A.into();
+        record.notebook_id = Some(NOTEBOOK_B.into());
+        assert!(!record.belongs_to_notebook(NOTEBOOK_A));
+        assert!(record.belongs_to_notebook(NOTEBOOK_B));
+        record.context_kind = "other".into();
+        assert!(!record.belongs_to_notebook(NOTEBOOK_B));
+    }
+
+    #[tokio::test]
+    async fn notebook_identity_round_trips_without_changing_legacy_schema() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = ExecutionStore::new(tmp.path());
+        let legacy = record("legacy");
+        let legacy_json = serde_json::to_value(&legacy).unwrap();
+        assert!(legacy_json.get("notebook_id").is_none());
+        tokio::fs::write(
+            tmp.path().join("legacy.json"),
+            serde_json::to_vec(&legacy_json).unwrap(),
+        )
+        .await
+        .unwrap();
+        let loaded = store.read_record("legacy").await.unwrap();
+        assert_eq!(loaded.notebook_id, None);
+        assert_eq!(loaded.schema_version, 1);
+        let mut qualified = loaded.clone();
+        qualified.notebook_id = Some(NOTEBOOK_A.into());
+        store.write_record(qualified).await.unwrap();
+        let loaded = store.read_record("legacy").await.unwrap();
+        assert!(loaded.belongs_to_notebook(NOTEBOOK_A));
+        assert_eq!(loaded.schema_version, 1);
+        assert_eq!(loaded.created_at, legacy.created_at);
+        let mut other = record("other");
+        other.notebook_id = Some(NOTEBOOK_B.into());
+        store.write_record(other).await.unwrap();
+        let same_path = store.list_context("notebook", "/tmp/a.ipynb").await;
+        assert_eq!(same_path.len(), 2);
+        assert_eq!(
+            same_path
+                .iter()
+                .filter(|record| record.belongs_to_notebook(NOTEBOOK_A))
+                .count(),
+            1
+        );
+        assert_eq!(
+            same_path
+                .iter()
+                .filter(|record| record.belongs_to_notebook(NOTEBOOK_B))
+                .count(),
+            1
+        );
+        assert!(same_path
+            .iter()
+            .all(|record| !record.belongs_to_notebook("/tmp/a.ipynb")));
     }
 
     #[tokio::test]

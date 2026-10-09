@@ -2080,17 +2080,13 @@ impl Daemon {
                 .path()
                 .await
                 .map(|path| path.to_string_lossy().to_string());
-            let context_id = crate::notebook_sync_server::notebook_execution_context_id(
-                &room,
-                notebook_path.as_deref(),
-            );
-            let record = runtimed_client::execution_store::ExecutionRecord::from_execution_state(
-                &execution_id,
-                "notebook",
-                context_id,
-                notebook_path,
-                &exec,
-            );
+            let record =
+                runtimed_client::execution_store::ExecutionRecord::from_notebook_execution_state(
+                    &execution_id,
+                    room.id.to_string(),
+                    notebook_path,
+                    &exec,
+                );
 
             if let Err(e) = self.execution_store.write_record(record.clone()).await {
                 warn!(
@@ -11524,6 +11520,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_execution_result_qualifies_room_and_preserves_path() {
+        let tmp = TempDir::new().unwrap();
+        let config = lease_test_config(&tmp);
+        let docs_dir = config.notebook_docs_dir.clone();
+        let daemon = Daemon::new_for_test(config).unwrap();
+        let id = uuid::Uuid::new_v4();
+        let path = tmp.path().join("saved.ipynb");
+        std::fs::write(
+            &path,
+            br#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#,
+        )
+        .unwrap();
+        let room = Arc::new(crate::notebook_sync_server::NotebookRoom::new_fresh(
+            id,
+            Some(path.clone()),
+            &docs_dir,
+            daemon.blob_store.clone(),
+            false,
+        ));
+        room.state
+            .with_doc(|state| {
+                state.create_execution_with_source("qualified-live", "1 + 1", 0)?;
+                state.set_execution_done("qualified-live", true)?;
+                Ok(())
+            })
+            .unwrap();
+        let inserted = daemon
+            .notebook_rooms
+            .insert_or_get(id, room, Some(&path))
+            .await
+            .unwrap();
+        let (_, reservation) = inserted.into_parts();
+        drop(reservation);
+        let Response::ExecutionResult { record } =
+            daemon.build_execution_result("qualified-live".into()).await
+        else {
+            panic!("expected a durable execution result");
+        };
+        assert_eq!(record.notebook_id, Some(id.to_string()));
+        assert_eq!(record.context_id, path.to_string_lossy());
+        assert_eq!(record.notebook_path.as_deref(), path.to_str());
+        let persisted = daemon
+            .execution_store
+            .read_record("qualified-live")
+            .await
+            .unwrap();
+        assert!(persisted.belongs_to_notebook(&id.to_string()));
+        assert!(!persisted.belongs_to_notebook(&uuid::Uuid::new_v4().to_string()));
+    }
+
+    #[tokio::test]
     async fn execution_store_gc_prunes_expired_records_before_marking_blobs() {
         let tmp = tempfile::TempDir::new().unwrap();
         let store = runtimed_client::execution_store::ExecutionStore::new(tmp.path());
@@ -11533,6 +11580,7 @@ mod tests {
                 execution_id: "exec-live".to_string(),
                 context_kind: "notebook".to_string(),
                 context_id: "/tmp/live.ipynb".to_string(),
+                notebook_id: None,
                 notebook_path: Some("/tmp/live.ipynb".to_string()),
                 cell_id: Some("cell-live".to_string()),
                 status: "done".to_string(),
@@ -11556,6 +11604,7 @@ mod tests {
             execution_id: "exec-expired".to_string(),
             context_kind: "notebook".to_string(),
             context_id: "/tmp/expired.ipynb".to_string(),
+            notebook_id: None,
             notebook_path: Some("/tmp/expired.ipynb".to_string()),
             cell_id: Some("cell-expired".to_string()),
             status: "done".to_string(),

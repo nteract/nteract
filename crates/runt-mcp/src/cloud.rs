@@ -9,6 +9,7 @@ use notebook_cloud_transport::{CloudAuth, CloudWsConfig, CloudWsFrameTransport};
 use notebook_protocol::connection::FrameTransport;
 use notebook_sync::connect::ConnectResult;
 
+pub use mcp_transport::is_local_domain_alias;
 pub use notebook_cloud_transport::registry::{
     hosted_notebook_url, normalize_domain, registry_path, CloudDomainConfig, CloudRegistry,
     CredentialRef, ResolvedCloudDomain,
@@ -285,13 +286,6 @@ fn parse_hosted_url_target(target: &str) -> Result<NotebookTarget, String> {
 
 fn looks_like_uuid(value: &str) -> bool {
     uuid::Uuid::parse_str(value).is_ok()
-}
-
-pub fn is_local_domain_alias(domain: &str) -> bool {
-    matches!(
-        domain.trim().to_ascii_lowercase().as_str(),
-        "local" | "desktop"
-    )
 }
 
 fn looks_like_ulid(value: &str) -> bool {
