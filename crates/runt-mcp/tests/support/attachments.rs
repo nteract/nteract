@@ -27,6 +27,8 @@ struct FixtureTrace(std::sync::atomic::AtomicU64);
 impl tracing::Subscriber for FixtureTrace {
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
         *metadata.level() <= tracing::Level::WARN
+            || (metadata.target() == "runtimed::daemon"
+                && *metadata.level() <= tracing::Level::INFO)
             || (metadata
                 .target()
                 .starts_with("runtimed::notebook_sync_server")
@@ -59,7 +61,8 @@ fn daemon_fixture_process() {
         tracing::subscriber::set_global_default(FixtureTrace(std::sync::atomic::AtomicU64::new(1)))
             .unwrap();
     }
-    tokio::runtime::Runtime::new().unwrap().block_on(async {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
         let config = DaemonConfig {
             socket_path: root.join("daemon.sock"),
             cache_dir: root.join("envs"),
@@ -81,7 +84,11 @@ fn daemon_fixture_process() {
             ..Default::default()
         };
         Daemon::new_for_test(config).unwrap().run().await.unwrap();
+        eprintln!("fixture daemon run completed");
     });
+    eprintln!("fixture runtime teardown starting");
+    drop(runtime);
+    eprintln!("fixture runtime teardown completed");
 }
 
 struct PendingOpen {

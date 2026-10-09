@@ -1762,6 +1762,23 @@ impl Daemon {
         Ok(())
     }
 
+    /// Notifications wake accept loops; the committed flag is the authority.
+    /// Register before checking it so shutdown cannot fall between the check
+    /// and the wait, or disappear between two accepted connections.
+    async fn wait_for_shutdown(&self) {
+        loop {
+            let notified = self.shutdown_notify.notified();
+            let committed = {
+                let shutdown = self.shutdown.lock().await;
+                *shutdown
+            };
+            if committed {
+                return;
+            }
+            notified.await;
+        }
+    }
+
     /// Establish the same causal journal barrier used by room reaping before
     /// a clean daemon shutdown releases the room. Source publication journals
     /// its complete staged generation before touching the live document, so a
@@ -2497,7 +2514,7 @@ impl Daemon {
                         }
                     }
                 }
-                _ = self.shutdown_notify.notified() => {
+                _ = self.wait_for_shutdown() => {
                     info!("[runtimed] Shutting down");
                     break;
                 }
@@ -2557,7 +2574,7 @@ impl Daemon {
                         }
                     });
                 }
-                _ = self.shutdown_notify.notified() => {
+                _ = self.wait_for_shutdown() => {
                     info!("[runtimed] Shutting down");
                     break;
                 }
@@ -8400,6 +8417,92 @@ mod tests {
             settings_json_path: Some(temp_dir.path().join("settings.json")),
             ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn committed_shutdown_stops_new_accept_loop() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = lease_test_config(&temp_dir);
+        #[cfg(unix)]
+        let socket_path = config.socket_path.clone();
+        let daemon = Daemon::new_for_test(config).unwrap();
+        daemon.trigger_shutdown().await.unwrap();
+
+        #[cfg(unix)]
+        let server = daemon.run_unix_server(UnixListener::bind(socket_path).unwrap());
+        #[cfg(windows)]
+        let server = daemon.run_windows_server();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("accept loop must observe an already committed shutdown")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn registered_shutdown_wait_observes_later_commit() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
+        let mut waiting = Box::pin(daemon.wait_for_shutdown());
+        assert!(futures::poll!(&mut waiting).is_pending());
+        daemon.trigger_shutdown().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+            .await
+            .expect("registered waiter must observe committed shutdown");
+    }
+
+    #[tokio::test]
+    async fn shutdown_wait_ignores_preparation_and_uncommitted_wakeup() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
+        daemon
+            .shutdown_preparing
+            .store(true, std::sync::atomic::Ordering::Release);
+        let mut waiting = Box::pin(daemon.wait_for_shutdown());
+        assert!(futures::poll!(&mut waiting).is_pending());
+        let error = daemon.trigger_shutdown().await.unwrap_err();
+        assert!(error.to_string().contains("already preparing"));
+        daemon.shutdown_notify.notify_waiters();
+        assert!(futures::poll!(&mut waiting).is_pending());
+        daemon
+            .shutdown_preparing
+            .store(false, std::sync::atomic::Ordering::Release);
+        daemon.trigger_shutdown().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+            .await
+            .expect("waiter must remain usable after rejected preparation");
+    }
+
+    #[tokio::test]
+    async fn shutdown_wait_remains_live_after_durability_refusal() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = lease_test_config(&temp_dir);
+        let room = Arc::new(crate::notebook_sync_server::NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            &config.notebook_docs_dir,
+            Arc::new(BlobStore::new(config.blob_store_dir.clone())),
+            true,
+        ));
+        room.durability.mark_degraded(
+            crate::notebook_sync_server::durability::DegradationKind::DurabilityBoundary,
+            "injected shutdown refusal",
+        );
+        let daemon = Daemon::new_for_test(config).unwrap();
+        let outcome = daemon
+            .notebook_rooms
+            .insert_or_get(room.id, room.clone(), None)
+            .await
+            .unwrap();
+        let (_, reservation) = outcome.into_parts();
+        drop(reservation);
+        let mut waiting = Box::pin(daemon.wait_for_shutdown());
+        assert!(futures::poll!(&mut waiting).is_pending());
+        daemon.trigger_shutdown().await.unwrap_err();
+        assert!(futures::poll!(&mut waiting).is_pending());
+        assert!(daemon.notebook_rooms.peek_uuid(room.id).await.is_some());
+        assert!(!daemon
+            .shutdown_preparing
+            .load(std::sync::atomic::Ordering::Acquire));
     }
 
     async fn write_ready_recovery_with_peer_edit(
