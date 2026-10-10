@@ -1124,7 +1124,7 @@ jobs:
       matrix:
         platform:
           - name: macOS
-            runner: macos-14
+            runner: macos-15
             setup: echo "No extra deps needed on macOS"
             run_on_pr: false
             non_blocking: false
