@@ -1159,13 +1159,6 @@ impl McpProxy {
         if let Err(error) = mcp_transport::validate_tool_target_params(&params) {
             return Ok(mcp_transport::tool_target_error(error));
         }
-        let handle = params
-            .arguments
-            .as_ref()
-            .and_then(|args| args.get("notebook_handle"))
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| McpError::invalid_params("notebook_handle is required", None))?
-            .to_owned();
         let success = match self.try_forward_tool_call(&params).await {
             Ok(success) => success,
             Err(failure)
@@ -1178,7 +1171,7 @@ impl McpProxy {
         if success.result.is_error == Some(true) {
             return Ok(success.result);
         }
-        let identity = NotebookLaunchIdentity::from_result(&success.result, &handle)?;
+        let identity = NotebookLaunchIdentity::from_request(&success.result, &params)?;
         {
             let state = self.state.read().await;
             if state.child_generation != success.generation
@@ -1189,7 +1182,7 @@ impl McpProxy {
             {
                 return Ok(mcp_transport::tool_target_error(McpError::invalid_params(
                     "Child changed before Desktop launch; reconnect the intended notebook, obtain a new handle, and explicitly resubmit",
-                    Some(serde_json::json!({"code":"attachment_unavailable","notebook_handle":handle})),
+                    Some(serde_json::json!({"code":"attachment_unavailable","notebook_handle":identity.notebook_handle})),
                 )));
             }
             // Holding this guard only during the synchronous callback prevents
@@ -1442,10 +1435,13 @@ impl McpProxy {
                 // create_cell is advertised even when compatibility read tools
                 // (get_cell/get_all_cells) are dispatch-only. Its required handle
                 // schema identifies the child's all-protocol routing contract.
-                if tools.iter().any(|tool| tool.name == "create_cell" && child_requires_handle(tool)) {
+                let requires_ids = mcp_transport::notebook_scoped_tool(&params.name)
+                    && params.arguments.as_ref().and_then(|args| args.get("notebook_id")).is_some_and(|id| !id.is_null());
+                if tools.iter().any(|tool| tool.name == "create_cell" &&
+                    (mcp_transport::tool_supports_notebook_ids(tool) || (!requires_ids && child_requires_handle(tool)))) {
                     Ok(())
                 } else {
-                    Err(McpError::invalid_params("This child does not advertise required notebook_handle routing; upgrade the child before using notebook tools", Some(serde_json::json!({"code":"unsupported_notebook_target"}))))
+                    Err(McpError::invalid_params("This child does not advertise the requested explicit notebook routing contract; upgrade the child or use its supported notebook_handle contract", Some(serde_json::json!({"code":"unsupported_notebook_target"}))))
                 }
             }).await;
             if let Err(error) = admission {
@@ -1861,6 +1857,50 @@ pub struct NotebookLaunchIdentity {
 }
 
 impl NotebookLaunchIdentity {
+    fn from_request(
+        result: &CallToolResult,
+        request: &CallToolRequestParams,
+    ) -> Result<Self, McpError> {
+        let args = request.arguments.as_ref();
+        if let Some(handle) = args
+            .and_then(|args| args.get("notebook_handle"))
+            .and_then(serde_json::Value::as_str)
+        {
+            return Self::from_result(result, handle);
+        }
+        let invalid = || {
+            McpError::invalid_params(
+                "Child launch identity does not match the requested local notebook_id",
+                None,
+            )
+        };
+        let requested_id = args
+            .and_then(|args| args.get("notebook_id"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(invalid)?;
+        if args
+            .and_then(|args| args.get("domain"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|domain| !mcp_transport::is_local_domain_alias(domain))
+        {
+            return Err(invalid());
+        }
+        let value = result.structured_content.as_ref().ok_or_else(invalid)?;
+        let id = value
+            .get("notebook_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(invalid)?;
+        if uuid::Uuid::parse_str(requested_id).map_err(|_| invalid())?
+            != uuid::Uuid::parse_str(id).map_err(|_| invalid())?
+        {
+            return Err(invalid());
+        }
+        let handle = value
+            .get("notebook_handle")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(invalid)?;
+        Self::from_result(result, handle)
+    }
     fn from_result(result: &CallToolResult, requested: &str) -> Result<Self, McpError> {
         let invalid = || {
             McpError::invalid_params(
@@ -1889,6 +1929,7 @@ impl NotebookLaunchIdentity {
             .and_then(serde_json::Value::as_bool)
             .ok_or_else(invalid)?;
         if value.get("source").and_then(serde_json::Value::as_str) != Some("local")
+            || handle.is_empty()
             || handle != requested
             || uuid::Uuid::parse_str(id).is_err()
             || !std::path::Path::new(socket).is_absolute()
@@ -2017,6 +2058,7 @@ fn tool_can_be_replayed(name: &str) -> bool {
             | "resolve_notebook_launch"
             | "get_cell"
             | "get_all_cells"
+            | "inspect_notebook"
             | "get_results"
             | "get_dependencies"
             | "wait_for_notebook_change"
@@ -2140,13 +2182,17 @@ impl ServerHandler for McpProxy {
             env!("CARGO_PKG_VERSION"),
         ))
         .with_instructions(
-            "nteract MCP server for Jupyter notebooks. \
-             Notebook operations use the notebook_handle returned by \
-             connect_notebook or create_notebook for that independent attachment. \
-             Release affects only the named attachment. Daemon replacement expires \
-             local attachments; child replacement expires all attachments. Connect \
-             again, read a fresh baseline, and resubscribe. Every notebook tool requires \
-             a nonempty notebook_handle on every supported protocol.",
+            "nteract MCP server for Jupyter notebooks. Follow the current tools/list \
+             target schema. Current workers accept notebook_id (plus configured domain \
+             for hosted notebooks) or an existing notebook_handle. Omitted domain is \
+             always local. Connect/create admits a notebook; ID calls only reuse an \
+             already connected authorized replica. disconnect_notebook releases one \
+             exact handle. ID results identify shared address retention separately. \
+             Use resources/subscriptions or inspect_notebook for reads and changes; \
+             get_results(execution_id, timeout_secs) continues observing an existing run. \
+             Daemon replacement expires local attachments; child replacement expires \
+             all attachments. Connect again to the same target, read a baseline, and \
+             resubscribe. Never infer a target or repeat a mutation with unknown outcome.",
         )
     }
 

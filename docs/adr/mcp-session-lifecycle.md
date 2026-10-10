@@ -182,18 +182,7 @@ child transport ends. Watches retain snapshot receivers rather than DocHandle
 command senders, so they do not independently keep notebook peers or kernels
 alive. Releasing a session wakes pending observers as unavailable.
 
-`wait_for_notebook_change` is the bounded fallback for hosts that do not make
-resource notifications available to agents. It requires a notebook handle,
-accepts an optional cursor and execution ID, and waits 25 seconds by default
-(50 seconds maximum, eight simultaneous waits per connection). Without a
-cursor or execution ID it returns an immediate baseline. An execution wait
-follows that exact execution, including trailing stream output, independently
-of later edits or reruns of its cell. Completion uses the existing output
-formatter and the execution's captured source. Cancellation ends observation;
-it does not interrupt the kernel. The tool returns baseline, changed, completed,
-timed_out, resync_required, or unavailable, with compact changes and resource
-links. Neither notification delivery nor a progress callback proves that a host
-has refreshed model context.
+`inspect_notebook(after, timeout_secs)` supplies bounded notebook-change observation for tool-only hosts. `get_results(execution_id, timeout_secs)` waits for the same existing execution without resubmission. Both default to zero and cap at 50 seconds, sharing the eight-wait budget. The hidden `wait_for_notebook_change` keeps its original handle contract and 25-second default for compatibility. Resources/subscriptions remain the ongoing observation surface.
 
 Tool requests honor request cancellation and connection teardown throughout
 their observation future. The shared `mcp-transport` adapter attaches a connection
@@ -222,10 +211,11 @@ request first, with the revision's required inline metadata. Initialize-based
 connections remain on their negotiated legacy revision. Inline metadata cannot
 upgrade an existing legacy connection.
 
-Native notebook-scoped tools require the attachment's `notebook_handle`.
-Legacy tools may also supply it. Selecting a handle routes just that request to
-an active or parked attachment; it does not switch the connection's active
-notebook. Native resource catalogs contain the static output UI and notebook
+All protocols require an explicit target: ordinary calls accept notebook ID/domain
+or an exact handle under the amended [attachment contract](mcp-explicit-notebook-attachments.md).
+ID calls capture an already authorized replica and retain a separate shared
+address owner; no cold connection occurs. Selecting a target affects only that
+request. Disconnect and the hidden legacy wait remain exact-handle operations. Native resource catalogs contain the static output UI and notebook
 listing, plus handle-qualified resource templates. Catalog entries do not depend
 on which notebooks this connection has opened. Reads and catalogs use private
 caching with zero TTL. The private child remains on `2025-11-25`, advertises empty

@@ -89,8 +89,8 @@
       "name": "disconnect_notebook"
     },
     {
-      "description": "Wait for notebook changes or an exact execution.",
-      "name": "wait_for_notebook_change"
+      "description": "Read bounded notebook cells; after a cursor, optionally wait for changes.",
+      "name": "inspect_notebook"
     },
     {
       "description": "Create after after_cell_id; omit it to append.",
@@ -117,7 +117,7 @@
       "name": "run_all_cells"
     },
     {
-      "description": "Get outputs and status (done/error/running/queued) for an execution_id.",
+      "description": "Read an execution_id's outputs/status; optionally wait up to 50 seconds.",
       "name": "get_results"
     },
     {

@@ -42,7 +42,7 @@ pub(crate) fn tool_icon(name: &str) -> Option<IconKind> {
         "save_notebook" => IconKind::SaveNotebook,
         "disconnect_notebook" => IconKind::DisconnectNotebook,
         "get_cell" => IconKind::ReadCell,
-        "get_all_cells" => IconKind::ListActiveNotebooks,
+        "get_all_cells" | "inspect_notebook" => IconKind::ListActiveNotebooks,
         "create_cell" => IconKind::CreateCell,
         "set_cell" => IconKind::EditCell,
         "delete_cell" => IconKind::DeleteCell,

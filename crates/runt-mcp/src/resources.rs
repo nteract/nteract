@@ -451,11 +451,22 @@ pub(crate) async fn resource_session(
             }
             return capture(&selected.session);
         }
-        let mut explicit = entries
+        let mut owners = entries
             .values()
-            .filter(|entry| entry.session.notebook_id == notebook_id);
-        let first = explicit.next();
-        if explicit.next().is_some() {
+            .filter(|entry| entry.session.notebook_id == notebook_id)
+            .filter(|entry| {
+                // ID calls retain an Address owner of an existing replica.
+                // Prefer its Explicit owner for compatibility aliases, so that
+                // reads and new watches keep the original attachment lifetime.
+                // Independent Explicit owners remain deliberately ambiguous.
+                entry.origin() != crate::attachments::AttachmentOrigin::Address
+                    || !entries.values().any(|other| {
+                        other.origin() == crate::attachments::AttachmentOrigin::Explicit
+                            && entry.session.shares_replica_with(&other.session)
+                    })
+            });
+        let first = owners.next();
+        if owners.next().is_some() {
             return Err(McpError::invalid_params("Ambiguous notebook ID; read its nteract://sessions/{notebook_handle} resource instead", None));
         }
         first.map(|entry| capture(&entry.session)).transpose()?
@@ -550,29 +561,47 @@ fn cells_json(notebook_id: &str, view: &ObservedNotebook, notebook_handle: &str)
     let cell_entries: Vec<_> = cells
         .iter()
         .enumerate()
-        .map(|(index, cell)| {
-            let execution_id = view.notebook.execution_pointers.get(&cell.id);
-            let execution = execution_id.and_then(|id| view.runtime.executions.get(id));
-            let status = observed_cell_status(view, cell);
-            serde_json::json!({
-                "cell_id": cell.id,
-                "uri": attachment_cell_uri(notebook_handle, &cell.id),
-                "cell_type": cell.cell_type,
-                "previous_cell_id": previous_cell_id(cells, index),
-                "next_cell_id": next_cell_id(cells, index),
-                "source_preview": source_preview(&cell.source, 160),
-                "execution_id": execution_id,
-                "execution_count": execution.and_then(|entry| entry.execution_count).map(|count| count.to_string()),
-                "status": status,
-                "outputs": summarize_outputs(execution.map(|entry| entry.outputs.as_slice()).unwrap_or(&[])),
-            })
-        })
+        .map(|(index, _)| observed_cell_summary(view, notebook_handle, index, 160, None))
         .collect();
     serde_json::to_string_pretty(&serde_json::json!({
         "notebook_id": notebook_id,
         "cells": cell_entries,
     }))
     .unwrap_or_else(|_| "{}".into())
+}
+
+/// One captured notebook/runtime projection, shared by resources and the tool fallback.
+pub(crate) fn observed_cell_summary(
+    view: &ObservedNotebook,
+    notebook_handle: &str,
+    index: usize,
+    preview_chars: usize,
+    output_limit: Option<usize>,
+) -> serde_json::Value {
+    let cells = view.notebook.cells();
+    let cell = &cells[index];
+    let execution_id = view.notebook.execution_pointers.get(&cell.id);
+    let execution = execution_id.and_then(|id| view.runtime.executions.get(id));
+    let outputs = execution
+        .map(|entry| entry.outputs.as_slice())
+        .unwrap_or(&[]);
+    let mut result = serde_json::json!({
+        "cell_id": cell.id,
+        "uri": attachment_cell_uri(notebook_handle, &cell.id),
+        "cell_type": cell.cell_type,
+        "previous_cell_id": previous_cell_id(cells, index),
+        "next_cell_id": next_cell_id(cells, index),
+        "source_preview": source_preview(&cell.source, preview_chars),
+        "execution_id": execution_id,
+        "execution_count": execution.and_then(|entry| entry.execution_count).map(|count| count.to_string()),
+        "status": observed_cell_status(view, cell),
+        "outputs": match output_limit { Some(limit) => bounded_output_summaries(outputs, limit), None => summarize_outputs(outputs) },
+    });
+    if let Some(limit) = output_limit {
+        result["output_count"] = serde_json::json!(outputs.len());
+        result["outputs_truncated"] = serde_json::json!(outputs.len() > limit);
+    }
+    result
 }
 
 fn previous_cell_id(cells: &[notebook_doc::CellSnapshot], index: usize) -> Option<&str> {
@@ -663,6 +692,21 @@ fn observed_cell_status<'a>(
         .get(id)
         .map(|entry| entry.status.as_str())
         .filter(|status| matches!(*status, "done" | "error" | "cancelled"))
+}
+
+/// Summaries for a bounded tool read, without materializing all output manifests.
+fn bounded_output_summaries(outputs: &[serde_json::Value], limit: usize) -> Vec<serde_json::Value> {
+    outputs.iter().take(limit).map(|output| {
+        let data = output.get("data").and_then(serde_json::Value::as_object);
+        let bounded = |value: Option<&str>| value.map(|value| value.chars().take(128).collect::<String>());
+        let id = output.get("output_id").and_then(serde_json::Value::as_str);
+        let kind = output.get("output_type").and_then(serde_json::Value::as_str);
+        let mimes: Vec<_> = data.into_iter().flat_map(|data| data.keys()).take(16).map(|key| bounded(Some(key))).collect();
+        let truncated = id.is_some_and(|id| id.chars().count() > 128)
+            || kind.is_some_and(|kind| kind.chars().count() > 128)
+            || data.is_some_and(|data| data.len() > 16 || data.keys().take(16).any(|key| key.chars().count() > 128));
+        serde_json::json!({"output_id":bounded(id),"output_type":bounded(kind),"mime_types":mimes,"truncated":truncated})
+    }).collect()
 }
 
 fn summarize_outputs(outputs: &[serde_json::Value]) -> Vec<serde_json::Value> {
@@ -756,7 +800,7 @@ pub(crate) fn attachment_cell_resource_link(notebook_handle: &str, cell_id: &str
     resource
 }
 
-fn attachment_cell_uri(notebook_handle: &str, cell_id: &str) -> String {
+pub(crate) fn attachment_cell_uri(notebook_handle: &str, cell_id: &str) -> String {
     format!(
         "{}/{}",
         attachment_cells_uri(notebook_handle),
@@ -859,6 +903,61 @@ mod tests {
 
     use super::*;
     use crate::NteractMcp;
+
+    struct IdleAliasFrames;
+
+    impl notebook_protocol::connection::FrameSource for IdleAliasFrames {
+        async fn recv_frame(
+            &mut self,
+        ) -> Option<std::io::Result<notebook_protocol::connection::TypedNotebookFrame>> {
+            std::future::pending().await
+        }
+    }
+
+    async fn hosted_alias_session(domain: &str) -> crate::session::NotebookSession {
+        let handle = notebook_sync::connect::connect_frame_io(
+            "same-notebook".into(),
+            &format!("local:alias-test/agent:test:{}", uuid::Uuid::new_v4()),
+            IdleAliasFrames,
+            notebook_protocol::connection::WriterFrameSink::new(tokio::io::sink()),
+        )
+        .await
+        .unwrap()
+        .handle;
+        crate::session::NotebookSession::hosted(handle, "same-notebook".into(), domain.into())
+    }
+
+    #[tokio::test]
+    async fn notebook_alias_keeps_independent_address_and_explicit_replicas_ambiguous() {
+        for other_domain in ["https://first.invalid", "https://second.invalid"] {
+            let server = NteractMcp::new("/unused-alias-test.sock".into(), None, None);
+            let original = hosted_alias_session("https://first.invalid").await;
+            let handle = original.notebook_handle.clone();
+            let target = crate::session_activation::CanonicalNotebookTarget::new(
+                original.activation_target.clone(),
+            );
+            server
+                .attachments
+                .insert(original, server.attachments.reserve().unwrap());
+            let address = server
+                .attachments
+                .acquire_address(&target, |session| session.notebook_handle == handle)
+                .unwrap();
+            drop(server.attachments.remove(&handle));
+            let independent = hosted_alias_session(other_domain).await;
+            assert!(!address.shares_replica_with(&independent));
+            server
+                .attachments
+                .insert(independent, server.attachments.reserve().unwrap());
+
+            let error = resource_session(&server, "same-notebook", false)
+                .await
+                .err()
+                .unwrap();
+            assert!(error.message.contains("Ambiguous notebook ID"), "{error}");
+            assert_eq!(server.attachments.read_entries().len(), 2);
+        }
+    }
 
     fn ui_meta(meta: &MetaObject) -> &serde_json::Value {
         meta.0.get("ui").expect("ui metadata")

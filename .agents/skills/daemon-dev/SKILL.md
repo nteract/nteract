@@ -168,9 +168,14 @@ RUNTIMED_SOCKET_PATH="$(./target/debug/runt daemon status --json | python3 -c 'i
 
 Use `nteract mcp` for the supervised MCP server. `runt mcp` remains available to run the worker directly. Run via `cargo xtask run-mcp` for development.
 
-**Advertised tools** (`all_tools()`): `list_active_notebooks`, `list_notebooks`, `connect_notebook`, `create_notebook`, `save_notebook`, `show_notebook`, `disconnect_notebook`, `create_cell`, `set_cell`, `delete_cell`, `move_cell`, `execute_cell`, `run_all_cells`, `get_results`, `interrupt_kernel`, `restart_kernel`, `manage_dependencies`, `replace_match`, `replace_regex`.
+Use `all_tools()` as the current advertised inventory. It includes bounded
+`inspect_notebook`, cell editing/execution, exact-run `get_results`, comments,
+dependencies and notebook lifecycle calls. Ordinary notebook tools accept
+ID/domain or a compatible exact handle; see the MCP session lifecycle skill.
 
-**Hidden/callable read tools** (`hidden_tools()`): `get_cell`, `get_all_cells`. These are callable but not advertised in `list_tools()`. They are dispatch-only read paths for clients that prefer direct tool calls over resource URIs.
+**Hidden/callable reads** (`hidden_tools()`): `get_cell`, `get_all_cells`, and
+legacy `wait_for_notebook_change`. Prefer resources/subscriptions or inspect for
+notebook observation, and get_results with timeout_secs for an existing run.
 
 Legacy dependency and cell-metadata tool names still dispatch for compatibility, but new workflows should use `manage_dependencies` for dependency inspection/edits and `get_results` for execution output lookup by `execution_id`.
 

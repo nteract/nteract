@@ -130,7 +130,7 @@ async fn actual_notebook_server_supports_native_first_reads_and_expired_waits() 
     }
 }
 #[tokio::test]
-async fn native_requires_handles_and_rejects_expired_subscriptions_before_ack() {
+async fn native_requires_explicit_targets_and_rejects_expired_subscriptions_before_ack() {
     let dir = tempfile::tempdir().unwrap();
     let server = runt_mcp::NteractMcp::new_no_show(dir.path().join("daemon.sock"), None, None);
     let mut wire = Wire::start(server);

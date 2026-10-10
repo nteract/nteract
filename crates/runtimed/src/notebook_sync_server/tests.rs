@@ -6158,7 +6158,40 @@ async fn test_initial_load_hydrates_widget_metadata_into_runtime_comms() {
 }
 
 #[tokio::test]
+async fn test_persist_terminal_execution_records_qualifies_room_and_preserves_path() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = test_room_with_path(&tmp, "durable-identity.ipynb");
+    room.state
+        .with_doc(|state| {
+            state.create_execution_with_source("qualified-run", "1 + 1", 0)?;
+            state.set_execution_done("qualified-run", true)?;
+            Ok(())
+        })
+        .unwrap();
+    let store =
+        runtimed_client::execution_store::ExecutionStore::new(tmp.path().join("execution-store"));
+    let mut persisted = std::collections::HashMap::new();
+    super::peer_runtime_sync::persist_terminal_execution_records(&room, &store, &mut persisted)
+        .await;
+    let record = store.read_record("qualified-run").await.unwrap();
+    assert_eq!(record.notebook_id, Some(room.id.to_string()));
+    assert_eq!(record.context_id, path.to_string_lossy());
+    assert_eq!(record.notebook_path.as_deref(), path.to_str());
+    assert!(record.belongs_to_notebook(&room.id.to_string()));
+    assert!(!record.belongs_to_notebook(&Uuid::new_v4().to_string()));
+}
+
+#[tokio::test]
 async fn test_initial_load_reuses_matching_durable_execution_id() {
+    assert_initial_load_requalifies_only_after_persistence(false).await;
+}
+
+#[tokio::test]
+async fn test_initial_load_requalifies_durable_execution_only_when_persisted() {
+    assert_initial_load_requalifies_only_after_persistence(true).await;
+}
+
+async fn assert_initial_load_requalifies_only_after_persistence(explicit_identity: bool) {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
 
@@ -6196,9 +6229,10 @@ async fn test_initial_load_reuses_matching_durable_execution_id() {
     // First materialization has no durable records, so it mints a synthetic
     // execution. Capture its manifest refs to author a matching durable
     // record for the reload.
+    let original_notebook_id = Uuid::new_v4();
     let outputs = {
         let (first_room, _guard, settled) = materialized_room_from_disk_with(
-            Uuid::new_v4(),
+            original_notebook_id,
             tmp.path(),
             blob_store.clone(),
             &ipynb_path,
@@ -6225,6 +6259,7 @@ async fn test_initial_load_reuses_matching_durable_execution_id() {
             execution_id: "durable-exec-1".to_string(),
             context_kind: "notebook".to_string(),
             context_id: context_id.clone(),
+            notebook_id: explicit_identity.then(|| original_notebook_id.to_string()),
             notebook_path: Some(context_id.clone()),
             cell_id: Some("cell-1".to_string()),
             status: "error".to_string(),
@@ -6240,8 +6275,9 @@ async fn test_initial_load_reuses_matching_durable_execution_id() {
         .await
         .unwrap();
 
+    let reload_notebook_id = Uuid::new_v4();
     let (reload_room, _guard, settled) = materialized_room_from_disk_with(
-        Uuid::new_v4(),
+        reload_notebook_id,
         tmp.path(),
         blob_store,
         &ipynb_path,
@@ -6267,6 +6303,27 @@ async fn test_initial_load_reuses_matching_durable_execution_id() {
     assert_eq!(reloaded_execution.execution_count, Some(7));
     assert_eq!(reloaded_execution.status, "error");
     assert_eq!(reloaded_execution.success, Some(false));
+
+    // Loading by path and exact cell content admits the existing execution into
+    // this room, but a reader cannot infer qualification from that path alone.
+    let before_persist = store.read_record("durable-exec-1").await.unwrap();
+    assert_eq!(
+        before_persist.notebook_id,
+        explicit_identity.then(|| original_notebook_id.to_string())
+    );
+    assert!(!before_persist.belongs_to_notebook(&reload_notebook_id.to_string()));
+    let mut persisted = std::collections::HashMap::new();
+    super::peer_runtime_sync::persist_terminal_execution_records(
+        &reload_room,
+        &store,
+        &mut persisted,
+    )
+    .await;
+    let qualified = store.read_record("durable-exec-1").await.unwrap();
+    assert_eq!(qualified.execution_id, "durable-exec-1");
+    assert_eq!(qualified.context_id, context_id);
+    assert!(qualified.belongs_to_notebook(&reload_notebook_id.to_string()));
+    assert!(!qualified.belongs_to_notebook(&original_notebook_id.to_string()));
 }
 
 #[tokio::test]
@@ -6311,6 +6368,7 @@ async fn test_initial_load_mints_execution_id_when_durable_record_no_longer_matc
             execution_id: "durable-exec-1".to_string(),
             context_kind: "notebook".to_string(),
             context_id: context_id.clone(),
+            notebook_id: None,
             notebook_path: Some(context_id.clone()),
             cell_id: Some("cell-1".to_string()),
             status: "done".to_string(),

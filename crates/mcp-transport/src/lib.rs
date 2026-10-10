@@ -140,6 +140,45 @@ impl<T: Transport<rmcp::service::RoleClient>> Transport<rmcp::service::RoleClien
 #[allow(clippy::unwrap_used)]
 mod tests {
     #[test]
+    fn local_domain_aliases_preserve_case_and_whitespace_semantics() {
+        for domain in [
+            "local",
+            "desktop",
+            "LOCAL",
+            "DeSkToP",
+            " local ",
+            "\tDesktop\n",
+            "\u{2003}local\u{2003}",
+        ] {
+            assert!(super::is_local_domain_alias(domain), "{domain:?}");
+        }
+    }
+
+    #[test]
+    fn local_domain_aliases_reject_lookalikes_and_hosted_origins() {
+        for domain in [
+            "",
+            " \t\n",
+            "localhost",
+            "local.",
+            "local/",
+            "local:80",
+            "local.example",
+            "desktop.example",
+            "desktop://",
+            "lo cal",
+            "localdesktop",
+            "https://local",
+            "http://desktop",
+            "https://notebooks.example",
+            "ｌｏｃａｌ",
+            "locаl",
+        ] {
+            assert!(!super::is_local_domain_alias(domain), "{domain:?}");
+        }
+    }
+
+    #[test]
     fn catalog_interests_are_accepted_only_by_proxy_filter() {
         let requested: rmcp::model::SubscriptionFilter = serde_json::from_value(serde_json::json!({
             "toolsListChanged":true,"resourcesListChanged":true,"promptsListChanged":true,
@@ -156,6 +195,86 @@ mod tests {
             proxy.resource_subscriptions,
             Some(vec!["nteract://sessions/explicit/cells".into()])
         );
+    }
+
+    #[test]
+    fn id_schema_requires_one_target_and_proxy_does_not_upgrade_old_children() {
+        let tool = rmcp::model::Tool::new("create_cell", "fixture", serde_json::Map::new());
+        let mut old = vec![tool.clone()];
+        super::attachment_tool_schemas(&mut old);
+        assert!(!super::tool_supports_notebook_ids(&old[0]));
+        assert_eq!(
+            old[0].input_schema["required"],
+            serde_json::json!(["notebook_handle"])
+        );
+        let mut new = vec![tool];
+        super::notebook_target_tool_schemas(&mut new);
+        assert!(super::tool_supports_notebook_ids(&new[0]));
+        let original = new[0].input_schema.clone();
+        super::attachment_tool_schemas(&mut new);
+        assert_eq!(new[0].input_schema, original);
+        let mut forged = old[0].clone();
+        std::sync::Arc::make_mut(&mut forged.input_schema).insert(
+            "x-nteract-notebook-target-version".into(),
+            serde_json::json!(1),
+        );
+        assert!(!super::tool_supports_notebook_ids(&forged));
+        let mut release = vec![rmcp::model::Tool::new(
+            "disconnect_notebook",
+            "fixture",
+            serde_json::Map::new(),
+        )];
+        super::notebook_target_tool_schemas(&mut release);
+        assert!(!super::tool_supports_notebook_ids(&release[0]));
+        assert_eq!(
+            release[0].input_schema["required"],
+            serde_json::json!(["notebook_handle"])
+        );
+    }
+
+    #[test]
+    fn selector_validation_rejects_ambiguous_and_malformed_targets() {
+        fn validate(name: &str, args: serde_json::Value) -> bool {
+            super::validate_tool_target_params(
+                &rmcp::model::CallToolRequestParams::new(name.to_owned())
+                    .with_arguments(args.as_object().unwrap().clone()),
+            )
+            .is_ok()
+        }
+        for args in [
+            serde_json::json!({"notebook_handle":"h"}),
+            serde_json::json!({"notebook_handle":"h","notebook_id":null}),
+            serde_json::json!({"notebook_id":"id"}),
+            serde_json::json!({"notebook_id":"id","domain":"https://example.com"}),
+        ] {
+            assert!(validate("set_cell", args.clone()), "{args}");
+        }
+        for args in [
+            serde_json::json!({}),
+            serde_json::json!({"notebook_id":null}),
+            serde_json::json!({"notebook_id":3}),
+            serde_json::json!({"notebook_handle":true}),
+            serde_json::json!({"notebook_id":""}),
+            serde_json::json!({"notebook_handle":""}),
+            serde_json::json!({"notebook_id":"id","notebook_handle":"h"}),
+            serde_json::json!({"notebook_handle":"h","domain":"local"}),
+            serde_json::json!({"notebook_id":"id","domain":3}),
+            serde_json::json!({"notebook_id":"id","target":"elsewhere"}),
+        ] {
+            assert!(!validate("set_cell", args.clone()), "{args}");
+        }
+        assert!(!validate(
+            "disconnect_notebook",
+            serde_json::json!({"notebook_id":"id"})
+        ));
+        assert!(!validate(
+            "wait_for_notebook_change",
+            serde_json::json!({"notebook_id":"id"})
+        ));
+        assert!(!validate(
+            "show_notebook",
+            serde_json::json!({"notebook_id":"id","path":"elsewhere"})
+        ));
     }
 
     #[test]
@@ -269,6 +388,13 @@ pub const SUPPORTED_VERSIONS: &[ProtocolVersion] = &[
     ProtocolVersion::V_2025_11_25,
     ProtocolVersion::V_2026_07_28,
 ];
+/// Reserved domain selectors for this MCP server's configured local daemon.
+/// Hosted origins and lookalike hostnames must retain their own authority.
+pub fn is_local_domain_alias(domain: &str) -> bool {
+    let domain = domain.trim();
+    domain.eq_ignore_ascii_case("local") || domain.eq_ignore_ascii_case("desktop")
+}
+
 pub fn notebook_scoped_tool(name: &str) -> bool {
     matches!(
         name,
@@ -279,6 +405,7 @@ pub fn notebook_scoped_tool(name: &str) -> bool {
             | "disconnect_notebook"
             | "get_cell"
             | "get_all_cells"
+            | "inspect_notebook"
             | "create_cell"
             | "set_cell"
             | "delete_cell"
@@ -308,9 +435,81 @@ pub fn notebook_scoped_tool(name: &str) -> bool {
             | "wait_for_notebook_change"
     )
 }
+/// Ownership operations and the cached compatibility wait retain exact handles.
+pub fn handle_only_tool(name: &str) -> bool {
+    matches!(name, "disconnect_notebook" | "wait_for_notebook_change")
+}
+
+fn notebook_target_alternatives() -> serde_json::Value {
+    serde_json::json!([
+        {"required":["notebook_handle"],"properties":{
+            "notebook_handle":{"type":"string","minLength":1},
+            "notebook_id":{"type":"null"},"domain":{"type":"null"}}},
+        {"required":["notebook_id"],"properties":{
+            "notebook_id":{"type":"string","minLength":1},
+            "notebook_handle":{"type":"null"}}}
+    ])
+}
+
+/// Recognize the exact new-worker routing contract in its live catalog.
+/// A proxy's cached or rewritten tools are never proof of child support.
+pub fn tool_supports_notebook_ids(tool: &rmcp::model::Tool) -> bool {
+    let schema = &tool.input_schema;
+    schema.get("x-nteract-notebook-target-version") == Some(&serde_json::json!(1))
+        && schema.get("oneOf") == Some(&notebook_target_alternatives())
+        && ["notebook_id", "notebook_handle", "domain"]
+            .iter()
+            .all(|name| {
+                schema
+                    .get("properties")
+                    .and_then(|v| v.get(*name))
+                    .and_then(|v| v.get("type"))
+                    == Some(&serde_json::json!(["string", "null"]))
+            })
+        && schema
+            .get("required")
+            .and_then(serde_json::Value::as_array)
+            .is_none_or(|fields| {
+                !fields
+                    .iter()
+                    .any(|field| field == "notebook_handle" || field == "notebook_id")
+            })
+}
+
+/// Only workers implementing ID capture call this. Proxies preserve these
+/// schemas from a capable worker; they must not promote an older worker.
+pub fn notebook_target_tool_schemas(tools: &mut [rmcp::model::Tool]) {
+    attachment_tool_schemas(tools);
+    for tool in tools {
+        if !notebook_scoped_tool(&tool.name) || handle_only_tool(&tool.name) {
+            continue;
+        }
+        let schema = Arc::make_mut(&mut tool.input_schema);
+        let properties = schema
+            .entry("properties")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(properties) = properties.as_object_mut() {
+            properties.insert("notebook_id".into(), serde_json::json!({"type":["string","null"],"minLength":1,"description":"ID of an already connected notebook. Omitted domain uses this server's local daemon."}));
+            properties.insert("domain".into(), serde_json::json!({"type":["string","null"],"minLength":1,"description":"Configured hosted domain; only with notebook_id. Omit for local."}));
+            properties.insert("notebook_handle".into(), serde_json::json!({"type":["string","null"],"minLength":1,"description":"Compatibility attachment handle; use instead of notebook_id/domain."}));
+        }
+        if let Some(required) = schema
+            .get_mut("required")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            required.retain(|name| name != "notebook_handle" && name != "notebook_id");
+        }
+        schema.insert("oneOf".into(), notebook_target_alternatives());
+        schema.insert(
+            "x-nteract-notebook-target-version".into(),
+            serde_json::json!(1),
+        );
+    }
+}
+
 pub fn attachment_tool_schemas(tools: &mut [rmcp::model::Tool]) {
     for tool in tools {
-        if !notebook_scoped_tool(&tool.name) {
+        if !notebook_scoped_tool(&tool.name) || tool_supports_notebook_ids(tool) {
             continue;
         }
         let schema = Arc::make_mut(&mut tool.input_schema);
@@ -345,31 +544,47 @@ pub fn validate_tool_target(
 pub fn validate_tool_target_params(
     request: &rmcp::model::CallToolRequestParams,
 ) -> Result<(), rmcp::ErrorData> {
-    if notebook_scoped_tool(&request.name)
-        && request
+    if !notebook_scoped_tool(&request.name) {
+        return Ok(());
+    }
+    let value = |name: &str| {
+        request
             .arguments
             .as_ref()
-            .and_then(|args| args.get("notebook_handle"))
+            .and_then(|args| args.get(name))
+            .filter(|value| !value.is_null())
+    };
+    let handle = value("notebook_handle");
+    let id = value("notebook_id");
+    let domain = value("domain");
+    if id.is_none()
+        && handle
             .and_then(serde_json::Value::as_str)
-            .is_none_or(|handle| handle.is_empty())
+            .is_none_or(str::is_empty)
     {
         return Err(rmcp::ErrorData::invalid_params(
-            "notebook_handle is required; refresh tools/list (reconnect the MCP client if it retains old definitions), then use connect_notebook or create_notebook for the intended notebook to obtain a current handle and explicitly resubmit the request",
+            "An explicit notebook_id or notebook_handle is required; refresh tools/list (reconnect the client if its definitions are cached), connect to the intended notebook, then explicitly resubmit",
             Some(serde_json::json!({"kind":"missing_notebook_handle","refresh":"tools/list","reconnect_if_cached":true,"resubmit_required":true})),
         ));
     }
-    if notebook_scoped_tool(&request.name)
-        && request.arguments.as_ref().is_some_and(|args| {
-            args.get("notebook_id")
-                .is_some_and(|value| !value.is_null())
-                || (matches!(
-                    request.name.as_ref(),
-                    "show_notebook" | "launch_app" | "resolve_notebook_launch"
-                ) && args.contains_key("path"))
-        })
+    if [handle, id, domain]
+        .into_iter()
+        .flatten()
+        .any(|value| value.as_str().is_none_or(str::is_empty))
+        || (handle.is_some() && (id.is_some() || domain.is_some()))
+        || (handle_only_tool(&request.name)
+            && (handle.is_none() || id.is_some() || domain.is_some()))
+        || value("target").is_some()
+        || (matches!(
+            request.name.as_ref(),
+            "show_notebook" | "launch_app" | "resolve_notebook_launch"
+        ) && request
+            .arguments
+            .as_ref()
+            .is_some_and(|args| args.contains_key("path")))
     {
         return Err(rmcp::ErrorData::invalid_params(
-            "Use only the notebook_handle returned for the intended notebook; omit alternate notebook_id/path selectors and explicitly resubmit",
+            "Use exactly one nonempty notebook_id (optional domain) or notebook_handle. disconnect_notebook and the compatibility wait require a handle; alternate target/path selectors are not accepted",
             Some(serde_json::json!({"code":"invalid_notebook_target","resubmit_required":true})),
         ));
     }

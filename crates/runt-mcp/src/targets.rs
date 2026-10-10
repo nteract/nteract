@@ -4,6 +4,7 @@ use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::ErrorData;
 tokio::task_local! {
     static TARGET: Option<String>;
+    static CAPTURED_SESSION: Option<crate::session::NotebookSession>;
     static EXPLICIT_ATTACHMENT: bool;
     static RESERVATION: std::cell::RefCell<Option<crate::attachments::AttachmentReservation>>;
     static BACKING_KEY: Option<crate::attachments::BackingPeerKey>;
@@ -33,6 +34,10 @@ pub(crate) fn take_reservation(
         .unwrap_or_else(|| server.attachments.reserve())
 }
 
+pub(crate) fn captured_session() -> Option<crate::session::NotebookSession> {
+    CAPTURED_SESSION.try_with(Clone::clone).ok().flatten()
+}
+
 pub(crate) fn current() -> Option<String> {
     TARGET.try_with(Clone::clone).ok().flatten()
 }
@@ -44,6 +49,7 @@ pub(crate) async fn dispatch(
     if let Err(error) = mcp_transport::validate_tool_target_params(request) {
         return Ok(mcp_transport::tool_target_error(error));
     }
+    server.attachments.reap_disconnected_addresses();
     let reservation = if matches!(
         request.name.as_ref(),
         "connect_notebook" | "open_notebook" | "create_notebook"
@@ -51,7 +57,7 @@ pub(crate) async fn dispatch(
         Some(match server.attachments.reserve() {
             Ok(reservation) => reservation,
             Err(message) => return Ok(mcp_transport::tool_target_error(ErrorData::invalid_params(
-                format!("{message}; deliberately disconnect_notebook with an unneeded exact notebook_handle, then explicitly acquire again"),
+                format!("{message}; deliberately disconnect_notebook with an unneeded exact notebook_handle, then explicitly acquire again; resources/list lists retained handles"),
                 Some(serde_json::json!({"code":"attachment_limit","resubmit_required":true})),
             ))),
         })
@@ -79,35 +85,80 @@ async fn dispatch_inner(
         return crate::tools::dispatch(server, request).await;
     }
     let mut request = request.clone();
-    let value = request
-        .arguments
-        .as_mut()
-        .and_then(|arguments| arguments.remove("notebook_handle"));
-    let target = match value {
-        Some(serde_json::Value::String(handle)) if !handle.is_empty() => Some(handle),
-        Some(_) => return Ok(mcp_transport::tool_target_error(ErrorData::invalid_params("notebook_handle must be a nonempty attachment handle", None))),
-        None => return Ok(mcp_transport::tool_target_error(ErrorData::invalid_params("notebook_handle is required; use the handle returned by connect_notebook or create_notebook", None))),
+    let arguments = request.arguments.get_or_insert_default();
+    let handle = arguments
+        .remove("notebook_handle")
+        .and_then(|v| v.as_str().map(str::to_owned));
+    let id = arguments
+        .remove("notebook_id")
+        .and_then(|v| v.as_str().map(str::to_owned));
+    let domain = arguments
+        .remove("domain")
+        .and_then(|v| v.as_str().map(str::to_owned));
+    let captured = match id {
+        Some(id) => match crate::notebook_target::acquire(server, &id, domain.as_deref()).await {
+            Ok(session) => Some(session),
+            Err(error) => return Ok(mcp_transport::tool_target_error(error)),
+        },
+        None => None,
     };
-    if let Some(handle) = target.as_ref() {
-        if server.attachment_identity(handle).await.is_none() {
-            return Ok(mcp_transport::tool_target_error(
-                crate::attachments::expired_resource_error(handle),
+    let handle = match captured
+        .as_ref()
+        .map(|session| session.notebook_handle.clone())
+        .or(handle)
+    {
+        Some(handle) => handle,
+        None => {
+            return Ok(mcp_transport::tool_target_error(ErrorData::invalid_params(
+                "An explicit notebook target is required",
+                None,
+            )))
+        }
+    };
+    if captured.is_none() && server.attachment_identity(&handle).await.is_none() {
+        return Ok(mcp_transport::tool_target_error(
+            crate::attachments::expired_resource_error(&handle),
+        ));
+    }
+    let mut outcome = TARGET
+        .scope(
+            Some(handle.clone()),
+            CAPTURED_SESSION.scope(captured.clone(), crate::tools::dispatch(server, &request)),
+        )
+        .await;
+    if let Some(session) = captured {
+        // An admitted ID request owns its captured replica through completion.
+        // Releasing shared address retention is not rollback or a reason to
+        // discard a confirmed cell/execution ID after a mutation.
+        if let Ok(result) = &mut outcome {
+            let target = serde_json::json!({
+                "notebook_id":session.notebook_id,
+                "domain":match &session.source {
+                    crate::session::NotebookSessionSource::Local => "local",
+                    crate::session::NotebookSessionSource::Hosted { domain } => domain.as_str(),
+                },
+                "notebook_handle":handle,
+                "retention":"shared_address_owner",
+                "retained":server.attachments.read_entries().contains_key(&handle),
+            });
+            if result.structured_content.is_none() {
+                result.structured_content = Some(serde_json::json!({}));
+            }
+            if let Some(content) = result
+                .structured_content
+                .as_mut()
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                content.insert("target".into(), target.clone());
+            }
+            result.content.push(crate::formatting::assistant_text(
+                serde_json::json!({"target":target}).to_string(),
             ));
         }
-        if request.arguments.as_ref().is_some_and(|args| {
-            args.get("notebook_id")
-                .is_some_and(|value| !value.is_null())
-        }) {
-            return Ok(mcp_transport::tool_target_error(ErrorData::invalid_params(
-                "Use notebook_handle without notebook_id",
-                None,
-            )));
-        }
+        outcome
+    } else {
+        finish_scoped_tool(server, &request.name, Some(&handle), outcome)
     }
-    let outcome = TARGET
-        .scope(target.clone(), crate::tools::dispatch(server, &request))
-        .await;
-    finish_scoped_tool(server, &request.name, target.as_deref(), outcome)
 }
 
 /// Fence successful completions against the logical owner captured at admission.
@@ -142,4 +193,18 @@ pub(crate) async fn with_handle<T>(
     future: impl std::future::Future<Output = T>,
 ) -> T {
     TARGET.scope(Some(handle), future).await
+}
+
+/// Exercise an already-admitted ID call without a daemon/network resolver.
+#[cfg(test)]
+pub(crate) async fn with_captured_session<T>(
+    session: crate::session::NotebookSession,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    TARGET
+        .scope(
+            Some(session.notebook_handle.clone()),
+            CAPTURED_SESSION.scope(Some(session), future),
+        )
+        .await
 }

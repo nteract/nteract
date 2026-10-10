@@ -644,7 +644,7 @@ async fn rejoin(
             match notebook_sync::connect::connect_open(
                 socket_path.to_path_buf(),
                 PathBuf::from(path),
-                &identity.actor_label,
+                &crate::replica::fresh_operator(&identity.actor_label),
             )
             .await
             {
@@ -666,7 +666,7 @@ async fn rejoin(
             match notebook_sync::connect::connect(
                 socket_path.to_path_buf(),
                 notebook_id.clone(),
-                &identity.actor_label,
+                &crate::replica::fresh_operator(&identity.actor_label),
             )
             .await
             {
@@ -844,16 +844,17 @@ async fn rejoin_hosted(
             info!("Automatic hosted rejoin cancelled by explicit session intent");
             return true;
         }
-        match cloud::connect_hosted_notebook(&domain_config, &notebook_id).await {
-            Ok(result) => {
+        match cloud::connect_hosted_bound(&domain_config, &notebook_id).await {
+            Ok((result, authority)) => {
                 let label = peer_label.read().await.clone();
                 crate::presence::announce(&result.handle, &label).await;
 
-                let new_session = NotebookSession::hosted(
+                let mut new_session = NotebookSession::hosted(
                     result.handle,
                     notebook_id.clone(),
                     domain_config.base_url.clone(),
                 );
+                new_session.hosted_authority = Some(authority);
                 return match publish_rejoined_session(
                     session,
                     new_session,

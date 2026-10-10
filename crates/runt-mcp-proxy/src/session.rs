@@ -3,6 +3,7 @@
 //! can seed the new child's `NTERACT_MCP_REJOIN_NOTEBOOK` env var and let the
 //! child's `daemon_watch` loop re-join on its first `Connected` event.
 
+use mcp_transport::is_local_domain_alias;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
 use serde_json::Value;
 
@@ -143,13 +144,6 @@ pub(crate) fn extract_notebook_id_from_result(result: &CallToolResult) -> Option
 fn is_hosted_target(target: &str) -> bool {
     let t = target.trim();
     t.starts_with("http://") || t.starts_with("https://")
-}
-
-fn is_local_domain_alias(domain: &str) -> bool {
-    matches!(
-        domain.trim().to_ascii_lowercase().as_str(),
-        "local" | "desktop"
-    )
 }
 
 fn hosted_notebook_target(domain: &str, notebook_id: &str) -> String {

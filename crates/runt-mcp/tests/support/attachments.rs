@@ -474,7 +474,19 @@ impl Fixture {
                             &mut daemon,
                         )
                         .await
-                        .unwrap();
+                        .unwrap_or_else(|error| {
+                            // Shutdown can drop the daemon runtime after the
+                            // frame header but before its body is written. The
+                            // caller still requires a clean owned-child exit.
+                            if error
+                                .downcast_ref::<std::io::Error>()
+                                .is_some_and(|io| io.kind() == std::io::ErrorKind::UnexpectedEof)
+                            {
+                                None
+                            } else {
+                                panic!("shutdown relay failed to read daemon reply: {error}");
+                            }
+                        });
                     if let Some(reply) = reply {
                         if !matches!(reply, runtimed_client::protocol::Response::ShuttingDown) {
                             // Preserve a real refusal instead of disguising it as EOF.

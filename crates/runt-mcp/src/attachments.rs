@@ -11,6 +11,8 @@ use crate::session::{DaemonIncarnation, NotebookSession};
 pub enum AttachmentOrigin {
     Explicit,
     Legacy,
+    /// Server-retained owner used by notebook-ID requests.
+    Address,
 }
 
 /// Source and authority must match before a native open can share a peer.
@@ -135,6 +137,18 @@ impl AttachmentRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Reclaim server-owned retention after its physical connection has ended.
+    /// Explicit/legacy owners keep their existing observation-loss contract.
+    /// Connected peers, including failed bootstrap or changed credentials, are
+    /// never evicted here; source recovery and deliberate release still apply.
+    pub(crate) fn reap_disconnected_addresses(&self) {
+        self.write_entries().retain(|_, entry| {
+            entry.origin != AttachmentOrigin::Address
+                || entry.session.handle.status().connection
+                    != notebook_sync::ConnectionState::Disconnected
+        });
+    }
+
     pub fn reserve(&self) -> Result<AttachmentReservation, &'static str> {
         Arc::clone(&self.capacity)
             .try_acquire_owned()
@@ -182,6 +196,62 @@ impl AttachmentRegistry {
         let gate = Arc::new(Semaphore::new(1));
         gates.insert(key, Arc::downgrade(&gate));
         gate
+    }
+
+    /// Retain one address owner per already admitted notebook/authority. This
+    /// owner is shared by ID callers; it is independent of every explicit handle.
+    /// No network admission or eviction occurs here. Capacity is deliberate.
+    pub(crate) fn acquire_address(
+        &self,
+        target: &crate::session_activation::CanonicalNotebookTarget,
+        eligible: impl Fn(&NotebookSession) -> bool,
+    ) -> Result<NotebookSession, &'static str> {
+        let mut entries = self.write_entries();
+        let mut candidates = entries.values().filter(|entry| eligible(&entry.session));
+        let Some(first) = candidates.next() else {
+            return Err("notebook_not_connected");
+        };
+        let principal = first
+            .session
+            .hosted_authority
+            .as_ref()
+            .map(|authority| (&authority.principal, authority.requested_scope));
+        if candidates.any(|entry| {
+            entry
+                .session
+                .hosted_authority
+                .as_ref()
+                .map(|authority| (&authority.principal, authority.requested_scope))
+                != principal
+        }) {
+            return Err("ambiguous_notebook_authority");
+        }
+        let selected = entries
+            .values()
+            .filter(|entry| eligible(&entry.session))
+            .max_by_key(|entry| {
+                (
+                    entry.origin == AttachmentOrigin::Address,
+                    entry.session.readiness().document_ready,
+                    &entry.session.notebook_handle,
+                )
+            })
+            .ok_or("notebook_not_connected")?;
+        if selected.origin == AttachmentOrigin::Address {
+            return Ok(selected.session.clone());
+        }
+        let session = selected.session.fresh_attachment(0, target);
+        let reservation = self.reserve().map_err(|_| "attachment_limit")?;
+        entries.insert(
+            session.notebook_handle.clone(),
+            AttachmentEntry {
+                session: session.clone(),
+                origin: AttachmentOrigin::Address,
+                _reservation: reservation,
+                expired: tokio::sync::watch::channel(false).0,
+            },
+        );
+        Ok(session)
     }
 
     pub fn remove(&self, handle: &str) -> Option<AttachmentEntry> {

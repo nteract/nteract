@@ -1,6 +1,6 @@
 # Explicit notebook attachments in MCP
 
-**Status:** Accepted, 2026-10-08. The registry and mandatory attachment targeting
+**Status:** Accepted, 2026-10-08. Amended 2026-10-09 for notebook-ID targets. The registry and explicit targeting
 apply across initialize-based and native protocols. Qualification boundaries
 are recorded below.
 
@@ -27,42 +27,62 @@ requires state spanning requests to be referenced explicitly. Initialize-based
 clients can also pass application identifiers in tool arguments; they do not
 need to adopt a new MCP protocol revision to target notebooks safely.
 
-## Decision 1: Every notebook operation names an attachment
+## Decision 1: Every notebook operation names its target
 
-Every notebook-scoped `tools/call` requires a nonempty `notebook_handle`, on
-every supported protocol. Discovery and notebook acquisition do not require an
-existing handle. The server advertises the required argument in live tool
-schemas and the startup cache. Missing targets fail before notebook edits,
-kernel control, execution, dependency changes, saves or window-opening effects.
+Amended 2026-10-09: ordinary notebook calls accept exactly one of
+`notebook_id` (with optional configured hosted `domain`) or an existing
+`notebook_handle`, on every supported MCP protocol. Omitted domain always names
+the worker's fixed local daemon, never a mutable default. `disconnect_notebook`
+and the hidden compatibility wait remain exact-handle operations. Discovery and
+connect/create do not need an existing attachment.
 
-Connect/create return a fresh logical attachment and its opaque handle. Calls
-retain that handle and scope it to the request. Opening another notebook does
-not alter its meaning. Concurrent acquisitions of different targets do not
-supersede one another. Repeated acquisitions of the same notebook also produce
-independent handles. Continuing an existing attachment uses its retained handle
-rather than repeatedly acquiring more owners.
+ID resolution currently uses already connected, authorized replicas only. A
+cold, unknown, stale or unauthorized target returns explicit unavailability;
+resolution does not open a peer, start a kernel, recover source or create an
+empty notebook. Local candidates match the current daemon incarnation and
+operator. Hosted candidates match the normalized configured domain and the
+credentials/operator pinned to their actual authenticated connection. Conflicting
+principal/scope evidence fails closed. Hosted scope stored here is requested
+scope; the room host still decides effective permissions.
 
-Missing, malformed, unknown or expired tool handles return actionable
-[tool execution errors](https://modelcontextprotocol.io/specification/2026-07-28/server/tools#error-handling)
-(`isError: true`) with explicit recovery guidance. This keeps
-the correction available to the model while rejecting the operation before
-effects. Protocol negotiation, malformed MCP requests and unknown tool names
-retain their protocol error handling; resource errors retain their resource
-contract. A valid observation may still finish with its documented unavailable
-outcome if its captured attachment ends during the wait.
+The first ID request retains a shared address owner over a compatible physical
+replica. Subsequent requests reuse it under the same authority checks. This is
+server retention, not per-chat ownership. Its release handle is returned under
+`target.notebook_handle`; releasing it ends future retention, while already
+admitted requests own their captured replica through completion. Existing
+connect/create handles remain independently releasable. There is no TTL or
+pressure eviction, and address owners count toward the same capacity limit.
+A terminal disconnected physical connection ends its shared address retention
+at the next valid tool admission, releasing that capacity. This does not expire
+explicit/legacy handles, evict live peers, or discard a connected source-recovery
+session. A credential change alone is not connection loss. Retained handles
+remain discoverable through `resources/list` for deliberate release.
 
-This application contract is independent of initialize-based or per-request
-protocol negotiation. Client/process labels and optional metadata cannot stand
-in for a notebook target. Older workers that lack attachment routing must not
-silently ignore a supplied handle and execute against their active slot; the
-proxy rejects unsupported notebook forwarding before side effects.
+Connect/create still return a fresh logical attachment and its opaque handle.
+Opening another notebook cannot alter a handle or an admitted request's target.
+Repeated explicit acquisitions have independent lifetimes. Expired handles are
+never translated into fresh ID lookups.
 
-A handle is routing and ownership identity, not a new authentication credential.
-Daemon/hosted admission remains authoritative. Requests still observe source,
-document, runtime and causal execution gates. Execution references a synced
-`cell_id`, never a separate code string.
+Missing, malformed, ambiguous, unknown or expired targets return actionable tool
+errors before effects. The live worker catalog advertises the exact selector
+contract. Proxy forwarding proves support from that child's live catalog;
+cached or rewritten schemas are not evidence. Old handle-capable workers accept
+handle requests only, and workers with implicit active selection are rejected.
 
-Relevant source: `crates/runt-mcp/src/targets.rs`, `lib.rs`, `session.rs`,
+Neither notebook IDs nor handles are authentication credentials. Daemon/hosted
+admission, source recovery, readiness and causal execution gates remain in force.
+Execution references a synced `cell_id`, never an independent code string.
+
+Durable execution results carry a daemon-written `notebook_id` separately from
+the path context used for validated file reload. Tool and blob-resource reads
+require this identity, or an exact UUID context in an older record; a matching
+path alone never grants access. The daemon can qualify a recovered execution
+for its current room after validating and restoring its cell/source/output
+state, preserving the execution ID. Older path-only records remain unavailable
+to scoped durable reads until the daemon qualifies them; live runtime results
+remain readable through their admitted notebook.
+
+Relevant source: `targets.rs`, `notebook_target.rs`, `attachments.rs`, `session.rs`,
 `crates/mcp-transport/src/lib.rs`, and proxy `proxy.rs`.
 
 ## Decision 2: Logical ownership is separate from physical peers
@@ -79,20 +99,37 @@ Its reuse key includes canonical target, fixed endpoint, live daemon incarnation
 and operator. Reuse requires healthy source/replica evidence and current daemon
 path metadata; it cannot bind a stale saved-path alias to an old room. Optional
 room-list lookup failure skips reuse and attempts guarded fresh admission using
-the requested target. Hosted peers remain independent without a stable
-authenticated principal/source key.
+the requested target. Explicit hosted connects remain independent; ID retention can share an already
+authorized hosted replica only under its pinned credential/principal binding.
 
 Releasing A1 removes only A1's ownership and capacity. A2 can keep the same
 backing peer alive and continue reads, sync, edits and subscriptions. The last
 owner releases the physical backing. The active slot and bounded parked cache
 used by internal recovery are not the ownership registry.
 
+An address owner retains that backing too. Releasing every explicit handle can
+leave the MCP peer connected through the address owner, postponing the local
+daemon's last-client idle teardown. To release this shared retention, call
+`disconnect_notebook` with the ID result's `target.notebook_handle`; retained
+handles are also listed by `resources/list`. Switching notebook targets does
+not release other owners or disconnect their runtime peers.
+
+Kernel lifetime remains daemon-owned. The runtime agent that owns a Python
+kernel is a separate sync peer, handled outside the ordinary client-peer count.
+When the last counted client leaves, the local daemon waits its keepalive delay
+and rechecks connections, generation and persistence before requesting kernel
+shutdown through that runtime peer. Other client peers, retained owners and
+already-admitted requests can still hold a connection. Releasing an address
+owner therefore releases MCP retention; it does not unconditionally stop a
+kernel. Hosted kernel lifetime remains the room host's policy.
+
 Notebook-ID resource URIs identify a notebook explicitly and remain compatibility
 addressing. Ambiguous identities require an exact handle. They never provide an
-implicit target for notebook-scoped tool calls.
+implicit target for tool calls; explicit ID arguments use the address resolver.
 
 Relevant source: `crates/runt-mcp/src/attachments.rs`, `tools/session.rs`, and
-`resources.rs`.
+`resources.rs`; daemon `notebook_sync_server/peer_connection.rs`,
+`peer_runtime_agent.rs`, and `peer_eviction.rs`.
 
 ## Decision 3: Handles expire without rebinding
 
@@ -109,8 +146,9 @@ to the original target, obtain new handles and establish new baselines.
 
 Internal source recovery retains its existing incarnation, intent-epoch and
 publication gates. It can recover notebook availability without turning an old
-public handle into a new peer. No operation missing a handle is completed by
-selecting a recovered notebook. Ambiguous mutations are never automatically
+public handle into a new peer. No operation missing an explicit target is completed by
+selecting a recovered notebook. ID requests must reacquire an admitted replica;
+worker recovery does not silently restore their old retention. Ambiguous mutations are never automatically
 replayed after lost replies.
 
 Relevant source: `daemon_watch.rs`, `session_activation.rs`, proxy `proxy.rs`
@@ -127,7 +165,9 @@ subscription ID.
 Release or membership expiry uses `attachment_expired` and
 `io.nteract/attachmentExpired`. Terminal backing loss uses
 `attachment_unavailable` and `io.nteract/attachmentUnavailable`. The latter ends
-observation of that peer while retaining logical ownership and capacity. Read
+observation of that peer while retaining explicit/legacy logical ownership and
+capacity. Shared address retention follows the terminal-connection cleanup rule
+above. Read
 and admission errors preserve original code/message/readiness and add typed
 code/handle data. Already-signaled expiry wins.
 
@@ -143,8 +183,8 @@ Relevant source: `subscriptions.rs`, `resources.rs`, proxy
 ## Compatibility and migration
 
 Supported initialize-based protocol revisions remain supported. Their tool
-arguments change: previously unqualified notebook operations now require the
-handle from a successful connect/create. Cached tool definitions and old skill
+arguments remain explicit: current ordinary calls accept ID/domain or an existing
+handle. Previously unqualified calls still fail closed. Cached tool definitions and old skill
 examples must be refreshed along with the worker; app bundling alone does not
 refresh a running host's model context.
 

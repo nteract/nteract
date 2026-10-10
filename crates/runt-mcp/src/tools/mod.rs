@@ -98,6 +98,7 @@ mod comments;
 mod deps;
 mod editing;
 mod execution;
+mod inspect;
 mod kernel;
 mod observation;
 mod session;
@@ -182,9 +183,9 @@ pub fn all_tools() -> Vec<Tool> {
         .annotate(ToolAnnotations::new().destructive(true).open_world(false)),
         // -- Cell CRUD --
         Tool::new(
-            "wait_for_notebook_change",
-            "Wait for notebook changes or an exact execution.",
-            schema_for::<observation::WaitForNotebookChangeParams>(),
+            "inspect_notebook",
+            "Read bounded notebook cells; after a cursor, optionally wait for changes.",
+            schema_for::<inspect::InspectNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         Tool::new(
@@ -235,7 +236,7 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(app_tool_meta()),
         Tool::new(
             "get_results",
-            "Get outputs and status (done/error/running/queued) for an execution_id.",
+            "Read an execution_id's outputs/status; optionally wait up to 50 seconds.",
             schema_for::<execution::GetResultsParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false))
@@ -331,6 +332,12 @@ pub fn all_tools() -> Vec<Tool> {
 pub fn hidden_tools() -> Vec<Tool> {
     let mut tools = vec![
         Tool::new(
+            "wait_for_notebook_change",
+            "Compatibility wait for notebook changes or an exact execution.",
+            schema_for::<observation::WaitForNotebookChangeParams>(),
+        )
+        .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
+        Tool::new(
             "get_cell",
             "Get a cell by ID. Dispatch-only read path; resource-aware MCP clients can read nteract://notebooks/{id}/cells.",
             schema_for::<cell_read::GetCellParams>(),
@@ -358,7 +365,7 @@ pub fn cli_discoverable_tools() -> Vec<Tool> {
 }
 
 fn attach_icons(tools: &mut [Tool]) {
-    mcp_transport::attachment_tool_schemas(tools);
+    mcp_transport::notebook_target_tool_schemas(tools);
     for tool in tools {
         if let Some(icon) = crate::icons::tool_icon(tool.name.as_ref()) {
             tool.icons = Some(crate::icons::icons(icon));
@@ -392,6 +399,7 @@ pub async fn dispatch(
         "resolve_notebook_launch" => session::resolve_notebook_launch(server, request).await,
         "disconnect_notebook" => session::disconnect_notebook(server, request).await,
         "wait_for_notebook_change" => observation::wait_for_notebook_change(server, request).await,
+        "inspect_notebook" => inspect::inspect_notebook(server, request).await,
         // Cell read. Hidden from tool listing but still callable for backwards compat;
         // resource-aware clients should read nteract://notebooks/{notebook_id}/cells.
         "get_cell" => cell_read::get_cell(server, request).await,
@@ -970,6 +978,10 @@ mod tests {
 
         assert!(tools.iter().all(|tool| tool.name != "get_cell"));
         assert!(tools.iter().all(|tool| tool.name != "get_all_cells"));
+        assert!(tools
+            .iter()
+            .all(|tool| tool.name != "wait_for_notebook_change"));
+        assert!(tools.iter().any(|tool| tool.name == "inspect_notebook"));
     }
 
     #[test]
@@ -980,6 +992,9 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(hidden_names.iter().any(|name| name == "get_cell"));
         assert!(hidden_names.iter().any(|name| name == "get_all_cells"));
+        assert!(hidden_names
+            .iter()
+            .any(|name| name == "wait_for_notebook_change"));
 
         let callable_names = cli_discoverable_tools()
             .into_iter()

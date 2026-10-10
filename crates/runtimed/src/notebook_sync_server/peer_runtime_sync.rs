@@ -243,7 +243,6 @@ pub(super) async fn persist_terminal_execution_records(
         .path()
         .await
         .map(|p| p.to_string_lossy().to_string());
-    let context_id = notebook_execution_context_id(room, notebook_path.as_deref());
     let records = room
         .state
         .read(|sd| {
@@ -255,10 +254,9 @@ pub(super) async fn persist_terminal_execution_records(
                         return None;
                     }
                     Some(
-                        runtimed_client::execution_store::ExecutionRecord::from_execution_state(
+                        runtimed_client::execution_store::ExecutionRecord::from_notebook_execution_state(
                             &execution_id,
-                            "notebook",
-                            context_id.clone(),
+                            room.id.to_string(),
                             notebook_path.clone(),
                             &exec,
                         ),

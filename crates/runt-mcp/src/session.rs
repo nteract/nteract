@@ -206,6 +206,7 @@ pub struct NotebookSession {
     pub notebook_path: Option<String>,
     /// Session source. Hosted sessions do not depend on the local daemon.
     pub source: NotebookSessionSource,
+    pub(crate) hosted_authority: Option<crate::cloud::HostedAuthority>,
     /// The local daemon process that owns this handle. `None` means either a
     /// hosted session or a local connection whose daemon changed while the
     /// connection was being established. An unbound local handle is stale.
@@ -232,6 +233,12 @@ impl NotebookSession {
         attachment
     }
 
+    /// Logical owners cloned from one replica share its observation state.
+    /// Equal notebook IDs or actor labels do not establish replica identity.
+    pub(crate) fn shares_replica_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.observation, &other.observation)
+    }
+
     pub fn observer(&self) -> Result<crate::observation::ObservationReader, String> {
         self.observation
             .get_or_init(|| {
@@ -253,6 +260,7 @@ impl NotebookSession {
         Self {
             notebook_handle: uuid::Uuid::new_v4().to_string(),
             backing_key: None,
+            hosted_authority: None,
             observation: Arc::new(OnceLock::new()),
             handle,
             notebook_id,
@@ -277,6 +285,7 @@ impl NotebookSession {
         Self {
             notebook_handle: uuid::Uuid::new_v4().to_string(),
             backing_key: None,
+            hosted_authority: None,
             observation: Arc::new(OnceLock::new()),
             handle,
             notebook_id,
@@ -296,6 +305,7 @@ impl NotebookSession {
         Self {
             notebook_handle: uuid::Uuid::new_v4().to_string(),
             backing_key: None,
+            hosted_authority: None,
             observation: Arc::new(OnceLock::new()),
             handle,
             notebook_id,
@@ -318,6 +328,7 @@ impl NotebookSession {
         Self {
             notebook_handle: uuid::Uuid::new_v4().to_string(),
             backing_key: None,
+            hosted_authority: None,
             observation: Arc::new(OnceLock::new()),
             handle,
             notebook_id,

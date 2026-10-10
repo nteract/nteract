@@ -228,10 +228,6 @@ pub(super) async fn read(
             let (session, execution, hash) = (parts[0], parts[2], parts[4]);
             let (notebook_id, _, _, observer) =
                 super::resource_session(server, session, true).await?;
-            let notebook_path = server
-                .attachment_identity(session)
-                .await
-                .and_then(|(_, path)| path);
             let snapshot = super::observed_read(&observer)?;
             let metadata =
                 crate::targets::with_handle(session.to_owned(), server.local_runtime_metadata())
@@ -240,23 +236,22 @@ pub(super) async fn read(
                 .blob_base_url
                 .as_deref()
                 .ok_or_else(|| unavailable("Local output blobs unavailable"))?;
-            let outputs =
-                if let Some(execution) = snapshot.snapshot.runtime.executions.get(execution) {
-                    execution.outputs.clone()
-                } else if let Some(path) = metadata.execution_store_path {
-                    let record = runtimed_client::execution_store::ExecutionStore::new(path)
-                        .read_record(execution)
-                        .await
-                        .filter(|record| {
-                            record.context_kind == "notebook"
-                                && (record.context_id == notebook_id
-                                    || notebook_path.as_deref() == Some(record.context_id.as_str()))
-                        })
-                        .ok_or_else(|| unavailable("Execution does not belong to this notebook"))?;
-                    record.outputs
-                } else {
-                    return Err(unavailable("Execution is unavailable"));
-                };
+            let outputs = if let Some(execution) =
+                snapshot.snapshot.runtime.executions.get(execution)
+            {
+                execution.outputs.clone()
+            } else if let Some(path) = metadata.execution_store_path {
+                let record = runtimed_client::execution_store::ExecutionStore::new(path)
+                    .read_record(execution)
+                    .await
+                    .filter(|record| {
+                        record.belongs_to_notebook(&notebook_id) && record.execution_id == execution
+                    })
+                    .ok_or_else(|| unavailable("Execution does not belong to this notebook"))?;
+                record.outputs
+            } else {
+                return Err(unavailable("Execution is unavailable"));
+            };
             if !authorized(&outputs, hash, base, &snapshot.snapshot.runtime.comms).await? {
                 return Err(unavailable("Blob is not referenced by this execution"));
             }
