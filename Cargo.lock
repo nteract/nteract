@@ -772,10 +772,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "automerge"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fb849130973a7808a167887f56b1e8bdc36b9b541542602dcb337f34aecf47b"
+dependencies = [
+ "cfg-if",
+ "flate2",
+ "getrandom 0.4.2",
+ "hex",
+ "hexane 1.0.0-alpha.5",
+ "itertools 0.15.0",
+ "leb128",
+ "rand 0.10.1",
+ "rustc-hash",
+ "serde",
+ "sha2 0.11.0",
+ "smol_str",
+ "thiserror 2.0.18",
+ "tinyvec",
+ "tracing",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "automerge-recovery"
 version = "0.4.2"
 dependencies = [
- "automerge 0.11.0",
+ "automerge 0.12.0",
  "thiserror 2.0.18",
 ]
 
@@ -785,6 +809,7 @@ version = "0.2.2"
 dependencies = [
  "automerge 0.10.0",
  "automerge 0.11.0",
+ "automerge 0.12.0",
  "base64 0.22.1",
  "rusqlite",
  "sha2 0.11.0",
@@ -797,7 +822,7 @@ dependencies = [
 name = "automunge"
 version = "0.6.2"
 dependencies = [
- "automerge 0.11.0",
+ "automerge 0.12.0",
  "serde_json",
 ]
 
@@ -1523,7 +1548,7 @@ dependencies = [
 name = "comments-doc"
 version = "0.4.2"
 dependencies = [
- "automerge 0.11.0",
+ "automerge 0.12.0",
  "automerge-recovery",
  "automunge",
  "hex",
@@ -5234,7 +5259,7 @@ dependencies = [
 name = "notebook-doc"
 version = "0.7.2"
 dependencies = [
- "automerge 0.11.0",
+ "automerge 0.12.0",
  "automerge-recovery",
  "automunge",
  "ciborium",
@@ -5268,7 +5293,7 @@ dependencies = [
 name = "notebook-room-host"
 version = "0.2.2"
 dependencies = [
- "automerge 0.11.0",
+ "automerge 0.12.0",
  "comments-doc",
  "hex",
  "notebook-doc",
@@ -5285,7 +5310,7 @@ dependencies = [
 name = "notebook-sync"
 version = "0.7.2"
 dependencies = [
- "automerge 0.11.0",
+ "automerge 0.12.0",
  "automerge-recovery",
  "chrono",
  "comments-doc",
@@ -5552,7 +5577,7 @@ version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
 dependencies = [
- "proc-macro-crate 1.3.1",
+ "proc-macro-crate 3.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -6142,7 +6167,7 @@ checksum = "9cd31dcfdbbd7431a807ef4df6edd6473228e94d5c805e8cf671227a21bad068"
 dependencies = [
  "anyhow",
  "clap",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "proc-macro2",
  "quote",
  "rand 0.8.6",
@@ -7879,7 +7904,7 @@ dependencies = [
 name = "runt-mcp"
 version = "0.7.2"
 dependencies = [
- "automerge 0.11.0",
+ "automerge 0.12.0",
  "base64 0.22.1",
  "chrono",
  "comments-doc",
@@ -7939,7 +7964,7 @@ name = "runt-publish"
 version = "0.4.2"
 dependencies = [
  "anyhow",
- "automerge 0.11.0",
+ "automerge 0.12.0",
  "clap",
  "hex",
  "notebook-doc",
@@ -7983,7 +8008,7 @@ dependencies = [
 name = "runtime-doc"
 version = "0.6.2"
 dependencies = [
- "automerge 0.11.0",
+ "automerge 0.12.0",
  "automerge-recovery",
  "automunge",
  "serde",
@@ -8001,7 +8026,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "async-rust-lsp",
- "automerge 0.11.0",
+ "automerge 0.12.0",
  "automerge-recovery",
  "base64 0.22.1",
  "build-metadata",
@@ -8073,7 +8098,7 @@ dependencies = [
 name = "runtimed-client"
 version = "2.8.2"
 dependencies = [
- "automerge 0.11.0",
+ "automerge 0.12.0",
  "automerge-recovery",
  "build-metadata",
  "chrono",
@@ -8174,7 +8199,7 @@ dependencies = [
 name = "runtimed-settings-sync"
 version = "2.8.2"
 dependencies = [
- "automerge 0.11.0",
+ "automerge 0.12.0",
  "log",
  "notebook-protocol",
  "runt-workspace",
@@ -8188,7 +8213,7 @@ dependencies = [
 name = "runtimed-wasm"
 version = "0.7.2"
 dependencies = [
- "automerge 0.11.0",
+ "automerge 0.12.0",
  "base64 0.22.1",
  "comments-doc",
  "console_error_panic_hook",
@@ -10077,7 +10102,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
@@ -10785,7 +10810,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
