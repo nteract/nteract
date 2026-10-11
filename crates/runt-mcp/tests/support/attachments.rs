@@ -12,6 +12,7 @@ use notebook_protocol::connection::{self, Handshake};
 use runt_mcp::NteractMcp;
 use runtimed::daemon::{Daemon, DaemonConfig};
 use serde_json::{json, Value};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -120,6 +121,7 @@ impl OpenGate {
 #[derive(Clone, Copy)]
 pub enum ShutdownFault {
     LostReply,
+    TruncatedReply,
     Refusal,
     Disconnect,
     FailedChild,
@@ -460,7 +462,7 @@ impl Fixture {
                 runtimed_client::protocol::Request::Shutdown
             ));
             match fault {
-                ShutdownFault::LostReply => {
+                ShutdownFault::LostReply | ShutdownFault::TruncatedReply => {
                     let mut daemon = UnixStream::connect(daemon_socket).await.unwrap();
                     connection::send_preamble(&mut daemon).await.unwrap();
                     connection::send_json_frame(&mut daemon, &handshake)
@@ -493,10 +495,20 @@ impl Fixture {
                             connection::send_json_frame(&mut caller, &reply)
                                 .await
                                 .unwrap();
+                            return;
                         }
                     }
-                    // Discard only the successful acknowledgment; closing caller
-                    // reproduces EOF during the daemon's actual shutdown.
+                    if matches!(fault, ShutdownFault::TruncatedReply) {
+                        // Deliver a complete header and only part of its body so
+                        // PoolClient deterministically observes a body-read EOF.
+                        let body =
+                            serde_json::to_vec(&runtimed_client::protocol::Response::ShuttingDown)
+                                .unwrap();
+                        caller.write_u32(body.len() as u32).await.unwrap();
+                        caller.write_all(&body[..body.len() / 2]).await.unwrap();
+                    }
+                    // Closing caller reproduces a lost or truncated successful
+                    // acknowledgment during the daemon's actual shutdown.
                 }
                 ShutdownFault::Refusal => {
                     connection::send_json_frame(
@@ -526,10 +538,12 @@ impl Fixture {
             .await;
         if let Err(error) = &shutdown_reply {
             // Daemon::run can finish and drop the child runtime before the
-            // shutdown handler writes its final reply. Only this EOF is
-            // admissible, and only with the clean owned-process exit below.
+            // shutdown handler completes its final reply. PoolClient reports
+            // header EOF as `connection closed`; body EOF retains tokio
+            // read_exact's `early eof` text after PoolClient's `recv: ` prefix.
+            // Either requires the clean owned-process exit checked below.
             assert!(
-                matches!(error, runtimed_client::client::ClientError::ProtocolError(message) if message == "connection closed"),
+                matches!(error, runtimed_client::client::ClientError::ProtocolError(message) if matches!(message.as_str(), "connection closed" | "recv: early eof")),
                 "daemon shutdown request failed: {error}"
             );
         }
