@@ -764,6 +764,15 @@ async fn admission_counts_pending_opens_without_evicting_retained_handles() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lost_shutdown_reply_requires_clean_owned_daemon_exit() {
+    assert_shutdown_reply_fault(ShutdownFault::LostReply).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn truncated_shutdown_reply_requires_clean_owned_daemon_exit() {
+    assert_shutdown_reply_fault(ShutdownFault::TruncatedReply).await;
+}
+
+async fn assert_shutdown_reply_fault(fault: ShutdownFault) {
     let fixture = Fixture::start().await;
     let a_path = fixture.notebook("shutdown-a", "source A");
     let b_path = fixture.notebook("shutdown-b", "source B");
@@ -780,9 +789,7 @@ async fn lost_shutdown_reply_requires_clean_owned_daemon_exit() {
         read(&mut wire, 13, &b, true).await["cells"][0]["source_preview"],
         "source B"
     );
-    fixture
-        .stop_with_shutdown_fault(wire, ShutdownFault::LostReply)
-        .await;
+    fixture.stop_with_shutdown_fault(wire, fault).await;
 }
 
 async fn reject_shutdown_fault(fault: ShutdownFault) {
