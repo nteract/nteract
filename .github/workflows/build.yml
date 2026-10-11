@@ -179,6 +179,8 @@ jobs:
               - ".github/workflows/build.yml"
               - "crates/notebook/nsis/**"
               - "crates/notebook/src/**"
+              - "crates/notebook/tests/**"
+              - "crates/notebook/icons/**"
               - "crates/notebook/tauri.conf.json"
               - "crates/notebook/Cargo.toml"
               - "crates/notebook/build.rs"
