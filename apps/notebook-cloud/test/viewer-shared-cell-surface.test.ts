@@ -445,10 +445,7 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
     authControlsSourceText,
     /window\.location\.assign\(authConfig\.localDev!\.authUrl\)/,
   );
-  assert.match(
-    authControlsSourceText,
-    /const providerLabel = authConfig\.oidc\?\.providerLabel\?\.trim\(\)/,
-  );
+  assert.match(authControlsSourceText, /if \(authConfig\.oidc\)\s*\{\s*return "Sign in";/);
   // OIDC is the primary sign-in when configured: cloudSignInMethodForConfig
   // returns "oidc" before it ever falls back to "localDev".
   assert.match(

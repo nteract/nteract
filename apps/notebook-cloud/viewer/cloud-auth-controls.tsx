@@ -41,10 +41,6 @@ export function resolveCloudSignInMethod(
 }
 
 export function cloudNotebookSignInLabel(authConfig: CloudViewerAuthConfig): string {
-  const providerLabel = authConfig.oidc?.providerLabel?.trim();
-  if (providerLabel) {
-    return `Sign in with ${providerLabel}`;
-  }
   if (authConfig.oidc) {
     return "Sign in";
   }
