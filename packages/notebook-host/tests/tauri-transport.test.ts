@@ -59,13 +59,14 @@ describe("TauriTransport", () => {
       },
       {
         cmd: "subscribe_notebook_frames",
-        args: { generation: 8, channel: coreMock.channels[0] },
+        args: { generation: 8, channel: coreMock.channels[1] },
       },
     ]);
   });
 
-  it("fans channel frames out to subscribers and stops after unlisten", () => {
+  it("fans channel frames out to subscribers and stops after unlisten", async () => {
     const transport = new TauriTransport();
+    await transport.subscribeNotebookFrames(7);
     const first = vi.fn();
     const second = vi.fn();
 
@@ -84,6 +85,7 @@ describe("TauriTransport", () => {
 
   it("resolves notebook requests from response frames delivered over the channel", async () => {
     const transport = new TauriTransport();
+    await transport.subscribeNotebookFrames(7);
 
     const result = transport.sendRequest({ type: "get_history", query: "import" });
     await Promise.resolve();
@@ -117,8 +119,9 @@ describe("TauriTransport", () => {
     await expect(result).rejects.toThrow("Transport disconnected (request req-1)");
   });
 
-  it("ignores channel frames after disconnect", () => {
+  it("ignores channel frames after disconnect", async () => {
     const transport = new TauriTransport();
+    await transport.subscribeNotebookFrames(7);
     const subscriber = vi.fn();
     transport.onFrame(subscriber);
 
@@ -128,8 +131,9 @@ describe("TauriTransport", () => {
     expect(subscriber).not.toHaveBeenCalled();
   });
 
-  it("dispatches to a subscriber snapshot when one listener disconnects", () => {
+  it("dispatches to a subscriber snapshot when one listener disconnects", async () => {
     const transport = new TauriTransport();
+    await transport.subscribeNotebookFrames(7);
     const second = vi.fn();
     const first = vi.fn(() => {
       transport.disconnect();
@@ -141,5 +145,18 @@ describe("TauriTransport", () => {
 
     expect(first).toHaveBeenCalledWith([0x00, 1, 2, 3]);
     expect(second).toHaveBeenCalledWith([0x00, 1, 2, 3]);
+  });
+
+  it("ignores frames from a superseded relay channel", async () => {
+    const transport = new TauriTransport();
+    const subscriber = vi.fn();
+    transport.onFrame(subscriber);
+    await transport.subscribeNotebookFrames(7);
+    await transport.subscribeNotebookFrames(8);
+
+    coreMock.channels[0].onmessage(new Uint8Array([0x00, 1]));
+    coreMock.channels[1].onmessage(new Uint8Array([0x00, 2]));
+
+    expect(subscriber).toHaveBeenCalledExactlyOnceWith([0x00, 2]);
   });
 });
