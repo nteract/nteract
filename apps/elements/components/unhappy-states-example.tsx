@@ -276,7 +276,7 @@ const fullStageGates = [
     title: "Sign in to open this notebook",
     detail:
       "This notebook is private. Sign in with your account and we'll bring you straight back here.",
-    primaryLabel: "Sign in with Anaconda",
+    primaryLabel: "Sign in",
   },
   {
     icon: Lock,

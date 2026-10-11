@@ -272,7 +272,7 @@ const gateScenarios: GateScenario[] = [
     title: "Sign in to open this notebook",
     detail:
       "This notebook is private. Sign in with your account and we'll bring you straight back here.",
-    primaryAction: <Button size="sm">Sign in with Anaconda</Button>,
+    primaryAction: <Button size="sm">Sign in</Button>,
   },
   {
     id: "no-access",
