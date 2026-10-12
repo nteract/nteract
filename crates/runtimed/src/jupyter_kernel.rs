@@ -421,17 +421,60 @@ fn history_cache_value_satisfies_limit(value: &HistoryCacheValue, limit: i32) ->
     fetched >= requested || value.entries.len() < fetched
 }
 
-/// Handle for interrupting a kernel without exclusive access.
-///
-/// What an IOPub status message translates to on the RuntimeStateDoc.
-///
-/// Either a lifecycle transition (Starting/Restarting/Terminating/Dead —
-/// infrequent, always written) or an activity flip (Idle/Busy — hot path,
-/// throttled by `set_activity`). Kept local to this file because it is
-/// only a dispatch helper for the IOPub handler.
+/// An accepted IOPub status update to the RuntimeStateDoc.
+/// Lifecycle transitions are infrequent; activity flips use `set_activity`'s
+/// redundant-write throttle.
 enum IoPubStateUpdate {
     Activity(KernelActivity),
     Lifecycle(RuntimeLifecycle),
+}
+
+fn apply_iopub_status(
+    sd: &mut runtime_doc::RuntimeStateDoc,
+    execution_state: &jupyter_protocol::ExecutionState,
+    is_registered_execution: bool,
+) -> Result<(), runtime_doc::RuntimeStateError> {
+    let update = match execution_state {
+        jupyter_protocol::ExecutionState::Busy => {
+            Some(IoPubStateUpdate::Activity(KernelActivity::Busy))
+        }
+        jupyter_protocol::ExecutionState::Idle => {
+            Some(IoPubStateUpdate::Activity(KernelActivity::Idle))
+        }
+        jupyter_protocol::ExecutionState::Starting => {
+            // Shell and IOPub are separate channels. A startup status can arrive
+            // after kernel_info has already made this kernel Running. Check and
+            // write under the caller's document lock so that a late Starting
+            // cannot undo readiness (or a terminal lifecycle).
+            if matches!(
+                sd.read_state().kernel.lifecycle,
+                RuntimeLifecycle::Launching | RuntimeLifecycle::Connecting
+            ) {
+                Some(IoPubStateUpdate::Lifecycle(RuntimeLifecycle::Connecting))
+            } else {
+                None
+            }
+        }
+        jupyter_protocol::ExecutionState::Restarting => {
+            Some(IoPubStateUpdate::Lifecycle(RuntimeLifecycle::Connecting))
+        }
+        jupyter_protocol::ExecutionState::Terminating | jupyter_protocol::ExecutionState::Dead => {
+            Some(IoPubStateUpdate::Lifecycle(RuntimeLifecycle::Shutdown))
+        }
+        _ => None,
+    };
+    if let Some(update) = update {
+        // kernel_info and completion statuses do not describe user execution.
+        let is_transient_activity =
+            !is_registered_execution && matches!(update, IoPubStateUpdate::Activity(_));
+        if !is_transient_activity {
+            match update {
+                IoPubStateUpdate::Activity(activity) => sd.set_activity(activity)?,
+                IoPubStateUpdate::Lifecycle(lifecycle) => sd.set_lifecycle(&lifecycle)?,
+            }
+        }
+    }
+    Ok(())
 }
 
 fn try_send_comm_update(
@@ -1653,55 +1696,15 @@ impl KernelConnection for JupyterKernel {
                             // Handle different message types
                             match &message.content {
                                 JupyterMessageContent::Status(status) => {
-                                    // Map the kernel's execution_state to either a typed
-                                    // activity flip (Idle/Busy — hot path, throttled) or a
-                                    // lifecycle transition (Starting/Restarting/Terminating/Dead).
-                                    let update = match status.execution_state {
-                                        jupyter_protocol::ExecutionState::Busy => {
-                                            Some(IoPubStateUpdate::Activity(KernelActivity::Busy))
-                                        }
-                                        jupyter_protocol::ExecutionState::Idle => {
-                                            Some(IoPubStateUpdate::Activity(KernelActivity::Idle))
-                                        }
-                                        // Starting and Restarting both land in Connecting —
-                                        // the kernel process has just come up and is
-                                        // reporting its first status; we treat those as
-                                        // "connected but pre-kernel_info" transitions.
-                                        jupyter_protocol::ExecutionState::Starting
-                                        | jupyter_protocol::ExecutionState::Restarting => {
-                                            Some(IoPubStateUpdate::Lifecycle(
-                                                RuntimeLifecycle::Connecting,
-                                            ))
-                                        }
-                                        jupyter_protocol::ExecutionState::Terminating
-                                        | jupyter_protocol::ExecutionState::Dead => Some(
-                                            IoPubStateUpdate::Lifecycle(RuntimeLifecycle::Shutdown),
-                                        ),
-                                        _ => None,
-                                    };
-
-                                    if let Some(update) = update {
-                                        // Non-execute messages (kernel_info, completions) have a
-                                        // parent_header.msg_id that isn't in our registered
-                                        // execution set. Treat activity flips from those as
-                                        // transient (they don't reflect user code state).
-                                        let is_transient_activity = !is_registered_execution
-                                            && matches!(update, IoPubStateUpdate::Activity(_));
-
-                                        if !is_transient_activity {
-                                            let result =
-                                                state_for_iopub.with_doc(|sd| match update {
-                                                    IoPubStateUpdate::Activity(a) => {
-                                                        sd.set_activity(a)
-                                                    }
-                                                    IoPubStateUpdate::Lifecycle(lc) => {
-                                                        sd.set_lifecycle(&lc)
-                                                    }
-                                                });
-                                            if let Err(e) = result {
-                                                warn!("[runtime-state] {}", e);
-                                            }
-                                        }
+                                    let result = state_for_iopub.with_doc(|sd| {
+                                        apply_iopub_status(
+                                            sd,
+                                            &status.execution_state,
+                                            is_registered_execution,
+                                        )
+                                    });
+                                    if let Err(e) = result {
+                                        warn!("[runtime-state] {}", e);
                                     }
 
                                     if status.execution_state
@@ -3949,6 +3952,100 @@ fn prepend_to_path(dir: &std::path::Path) -> String {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[test]
+    fn delayed_iopub_starting_does_not_undo_kernel_info_readiness() {
+        use jupyter_protocol::ExecutionState;
+        let mut doc = runtime_doc::RuntimeStateDoc::new();
+        doc.set_lifecycle(&RuntimeLifecycle::Launching).unwrap();
+        // The shell handshake completes before the IOPub startup backlog is read.
+        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .unwrap();
+        doc.set_kernel_info("python", "python", "uv:prewarmed")
+            .unwrap();
+        let ready_heads = doc.get_heads();
+        for status in [
+            ExecutionState::Starting,
+            ExecutionState::Busy,
+            ExecutionState::Idle,
+        ] {
+            apply_iopub_status(&mut doc, &status, false).unwrap();
+        }
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Idle),
+            "late startup statuses must not strand a launched kernel in Connecting"
+        );
+        assert_eq!(doc.get_heads(), ready_heads);
+    }
+
+    #[test]
+    fn iopub_starting_advances_launch_but_transient_activity_does_not_mark_ready() {
+        use jupyter_protocol::ExecutionState;
+        let mut doc = runtime_doc::RuntimeStateDoc::new();
+        doc.set_lifecycle(&RuntimeLifecycle::Launching).unwrap();
+        apply_iopub_status(&mut doc, &ExecutionState::Starting, false).unwrap();
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Connecting
+        );
+        for status in [ExecutionState::Busy, ExecutionState::Idle] {
+            apply_iopub_status(&mut doc, &status, false).unwrap();
+        }
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Connecting
+        );
+    }
+
+    #[test]
+    fn delayed_iopub_starting_preserves_execution_activity_and_terminal_states() {
+        use jupyter_protocol::ExecutionState;
+        for lifecycle in [
+            RuntimeLifecycle::Running(KernelActivity::Busy),
+            RuntimeLifecycle::Shutdown,
+            RuntimeLifecycle::Error,
+        ] {
+            let mut doc = runtime_doc::RuntimeStateDoc::new();
+            doc.set_lifecycle(&lifecycle).unwrap();
+            let heads = doc.get_heads();
+            apply_iopub_status(&mut doc, &ExecutionState::Starting, false).unwrap();
+            assert_eq!(doc.read_state().kernel.lifecycle, lifecycle);
+            assert_eq!(doc.get_heads(), heads);
+        }
+    }
+
+    #[test]
+    fn iopub_restart_execution_and_shutdown_transitions_remain_authoritative() {
+        use jupyter_protocol::ExecutionState;
+        let mut doc = runtime_doc::RuntimeStateDoc::new();
+        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .unwrap();
+        apply_iopub_status(&mut doc, &ExecutionState::Restarting, false).unwrap();
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Connecting
+        );
+        apply_iopub_status(&mut doc, &ExecutionState::Busy, true).unwrap();
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Busy)
+        );
+        apply_iopub_status(&mut doc, &ExecutionState::Idle, true).unwrap();
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
+        for status in [ExecutionState::Terminating, ExecutionState::Dead] {
+            doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+                .unwrap();
+            apply_iopub_status(&mut doc, &status, false).unwrap();
+            assert_eq!(
+                doc.read_state().kernel.lifecycle,
+                RuntimeLifecycle::Shutdown
+            );
+        }
+    }
 
     fn history_entry(source: &str, line: i32) -> HistoryEntry {
         HistoryEntry {
