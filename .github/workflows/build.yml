@@ -183,6 +183,7 @@ jobs:
               - "crates/notebook/src/**"
               - "crates/notebook/tests/**"
               - "crates/notebook/icons/**"
+              - "crates/notebook/capabilities/**"
               - "crates/notebook/tauri.conf.json"
               - "crates/notebook/Cargo.toml"
               - "crates/notebook/build.rs"
