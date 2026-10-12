@@ -2524,6 +2524,9 @@ fn filter_rows_in_store(
                         continue 'row;
                     }
                     let arr = batch.column(*col);
+                    if cell_is_null(arr.as_ref(), local_row) {
+                        continue 'row;
+                    }
                     let value = cell_string_for(s, *col, arr.as_ref(), local_row);
                     if let Some(ref lookup) = set_lookups[fi] {
                         if !lookup.contains(value.as_str()) {
@@ -2536,6 +2539,10 @@ fn filter_rows_in_store(
                         continue 'row;
                     }
                     let arr = batch.column(*col);
+                    // Null is not a string category, including the empty string.
+                    if cell_is_null(arr.as_ref(), local_row) {
+                        continue;
+                    }
                     let value = cell_string_for(s, *col, arr.as_ref(), local_row);
                     if let Some(ref lookup) = set_lookups[fi] {
                         // Inverted logic: skip row if value IS in the exclusion set
@@ -3127,6 +3134,43 @@ mod tests {
 
         assert!(err.contains("already finished"));
         assert_eq!(store.total_rows, 1);
+    }
+
+    #[test]
+    fn category_filters_distinguish_null_from_empty_string() {
+        let store = store_from_string_column(
+            DataType::Utf8,
+            Arc::new(StringArray::from(vec![
+                None,
+                Some(""),
+                Some("null"),
+                Some("NA"),
+                None,
+            ])),
+        );
+        let lookups = vec![Some(HashSet::from([""]))];
+        assert_eq!(
+            filter_rows_in_store(
+                &store,
+                &[FilterSpec::Set {
+                    col: 0,
+                    values: vec![String::new()]
+                }],
+                &lookups,
+            ),
+            vec![1],
+        );
+        assert_eq!(
+            filter_rows_in_store(
+                &store,
+                &[FilterSpec::NotIn {
+                    col: 0,
+                    values: vec![String::new()]
+                }],
+                &lookups,
+            ),
+            vec![0, 2, 3, 4],
+        );
     }
 
     #[test]

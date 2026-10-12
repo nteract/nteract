@@ -52,7 +52,15 @@ The first record supplies column names; blank and duplicate names are made
 unique. Quoted delimiters, escaped quotes, and multiline fields are supported.
 Malformed quoting and inconsistent record widths throw an error. Empty unquoted
 fields become null; quoted empty fields stay empty strings. Literal `NA`, `null`,
-and similar strings are preserved.
+and similar strings are preserved. Nulls are excluded from categorical counts
+and never match the empty-string category. Selecting that category matches only
+quoted empty strings; excluding it retains null rows. Category percentages use
+all rows in the current selection as their denominator, including null rows.
+
+A final line ending terminates the preceding record. Additional blank records
+are preserved: in a one-column file each is a null row; in a wider file each
+fails the record-width check. Automatically skipping blank records is an open
+format-policy decision because it could silently remove valid null rows.
 
 Default inference examines every loaded value in a column. Conservative numbers
 and lowercase `true`/`false` become numeric/boolean columns; dates, leading-zero
@@ -98,9 +106,18 @@ containers and compressed IPC streams are not supported by this path.
 
 Binary input defaults to 16 MiB, 100,000 rows, 256 columns, and a 128 MiB decoded
 memory guardrail (`maxBytes`, `maxRows`, `maxColumns`, `maxDecodedBytes`). Parquet
-checks footer metadata before decoding; decoded batches are checked as they
-arrive. These are admission limits, not a process memory sandbox: dictionaries,
-decoder batches, summaries, copies, and temporary allocations add memory.
+checks footer metadata before decoding using an estimate of twice the
+uncompressed page bytes plus 16 bytes per leaf value, summed across all row
+groups. That conservative estimate can reject compact, wide tables whose actual
+Arrow allocation would be smaller: 100,000 rows across 84 boolean columns already
+exceed the default guard from the per-value allowance alone. The row, column,
+input-byte, and decoded-byte limits are independent ceilings, not a promise that
+every file below the first three will load. Retained Arrow allocations are also
+checked after each decoded batch. These are admission limits, not a process
+memory sandbox: dictionaries, decoder batches, summaries, copies, and temporary
+allocations add memory. Raising `maxDecodedBytes` relaxes both the Parquet estimate
+and retained-allocation checks; hosts should do so only with an appropriate
+memory budget.
 
 This API materializes a complete file. Virtual scrolling bounds rendered DOM,
 not the loaded dataset. Sorting, filtering, and summaries cover all accepted
@@ -171,14 +188,16 @@ From the nteract repository root:
 pnpm install --frozen-lockfile
 cargo xtask wasm sift --skip-renderer-plugins
 pnpm --dir packages/sift test:package
-# Optional: headless Chromium smoke (install with pnpm exec playwright install chromium).
+# Optional: production consumer smoke (install with pnpm exec playwright install chromium).
 pnpm --dir packages/sift exec node scripts/test-package.mjs --browser
 pnpm --dir packages/sift pack --pack-destination /tmp/sift-package
 ```
 
 `test:package` builds the library, packs it, extracts it outside the workspace,
 checks its public declarations and dependency boundary, and tests the shipped
-WASM glue/binary against synthetic Arrow data. It reuses installed public
+WASM glue/binary against synthetic Arrow data. With `--browser`, it builds and
+previews a production consumer in Chromium, testing both explicit and default
+WASM asset URLs. It reuses installed public
 dependencies without registry requests. `prepack` rejects missing built assets,
 checks every current runtime method against the actual WASM and JavaScript
 exports, and instantiates the pair to reject incompatible glue/binary imports.

@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -11,7 +20,9 @@ import ts from "typescript";
 // undeclared workspace dependencies must not make a broken artifact pass.
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const require = createRequire(new URL("../package.json", import.meta.url));
-const scratch = await mkdtemp(join(tmpdir(), "sift-package-"));
+// Vite resolves source paths through realpath; macOS /var -> /private/var must
+// not make this isolated consumer's entry look like it is outside its root.
+const scratch = await realpath(await mkdtemp(join(tmpdir(), "sift-package-")));
 
 function run(command, args, cwd = scratch) {
   return execFileSync(command, args, { cwd, encoding: "utf8", stdio: "pipe" });
@@ -158,9 +169,41 @@ try {
   } finally {
     wasm.free(handle);
   }
+  // Exercise the shipped bounded loaders and filters, not source stubs. The
+  // browser smoke covers the public adapter, whose text layout needs a canvas.
+  // Missing values must not become the empty-string category in either format.
+  const categories = tableToIPC(tableFromArrays({ name: [null, "", "null", "NA", null] }));
+  for (const load of [
+    () => wasm.load_ipc_bounded(categories, 5, 1, 1024 * 1024),
+    () => wasm.load_parquet_bounded(wasm.write_parquet_ipc(categories), 5, 1, 1024 * 1024),
+  ]) {
+    const categoryHandle = load();
+    try {
+      assert.equal(wasm.is_null(categoryHandle, 0, 0), true);
+      assert.equal(wasm.is_null(categoryHandle, 1, 0), false);
+      assert.equal(wasm.get_cell_string(categoryHandle, 1, 0), "");
+      assert.deepEqual(
+        [...wasm.store_filter_rows(categoryHandle, [{ kind: "set", col: 0, values: [""] }])],
+        [1],
+      );
+      assert.deepEqual(
+        [...wasm.store_filter_rows(categoryHandle, [{ kind: "not_in", col: 0, values: [""] }])],
+        [0, 2, 3, 4],
+      );
+    } finally {
+      wasm.free(categoryHandle);
+    }
+  }
   if (process.argv.includes("--browser")) {
     const { testPackageBrowser } = await import("./test-package-browser.mjs");
-    await testPackageBrowser({ scratch, packageRoot, wasm, tableFromArrays, tableToIPC });
+    await testPackageBrowser({
+      scratch,
+      packageRoot,
+      tarballPath: join(scratch, tarball),
+      wasm,
+      tableFromArrays,
+      tableToIPC,
+    });
   }
   console.log(
     "Packed Sift: exports, declarations, compiled CSS, standalone imports, and real WASM decode/sort passed.",

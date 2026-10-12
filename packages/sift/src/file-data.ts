@@ -15,6 +15,8 @@ export type TableFileOptions = {
   maxColumns?: number;
   /**
    * Parquet metadata estimate and retained Arrow memory limit. Default: 128 MiB.
+   * The conservative estimate (2× uncompressed bytes + 16 bytes/leaf value)
+   * can reject files below the other limits even when their Arrow data is small.
    * This is a loading guardrail, not a process memory sandbox: decoder batches,
    * dictionaries, summaries, copies, and other temporary allocations add memory.
    */

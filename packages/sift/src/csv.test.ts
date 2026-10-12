@@ -49,6 +49,60 @@ describe("parseCsv", () => {
     expect(data.getCellRaw(0, 2)).toBe("1");
   });
 
+  it("keeps nulls out of categories while retaining quoted empty and null-like text", () => {
+    const data = parseCsv('id,value\n1,\n2,""\n3,null\n4,NA\n5,');
+    expect(data.columnSummaries[1]).toMatchObject({
+      kind: "categorical",
+      uniqueCount: 3,
+      allCategories: [
+        { label: "", count: 1, pct: 20 },
+        { label: "null", count: 1, pct: 20 },
+        { label: "NA", count: 1, pct: 20 },
+      ],
+    });
+    data.recomputeFilteredSummaries?.(new Uint8Array([1, 0, 0, 0, 1]), 2);
+    expect(data.columnSummaries[1]).toMatchObject({ uniqueCount: 0, allCategories: [] });
+    data.recomputeFilteredSummaries?.(new Uint8Array(5), 0);
+    expect(data.columnSummaries[1]).toMatchObject({ allCategories: [], othersPct: 0 });
+  });
+
+  it("selects and excludes quoted empty categories without matching null cells", async () => {
+    vi.useFakeTimers();
+    const data = parseCsv('id,value\n1,\n2,""\n3,null\n4,NA\n5,');
+    const engine = createTable(document.createElement("div"), data);
+    try {
+      engine.setFilter(1, { kind: "set", values: new Set([""]) });
+      expect(engine.getState().filteredCount).toBe(1);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(data.columnSummaries[0]).toMatchObject({ min: 2, max: 2 });
+      expect(data.columnSummaries[1]).toMatchObject({
+        allCategories: [{ label: "", count: 1, pct: 100 }],
+      });
+      engine.setFilter(1, { kind: "not-in", values: new Set([""]) });
+      expect(engine.getState().filteredCount).toBe(4);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(data.columnSummaries[0]).toMatchObject({ min: 1, max: 5 });
+      expect(data.columnSummaries[1]).toMatchObject({
+        allCategories: [
+          { label: "null", count: 1, pct: 25 },
+          { label: "NA", count: 1, pct: 25 },
+        ],
+      });
+      engine.clearAllFilters();
+      expect(engine.getState().filteredCount).toBe(5);
+    } finally {
+      engine.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves explicit blank records instead of silently dropping null rows", () => {
+    const data = parseCsv("a\n1\n\n");
+    expect(data.rowCount).toBe(2);
+    expect(data.getCellRaw(1, 0)).toBeNull();
+    expect(() => parseCsv("a,b\n1,2\n\n")).toThrow(/record 3.*1 fields.*expected 2/);
+  });
+
   it("can keep all non-null values as text", () => {
     const data = parseCsv("n,b\n2,true", { typing: "text" });
     expect(data.getCellRaw(0, 0)).toBe("2");

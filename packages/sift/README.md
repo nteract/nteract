@@ -48,8 +48,11 @@ const data = parseCsv(csvText) // Complete file; rejects malformed/over-limit da
 
 For binary files, use `loadTableFile(bytes)` through a memoized React loader
 source or pass its result to imperative `createTable` (see the guide).
-The default file adapters accept up to 16 MiB,
-100,000 rows, and 256 columns. Virtual scrolling does not provide disk paging.
+The default file adapters impose independent ceilings of 16 MiB,
+100,000 rows, and 256 columns; CSV also has a 1,000,000-cell ceiling, and binary
+files have a conservative 128 MiB decoded-memory admission guard. Meeting the
+byte, row, and column ceilings alone does not guarantee acceptance.
+Virtual scrolling does not provide disk paging.
 
 See the [embedding guide](docs/embedding-guide.md) for WASM asset setup, CSV/TSV
 options, memory limits, lifecycle, themes, and host viewer/editor integration.

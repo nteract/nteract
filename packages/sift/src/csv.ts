@@ -43,7 +43,7 @@ function inferType(values: CsvCell[]): ColumnType {
   return "categorical";
 }
 
-function summarize(type: ColumnType, raw: unknown[], strings: string[]): ColumnSummary {
+function summarize(type: ColumnType, raw: unknown[], strings: CsvCell[]): ColumnSummary {
   const accumulator =
     type === "numeric"
       ? new NumericAccumulator()
@@ -169,13 +169,7 @@ export function parseCsv(text: string, options: CsvParseOptions = {}): TableData
       return value;
     });
     rawColumns.push(raw);
-    summaries.push(
-      summarize(
-        columnType,
-        raw,
-        values.map((value) => value ?? ""),
-      ),
-    );
+    summaries.push(summarize(columnType, raw, values));
     return {
       key: name,
       label: name,
@@ -195,11 +189,11 @@ export function parseCsv(text: string, options: CsvParseOptions = {}): TableData
     recomputeFilteredSummaries(mask) {
       data.columnSummaries = columns.map((column, col) => {
         const raw: unknown[] = [];
-        const strings: string[] = [];
+        const strings: CsvCell[] = [];
         for (let row = 0; row < rows.length; row++) {
           if (mask[row]) {
             raw.push(rawColumns[col][row]);
-            strings.push(rows[row][col] ?? "");
+            strings.push(rows[row][col]);
           }
         }
         return summarize(column.columnType, raw, strings);
