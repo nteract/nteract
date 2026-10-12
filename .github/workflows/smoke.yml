@@ -286,7 +286,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: windows-app-launch-smoke-diagnostics
+          name: windows-app-launch-smoke-diagnostics-${{ matrix.arch }}
           path: |
             ${{ runner.temp }}\app-launch-diag\*.tar.gz
             ${{ runner.temp }}\release-asset\*.exe
