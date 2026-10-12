@@ -625,9 +625,9 @@ export function useNotebookActionPolicy({
           }
         }
       } finally {
-        setTimeout(() => {
-          executingCellsRef.current.delete(cellId);
-        }, 150);
+        // Guard overlapping requests, not a completed run: a fast kernel can
+        // return to idle before an arbitrary post-request cooldown expires.
+        executingCellsRef.current.delete(cellId);
       }
     },
     [

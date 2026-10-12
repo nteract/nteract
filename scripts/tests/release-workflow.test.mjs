@@ -29,6 +29,29 @@ const jobs = workflowJobs(release);
 const validation = workflow("release-validation");
 const validationJobs = workflowJobs(validation);
 
+test("macOS runner migration preserves ARM64 hosts and explicit release architectures", () => {
+  const build = workflow("build");
+  assert.doesNotMatch(build + release, /\bmacos-14(?:\b|-)/);
+  assert.match(workflowJobs(build).get("build"), /name: macOS\n\s+runner: macos-15\n/);
+  for (const id of ["build-macos", "build-notebook-macos-arm64", "build-notebook-macos-x64"]) {
+    assert.match(jobs.get(id), /^    runs-on: macos-15$/m, `${id} must keep its ARM64 host`);
+  }
+
+  const executables = jobs.get("build-macos");
+  for (const [target, arch] of [["aarch64-apple-darwin", "arm64"], ["x86_64-apple-darwin", "x64"]]) {
+    assert.ok(executables.includes(`cargo build --release --target ${target} -p runt -p runtimed`));
+    for (const binary of ["runt", "runtimed"]) {
+      assert.ok(executables.includes(`cp target/${target}/release/${binary} ${binary}-darwin-${arch}`));
+    }
+    assert.match(jobs.get("build-python-wheels"), new RegExp(`runner: macos-15\\n\\s+target: ${target}\\n`));
+  }
+  const x64 = jobs.get("build-notebook-macos-x64");
+  assert.match(x64, /run: rustup target add x86_64-apple-darwin/);
+  assert.match(x64, /cargo build --release --target x86_64-apple-darwin -p runtimed -p runt -p nteract-mcp/);
+  assert.match(x64, /args: --target x86_64-apple-darwin --bundles app,dmg/);
+  assert.match(x64, /target\/x86_64-apple-darwin\/release\/bundle\/macos/);
+});
+
 test("Linux npm validation tests packed wrapper and addon on the oldest supported userspace", () => {
   const body = validationJobs.get("linux-node-addon");
   assert.match(body, /arch: x64\n\s+runner: ubuntu-22\.04\n/);

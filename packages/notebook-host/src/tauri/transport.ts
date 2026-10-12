@@ -59,9 +59,7 @@ interface PendingEntry {
 export class TauriTransport implements NotebookTransport {
   private _connected = true;
   private subscribers = new Set<FrameListener>();
-  private frameChannel = new Channel<ChannelFramePayload>((payload) =>
-    this.dispatchInboundFrame(payload),
-  );
+  private frameChannel: Channel<ChannelFramePayload> | null = null;
   private frameChannelGeneration: number | undefined;
   private frameChannelSubscription: Promise<void> | null = null;
   /** In-flight requests keyed by correlation id. */
@@ -79,13 +77,20 @@ export class TauriTransport implements NotebookTransport {
     }
 
     this.frameChannelGeneration = generation;
+    // Rust starts a new message index at zero for every registration. A JS
+    // Channel retains its index and is closed when the old Rust channel drops,
+    // so it cannot be reused across relay generations (or registration retries).
+    const channel = new Channel<ChannelFramePayload>((payload) => {
+      if (this.frameChannel === channel) this.dispatchInboundFrame(payload);
+    });
+    this.frameChannel = channel;
     const subscription = invoke<void>("subscribe_notebook_frames", {
       generation,
-      channel: this.frameChannel,
+      channel,
     })
       .then(() => undefined)
       .catch((err) => {
-        if (this.frameChannelGeneration === generation) {
+        if (this.frameChannel === channel) {
           this.frameChannelSubscription = null;
         }
         throw err;

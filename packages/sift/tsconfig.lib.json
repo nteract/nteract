@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "../..",
+    "outDir": "./lib/types",
+    "types": ["vite/client"]
+  },
+  "include": ["src/index.ts", "src/handoff.tsx", "src/sift-wasm.d.ts"]
+}

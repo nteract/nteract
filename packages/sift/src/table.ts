@@ -586,18 +586,21 @@ export function createTable(
           break;
         }
         case "set": {
+          if (raw == null) return false;
           const s = data.getCell(dataRow, c);
           if (!f.values.has(s)) return false;
           break;
         }
         case "not-in": {
+          // Null is not a string category, including the empty-string category.
+          if (raw == null) break;
           const s = data.getCell(dataRow, c);
           // Inverted: exclude row if value IS in the exclusion set
           if (f.values.has(s)) return false;
           break;
         }
         case "boolean": {
-          if (Boolean(raw) !== f.value) return false;
+          if (raw == null || Boolean(raw) !== f.value) return false;
           break;
         }
       }

@@ -603,6 +603,267 @@ pub fn load_parquet(parquet_bytes: &[u8]) -> Result<u32, JsValue> {
     store_batches(batches, schema).map_err(|e| JsValue::from_str(&e))
 }
 
+#[derive(Clone, Copy)]
+struct FileLimits {
+    rows: u32,
+    columns: u32,
+    decoded_bytes: u32,
+}
+
+fn check_file_limit(value: u64, limit: u32, label: &str) -> Result<(), String> {
+    if value > u64::from(limit) {
+        return Err(format!(
+            "Table file exceeds {label} limit ({value} > {limit})"
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct FileMemory {
+    allocations: HashMap<usize, usize>,
+    bytes: u64,
+}
+
+impl FileMemory {
+    fn add_buffer(&mut self, buffer: &arrow::buffer::Buffer) {
+        // data_ptr identifies the allocation before any slice offset. IPC
+        // columns often share one message body, and dictionaries may share
+        // values across batches. Counting each slice's capacity multiplies
+        // the actual retained memory. All earlier batches remain alive, so
+        // their allocation addresses cannot be reused while collecting.
+        let key = buffer.data_ptr().as_ptr() as usize;
+        // External allocations report zero capacity. Count the known extent
+        // instead and increase it if a later slice exposes more of the buffer.
+        let size = buffer
+            .capacity()
+            .max(buffer.ptr_offset().saturating_add(buffer.len()));
+        let previous = self.allocations.entry(key).or_default();
+        self.bytes = self
+            .bytes
+            .saturating_add(size.saturating_sub(*previous) as u64);
+        *previous = (*previous).max(size);
+    }
+
+    fn add_array(&mut self, data: &arrow::array::ArrayData) {
+        // Keep a conservative allowance for array metadata, in addition to
+        // unique backing buffers. Visit children for nested/dictionary arrays.
+        self.bytes = self
+            .bytes
+            .saturating_add(std::mem::size_of_val(data) as u64);
+        for buffer in data.buffers() {
+            self.bytes = self
+                .bytes
+                .saturating_add(std::mem::size_of_val(buffer) as u64);
+            self.add_buffer(buffer);
+        }
+        if let Some(nulls) = data.nulls() {
+            self.add_buffer(nulls.buffer());
+        }
+        for child in data.child_data() {
+            self.add_array(child);
+        }
+    }
+}
+
+/// Retained Arrow memory is checked after each decoded batch. This is a loading
+/// guardrail, not a hard allocator limit: a decoder batch and temporary buffers
+/// can exceed the limit before we regain control.
+fn collect_file_batches(
+    reader: impl Iterator<Item = Result<RecordBatch, arrow::error::ArrowError>>,
+    limits: FileLimits,
+) -> Result<Vec<RecordBatch>, String> {
+    let mut rows = 0u64;
+    let mut memory = FileMemory::default();
+    let mut batches = Vec::new();
+    for batch in reader {
+        let batch = batch.map_err(|e| e.to_string())?;
+        rows = rows.saturating_add(batch.num_rows() as u64);
+        for column in batch.columns() {
+            memory.add_array(&column.to_data());
+        }
+        check_file_limit(rows, limits.rows, "row")?;
+        check_file_limit(batch.num_columns() as u64, limits.columns, "column")?;
+        check_file_limit(memory.bytes, limits.decoded_bytes, "decoded bytes")?;
+        batches.push(batch);
+    }
+    Ok(batches)
+}
+
+fn bounded_parquet_batches(
+    parquet_bytes: &[u8],
+    limits: FileLimits,
+) -> Result<(Arc<arrow::datatypes::Schema>, Vec<RecordBatch>), String> {
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::copy_from_slice(parquet_bytes))
+            .map_err(|e| e.to_string())?;
+    let schema = builder.schema().clone();
+    let metadata = builder.metadata();
+    let rows = u64::try_from(metadata.file_metadata().num_rows())
+        .map_err(|_| "Invalid negative Parquet row count")?;
+    check_file_limit(rows, limits.rows, "row")?;
+    check_file_limit(schema.fields().len() as u64, limits.columns, "column")?;
+    // Bound leaf columns too: one top-level struct may contain many fields.
+    check_file_limit(
+        metadata.file_metadata().schema_descr().num_columns() as u64,
+        limits.columns,
+        "leaf column",
+    )?;
+    // Uncompressed page sizes alone undercount Arrow offsets and dictionary
+    // expansion. Allow overhead per value and a multiplier, then also check
+    // retained Arrow memory below. The estimate is deliberately conservative,
+    // but is not an upper bound for arbitrary dictionary-encoded strings.
+    let mut estimate = 0u64;
+    for group in metadata.row_groups() {
+        for column in group.columns() {
+            let size = u64::try_from(column.uncompressed_size())
+                .map_err(|_| "Invalid negative Parquet uncompressed size")?;
+            let values = u64::try_from(column.num_values())
+                .map_err(|_| "Invalid negative Parquet value count")?;
+            estimate = estimate
+                .saturating_add(size.saturating_mul(2))
+                .saturating_add(values.saturating_mul(16));
+        }
+    }
+    check_file_limit(estimate, limits.decoded_bytes, "estimated decoded bytes")?;
+    let reader = builder
+        .with_batch_size(1024)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let batches = collect_file_batches(reader, limits)?;
+    if batches
+        .iter()
+        .map(|batch| batch.num_rows() as u64)
+        .sum::<u64>()
+        != rows
+    {
+        return Err("Parquet row count does not match its metadata".to_string());
+    }
+    Ok((schema, batches))
+}
+
+/// Inspect IPC framing and batch lengths without decoding any array buffers.
+/// Compressed IPC is intentionally unsupported on this bounded local-file path.
+fn check_ipc_file_metadata(ipc_bytes: &[u8], limits: FileLimits) -> Result<(), String> {
+    if ipc_bytes.starts_with(b"ARROW1") {
+        return Err("Arrow IPC files are not supported; use an Arrow IPC stream".to_string());
+    }
+    check_file_limit(
+        ipc_bytes.len() as u64,
+        limits.decoded_bytes,
+        "decoded bytes",
+    )?;
+    let mut offset = 0usize;
+    let mut rows = 0u64;
+    while offset < ipc_bytes.len() {
+        let read_length = |offset: &mut usize| -> Result<u32, String> {
+            let bytes = ipc_bytes
+                .get(*offset..offset.saturating_add(4))
+                .ok_or("Truncated Arrow IPC message length")?;
+            *offset += 4;
+            Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        };
+        let mut length = read_length(&mut offset)?;
+        if length == u32::MAX {
+            length = read_length(&mut offset)?;
+        }
+        if length == 0 {
+            if offset != ipc_bytes.len() {
+                return Err("Unexpected bytes after Arrow IPC end marker".to_string());
+            }
+            return Ok(());
+        }
+        let end = offset
+            .checked_add(length as usize)
+            .ok_or("Invalid Arrow IPC message length")?;
+        let message = arrow::ipc::root_as_message(
+            ipc_bytes
+                .get(offset..end)
+                .ok_or("Truncated Arrow IPC metadata")?,
+        )
+        .map_err(|e| e.to_string())?;
+        if let Some(batch) = message.header_as_record_batch() {
+            let length = u64::try_from(batch.length()).map_err(|_| "Invalid Arrow row count")?;
+            rows = rows.saturating_add(length);
+            check_file_limit(rows, limits.rows, "row")?;
+            if batch.compression().is_some() {
+                return Err("Compressed Arrow IPC streams are not supported".to_string());
+            }
+        }
+        if let Some(dictionary) = message.header_as_dictionary_batch() {
+            if dictionary
+                .data()
+                .is_some_and(|batch| batch.compression().is_some())
+            {
+                return Err("Compressed Arrow IPC streams are not supported".to_string());
+            }
+        }
+        let body_length =
+            usize::try_from(message.bodyLength()).map_err(|_| "Invalid Arrow IPC body length")?;
+        offset = end
+            .checked_add(body_length)
+            .ok_or("Invalid Arrow IPC body length")?;
+        if offset > ipc_bytes.len() {
+            return Err("Truncated Arrow IPC body".to_string());
+        }
+    }
+    // IPC streams may omit the optional end-of-stream marker.
+    Ok(())
+}
+
+fn bounded_ipc_batches(
+    ipc_bytes: &[u8],
+    limits: FileLimits,
+) -> Result<(Arc<arrow::datatypes::Schema>, Vec<RecordBatch>), String> {
+    check_ipc_file_metadata(ipc_bytes, limits)?;
+    let reader = StreamReader::try_new(Cursor::new(ipc_bytes), None).map_err(|e| e.to_string())?;
+    let schema = reader.schema();
+    check_file_limit(schema.fields().len() as u64, limits.columns, "column")?;
+    let batches = collect_file_batches(reader, limits)?;
+    Ok((schema, batches))
+}
+
+/// Load a complete Parquet file with metadata admission limits. No store is
+/// registered until every batch has passed validation and decoded successfully.
+#[wasm_bindgen]
+pub fn load_parquet_bounded(
+    parquet_bytes: &[u8],
+    max_rows: u32,
+    max_columns: u32,
+    max_decoded_bytes: u32,
+) -> Result<u32, JsValue> {
+    let (schema, batches) = bounded_parquet_batches(
+        parquet_bytes,
+        FileLimits {
+            rows: max_rows,
+            columns: max_columns,
+            decoded_bytes: max_decoded_bytes,
+        },
+    )
+    .map_err(|e| JsValue::from_str(&e))?;
+    store_batches(batches, schema).map_err(|e| JsValue::from_str(&e))
+}
+
+/// Load a complete, uncompressed Arrow IPC stream with admission limits.
+#[wasm_bindgen]
+pub fn load_ipc_bounded(
+    ipc_bytes: &[u8],
+    max_rows: u32,
+    max_columns: u32,
+    max_decoded_bytes: u32,
+) -> Result<u32, JsValue> {
+    let (schema, batches) = bounded_ipc_batches(
+        ipc_bytes,
+        FileLimits {
+            rows: max_rows,
+            columns: max_columns,
+            decoded_bytes: max_decoded_bytes,
+        },
+    )
+    .map_err(|e| JsValue::from_str(&e))?;
+    store_batches(batches, schema).map_err(|e| JsValue::from_str(&e))
+}
+
 /// Create an empty Arrow stream store. Append self-contained Arrow IPC stream
 /// chunks with `append_arrow_stream_chunk`, then call `finish_arrow_stream_store`
 /// when the manifest is complete.
@@ -828,24 +1089,7 @@ fn cell_f64_for(column: &dyn Array, local_row: usize) -> f64 {
         return ms as f64;
     }
 
-    match column.data_type() {
-        DataType::Float64 => column
-            .as_any()
-            .downcast_ref::<Float64Array>()
-            .map(|a| a.value(local_row))
-            .unwrap_or(f64::NAN),
-        DataType::Int32 => column
-            .as_any()
-            .downcast_ref::<Int32Array>()
-            .map(|a| a.value(local_row) as f64)
-            .unwrap_or(f64::NAN),
-        DataType::Int64 => column
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .map(|a| a.value(local_row) as f64)
-            .unwrap_or(f64::NAN),
-        _ => f64::NAN,
-    }
+    get_f64_value(column, local_row)
 }
 
 fn viewport_cells_for(s: &DataStore, rows: &[u32]) -> ViewportCells {
@@ -1193,38 +1437,13 @@ pub fn store_histogram(handle: u32, col: usize, num_bins: usize) -> Result<JsVal
         let mut values: Vec<f64> = Vec::new();
         for batch in &s.batches {
             let column = batch.column(col);
-            match column.data_type() {
-                DataType::Float64 => {
-                    if let Some(arr) = column.as_any().downcast_ref::<Float64Array>() {
-                        for i in 0..arr.len() {
-                            if !arr.is_null(i) {
-                                let v = arr.value(i);
-                                if v.is_finite() {
-                                    values.push(v);
-                                }
-                            }
-                        }
+            for row in 0..column.len() {
+                if !cell_is_null(column.as_ref(), row) {
+                    let value = get_f64_value(column.as_ref(), row);
+                    if value.is_finite() {
+                        values.push(value);
                     }
                 }
-                DataType::Int32 => {
-                    if let Some(arr) = column.as_any().downcast_ref::<Int32Array>() {
-                        for i in 0..arr.len() {
-                            if !arr.is_null(i) {
-                                values.push(arr.value(i) as f64);
-                            }
-                        }
-                    }
-                }
-                DataType::Int64 => {
-                    if let Some(arr) = column.as_any().downcast_ref::<Int64Array>() {
-                        for i in 0..arr.len() {
-                            if !arr.is_null(i) {
-                                values.push(arr.value(i) as f64);
-                            }
-                        }
-                    }
-                }
-                _ => {}
             }
         }
         if values.is_empty() {
@@ -1410,41 +1629,24 @@ pub fn store_filtered_histogram(
             let column = batch.column(col);
             let n = column.len();
             match column.data_type() {
-                DataType::Float64 => {
-                    if let Some(arr) = column.as_any().downcast_ref::<Float64Array>() {
-                        for i in 0..n {
-                            if global_row + i < mask.len()
-                                && mask[global_row + i] != 0
-                                && !arr.is_null(i)
-                            {
-                                let v = arr.value(i);
-                                if v.is_finite() {
-                                    values.push(v);
-                                }
-                            }
-                        }
-                    }
-                }
-                DataType::Int32 => {
-                    if let Some(arr) = column.as_any().downcast_ref::<Int32Array>() {
-                        for i in 0..n {
-                            if global_row + i < mask.len()
-                                && mask[global_row + i] != 0
-                                && !arr.is_null(i)
-                            {
-                                values.push(arr.value(i) as f64);
-                            }
-                        }
-                    }
-                }
-                DataType::Int64 => {
-                    if let Some(arr) = column.as_any().downcast_ref::<Int64Array>() {
-                        for i in 0..n {
-                            if global_row + i < mask.len()
-                                && mask[global_row + i] != 0
-                                && !arr.is_null(i)
-                            {
-                                values.push(arr.value(i) as f64);
+                DataType::Float32
+                | DataType::Float64
+                | DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::UInt8
+                | DataType::UInt16
+                | DataType::UInt32
+                | DataType::UInt64 => {
+                    for i in 0..n {
+                        if global_row + i < mask.len()
+                            && mask[global_row + i] != 0
+                            && !cell_is_null(column.as_ref(), i)
+                        {
+                            let value = get_f64_value(column.as_ref(), i);
+                            if value.is_finite() {
+                                values.push(value);
                             }
                         }
                     }
@@ -2322,6 +2524,9 @@ fn filter_rows_in_store(
                         continue 'row;
                     }
                     let arr = batch.column(*col);
+                    if cell_is_null(arr.as_ref(), local_row) {
+                        continue 'row;
+                    }
                     let value = cell_string_for(s, *col, arr.as_ref(), local_row);
                     if let Some(ref lookup) = set_lookups[fi] {
                         if !lookup.contains(value.as_str()) {
@@ -2334,6 +2539,10 @@ fn filter_rows_in_store(
                         continue 'row;
                     }
                     let arr = batch.column(*col);
+                    // Null is not a string category, including the empty string.
+                    if cell_is_null(arr.as_ref(), local_row) {
+                        continue;
+                    }
                     let value = cell_string_for(s, *col, arr.as_ref(), local_row);
                     if let Some(ref lookup) = set_lookups[fi] {
                         // Inverted logic: skip row if value IS in the exclusion set
@@ -2493,6 +2702,233 @@ mod tests {
     use arrow::datatypes::{Field, Schema};
     use std::collections::HashMap;
     use std::sync::Arc;
+
+    fn file_limits() -> FileLimits {
+        FileLimits {
+            rows: 100_000,
+            columns: 256,
+            decoded_bytes: 128 * 1024 * 1024,
+        }
+    }
+
+    fn file_fixture() -> RecordBatch {
+        let nested = StructArray::from(vec![(
+            Arc::new(Field::new("tag", DataType::Utf8, true)),
+            Arc::new(StringArray::from(vec![Some("x"), None, Some("z")])) as ArrayRef,
+        )]);
+        RecordBatch::try_from_iter(vec![
+            (
+                "number",
+                Arc::new(Int64Array::from(vec![Some(3), None, Some(1)])) as ArrayRef,
+            ),
+            (
+                "text",
+                Arc::new(StringArray::from(vec![Some("東京"), Some(""), None])) as ArrayRef,
+            ),
+            ("nested", Arc::new(nested) as ArrayRef),
+        ])
+        .unwrap()
+    }
+
+    fn parquet_fixture(batch: &RecordBatch) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let properties = parquet::file::properties::WriterProperties::builder()
+            .set_max_row_group_size(2)
+            .set_compression(parquet::basic::Compression::SNAPPY)
+            .build();
+        let mut writer =
+            parquet::arrow::ArrowWriter::try_new(&mut bytes, batch.schema(), Some(properties))
+                .unwrap();
+        writer.write(batch).unwrap();
+        writer.close().unwrap();
+        bytes
+    }
+
+    fn ipc_fixture(batch: &RecordBatch) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut writer = StreamWriter::try_new(&mut bytes, batch.schema_ref()).unwrap();
+        writer.write(batch).unwrap();
+        writer.finish().unwrap();
+        drop(writer);
+        bytes
+    }
+
+    #[test]
+    fn bounded_files_keep_all_row_groups_nested_schema_and_nulls() {
+        let batch = file_fixture();
+        for (schema, batches) in [
+            bounded_parquet_batches(&parquet_fixture(&batch), file_limits()).unwrap(),
+            bounded_ipc_batches(&ipc_fixture(&batch), file_limits()).unwrap(),
+        ] {
+            assert_eq!(schema.fields(), batch.schema().fields());
+            assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
+            let handle = store_batches(batches, schema).unwrap();
+            assert_eq!(get_cell_string(handle, 0, 1).unwrap(), "東京");
+            assert!(is_null(handle, 1, 0).unwrap());
+            assert!(!is_null(handle, 1, 1).unwrap());
+            assert!(get_cell_string(handle, 2, 2).unwrap().contains('z'));
+            free(handle);
+            assert!(with_store(handle, |_| ()).is_err());
+        }
+    }
+
+    #[test]
+    fn bounded_files_accept_schema_only_tables() {
+        let batch = file_fixture().slice(0, 0);
+        for (schema, batches) in [
+            bounded_parquet_batches(&parquet_fixture(&batch), file_limits()).unwrap(),
+            bounded_ipc_batches(&ipc_fixture(&batch), file_limits()).unwrap(),
+        ] {
+            assert_eq!(schema.fields().len(), 3);
+            assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 0);
+        }
+    }
+
+    #[test]
+    fn bounded_files_reject_rows_and_columns_before_array_decode() {
+        let batch = file_fixture();
+        let mut parquet = parquet_fixture(&batch);
+        // Damage the encoded pages while keeping the footer. The row admission
+        // error must win, demonstrating that the decoder has not run yet.
+        parquet[4..20].fill(0xff);
+        let mut limits = file_limits();
+        limits.rows = 2;
+        assert!(bounded_parquet_batches(&parquet, limits)
+            .unwrap_err()
+            .contains("row limit"));
+        assert!(bounded_ipc_batches(&ipc_fixture(&batch), limits)
+            .unwrap_err()
+            .contains("row limit"));
+        limits = file_limits();
+        limits.columns = 2;
+        assert!(bounded_parquet_batches(&parquet_fixture(&batch), limits)
+            .unwrap_err()
+            .contains("column limit"));
+        assert!(bounded_ipc_batches(&ipc_fixture(&batch), limits)
+            .unwrap_err()
+            .contains("column limit"));
+    }
+
+    #[test]
+    fn bounded_parquet_rejects_metadata_expansion_before_decode() {
+        let mut parquet = parquet_fixture(&file_fixture());
+        parquet[4..20].fill(0xff);
+        let mut limits = file_limits();
+        limits.decoded_bytes = 1;
+        assert!(bounded_parquet_batches(&parquet, limits)
+            .unwrap_err()
+            .contains("estimated decoded bytes limit"));
+    }
+
+    #[test]
+    fn bounded_files_reject_retained_arrow_memory() {
+        let batch = file_fixture();
+        let mut limits = file_limits();
+        limits.decoded_bytes = 1;
+        assert!(collect_file_batches(vec![Ok(batch)].into_iter(), limits)
+            .unwrap_err()
+            .contains("decoded bytes limit"));
+    }
+
+    #[test]
+    fn bounded_ipc_counts_shared_message_allocation_once() {
+        let batch = RecordBatch::try_from_iter((0..20).map(|col| {
+            (
+                format!("column_{col}"),
+                Arc::new(Int64Array::from_iter(
+                    (0..25_000).map(|row| (row % 2 == 0).then_some(i64::from(row))),
+                )) as ArrayRef,
+            )
+        }))
+        .unwrap();
+        let bytes = ipc_fixture(&batch);
+        assert!(bytes.len() < 5 * 1024 * 1024);
+        let (_, batches) = bounded_ipc_batches(&bytes, file_limits()).unwrap();
+        assert_eq!(batches[0].num_rows(), 25_000);
+        // The old counter charges the same ~4 MiB message body once per
+        // values/validity slice, exceeding the default 128 MiB guard.
+        assert!(batches[0].get_array_memory_size() > 128 * 1024 * 1024);
+    }
+
+    #[test]
+    fn bounded_parquet_counts_shared_dictionary_once_across_batches() {
+        use arrow::array::DictionaryArray;
+        use arrow::datatypes::Int32Type;
+
+        let values = StringArray::from_iter_values(
+            (0..32).map(|i| format!("dictionary-value-{i}-{}", "x".repeat(4096))),
+        );
+        let keys = Int32Array::from_iter_values((0..10_000).map(|i| i % 32));
+        let dictionary = DictionaryArray::<Int32Type>::try_new(keys, Arc::new(values)).unwrap();
+        let batch =
+            RecordBatch::try_from_iter(vec![("value", Arc::new(dictionary) as ArrayRef)]).unwrap();
+        let mut bytes = Vec::new();
+        let mut writer =
+            parquet::arrow::ArrowWriter::try_new(&mut bytes, batch.schema(), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let mut limits = file_limits();
+        limits.decoded_bytes = 1024 * 1024;
+        let (_, batches) = bounded_parquet_batches(&bytes, limits).unwrap();
+        assert_eq!(batches.len(), 10);
+        assert_eq!(
+            batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
+            10_000
+        );
+        assert!(
+            batches
+                .iter()
+                .map(RecordBatch::get_array_memory_size)
+                .sum::<usize>()
+                > limits.decoded_bytes as usize
+        );
+    }
+
+    #[test]
+    fn bounded_files_still_count_distinct_allocations_across_batches() {
+        let first = RecordBatch::try_from_iter(vec![(
+            "value",
+            Arc::new(Int64Array::from_iter_values(0..1024)) as ArrayRef,
+        )])
+        .unwrap();
+        let second = RecordBatch::try_from_iter(vec![(
+            "value",
+            Arc::new(Int64Array::from_iter_values(0..1024)) as ArrayRef,
+        )])
+        .unwrap();
+        let mut limits = file_limits();
+        limits.decoded_bytes = 12 * 1024;
+        assert!(
+            collect_file_batches(vec![Ok(first.clone()), Ok(first)].into_iter(), limits).is_ok()
+        );
+        assert!(collect_file_batches(
+            vec![Ok(second.clone()), Ok(second.slice(0, 1))].into_iter(),
+            limits
+        )
+        .is_ok());
+        let third = RecordBatch::try_from_iter(vec![(
+            "value",
+            Arc::new(Int64Array::from_iter_values(0..1024)) as ArrayRef,
+        )])
+        .unwrap();
+        assert!(
+            collect_file_batches(vec![Ok(second), Ok(third)].into_iter(), limits)
+                .unwrap_err()
+                .contains("decoded bytes limit")
+        );
+    }
+
+    #[test]
+    fn bounded_files_reject_malformed_or_truncated_input() {
+        assert!(bounded_parquet_batches(b"PAR1bad", file_limits()).is_err());
+        assert!(bounded_ipc_batches(b"bad", file_limits()).is_err());
+        let mut ipc = ipc_fixture(&file_fixture());
+        ipc.truncate(ipc.len() - 20);
+        assert!(bounded_ipc_batches(&ipc, file_limits()).is_err());
+        assert!(bounded_ipc_batches(b"ARROW1", file_limits())
+            .unwrap_err()
+            .contains("use an Arrow IPC stream"));
+    }
 
     #[test]
     fn format_date_only() {
@@ -2698,6 +3134,43 @@ mod tests {
 
         assert!(err.contains("already finished"));
         assert_eq!(store.total_rows, 1);
+    }
+
+    #[test]
+    fn category_filters_distinguish_null_from_empty_string() {
+        let store = store_from_string_column(
+            DataType::Utf8,
+            Arc::new(StringArray::from(vec![
+                None,
+                Some(""),
+                Some("null"),
+                Some("NA"),
+                None,
+            ])),
+        );
+        let lookups = vec![Some(HashSet::from([""]))];
+        assert_eq!(
+            filter_rows_in_store(
+                &store,
+                &[FilterSpec::Set {
+                    col: 0,
+                    values: vec![String::new()]
+                }],
+                &lookups,
+            ),
+            vec![1],
+        );
+        assert_eq!(
+            filter_rows_in_store(
+                &store,
+                &[FilterSpec::NotIn {
+                    col: 0,
+                    values: vec![String::new()]
+                }],
+                &lookups,
+            ),
+            vec![0, 2, 3, 4],
+        );
     }
 
     #[test]

@@ -8,7 +8,8 @@ Crossfilter data explorer. [Pretext](https://github.com/chenglou/pretext) × [Ar
 
 ## Features
 
-- **Stream Arrow IPC or load Parquet directly** — WASM-native, no server needed
+- **Local CSV/TSV, Parquet, and Arrow IPC streams** — bounded file adapters, no notebook or server needed
+- **Stream hosted Arrow IPC or load Parquet URLs** — WASM-native
 - **Crossfilter** — brush histograms to filter, all other summaries update instantly
 - **Column profiling** — null%, distinct count shown inline in headers
 - **Smart summaries** — histograms, category bars, boolean ratios, binary value bars, searchable popovers. Adapts visualization to column type × cardinality.
@@ -24,24 +25,37 @@ Crossfilter data explorer. [Pretext](https://github.com/chenglou/pretext) × [Ar
 
 ## Quick start
 
+From the nteract repository root:
+
 ```sh
-npm install
-npm run dev
+pnpm install --frozen-lockfile
+cargo xtask wasm sift --skip-renderer-plugins
+pnpm --dir packages/sift dev
 ```
 
 ## Use as a library
 
-```tsx
-import { SiftTable } from '@nteract/sift'
-
-<SiftTable url="/data.arrow" onChange={console.log} />
-```
-
-Load Parquet directly — decoded entirely in WASM:
+The package ships JavaScript, compiled CSS, TypeScript declarations, and WASM.
+React and React DOM are required; no notebook, kernel, or daemon is needed.
 
 ```tsx
-<SiftTable url="https://huggingface.co/datasets/spotify/resolve/main/data.parquet" />
+import { parseCsv, SiftTable } from '@nteract/sift'
+import '@nteract/sift/style.css'
+
+const data = parseCsv(csvText) // Complete file; rejects malformed/over-limit data.
+<SiftTable data={data} style={{ height: 600 }} />
 ```
+
+For binary files, use `loadTableFile(bytes)` through a memoized React loader
+source or pass its result to imperative `createTable` (see the guide).
+The default file adapters impose independent ceilings of 16 MiB,
+100,000 rows, and 256 columns; CSV also has a 1,000,000-cell ceiling, and binary
+files have a conservative 128 MiB decoded-memory admission guard. Meeting the
+byte, row, and column ceilings alone does not guarantee acceptance.
+Virtual scrolling does not provide disk paging.
+
+See the [embedding guide](docs/embedding-guide.md) for WASM asset setup, CSV/TSV
+options, memory limits, lifecycle, themes, and host viewer/editor integration.
 
 ## Engine API
 
@@ -50,20 +64,18 @@ engine.setSort('age', 'desc')
 engine.setFilter(colIndex, { kind: 'range', min: 18, max: 65 })
 engine.clearAllFilters()
 
-// State → SQL/pandas
+// Inspect the current sort, filters, and counts.
 const state = engine.getState()
-engineStateToExplorerState(state).filters.map(predicateToSQL)
 ```
 
 See [`docs/embedding-guide.md`](docs/embedding-guide.md) for the full API.
 
-## WASM compute (`nteract-predicate`)
+## WASM compute (`sift-wasm`)
 
 Rust crate wrapping arrow-rs. Parquet decoding, sort, histograms, value counts, string search, column casting — all in one WASM binary. Data lives in WASM memory; JS holds handles.
 
 ```sh
-cd crates/nteract-predicate
-wasm-pack build --target web --release
+cargo xtask wasm sift --skip-renderer-plugins
 ```
 
 ## Stack
@@ -72,19 +84,20 @@ wasm-pack build --target web --release
 |-------|------|
 | Layout | [@chenglou/pretext](https://github.com/chenglou/pretext) — DOM-free text measurement |
 | Data | [Apache Arrow](https://arrow.apache.org/) — columnar, streamed via RecordBatchReader |
-| Compute | [nteract-predicate](crates/nteract-predicate/) — arrow-rs WASM kernels |
+| Compute | [sift-wasm](../../crates/sift-wasm/) — arrow-rs WASM kernels |
 | Reactivity | [RxJS](https://rxjs.dev/) — streaming pipeline |
 | Charts | SVG histograms + HTML bars |
 
 ## Development
 
+Run from the repository root after the setup above:
+
 ```sh
-npm install              # deps
-npm run dev              # vite dev server
-npm test                 # vitest unit tests
-npm run test:e2e         # playwright E2E
-npm run build            # production build (demo)
-npm run build:lib        # library build → lib/index.js
+pnpm --dir packages/sift test          # Vitest unit tests
+pnpm --dir packages/sift test:e2e      # Playwright E2E
+pnpm --dir packages/sift build         # production build (demo)
+pnpm --dir packages/sift build:lib     # lib/ (JS, CSS, types, WASM)
+pnpm --dir packages/sift test:package  # packed consumer outside the workspace
 ```
 
 ## Demo pages

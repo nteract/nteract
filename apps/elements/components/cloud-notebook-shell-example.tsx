@@ -1001,7 +1001,7 @@ function CloudEntrySurface() {
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-sm transition-colors hover:bg-muted"
             >
               <LogIn className="size-3.5" aria-hidden="true" />
-              Sign in with Anaconda
+              Sign in
             </button>
           </div>
         </div>

@@ -1,19 +1,23 @@
 /**
- * @nteract/data-explorer — public API
+ * @nteract/sift — public API
  *
  * React component:
- *   import { SiftTable } from '@nteract/data-explorer'
+ *   import { SiftTable } from '@nteract/sift'
  *   <SiftTable url="/data.arrow" onChange={handleState} />
  *
  * Imperative engine:
- *   import { createTable } from '@nteract/data-explorer'
+ *   import { createTable } from '@nteract/sift'
  *   const engine = createTable(container, tableData)
  *
  * State serialization:
- *   import { engineStateToExplorerState, predicateToSQL } from '@nteract/data-explorer'
+ *   import { explorerStateToJSON, predicateToSQL } from '@nteract/sift'
  */
 
 export type { SummaryAccumulator } from "./accumulators";
+export { parseCsv } from "./csv";
+export type { CsvParseOptions } from "./csv";
+export { loadTableFile } from "./file-data";
+export type { TableFileOptions } from "./file-data";
 // Accumulators (for custom data pipelines)
 export {
   BooleanAccumulator,

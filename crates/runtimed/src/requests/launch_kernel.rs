@@ -1835,6 +1835,15 @@ pub(crate) async fn handle(
             };
         };
 
+        // Publish Connecting before the subprocess can take its initial
+        // state snapshot. Its readiness acknowledgement must cover this write.
+        if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
+            room.state
+                .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Connecting))
+        }) {
+            warn!("[runtime-state] {}", e);
+        }
+
         let spawn_result = tokio::select! {
             biased;
             _ = crate::notebook_sync_server::wait_for_kernel_launch_cancellation(
@@ -1876,14 +1885,6 @@ pub(crate) async fn handle(
                     return NotebookResponse::Error {
                         error: "Kernel launch cancelled after runtime agent spawn".to_string(),
                     };
-                }
-
-                // Connecting lifecycle — fills the gap between spawn and connect
-                if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
-                    room.state
-                        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Connecting))
-                }) {
-                    warn!("[runtime-state] {}", e);
                 }
 
                 // Wait for THIS runtime agent to connect back via socket

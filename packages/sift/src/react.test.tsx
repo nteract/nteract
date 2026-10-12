@@ -853,6 +853,50 @@ describe("SiftTable", () => {
     expect(wrapper.style.border).toBe("1px solid red");
   });
 
+  it("disposes stale loader results and keeps the latest complete table", async () => {
+    vi.useRealTimers();
+    let finishOld!: (data: TableData) => void;
+    const oldLoad = new Promise<TableData>((resolve) => {
+      finishOld = resolve;
+    });
+    const load = vi.fn(() => oldLoad);
+    const stale = { ...makeTableData([[1, "Old", 0]]), dispose: vi.fn() };
+    const current = { ...makeTableData([[2, "Current", 10]]), dispose: vi.fn() };
+    const { container, rerender, unmount } = render(
+      <SiftTable source={{ kind: "loader", load }} />,
+    );
+    await waitFor(() => expect(load).toHaveBeenCalledOnce());
+    rerender(<SiftTable source={{ kind: "loader", load: async () => current }} />);
+    await waitFor(() => expect(container.querySelector(".sift-table-container")).not.toBeNull());
+    finishOld(stale);
+    await waitFor(() => expect(stale.dispose).toHaveBeenCalledOnce());
+    expect(current.dispose).not.toHaveBeenCalled();
+    unmount();
+    expect(current.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("clears a previous loader table on replacement and reports load failures", async () => {
+    vi.useRealTimers();
+    const data = { ...makeTableData([[1, "Old", 0]]), dispose: vi.fn() };
+    const { container, rerender, getByText } = render(
+      <SiftTable source={{ kind: "loader", load: async () => data }} />,
+    );
+    await waitFor(() => expect(container.querySelector(".sift-table-container")).not.toBeNull());
+    rerender(
+      <SiftTable
+        source={{
+          kind: "loader",
+          load: async () => {
+            throw new Error("Invalid table file");
+          },
+        }}
+      />,
+    );
+    await waitFor(() => expect(getByText("Error: Invalid table file")).not.toBeNull());
+    expect(container.querySelector(".sift-table-container")).toBeNull();
+    expect(data.dispose).toHaveBeenCalledOnce();
+  });
+
   it("renders the scroll handoff cue with accessible default copy", () => {
     const { getByRole } = render(<SiftScrollHandoffCue />);
 

@@ -21,7 +21,6 @@ import { createRoot, type Root } from "react-dom/client";
 import {
   applyColumnOverrides,
   applyParquetColumnHints,
-  looksLikeIndexColumnName,
   pandasIndexColumnsFromHints,
 } from "./parquet-features";
 import { ensureModule, getModuleSync, loadIpc } from "./predicate";
@@ -37,6 +36,7 @@ import {
 } from "./table";
 import { createWasmTableData } from "./wasm-table-data";
 import { tableResponse } from "./table-response";
+import { updateWasmSummaries } from "./wasm-summaries";
 
 // --- Props ---
 
@@ -60,6 +60,8 @@ export type ArrowStreamManifest = {
 
 export type SiftSource =
   | { kind: "table-data"; data: TableData }
+  /** Memoize the loader; each call must return a fresh, independently disposable table. */
+  | { kind: "loader"; load: () => Promise<TableData> }
   | { kind: "url"; url: string }
   | { kind: "arrow-stream-manifest"; manifest: ArrowStreamManifest };
 
@@ -77,7 +79,7 @@ export type SiftLoadMilestone = {
 export type SiftTableProps = {
   /** Normalized table source. Prefer this for new source types. */
   source?: SiftSource;
-  /** Pre-built TableData object. Mutually exclusive with `url`. */
+  /** Pre-built static TableData. For disposable file data, use a loader source for React effect replay. */
   data?: TableData;
   /** URL to load data from (Arrow IPC or Parquet, auto-detected). Mutually exclusive with `data`. */
   url?: string;
@@ -263,95 +265,6 @@ async function detectFormat(
   };
 }
 
-// --- WASM summary computation ---
-
-function updateWasmSummaries(
-  mod: ReturnType<typeof getModuleSync>,
-  handle: number,
-  tableData: TableData,
-  columns: Column[],
-  pandasIndexCols?: Set<string>,
-) {
-  const numRows = mod.num_rows(handle);
-  const BIN_COUNT = 25;
-
-  tableData.rowCount = numRows;
-  tableData.columnSummaries = columns.map((col, c) => {
-    switch (col.columnType) {
-      // No header chart for image columns yet.
-      case "image":
-        return null;
-      case "categorical": {
-        const counts = mod.store_value_counts(handle, c) as {
-          label: string;
-          count: number;
-        }[];
-        const allCategories = counts.map(({ label, count }) => ({
-          label,
-          count,
-          pct: Math.round((count / numRows) * 1000) / 10,
-        }));
-        const topCategories = allCategories.slice(0, 3);
-        const othersCount = counts.slice(3).reduce((s, e) => s + e.count, 0);
-        const othersPct = Math.round((othersCount / numRows) * 1000) / 10;
-        const lengths = counts.map(({ label }) => label.length).sort((a, b) => a - b);
-        const medianTextLength = lengths.length > 0 ? lengths[Math.floor(lengths.length / 2)] : 0;
-        return {
-          kind: "categorical" as const,
-          uniqueCount: counts.length,
-          topCategories,
-          othersCount,
-          othersPct,
-          allCategories,
-          medianTextLength,
-        };
-      }
-      case "boolean": {
-        const [trueCount, falseCount, nullCount] = mod.store_bool_counts(handle, c);
-        return {
-          kind: "boolean" as const,
-          trueCount,
-          falseCount,
-          nullCount,
-          total: numRows,
-        };
-      }
-      case "timestamp": {
-        const bins = mod.store_temporal_histogram(handle, c) as {
-          x0: number;
-          x1: number;
-          count: number;
-        }[];
-        if (bins.length === 0) return null;
-        return {
-          kind: "timestamp" as const,
-          min: bins[0].x0,
-          max: bins[bins.length - 1].x1,
-          bins,
-        };
-      }
-      case "numeric": {
-        const bins = mod.store_histogram(handle, c, BIN_COUNT) as {
-          x0: number;
-          x1: number;
-          count: number;
-        }[];
-        if (bins.length === 0) return null;
-        // Parquet loads carry `pandasIndexCols` from the Rust hints; Arrow IPC
-        // and other sources without footer metadata fall back to a name match.
-        const isIndex = pandasIndexCols?.has(col.key) ?? looksLikeIndexColumnName(col.key);
-        return {
-          kind: "numeric" as const,
-          min: bins[0].x0,
-          max: bins[bins.length - 1].x1,
-          bins,
-          isIndex: isIndex ? true : undefined,
-        };
-      }
-    }
-  });
-}
-
 // --- Component ---
 
 export function SiftTable({
@@ -369,6 +282,7 @@ export function SiftTable({
   const dataSource = source?.kind === "table-data" ? source.data : data;
   const urlSource = source?.kind === "url" ? source.url : url;
   const manifestSource = source?.kind === "arrow-stream-manifest" ? source.manifest : undefined;
+  const loadSource = source?.kind === "loader" ? source.load : undefined;
   const previewNotice = useMemo(() => arrowStreamPreviewNotice(manifestSource), [manifestSource]);
   const isBoundedPreview = previewNotice !== null;
   const containerRef = useRef<HTMLDivElement>(null);
@@ -471,6 +385,69 @@ export function SiftTable({
   }, []);
 
   const manifestKey = arrowStreamManifestKey(manifestSource);
+
+  useEffect(() => {
+    if (!loadSource || !containerRef.current) return;
+    const startedAt = performance.now();
+    let cancelled = false;
+    let pendingData: TableData | undefined;
+    engineRef.current?.destroy();
+    engineRef.current = null;
+    storeRef.current = null;
+    setStatus("loading");
+    setError(null);
+    emitLoadMilestone(startedAt, { source: "loader", phase: "load-start" });
+
+    Promise.resolve()
+      .then(() => (cancelled ? undefined : loadSource()))
+      .then((loaded) => {
+        if (!loaded) return;
+        if (cancelled) {
+          loaded.dispose?.();
+          return;
+        }
+        pendingData = loaded;
+        const engineDiv = getEngineElement();
+        if (!engineDiv) {
+          loaded.dispose?.();
+          pendingData = undefined;
+          return;
+        }
+        applyColumnOverrides(loaded.columns, columnOverrides);
+        engineRef.current = createTable(engineDiv, loaded, {
+          onChange: stableOnChange,
+          footerControl: getFooterControlElement(),
+        });
+        pendingData = undefined;
+        engineRef.current.setStreamingDone();
+        setStatus("ready");
+        emitLoadMilestone(startedAt, {
+          source: "loader",
+          phase: "complete",
+          rowCount: loaded.rowCount,
+        });
+      })
+      .catch((cause: unknown) => {
+        pendingData?.dispose?.();
+        pendingData = undefined;
+        if (cancelled) return;
+        setError(cause instanceof Error ? cause.message : String(cause));
+        setStatus("error");
+      });
+
+    return () => {
+      cancelled = true;
+      pendingData?.dispose?.();
+      pendingData = undefined;
+    };
+  }, [
+    loadSource,
+    columnOverrides,
+    stableOnChange,
+    getEngineElement,
+    getFooterControlElement,
+    emitLoadMilestone,
+  ]);
 
   // Mount engine when `data` prop is provided directly
   useEffect(() => {
@@ -1040,8 +1017,22 @@ export function SiftTable({
   ]);
 
   return (
-    <div ref={containerRef} className={className} style={{ height: "100%", ...style }}>
-      {status === "error" && error && <div className="sift-loading">Error: {error}</div>}
+    <div
+      ref={containerRef}
+      className={className}
+      style={{ height: "100%", ...style }}
+      aria-busy={status === "loading"}
+    >
+      {loadSource && status === "loading" && (
+        <div className="sift-loading" role="status">
+          Loading table…
+        </div>
+      )}
+      {status === "error" && error && (
+        <div className="sift-loading" role="alert">
+          Error: {error}
+        </div>
+      )}
     </div>
   );
 }

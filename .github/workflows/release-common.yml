@@ -219,7 +219,7 @@ jobs:
 
   build-macos:
     name: Build macOS Executables
-    runs-on: macos-14
+    runs-on: macos-15
     needs: [compute-version, build-wasm]
     steps:
       - name: Checkout
@@ -470,7 +470,8 @@ jobs:
 
   build-notebook-macos-x64:
     name: Build macOS x64 Notebook
-    runs-on: macos-14
+    # Standard macOS runners are ARM64; keep the explicit x64 targets below.
+    runs-on: macos-15
     needs: [compute-version, build-wasm]
     steps:
       - name: Checkout
@@ -1289,7 +1290,8 @@ jobs:
           - runner: macos-15
             target: aarch64-apple-darwin
             sccache: false
-          - runner: macos-14
+          # Cross-compile the x64 wheel on the same ARM64 image as the CLI/app.
+          - runner: macos-15
             target: x86_64-apple-darwin
             sccache: false
           - runner: ubuntu-24.04

@@ -127,6 +127,7 @@ jobs:
               - "packages/sift/**"
               - "crates/runtimed-wasm/**"
               - "crates/sift-wasm/**"
+              - "crates/nteract-predicate/**"
               - "crates/runtimed/**"
               - "crates/notebook-doc/**"
               - "crates/notebook-sync/**"
@@ -144,6 +145,7 @@ jobs:
               - "apps/notebook/src/wasm/**"
               - "crates/runtimed-wasm/**"
               - "crates/sift-wasm/**"
+              - "crates/nteract-predicate/**"
               - "packages/sift/**"
               - "Cargo.toml"
               - "Cargo.lock"
@@ -545,6 +547,14 @@ jobs:
         # versa). Runs against the freshly-built artifacts produced above.
         run: cargo xtask verify-plugins
 
+      # The general workspace Rust lanes exclude this browser-facing crate.
+      # Native tests exercise decoder admission and retained-memory accounting.
+      - name: Test sift-wasm natively
+        run: cargo test -p sift-wasm
+
+      - name: Clippy sift-wasm
+        run: cargo clippy -p sift-wasm --all-targets -- -D warnings
+
       - name: Install Deno
         run: |
           set -euo pipefail
@@ -720,6 +730,11 @@ jobs:
       - name: Run sift tests
         run: pnpm --filter @nteract/sift test
 
+      - name: Verify packed Sift package
+        # Includes stale-WASM mutation guards and an isolated consumer's types,
+        # imports, compiled CSS, and real WASM decode against a fresh tarball.
+        run: pnpm --dir packages/sift test:package
+
       - name: Build isolated Python runtime and verify IPython compatibility
         run: |
           pnpm --filter @nteract/preview-python build
@@ -765,6 +780,7 @@ jobs:
         run: |
           pnpm --filter notebook-ui exec playwright install chromium
           pnpm --dir apps/mcp-app exec playwright install chromium
+          pnpm --dir packages/sift exec playwright install chromium
           if [ "$RUNNER_ENVIRONMENT" = "github-hosted" ]; then
             pnpm --filter notebook-ui exec playwright install-deps chromium
           fi
@@ -788,8 +804,16 @@ jobs:
           pnpm --dir apps/notebook-cloud exec node --import tsx --test test/route-load-recovery.test.ts
           pnpm --dir apps/notebook-cloud test:asset-recovery
 
+      - name: Test production packed Sift consumer
+        if: ${{ !cancelled() && (steps.browser_e2e.outcome == 'success' || steps.browser_e2e.outcome == 'failure') }}
+        # Build and pack once in this lane. The browser check includes the
+        # consumer checks, then Vite build/preview with both WASM URL paths.
+        run: |
+          pnpm --dir packages/sift build:lib
+          pnpm --dir packages/sift exec node scripts/test-package.mjs --browser
+
       - name: Upload Playwright report
-        # Preserve failures from either browser suite.
+        # Preserve failures from the notebook, MCP, and packed Sift consumers.
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
@@ -800,6 +824,7 @@ jobs:
             apps/notebook-cloud/test-results/
             apps/mcp-app/test-results/
             apps/mcp-app/playwright-report/
+            packages/sift/test-results/
           retention-days: 7
 
   build-linux:
@@ -1157,7 +1182,7 @@ jobs:
       matrix:
         platform:
           - name: macOS
-            runner: macos-14
+            runner: macos-15
             setup: echo "No extra deps needed on macOS"
             run_on_pr: false
             non_blocking: false

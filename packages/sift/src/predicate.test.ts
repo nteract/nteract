@@ -89,4 +89,33 @@ describe("predicate wasm loading fallback", () => {
 
     expect(initUrls).toEqual([hashed]);
   });
+
+  it("initializes WASM once when multiple file tabs open concurrently", async () => {
+    let ready!: () => void;
+    const initialized = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const initialize = vi.fn(() => initialized);
+    const module = { default: initialize };
+    _setWasmModuleLoaderForTests(async () => module);
+    const first = ensureModule();
+    const second = ensureModule();
+    await Promise.resolve();
+    expect(initialize).toHaveBeenCalledOnce();
+    ready();
+    expect(await first).toBe(module);
+    expect(await second).toBe(module);
+  });
+
+  it("can retry initialization after a failed attempt", async () => {
+    const initialize = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("unavailable"))
+      .mockResolvedValue(undefined);
+    const module = { default: initialize };
+    _setWasmModuleLoaderForTests(async () => module);
+    await expect(ensureModule()).rejects.toThrow("unavailable");
+    expect(await ensureModule()).toBe(module);
+    expect(initialize).toHaveBeenCalledTimes(2);
+  });
 });
