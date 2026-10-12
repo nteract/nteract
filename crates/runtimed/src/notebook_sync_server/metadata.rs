@@ -4395,6 +4395,15 @@ async fn auto_launch_kernel_attempt(
             rx
         };
 
+        // Publish Connecting before the subprocess can take its initial
+        // state snapshot. Its readiness acknowledgement must cover this write.
+        if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
+            room.state
+                .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Connecting))
+        }) {
+            warn!("[runtime-state] {}", e);
+        }
+
         let spawn_result = tokio::select! {
             biased;
             _ = wait_for_kernel_launch_cancellation(attempt.cancellation_receiver()) => {
@@ -4424,14 +4433,6 @@ async fn auto_launch_kernel_attempt(
                         .discard_cancelled_runtime_agent(&runtime_agent_id)
                         .await;
                     return None;
-                }
-
-                // Connecting lifecycle — fills the gap between spawn and connect
-                if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
-                    room.state
-                        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Connecting))
-                }) {
-                    warn!("[runtime-state] {}", e);
                 }
 
                 // Wait for THIS runtime agent to establish its sync connection

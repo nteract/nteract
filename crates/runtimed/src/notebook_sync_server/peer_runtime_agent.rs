@@ -181,8 +181,8 @@ async fn apply_runtime_agent_notebook_doc_frame(
 /// This handler:
 /// 1. Performs initial NotebookDoc + RuntimeStateDoc + CommsDoc sync
 /// 2. Sets up the `runtime_agent_request_tx` channel on the room
-/// 3. Fires `runtime_agent_connected` to unblock LaunchKernel
-/// 4. Enters a sync loop relaying frames bidirectionally
+/// 3. Enters a sync loop relaying frames bidirectionally
+/// 4. Unblocks LaunchKernel after the agent acknowledges RuntimeStateDoc
 pub async fn handle_runtime_agent_sync_connection<R, W>(
     reader: R,
     mut writer: W,
@@ -324,7 +324,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
         *tx_guard = Some(ra_tx);
     }
 
-    // ── 4. Signal connected ─────────────────────────────────────────
+    // ── 4. Retain this generation's readiness notification ──────────
     // Provenance is already set by the spawn site (before spawn).
     // We do NOT re-set it here — doing so after the async sync work above
     // would create a window where a newer spawn's provenance could be
@@ -332,13 +332,10 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     //
     // take() ensures at most one signal per spawn generation — a stale
     // runtime agent that passes provenance finds None here (no-op).
-    if let Some(tx) = room.pending_runtime_agent_connect_tx.lock().await.take() {
-        let _ = tx.send(());
-    }
-    info!(
-        "[notebook-sync] Runtime agent connected and ready: {}",
-        runtime_agent_id
-    );
+    // The initial sync frame can contain only heads. Launching before the
+    // agent receives our changes makes its Running write concurrent with
+    // Connecting, which can leave both replicas projecting Connecting.
+    let mut connected_tx = room.pending_runtime_agent_connect_tx.lock().await.take();
 
     // ── 5. Sync loop ─────────────────────────────────────────────────
     let mut changed_rx = room.broadcasts.changed_tx.subscribe();
@@ -440,15 +437,17 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                                         return Err(e.into());
                                     }
                                 }
+                                let state_acknowledged =
+                                    sd.get_heads() == state_sync_state.shared_heads;
                                 sd.generate_sync_message_recovering(
                                         &mut state_sync_state,
                                         "peer-runtime-agent-state-reply",
                                     )
-                                    .map(|message| message.map(|reply| reply.encode()))
+                                    .map(|message| (message.map(|reply| reply.encode()), state_acknowledged))
                                     .map_err(Into::into)
                             });
-                            let reply_encoded = match reply_encoded {
-                                Ok(encoded) => encoded,
+                            let (reply_encoded, state_acknowledged) = match reply_encoded {
+                                Ok(result) => result,
                                 Err(e) => {
                                     warn!("[notebook-sync] Agent state sync failed: {}", e);
                                     break;
@@ -461,6 +460,15 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                                 ) {
                                     warn!("[notebook-sync] Failed to queue state sync reply to runtime agent: {}", e);
                                     break;
+                                }
+                            }
+                            if state_acknowledged {
+                                if let Some(tx) = connected_tx.take() {
+                                    let _ = tx.send(());
+                                    info!(
+                                        "[notebook-sync] Runtime agent initial state acknowledged and ready: {}",
+                                        runtime_agent_id
+                                    );
                                 }
                             }
                             if state_changed {
@@ -808,6 +816,130 @@ mod tests {
 
     use crate::blob_store::BlobStore;
     use crate::notebook_sync_server::KernelLaunchCommitRejection;
+
+    #[tokio::test]
+    async fn runtime_agent_ready_waits_for_initial_state_acknowledgement() {
+        use notebook_protocol::connection::recv_typed_frame;
+        use runtime_doc::{KernelActivity, RuntimeLifecycle, RuntimeStateDoc};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (id, _, room) = test_file_backed_room(&tmp);
+        let agent_id = "runtime-agent:startup-test";
+        room.expect_runtime_agent(agent_id);
+        *room.current_runtime_agent_id.write().await = Some(agent_id.into());
+        room.state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Connecting))
+            .unwrap();
+        let (connected_tx, mut connected_rx) = tokio::sync::oneshot::channel();
+        *room.pending_runtime_agent_connect_tx.lock().await = Some(connected_tx);
+        let (coordinator_socket, agent_socket) = tokio::io::duplex(64 * 1024);
+        let (reader, writer) = tokio::io::split(coordinator_socket);
+        let task = tokio::spawn(handle_runtime_agent_sync_connection(
+            reader,
+            writer,
+            room.clone(),
+            id.to_string(),
+            agent_id.into(),
+            tmp.path().join("executions"),
+        ));
+        let (mut reader, mut writer) = tokio::io::split(agent_socket);
+        let mut agent = RuntimeStateDoc::new_with_actor(agent_id);
+        let mut peer = automerge::sync::State::new();
+
+        // The first state frame advertises heads but carries no changes. It
+        // must not authorize LaunchKernel against the agent's seed document.
+        for _ in 0..3 {
+            let frame = recv_typed_frame(&mut reader).await.unwrap().unwrap();
+            if frame.frame_type == NotebookFrameType::RuntimeStateSync {
+                let message = automerge::sync::Message::decode(&frame.payload).unwrap();
+                assert!(message.changes.is_empty());
+                agent
+                    .receive_sync_message_with_changes(&mut peer, message)
+                    .unwrap();
+            }
+        }
+        let reply = agent.generate_sync_message(&mut peer).unwrap();
+        send_typed_frame(
+            &mut writer,
+            NotebookFrameType::RuntimeStateSync,
+            &reply.encode(),
+        )
+        .await
+        .unwrap();
+        let frame = recv_typed_frame(&mut reader).await.unwrap().unwrap();
+        assert_eq!(frame.frame_type, NotebookFrameType::RuntimeStateSync);
+        assert!(matches!(
+            connected_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        agent
+            .receive_sync_message_with_changes(
+                &mut peer,
+                automerge::sync::Message::decode(&frame.payload).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            agent.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Connecting
+        );
+        let acknowledgement = agent.generate_sync_message(&mut peer).unwrap();
+        send_typed_frame(
+            &mut writer,
+            NotebookFrameType::RuntimeStateSync,
+            &acknowledgement.encode(),
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), &mut connected_rx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // A launch after readiness causally replaces Connecting at both peers.
+        agent
+            .set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .unwrap();
+        let update = agent.generate_sync_message(&mut peer).unwrap();
+        send_typed_frame(
+            &mut writer,
+            NotebookFrameType::RuntimeStateSync,
+            &update.encode(),
+        )
+        .await
+        .unwrap();
+        loop {
+            let frame = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                recv_typed_frame(&mut reader),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+            if frame.frame_type == NotebookFrameType::RuntimeStateSync {
+                agent
+                    .receive_sync_message_with_changes(
+                        &mut peer,
+                        automerge::sync::Message::decode(&frame.payload).unwrap(),
+                    )
+                    .unwrap();
+                if room
+                    .state
+                    .read(|sd| sd.read_state().kernel.lifecycle)
+                    .unwrap()
+                    == RuntimeLifecycle::Running(KernelActivity::Idle)
+                {
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            agent.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
+        task.abort();
+        let _ = task.await;
+    }
 
     fn test_file_backed_room(tmp: &tempfile::TempDir) -> (uuid::Uuid, PathBuf, Arc<NotebookRoom>) {
         let notebook_id = uuid::Uuid::new_v4();
