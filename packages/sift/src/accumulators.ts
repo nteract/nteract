@@ -262,15 +262,16 @@ export class TimestampAccumulator implements SummaryAccumulator {
 
 export class CategoricalAccumulator implements SummaryAccumulator {
   private freq = new Map<string, number>();
-  private stringCol: string[];
+  private stringCol: (string | null)[];
 
-  constructor(stringCol: string[]) {
+  constructor(stringCol: (string | null)[]) {
     this.stringCol = stringCol;
   }
 
   add(_rawCol: unknown[], startRow: number, count: number) {
     for (let r = startRow; r < startRow + count; r++) {
       const s = this.stringCol[r];
+      if (s === null) continue;
       this.freq.set(s, (this.freq.get(s) ?? 0) + 1);
     }
   }
