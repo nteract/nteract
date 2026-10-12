@@ -8,51 +8,47 @@
     ".": "./src/index.ts",
     "./handoff": "./src/handoff.tsx",
     "./style.css": "./src/style.css",
-    "./handoff.css": "./src/handoff.css"
+    "./handoff.css": "./src/handoff.css",
+    "./sift.wasm": "./public/wasm/sift_wasm_bg.wasm"
   },
   "publishConfig": {
     "main": "./lib/index.js",
-    "types": "./lib/index.d.ts",
+    "types": "./lib/types/packages/sift/src/index.d.ts",
     "exports": {
       ".": {
-        "import": "./lib/index.js",
-        "types": "./lib/index.d.ts"
+        "types": "./lib/types/packages/sift/src/index.d.ts",
+        "import": "./lib/index.js"
       },
       "./handoff": {
-        "import": "./lib/handoff.js",
-        "types": "./lib/handoff.d.ts"
+        "types": "./lib/types/packages/sift/src/handoff.d.ts",
+        "import": "./lib/handoff.js"
       },
       "./style.css": "./lib/style.css",
-      "./handoff.css": "./lib/handoff.css"
+      "./handoff.css": "./lib/handoff.css",
+      "./sift.wasm": "./lib/wasm/sift_wasm_bg.wasm"
     }
   },
   "files": [
     "lib",
-    "src"
+    "docs/embedding-guide.md"
   ],
   "scripts": {
     "generate": "npx tsx src/generate-data.ts",
     "dev": "vp dev",
     "build": "tsc && vp build",
-    "build:lib": "tsc && vp build --config vite.lib.config.ts && node scripts/build-lib-css.mjs && cp src/handoff.css lib/handoff.css",
+    "build:lib": "tsc && vp build --config vite.lib.config.ts && tsc --project tsconfig.lib.json && node scripts/build-lib-css.mjs && cp src/handoff.css lib/handoff.css",
     "preview": "vp preview",
     "test": "vp test run",
     "test:watch": "vp test",
     "test:e2e": "playwright test",
-    "cache-datasets": "npx tsx scripts/cache-datasets.ts"
+    "cache-datasets": "npx tsx scripts/cache-datasets.ts",
+    "test:package": "pnpm run build:lib && node --test scripts/check-lib.node-test.mjs && node scripts/test-package.mjs",
+    "prepack": "node scripts/check-lib.mjs"
   },
   "peerDependencies": {
     "@chenglou/pretext": ">=0.0.6",
     "react": ">=18",
     "react-dom": ">=18"
-  },
-  "peerDependenciesMeta": {
-    "react": {
-      "optional": true
-    },
-    "react-dom": {
-      "optional": true
-    }
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
@@ -68,11 +64,11 @@
     "typescript": "~5.9.3",
     "vite": "catalog:",
     "vitest": "catalog:",
-    "vite-plus": "catalog:"
+    "vite-plus": "catalog:",
+    "@nteract/odometer": "workspace:*"
   },
   "dependencies": {
     "@chenglou/pretext": ">=0.0.6",
-    "@nteract/odometer": "workspace:*",
     "@radix-ui/react-context-menu": "^2.2.16",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-popover": "^1.1.15",
@@ -83,5 +79,9 @@
     "rxjs": "^7.8.2",
     "tailwind-merge": "^3.5.0",
     "tslib": "^2.8.1"
-  }
+  },
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "license": "BSD-3-Clause"
 }

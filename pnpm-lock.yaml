@@ -872,9 +872,6 @@ importers:
       '@chenglou/pretext':
         specifier: '>=0.0.6'
         version: 0.0.6
-      '@nteract/odometer':
-        specifier: workspace:*
-        version: link:../odometer
       '@radix-ui/react-context-menu':
         specifier: ^2.2.16
         version: 2.2.16(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -912,6 +909,9 @@ importers:
         specifier: ^2.8.1
         version: 2.8.1
     devDependencies:
+      '@nteract/odometer':
+        specifier: workspace:*
+        version: link:../odometer
       '@playwright/test':
         specifier: ^1.59.1
         version: 1.59.1

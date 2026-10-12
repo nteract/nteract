@@ -597,7 +597,7 @@ export function createTable(
           break;
         }
         case "boolean": {
-          if (Boolean(raw) !== f.value) return false;
+          if (raw == null || Boolean(raw) !== f.value) return false;
           break;
         }
       }

@@ -25,10 +25,22 @@ export type ViewportCells = {
 type PredicateModule = {
   // Data store
   load_ipc(ipc_bytes: Uint8Array): number;
+  load_ipc_bounded(
+    ipc_bytes: Uint8Array,
+    max_rows: number,
+    max_columns: number,
+    max_decoded_bytes: number,
+  ): number;
   create_arrow_stream_store(): number;
   append_arrow_stream_chunk(handle: number, ipc_bytes: Uint8Array): void;
   finish_arrow_stream_store(handle: number): void;
   load_parquet(parquet_bytes: Uint8Array): number;
+  load_parquet_bounded(
+    parquet_bytes: Uint8Array,
+    max_rows: number,
+    max_columns: number,
+    max_decoded_bytes: number,
+  ): number;
   parquet_metadata(parquet_bytes: Uint8Array): Uint32Array;
   parquet_column_hints(parquet_bytes: Uint8Array): ParquetColumnHint[];
   arrow_ipc_column_hints(ipc_bytes: Uint8Array): ParquetColumnHint[];
@@ -106,6 +118,7 @@ type PredicateModule = {
 };
 
 let mod: PredicateModule | null = null;
+let initializing: Promise<PredicateModule> | null = null;
 let configuredWasmUrl: string | undefined;
 let configuredWasmFallbackUrl: string | undefined;
 
@@ -136,6 +149,14 @@ export function setWasmUrl(url: string, fallbackUrl?: string): void {
 
 export async function ensureModule(): Promise<PredicateModule> {
   if (mod) return mod;
+  initializing ??= initializeModule().catch((error: unknown) => {
+    initializing = null;
+    throw error;
+  });
+  return initializing;
+}
+
+async function initializeModule(): Promise<PredicateModule> {
   const wasm = await wasmModuleLoader();
   try {
     const input = configuredWasmUrl?.startsWith("data:")
@@ -171,6 +192,7 @@ export function _setWasmModuleLoaderForTests(loader: SiftWasmModuleLoader | null
  */
 export function _resetPredicateModuleForTests(): void {
   mod = null;
+  initializing = null;
   configuredWasmUrl = undefined;
   configuredWasmFallbackUrl = undefined;
 }
