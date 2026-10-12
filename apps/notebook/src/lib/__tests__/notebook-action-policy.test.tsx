@@ -118,6 +118,50 @@ describe("notebook action policy helpers", () => {
 });
 
 describe("useNotebookActionPolicy", () => {
+  it("accepts another cell run as soon as the previous request settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const options = createPolicyOptions({ kernelStatus: KERNEL_STATUS.IDLE });
+      const { result, unmount } = renderHook(() => useNotebookActionPolicy(options));
+
+      await act(async () => {
+        await result.current.handleExecuteCell("cell-1");
+        await result.current.handleExecuteCell("cell-1");
+        await result.current.handleExecuteCell("cell-1");
+      });
+
+      expect(options.executeCell).toHaveBeenCalledTimes(3);
+      unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("suppresses overlapping requests for the same cell and releases the guard on failure", async () => {
+    let rejectExecution!: (error: Error) => void;
+    const execution = new Promise<NotebookResponse>((_resolve, reject) => {
+      rejectExecution = reject;
+    });
+    const options = createPolicyOptions({
+      kernelStatus: KERNEL_STATUS.IDLE,
+      executeCell: vi.fn().mockReturnValueOnce(execution).mockResolvedValue(response("cell_queued")),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      const first = result.current.handleExecuteCell("cell-1");
+      const failure = expect(first).rejects.toThrow("transport disconnected");
+      await result.current.handleExecuteCell("cell-1");
+      expect(options.executeCell).toHaveBeenCalledTimes(1);
+
+      rejectExecution(new Error("transport disconnected"));
+      await failure;
+      await result.current.handleExecuteCell("cell-1");
+    });
+
+    expect(options.executeCell).toHaveBeenCalledTimes(2);
+  });
+
   it("opens trust review instead of launching or executing when a cell run is untrusted", async () => {
     const options = createPolicyOptions({
       checkTrust: vi.fn().mockResolvedValue({ status: "untrusted" }),
