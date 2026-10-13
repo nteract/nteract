@@ -1,16 +1,35 @@
 #!/usr/bin/env bash
-# target_commitish does not move existing tags. Reject a conflicting tag before
-# publishing any assets, and never rewrite it to make a release pass.
+# An existing tag owns release identity; target_commitish cannot move it.
+# Reserve that identity before builds, then require it at publication time.
 set -euo pipefail
 
 tag="${1:?release tag required}"
 source_sha="${2:?built source SHA required}"
+mode="${3:---check}"
+case "$mode" in
+  --check|--reserve|--require) ;;
+  *) echo "Unknown release tag mode: $mode" >&2; exit 1 ;;
+esac
 git check-ref-format "refs/tags/$tag"
 [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid source SHA: $source_sha" >&2; exit 1; }
 refs=$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")
 if [[ -z "$refs" ]]; then
-  echo "Release tag $tag is available for $source_sha"
-  exit 0
+  case "$mode" in
+    --check)
+      echo "Release tag $tag is available for $source_sha"
+      exit 0
+      ;;
+    --require)
+      echo "Release tag $tag is missing. Refusing to publish without the reserved source ref." >&2
+      exit 1
+      ;;
+    --reserve)
+      # No force and no local tag: a concurrent/conflicting reservation must not
+      # be overwritten. A denied push stops before any build or publication.
+      git push origin "$source_sha:refs/tags/$tag"
+      refs=$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")
+      ;;
+  esac
 fi
 
 # Annotated tags point at a tag object; compare the peeled commit when present.
