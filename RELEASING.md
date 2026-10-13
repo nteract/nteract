@@ -19,6 +19,14 @@ Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-rel
 
 > **Note:** Desktop releases also build `runtimed` Python wheels and publish them to PyPI via trusted publishing. Nightly releases publish a unique pre-release version; stable releases publish the base version from `crates/runt/Cargo.toml`. `cargo xtask bump` still bumps `python/runtimed/pyproject.toml`; the release workflow stamps it again inside the ephemeral Actions checkout so PyPI publishing follows the Rust release version even if that file drifts.
 
+### Release source and partial publication
+
+The version job reserves the timestamped tag at the exact source SHA before builds begin, using the workflow's existing `GITHUB_TOKEN`. It never force-pushes a tag. A denied reservation stops the builds; a failed build may leave a source tag without a release. Do not move that tag to repair a run. Changelog generation excludes unpublished timestamped tags and the current release tag from its disposable checkout, leaving remote tags intact. Excluding the current tag also preserves release notes on a publication retry. Token-created tags do not trigger the stable tag-push workflow. Each channel serializes release runs with `cancel-in-progress: false`, so overlapping runs cannot replace each other's assets. GitHub keeps one pending run per channel by default; newer pending requests replace older pending requests without cancelling the active release.
+
+After all build and smoke gates pass, publication requires that reserved tag to still match the built source. The GitHub release uses the existing tag without `target_commitish`: that field only supplies a commit when creating a missing tag. Passing the old SHA can instead invoke GitHub's workflow-write restriction when main's workflows have advanced during the build. See [GitHub's release API contract](https://docs.github.com/en/rest/releases/releases#create-a-release). A second tag check follows GitHub publication.
+
+PyPI publication follows successful GitHub release creation and asset upload, before updater and plugin publication. This prevents a GitHub 403 from publishing Python wheels first. A later PyPI or updater failure still leaves a partial release; preserve existing artifacts and inspect the exact failed step before retrying. The existing PyPI `--check-url` and npm identity checks protect their retry paths. This does not make the registries one atomic transaction.
+
 ### Artifacts
 
 | Platform | File |

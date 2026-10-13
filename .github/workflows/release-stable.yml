@@ -6,6 +6,11 @@ on:
       - "v*"
   workflow_dispatch:
 
+# Serialize publication within this channel without cancelling an active release.
+concurrency:
+  group: nteract-release-stable
+  cancel-in-progress: false
+
 permissions:
   contents: write
   id-token: write
