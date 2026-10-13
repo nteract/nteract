@@ -91,7 +91,7 @@ To enable either ARM64 npm platform:
 
 `@nteract/sift` is gated by the `NPM_SIFT_ENABLED` repository variable. Until it is `true`, CI builds the WASM, runs the packed-consumer checks, and uploads `npm-package-sift`, but does not publish it. npm configures trusted publishers in an existing package's settings, so Sift bootstraps from a placeholder instead of a CI tarball:
 
-1. An `@nteract` owner publishes a code-free `@nteract/sift@0.0.1` with `npm publish --access public` and deprecates it with a pointer to the `nightly` tag. `0.0.1` sorts below every Sift version CI publishes, so it never blocks or collides with one.
+1. An `@nteract` owner publishes a code-free `@nteract/sift@0.0.1` with `npm publish --access public`. `0.0.1` sorts below every Sift version CI publishes, so it never blocks or collides with one. Deprecate it once a stable release has moved `latest` to a real version.
 2. Configure the trusted publisher as in step 3 above. New configurations default to staged publishing only; allow `npm publish`.
 3. Set the variable right away. A new trusted-publisher configuration expires unless it completes a publish within two days. Let the next nightly publish, or dispatch **Nightly Release**.
 
