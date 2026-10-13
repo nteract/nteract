@@ -1,6 +1,11 @@
 {
   "name": "@nteract/sift",
   "version": "0.5.3",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nteract/nteract.git",
+    "directory": "packages/sift"
+  },
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",

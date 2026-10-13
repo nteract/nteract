@@ -17,6 +17,7 @@ import {
 
 const workflow = readFileSync(new URL("../../.github/workflows/publish-npm.yml", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const sourceManifest = JSON.parse(readFileSync(new URL("../../packages/runtimed-node/package.json", import.meta.url), "utf8"));
+const siftManifest = JSON.parse(readFileSync(new URL("../../packages/sift/package.json", import.meta.url), "utf8"));
 const identity = {channel: "nightly", sourceSha: "a".repeat(40), runId: "100", runAttempt: "1"};
 const jobs = new Map();
 let current;
@@ -104,7 +105,7 @@ test("standalone OIDC publishers only consume artifacts, with no source build or
   assert.match(workflow, /workflows: \["Stable Release", "Nightly Release"\]/);
   assert.match(workflow, /^concurrency:\n  group: npm-publish\n  queue: max\n  cancel-in-progress: false$/m);
   assert.doesNotMatch(workflow, /workflow_call:|NODE_AUTH_TOKEN|NPM_TOKEN|continue-on-error:|if: always\(\)/);
-  for (const target of ["native", "wrapper", "pi"]) {
+  for (const target of ["native", "wrapper", "pi", "sift"]) {
     const publisher = jobs.get(`publish-${target}`);
     assert.match(publisher, /^      id-token: write$/m);
     assert.doesNotMatch(publisher, /actions\/checkout|pnpm|cargo|npm (?:install|ci)|secrets\./);
@@ -117,7 +118,7 @@ test("native failures block wrapper, Pi is stable-only, and source/channel are e
   assert.match(jobs.get("pack-wrapper"), /^    needs: \[resolve-release, publish-native\]$/m);
   assert.match(jobs.get("publish-native"), /if: \(matrix\.target != 'linux-arm64-gnu' \|\| needs\.resolve-release\.outputs\.linux_arm64_enabled == 'true'\) && \(matrix\.target != 'win32-arm64-msvc' \|\| needs\.resolve-release\.outputs\.windows_arm64_enabled == 'true'\)/);
   assert.match(jobs.get("pack-pi"), /^    if: needs\.resolve-release\.outputs\.channel == 'stable'$/m);
-  for (const id of ["pack-native", "pack-wrapper", "pack-pi"]) {
+  for (const id of ["pack-native", "pack-wrapper", "pack-pi", "pack-sift"]) {
     assert.match(jobs.get(id), /ref: \$\{\{ needs\.resolve-release\.outputs\.source_sha \}\}/);
   }
   for (const id of ["pack-native", "pack-wrapper"]) {
@@ -135,6 +136,71 @@ test("native failures block wrapper, Pi is stable-only, and source/channel are e
     assert.match(job.slice(finalize), /npm-release-cli\.mjs" stamp-tarball/);
   }
   assert.match(jobs.get("pack-native"), /Smoke installed native tarball and compiled channel/);
+});
+
+test("Sift packs independently, tests the stamped package, and publishes only behind its gate", () => {
+  const resolve = jobs.get("resolve-release");
+  assert.match(resolve, /plan "\$RUNNER_TEMP\/release-identity\.json" release-source\/packages\/sift\/package\.json "\$RUNNER_TEMP\/npm-release-tools\/sift-plan\.json"/);
+  assert.match(resolve, /NPM_SIFT_ENABLED: \$\{\{ vars\.NPM_SIFT_ENABLED \}\}/);
+  assert.match(resolve, /sift_enabled: \$\{\{ steps\.sift-plan\.outputs\.enabled \}\}/);
+  assert.ok(resolve.indexOf("id: sift-plan") < resolve.indexOf("uses: actions/upload-artifact@"), "upload the Sift plan with the tools");
+
+  const pack = jobs.get("pack-sift");
+  assert.match(pack, /^    needs: \[resolve-release\]$/m, "Sift must not wait for the Node SDK");
+  const order = [
+    "pnpm install --frozen-lockfile",
+    "cargo xtask wasm sift --skip-renderer-plugins",
+    'stamp-build "$RUNNER_TEMP/npm-release-tools/sift-plan.json" packages/sift sift',
+    "pnpm --dir packages/sift test:package",
+    'pnpm --dir packages/sift pack --pack-destination "$RUNNER_TEMP"',
+    'stamp-tarball "$RUNNER_TEMP/npm-release-tools/sift-plan.json" sift "$RUNNER_TEMP"',
+    'verify "$RUNNER_TEMP/npm-release-tools/sift-plan.json" sift',
+    "uses: actions/upload-artifact@",
+  ].map(step => pack.indexOf(step));
+  assert.ok(order.every((position, index) => position >= 0 && (index === 0 || position > order[index - 1])), `pack-sift step order: ${order}`);
+
+  const publish = jobs.get("publish-sift");
+  assert.match(publish, /^    needs: \[resolve-release, pack-sift\]$/m);
+  assert.match(publish, /- name: Publish Sift package\n\s+if: needs\.resolve-release\.outputs\.sift_enabled == 'true'\n/);
+  assert.match(publish, /- name: Report Sift bootstrap prerequisite\n\s+if: needs\.resolve-release\.outputs\.sift_enabled != 'true'\n/);
+  assert.match(publish, /publish "\$RUNNER_TEMP\/npm-release-tools\/sift-plan\.json" sift "\$RUNNER_TEMP\/npm-package"/);
+});
+
+test("Sift manifests carry their own version, provenance and no private or workspace dependencies", () => {
+  assert.equal(packageName("sift"), siftManifest.name);
+  assert.equal(siftManifest.repository?.url, "git+https://github.com/nteract/nteract.git", "npm provenance needs the source repository");
+  assert.equal(siftManifest.repository?.directory, "packages/sift");
+  for (const channel of ["stable", "nightly"]) {
+    const plan = releasePlan(siftManifest.version, {...identity, channel});
+    assert.equal(plan.version, channel === "stable" ? siftManifest.version : `${siftManifest.version}-nightly.${identity.runId}`);
+    const build = stampBuildManifest(siftManifest, plan, "sift");
+    const packed = {...build, devDependencies: {...build.devDependencies, "@nteract/odometer": "0.1.0"}};
+    const finalized = finalizePackedManifest(packed, plan, "sift");
+    assert.equal(finalized.version, plan.version);
+    assert.doesNotThrow(() => verifyManifest(finalized, plan, "sift"));
+    assert.throws(() => verifyManifest({...finalized, dependencies: {...finalized.dependencies, "@nteract/odometer": "0.1.0"}}, plan, "sift"), /private package @nteract\/odometer/);
+    assert.throws(() => verifyManifest({...finalized, peerDependencies: {...finalized.peerDependencies, react: "workspace:*"}}, plan, "sift"), /peerDependencies\.react uses workspace protocol/);
+    assert.throws(() => stampManifest({...siftManifest, version: "0.0.1"}, plan, "sift"), /Checked-in version mismatch/);
+    assert.throws(() => stampManifest(sourceManifest, plan, "sift"), /Unexpected package/);
+  }
+});
+
+test("Sift build stamping rewrites only the Sift manifest", () => {
+  const directory = mkdtempSync(join(tmpdir(), "nteract-npm-sift-"));
+  try {
+    const plan = releasePlan(siftManifest.version, identity);
+    const planPath = join(directory, "plan.json");
+    writeFileSync(planPath, JSON.stringify(plan));
+    mkdirSync(join(directory, "sift"));
+    writeFileSync(join(directory, "sift", "package.json"), JSON.stringify(siftManifest));
+    const cli = fileURLToPath(new URL("../ci/npm-release-cli.mjs", import.meta.url));
+    execFileSync(process.execPath, [cli, "stamp-build", planPath, join(directory, "sift"), "sift"]);
+    const stamped = JSON.parse(readFileSync(join(directory, "sift", "package.json"), "utf8"));
+    assert.deepEqual(stamped, stampBuildManifest(siftManifest, plan, "sift"));
+    assert.equal(stamped.version, `${siftManifest.version}-nightly.${identity.runId}`);
+  } finally {
+    rmSync(directory, {recursive: true, force: true});
+  }
 });
 
 test("build versions preserve workspace links and finalization applies the publication gates", () => {

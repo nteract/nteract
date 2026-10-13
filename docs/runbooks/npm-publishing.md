@@ -1,9 +1,9 @@
 # Publishing the Node bindings
 
-`publish-npm.yml` builds the Node SDK after a successful **Stable Release** or
-**Nightly Release** run. It retains the existing npm trusted-publisher identity;
-the build jobs have no publication credentials, and the publication jobs do not
-build source or install project dependencies.
+`publish-npm.yml` builds the Node SDK and `@nteract/sift` after a successful
+**Stable Release** or **Nightly Release** run. It retains the existing npm
+trusted-publisher identity; the build jobs have no publication credentials, and
+the publication jobs do not build source or install project dependencies.
 
 | Upstream release | npm version | Dist-tag | Default daemon discovery |
 |---|---|---|---|
@@ -23,8 +23,20 @@ dispatched from a feature branch is eligible too, including promotion of npm's
 The manual npm workflow itself must run from the repository's default branch;
 its validated upstream run supplies the build source.
 
-Only `@runtimed/node` and its native platform packages get nightly versions.
-`@nteract/pi` continues to publish through the stable path.
+`@runtimed/node`, its native platform packages, and `@nteract/sift` get nightly
+versions. `@nteract/pi` continues to publish through the stable path.
+
+## Sift
+
+`@nteract/sift` follows the same channels from its own checked-in version:
+stable publishes it to `latest`, and nightly publishes
+`<Sift version>-nightly.<upstream run ID>` to `nightly`. Its pack job builds the
+Sift WASM, stamps the version, runs `test:package` against the packed consumer,
+then packs the tarball it uploads. It shares the upstream source and run identity
+with the Node SDK but no jobs, so a failed native build doesn't block Sift and a
+Sift failure doesn't block the SDK. Publication waits for the `NPM_SIFT_ENABLED`
+bootstrap gate in [RELEASING.md](../../RELEASING.md#published-bindings).
+Consumers should pin an exact Sift version, as with the SDK.
 
 ## Package coordination and daemon compatibility
 

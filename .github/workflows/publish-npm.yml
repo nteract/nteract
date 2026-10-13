@@ -2,9 +2,10 @@ name: Publish npm packages
 
 # Keep this standalone workflow identity for npm OIDC trusted publishing.
 # Builders have no publishing permission; publishers consume only packed artifacts.
-# Stable uses the checked-in Node version/latest. Nightly uses that version plus
-# the successful upstream run ID/nightly. @nteract/pi remains stable-only.
-# Linux/Windows ARM64 require their NPM_*_ARM64_ENABLED bootstrap gates.
+# Stable uses each package's checked-in version/latest. Nightly uses that version
+# plus the successful upstream run ID/nightly. @nteract/pi remains stable-only.
+# Linux/Windows ARM64 require their NPM_*_ARM64_ENABLED bootstrap gates, and
+# @nteract/sift requires NPM_SIFT_ENABLED. Sift is independent of the Node SDK.
 on:
   workflow_dispatch:
     inputs:
@@ -51,6 +52,8 @@ jobs:
       dist_tag: ${{ steps.plan.outputs.dist_tag }}
       linux_arm64_enabled: ${{ steps.plan.outputs.linux_arm64_enabled }}
       windows_arm64_enabled: ${{ steps.plan.outputs.windows_arm64_enabled }}
+      sift_version: ${{ steps.sift-plan.outputs.version }}
+      sift_enabled: ${{ steps.sift-plan.outputs.enabled }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -81,6 +84,13 @@ jobs:
           cp scripts/ci/npm-release*.mjs "$RUNNER_TEMP/npm-release-tools/"
           cp scripts/ci/audit-linux-node.mjs "$RUNNER_TEMP/npm-release-tools/"
           node scripts/ci/npm-release-cli.mjs plan "$RUNNER_TEMP/release-identity.json" release-source/packages/runtimed-node/package.json "$RUNNER_TEMP/npm-release-tools/plan.json"
+      - name: Prepare immutable Sift release plan
+        id: sift-plan
+        env:
+          NPM_SIFT_ENABLED: ${{ vars.NPM_SIFT_ENABLED }}
+        run: |
+          node scripts/ci/npm-release-cli.mjs plan "$RUNNER_TEMP/release-identity.json" release-source/packages/sift/package.json "$RUNNER_TEMP/npm-release-tools/sift-plan.json"
+          echo "enabled=$([ "$NPM_SIFT_ENABLED" = true ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
         with:
           name: npm-release-tools
@@ -349,3 +359,90 @@ jobs:
           path: ${{ runner.temp }}/npm-package
       - name: Publish Pi package
         run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" publish "$RUNNER_TEMP/npm-release-tools/plan.json" pi "$RUNNER_TEMP/npm-package"
+
+  pack-sift:
+    name: Pack Sift package
+    needs: [resolve-release]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+          ref: ${{ needs.resolve-release.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release-tools
+          path: ${{ runner.temp }}/npm-release-tools
+      - uses: dsherret/rust-toolchain-file@v1
+      - uses: ./.github/actions/install-wasm-pack
+      - uses: pnpm/action-setup@v6
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # The packed library embeds this binary, its glue, and the notices
+      # generated from the same Cargo.lock.
+      - name: Build Sift WASM
+        run: cargo xtask wasm sift --skip-renderer-plugins
+      - name: Stamp Sift build version
+        run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" stamp-build "$RUNNER_TEMP/npm-release-tools/sift-plan.json" packages/sift sift
+      - name: Build and test packed Sift consumer
+        run: pnpm --dir packages/sift test:package
+      - name: Pack Sift package
+        run: pnpm --dir packages/sift pack --pack-destination "$RUNNER_TEMP"
+      - name: Finalize packed Sift manifest
+        run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" stamp-tarball "$RUNNER_TEMP/npm-release-tools/sift-plan.json" sift "$RUNNER_TEMP"
+      - name: Verify Sift package manifest
+        run: |
+          tar -xOf "$RUNNER_TEMP"/nteract-sift-*.tgz package/package.json > "$RUNNER_TEMP/sift-package.json"
+          node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" verify "$RUNNER_TEMP/npm-release-tools/sift-plan.json" sift "$RUNNER_TEMP/sift-package.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-package-sift
+          path: ${{ runner.temp }}/nteract-sift-*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-sift:
+    name: Publish Sift package
+    needs: [resolve-release, pack-sift]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release-tools
+          path: ${{ runner.temp }}/npm-release-tools
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-package-sift
+          path: ${{ runner.temp }}/npm-package
+      - name: Publish Sift package
+        if: needs.resolve-release.outputs.sift_enabled == 'true'
+        run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" publish "$RUNNER_TEMP/npm-release-tools/sift-plan.json" sift "$RUNNER_TEMP/npm-package"
+      - name: Record available immutable Sift release
+        if: needs.resolve-release.outputs.sift_enabled == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-sift-release-result
+          path: ${{ runner.temp }}/npm-result/sift.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Report Sift bootstrap prerequisite
+        if: needs.resolve-release.outputs.sift_enabled != 'true'
+        env:
+          SIFT_VERSION: ${{ needs.resolve-release.outputs.sift_version }}
+        run: |
+          echo "@nteract/sift@$SIFT_VERSION npm publication is disabled until bootstrap and trusted publishing are configured." >> "$GITHUB_STEP_SUMMARY"
+          echo "Download npm-package-sift and follow RELEASING.md." >> "$GITHUB_STEP_SUMMARY"

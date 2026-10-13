@@ -76,6 +76,7 @@ export function releasePlan(baseVersion, identity, linuxArm64Enabled, windowsArm
 export function packageName(target) {
   if (target === "wrapper") return "@runtimed/node";
   if (target === "pi") return "@nteract/pi";
+  if (target === "sift") return "@nteract/sift";
   if (!nativeTargets.includes(target)) throw new Error(`Unknown native target ${target}`);
   return `@runtimed/node-${target}`;
 }
@@ -131,7 +132,9 @@ export function verifyManifest(manifest, plan, target) {
     }
   }
   if (manifest.dependencies?.runtimed) throw new Error("Packed manifest depends on private package runtimed");
-  for (const section of ["dependencies", "optionalDependencies"]) {
+  // Sift bundles the private odometer; consumers can't install it.
+  if (manifest.dependencies?.["@nteract/odometer"]) throw new Error("Packed manifest depends on private package @nteract/odometer");
+  for (const section of ["dependencies", "optionalDependencies", "peerDependencies"]) {
     for (const [name, version] of Object.entries(manifest[section] ?? {})) {
       if (String(version).startsWith("workspace:")) throw new Error(`${section}.${name} uses workspace protocol`);
     }
@@ -231,7 +234,7 @@ export async function assertNativeDependencies(manifest, plan, fetchPackage = re
 
 export async function publishPackage(manifest, plan, target, { fetchPackage = registryPackage, publish, nativeWait }) {
   verifyManifest(manifest, plan, target);
-  if (target !== "wrapper" && target !== "pi" && !plan.nativeTargets.includes(target)) {
+  if (nativeTargets.includes(target) && !plan.nativeTargets.includes(target)) {
     throw new Error("Native target is disabled by the publication gate");
   }
   let packument = await fetchPackage(manifest.name);

@@ -57,12 +57,14 @@ if (command === "resolve") {
   output("dist_tag", plan.distTag);
   output("linux_arm64_enabled", String(plan.nativeTargets.includes("linux-arm64-gnu")));
   output("windows_arm64_enabled", String(plan.nativeTargets.includes("win32-arm64-msvc")));
-  appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Node release: **${plan.version}** → **${plan.distTag}**, source \`${plan.sourceSha}\`, upstream run ${plan.runId} (attempt ${plan.runAttempt}).\n`);
+  appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\`${sourceManifest.name}\` release: **${plan.version}** → **${plan.distTag}**, source \`${plan.sourceSha}\`, upstream run ${plan.runId} (attempt ${plan.runAttempt}).\n`);
 } else if (command === "stamp" || command === "stamp-build") {
   const plan = readJson(args[0]);
   const root = args[1];
-  for (const target of ["wrapper", ...nativeTargets]) {
-    const path = target === "wrapper" ? join(root, "package.json") : join(root, "npm", target, "package.json");
+  // Sift is a single package. The Node SDK stamps its wrapper and every native package.
+  const targets = args[2] === "sift" ? ["sift"] : ["wrapper", ...nativeTargets];
+  for (const target of targets) {
+    const path = target === "wrapper" || target === "sift" ? join(root, "package.json") : join(root, "npm", target, "package.json");
     const stamp = command === "stamp-build" ? stampBuildManifest : stampManifest;
     writeJson(path, stamp(readJson(path), plan, target));
   }
