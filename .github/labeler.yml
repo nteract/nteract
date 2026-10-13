@@ -76,7 +76,7 @@ documentation:
       - '.claude/rules/**'
       - '.claude/skills/**'
       - 'AGENTS.md'
-      - 'CLAUDE.md'
+      - '**/AGENTS.md'
       - 'README.md'
 
 test:

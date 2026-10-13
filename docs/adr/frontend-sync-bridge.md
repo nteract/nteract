@@ -88,8 +88,7 @@ Stable-DOM-order rendering keeps every cell's iframe pinned to the same DOM node
 
 ### Why this is load-bearing across the codebase
 
-The invariant lives in `AGENTS.md` (also available through the `CLAUDE.md`
-symlink). Three code sites implement it: the `stableDomOrder` memo
+The invariant lives in `apps/notebook/src/AGENTS.md`. Three code sites implement it: the `stableDomOrder` memo
 (`NotebookView.tsx`), the `order: index` style, and the parent flex container.
 Any one of them flipping back to "iterate cellIds and let React handle order"
 reintroduces the iframe reload. CI doesn't catch this; the visible failure is a

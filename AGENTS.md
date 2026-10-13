@@ -1,7 +1,5 @@
 # Agent Instructions
 
-<!-- This file is canonical. CLAUDE.md is a symlink to AGENTS.md. -->
-
 ## Communication
 
 Write like you're talking with a colleague: use everyday language, precise

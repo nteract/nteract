@@ -6,7 +6,7 @@
 
 The daemon is a multi-tenant async server. One process holds every open room, every kernel subprocess, every blob HTTP handler, and every sync stream. A single Tokio runtime drives all of it. Under load (a notebook generating multi-megabyte image output while another room is opening a kernel while a third is shutting down) the daemon's responsiveness is determined by which futures get to run when, and what each holds when it suspends.
 
-This ADR collects the rules that keep that runtime responsive. The headline rule is the tokio-mutex-across-await ban that lives as a single paragraph in `AGENTS.md` (also available through the `CLAUDE.md` symlink) and is enforced by a CI lint. But that rule does not stand alone. It is one member of a family of concurrency invariants that all serve the same goal: no single piece of work, however large, can stall the daemon's ability to drive other work forward.
+This ADR collects the rules that keep that runtime responsive. The headline rule is the tokio-mutex-across-await ban that lives as a single paragraph in `AGENTS.md` and is enforced by a CI lint. But that rule does not stand alone. It is one member of a family of concurrency invariants that all serve the same goal: no single piece of work, however large, can stall the daemon's ability to drive other work forward.
 
 Neighbors:
 
@@ -223,7 +223,7 @@ These follow-ups are tracked but not decided here:
 
 ## References
 
-- `AGENTS.md` / `CLAUDE.md` "Tokio mutex guards stay within synchronous blocks" - the load-bearing paragraph this ADR expands.
+- `AGENTS.md` "Do not hold Tokio locks across `await`" - the load-bearing paragraph this ADR expands.
 - `crates/runtimed/tests/tokio_mutex_lint.rs` - the CI lint and the violation-count history.
 - `async-rust-lsp::rules::mutex_across_await` - the tree-sitter rule the lint wraps. Documented inline in the crate; current version `0.3.1`.
 - `crates/notebook-sync/src/handle.rs:73,206-229` - `DocHandle::with_doc`, the canonical sync-only critical section behind a `std::sync::Mutex`.

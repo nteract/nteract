@@ -666,7 +666,7 @@ function NotebookViewContent({
   // Cells are rendered in sorted-ID order so React never calls insertBefore on
   // existing DOM nodes. Visual ordering uses CSS `order` on each cell wrapper.
   // Without this, moving a cell causes browsers to reload iframes (destroying
-  // content, widgets, and theme state). See CLAUDE.md § "Cell List Stable DOM Order".
+  // content, widgets, and theme state). See apps/notebook/src/AGENTS.md § "Invariants".
   //
   // Default JS string sort (code-unit order, not locale-aware) is correct
   // here because the sort only needs to be *stable and deterministic*, not

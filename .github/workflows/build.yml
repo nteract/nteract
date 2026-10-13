@@ -85,8 +85,6 @@ jobs:
               - "scripts/ci/check-docs-guidance.py"
               - "AGENTS.md"
               - "**/AGENTS.md"
-              - "CLAUDE.md"
-              - "**/CLAUDE.md"
               - "README.md"
               - "CONTRIBUTING.md"
               - "DESIGN.md"
