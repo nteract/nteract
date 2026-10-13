@@ -278,3 +278,23 @@ test("an observed existing wrapper stays existing if a later replica omits it", 
   assert.equal(result.status, "existing");
   assert.deepEqual(result.registryRelease, f.wrapper.nteractRelease);
 });
+
+test("Sift publishes on its own plan without native gates and refuses stale releases", async () => {
+  const siftPlan = releasePlan("0.5.3", identity);
+  const sift = stampManifest({name: packageName("sift"), version: "0.5.3"}, siftPlan, "sift");
+  assert.equal(sift.version, "0.5.3-nightly.100");
+  let publishes = 0;
+  const result = await publishPackage(sift, siftPlan, "sift", {
+    fetchPackage: async name => {
+      assert.equal(name, "@nteract/sift");
+      return empty();
+    },
+    publish: () => publishes++,
+  });
+  assert.deepEqual([result.status, result.version, publishes], ["published", sift.version, 1]);
+  const newer = {...sift, version: "0.5.3-nightly.101", nteractRelease: {...sift.nteractRelease, runId: "101"}};
+  await assert.rejects(publishPackage(sift, siftPlan, "sift", {
+    fetchPackage: async () => packument([newer], "nightly", newer.version),
+    publish: () => assert.fail("stale Sift run must not publish"),
+  }), /incomplete older release/);
+});
