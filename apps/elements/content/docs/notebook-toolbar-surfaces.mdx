@@ -26,3 +26,13 @@ until the host deliberately wires them. The rendered boundary map keeps shared
 command chrome, actor identity, runtime status projection,
 package panel state, and host-owned actions named separately so future toolbar
 work can move one host-owned action at a time.
+
+## Hints
+
+Every icon control, the runtime chip, and the kernel status carry a
+[Tooltip](/docs/tooltip) hint. Hints open on hover and keyboard focus inside
+one toolbar-scoped provider, so hosts mount nothing extra. The toolbar sets no
+native `title` attributes. Host text arrives through the existing props:
+`workstationAction.title`, `updateAction.title`, and `runtimeStatus.title`.
+The kernel status hint yields to the error hover card when `runtimeStatus.error`
+is set.

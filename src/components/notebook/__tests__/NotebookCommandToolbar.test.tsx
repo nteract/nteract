@@ -1,5 +1,6 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { NotebookCommandToolbar } from "../NotebookCommandToolbar";
 
@@ -233,7 +234,8 @@ describe("NotebookCommandToolbar", () => {
     expect(screen.getByTestId("kernel-status")).toHaveAttribute("data-kernel-status", "idle");
   });
 
-  it("can reserve add-cell controls as disabled while host edit access resolves", () => {
+  it("can reserve add-cell controls as disabled while host edit access resolves", async () => {
+    const user = userEvent.setup();
     const onAddCell = vi.fn();
 
     render(
@@ -252,8 +254,15 @@ describe("NotebookCommandToolbar", () => {
     const markdownButton = screen.getByTestId("add-markdown-cell-button");
 
     expect(codeButton).toBeDisabled();
-    expect(codeButton).toHaveAttribute("title", "Checking edit access");
+    expect(codeButton).toHaveAccessibleName("Add code cell");
+    expect(codeButton).toHaveAttribute("aria-description", "Checking edit access");
     expect(markdownButton).toBeDisabled();
+
+    // A disabled button passes the pointer through to its tooltip wrapper.
+    expect(codeButton).toHaveClass("disabled:pointer-events-none");
+    expect(codeButton.parentElement).toHaveClass("cursor-not-allowed");
+    await user.hover(codeButton.parentElement!);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Checking edit access");
 
     fireEvent.click(codeButton);
 
@@ -276,7 +285,8 @@ describe("NotebookCommandToolbar", () => {
     expect(screen.queryByTestId("run-all-button")).toBeNull();
   });
 
-  it("surfaces attached compute metadata on the runtime chip", () => {
+  it("surfaces attached compute metadata on the runtime chip", async () => {
+    const user = userEvent.setup();
     render(
       <NotebookCommandToolbar
         capabilities={editableToolbarCapabilities}
@@ -297,13 +307,15 @@ describe("NotebookCommandToolbar", () => {
       />,
     );
 
+    const description =
+      "Python runtime · Lab2 workstation · Ready · Kernel idle · 1 compute session";
     const chip = screen.getByTestId("runtime-environment-indicator");
     expect(chip).toHaveAttribute("data-runtime-target", "cloud_workstation");
     expect(chip).toHaveAttribute("data-runtime-peer-count", "1");
-    expect(chip).toHaveAttribute(
-      "title",
-      "Python - Lab2 workstation · Ready · Kernel idle · 1 compute session",
-    );
+    expect(within(chip).getByText(description)).toHaveClass("sr-only");
+
+    await user.hover(chip);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(description);
   });
 
   it("keeps runtime metadata passive without package navigation capabilities", async () => {
@@ -327,7 +339,10 @@ describe("NotebookCommandToolbar", () => {
     expect(indicator.tagName).toBe("SPAN");
     expect(indicator).toHaveTextContent("Python");
     expect(indicator).toHaveAttribute("data-env-manager", "conda");
-    expect(indicator).toHaveAttribute("title", "Python / conda");
+    expect(indicator).not.toHaveAttribute("title");
+    expect(within(indicator).getByText("Python runtime · conda environment")).toHaveClass(
+      "sr-only",
+    );
     expect(indicator).not.toHaveAttribute("role");
     expect(indicator).not.toHaveAttribute("tabindex");
     expect(indicator.tabIndex).toBe(-1);
@@ -344,8 +359,7 @@ describe("NotebookCommandToolbar", () => {
     await user.tab();
     expect(screen.getByRole("button", { name: "Next control" })).toHaveFocus();
     expect(screen.getByTestId("kernel-status")).toBeVisible();
-    expect(screen.getByTestId("restart-run-all-button")).toHaveAttribute(
-      "title",
+    expect(screen.getByTestId("restart-run-all-button")).toHaveAccessibleName(
       "Dependencies changed - restart kernel and run all cells",
     );
   });
@@ -369,7 +383,8 @@ describe("NotebookCommandToolbar", () => {
 
     const setupButton = screen.getByTestId("workstation-setup-button");
     expect(setupButton).toHaveAccessibleName("Set up compute");
-    expect(setupButton).toHaveAttribute("title", "Open workstations panel");
+    expect(setupButton).toHaveAttribute("aria-description", "Open workstations panel");
+    expect(setupButton).not.toHaveAttribute("title");
 
     fireEvent.click(setupButton);
 
@@ -377,7 +392,8 @@ describe("NotebookCommandToolbar", () => {
     expect(screen.queryByTestId("run-all-button")).toBeNull();
   });
 
-  it("shows pending workstation start without dispatching duplicate requests", () => {
+  it("shows pending workstation start without dispatching duplicate requests", async () => {
+    const user = userEvent.setup();
     const onWorkstationSetup = vi.fn();
 
     render(
@@ -397,11 +413,133 @@ describe("NotebookCommandToolbar", () => {
 
     const setupButton = screen.getByTestId("workstation-setup-button");
     expect(setupButton).toHaveAccessibleName("Starting");
-    expect(setupButton).toHaveAttribute("title", "Starting compute on Lab2 workstation");
+    expect(setupButton).toHaveAttribute("aria-description", "Starting compute on Lab2 workstation");
     expect(setupButton).toBeDisabled();
+
+    await user.hover(setupButton.parentElement!);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Starting compute on Lab2 workstation",
+    );
 
     fireEvent.click(setupButton);
 
     expect(onWorkstationSetup).not.toHaveBeenCalled();
+  });
+
+  describe("tooltips", () => {
+    function renderDesktopToolbar() {
+      return render(
+        <NotebookCommandToolbar
+          capabilities={editableToolbarCapabilities}
+          runtime="python"
+          environmentManager="conda"
+          runtimeStatus={runtimeStatus}
+          onAddCell={() => ({ id: "cell-new" })}
+          onRunAllCells={() => {}}
+          onRestartRuntime={() => {}}
+          onRestartAndRunAll={() => {}}
+          onInterruptRuntime={() => {}}
+          updateAction={{
+            label: "Update 2.5.3",
+            title: "Prepare to update to v2.5.3",
+            onClick: () => {},
+          }}
+        />,
+      );
+    }
+
+    it("explains every icon control on hover without native title tooltips", async () => {
+      const user = userEvent.setup();
+      renderDesktopToolbar();
+
+      expect(screen.getByTestId("notebook-toolbar").querySelectorAll("[title]")).toHaveLength(0);
+
+      const hints: Array<[target: () => HTMLElement, hint: string]> = [
+        [() => screen.getByTestId("add-code-cell-button"), "Add code cell"],
+        [() => screen.getByTestId("add-markdown-cell-button"), "Add markdown cell"],
+        [() => screen.getByTestId("run-all-button"), "Run all cells"],
+        [() => screen.getByTestId("restart-kernel-button"), "Restart kernel"],
+        [() => screen.getByTestId("restart-run-all-button"), "Restart kernel and run all cells"],
+        [() => screen.getByTestId("interrupt-kernel-button"), "Interrupt kernel"],
+        [() => screen.getByTestId("update-download-button"), "Prepare to update to v2.5.3"],
+        [
+          () => screen.getByTestId("runtime-environment-indicator"),
+          "Python runtime · conda environment",
+        ],
+        [() => within(screen.getByTestId("kernel-status")).getByText("idle"), "Kernel is idle"],
+      ];
+      for (const [target, hint] of hints) {
+        await user.hover(target());
+        expect((await screen.findByRole("tooltip")).textContent).toBe(hint);
+        // jsdom has no layout for Radix's hover grace area, so dismiss before
+        // moving to the next control.
+        await user.keyboard("{Escape}");
+        await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
+      }
+    });
+
+    it("opens the hint on keyboard focus and closes it on Escape", async () => {
+      const user = userEvent.setup();
+      renderDesktopToolbar();
+
+      for (const name of [
+        "Add code cell",
+        "Add markdown cell",
+        "Run all cells",
+        "Restart kernel",
+        "Restart kernel and run all cells",
+        "Interrupt kernel",
+      ]) {
+        await user.tab();
+        expect(screen.getByRole("button", { name })).toHaveFocus();
+        expect(screen.getByRole("tooltip").textContent).toBe(name);
+      }
+
+      await user.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
+      expect(screen.getByRole("button", { name: "Interrupt kernel" })).toHaveFocus();
+    });
+
+    it("gives each command button a visible focus ring", () => {
+      renderDesktopToolbar();
+
+      for (const button of within(screen.getByTestId("notebook-toolbar")).getAllByRole("button")) {
+        expect(button).toHaveClass("focus-visible:ring-1", "focus-visible:ring-ring");
+      }
+    });
+
+    it("leaves runtime error details to the hover card instead of a tooltip", () => {
+      vi.useFakeTimers();
+      try {
+        const renderStatus = (error?: ReactNode) => (
+          <NotebookCommandToolbar
+            capabilities={editableToolbarCapabilities}
+            runtimeStatus={{
+              state: "error",
+              label: "error",
+              ariaLabel: "Kernel: Error - conda env failed",
+              title: "Error - conda env failed",
+              error,
+            }}
+          />
+        );
+        const hoverLongEnough = (target: HTMLElement) => {
+          fireEvent.pointerMove(target);
+          act(() => {
+            vi.advanceTimersByTime(1000);
+          });
+        };
+        const { rerender } = render(renderStatus());
+
+        hoverLongEnough(within(screen.getByTestId("kernel-status")).getByText("error"));
+        expect(screen.getByRole("tooltip").textContent).toBe("Error - conda env failed");
+
+        rerender(renderStatus(<span data-testid="runtime-error-detail">conda env failed</span>));
+        hoverLongEnough(screen.getByTestId("runtime-error-detail"));
+        expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

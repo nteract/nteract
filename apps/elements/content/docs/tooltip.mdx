@@ -1,0 +1,25 @@
+---
+title: Tooltip
+description: Inverted hover and focus hints for icon controls.
+---
+
+import { TooltipExample } from "@/components/tooltip-example";
+
+Tooltip is the shared hint primitive for icon controls. It wraps Radix Tooltip
+and renders an inverted surface: `bg-foreground` with `text-background`. That
+keeps a one-line hint visually apart from popover and hover-card panels, and it
+matches the tooltips in hosts that embed the notebook.
+
+Hints render in the DOM, not through the native `title` attribute. Electron
+hosts on macOS stop showing native titles after the first hover, so a `title`
+alone is not a reliable hint there.
+
+Mount one `TooltipProvider` around each group of triggers. The provider waits
+300ms before the first hint opens; moving to a neighbor skips the delay. A
+`Tooltip` outside every provider throws.
+
+Hints open on keyboard focus as well as hover, and Escape dismisses them. The
+hint is not the accessible name: give each icon control its own `aria-label`,
+and add `aria-description` when the hint says more than the label.
+
+<TooltipExample />
