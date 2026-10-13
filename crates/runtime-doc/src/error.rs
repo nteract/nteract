@@ -6,6 +6,8 @@ pub enum RuntimeStateError {
     MissingScaffold(&'static str),
     #[error("output manifest is missing a non-empty output_id")]
     MissingOutputId,
+    #[error("recovered execution must have terminal status done or error")]
+    InvalidRecoveredExecution,
     #[error("env progress phase must serialize as an object")]
     InvalidProgressShape,
     #[error("invalid Bokeh session: {0}")]

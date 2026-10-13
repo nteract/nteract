@@ -1588,6 +1588,62 @@ impl RuntimeStateDoc {
         Ok(true)
     }
 
+    /// Restore a validated terminal execution without submitting new work.
+    /// Existing entries are left untouched, including on source-import retries.
+    /// Missing legacy provenance remains missing rather than being inferred
+    /// from the current notebook source or a fabricated queue sequence.
+    pub fn restore_terminal_execution(
+        &mut self,
+        execution_id: &str,
+        execution: &ExecutionState,
+    ) -> Result<bool, RuntimeStateError> {
+        if !matches!(execution.status.as_str(), "done" | "error") {
+            return Err(RuntimeStateError::InvalidRecoveredExecution);
+        }
+        for output in &execution.outputs {
+            extract_output_id(output).ok_or(RuntimeStateError::MissingOutputId)?;
+        }
+        let executions = self.scaffold_map("executions")?;
+        if self.doc.get(&executions, execution_id)?.is_some() {
+            return Ok(false);
+        }
+        let entry = self
+            .doc
+            .put_object(&executions, execution_id, ObjType::Map)?;
+        self.doc.put(&entry, "status", execution.status.as_str())?;
+        self.doc.put(
+            &entry,
+            "execution_count",
+            execution
+                .execution_count
+                .map(ScalarValue::Int)
+                .unwrap_or(ScalarValue::Null),
+        )?;
+        self.doc.put(
+            &entry,
+            "success",
+            execution
+                .success
+                .map(ScalarValue::Boolean)
+                .unwrap_or(ScalarValue::Null),
+        )?;
+        if let Some(source) = &execution.source {
+            self.doc.put(&entry, "source", source.as_str())?;
+        }
+        if let Some(cell_id) = &execution.cell_id {
+            self.doc.put(&entry, "cell_id", cell_id.as_str())?;
+        }
+        if let Some(seq) = execution.seq {
+            self.doc.put(&entry, "seq", ScalarValue::Uint(seq))?;
+        }
+        if let Some(actor) = &execution.submitted_by_actor_label {
+            self.doc
+                .put(&entry, "submitted_by_actor_label", actor.as_str())?;
+        }
+        self.set_outputs(execution_id, &execution.outputs)?;
+        Ok(true)
+    }
+
     /// Mark an execution as running.
     ///
     /// The execution_count is not known yet at this point — it arrives later
@@ -5341,6 +5397,55 @@ mod tests {
     }
 
     // ── Execution lifecycle tests ───────────────────────────────────
+
+    #[test]
+    fn restored_terminal_executions_preserve_provenance_without_queueing() {
+        for status in ["done", "error"] {
+            for known_source in [false, true] {
+                let mut doc = RuntimeStateDoc::new();
+                let execution = ExecutionState {
+                    status: status.into(),
+                    execution_count: Some(7),
+                    success: Some(status == "done"),
+                    outputs: vec![
+                        serde_json::json!({"output_type":"stream", "output_id":"original-output", "name":"stdout", "text":{"inline":"hello\n"}}),
+                    ],
+                    source: known_source.then(|| "print('hello')".into()),
+                    cell_id: known_source.then(|| "original-cell".into()),
+                    seq: known_source.then_some(42),
+                    submitted_by_actor_label: known_source.then(|| "mcp:original-peer".into()),
+                };
+                assert!(doc
+                    .restore_terminal_execution("exec-1", &execution)
+                    .unwrap());
+                assert_eq!(doc.get_execution("exec-1"), Some(execution.clone()));
+                assert!(doc.get_queued_executions().is_empty());
+                let mut changed = execution.clone();
+                changed.source = Some("never executed".into());
+                assert!(!doc.restore_terminal_execution("exec-1", &changed).unwrap());
+                assert_eq!(doc.get_execution("exec-1"), Some(execution));
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_terminal_import_does_not_create_an_execution() {
+        let mut doc = RuntimeStateDoc::new();
+        let mut execution: ExecutionState =
+            serde_json::from_value(serde_json::json!({"status":"queued"})).unwrap();
+        assert!(matches!(
+            doc.restore_terminal_execution("exec-1", &execution),
+            Err(RuntimeStateError::InvalidRecoveredExecution)
+        ));
+        assert!(doc.get_execution("exec-1").is_none());
+        execution.status = "done".into();
+        execution.outputs = vec![serde_json::json!({"output_type":"stream"})];
+        assert!(matches!(
+            doc.restore_terminal_execution("exec-1", &execution),
+            Err(RuntimeStateError::MissingOutputId)
+        ));
+        assert!(doc.get_execution("exec-1").is_none());
+    }
 
     #[test]
     fn test_create_execution() {

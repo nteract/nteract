@@ -6187,6 +6187,280 @@ async fn test_initial_load_reuses_matching_durable_execution_id() {
 }
 
 #[tokio::test]
+async fn recovered_terminal_results_survive_two_persistence_cycles() {
+    assert_recovered_terminal_results(false, None, "current").await;
+}
+
+#[tokio::test]
+async fn recovered_terminal_results_keep_executed_source_after_cell_edits() {
+    assert_recovered_terminal_results(true, None, "current").await;
+}
+
+#[tokio::test]
+async fn recovered_terminal_results_reject_conflicting_durable_records() {
+    for conflict in ["notebook", "cell", "count", "outputs"] {
+        assert_recovered_terminal_results(true, Some(conflict), "current").await;
+    }
+}
+
+#[tokio::test]
+async fn recovered_terminal_results_accept_legacy_path_records() {
+    assert_recovered_terminal_results(true, None, "legacy-path").await;
+}
+
+#[tokio::test]
+async fn recovered_terminal_results_assign_only_missing_output_ids() {
+    assert_recovered_terminal_results(false, None, "missing-output-ids").await;
+}
+
+#[tokio::test]
+async fn recovered_terminal_results_revalidate_before_room_requalification() {
+    assert_recovered_terminal_results(false, None, "previous-room").await;
+}
+
+async fn assert_recovered_terminal_results(
+    edit_after_execution: bool,
+    conflict: Option<&str>,
+    record_shape: &str,
+) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let path = tmp.path().join("recovered-results.ipynb");
+    let docs_dir = tmp.path().join("docs");
+    let store_dir = tmp.path().join("executions");
+    let store = runtimed_client::execution_store::ExecutionStore::new(&store_dir);
+    let notebook_id = Uuid::new_v4();
+    tokio::fs::write(
+        &path,
+        br#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[]}"#,
+    )
+    .await
+    .unwrap();
+    let mut expected = {
+        let (room, _guard, settled) = materialized_room_from_disk_with(
+            notebook_id,
+            &docs_dir,
+            Arc::clone(&blob_store),
+            &path,
+            &store_dir,
+        )
+        .await;
+        assert_source_ready(&settled);
+        for (index, (cell_id, execution_id, source, success)) in [
+            ("success-cell", "success-execution", "print('hello')", true),
+            (
+                "error-cell",
+                "error-execution",
+                "raise ValueError('expected')",
+                false,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            {
+                let mut doc = room.doc.write().await;
+                doc.add_cell(index, cell_id, "code").unwrap();
+                doc.update_source(
+                    cell_id,
+                    if edit_after_execution {
+                        "print('edited, never executed')"
+                    } else {
+                        source
+                    },
+                )
+                .unwrap();
+                doc.set_execution_id(cell_id, Some(execution_id)).unwrap();
+            }
+            let raw_output = if success {
+                serde_json::json!({"output_type":"stream", "name":"stdout", "text":"hello\n"})
+            } else {
+                serde_json::json!({"output_type":"error", "ename":"ValueError", "evalue":"expected", "traceback":["ValueError: expected"]})
+            };
+            let mut output = output_value_to_manifest_ref(&raw_output, &blob_store).await;
+            output["output_id"] = serde_json::json!(if success {
+                "original-stream"
+            } else {
+                "original-error"
+            });
+            room.state
+                .with_doc(|state| {
+                    state.create_execution_with_source_provenance(
+                        execution_id,
+                        source,
+                        index as u64 + 10,
+                        Some("mcp:original-submitter"),
+                        Some(cell_id),
+                    )?;
+                    state.set_execution_count(execution_id, index as i64 + 1)?;
+                    state.set_outputs(execution_id, &[output])?;
+                    state.set_execution_done(execution_id, success)?;
+                    Ok(())
+                })
+                .unwrap();
+        }
+        save_notebook_to_disk(&room, None).await.unwrap();
+        super::peer_runtime_sync::persist_terminal_execution_records(
+            &room,
+            &store,
+            &mut HashMap::new(),
+        )
+        .await;
+        let records = store.list_records().await;
+        assert_eq!(records.len(), 2);
+        for record in &records {
+            assert!(record.source.is_some());
+            assert!(record.cell_id.is_some());
+            assert_eq!(
+                record.submitted_by_actor_label.as_deref(),
+                Some("mcp:original-submitter")
+            );
+        }
+        records
+    };
+    for record in &mut expected {
+        let mut stored = record.clone();
+        match record_shape {
+            "legacy-path" => {
+                stored.notebook_id = None;
+                stored.cell_id = None;
+                record.cell_id = None;
+            }
+            "previous-room" => stored.notebook_id = Some(Uuid::new_v4().to_string()),
+            "missing-output-ids" => {
+                if stored.execution_id == "success-execution" {
+                    stored.outputs[0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("output_id");
+                } else {
+                    stored.outputs[0]["output_id"] = serde_json::json!("");
+                }
+            }
+            "current" => {}
+            _ => unreachable!(),
+        }
+        store.write_record(stored).await.unwrap();
+    }
+    if let Some(conflict) = conflict {
+        let mut record = expected
+            .iter()
+            .find(|record| record.execution_id == "success-execution")
+            .unwrap()
+            .clone();
+        match conflict {
+            "notebook" => record.notebook_id = Some(Uuid::new_v4().to_string()),
+            "cell" => record.cell_id = Some("foreign-cell".into()),
+            "count" => record.execution_count = Some(99),
+            "outputs" => record.outputs.clear(),
+            _ => unreachable!(),
+        }
+        store.write_record(record.clone()).await.unwrap();
+        let (room, _guard, settled) =
+            materialized_room_from_disk_with(notebook_id, &docs_dir, blob_store, &path, &store_dir)
+                .await;
+        assert!(
+            matches!(settled, RoomSourceState::Failed(_)),
+            "{conflict}: {settled:?}"
+        );
+        assert!(room
+            .state
+            .read(|state| state.get_execution("success-execution"))
+            .unwrap()
+            .is_none());
+        assert!(store
+            .read_record("success-execution")
+            .await
+            .unwrap()
+            .payload_matches(&record));
+        return;
+    }
+    for cycle in 1..=2 {
+        let (room, _guard, settled) = materialized_room_from_disk_with(
+            notebook_id,
+            &docs_dir,
+            Arc::clone(&blob_store),
+            &path,
+            &store_dir,
+        )
+        .await;
+        assert_source_ready(&settled);
+        for record in &mut expected {
+            let cell_id = if record.execution_id == "success-execution" {
+                "success-cell"
+            } else {
+                "error-cell"
+            };
+            assert_eq!(
+                room.doc.read().await.get_execution_id(cell_id).as_deref(),
+                Some(record.execution_id.as_str())
+            );
+            let restored = room
+                .state
+                .read(|state| state.get_execution(&record.execution_id))
+                .unwrap()
+                .unwrap();
+            if cycle == 1 && record_shape == "missing-output-ids" {
+                for (expected_output, actual_output) in
+                    record.outputs.iter_mut().zip(&restored.outputs)
+                {
+                    let id = actual_output["output_id"].as_str().unwrap();
+                    assert!(!id.is_empty());
+                    expected_output["output_id"] = serde_json::json!(id);
+                }
+            }
+            assert_eq!(restored, record.execution_state(), "recovery cycle {cycle}");
+        }
+        assert!(room
+            .state
+            .read(|state| state.get_queued_executions())
+            .unwrap()
+            .is_empty());
+        super::peer_runtime_sync::persist_terminal_execution_records(
+            &room,
+            &store,
+            &mut HashMap::new(),
+        )
+        .await;
+        for record in &expected {
+            assert!(
+                store
+                    .read_record(&record.execution_id)
+                    .await
+                    .unwrap()
+                    .payload_matches(record),
+                "persistence cycle {cycle}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn imported_legacy_error_keeps_unknown_source_and_failure_status() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("legacy-error.ipynb");
+    tokio::fs::write(&path, serde_json::to_vec(&serde_json::json!({
+        "nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[{
+            "id":"cell-1","cell_type":"code","metadata":{},"source":"edited source",
+            "execution_count":1,"outputs":[{"output_type":"error","ename":"ValueError","evalue":"expected","traceback":[]}]
+        }]
+    })).unwrap()).await.unwrap();
+    let (room, _guard, settled) = materialized_room_from_disk(&tmp, &path).await;
+    assert_source_ready(&settled);
+    let id = room.doc.read().await.get_execution_id("cell-1").unwrap();
+    let execution = room
+        .state
+        .read(|state| state.get_execution(&id))
+        .unwrap()
+        .unwrap();
+    assert_eq!(execution.status, "error");
+    assert_eq!(execution.success, Some(false));
+    assert_eq!(execution.source, None);
+    assert_eq!(execution.cell_id, None);
+    assert_eq!(execution.seq, None);
+}
+
+#[tokio::test]
 async fn test_initial_load_requalifies_durable_execution_only_when_persisted() {
     assert_initial_load_requalifies_only_after_persistence(true).await;
 }
@@ -6303,10 +6577,14 @@ async fn assert_initial_load_requalifies_only_after_persistence(explicit_identit
     assert_eq!(reloaded_execution.execution_count, Some(7));
     assert_eq!(reloaded_execution.status, "error");
     assert_eq!(reloaded_execution.success, Some(false));
+    assert_eq!(reloaded_execution.source.as_deref(), Some("print('hi')"));
+    assert_eq!(reloaded_execution.cell_id.as_deref(), Some("cell-1"));
+    assert_eq!(reloaded_execution.seq, Some(0));
 
     // Loading by path and exact cell content admits the existing execution into
     // this room, but a reader cannot infer qualification from that path alone.
     let before_persist = store.read_record("durable-exec-1").await.unwrap();
+    assert_eq!(reloaded_execution.outputs, before_persist.outputs);
     assert_eq!(
         before_persist.notebook_id,
         explicit_identity.then(|| original_notebook_id.to_string())
@@ -6324,6 +6602,10 @@ async fn assert_initial_load_requalifies_only_after_persistence(explicit_identit
     assert_eq!(qualified.context_id, context_id);
     assert!(qualified.belongs_to_notebook(&reload_notebook_id.to_string()));
     assert!(!qualified.belongs_to_notebook(&original_notebook_id.to_string()));
+    assert_eq!(qualified.source, before_persist.source);
+    assert_eq!(qualified.cell_id, before_persist.cell_id);
+    assert_eq!(qualified.seq, before_persist.seq);
+    assert_eq!(qualified.outputs, before_persist.outputs);
 }
 
 #[tokio::test]
