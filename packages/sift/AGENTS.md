@@ -1,7 +1,5 @@
 # Sift
 
-<!-- This file is canonical. CLAUDE.md is a symlink to AGENTS.md. -->
-
 Crossfilter table explorer. Published as `@nteract/sift`; the nteract notebook
 embeds it in the isolated output renderer, and other apps embed it to view
 local CSV, Parquet, and Arrow files. Demo: [rgbkrk.github.io/sift](https://rgbkrk.github.io/sift/).
