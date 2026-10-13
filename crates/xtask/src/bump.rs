@@ -234,6 +234,11 @@ const TARGETS: &[Target] = &[
         matches: 1,
     },
     Target {
+        path: "crates/sift-csv-wasm/Cargo.toml",
+        format: Format::Toml,
+        matches: 1,
+    },
+    Target {
         path: "crates/automunge/Cargo.toml",
         format: Format::Toml,
         matches: 1,
@@ -271,7 +276,17 @@ const TARGETS: &[Target] = &[
         matches: 1,
     },
     Target {
+        path: "crates/sift-csv-wasm/pkg/package.json",
+        format: Format::Json,
+        matches: 1,
+    },
+    Target {
         path: "packages/sift/package.json",
+        format: Format::Json,
+        matches: 1,
+    },
+    Target {
+        path: "packages/sift-csv/package.json",
         format: Format::Json,
         matches: 1,
     },
@@ -384,6 +399,7 @@ const OPTIONAL_GENERATED_TARGETS: &[&str] = &[
     // of truth, so these may not exist yet on a fresh checkout during bump.
     "apps/notebook/src/wasm/runtimed-wasm/package.json",
     "crates/sift-wasm/pkg/package.json",
+    "crates/sift-csv-wasm/pkg/package.json",
 ];
 
 pub fn cmd_bump(level: &str) {

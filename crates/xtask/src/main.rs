@@ -228,6 +228,8 @@ Other:
   wasm runtimed              Rebuild only runtimed-wasm
   wasm sift                  Rebuild only sift-wasm (bindings for @nteract/sift);
                              also rebuilds the sift renderer plugin.
+  wasm sift-csv              Rebuild only sift-csv-wasm (CSV front end for
+                             @nteract/sift-csv). `wasm --all` includes it.
   wasm --skip-renderer-plugins
                              Skip the chained renderer-plugins rebuild (escape hatch
                              for intentionally testing drift between the two).
@@ -1693,16 +1695,41 @@ fn cmd_wasm(target: Option<&str>, skip_renderer_plugins: bool) {
     ensure_workspace_root_cwd();
     require_tool("wasm-pack", WASM_PACK_INSTALL);
 
-    // Default (no target) builds both. `sift` or `runtimed` pick just one.
-    let (build_runtimed, build_sift) = match target {
-        None | Some("--all") => (true, true),
-        Some("sift") => (false, true),
-        Some("runtimed") => (true, false),
+    // Default (no target) builds the notebook's two modules. `sift`,
+    // `runtimed`, or `sift-csv` pick just one; `--all` adds sift-csv.
+    let (build_runtimed, build_sift, build_sift_csv) = match target {
+        None => (true, true, false),
+        Some("--all") => (true, true, true),
+        Some("sift") => (false, true, false),
+        Some("runtimed") => (true, false, false),
+        Some("sift-csv") => (false, false, true),
         Some(other) => {
-            eprintln!("Unknown wasm target: {other}. Use 'sift', 'runtimed', or '--all'.");
+            eprintln!(
+                "Unknown wasm target: {other}. Use 'sift', 'runtimed', 'sift-csv', or '--all'."
+            );
             std::process::exit(1);
         }
     };
+
+    if build_sift_csv {
+        println!("Building sift-csv-wasm...");
+        // Standalone module for @nteract/sift-csv. Nothing in the notebook
+        // consumes it, so there is no public/ mirror, fingerprint, or
+        // renderer-plugin chain.
+        run_wasm_pack(
+            true,
+            "wasm-pack",
+            &[
+                "build",
+                "crates/sift-csv-wasm",
+                "--target",
+                "web",
+                "--release",
+            ],
+        );
+        let _ = fs::remove_file("crates/sift-csv-wasm/pkg/.gitignore");
+        println!("WASM build complete. Output: crates/sift-csv-wasm/pkg/");
+    }
 
     if build_runtimed {
         println!("Building runtimed-wasm...");
