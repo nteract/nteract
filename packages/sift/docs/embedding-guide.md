@@ -202,3 +202,10 @@ dependencies without registry requests. `prepack` rejects missing built assets,
 checks every current runtime method against the actual WASM and JavaScript
 exports, and instantiates the pair to reject incompatible glue/binary imports.
 The resulting tarball can be installed via its local path; nothing is published.
+
+`build:lib` also writes `lib/THIRD_PARTY_NOTICES.md`. It lists the Rust crates
+and C sources that `cargo tree` reports for the WASM build and the npm packages
+the bundle inlines, with their license texts and NOTICE files. Ship it with any
+host app that redistributes Sift. A dependency under a license the generator
+doesn't recognize, without its license text, or with unreviewed native sources
+fails the build until the generator learns it.

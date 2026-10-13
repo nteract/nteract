@@ -1,9 +1,37 @@
 import { defineConfig } from "vite-plus";
+import type { Plugin } from "vite";
 import { resolve } from "node:path";
 import { copyFile, mkdir } from "node:fs/promises";
 import tailwindcss from "@tailwindcss/vite";
+import { writeThirdPartyNotices } from "./scripts/third-party-notices.mjs";
 
 const wasmPkg = resolve(__dirname, "../../crates/sift-wasm/pkg");
+
+/** Writes lib/THIRD_PARTY_NOTICES.md from the modules this build actually inlined. */
+function thirdPartyNotices(): Plugin {
+  const moduleIds = new Set<string>();
+  let rendered = false;
+  return {
+    name: "sift-third-party-notices",
+    generateBundle(_options, bundle) {
+      for (const output of Object.values(bundle)) {
+        if (output.type !== "chunk") continue;
+        for (const [id, module] of Object.entries(output.modules)) {
+          // Tree-shaking can leave a module in the graph with no shipped code.
+          if (module.renderedLength > 0) moduleIds.add(id);
+        }
+      }
+      rendered = true;
+    },
+    async closeBundle() {
+      if (!rendered) return;
+      await writeThirdPartyNotices({
+        moduleIds,
+        output: resolve(__dirname, "lib/THIRD_PARTY_NOTICES.md"),
+      });
+    },
+  };
+}
 
 /**
  * Library build config — produces ESM bundle + compiled CSS for npm consumers.
@@ -32,6 +60,7 @@ export default defineConfig({
         await copyFile(resolve(__dirname, "../../LICENSE"), resolve(__dirname, "lib/LICENSE"));
       },
     },
+    thirdPartyNotices(),
   ],
   // Demo datasets are not part of the embeddable library.
   publicDir: false,
