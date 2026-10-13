@@ -136,7 +136,12 @@ class ReleaseTagTests(unittest.TestCase):
         published = self.repo / "published-tags"
         published.write_text(published_tag + "\n")
         result = subprocess.run(
-            ["bash", str(CHECK.with_name("filter-unpublished-release-tags.sh")), str(published)],
+            [
+                "bash",
+                str(CHECK.with_name("filter-unpublished-release-tags.sh")),
+                str(published),
+                TAG,
+            ],
             cwd=self.repo,
             capture_output=True,
             text=True,
@@ -145,6 +150,36 @@ class ReleaseTagTests(unittest.TestCase):
         self.assertEqual(self.git("tag", "-l").splitlines(), ["other-project-tag", published_tag])
         self.assertEqual(self.git("ls-remote", "origin"), before)
         self.assertEqual(self.check("--require").returncode, 0)
+
+    def test_changelog_excludes_current_published_tag_on_retry(self) -> None:
+        for channel in ["nightly", "stable"]:
+            with self.subTest(channel=channel):
+                previous = f"v2.7.5-{channel}.202609240900"
+                current = f"v2.7.6-{channel}.202609251717"
+                for tag, commit in [(previous, self.source), (current, self.later)]:
+                    self.git("tag", tag, commit)
+                    self.git("push", "origin", f"refs/tags/{tag}")
+                before = self.git("ls-remote", "origin")
+                published = self.repo / "published-tags"
+                published.write_text(previous + "\n" + current + "\n")
+                result = subprocess.run(
+                    [
+                        "bash",
+                        str(CHECK.with_name("filter-unpublished-release-tags.sh")),
+                        str(published),
+                        current,
+                    ],
+                    cwd=self.repo,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.git("tag", "-l").splitlines(), [previous])
+                self.assertEqual(
+                    self.git("log", "--format=%s", f"{previous}..HEAD"), "Main moved during build"
+                )
+                self.assertEqual(self.git("ls-remote", "origin"), before)
+                self.git("tag", "-d", previous)
 
     def test_unreadable_remote_fails_instead_of_treating_tag_as_absent(self) -> None:
         self.git("remote", "set-url", "origin", str(self.remote / "missing"))

@@ -24,7 +24,7 @@ if [[ -z "$refs" ]]; then
       exit 1
       ;;
     --reserve)
-      # No force and no local tag: a concurrent/conflicting reservation must not
+      # No force and no local tag: an existing different source must not
       # be overwritten. A denied push stops before any build or publication.
       git push origin "$source_sha:refs/tags/$tag"
       refs=$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")

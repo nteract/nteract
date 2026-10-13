@@ -1610,12 +1610,14 @@ jobs:
         id: changelog
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: v${{ needs.compute-version.outputs.version }}
         run: |
-          # Reserved tags can exist without a successful release. Exclude those
-          # only from this checkout so they cannot truncate the changelog.
+          # Unpublished reservations and this run's own tag must not truncate
+          # the changelog, including retries after GitHub publication succeeded.
+          # These deletions affect only this checkout.
           gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
             --jq '.[] | select(.draft == false) | .tag_name' > "$RUNNER_TEMP/published-release-tags"
-          bash scripts/ci/filter-unpublished-release-tags.sh "$RUNNER_TEMP/published-release-tags"
+          bash scripts/ci/filter-unpublished-release-tags.sh "$RUNNER_TEMP/published-release-tags" "$TAG_NAME"
 
           if [ "${{ inputs.github_release_prerelease }}" = "false" ]; then
             # Stable release: generate changelog since the previous stable tag.

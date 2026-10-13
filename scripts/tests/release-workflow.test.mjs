@@ -144,7 +144,15 @@ test("changelog excludes reserved tags without touching the remote", () => {
   const filter = body.indexOf("bash scripts/ci/filter-unpublished-release-tags.sh");
   assert.ok(filter >= 0 && filter < body.indexOf("CHANGELOG=$(git-cliff"));
   assert.match(body, /select\(\.draft == false\)/);
+  assert.ok(body.includes('filter-unpublished-release-tags.sh "$RUNNER_TEMP/published-release-tags" "$TAG_NAME"'));
   assert.ok(validation.includes("      - scripts/ci/filter-unpublished-release-tags.sh\n"));
+});
+
+test("release channels serialize runs without cancelling active publication", () => {
+  for (const channel of ["stable", "nightly"]) {
+    const caller = workflow(`release-${channel}`);
+    assert.ok(caller.includes(`concurrency:\n  group: nteract-release-${channel}\n  cancel-in-progress: false\n`));
+  }
 });
 
 test("stable and nightly keep publishing their own plugin slice", () => {
