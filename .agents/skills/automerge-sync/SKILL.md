@@ -283,7 +283,7 @@ If reconnect latency becomes a problem, preserving `shared_heads` (automerge-rep
 ### Historical desktop patches
 
 The fork addressed historical MissingOps and patch-log failures. Production
-has since moved to crates.io `0.11.0`. The local upstream source contains the
+uses the crates.io pin in the dependency baseline above. The local upstream source contains the
 `fork_at` dependency-walk deduplication, no-op actor cleanup, stale-orphan sync
 correction, and historical-view patch finalization. This is not an exhaustive
 accounting of the 21 patches recorded in the earlier `b3502d42` rebase.
