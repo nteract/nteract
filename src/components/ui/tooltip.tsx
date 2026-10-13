@@ -21,7 +21,9 @@ const TooltipTrigger = TooltipPrimitive.Trigger;
 
 /**
  * Inverted label surface: foreground fill with background text, so a short
- * hint reads apart from popover and hover-card panels.
+ * hint reads apart from popover and hover-card panels. Content animates in
+ * but closes without an exit animation, so a closed hint unmounts in the same
+ * task and its Escape listener goes with it.
  */
 const TooltipContent = React.forwardRef<
   React.ElementRef<typeof TooltipPrimitive.Content>,
@@ -33,7 +35,7 @@ const TooltipContent = React.forwardRef<
       data-slot="tooltip-content"
       sideOffset={sideOffset}
       className={cn(
-        "z-50 max-w-xs rounded-md bg-foreground px-2 py-1 text-xs leading-snug text-balance text-background animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 origin-(--radix-tooltip-content-transform-origin)",
+        "z-50 max-w-xs rounded-md bg-foreground px-2 py-1 text-xs leading-snug text-balance text-background animate-in fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 origin-(--radix-tooltip-content-transform-origin)",
         className,
       )}
       {...props}

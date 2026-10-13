@@ -9,7 +9,8 @@ import {
   ServerCog,
   Square,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "@/components/environment";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -437,6 +438,15 @@ function NotebookCommandToolbarRow({
  * means toggling `disabled` never remounts the button. Focus on the inner
  * button bubbles to the span and opens the hint. The control's own
  * `aria-label` names it; add `aria-description` when the hint says more.
+ *
+ * A hint never claims a key aimed at focus elsewhere. Radix dismisses an
+ * open tooltip on Escape from a document capture listener and prevents the
+ * event, and CodeMirror and command mode ignore prevented keys, so a hover
+ * hint would swallow the Escape that leaves a cell editor. A window capture
+ * listener runs first and closes the hint synchronously; `TooltipContent`
+ * has no exit animation, so Radix's listener is gone before the key reaches
+ * the document. Keys pressed while focus is inside the trigger still go to
+ * Radix, which dismisses the hint on Escape.
  */
 function ToolbarTooltip({
   content,
@@ -449,10 +459,25 @@ function ToolbarTooltip({
   className?: string;
   children: ReactNode;
 }) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const releaseKeyAimedElsewhere = (event: KeyboardEvent) => {
+      const focus = event.target instanceof Node ? event.target : null;
+      if (focus && triggerRef.current?.contains(focus)) return;
+      flushSync(() => setOpen(false));
+    };
+    window.addEventListener("keydown", releaseKeyAimedElsewhere, true);
+    return () => window.removeEventListener("keydown", releaseKeyAimedElsewhere, true);
+  }, [open]);
+
   return (
-    <Tooltip>
+    <Tooltip open={open} onOpenChange={setOpen}>
       <TooltipTrigger asChild>
         <span
+          ref={triggerRef}
           className={cn("inline-flex items-center", disabled && "cursor-not-allowed", className)}
         >
           {children}

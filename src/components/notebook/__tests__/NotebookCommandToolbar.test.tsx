@@ -500,6 +500,71 @@ describe("NotebookCommandToolbar", () => {
       expect(screen.getByRole("button", { name: "Interrupt kernel" })).toHaveFocus();
     });
 
+    it("lets Escape reach a focused cell editor while a hover hint is open", async () => {
+      const user = userEvent.setup();
+      render(
+        <>
+          <textarea aria-label="Cell editor" />
+          <NotebookCommandToolbar
+            capabilities={editableToolbarCapabilities}
+            runtimeStatus={runtimeStatus}
+            onRunAllCells={() => {}}
+          />
+        </>,
+      );
+      const editor = screen.getByRole("textbox", { name: "Cell editor" });
+      const escapePrevented: boolean[] = [];
+      editor.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") escapePrevented.push(event.defaultPrevented);
+      });
+      editor.focus();
+
+      await user.hover(screen.getByTestId("run-all-button"));
+      expect(await screen.findByRole("tooltip")).toHaveTextContent("Run all cells");
+
+      // CodeMirror and command mode both ignore an Escape that was already
+      // prevented, so the hint must close without claiming the key.
+      await user.keyboard("{Escape}");
+      expect(escapePrevented).toEqual([false]);
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+      expect(editor).toHaveFocus();
+    });
+
+    it("closes the hint when its control is clicked", async () => {
+      const user = userEvent.setup();
+      const onRunAllCells = vi.fn();
+      render(
+        <NotebookCommandToolbar
+          capabilities={editableToolbarCapabilities}
+          runtimeStatus={runtimeStatus}
+          onRunAllCells={onRunAllCells}
+        />,
+      );
+
+      const runAll = screen.getByTestId("run-all-button");
+      await user.hover(runAll);
+      await screen.findByRole("tooltip");
+      await user.click(runAll);
+
+      expect(onRunAllCells).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    });
+
+    it("keeps the same button element when disabled toggles", () => {
+      const props = {
+        capabilities: editableToolbarCapabilities,
+        onAddCell: () => ({ id: "cell-new" }),
+      };
+      const { rerender } = render(<NotebookCommandToolbar {...props} addCellControlsDisabled />);
+      const disabledButton = screen.getByTestId("add-code-cell-button");
+      expect(disabledButton).toBeDisabled();
+
+      rerender(<NotebookCommandToolbar {...props} addCellControlsDisabled={false} />);
+
+      expect(screen.getByTestId("add-code-cell-button")).toBe(disabledButton);
+      expect(disabledButton).toBeEnabled();
+    });
+
     it("gives each command button a visible focus ring", () => {
       renderDesktopToolbar();
 
