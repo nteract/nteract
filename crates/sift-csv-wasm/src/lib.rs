@@ -106,6 +106,7 @@ pub fn csv_to_arrow_ipc(bytes: &[u8], options: &CsvOptions) -> Result<Vec<u8>, S
     }
     writer.finish().map_err(|e| e.to_string())?;
     drop(writer);
+    exceeds(output.len(), options.max_output_bytes, "decoded byte")?;
     Ok(output)
 }
 
@@ -247,6 +248,25 @@ mod tests {
         assert!(err(small(|o| o.max_rows = 1)).contains("row limit"));
         assert!(err(small(|o| o.max_output_bytes = 64)).contains("decoded byte limit"));
         assert!(csv_to_arrow_ipc(csv, &CsvOptions::default()).is_ok());
+    }
+
+    #[test]
+    fn output_limit_includes_schema_and_end_marker() {
+        for csv in [b"a,b\n".as_slice(), b"a,b\n1,2\n".as_slice()] {
+            let output = csv_to_arrow_ipc(csv, &CsvOptions::default()).unwrap();
+            let mut options = CsvOptions {
+                max_output_bytes: output.len() - 1,
+                ..CsvOptions::default()
+            };
+            assert!(
+                csv_to_arrow_ipc(csv, &options).is_err(),
+                "accepted {} bytes with limit {}",
+                output.len(),
+                options.max_output_bytes
+            );
+            options.max_output_bytes = output.len();
+            assert_eq!(csv_to_arrow_ipc(csv, &options).unwrap().len(), output.len());
+        }
     }
 
     #[test]

@@ -3,7 +3,7 @@
  *
  * Two layers:
  *
- * 1. Inputs a host sets on any ancestor (or on `.sift-root` itself):
+ * 1. Inputs a host sets on html/body (the common ancestors of tables and portals):
  *
  *      --sift-color-bg       table background
  *      --sift-color-panel    header, popovers, menus, sheets

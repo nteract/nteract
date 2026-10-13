@@ -126,6 +126,36 @@ export async function testPackageBrowser({
     assert(address && typeof address !== "string");
     const origin = `http://127.0.0.1:${address.port}`;
     browser = await chromium.launch({ headless: true });
+    const cssPage = await browser.newPage();
+    await cssPage.setContent(
+      "<style>@layer theme,base,components,utilities; @layer utilities{.border{border:3px dashed red}.bg-primary{background:rgb(12,34,56)}}</style>" +
+        '<button id="host" class="border bg-primary">Host</button>' +
+        '<div class="sift-root"><button id="sift" class="border bg-primary px-4 py-2">Sift</button></div>' +
+        '<div id="portal" class="sift-root border bg-primary px-4">Portal root</div>',
+    );
+    const hostBefore = await cssPage.locator("#host").evaluate((el) => {
+      const s = getComputedStyle(el);
+      return [s.backgroundColor, s.borderWidth, s.padding];
+    });
+    await cssPage.addStyleTag({
+      content: await readFile(join(scratch, "node_modules/@nteract/sift/lib/style.css"), "utf8"),
+    });
+    assert.deepEqual(
+      await cssPage.locator("#host").evaluate((el) => {
+        const s = getComputedStyle(el);
+        return [s.backgroundColor, s.borderWidth, s.padding];
+      }),
+      hostBefore,
+      "Sift must not restyle host utility classes",
+    );
+    await expect(cssPage.locator("#sift")).toHaveCSS("border-width", "1px");
+    await expect(cssPage.locator("#sift")).toHaveCSS("padding-left", "16px");
+    await expect(cssPage.locator("#portal")).toHaveCSS("padding-left", "16px");
+    assert.notEqual(
+      await cssPage.locator("#sift").evaluate((el) => getComputedStyle(el).backgroundColor),
+      "rgba(0, 0, 0, 0)",
+    );
+    await cssPage.close();
     for (const mode of ["explicit", "default"]) {
       // Separate contexts reset both the WASM singleton and browser caches.
       const context = await browser.newContext({ viewport: { width: 1100, height: 680 } });

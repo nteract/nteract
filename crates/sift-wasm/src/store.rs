@@ -699,40 +699,28 @@ fn collect_file_batches(
 /// `rows x largest entry`. 256 rows caps that overshoot at 256x one entry.
 const PARQUET_BATCH_ROWS: u64 = 256;
 
-/// A floor on the Arrow bytes a complete Parquet decode retains, from footer
-/// metadata alone: every leaf value of a fixed-width physical type costs at
-/// least its width. Variable-width values (BYTE_ARRAY) cost nothing here
-/// because a dictionary-encoded column can retain far less than one byte per
-/// value. The floor never exceeds the real decode, so it never rejects a file
-/// that would have fit; it exists to refuse wide fixed-width tables and huge
-/// repeated lists before any page is decoded.
+/// Footer-only lower bound for top-level fixed-width Arrow arrays. Physical
+/// Parquet widths can exceed the decoded width (Int8 uses INT32, timestamps
+/// can use INT96). Nested leaves can describe empty/null lists rather than
+/// retained values, so they contribute nothing to this conservative floor.
 fn minimum_parquet_bytes(
+    schema: &arrow::datatypes::Schema,
     metadata: &parquet::file::metadata::ParquetMetaData,
 ) -> Result<u64, String> {
-    use parquet::basic::Type as PhysicalType;
+    let rows = u64::try_from(metadata.file_metadata().num_rows())
+        .map_err(|_| "Invalid negative Parquet row count")?;
     let mut bytes = 0u64;
-    let mut boolean_values = 0u64;
-    for group in metadata.row_groups() {
-        for column in group.columns() {
-            let values = u64::try_from(column.num_values())
-                .map_err(|_| "Invalid negative Parquet value count")?;
-            let width = match column.column_type() {
-                PhysicalType::BOOLEAN => {
-                    boolean_values = boolean_values.saturating_add(values);
-                    continue;
-                }
-                PhysicalType::INT32 | PhysicalType::FLOAT => 4,
-                PhysicalType::INT64 | PhysicalType::DOUBLE => 8,
-                PhysicalType::INT96 => 12,
-                PhysicalType::FIXED_LEN_BYTE_ARRAY => {
-                    u64::try_from(column.column_descr().type_length()).unwrap_or(0)
-                }
-                PhysicalType::BYTE_ARRAY => 0,
-            };
-            bytes = bytes.saturating_add(values.saturating_mul(width));
-        }
+    for field in schema.fields() {
+        let bits = match field.data_type() {
+            DataType::Boolean => 1,
+            DataType::FixedSizeBinary(width) => {
+                u64::try_from(*width).unwrap_or(0).saturating_mul(8)
+            }
+            data_type => data_type.primitive_width().unwrap_or(0) as u64 * 8,
+        };
+        bytes = bytes.saturating_add(rows.saturating_mul(bits).div_ceil(8));
     }
-    Ok(bytes.saturating_add(boolean_values.div_ceil(8)))
+    Ok(bytes)
 }
 
 fn bounded_parquet_batches(
@@ -757,7 +745,7 @@ fn bounded_parquet_batches(
     // Admission runs on footer metadata alone; retained Arrow memory is the
     // real guard and is checked after every decoded batch below.
     check_file_limit(
-        minimum_parquet_bytes(metadata)?,
+        minimum_parquet_bytes(&schema, metadata)?,
         limits.decoded_bytes,
         "minimum decoded bytes",
     )?;
@@ -2877,6 +2865,32 @@ mod tests {
     }
 
     #[test]
+    fn parquet_floor_admits_narrow_integers_within_retained_limit() {
+        let batch = RecordBatch::try_from_iter(vec![(
+            "small",
+            Arc::new(arrow::array::Int8Array::from_iter_values(
+                (0..20_000).map(|i| (i % 100) as i8),
+            )) as ArrayRef,
+        )])
+        .unwrap();
+        let bytes = default_parquet(&batch);
+        let (_, decoded) = bounded_parquet_batches(&bytes, file_limits()).unwrap();
+        let mut memory = FileMemory::default();
+        for batch in &decoded {
+            for column in batch.columns() {
+                memory.add_array(&column.to_data());
+            }
+        }
+        let mut limits = file_limits();
+        limits.decoded_bytes = memory.bytes.try_into().unwrap();
+        assert!(
+            bounded_parquet_batches(&bytes, limits).is_ok(),
+            "must admit a file retaining {} bytes",
+            memory.bytes
+        );
+    }
+
+    #[test]
     fn bounded_parquet_admits_compact_wide_boolean_tables() {
         // 1.8 million booleans retain a few MiB of Arrow memory at most, while
         // a flat 16-byte-per-value allowance would charge them 28.8 MB.
@@ -2953,11 +2967,11 @@ mod tests {
         let bytes = default_parquet(&batch);
         let builder =
             ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes.clone())).unwrap();
-        let floor = minimum_parquet_bytes(builder.metadata()).unwrap();
+        let floor = minimum_parquet_bytes(builder.schema(), builder.metadata()).unwrap();
 
         // Booleans: one bit each. Int64: 8 bytes. Strings: nothing. The list
-        // leaf has two values per row (one of them null) at 4 bytes each.
-        let expected = (rows as u64).div_ceil(8) + rows as u64 * 8 + rows as u64 * 2 * 4;
+        // leaf is nested and contributes nothing to the conservative floor.
+        let expected = (rows as u64).div_ceil(8) + rows as u64 * 8;
         assert_eq!(floor, expected);
 
         // The floor is a lower bound on what the retained-memory check counts.

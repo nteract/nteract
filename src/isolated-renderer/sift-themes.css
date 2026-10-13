@@ -1,0 +1,143 @@
+/**
+ * Sift Cream Theme
+ *
+ * Warm, document-like palette with brown accents.
+ * Light and dark variants.
+ */
+
+/* --- Light --- */
+[data-color-theme="cream"] {
+  color-scheme: light;
+  --sift-bg: #f5f2ec;
+  --sift-panel: #fffdf9;
+  --sift-ink: #1e1a18;
+  --sift-muted: #6e655f;
+  --sift-rule: #d8cec3;
+  --sift-accent: #955f3b;
+  --sift-row-alt: rgba(0, 0, 0, 0.018);
+  --sift-pin-shadow: rgba(0, 0, 0, 0.06);
+  --sift-font: Inter, "Helvetica Neue", Helvetica, Arial, sans-serif;
+
+  /* Semantic colors */
+  --sift-badge-true-bg: rgba(58, 138, 92, 0.15);
+  --sift-badge-true-color: #2d6e4a;
+  --sift-badge-false-bg: rgba(196, 81, 58, 0.15);
+  --sift-badge-false-color: #9e3a24;
+  --sift-bool-true: #3a8a5c;
+  --sift-bool-false: #c4513a;
+  --sift-bool-null-fg: rgba(0, 0, 0, 0.08);
+  --sift-bool-null-bg: rgba(0, 0, 0, 0.03);
+  --sift-loading-code-bg: rgba(0, 0, 0, 0.06);
+  --sift-detail-backdrop: rgba(0, 0, 0, 0.3);
+  --sift-detail-shadow: rgba(0, 0, 0, 0.15);
+  --sift-skeleton-bar-from: rgba(0, 0, 0, 0.04);
+  --sift-skeleton-bar-via: rgba(0, 0, 0, 0.08);
+  --sift-cat-bar-track: rgba(0, 0, 0, 0.04);
+  --sift-scrollbar-thumb: rgba(0, 0, 0, 0.15);
+  --sift-scrollbar-thumb-hover: rgba(0, 0, 0, 0.25);
+}
+
+/* Dark values are keyed on explicit .dark/[data-theme=dark] only; every host sets an explicit signal, so OS preference does not create an alternate palette path. */
+
+/* --- Dark (explicit attribute) --- */
+[data-color-theme="cream"][data-theme="dark"],
+[data-color-theme="cream"].dark {
+  color-scheme: dark;
+  --sift-bg: #1a1816;
+  --sift-panel: #242120;
+  --sift-ink: #e8e2dc;
+  --sift-muted: #9a918a;
+  --sift-rule: #3a3533;
+  --sift-accent: #d4896a;
+  --sift-row-alt: rgba(255, 255, 255, 0.025);
+  --sift-pin-shadow: rgba(255, 255, 255, 0.08);
+
+  --sift-badge-true-bg: rgba(94, 201, 138, 0.2);
+  --sift-badge-true-color: #5ec98a;
+  --sift-badge-false-bg: rgba(224, 122, 100, 0.2);
+  --sift-badge-false-color: #e07a64;
+  --sift-bool-true: #5ec98a;
+  --sift-bool-false: #e07a64;
+  --sift-bool-null-fg: rgba(255, 255, 255, 0.1);
+  --sift-bool-null-bg: rgba(255, 255, 255, 0.04);
+  --sift-loading-code-bg: rgba(255, 255, 255, 0.08);
+  --sift-detail-backdrop: rgba(0, 0, 0, 0.5);
+  --sift-detail-shadow: rgba(0, 0, 0, 0.4);
+  --sift-skeleton-bar-from: rgba(255, 255, 255, 0.04);
+  --sift-skeleton-bar-via: rgba(255, 255, 255, 0.08);
+  --sift-cat-bar-track: rgba(255, 255, 255, 0.06);
+  --sift-scrollbar-thumb: rgba(255, 255, 255, 0.15);
+  --sift-scrollbar-thumb-hover: rgba(255, 255, 255, 0.25);
+}
+
+/**
+ * Sift Classic Theme
+ *
+ * Neutral palette matching the nteract notebook's shadcn-based design system.
+ * Light and dark variants.
+ */
+
+/* --- Light (default) --- */
+:root:not([data-color-theme]),
+[data-color-theme="classic"] {
+  color-scheme: light;
+  --sift-bg: var(--background);
+  --sift-panel: var(--card);
+  --sift-ink: var(--foreground);
+  --sift-muted: var(--muted-foreground);
+  --sift-rule: var(--border);
+  --sift-accent: oklch(0.546 0.245 262.881);
+  --sift-row-alt: rgba(0, 0, 0, 0.02);
+  --sift-pin-shadow: rgba(0, 0, 0, 0.06);
+  --sift-font: Inter, ui-sans-serif, system-ui, sans-serif;
+
+  /* Semantic colors */
+  --sift-badge-true-bg: rgba(34, 197, 94, 0.12);
+  --sift-badge-true-color: #15803d;
+  --sift-badge-false-bg: rgba(239, 68, 68, 0.12);
+  --sift-badge-false-color: #b91c1c;
+  --sift-bool-true: #22c55e;
+  --sift-bool-false: #ef4444;
+  --sift-bool-null-fg: rgba(0, 0, 0, 0.08);
+  --sift-bool-null-bg: rgba(0, 0, 0, 0.03);
+  --sift-loading-code-bg: rgba(0, 0, 0, 0.04);
+  --sift-detail-backdrop: rgba(0, 0, 0, 0.4);
+  --sift-detail-shadow: rgba(0, 0, 0, 0.1);
+  --sift-skeleton-bar-from: rgba(0, 0, 0, 0.04);
+  --sift-skeleton-bar-via: rgba(0, 0, 0, 0.08);
+  --sift-cat-bar-track: rgba(0, 0, 0, 0.04);
+  --sift-scrollbar-thumb: rgba(0, 0, 0, 0.15);
+  --sift-scrollbar-thumb-hover: rgba(0, 0, 0, 0.3);
+}
+
+/* Dark values are keyed on explicit .dark/[data-theme=dark] only; every host
+   (app iframe, demo main.ts) sets an explicit signal, and the aliased neutrals
+   above inherit the app token flip from notebook-tokens.css. */
+
+/* --- Dark (explicit attribute) --- */
+:root:not([data-color-theme])[data-theme="dark"],
+:root:not([data-color-theme]).dark,
+[data-color-theme="classic"][data-theme="dark"],
+[data-color-theme="classic"].dark {
+  color-scheme: dark;
+  --sift-accent: oklch(0.707 0.165 254.624);
+  --sift-row-alt: rgba(255, 255, 255, 0.025);
+  --sift-pin-shadow: rgba(255, 255, 255, 0.06);
+
+  --sift-badge-true-bg: rgba(34, 197, 94, 0.15);
+  --sift-badge-true-color: #4ade80;
+  --sift-badge-false-bg: rgba(239, 68, 68, 0.15);
+  --sift-badge-false-color: #f87171;
+  --sift-bool-true: #4ade80;
+  --sift-bool-false: #f87171;
+  --sift-bool-null-fg: rgba(255, 255, 255, 0.1);
+  --sift-bool-null-bg: rgba(255, 255, 255, 0.04);
+  --sift-loading-code-bg: rgba(255, 255, 255, 0.06);
+  --sift-detail-backdrop: rgba(0, 0, 0, 0.6);
+  --sift-detail-shadow: rgba(0, 0, 0, 0.5);
+  --sift-skeleton-bar-from: rgba(255, 255, 255, 0.04);
+  --sift-skeleton-bar-via: rgba(255, 255, 255, 0.08);
+  --sift-cat-bar-track: rgba(255, 255, 255, 0.06);
+  --sift-scrollbar-thumb: rgba(255, 255, 255, 0.2);
+  --sift-scrollbar-thumb-hover: rgba(255, 255, 255, 0.35);
+}

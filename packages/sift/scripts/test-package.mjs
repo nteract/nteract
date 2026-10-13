@@ -161,7 +161,7 @@ try {
     !/\*,:after,:before|\*,::after,::before/.test(css),
     "Sift CSS must not ship a preflight reset",
   );
-  assert(css.includes(".sift-root{"), "Sift tokens must be keyed on .sift-root");
+  assert(css.includes(".sift-root"), "Sift tokens must be keyed on .sift-root");
 
   const api = await import(pathToFileURL(join(packed, "lib/index.js")));
   assert.equal(typeof api.SiftTable, "function");

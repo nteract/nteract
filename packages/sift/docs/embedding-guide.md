@@ -142,15 +142,16 @@ ARIA grid semantics.
 ## Styling
 
 `style.css` is compiled and self-contained. It writes nothing to `:root`,
-`html`, or `body` and ships no CSS reset, so it can load into a host document
+`html`, or `body` and ships no document-wide CSS reset, so it can load into a host document
 next to the host's own stylesheet. Every rule is keyed on `.sift-root`, which
 Sift puts on the table container and on each element it appends to `<body>`
 (popovers, the column menu, the row detail sheet, the image viewer).
 
 Dark mode follows the host: put `.dark` or `data-theme="dark"` on `<html>` or
-any ancestor of the table.
+`<body>`, so body-mounted overlays receive the same theme.
 
-Sift reads eight colors, a font, and a radius. Set them on any ancestor:
+Sift reads eight colors, a font, and a radius. Set them on `<html>` or `<body>`. A table-local wrapper does not theme overlays
+that are portaled to `<body>`:
 
 ```css
 :root {

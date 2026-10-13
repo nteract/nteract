@@ -36,6 +36,7 @@ export type {
 } from "./filter-schema";
 // Filter schema & state serialization
 export {
+  columnFiltersToPredicates,
   engineStateToExplorerState,
   explorerStateToJSON,
   predicateToEnglish,

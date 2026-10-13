@@ -1024,12 +1024,12 @@ export function SiftTable({
       aria-busy={status === "loading"}
     >
       {loadSource && status === "loading" && (
-        <div className="sift-loading" role="status">
+        <div className="sift-root sift-loading" role="status">
           Loading table…
         </div>
       )}
       {status === "error" && error && (
-        <div className="sift-loading" role="alert">
+        <div className="sift-root sift-loading" role="alert">
           Error: {error}
         </div>
       )}

@@ -179,7 +179,7 @@ test("Sift CSV packs and publishes like Sift, independent of both the Node SDK a
   const order = [
     "pnpm install --frozen-lockfile",
     "cargo xtask wasm sift-csv",
-    "install-cargo-about",
+    "Install cargo-about",
     'stamp-build "$RUNNER_TEMP/npm-release-tools/sift-csv-plan.json" packages/sift-csv sift-csv',
     "pnpm --dir packages/sift-csv test:package",
     'pnpm --dir packages/sift-csv pack --pack-destination "$RUNNER_TEMP"',
@@ -317,4 +317,20 @@ test("tarball finalization preserves pnpm payload and modes, changing only its m
   } finally {
     rmSync(directory, {recursive: true, force: true});
   }
+});
+
+// Execute the workflow's actual plan shell against an old release checkout.
+test("old upstream source skips CSV without blocking other release plans", () => {
+  const dir = mkdtempSync(join(tmpdir(), "npm-old-source-"));
+  try {
+    const output = join(dir, "output"), summary = join(dir, "summary");
+    const step = jobs.get("resolve-release").split("      - name: Prepare immutable Sift CSV release plan")[1].split("      - uses:")[0];
+    const shell = step.split("        run: |\n")[1].split("\n").filter(line => line.startsWith("          ")).map(line => line.slice(10)).join("\n");
+    execFileSync("bash", ["-e", "-c", shell], {cwd: dir, env: {...process.env, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary}});
+    assert.equal(readFileSync(output, "utf8"), "present=false\n");
+    assert.match(jobs.get("pack-sift-csv"), /if: needs.resolve-release.outputs.sift_csv_present == 'true'/);
+    for (const job of ["pack-sift", "pack-sift-csv"]) {
+      assert.doesNotMatch(jobs.get(job), /uses: \.\/\.github\/actions\/install-cargo-about/);
+    }
+  } finally { rmSync(dir, {recursive: true, force: true}); }
 });
