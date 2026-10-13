@@ -52,15 +52,17 @@ export async function verifyWasmPair(binary, glueUrl, required) {
 
 async function checkLibrary() {
   const manifest = JSON.parse(await readFile(new URL("package.json", packageRoot), "utf8"));
-  for (const entry of Object.values(manifest.publishConfig.exports)) {
-    for (const file of typeof entry === "string" ? [entry] : Object.values(entry)) {
-      try {
-        assert((await readFile(new URL(file, packageRoot))).byteLength > 0);
-      } catch {
-        throw new Error(
-          `Missing library output ${file}. Run pnpm run build:lib before packing Sift.`,
-        );
-      }
+  const exported = Object.values(manifest.publishConfig.exports).flatMap((entry) =>
+    typeof entry === "string" ? [entry] : Object.values(entry),
+  );
+  // The WASM and bundle carry third-party code; their notices ship beside them.
+  for (const file of [...exported, "./lib/LICENSE", "./lib/THIRD_PARTY_NOTICES.md"]) {
+    try {
+      assert((await readFile(new URL(file, packageRoot))).byteLength > 0);
+    } catch {
+      throw new Error(
+        `Missing library output ${file}. Run pnpm run build:lib before packing Sift.`,
+      );
     }
   }
   const wasm = await readFile(new URL("lib/wasm/sift_wasm_bg.wasm", packageRoot));

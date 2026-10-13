@@ -142,6 +142,11 @@ try {
       assert(name in dependencies, `${file} imports undeclared package ${imported}`);
     }
   }
+  // Notices must name third-party code from both shipped builds.
+  const notices = await readFile(join(packed, "lib/THIRD_PARTY_NOTICES.md"), "utf8");
+  for (const name of ["parquet", "arrow-array", "rxjs"]) {
+    assert.match(notices, new RegExp(`^\\| ${name} \\| `, "m"), `Notices must list ${name}`);
+  }
   const css = await readFile(join(packed, "lib/style.css"), "utf8");
   assert(css.includes(".sift-table-container"), "Compiled table styles must be shipped");
   assert(!/@(?:import|source|theme)\b/.test(css), "Consumers must not need a Tailwind compiler");

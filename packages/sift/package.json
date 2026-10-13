@@ -42,7 +42,7 @@
     "test:watch": "vp test",
     "test:e2e": "playwright test",
     "cache-datasets": "npx tsx scripts/cache-datasets.ts",
-    "test:package": "pnpm run build:lib && node --test scripts/check-lib.node-test.mjs && node scripts/test-package.mjs",
+    "test:package": "pnpm run build:lib && node --test scripts/check-lib.node-test.mjs scripts/third-party-notices.node-test.mjs && node scripts/test-package.mjs",
     "prepack": "node scripts/check-lib.mjs"
   },
   "peerDependencies": {

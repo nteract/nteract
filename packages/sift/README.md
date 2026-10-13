@@ -35,7 +35,8 @@ pnpm --dir packages/sift dev
 
 ## Use as a library
 
-The package ships JavaScript, compiled CSS, TypeScript declarations, and WASM.
+The package ships JavaScript, compiled CSS, TypeScript declarations, and WASM,
+with third-party notices for the bundled code in `lib/THIRD_PARTY_NOTICES.md`.
 React and React DOM are required; no notebook, kernel, or daemon is needed.
 
 ```tsx
