@@ -58,4 +58,20 @@ describe("Tooltip", () => {
     expect(content).toHaveClass("bg-foreground", "text-background", "text-xs", "rounded-md");
     expect([...content!.classList].filter((name) => RAW_PALETTE_CLASS.test(name))).toEqual([]);
   });
+
+  it("closes without an exit animation so closed content unmounts at once", async () => {
+    const user = userEvent.setup();
+    renderTooltip();
+
+    await user.tab();
+
+    // A closed-state animation keeps Radix Presence mounted, and with it the
+    // Escape listener that prevents keys aimed at other focus.
+    const content = document.querySelector<HTMLElement>('[data-slot="tooltip-content"]');
+    expect(
+      [...content!.classList].filter(
+        (name) => name.includes("animate-out") || name.startsWith("data-[state=closed]:"),
+      ),
+    ).toEqual([]);
+  });
 });

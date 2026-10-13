@@ -530,6 +530,45 @@ describe("NotebookCommandToolbar", () => {
       expect(editor).toHaveFocus();
     });
 
+    it("restores the provider delay after a key closes a hover hint", () => {
+      vi.useFakeTimers();
+      try {
+        render(
+          <>
+            <textarea aria-label="Cell editor" />
+            <NotebookCommandToolbar
+              capabilities={editableToolbarCapabilities}
+              runtimeStatus={runtimeStatus}
+              onRunAllCells={() => {}}
+              onRestartRuntime={() => {}}
+            />
+          </>,
+        );
+        const editor = screen.getByRole("textbox", { name: "Cell editor" });
+        editor.focus();
+        const advance = (ms: number) =>
+          act(() => {
+            vi.advanceTimersByTime(ms);
+          });
+
+        fireEvent.pointerMove(screen.getByTestId("run-all-button"));
+        advance(300);
+        expect(screen.getByRole("tooltip").textContent).toBe("Run all cells");
+
+        fireEvent.keyDown(editor, { key: "x" });
+        expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+        // Past the provider's skip-delay window, the next hint waits again.
+        advance(1000);
+        fireEvent.pointerMove(screen.getByTestId("restart-kernel-button"));
+        expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+        advance(300);
+        expect(screen.getByRole("tooltip").textContent).toBe("Restart kernel");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("closes the hint when its control is clicked", async () => {
       const user = userEvent.setup();
       const onRunAllCells = vi.fn();

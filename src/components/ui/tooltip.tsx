@@ -24,6 +24,10 @@ const TooltipTrigger = TooltipPrimitive.Trigger;
  * hint reads apart from popover and hover-card panels. Content animates in
  * but closes without an exit animation, so a closed hint unmounts in the same
  * task and its Escape listener goes with it.
+ *
+ * While a hint is open, Radix claims Escape document-wide and prevents it.
+ * A trigger group beside editors must close its hints before keys reach the
+ * document, as `NotebookCommandToolbar` does.
  */
 const TooltipContent = React.forwardRef<
   React.ElementRef<typeof TooltipPrimitive.Content>,

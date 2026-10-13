@@ -92,6 +92,13 @@ const TOOLBAR_BUTTON_FOCUS =
   "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 /**
+ * Document event `@radix-ui/react-tooltip` dispatches when a tooltip opens;
+ * every other open tooltip closes through its own lifecycle when it fires.
+ * The "restores the provider delay" toolbar test fails if this drifts.
+ */
+const RADIX_TOOLTIP_OPEN_EVENT = "tooltip.open";
+
+/**
  * Shared notebook command row. It owns one tooltip group, so hosts mount no
  * `TooltipProvider` of their own.
  */
@@ -447,6 +454,10 @@ function NotebookCommandToolbarRow({
  * has no exit animation, so Radix's listener is gone before the key reaches
  * the document. Keys pressed while focus is inside the trigger still go to
  * Radix, which dismisses the hint on Escape.
+ *
+ * The close runs through Radix's own path, which keeps provider bookkeeping
+ * that a controlled `open={false}` skips. Without it, the next hint in the
+ * group would open without its delay.
  */
 function ToolbarTooltip({
   content,
@@ -467,7 +478,14 @@ function ToolbarTooltip({
     const releaseKeyAimedElsewhere = (event: KeyboardEvent) => {
       const focus = event.target instanceof Node ? event.target : null;
       if (focus && triggerRef.current?.contains(focus)) return;
-      flushSync(() => setOpen(false));
+      flushSync(() => {
+        // Open tooltip content closes when another tooltip announces it is
+        // opening. That close resets the provider's skip delay and clears a
+        // pending open timer. `setOpen` still closes this hint if the event
+        // name ever changes.
+        document.dispatchEvent(new CustomEvent(RADIX_TOOLTIP_OPEN_EVENT));
+        setOpen(false);
+      });
     };
     window.addEventListener("keydown", releaseKeyAimedElsewhere, true);
     return () => window.removeEventListener("keydown", releaseKeyAimedElsewhere, true);
