@@ -1,0 +1,27 @@
+# cargo-about configuration for the Rust code compiled into @nteract/sift's
+# WebAssembly (crates/sift-wasm) and @nteract/sift-csv's (crates/sift-csv-wasm).
+# scripts/third-party-notices.mjs runs `cargo about generate` with this file and
+# renders lib/THIRD_PARTY_NOTICES.md. A crate whose license is not listed here
+# fails that step, which is the point: review it before it ships.
+
+accepted = [
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  "Unicode-3.0",
+  "Zlib",
+]
+
+# Only what reaches the browser. Native-only dependencies of these crates are
+# not shipped.
+targets = ["wasm32-unknown-unknown"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# zstd-sys compiles the zstd C library into the WASM. cargo-about reports the
+# Rust bindings' license; the C sources' BSD license is read from the crate by
+# scripts/third-party-notices.mjs (see BUNDLED_SOURCES there), because
+# cargo-about's `clarify` table pins a file checksum that breaks on every bump.
