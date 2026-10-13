@@ -230,6 +230,18 @@ export function predicateToEnglish(p: FilterPredicate): string {
 
 import type { ColumnFilter, TableEngineState } from "./table";
 
+function categoryExclusionPredicate(column: string, values: Set<string>): CompoundPredicate {
+  // UI category exclusions retain null rows. Encode that in the portable
+  // predicate, since SQL NOT IN alone excludes nulls through three-valued logic.
+  return {
+    op: "or",
+    args: [
+      { column, op: "is_null" },
+      { column, op: "not_in", value: [...values] },
+    ],
+  };
+}
+
 export function columnFiltersToPredicates(
   columns: { key: string }[],
   filters: ColumnFilter[],
@@ -247,7 +259,7 @@ export function columnFiltersToPredicates(
         predicates.push({ column: col, op: "in", value: [...f.values] });
         break;
       case "not-in":
-        predicates.push({ column: col, op: "not_in", value: [...f.values] });
+        if (f.values.size > 0) predicates.push(categoryExclusionPredicate(col, f.values));
         break;
       case "boolean":
         predicates.push({ column: col, op: "eq", value: f.value });
@@ -277,7 +289,7 @@ export function engineStateToExplorerState(state: TableEngineState): ExplorerSta
         filters.push({ column, op: "in", value: [...filter.values] });
         break;
       case "not-in":
-        filters.push({ column, op: "not_in", value: [...filter.values] });
+        if (filter.values.size > 0) filters.push(categoryExclusionPredicate(column, filter.values));
         break;
       case "boolean":
         filters.push({ column, op: "eq", value: filter.value });
