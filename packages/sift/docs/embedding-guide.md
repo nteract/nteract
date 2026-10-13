@@ -33,45 +33,29 @@ access. The package's URL API explicitly fetches URLs supplied by the host.
 
 ## Local CSV and TSV
 
+CSV parsing is a separate package, `@nteract/sift-csv`, so apps that only open
+Parquet or Arrow do not carry it. It converts text or bytes to an Arrow IPC
+stream that `loadTableFile` accepts:
+
 ```tsx
-import { parseCsv, SiftTable } from '@nteract/sift'
+import { csvToArrowIpc } from '@nteract/sift-csv'
+import { loadTableFile, SiftTable } from '@nteract/sift'
 
-const data = parseCsv(csvText)
-// For TSV: parseCsv(tsvText, { delimiter: '\t' })
+const load = useCallback(async () => {
+  const ipc = await csvToArrowIpc(text, { delimiter: '\t' })
+  return loadTableFile(ipc, { format: 'arrow-ipc' })
+}, [text])
 
-<SiftTable data={data} style={{ height: 600 }} />
+<SiftTable source={{ kind: 'loader', load }} style={{ height: 600 }} />
 ```
 
-Parse once when the file snapshot changes, not on every React render. The host
-owns text decoding: for UTF-8 files, use `new TextDecoder('utf-8', { fatal: true })`
-so invalid byte sequences become an actionable error. A leading BOM is accepted.
-There is no encoding or delimiter guessing. Delimiters are comma (default), tab,
-semicolon, and pipe.
-
-The first record supplies column names; blank and duplicate names are made
-unique. Quoted delimiters, escaped quotes, and multiline fields are supported.
-Malformed quoting and inconsistent record widths throw an error. Empty unquoted
-fields become null; quoted empty fields stay empty strings. Literal `NA`, `null`,
-and similar strings are preserved. Nulls are excluded from categorical counts
-and never match the empty-string category. Selecting that category matches only
-quoted empty strings; excluding it retains null rows. Category percentages use
-all rows in the current selection as their denominator, including null rows.
-
-A final line ending terminates the preceding record. Additional blank records
-are preserved: in a one-column file each is a null row; in a wider file each
-fails the record-width check. Automatically skipping blank records is an open
-format-policy decision because it could silently remove valid null rows.
-
-Default inference examines every loaded value in a column. Conservative numbers
-and lowercase `true`/`false` become numeric/boolean columns; dates, leading-zero
-identifiers, and unsafe integers stay text. Original spellings remain available
-for display, but numeric comparisons use JavaScript numbers and can approximate
-exact decimals. Use `{ typing: 'text' }` to keep every non-null field as text.
-
-The default limits are 16 MiB of UTF-8 text, 100,000 data rows, 256 columns, and
-1,000,000 cells. Override `maxBytes`, `maxRows`, `maxColumns`, and `maxCells`
-explicitly when the host can support larger files. Over-limit input fails; it is
-never silently truncated. Reject oversized files before reading them as well.
+Type inference reads the whole file. Booleans, Int64, Float64 (including
+exponents), ISO dates, and ISO timestamps are detected; a column with mixed
+shapes stays text. Empty fields are null in every type. Malformed quoting and
+ragged rows reject with the reason; nothing is truncated or sampled. The host
+owns text decoding and delimiter choice; there is no guessing. Defaults are
+16 MiB of input, 100,000 rows, and 256 columns, each an option. See the
+package README for the WASM asset setup.
 
 ## Local Parquet and Arrow
 
@@ -101,42 +85,23 @@ Keep the bytes snapshot stable until the file changes. Do not capture and return
 one previously loaded disposable table from the callback.
 
 `loadTableFile` supports Parquet and uncompressed Arrow IPC streams. The optional
-`format` is `'parquet'` or `'arrow-ipc'`. CSV/TSV should use `parseCsv`. Arrow file
+`format` is `'parquet'` or `'arrow-ipc'`. CSV and TSV go through `@nteract/sift-csv`. Arrow file
 containers and compressed IPC streams are not supported by this path.
 
-Binary input defaults to 16 MiB, 100,000 rows, 256 columns, and a 128 MiB decoded
-memory guardrail (`maxBytes`, `maxRows`, `maxColumns`, `maxDecodedBytes`). Parquet
-checks footer metadata before decoding, summed across all row groups. Boolean and
-fixed-width leaves (integers, floats, dates, times, timestamps, decimals,
-fixed-size binary) are charged their Arrow width per value, plus validity, list
-offsets, and per-batch array overhead, so compact wide tables such as 100,000
-rows across 90 boolean columns fit the default guard. Variable-width leaves
-(strings, binaries, dictionaries) keep a conservative allowance of twice the
-uncompressed page bytes plus 16 bytes per value, so string-heavy files can still
-be rejected below the byte, row, and column caps. The row, column,
-input-byte, and decoded-byte limits are independent ceilings, not a promise that
-every file below the first three will load. Retained Arrow allocations are also
-checked after each decoded batch. That check counts decoder buffer capacity,
-which can reach twice the data of a numeric column with nulls, so a file the
-footer estimate admits can still be rejected. These are admission limits, not a
-process memory sandbox: dictionaries, decoder batches, summaries, copies, and
-temporary allocations add memory. Raising `maxDecodedBytes` relaxes both the
-Parquet estimate and retained-allocation checks; hosts should do so only with an
-appropriate memory budget.
+Binary input defaults to 16 MiB, 100,000 rows, 256 columns, and 128 MiB of
+retained Arrow memory (`maxBytes`, `maxRows`, `maxColumns`, `maxDecodedBytes`).
+Rows and columns are checked from file metadata before decoding. Retained memory
+is checked after each decoded batch, and the decoder can allocate one batch past
+the limit before that check runs. These limits are meant for files you chose to
+open, not a sandbox for hostile input: a crafted Parquet file can make one batch
+large. If you load untrusted files, do it in a Worker you can terminate.
 
-This API materializes a complete file. Virtual scrolling bounds rendered DOM,
-not the loaded dataset. Sorting, filtering, and summaries cover all accepted
-rows. There is no disk paging or sampled preview. Larger files need a separate
-bounded-preview or query architecture with explicit operation scope.
+This API loads a complete file. Virtual scrolling bounds rendered DOM, not the
+dataset: sorting, filtering, and summaries cover every accepted row. There is no
+paging or sampled preview.
 
-After filtering, binary numeric ratio bars retain the unfiltered file's two-value
-baseline; nearby counts and null statistics describe the filtered rows.
-
-Arrow/Parquet schemas and nulls are retained in WASM. Lists, structs, and map-like
-values may display as text; known image structures have dedicated rendering.
-Nested values do not become editable sub-tables, and a formatted nested column's
-ordering/filtering is not a nested query language. Do not assume all nested types
-have numeric or categorical semantics identical to primitive columns.
+Lists, structs, and maps display as text. Known image structures have dedicated
+rendering.
 
 ## Lifecycle and host controls
 
@@ -172,45 +137,48 @@ const state = engine.getState()
 ```
 
 The container needs a defined height. The table supplies keyboard navigation and
-ARIA grid semantics; give the surrounding file view an accessible title, expose
-loading/errors to assistive technology, and keep keyboard focus predictable when
-switching modes. Test the host's narrow view and keyboard paths.
+ARIA grid semantics.
 
-`style.css` is compiled: consumers do not need Tailwind or nteract source files.
-It includes shared base styles and design-token defaults, so load it before host
-theme overrides or use an existing isolated document boundary. Set
-`data-theme="dark"`/`"light"` explicitly on the root; OS theme preference is not
-a separate automatic mode. `data-color-theme="cream"` selects the optional cream
-palette. Override `--sift-bg`, `--sift-panel`, `--sift-ink`, `--sift-muted`,
-`--sift-rule`, and `--sift-accent` to match the host. Popovers render in portals;
-theme tokens should be available at their document root too.
+## Styling
 
-## Build and verify a local package
+`style.css` is compiled and self-contained. It writes nothing to `:root`,
+`html`, or `body` and ships no CSS reset, so it can load into a host document
+next to the host's own stylesheet. Every rule is keyed on `.sift-root`, which
+Sift puts on the table container and on each element it appends to `<body>`
+(popovers, the column menu, the row detail sheet, the image viewer).
 
-From the nteract repository root:
+Dark mode follows the host: put `.dark` or `data-theme="dark"` on `<html>` or
+any ancestor of the table.
 
-```sh
-pnpm install --frozen-lockfile
-cargo xtask wasm sift --skip-renderer-plugins
-pnpm --dir packages/sift test:package
-# Optional: production consumer smoke (install with pnpm exec playwright install chromium).
-pnpm --dir packages/sift exec node scripts/test-package.mjs --browser
-pnpm --dir packages/sift pack --pack-destination /tmp/sift-package
+Sift reads eight colors, a font, and a radius. Set them on any ancestor:
+
+```css
+:root {
+  --sift-color-bg: #fff;        /* table background */
+  --sift-color-panel: #fff;     /* header, popovers, menus, sheets */
+  --sift-color-ink: #111;       /* text */
+  --sift-color-muted: #666;     /* secondary text, null markers */
+  --sift-color-rule: #e5e5e5;   /* borders and grid lines */
+  --sift-color-accent: #2563eb; /* histogram bars, selection, focus ring */
+  --sift-color-true: #22c55e;   /* boolean true */
+  --sift-color-false: #ef4444;  /* boolean false */
+  --sift-font-family: Inter, system-ui, sans-serif;
+  --sift-radius-base: 0.5rem;
+}
 ```
 
-`test:package` builds the library, packs it, extracts it outside the workspace,
-checks its public declarations and dependency boundary, and tests the shipped
-WASM glue/binary against synthetic Arrow data. With `--browser`, it builds and
-previews a production consumer in Chromium, testing both explicit and default
-WASM asset URLs. It reuses installed public
-dependencies without registry requests. `prepack` rejects missing built assets,
-checks every current runtime method against the actual WASM and JavaScript
-exports, and instantiates the pair to reject incompatible glue/binary imports.
-The resulting tarball can be installed via its local path; nothing is published.
+Every other color (row stripes, scrollbars, badges, skeletons) is derived from
+these with `color-mix()`, so they follow light and dark automatically.
 
-`build:lib` also writes `lib/THIRD_PARTY_NOTICES.md`. It lists the Rust crates
-and C sources that `cargo tree` reports for the WASM build and the npm packages
-the bundle inlines, with their license texts and NOTICE files. Ship it with any
-host app that redistributes Sift. A dependency under a license the generator
-doesn't recognize, without its license text, or with unreviewed native sources
-fails the build until the generator learns it.
+The neutrals fall back to the shadcn token names when the host defines them:
+`--background`, `--card`, `--foreground`, `--muted-foreground`, `--border`, and
+`--radius`. A shadcn app gets Sift in its own palette without setting anything.
+Accent and boolean colors keep Sift's defaults unless set, since a shadcn
+`--primary` is a button color and often near-black.
+
+## Notices
+
+`lib/THIRD_PARTY_NOTICES.md` lists the Rust crates compiled into the WASM with
+their license texts and NOTICE files. Ship it with any app that redistributes
+Sift. Building and verifying the package from source is covered in the
+package's `AGENTS.md`.

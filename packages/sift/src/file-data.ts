@@ -14,12 +14,11 @@ export type TableFileOptions = {
   /** Maximum top-level columns (and Parquet leaf columns). Default: 256. */
   maxColumns?: number;
   /**
-   * Parquet metadata estimate and retained Arrow memory limit. Default: 128 MiB.
-   * The estimate charges boolean and fixed-width leaves their Arrow width, and
-   * variable-width leaves a conservative 2× uncompressed bytes + 16 bytes/value,
-   * so string-heavy files can be rejected below the other limits.
-   * This is a loading guardrail, not a process memory sandbox: decoder batches,
-   * dictionaries, summaries, copies, and other temporary allocations add memory.
+   * Retained Arrow memory limit, checked after each decoded batch. Default:
+   * 128 MiB. Parquet files whose fixed-width values alone exceed it are
+   * rejected from footer metadata before decoding. This is a loading
+   * guardrail, not a sandbox: the decoder can allocate one batch past the limit
+   * before the check runs, and summaries and copies add memory on top.
    */
   maxDecodedBytes?: number;
 };
@@ -39,11 +38,8 @@ function limit(value: number | undefined, fallback: number, name: string): numbe
  *
  * Files exceeding the limits fail; this API never samples or truncates rows.
  * Sorting, filtering, and summaries therefore operate on the entire loaded file.
- * Parquet admission checks rows, columns, and a decoded-size estimate before
- * decoding; retained Arrow memory is also checked after each decoded batch.
  * Numeric raw values, summaries, and range filters use f64/JavaScript numbers;
  * integers beyond the safe-integer range are approximate in those operations.
- * Float16 and Decimal numeric analysis remains unsupported by the Sift engine.
  *
  * The returned TableData owns its WASM store. In React, use a stable SiftTable
  * source `{ kind: "loader", load: () => loadTableFile(bytes) }` so each effect

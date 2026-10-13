@@ -47,11 +47,11 @@
     "test:watch": "vp test",
     "test:e2e": "playwright test",
     "cache-datasets": "npx tsx scripts/cache-datasets.ts",
-    "test:package": "pnpm run build:lib && node --test scripts/check-lib.node-test.mjs scripts/third-party-notices.node-test.mjs && node scripts/test-package.mjs",
-    "prepack": "node scripts/check-lib.mjs"
+    "test:package": "pnpm run build:lib && node scripts/test-package.mjs",
+    "prepack": "pnpm run notices && node scripts/check-lib.mjs",
+    "notices": "node scripts/third-party-notices.mjs lib/THIRD_PARTY_NOTICES.md sift-wasm"
   },
   "peerDependencies": {
-    "@chenglou/pretext": ">=0.0.6",
     "react": ">=18",
     "react-dom": ">=18"
   },
@@ -74,16 +74,13 @@
   },
   "dependencies": {
     "@chenglou/pretext": ">=0.0.6",
-    "@radix-ui/react-context-menu": "^2.2.16",
-    "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-popover": "^1.1.15",
     "@radix-ui/react-slot": "^1.2.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.513.0",
     "rxjs": "^7.8.2",
-    "tailwind-merge": "^3.5.0",
-    "tslib": "^2.8.1"
+    "tailwind-merge": "^3.5.0"
   },
   "sideEffects": [
     "**/*.css"
