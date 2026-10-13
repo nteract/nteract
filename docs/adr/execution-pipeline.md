@@ -12,7 +12,7 @@ Two facts make this pipeline unusual:
 
 2. **The daemon multiplexes high-volume output traffic and low-volume lifecycle signals on the same async runtime.** stdout floods, image-display churn, and widget-comm replay must not delay the `KernelIdle` that releases the queue or the `ExecutionDone` that lets a client read outputs.
 
-This ADR captures the load-bearing decisions that make those facts work. Most of these rules live as paragraph-shaped invariants in `AGENTS.md` and the `execution-pipeline` skill. Writing them down as decisions surfaces both the rationale and the gaps.
+This ADR captures the load-bearing decisions that make those facts work. Most of these rules live as paragraph-shaped invariants in `crates/runtimed/AGENTS.md` and the `execution-pipeline` skill. Writing them down as decisions surfaces both the rationale and the gaps.
 
 Neighbors:
 
