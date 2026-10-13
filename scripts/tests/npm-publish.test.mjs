@@ -18,6 +18,7 @@ import {
 const workflow = readFileSync(new URL("../../.github/workflows/publish-npm.yml", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const sourceManifest = JSON.parse(readFileSync(new URL("../../packages/runtimed-node/package.json", import.meta.url), "utf8"));
 const siftManifest = JSON.parse(readFileSync(new URL("../../packages/sift/package.json", import.meta.url), "utf8"));
+const siftCsvManifest = JSON.parse(readFileSync(new URL("../../packages/sift-csv/package.json", import.meta.url), "utf8"));
 const identity = {channel: "nightly", sourceSha: "a".repeat(40), runId: "100", runAttempt: "1"};
 const jobs = new Map();
 let current;
@@ -105,7 +106,7 @@ test("standalone OIDC publishers only consume artifacts, with no source build or
   assert.match(workflow, /workflows: \["Stable Release", "Nightly Release"\]/);
   assert.match(workflow, /^concurrency:\n  group: npm-publish\n  queue: max\n  cancel-in-progress: false$/m);
   assert.doesNotMatch(workflow, /workflow_call:|NODE_AUTH_TOKEN|NPM_TOKEN|continue-on-error:|if: always\(\)/);
-  for (const target of ["native", "wrapper", "pi", "sift"]) {
+  for (const target of ["native", "wrapper", "pi", "sift", "sift-csv"]) {
     const publisher = jobs.get(`publish-${target}`);
     assert.match(publisher, /^      id-token: write$/m);
     assert.doesNotMatch(publisher, /actions\/checkout|pnpm|cargo|npm (?:install|ci)|secrets\./);
@@ -164,6 +165,54 @@ test("Sift packs independently, tests the stamped package, and publishes only be
   assert.match(publish, /- name: Publish Sift package\n\s+if: needs\.resolve-release\.outputs\.sift_enabled == 'true'\n/);
   assert.match(publish, /- name: Report Sift bootstrap prerequisite\n\s+if: needs\.resolve-release\.outputs\.sift_enabled != 'true'\n/);
   assert.match(publish, /publish "\$RUNNER_TEMP\/npm-release-tools\/sift-plan\.json" sift "\$RUNNER_TEMP\/npm-package"/);
+});
+
+test("Sift CSV packs and publishes like Sift, independent of both the Node SDK and Sift", () => {
+  const resolve = jobs.get("resolve-release");
+  assert.match(resolve, /plan "\$RUNNER_TEMP\/release-identity\.json" release-source\/packages\/sift-csv\/package\.json "\$RUNNER_TEMP\/npm-release-tools\/sift-csv-plan\.json"/);
+  assert.match(resolve, /NPM_SIFT_CSV_ENABLED: \$\{\{ vars\.NPM_SIFT_CSV_ENABLED \}\}/);
+  assert.match(resolve, /sift_csv_enabled: \$\{\{ steps\.sift-csv-plan\.outputs\.enabled \}\}/);
+  assert.ok(resolve.indexOf("id: sift-csv-plan") < resolve.indexOf("uses: actions/upload-artifact@"), "upload the Sift CSV plan with the tools");
+
+  const pack = jobs.get("pack-sift-csv");
+  assert.match(pack, /^    needs: \[resolve-release\]$/m, "Sift CSV must not wait for the Node SDK or Sift");
+  const order = [
+    "pnpm install --frozen-lockfile",
+    "cargo xtask wasm sift-csv",
+    "install-cargo-about",
+    'stamp-build "$RUNNER_TEMP/npm-release-tools/sift-csv-plan.json" packages/sift-csv sift-csv',
+    "pnpm --dir packages/sift-csv test:package",
+    'pnpm --dir packages/sift-csv pack --pack-destination "$RUNNER_TEMP"',
+    'stamp-tarball "$RUNNER_TEMP/npm-release-tools/sift-csv-plan.json" sift-csv "$RUNNER_TEMP"',
+    'verify "$RUNNER_TEMP/npm-release-tools/sift-csv-plan.json" sift-csv',
+    "uses: actions/upload-artifact@",
+  ].map(step => pack.indexOf(step));
+  assert.ok(order.every((position, index) => position >= 0 && (index === 0 || position > order[index - 1])), `pack-sift-csv step order: ${order}`);
+  assert.match(pack, /name: npm-package-sift-csv\n/);
+
+  const publish = jobs.get("publish-sift-csv");
+  assert.match(publish, /^    needs: \[resolve-release, pack-sift-csv\]$/m);
+  assert.match(publish, /- name: Publish Sift CSV package\n\s+if: needs\.resolve-release\.outputs\.sift_csv_enabled == 'true'\n/);
+  assert.match(publish, /- name: Report Sift CSV bootstrap prerequisite\n\s+if: needs\.resolve-release\.outputs\.sift_csv_enabled != 'true'\n/);
+  assert.match(publish, /publish "\$RUNNER_TEMP\/npm-release-tools\/sift-csv-plan\.json" sift-csv "\$RUNNER_TEMP\/npm-package"/);
+  assert.match(publish, /npm-result\/sift-csv\.json/);
+});
+
+test("Sift CSV manifest carries its own version, provenance and no workspace dependencies", () => {
+  assert.equal(packageName("sift-csv"), siftCsvManifest.name);
+  assert.equal(siftCsvManifest.repository?.url, "git+https://github.com/nteract/nteract.git", "npm provenance needs the source repository");
+  assert.equal(siftCsvManifest.repository?.directory, "packages/sift-csv");
+  assert.equal(siftCsvManifest.dependencies, undefined, "sift-csv ships only first-party JS and its WASM");
+  for (const channel of ["stable", "nightly"]) {
+    const plan = releasePlan(siftCsvManifest.version, {...identity, channel});
+    assert.equal(plan.version, channel === "stable" ? siftCsvManifest.version : `${siftCsvManifest.version}-nightly.${identity.runId}`);
+    const build = stampBuildManifest(siftCsvManifest, plan, "sift-csv");
+    const finalized = finalizePackedManifest(build, plan, "sift-csv");
+    assert.equal(finalized.version, plan.version);
+    assert.doesNotThrow(() => verifyManifest(finalized, plan, "sift-csv"));
+    assert.throws(() => stampManifest({...siftCsvManifest, version: "0.0.1"}, plan, "sift-csv"), /Checked-in version mismatch/);
+    assert.throws(() => stampManifest(siftManifest, plan, "sift-csv"), /Unexpected package/);
+  }
 });
 
 test("Sift manifests carry their own version, provenance and no private or workspace dependencies", () => {

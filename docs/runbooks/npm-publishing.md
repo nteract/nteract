@@ -1,6 +1,6 @@
 # Publishing the Node bindings
 
-`publish-npm.yml` builds the Node SDK and `@nteract/sift` after a successful
+`publish-npm.yml` builds the Node SDK, `@nteract/sift`, and `@nteract/sift-csv` after a successful
 **Stable Release** or **Nightly Release** run. It retains the existing npm
 trusted-publisher identity; the build jobs have no publication credentials, and
 the publication jobs do not build source or install project dependencies.
@@ -23,8 +23,8 @@ dispatched from a feature branch is eligible too, including promotion of npm's
 The manual npm workflow itself must run from the repository's default branch;
 its validated upstream run supplies the build source.
 
-`@runtimed/node`, its native platform packages, and `@nteract/sift` get nightly
-versions. `@nteract/pi` continues to publish through the stable path.
+`@runtimed/node`, its native platform packages, `@nteract/sift`, and
+`@nteract/sift-csv` get nightly versions. `@nteract/pi` continues to publish through the stable path.
 
 ## Sift
 
@@ -37,6 +37,12 @@ with the Node SDK but no jobs, so a failed native build doesn't block Sift and a
 Sift failure doesn't block the SDK. Publication waits for the `NPM_SIFT_ENABLED`
 bootstrap gate in [RELEASING.md](../../RELEASING.md#published-bindings).
 Consumers should pin an exact Sift version, as with the SDK.
+
+`@nteract/sift-csv` is the same shape with its own plan, `pack-sift-csv` and
+`publish-sift-csv` jobs, artifact (`npm-package-sift-csv`), checked-in version,
+and `NPM_SIFT_CSV_ENABLED` gate. Its pack job builds `crates/sift-csv-wasm`
+through `cargo xtask wasm sift-csv`. The two Sift packages do not depend on each
+other at publish time; a host pins each independently.
 
 ## Package coordination and daemon compatibility
 
