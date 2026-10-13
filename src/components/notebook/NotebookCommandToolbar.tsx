@@ -9,8 +9,10 @@ import {
   ServerCog,
   Square,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "@/components/environment";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
   projectNotebookCommandRuntimeActions,
@@ -86,7 +88,29 @@ export interface NotebookCommandToolbarProps {
   className?: string;
 }
 
-export function NotebookCommandToolbar({
+const TOOLBAR_BUTTON_FOCUS =
+  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+/**
+ * Document event `@radix-ui/react-tooltip` dispatches when a tooltip opens;
+ * every other open tooltip closes through its own lifecycle when it fires.
+ * The "restores the provider delay" toolbar test fails if this drifts.
+ */
+const RADIX_TOOLTIP_OPEN_EVENT = "tooltip.open";
+
+/**
+ * Shared notebook command row. It owns one tooltip group, so hosts mount no
+ * `TooltipProvider` of their own.
+ */
+export function NotebookCommandToolbar(props: NotebookCommandToolbarProps) {
+  return (
+    <TooltipProvider>
+      <NotebookCommandToolbarRow {...props} />
+    </TooltipProvider>
+  );
+}
+
+function NotebookCommandToolbarRow({
   capabilities,
   runtime = null,
   runtimeTarget = null,
@@ -142,6 +166,33 @@ export function NotebookCommandToolbar({
     flushCellUIState();
   };
 
+  const restartAndRunAllLabel = environmentOutOfSync
+    ? "Dependencies changed - restart kernel and run all cells"
+    : "Restart kernel and run all cells";
+  const workstationPending = Boolean(workstationAction?.pending);
+  const workstationDisabled = Boolean(workstationAction?.disabled) || workstationPending;
+  const startRuntimeDisabled = startDisabled || workstationPending;
+  const statusTooltip = runtimeStatus && !runtimeStatus.error ? runtimeStatus.title : undefined;
+  const statusReadout = runtimeStatus ? (
+    <>
+      <div
+        className={cn(
+          "size-2 shrink-0 rounded-full",
+          runtimeStatus.state === "idle" && "bg-green-500",
+          runtimeStatus.state === "busy" && "bg-amber-500",
+          (runtimeStatus.state === "starting" || runtimeStatus.state === "not_started") &&
+            "bg-blue-500 animate-pulse",
+          runtimeStatus.state === "shutdown" && "bg-gray-400 dark:bg-gray-500",
+          runtimeStatus.state === "error" && "bg-red-500",
+          runtimeStatus.state === "unknown" && "bg-muted-foreground",
+        )}
+      />
+      <span className="text-xs text-muted-foreground whitespace-nowrap">
+        {runtimeStatus.error ?? runtimeStatus.label}
+      </span>
+    </>
+  ) : null;
+
   return (
     <div
       data-testid="notebook-toolbar"
@@ -152,30 +203,46 @@ export function NotebookCommandToolbar({
 
       {showAddCellControls ? (
         <>
-          <button
-            type="button"
-            onClick={() => onAddCell?.("code", addAfterCellId)}
+          <ToolbarTooltip
+            content={addCellControlsDisabled ? "Checking edit access" : "Add code cell"}
             disabled={addCellControlsDisabled}
-            className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
-            title={addCellControlsDisabled ? "Checking edit access" : "Add code cell"}
-            aria-label="Add code cell"
-            data-testid="add-code-cell-button"
           >
-            <Code className="size-3" />
-            <span className="hidden @[40rem]:inline">Code</span>
-          </button>
-          <button
-            type="button"
-            onClick={addMarkdownCell}
+            <button
+              type="button"
+              onClick={() => onAddCell?.("code", addAfterCellId)}
+              disabled={addCellControlsDisabled}
+              className={cn(
+                TOOLBAR_BUTTON_FOCUS,
+                "flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50",
+              )}
+              aria-label="Add code cell"
+              aria-description={addCellControlsDisabled ? "Checking edit access" : undefined}
+              data-testid="add-code-cell-button"
+            >
+              <Code className="size-3" />
+              <span className="hidden @[40rem]:inline">Code</span>
+            </button>
+          </ToolbarTooltip>
+          <ToolbarTooltip
+            content={addCellControlsDisabled ? "Checking edit access" : "Add markdown cell"}
             disabled={addCellControlsDisabled}
-            className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
-            title={addCellControlsDisabled ? "Checking edit access" : "Add markdown cell"}
-            aria-label="Add markdown cell"
-            data-testid="add-markdown-cell-button"
           >
-            <LetterText className="size-3" />
-            <span className="hidden @[40rem]:inline">Markdown</span>
-          </button>
+            <button
+              type="button"
+              onClick={addMarkdownCell}
+              disabled={addCellControlsDisabled}
+              className={cn(
+                TOOLBAR_BUTTON_FOCUS,
+                "flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50",
+              )}
+              aria-label="Add markdown cell"
+              aria-description={addCellControlsDisabled ? "Checking edit access" : undefined}
+              data-testid="add-markdown-cell-button"
+            >
+              <LetterText className="size-3" />
+              <span className="hidden @[40rem]:inline">Markdown</span>
+            </button>
+          </ToolbarTooltip>
         </>
       ) : null}
 
@@ -184,110 +251,128 @@ export function NotebookCommandToolbar({
       ) : null}
 
       {runtimeActions.showRuntimeStart ? (
-        <button
-          type="button"
-          onClick={onStartRuntime}
-          disabled={startDisabled || workstationAction?.pending}
-          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-          title="Start kernel"
-          aria-label="Start kernel"
-          data-testid="start-kernel-button"
-        >
-          <Play className="size-3" fill="currentColor" />
-          <span className="hidden @[40rem]:inline">Start kernel</span>
-        </button>
+        <ToolbarTooltip content="Start kernel" disabled={startRuntimeDisabled}>
+          <button
+            type="button"
+            onClick={onStartRuntime}
+            disabled={startRuntimeDisabled}
+            className={cn(
+              TOOLBAR_BUTTON_FOCUS,
+              "flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50",
+            )}
+            aria-label="Start kernel"
+            data-testid="start-kernel-button"
+          >
+            <Play className="size-3" fill="currentColor" />
+            <span className="hidden @[40rem]:inline">Start kernel</span>
+          </button>
+        </ToolbarTooltip>
       ) : null}
 
       {runtimeActions.showRunAll ? (
-        <button
-          type="button"
-          onClick={onRunAllCells}
-          disabled={workstationAction?.pending}
-          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted disabled:opacity-50"
-          title="Run all cells"
-          aria-label="Run all cells"
-          data-testid="run-all-button"
-        >
-          <ChevronsRight className="size-3.5" />
-          <span className="hidden @[40rem]:inline">Run all</span>
-        </button>
+        <ToolbarTooltip content="Run all cells" disabled={workstationPending}>
+          <button
+            type="button"
+            onClick={onRunAllCells}
+            disabled={workstationPending}
+            className={cn(
+              TOOLBAR_BUTTON_FOCUS,
+              "flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50",
+            )}
+            aria-label="Run all cells"
+            data-testid="run-all-button"
+          >
+            <ChevronsRight className="size-3.5" />
+            <span className="hidden @[40rem]:inline">Run all</span>
+          </button>
+        </ToolbarTooltip>
       ) : null}
 
       {runtimeActions.showRestart ? (
-        <button
-          type="button"
-          onClick={onRestartRuntime}
-          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
-          title="Restart kernel"
-          aria-label="Restart kernel"
-          data-testid="restart-kernel-button"
-        >
-          <RotateCcw className="size-3" />
-          <span className="hidden @[40rem]:inline">Restart</span>
-        </button>
+        <ToolbarTooltip content="Restart kernel">
+          <button
+            type="button"
+            onClick={onRestartRuntime}
+            className={cn(
+              TOOLBAR_BUTTON_FOCUS,
+              "flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted",
+            )}
+            aria-label="Restart kernel"
+            data-testid="restart-kernel-button"
+          >
+            <RotateCcw className="size-3" />
+            <span className="hidden @[40rem]:inline">Restart</span>
+          </button>
+        </ToolbarTooltip>
       ) : null}
 
       {runtimeActions.showRestartAndRunAll ? (
-        <button
-          type="button"
-          onClick={onRestartAndRunAll}
-          className={cn(
-            "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
-            environmentOutOfSync
-              ? "bg-amber-500/10 text-amber-700 ring-1 ring-amber-500/30 hover:bg-amber-500/20 dark:text-amber-400"
-              : "text-foreground hover:bg-muted",
-          )}
-          title={
-            environmentOutOfSync
-              ? "Dependencies changed - restart kernel and run all cells"
-              : "Restart kernel and run all cells"
-          }
-          data-testid="restart-run-all-button"
-        >
-          <RotateCcw className="size-3" />
-          <ChevronsRight className="size-3 -ml-1" />
-        </button>
+        <ToolbarTooltip content={restartAndRunAllLabel}>
+          <button
+            type="button"
+            onClick={onRestartAndRunAll}
+            className={cn(
+              TOOLBAR_BUTTON_FOCUS,
+              "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
+              environmentOutOfSync
+                ? "bg-amber-500/10 text-amber-700 ring-1 ring-amber-500/30 hover:bg-amber-500/20 dark:text-amber-400"
+                : "text-foreground hover:bg-muted",
+            )}
+            aria-label={restartAndRunAllLabel}
+            data-testid="restart-run-all-button"
+          >
+            <RotateCcw className="size-3" />
+            <ChevronsRight className="size-3 -ml-1" />
+          </button>
+        </ToolbarTooltip>
       ) : null}
 
       {runtimeActions.showInterrupt ? (
-        <button
-          type="button"
-          onClick={onInterruptRuntime}
-          className={cn(
-            "flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs transition-colors",
-            runtimeStatus?.state === "busy"
-              ? "text-destructive hover:bg-destructive/10"
-              : "text-foreground hover:bg-muted",
-          )}
-          title="Interrupt kernel"
-          aria-label="Interrupt kernel"
-          data-testid="interrupt-kernel-button"
-        >
-          <Square
-            className="size-3"
-            fill={runtimeStatus?.state === "busy" ? "currentColor" : "none"}
-          />
-          <span className="hidden @[40rem]:inline">Interrupt</span>
-        </button>
+        <ToolbarTooltip content="Interrupt kernel">
+          <button
+            type="button"
+            onClick={onInterruptRuntime}
+            className={cn(
+              TOOLBAR_BUTTON_FOCUS,
+              "flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs transition-colors",
+              runtimeStatus?.state === "busy"
+                ? "text-destructive hover:bg-destructive/10"
+                : "text-foreground hover:bg-muted",
+            )}
+            aria-label="Interrupt kernel"
+            data-testid="interrupt-kernel-button"
+          >
+            <Square
+              className="size-3"
+              fill={runtimeStatus?.state === "busy" ? "currentColor" : "none"}
+            />
+            <span className="hidden @[40rem]:inline">Interrupt</span>
+          </button>
+        </ToolbarTooltip>
       ) : null}
 
       {workstationAction ? (
-        <button
-          type="button"
-          onClick={workstationAction.onClick}
-          disabled={workstationAction.disabled || workstationAction.pending}
-          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
-          title={workstationAction.title}
-          aria-label={workstationAction.label}
-          data-testid="workstation-setup-button"
-        >
-          {workstationAction.pending ? (
-            <Loader2 className="size-3 animate-spin" />
-          ) : (
-            <ServerCog className="size-3" />
-          )}
-          <span className="hidden @[40rem]:inline">{workstationAction.label}</span>
-        </button>
+        <ToolbarTooltip content={workstationAction.title} disabled={workstationDisabled}>
+          <button
+            type="button"
+            onClick={workstationAction.onClick}
+            disabled={workstationDisabled}
+            className={cn(
+              TOOLBAR_BUTTON_FOCUS,
+              "flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-60",
+            )}
+            aria-label={workstationAction.label}
+            aria-description={workstationAction.title}
+            data-testid="workstation-setup-button"
+          >
+            {workstationAction.pending ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <ServerCog className="size-3" />
+            )}
+            <span className="hidden @[40rem]:inline">{workstationAction.label}</span>
+          </button>
+        </ToolbarTooltip>
       ) : null}
 
       <div className="flex-1" />
@@ -295,69 +380,31 @@ export function NotebookCommandToolbar({
       {utilityControls}
 
       {updateAction ? (
-        <button
-          type="button"
-          onClick={updateAction.onClick}
-          data-testid="update-download-button"
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-violet-500/10 text-violet-600 hover:bg-violet-500/20 dark:text-violet-400 transition-colors"
-          title={updateAction.title}
-        >
-          <ArrowDownToLine className="size-3" />
-          <span>{updateAction.label}</span>
-        </button>
+        <ToolbarTooltip content={updateAction.title}>
+          <button
+            type="button"
+            onClick={updateAction.onClick}
+            data-testid="update-download-button"
+            className={cn(
+              TOOLBAR_BUTTON_FOCUS,
+              "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-violet-500/10 text-violet-600 hover:bg-violet-500/20 dark:text-violet-400 transition-colors",
+            )}
+            aria-description={updateAction.title}
+          >
+            <ArrowDownToLine className="size-3" />
+            <span>{updateAction.label}</span>
+          </button>
+        </ToolbarTooltip>
       ) : null}
 
       {runtime ? (
-        <span
-          data-testid="runtime-environment-indicator"
-          data-runtime={runtime ?? undefined}
-          data-env-manager={environmentManager || undefined}
-          data-runtime-target={runtimeTarget?.kind}
-          data-runtime-peer-count={showRuntimePeerIndicator ? runtimePeerCount : undefined}
-          className={cn(
-            "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
-            runtime === "deno"
-              ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-              : "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-          )}
-          title={runtimeChipTitle({
-            environmentManager,
-            runtime,
-            runtimeTarget,
-          })}
-        >
-          {runtime === "deno" ? (
-            <>
-              <DenoIcon className="size-3" />
-              <span>Deno</span>
-            </>
-          ) : (
-            <>
-              <PythonIcon className="size-3" />
-              <span>Python</span>
-            </>
-          )}
-          {environmentManager ? (
-            <>
-              <span className="opacity-40">/</span>
-              {environmentManager === "uv" ? (
-                <UvIcon className="size-2 text-fuchsia-600 dark:text-fuchsia-400" />
-              ) : null}
-              {environmentManager === "conda" ? (
-                <CondaIcon className="size-2.5 text-emerald-600 dark:text-emerald-400" />
-              ) : null}
-              {environmentManager === "pixi" ? (
-                <PixiIcon className="size-2.5 text-amber-600 dark:text-amber-400" />
-              ) : null}
-            </>
-          ) : null}
-          {showRuntimePeerIndicator ? (
-            <>
-              <span className="opacity-40">/</span>
-              <ServerCog className="size-2.5" aria-hidden="true" />
-            </>
-          ) : null}
-        </span>
+        <RuntimeEnvironmentIndicator
+          environmentManager={environmentManager}
+          runtime={runtime}
+          runtimeTarget={runtimeTarget}
+          showRuntimePeerIndicator={showRuntimePeerIndicator}
+          runtimePeerCount={runtimePeerCount}
+        />
       ) : null}
 
       {runtimeStatus ? (
@@ -365,25 +412,16 @@ export function NotebookCommandToolbar({
           className="flex items-center gap-1.5 whitespace-nowrap"
           role="status"
           aria-label={runtimeStatus.ariaLabel}
-          title={runtimeStatus.error ? undefined : runtimeStatus.title}
           data-testid="kernel-status"
           data-kernel-status={runtimeStatus.state}
         >
-          <div
-            className={cn(
-              "size-2 shrink-0 rounded-full",
-              runtimeStatus.state === "idle" && "bg-green-500",
-              runtimeStatus.state === "busy" && "bg-amber-500",
-              (runtimeStatus.state === "starting" || runtimeStatus.state === "not_started") &&
-                "bg-blue-500 animate-pulse",
-              runtimeStatus.state === "shutdown" && "bg-gray-400 dark:bg-gray-500",
-              runtimeStatus.state === "error" && "bg-red-500",
-              runtimeStatus.state === "unknown" && "bg-muted-foreground",
-            )}
-          />
-          <span className="text-xs text-muted-foreground whitespace-nowrap">
-            {runtimeStatus.error ?? runtimeStatus.label}
-          </span>
+          {statusTooltip ? (
+            <ToolbarTooltip content={statusTooltip} className="gap-1.5">
+              {statusReadout}
+            </ToolbarTooltip>
+          ) : (
+            statusReadout
+          )}
         </div>
       ) : null}
 
@@ -396,21 +434,179 @@ export function NotebookCommandToolbar({
   );
 }
 
-function runtimeChipTitle({
+/**
+ * Hover and keyboard-focus hint for one toolbar control. Hints render in the
+ * DOM instead of through native `title`, which Electron hosts on macOS stop
+ * showing after the first hover (electron/electron#49843).
+ *
+ * The trigger is a wrapper span, not the control. Disabled buttons emit no
+ * pointer events, so the span takes the hover; buttons inside must carry
+ * `disabled:pointer-events-none`. Keeping the span mounted in every state
+ * means toggling `disabled` never remounts the button. Focus on the inner
+ * button bubbles to the span and opens the hint. The control's own
+ * `aria-label` names it; add `aria-description` when the hint says more.
+ *
+ * A hint never claims a key aimed at focus elsewhere. Radix dismisses an
+ * open tooltip on Escape from a document capture listener and prevents the
+ * event, and CodeMirror and command mode ignore prevented keys, so a hover
+ * hint would swallow the Escape that leaves a cell editor. A window capture
+ * listener runs first and closes the hint synchronously; `TooltipContent`
+ * has no exit animation, so Radix's listener is gone before the key reaches
+ * the document. Keys pressed while focus is inside the trigger still go to
+ * Radix, which dismisses the hint on Escape.
+ *
+ * The close runs through Radix's own path, which keeps provider bookkeeping
+ * that a controlled `open={false}` skips. Without it, the next hint in the
+ * group would open without its delay.
+ */
+function ToolbarTooltip({
+  content,
+  disabled = false,
+  className,
+  children,
+}: {
+  content: ReactNode;
+  disabled?: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const releaseKeyAimedElsewhere = (event: KeyboardEvent) => {
+      const focus = event.target instanceof Node ? event.target : null;
+      if (focus && triggerRef.current?.contains(focus)) return;
+      flushSync(() => {
+        // Open tooltip content closes when another tooltip announces it is
+        // opening. That close resets the provider's skip delay and clears a
+        // pending open timer. `setOpen` still closes this hint if the event
+        // name ever changes.
+        document.dispatchEvent(new CustomEvent(RADIX_TOOLTIP_OPEN_EVENT));
+        setOpen(false);
+      });
+    };
+    window.addEventListener("keydown", releaseKeyAimedElsewhere, true);
+    return () => window.removeEventListener("keydown", releaseKeyAimedElsewhere, true);
+  }, [open]);
+
+  return (
+    <Tooltip open={open} onOpenChange={setOpen}>
+      <TooltipTrigger asChild>
+        <span
+          ref={triggerRef}
+          className={cn("inline-flex items-center", disabled && "cursor-not-allowed", className)}
+        >
+          {children}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" collisionPadding={8}>
+        {content}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * Passive runtime + environment chip. It never takes focus; the tooltip is a
+ * hover hint, and screen readers get the same sentence from hidden text.
+ */
+function RuntimeEnvironmentIndicator({
+  environmentManager,
+  runtime,
+  runtimeTarget,
+  showRuntimePeerIndicator,
+  runtimePeerCount,
+}: {
+  environmentManager: NotebookEnvironmentManager | null;
+  runtime: string;
+  runtimeTarget: NotebookShellRuntimeTargetProjection | null;
+  showRuntimePeerIndicator: boolean;
+  runtimePeerCount: number;
+}) {
+  const description = runtimeChipDescription({ environmentManager, runtime, runtimeTarget });
+
+  return (
+    <ToolbarTooltip content={description}>
+      <span
+        data-testid="runtime-environment-indicator"
+        data-runtime={runtime}
+        data-env-manager={environmentManager || undefined}
+        data-runtime-target={runtimeTarget?.kind}
+        data-runtime-peer-count={showRuntimePeerIndicator ? runtimePeerCount : undefined}
+        className={cn(
+          "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
+          runtime === "deno"
+            ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+            : "bg-blue-500/10 text-blue-600 dark:text-blue-400",
+        )}
+      >
+        <span className="sr-only">{description}</span>
+        {runtime === "deno" ? (
+          <>
+            <DenoIcon className="size-3" aria-hidden="true" />
+            <span aria-hidden="true">Deno</span>
+          </>
+        ) : (
+          <>
+            <PythonIcon className="size-3" aria-hidden="true" />
+            <span aria-hidden="true">Python</span>
+          </>
+        )}
+        {environmentManager ? (
+          <>
+            <span className="opacity-40" aria-hidden="true">
+              /
+            </span>
+            {environmentManager === "uv" ? (
+              <UvIcon
+                className="size-2 text-fuchsia-600 dark:text-fuchsia-400"
+                aria-hidden="true"
+              />
+            ) : null}
+            {environmentManager === "conda" ? (
+              <CondaIcon
+                className="size-2.5 text-emerald-600 dark:text-emerald-400"
+                aria-hidden="true"
+              />
+            ) : null}
+            {environmentManager === "pixi" ? (
+              <PixiIcon
+                className="size-2.5 text-amber-600 dark:text-amber-400"
+                aria-hidden="true"
+              />
+            ) : null}
+          </>
+        ) : null}
+        {showRuntimePeerIndicator ? (
+          <>
+            <span className="opacity-40" aria-hidden="true">
+              /
+            </span>
+            <ServerCog className="size-2.5" aria-hidden="true" />
+          </>
+        ) : null}
+      </span>
+    </ToolbarTooltip>
+  );
+}
+
+function runtimeChipDescription({
   environmentManager,
   runtime,
   runtimeTarget,
 }: {
   environmentManager: NotebookEnvironmentManager | null;
-  runtime: string | null;
+  runtime: string;
   runtimeTarget: NotebookShellRuntimeTargetProjection | null;
 }): string {
-  const lang = runtime === "deno" ? "Deno/TypeScript" : "Python";
-  const manager = environmentManager ? ` / ${environmentManager}` : "";
-  const targetParts = runtimeTargetTitleParts(runtimeTarget);
-  return targetParts.length > 0
-    ? `${lang}${manager} - ${targetParts.join(" · ")}`
-    : `${lang}${manager}`;
+  const parts = [runtime === "deno" ? "Deno/TypeScript runtime" : "Python runtime"];
+  if (environmentManager) {
+    parts.push(`${environmentManager} environment`);
+  }
+  parts.push(...runtimeTargetTitleParts(runtimeTarget));
+  return parts.join(" · ");
 }
 
 function runtimeTargetTitleParts(

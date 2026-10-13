@@ -36,7 +36,7 @@ For the plain shadcn primitives, our documented flow (`pnpm dlx shadcn@latest ad
 | Skeleton | shipped (#3964) | Added with the ratified shimmer (gradient sweep, `color-mix` on `--muted-foreground`), not stock `animate-pulse`; `CellSkeleton` migrated onto it. |
 | Spinner | add-now | Colorless (`currentColor`), `lucide-react` already a dep. Add a small `cva` size variant; law demotes spinner to tight-space fallback. |
 | Kbd | add-now | `bg-muted`/`text-muted-foreground` exist. Fix upstream's `<kbd>`-nested-in-`<kbd>`; preserve the `data-slot="tooltip-content"` coupling if Tooltip lands. |
-| Tooltip | needs Kyle | No token gap, but a real call: upstream's inverted `bg-foreground/text-background` vs the `--popover` pair the rest of the overlay stack uses. Also needs a `TooltipProvider` mount point in the app root. |
+| Tooltip | shipped | Inverted `bg-foreground/text-background` (open question 2). Scoped `@radix-ui/react-tooltip`, no arrow. `TooltipProvider` mounts per trigger group, not at the app root: the notebook command toolbar mounts its own, so desktop, cloud, Elements, and unit tests render it without a host provider. |
 | Empty (EmptyState) | needs Kyle | Tokens trivial, but `EmptyMedia`'s `size-10 rounded-lg` icon badge needs an explicit radius-law exemption before landing. Backs page-level empty states (no cells / comments / workstations). |
 
 ## AI Elements to nteract surface map (reference only)
@@ -64,14 +64,14 @@ The AI Elements port steps are dropped per the decision. What remains is the bas
 
 Autonomous (no design call): **1** Separator (in flight). **2** Skeleton (done, #3964). **3** Spinner (in flight).
 
-Needs a small design call: **4** Tooltip surface tokens + provider mount, then Tooltip + Kbd together. **5** Empty's icon-badge radius exemption, then Empty for page-level empties (no cells / comments / workstations).
+Needs a small design call: **4** Tooltip (done: inverted tokens, group-scoped provider); Kbd can follow without a further call. **5** Empty's icon-badge radius exemption, then Empty for page-level empties (no cells / comments / workstations).
 
 Deferred to the AI-cell roadmap (not now): a streaming *text* shimmer and the Message/Reasoning/Model Selector family only become real when the AI cell graduates from a gutter-color placeholder to a composed surface.
 
 ## Open questions for Kyle
 
 1. **Shimmer / gradient law:** convention 6 already mandates skeleton shimmer (a gradient sweep), and #3964 sanctions that in the exceptions list. Separate question: is AI Elements' gradient-sweep *text* shimmer for streaming output worth a further allow-list entry, or does streaming stay pulse/other?
-2. **Tooltip tokens:** align `TooltipContent` to `--popover`/`--popover-foreground` (matching Dialog/Popover) or ship upstream's inverted `bg-foreground/text-background`?
+2. **Tooltip tokens:** ~~align `TooltipContent` to `--popover`/`--popover-foreground` (matching Dialog/Popover) or ship upstream's inverted `bg-foreground/text-background`?~~ **Answered (Kyle, 2026-10-13): inverted.** A one-line hint reads apart from popover and hover-card panels, and it matches the tooltips in hosts that embed the notebook.
 3. **Empty icon badge:** is `size-10 rounded-lg` an acceptable radius-law exemption, or reshape to `rounded-md`?
 4. **Convergence:** ~~should our output renderers converge toward the AI Elements look?~~ **Answered (Kyle, 2026-07-07): no.** Reference only; outputs stay Jupyter-adjacent. This is the decision at the top of the memo.
 5. **AI cell roadmap:** when does the AI cell graduate from gutter-color placeholder to a composed surface? That gates Message/Reasoning/Prompt Input/Model Selector past reference-only.

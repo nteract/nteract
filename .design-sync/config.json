@@ -158,6 +158,9 @@
     "TabsContent": null,
     "TabsList": null,
     "TabsTrigger": null,
-    "ToggleGroupItem": null
+    "ToggleGroupItem": null,
+    "TooltipContent": null,
+    "TooltipProvider": null,
+    "TooltipTrigger": null
   }
 }

@@ -7,6 +7,7 @@ import {
   FileCode2,
   Frame,
   IdCard,
+  Info,
   LayoutDashboard,
   Loader2,
   Minus,
@@ -125,6 +126,12 @@ const catalogGroups = [
         description: "Colorless compact loading motion.",
         href: "/docs/spinner",
         icon: Loader2,
+      },
+      {
+        title: "Tooltip",
+        description: "Inverted hover and focus hints for icon controls.",
+        href: "/docs/tooltip",
+        icon: Info,
       },
       {
         title: "Compute placement",

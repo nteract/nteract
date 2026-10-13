@@ -752,7 +752,9 @@ async function readToolbarWorkstationAction(page) {
   if ((await button.count()) === 0) return null;
   return {
     label: await button.getAttribute("aria-label"),
-    title: await button.getAttribute("title"),
+    // The toolbar shows this text in a tooltip and exposes it as the
+    // button's accessible description.
+    title: await button.getAttribute("aria-description"),
   };
 }
 
