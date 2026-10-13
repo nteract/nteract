@@ -25,7 +25,7 @@ test.describe("Odometer", () => {
     await page.screenshot({ path: "test-results/odometer-full.png" });
 
     // Verify odometer slots exist (digits should be in strip elements)
-    const slots = stats.locator(".sift-odo-slot");
+    const slots = stats.locator("[data-odometer-slot]");
     await expect(slots.first()).toBeVisible();
   });
 

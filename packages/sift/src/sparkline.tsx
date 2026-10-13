@@ -174,7 +174,7 @@ function BrushLayer({
       stopBrushCapture();
 
       const overlay = document.createElement("div");
-      overlay.className = "sift-brush-overlay";
+      overlay.className = "sift-root sift-brush-overlay";
       document.body.appendChild(overlay);
       document.documentElement.classList.add(BRUSHING_CLASS);
       clearNativeSelection();
@@ -999,7 +999,7 @@ function CategoricalBars({
           ))}
         </div>
       </PopoverTrigger>
-      <PopoverContent side="bottom" align="start">
+      <PopoverContent side="bottom" align="start" className="sift-root">
         <CategoryPopoverContent
           allCategories={unfilteredAllCategories ?? summary.allCategories}
           activeSet={activeSet}

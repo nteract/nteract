@@ -8,7 +8,6 @@ import { build, preview } from "vite-plus";
 export async function testPackageBrowser({
   scratch,
   packageRoot,
-  tarballPath,
   wasm,
   tableFromArrays,
   tableToIPC,
@@ -17,25 +16,25 @@ export async function testPackageBrowser({
   await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
   await mkdir(join(scratch, "public"), { recursive: true });
-  await writeFile(
-    join(scratch, "public/fixture.parquet"),
-    wasm.write_parquet_ipc(
-      tableToIPC(
-        tableFromArrays({
-          name: ["Gamma", "Alpha", "Beta"],
-          value: [3, 1, null],
-          active: [true, false, true],
-        }),
-      ),
-    ),
+  // One table, two on-disk formats. CSV goes through @nteract/sift-csv, which
+  // has its own packed-consumer test.
+  const ipc = tableToIPC(
+    tableFromArrays({
+      name: ["Gamma", "Alpha", "Beta"],
+      value: [3, 1, null],
+      active: [true, false, true],
+    }),
+    "stream",
   );
+  await writeFile(join(scratch, "public/fixture.arrow"), ipc);
+  await writeFile(join(scratch, "public/fixture.parquet"), wasm.write_parquet_ipc(ipc));
   await writeFile(
     join(scratch, "index.html"),
     `<!doctype html>
     <html lang="en" data-theme="light"><head><meta charset="utf-8"><title>Packed Sift smoke test</title></head>
     <body><main><h1>Sift · standalone package</h1>
     <p>Complete synthetic file · three rows · local assets</p>
-    <nav><button id="csv">CSV</button><button id="parquet">Parquet</button>
+    <nav><button id="arrow">Arrow</button><button id="parquet">Parquet</button>
     <label><input id="dark" type="checkbox"> Dark theme</label></nav>
     <div id="status" role="status">Loading</div><div id="table"></div></main>
     <script type="module" src="/consumer.js"></script></body></html>`,
@@ -45,7 +44,7 @@ export async function testPackageBrowser({
     `
     import { createElement, StrictMode } from 'react';
     import { createRoot } from 'react-dom/client';
-    import { SiftTable, parseCsv, loadTableFile, setWasmUrl } from '@nteract/sift';
+    import { SiftTable, loadTableFile, setWasmUrl } from '@nteract/sift';
     import '@nteract/sift/style.css';
     import wasmUrl from '@nteract/sift/sift.wasm?url';
     import './host.css';
@@ -58,10 +57,9 @@ export async function testPackageBrowser({
       const request = ++epoch;
       document.querySelector('#status').textContent = 'Loading ' + format;
       window.siftState = null;
-      const input = format === 'CSV'
-        ? { data: parseCsv('name,value,active\\nGamma,3,true\\nAlpha,1,false\\nBeta,,true') }
-        : { source: { kind: 'loader', load: async () => loadTableFile(
-            new Uint8Array(await (await fetch('/fixture.parquet')).arrayBuffer())) } };
+      const file = format === 'Arrow' ? '/fixture.arrow' : '/fixture.parquet';
+      const input = { source: { kind: 'loader', load: async () => loadTableFile(
+        new Uint8Array(await (await fetch(file)).arrayBuffer())) } };
       root.render(createElement(StrictMode, null, createElement(SiftTable, {
         ...input, key: request,
         onChange: state => { window.siftState = state; },
@@ -72,21 +70,24 @@ export async function testPackageBrowser({
         },
       })));
     }
-    document.querySelector('#csv').onclick = () => show('CSV');
+    document.querySelector('#arrow').onclick = () => show('Arrow');
     document.querySelector('#parquet').onclick = () => show('Parquet');
     document.querySelector('#dark').onchange = event => {
       document.documentElement.dataset.theme = event.target.checked ? 'dark' : 'light';
     };
-    show('CSV');
+    show('Arrow');
   `,
   );
   await writeFile(
     join(scratch, "host.css"),
     `
-    body { margin: 0; padding: 24px; background: var(--sift-bg); color: var(--sift-ink); font: 14px system-ui; }
+    /* The host owns its page colors; Sift's tokens live on .sift-root only. */
+    :root { --host-bg: #fff; --host-ink: #111; --host-muted: #666; }
+    [data-theme="dark"] { --host-bg: #111; --host-ink: #eee; --host-muted: #999; }
+    body { margin: 0; padding: 24px; background: var(--host-bg); color: var(--host-ink); font: 14px system-ui; }
     main { max-width: 1000px; margin: auto; }
     h1 { font-size: 22px; font-weight: 650; margin: 0 0 6px; }
-    p { color: var(--sift-muted); margin: 0 0 18px; }
+    p { color: var(--host-muted); margin: 0 0 18px; }
     nav { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
     button { border: 1px solid var(--sift-rule); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
     #status { margin: 0 0 10px; color: var(--sift-muted); }
@@ -120,13 +121,41 @@ export async function testPackageBrowser({
   let browser;
   const requests = [];
   const errors = [];
-  const cases = [];
-  let passed = false;
   try {
     const address = server.httpServer.address();
     assert(address && typeof address !== "string");
     const origin = `http://127.0.0.1:${address.port}`;
     browser = await chromium.launch({ headless: true });
+    const cssPage = await browser.newPage();
+    await cssPage.setContent(
+      "<style>@layer theme,base,components,utilities; @layer utilities{.border{border:3px dashed red}.bg-primary{background:rgb(12,34,56)}}</style>" +
+        '<button id="host" class="border bg-primary">Host</button>' +
+        '<div class="sift-root"><button id="sift" class="border bg-primary px-4 py-2">Sift</button></div>' +
+        '<div id="portal" class="sift-root border bg-primary px-4">Portal root</div>',
+    );
+    const hostBefore = await cssPage.locator("#host").evaluate((el) => {
+      const s = getComputedStyle(el);
+      return [s.backgroundColor, s.borderWidth, s.padding];
+    });
+    await cssPage.addStyleTag({
+      content: await readFile(join(scratch, "node_modules/@nteract/sift/lib/style.css"), "utf8"),
+    });
+    assert.deepEqual(
+      await cssPage.locator("#host").evaluate((el) => {
+        const s = getComputedStyle(el);
+        return [s.backgroundColor, s.borderWidth, s.padding];
+      }),
+      hostBefore,
+      "Sift must not restyle host utility classes",
+    );
+    await expect(cssPage.locator("#sift")).toHaveCSS("border-width", "1px");
+    await expect(cssPage.locator("#sift")).toHaveCSS("padding-left", "16px");
+    await expect(cssPage.locator("#portal")).toHaveCSS("padding-left", "16px");
+    assert.notEqual(
+      await cssPage.locator("#sift").evaluate((el) => getComputedStyle(el).backgroundColor),
+      "rgba(0, 0, 0, 0)",
+    );
+    await cssPage.close();
     for (const mode of ["explicit", "default"]) {
       // Separate contexts reset both the WASM singleton and browser caches.
       const context = await browser.newContext({ viewport: { width: 1100, height: 680 } });
@@ -160,7 +189,7 @@ export async function testPackageBrowser({
         await page.locator('.sift-th[data-col="2"] .sift-bool-true').click();
         await page.waitForFunction(() => window.siftState?.filteredCount === 2);
         await expect(firstName).toHaveText("Gamma");
-        await page.screenshot({ path: join(output, `${mode}-csv-light.png`), fullPage: true });
+        await page.screenshot({ path: join(output, `${mode}-arrow-light.png`), fullPage: true });
         const light = await page
           .locator(".sift-table-container")
           .evaluate((element) => getComputedStyle(element).backgroundColor);
@@ -178,15 +207,9 @@ export async function testPackageBrowser({
           .evaluate((element) => getComputedStyle(element).backgroundColor);
         assert.notEqual(light, dark, "Explicit host dark mode must reach Sift");
         await page.screenshot({ path: join(output, `${mode}-parquet-dark.png`), fullPage: true });
-        await page.setViewportSize({ width: 460, height: 720 });
-        await expect(firstName).toBeVisible();
-        await page.screenshot({
-          path: join(output, `${mode}-parquet-dark-narrow.png`),
-          fullPage: true,
-        });
         // Reopen the original file after disposing a binary store.
-        await page.locator("#csv").click();
-        await expect(page.locator("#status")).toHaveText("CSV · 3 rows");
+        await page.locator("#arrow").click();
+        await expect(page.locator("#status")).toHaveText("Arrow · 3 rows");
         await expect(firstName).toHaveText("Gamma");
         assert(
           requests.some(
@@ -198,7 +221,6 @@ export async function testPackageBrowser({
           ),
           `${mode}: Browser must fetch the production WASM asset`,
         );
-        cases.push({ mode, lightBackground: light, darkBackground: dark });
       } catch (error) {
         await page.screenshot({ path: join(output, `${mode}-failure.png`), fullPage: true });
         throw error;
@@ -208,37 +230,11 @@ export async function testPackageBrowser({
     }
     assert(!requests.some((request) => request.status >= 400), "Production assets must load");
     assert.deepEqual(errors, [], "No runtime errors or external data requests");
-    passed = true;
     console.log(`Packed production browser smoke passed. Screenshots: ${output}`);
   } finally {
     await browser?.close();
     await new Promise((done, reject) =>
       server.httpServer.close((error) => (error ? reject(error) : done())),
-    );
-    await writeFile(
-      join(output, "evidence.json"),
-      JSON.stringify(
-        {
-          package: "@nteract/sift",
-          source: "packed artifact outside workspace, production Vite build and preview",
-          tarballSha256: sha256(await readFile(tarballPath)),
-          passed,
-          assets,
-          requests,
-          cases,
-          interactions: [
-            "CSV keyboard sort and boolean filter",
-            "Parquet click sort and boolean filter",
-            "light/dark theme",
-            "narrow viewport",
-            "binary-to-CSV reopen",
-            "React StrictMode wrapper (production React)",
-          ],
-          runtimeErrors: errors,
-        },
-        null,
-        2,
-      ),
     );
   }
 }

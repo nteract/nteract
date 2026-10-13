@@ -19,6 +19,14 @@ Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-rel
 
 > **Note:** Desktop releases also build `runtimed` Python wheels and publish them to PyPI via trusted publishing. Nightly releases publish a unique pre-release version; stable releases publish the base version from `crates/runt/Cargo.toml`. `cargo xtask bump` still bumps `python/runtimed/pyproject.toml`; the release workflow stamps it again inside the ephemeral Actions checkout so PyPI publishing follows the Rust release version even if that file drifts.
 
+### Release source and partial publication
+
+The version job reserves the timestamped tag at the exact source SHA before builds begin, using the workflow's existing `GITHUB_TOKEN`. It never force-pushes a tag. A denied reservation stops the builds; a failed build may leave a source tag without a release. Do not move that tag to repair a run. Changelog generation excludes unpublished timestamped tags and the current release tag from its disposable checkout, leaving remote tags intact. Excluding the current tag also preserves release notes on a publication retry. Token-created tags do not trigger the stable tag-push workflow. Each channel serializes release runs with `cancel-in-progress: false`, so overlapping runs cannot replace each other's assets. GitHub keeps one pending run per channel by default; newer pending requests replace older pending requests without cancelling the active release.
+
+After all build and smoke gates pass, publication requires that reserved tag to still match the built source. The GitHub release uses the existing tag without `target_commitish`: that field only supplies a commit when creating a missing tag. Passing the old SHA can instead invoke GitHub's workflow-write restriction when main's workflows have advanced during the build. See [GitHub's release API contract](https://docs.github.com/en/rest/releases/releases#create-a-release). A second tag check follows GitHub publication.
+
+PyPI publication follows successful GitHub release creation and asset upload, before updater and plugin publication. This prevents a GitHub 403 from publishing Python wheels first. A later PyPI or updater failure still leaves a partial release; preserve existing artifacts and inspect the exact failed step before retrying. The existing PyPI `--check-url` and npm identity checks protect their retry paths. This does not make the registries one atomic transaction.
+
 ### Artifacts
 
 | Platform | File |
@@ -73,7 +81,7 @@ The `runtimed` Python package is released by the stable and nightly release work
 
 Nightly builds publish the next patch alpha version, for example `2.4.7a202605082121`, and stable builds publish the checked-in Rust release version, for example `2.4.6`.
 
-The `publish-npm.yml` workflow publishes `@runtimed/node` and its native platform packages, and `@nteract/sift`, from the exact source of a successful stable or nightly release. Stable uses each package's checked-in version and npm's `latest` tag; nightly uses `<package version>-nightly.<upstream run ID>` and the `nightly` tag. `@nteract/pi` remains stable-only. Sift packs and publishes independently of the Node SDK, so a native build failure does not hold it back. Manual recovery requires a successful upstream release run ID and attempt. See the [npm publishing runbook](docs/runbooks/npm-publishing.md) for retry behavior, account prerequisites, consumer qualification, and the distinction between package pins and daemon compatibility.
+The `publish-npm.yml` workflow publishes `@runtimed/node` and its native platform packages, `@nteract/sift`, and `@nteract/sift-csv`, from the exact source of a successful stable or nightly release. Stable uses each package's checked-in version and npm's `latest` tag; nightly uses `<package version>-nightly.<upstream run ID>` and the `nightly` tag. `@nteract/pi` remains stable-only. Sift and Sift CSV each pack and publish independently of the Node SDK and of each other, so a native build failure does not hold them back. Manual recovery requires a successful upstream release run ID and attempt. See the [npm publishing runbook](docs/runbooks/npm-publishing.md) for retry behavior, account prerequisites, consumer qualification, and the distinction between package pins and daemon compatibility.
 
 Linux and Windows ARM64 npm publication each require a one-time bootstrap. Until a platform's repository variable is `true`, CI builds and tests its binding and uploads its tarball, but skips publishing it and omits that optional dependency from the published wrapper. Existing npm platforms continue publishing. Desktop, CLI, Python, and agent-plugin ARM64 releases do not use these gates.
 
@@ -96,6 +104,9 @@ To enable either ARM64 npm platform:
 3. Set the variable right away. A new trusted-publisher configuration expires unless it completes a publish within two days. Let the next nightly publish, or dispatch **Nightly Release**.
 
 The first nightly publishes `<Sift version>-nightly.<run ID>` under `nightly`. The next stable release publishes the checked-in Sift version and moves `latest` off the placeholder.
+
+`@nteract/sift-csv` uses the same placeholder bootstrap with its own `NPM_SIFT_CSV_ENABLED` gate and `npm-package-sift-csv` artifact. Releases from sources without the CSV package skip that package entirely.
+
 
 These bootstrap publications, npm permissions, and trusted-publisher settings require separate maintainer qualification. They are not established by the source change or a local test run.
 

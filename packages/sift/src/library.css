@@ -1,22 +1,7 @@
-@import "./themes/cream.css";
-@import "./themes/classic.css";
-
-* {
-  box-sizing: border-box;
-}
-
-/* --- Shared overlay fallback surface --- */
-
-:root {
-  --sift-overlay-panel-fallback: var(--card, #ffffff);
-  --sift-overlay-ink-fallback: var(--foreground, #1a1a1a);
-  --sift-overlay-rule-fallback: var(--border, #e5e7eb);
-}
-
 .sift-overlay-surface {
-  background-color: var(--sift-panel, var(--sift-overlay-panel-fallback));
-  border-color: var(--sift-rule, var(--sift-overlay-rule-fallback));
-  color: var(--sift-ink, var(--sift-overlay-ink-fallback));
+  background-color: var(--sift-panel);
+  border-color: var(--sift-rule);
+  color: var(--sift-ink);
 }
 
 /* --- Demo page shell --- */

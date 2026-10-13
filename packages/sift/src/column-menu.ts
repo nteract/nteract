@@ -23,6 +23,7 @@ export function mountColumnMenu(
   if (!container) {
     container = document.createElement("div");
     container.id = "column-context-menu-root";
+    container.className = "sift-root";
     document.body.appendChild(container);
     root = createRoot(container);
   }

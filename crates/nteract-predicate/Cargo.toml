@@ -1,8 +1,10 @@
 [package]
 name = "nteract-predicate"
-version = "0.6.3"
+version = "0.6.4"
 edition = "2021"
 description = "Pure-Rust compute kernels for dataframe/Arrow analysis (summary, filter, histogram)"
+repository = "https://github.com/nteract/nteract"
+license = "BSD-3-Clause"
 
 [lib]
 crate-type = ["rlib"]

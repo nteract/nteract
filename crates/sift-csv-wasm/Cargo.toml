@@ -1,0 +1,28 @@
+[package]
+name = "sift-csv-wasm"
+version = "0.1.0"
+edition.workspace = true
+description = "CSV to Arrow IPC in WebAssembly — used by @nteract/sift-csv"
+repository = "https://github.com/nteract/nteract"
+license = "BSD-3-Clause"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = { workspace = true }
+console_error_panic_hook = { workspace = true }
+serde = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
+
+arrow = { workspace = true, features = ["csv", "ipc"] }
+
+[dev-dependencies]
+wasm-bindgen-test = { workspace = true }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[lints]
+workspace = true

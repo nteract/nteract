@@ -41,6 +41,7 @@ members = [
     "crates/repr-llm",
     "crates/nteract-predicate",
     "crates/sift-wasm",
+    "crates/sift-csv-wasm",
 ]
 default-members = ["crates/notebook"]
 resolver = "2"

@@ -84,13 +84,14 @@ jobs:
             echo "SOURCE_SHA=$(git rev-parse HEAD)"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Check release tag before building or publishing
+      - name: Reserve release tag before building or publishing
         env:
           TAG_NAME: v${{ steps.version.outputs.VERSION }}
           SOURCE_SHA: ${{ steps.version.outputs.SOURCE_SHA }}
-        run: bash scripts/ci/check-release-tag.sh "$TAG_NAME" "$SOURCE_SHA"
+        run: bash scripts/ci/check-release-tag.sh "$TAG_NAME" "$SOURCE_SHA" --reserve
 
   build-wasm:
+    needs: [compute-version]
     name: Build WASM artifacts
     runs-on: ubuntu-24.04
     steps:
@@ -1607,13 +1608,23 @@ jobs:
 
       - name: Generate changelog
         id: changelog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: v${{ needs.compute-version.outputs.version }}
         run: |
+          # Unpublished reservations and this run's own tag must not truncate
+          # the changelog, including retries after GitHub publication succeeded.
+          # These deletions affect only this checkout.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+            --jq '.[] | select(.draft == false) | .tag_name' > "$RUNNER_TEMP/published-release-tags"
+          bash scripts/ci/filter-unpublished-release-tags.sh "$RUNNER_TEMP/published-release-tags" "$TAG_NAME"
+
           if [ "${{ inputs.github_release_prerelease }}" = "false" ]; then
             # Stable release: generate changelog since the previous stable tag.
             # We can't use --latest because nightly tags between stable releases
             # cause git-cliff to pick a nightly→stable range with zero commits.
             # Instead, find the previous stable tag and use an explicit range.
-            PREV_STABLE=$(git tag -l 'v*-stable.*' --sort=-creatordate | head -1)
+            PREV_STABLE=$(git tag -l 'v*-stable.*' --merged HEAD --sort=-creatordate | head -1)
             if [ -n "$PREV_STABLE" ]; then
               CHANGELOG=$(git-cliff "${PREV_STABLE}..HEAD" --ignore-tags ".*nightly.*" --strip header 2>/dev/null || echo "")
             else
@@ -1892,10 +1903,7 @@ jobs:
         env:
           TAG_NAME: v${{ needs.compute-version.outputs.version }}
           SOURCE_SHA: ${{ needs.compute-version.outputs.source_sha }}
-        run: bash scripts/ci/check-release-tag.sh "$TAG_NAME" "$SOURCE_SHA"
-
-      - name: Publish runtimed to PyPI
-        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/runtimed/ ./wheels/*.whl
+        run: bash scripts/ci/check-release-tag.sh "$TAG_NAME" "$SOURCE_SHA" --require
 
       - name: Generate release body
         env:
@@ -2046,7 +2054,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: v${{ needs.compute-version.outputs.version }}
-          target_commitish: ${{ needs.compute-version.outputs.source_sha }}
+          # The tag already pins the built source. Omitting target_commitish
+          # avoids asking GitHub to authorize an old workflow tree as a new ref
+          # after main advances. Never allow release creation to choose the tag.
           name: nteract v${{ needs.compute-version.outputs.version }}
           body_path: release-body.md
           draft: false
@@ -2081,6 +2091,17 @@ jobs:
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-arm64.exe.sig
             ./release-assets/latest.json
             ./wheels/*.whl
+
+      - name: Verify published release tag still matches built source
+        env:
+          TAG_NAME: v${{ needs.compute-version.outputs.version }}
+          SOURCE_SHA: ${{ needs.compute-version.outputs.source_sha }}
+        run: bash scripts/ci/check-release-tag.sh "$TAG_NAME" "$SOURCE_SHA" --require
+
+      # Do not publish irreversible PyPI versions when GitHub release creation
+      # or asset upload failed. A later PyPI failure can resume with --check-url.
+      - name: Publish runtimed to PyPI
+        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/runtimed/ ./wheels/*.whl
 
       - name: Update ${{ inputs.updater_channel_tag }} updater channel
         env:

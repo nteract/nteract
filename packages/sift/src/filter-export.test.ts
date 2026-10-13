@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vite-plus/test";
-import { parseCsv } from "./csv";
 import {
   columnFiltersToPredicates,
   engineStateToExplorerState,
@@ -8,7 +7,40 @@ import {
   predicateToPandas,
   predicateToSQL,
 } from "./filter-schema";
-import { type ColumnFilter, createTable } from "./table";
+import { type ColumnFilter, createTable, type TableData } from "./table";
+
+/**
+ * Five rows whose `value` mixes a real null, an empty string, and the text
+ * sentinels "null" and "NA". The exclusion filter must keep the null rows
+ * while dropping the chosen strings, and the exported predicate must say so.
+ */
+function fixture(): TableData {
+  const rows: [number, string | null][] = [
+    [1, null],
+    [2, ""],
+    [3, "null"],
+    [4, "NA"],
+    [5, null],
+  ];
+  const columns = [
+    { key: "id", label: "id", width: 80, sortable: true, numeric: true, columnType: "numeric" },
+    {
+      key: "value",
+      label: "value",
+      width: 120,
+      sortable: true,
+      numeric: false,
+      columnType: "categorical",
+    },
+  ] as const;
+  return {
+    columns: columns.map((c) => ({ ...c })),
+    rowCount: rows.length,
+    getCell: (r, c) => String(rows[r][c] ?? ""),
+    getCellRaw: (r, c) => rows[r][c],
+    columnSummaries: columns.map(() => null),
+  };
+}
 
 describe.each(["columns", "engine"] as const)("%s filter export", (conversion) => {
   it.each([
@@ -34,7 +66,7 @@ describe.each(["columns", "engine"] as const)("%s filter export", (conversion) =
   ])(
     "exports the displayed selection for $excluded with id >= $minimumId",
     ({ excluded, minimumId, count, exclusionSQL }) => {
-      const data = parseCsv('id,value\n1,\n2,""\n3,null\n4,NA\n5,');
+      const data = fixture();
       const engine = createTable(document.createElement("div"), data);
       try {
         const filters: ColumnFilter[] = [

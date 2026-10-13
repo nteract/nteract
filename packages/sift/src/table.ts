@@ -701,7 +701,9 @@ export function createTable(
   // --- DOM ---
 
   container.innerHTML = "";
-  container.classList.add("sift-table-container");
+  // `sift-root` carries the design tokens (tokens.css); every element Sift
+  // appends to <body> gets it too, so portals resolve the same palette.
+  container.classList.add("sift-root", "sift-table-container");
   container.setAttribute("role", "grid");
   container.setAttribute("aria-label", "Data table");
   container.setAttribute("aria-rowcount", String(rowCount));
@@ -1724,12 +1726,12 @@ export function createTable(
 
     // Backdrop
     const backdrop = document.createElement("div");
-    backdrop.className = "sift-detail-backdrop";
+    backdrop.className = "sift-root sift-detail-backdrop";
     backdrop.addEventListener("click", dismissDetailSheet);
 
     // Sheet
     const sheet = document.createElement("div");
-    sheet.className = "sift-detail-sheet";
+    sheet.className = "sift-root sift-detail-sheet";
 
     // Header with row number and close button
     const header = document.createElement("div");
@@ -2373,7 +2375,7 @@ export function createTable(
     revokeCellBlobUrls(container);
     // Clear DOM
     container.innerHTML = "";
-    container.classList.remove("sift-table-container");
+    container.classList.remove("sift-root", "sift-table-container");
     data.dispose?.();
   }
 
