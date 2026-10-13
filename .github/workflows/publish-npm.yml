@@ -444,5 +444,5 @@ jobs:
         env:
           SIFT_VERSION: ${{ needs.resolve-release.outputs.sift_version }}
         run: |
-          echo "@nteract/sift@$SIFT_VERSION npm publication is disabled until bootstrap and trusted publishing are configured." >> "$GITHUB_STEP_SUMMARY"
-          echo "Download npm-package-sift and follow RELEASING.md." >> "$GITHUB_STEP_SUMMARY"
+          echo "@nteract/sift@$SIFT_VERSION npm publication is disabled until NPM_SIFT_ENABLED is true." >> "$GITHUB_STEP_SUMMARY"
+          echo "Bootstrap it with the placeholder steps in RELEASING.md; npm-package-sift holds this run's tarball." >> "$GITHUB_STEP_SUMMARY"
