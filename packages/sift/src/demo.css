@@ -1,0 +1,31 @@
+/* Demo pages only. The library stylesheet carries no page reset and no page
+   palette; the demo adds Tailwind preflight for its own chrome and shows the
+   host-theming contract by setting Sift inputs for a warm "cream" palette. */
+@import "tailwindcss/preflight.css" layer(base);
+@import "./style.css";
+
+/* Host-provided palette: set the `--sift-color-*` inputs on an ancestor of
+   `.sift-root`. Every derived tint follows. */
+[data-color-theme="cream"] {
+  --sift-color-bg: #f5f2ec;
+  --sift-color-panel: #fffdf9;
+  --sift-color-ink: #1e1a18;
+  --sift-color-muted: #6e655f;
+  --sift-color-rule: #d8cec3;
+  --sift-color-accent: #955f3b;
+  --sift-color-true: #5a8a3c;
+  --sift-color-false: #c4513a;
+  --sift-font-family: Inter, "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+[data-color-theme="cream"][data-theme="dark"],
+[data-color-theme="cream"].dark {
+  --sift-color-bg: #1a1816;
+  --sift-color-panel: #242120;
+  --sift-color-ink: #e8e2dc;
+  --sift-color-muted: #9a918a;
+  --sift-color-rule: #3a3533;
+  --sift-color-accent: #d4896a;
+  --sift-color-true: #8bc34a;
+  --sift-color-false: #e57373;
+}

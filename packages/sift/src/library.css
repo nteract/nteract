@@ -1,22 +1,54 @@
-@import "./themes/cream.css";
-@import "./themes/classic.css";
-
-* {
+/* Sift has no Tailwind preflight. These are the resets its own markup relies
+   on, limited to Sift-owned elements. `border: 0 solid` is what lets the
+   `border` utility on shared primitives draw a 1px line in the rule color. */
+.sift-root,
+.sift-root *,
+.sift-root *::before,
+.sift-root *::after {
   box-sizing: border-box;
+  border: 0 solid var(--sift-rule);
 }
 
-/* --- Shared overlay fallback surface --- */
+.sift-root {
+  font-family: var(--sift-font);
+  color: var(--sift-ink);
+}
 
-:root {
-  --sift-overlay-panel-fallback: var(--card, #ffffff);
-  --sift-overlay-ink-fallback: var(--foreground, #1a1a1a);
-  --sift-overlay-rule-fallback: var(--border, #e5e7eb);
+.sift-root button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.sift-root ul,
+.sift-root ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sift-root h1,
+.sift-root h2,
+.sift-root h3,
+.sift-root p {
+  margin: 0;
+}
+
+.sift-root img,
+.sift-root svg,
+.sift-root canvas {
+  display: block;
+  vertical-align: middle;
 }
 
 .sift-overlay-surface {
-  background-color: var(--sift-panel, var(--sift-overlay-panel-fallback));
-  border-color: var(--sift-rule, var(--sift-overlay-rule-fallback));
-  color: var(--sift-ink, var(--sift-overlay-ink-fallback));
+  background-color: var(--sift-panel);
+  border-color: var(--sift-rule);
+  color: var(--sift-ink);
 }
 
 /* --- Demo page shell --- */

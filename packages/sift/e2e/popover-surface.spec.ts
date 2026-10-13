@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 test.describe("Sift overlay surfaces", () => {
-  test("category popover remains opaque when theme panel variables are missing", async ({
+  test("category popover resolves host --sift-color-* inputs through its portal", async ({
     page,
   }) => {
     await page.goto("/?dataset=polars-utf8view");
@@ -10,14 +10,14 @@ test.describe("Sift overlay surfaces", () => {
 
     await page.locator('.sift-toggle-btn[data-mode="dark"]').click();
 
+    // A host sets Sift's inputs on an ancestor. Radix portals the popover to
+    // <body>, outside the table, so the content must carry its own .sift-root.
     await page.addStyleTag({
       content: `
-        :root,
-        :root[data-theme="dark"],
-        :root.dark {
-          --sift-panel: initial !important;
-          --sift-rule: initial !important;
-          --sift-ink: initial !important;
+        :root {
+          --sift-color-panel: rgb(1, 2, 3) !important;
+          --sift-color-rule: rgb(4, 5, 6) !important;
+          --sift-color-ink: rgb(7, 8, 9) !important;
         }
       `,
     });
@@ -29,10 +29,9 @@ test.describe("Sift overlay surfaces", () => {
       })
       .click();
 
-    const popoverContent = page
-      .locator("[data-radix-popper-content-wrapper] > .sift-overlay-surface")
-      .first();
+    const popoverContent = page.locator("[data-radix-popper-content-wrapper] > .sift-root").first();
     await expect(popoverContent).toBeVisible();
+    await expect(popoverContent).toHaveClass(/sift-root/);
 
     const styles = await popoverContent.evaluate((el) => {
       const style = getComputedStyle(el);
@@ -43,8 +42,8 @@ test.describe("Sift overlay surfaces", () => {
       };
     });
 
-    expect(styles.backgroundColor).toBe("rgb(23, 23, 23)");
-    expect(styles.borderColor).toBe("rgb(42, 42, 42)");
-    expect(styles.color).toBe("rgb(229, 229, 229)");
+    expect(styles.backgroundColor).toBe("rgb(1, 2, 3)");
+    expect(styles.borderColor).toBe("rgb(4, 5, 6)");
+    expect(styles.color).toBe("rgb(7, 8, 9)");
   });
 });

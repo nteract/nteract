@@ -192,14 +192,36 @@ function updateDocumentTheme(isDark: boolean, colorTheme?: string | null) {
 
   // Update CSS variables for base styles (background kept transparent for cell focus colors to show through)
   const isCream = root.getAttribute("data-color-theme") === "cream";
-  // Set --sift-bg to the notebook's background so the table container is
-  // opaque (prevents focused-cell highlight from bleeding through the iframe).
-  // Leave --sift-panel to sift's theme CSS — it needs to be brighter than
-  // --sift-bg so rows have visible contrast.
-  root.style.setProperty(
-    "--sift-bg",
-    isCream ? (isDark ? "#1a1816" : "#f5f2ec") : isDark ? "#0d1117" : "#ffffff",
-  );
+  // Sift reads its palette from `--sift-color-*` inputs on an ancestor of its
+  // root (packages/sift/src/tokens.css). The table background is set to the
+  // notebook's so the container is opaque and the focused-cell highlight does
+  // not bleed through the iframe. Cream supplies its full palette; classic
+  // keeps Sift's defaults for everything else.
+  const siftPalette: Record<string, string | null> = isCream
+    ? {
+        "--sift-color-bg": isDark ? "#1a1816" : "#f5f2ec",
+        "--sift-color-panel": isDark ? "#242120" : "#fffdf9",
+        "--sift-color-ink": isDark ? "#e8e2dc" : "#1e1a18",
+        "--sift-color-muted": isDark ? "#9a918a" : "#6e655f",
+        "--sift-color-rule": isDark ? "#3a3533" : "#d8cec3",
+        "--sift-color-accent": isDark ? "#d4896a" : "#955f3b",
+        "--sift-color-true": isDark ? "#8bc34a" : "#5a8a3c",
+        "--sift-color-false": isDark ? "#e57373" : "#c4513a",
+      }
+    : {
+        "--sift-color-bg": isDark ? "#0d1117" : "#ffffff",
+        "--sift-color-panel": null,
+        "--sift-color-ink": null,
+        "--sift-color-muted": null,
+        "--sift-color-rule": null,
+        "--sift-color-accent": null,
+        "--sift-color-true": null,
+        "--sift-color-false": null,
+      };
+  for (const [name, value] of Object.entries(siftPalette)) {
+    if (value === null) root.style.removeProperty(name);
+    else root.style.setProperty(name, value);
+  }
   if (isCream) {
     root.style.setProperty("--bg-primary", "transparent");
     root.style.setProperty("--bg-secondary", isDark ? "#242120" : "#f0ede7");

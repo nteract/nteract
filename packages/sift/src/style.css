@@ -1,9 +1,12 @@
-@import "tailwindcss";
+/* Sift's embeddable stylesheet. No Tailwind preflight and no :root tokens:
+   everything is keyed on `.sift-root` (see tokens.css), so a host can load this
+   into its own document. The demo pages add preflight via demo.css. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
 @import "@nteract/odometer/style.css";
-/* App design tokens + @theme mapping so the shared primitives aliased from
-   @/components/ui/* render with our palette (bg-primary, border-input, ring, …)
-   instead of sift's prototype accent. @source pulls their utility classes into
-   this build since they live outside packages/sift. */
-@import "../../../src/styles/notebook-tokens.css";
+/* Shared primitives aliased from @/components/ui live outside this package;
+   @source pulls their utility classes into this build. */
 @source "../../../src/components/ui";
+@import "./tokens.css";
 @import "./library.css";

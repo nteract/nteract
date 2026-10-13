@@ -4,7 +4,7 @@
  */
 import { createRoot } from "react-dom/client";
 import { SiftTable } from "./react";
-import "./style.css";
+import "./demo.css";
 
 const cells = [
   { label: "Generated Dataset (100k rows)", url: "/data.arrow" },

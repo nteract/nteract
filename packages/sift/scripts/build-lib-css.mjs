@@ -47,7 +47,22 @@ if (compiler.features & Features.Utilities) {
 }
 
 const output = compiler.build(candidates);
-const optimized = optimize(output, { file: inputPath, minify: true });
+
+// Tailwind emits its theme variables (--spacing, --text-sm, ...) on
+// `:root, :host`. Sift writes nothing to the document root, so move that
+// block onto `.sift-root`, where the utilities that read it already live.
+const themeSelector = /^(\s*):root,\s*:host\s*\{/m;
+if (!themeSelector.test(output)) {
+  throw new Error("Expected one Tailwind `:root, :host` theme block in the compiled CSS.");
+}
+const scoped = output.replace(themeSelector, "$1.sift-root {");
+if (/:root|:host/.test(scoped)) {
+  throw new Error(
+    "Compiled Sift CSS still targets the document root; it must only style .sift-root.",
+  );
+}
+
+const optimized = optimize(scoped, { file: inputPath, minify: true });
 
 await mkdir(dirname(outputPath), { recursive: true });
 await writeFile(outputPath, optimized.code);
