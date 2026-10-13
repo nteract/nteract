@@ -690,6 +690,128 @@ fn collect_file_batches(
     Ok(batches)
 }
 
+/// Rows per decoded Parquet batch on the bounded file path.
+const PARQUET_BATCH_ROWS: u64 = 1024;
+
+/// Retained bytes `FileMemory::add_array` charges one array in one batch on top
+/// of its data: the array and buffer structs, plus 64-byte capacity rounding for
+/// the values and validity buffers.
+fn array_overhead_bytes() -> u64 {
+    (std::mem::size_of::<arrow::array::ArrayData>()
+        + 2 * std::mem::size_of::<arrow::buffer::Buffer>()
+        + 2 * 64) as u64
+}
+
+/// Collects leaf Arrow types depth-first, which is Parquet's leaf-column order.
+fn arrow_leaf_types<'a>(data_type: &'a DataType, leaves: &mut Vec<&'a DataType>) {
+    match data_type {
+        DataType::Struct(fields) => {
+            for field in fields {
+                arrow_leaf_types(field.data_type(), leaves);
+            }
+        }
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::FixedSizeList(field, _)
+        | DataType::Map(field, _) => arrow_leaf_types(field.data_type(), leaves),
+        leaf => leaves.push(leaf),
+    }
+}
+
+/// Decoded Arrow bits per value for leaves whose size follows from their type:
+/// nulls, booleans, primitives, and fixed-size binary. `None` for
+/// variable-width leaves (strings, binaries, dictionaries).
+fn fixed_leaf_bits(leaf: &DataType) -> Option<u64> {
+    match leaf {
+        DataType::Null => Some(0),
+        DataType::Boolean => Some(1),
+        DataType::FixedSizeBinary(width) => u64::try_from(*width).ok().map(|width| width * 8),
+        leaf => leaf.primitive_width().map(|width| width as u64 * 8),
+    }
+}
+
+/// Estimated decoded Arrow bytes for one Parquet leaf column chunk, before
+/// per-batch array overhead.
+///
+/// Fixed-width leaves decode to their Arrow width per value whatever the page
+/// encoding, and booleans to one bit, so their estimate is the data plus a
+/// validity bitmap per optional level and offsets per repeated level.
+/// Variable-width leaves and leaves without a known Arrow type keep a
+/// conservative allowance: uncompressed pages undercount Arrow offsets and
+/// dictionary expansion, so charge twice the page bytes plus 16 bytes per value.
+///
+/// Neither is an upper bound. The decoder grows fixed-width value buffers in
+/// steps across nulls and page boundaries, which can leave up to twice their
+/// length in capacity, and dictionary-encoded strings can expand past the
+/// allowance. The retained-memory check charges both while decoding.
+fn estimated_chunk_bytes(
+    bits: Option<u64>,
+    column: &parquet::file::metadata::ColumnChunkMetaData,
+) -> Result<u64, String> {
+    let values =
+        u64::try_from(column.num_values()).map_err(|_| "Invalid negative Parquet value count")?;
+    let Some(bits) = bits else {
+        let uncompressed = u64::try_from(column.uncompressed_size())
+            .map_err(|_| "Invalid negative Parquet uncompressed size")?;
+        return Ok(uncompressed
+            .saturating_mul(2)
+            .saturating_add(values.saturating_mul(16)));
+    };
+    let descriptor = column.column_descr();
+    let optional_levels = u64::from(descriptor.max_def_level().unsigned_abs());
+    let repeated_levels = u64::from(descriptor.max_rep_level().unsigned_abs());
+    Ok(values
+        .saturating_mul(bits)
+        .div_ceil(8)
+        .saturating_add(values.div_ceil(8).saturating_mul(optional_levels))
+        .saturating_add(values.saturating_mul(8).saturating_mul(repeated_levels)))
+}
+
+/// Footer-only estimate of the Arrow memory a complete Parquet decode retains.
+fn estimated_parquet_bytes(
+    schema: &arrow::datatypes::Schema,
+    metadata: &parquet::file::metadata::ParquetMetaData,
+) -> Result<u64, String> {
+    let mut leaves = Vec::new();
+    for field in schema.fields() {
+        arrow_leaf_types(field.data_type(), &mut leaves);
+    }
+    let columns = metadata.file_metadata().schema_descr();
+    // If the Arrow leaves ever fail to line up with the Parquet leaf columns,
+    // every column takes the conservative variable-width allowance.
+    let bits: Vec<Option<u64>> = if leaves.len() == columns.num_columns() {
+        leaves.iter().copied().map(fixed_leaf_bits).collect()
+    } else {
+        vec![None; columns.num_columns()]
+    };
+    let mut estimate = 0u64;
+    let mut rows = 0u64;
+    for group in metadata.row_groups() {
+        rows = rows.saturating_add(
+            u64::try_from(group.num_rows()).map_err(|_| "Invalid negative Parquet row count")?,
+        );
+        for (column, bits) in group.columns().iter().zip(&bits) {
+            estimate = estimate.saturating_add(estimated_chunk_bytes(*bits, column)?);
+        }
+    }
+    // The reader fills every batch across row-group boundaries, so it decodes
+    // ceil(rows / batch size) batches whatever the row-group layout. Each batch
+    // holds one array per fixed-width leaf, plus one per repeated level for its
+    // list offsets.
+    let batches = rows.div_ceil(PARQUET_BATCH_ROWS);
+    for (descriptor, bits) in columns.columns().iter().zip(&bits) {
+        if bits.is_some() {
+            let arrays = 1 + u64::from(descriptor.max_rep_level().unsigned_abs());
+            estimate = estimate.saturating_add(
+                batches
+                    .saturating_mul(array_overhead_bytes())
+                    .saturating_mul(arrays),
+            );
+        }
+    }
+    Ok(estimate)
+}
+
 fn bounded_parquet_batches(
     parquet_bytes: &[u8],
     limits: FileLimits,
@@ -709,25 +831,12 @@ fn bounded_parquet_batches(
         limits.columns,
         "leaf column",
     )?;
-    // Uncompressed page sizes alone undercount Arrow offsets and dictionary
-    // expansion. Allow overhead per value and a multiplier, then also check
-    // retained Arrow memory below. The estimate is deliberately conservative,
-    // but is not an upper bound for arbitrary dictionary-encoded strings.
-    let mut estimate = 0u64;
-    for group in metadata.row_groups() {
-        for column in group.columns() {
-            let size = u64::try_from(column.uncompressed_size())
-                .map_err(|_| "Invalid negative Parquet uncompressed size")?;
-            let values = u64::try_from(column.num_values())
-                .map_err(|_| "Invalid negative Parquet value count")?;
-            estimate = estimate
-                .saturating_add(size.saturating_mul(2))
-                .saturating_add(values.saturating_mul(16));
-        }
-    }
+    // Admission runs on footer metadata alone; retained Arrow memory is checked
+    // again after every decoded batch below.
+    let estimate = estimated_parquet_bytes(&schema, metadata)?;
     check_file_limit(estimate, limits.decoded_bytes, "estimated decoded bytes")?;
     let reader = builder
-        .with_batch_size(1024)
+        .with_batch_size(PARQUET_BATCH_ROWS as usize)
         .build()
         .map_err(|e| e.to_string())?;
     let batches = collect_file_batches(reader, limits)?;
@@ -2818,6 +2927,202 @@ mod tests {
         assert!(bounded_parquet_batches(&parquet, limits)
             .unwrap_err()
             .contains("estimated decoded bytes limit"));
+    }
+
+    fn default_parquet(batch: &RecordBatch) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut writer =
+            parquet::arrow::ArrowWriter::try_new(&mut bytes, batch.schema(), None).unwrap();
+        writer.write(batch).unwrap();
+        writer.close().unwrap();
+        bytes
+    }
+
+    fn boolean_table(rows: usize, columns: usize) -> RecordBatch {
+        RecordBatch::try_from_iter((0..columns).map(|col| {
+            (
+                format!("flag_{col}"),
+                Arc::new(BooleanArray::from_iter(
+                    (0..rows).map(|row| Some((row + col) % 2 == 0)),
+                )) as ArrayRef,
+            )
+        }))
+        .unwrap()
+    }
+
+    fn retained_bytes(batches: &[RecordBatch]) -> u64 {
+        let mut memory = FileMemory::default();
+        for batch in batches {
+            for column in batch.columns() {
+                memory.add_array(&column.to_data());
+            }
+        }
+        memory.bytes
+    }
+
+    #[test]
+    fn bounded_parquet_admits_compact_wide_boolean_tables() {
+        // 1.8 million booleans retain a few MiB of Arrow memory at most, while
+        // a flat 16-byte-per-value allowance would charge them 28.8 MB.
+        let bytes = default_parquet(&boolean_table(20_000, 90));
+        let mut limits = file_limits();
+        limits.decoded_bytes = 4 * 1024 * 1024;
+        let (schema, batches) = bounded_parquet_batches(&bytes, limits).unwrap();
+        assert_eq!(schema.fields().len(), 90);
+        assert_eq!(
+            batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
+            20_000
+        );
+    }
+
+    #[test]
+    fn parquet_estimate_follows_arrow_leaf_widths() {
+        use arrow::array::ListArray;
+        use arrow::datatypes::Int32Type;
+        use parquet::basic::Type as PhysicalType;
+
+        let rows = 10_000usize;
+        let point = StructArray::from(vec![
+            (
+                Arc::new(Field::new("x", DataType::Int32, true)),
+                Arc::new(Int32Array::from_iter_values(0..rows as i32)) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("label", DataType::Utf8, true)),
+                Arc::new(StringArray::from_iter_values(
+                    (0..rows).map(|row| format!("row-{row}")),
+                )) as ArrayRef,
+            ),
+        ]);
+        let tags = ListArray::from_iter_primitive::<Int32Type, _, _>(
+            (0..rows).map(|row| Some(vec![Some(row as i32), None])),
+        );
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "flag",
+                Arc::new(BooleanArray::from_iter(
+                    (0..rows).map(|row| Some(row % 3 == 0)),
+                )) as ArrayRef,
+            ),
+            (
+                "count",
+                Arc::new(Int64Array::from_iter_values(0..rows as i64)) as ArrayRef,
+            ),
+            ("point", Arc::new(point) as ArrayRef),
+            ("tags", Arc::new(tags) as ArrayRef),
+        ])
+        .unwrap();
+        let bytes = default_parquet(&batch);
+        let builder =
+            ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes.clone())).unwrap();
+        let schema = builder.schema().clone();
+        let metadata = builder.metadata().clone();
+
+        // Depth-first Arrow leaves line up with Parquet's leaf columns.
+        let mut leaves = Vec::new();
+        for field in schema.fields() {
+            arrow_leaf_types(field.data_type(), &mut leaves);
+        }
+        assert_eq!(
+            leaves,
+            [
+                &DataType::Boolean,
+                &DataType::Int64,
+                &DataType::Int32,
+                &DataType::Utf8,
+                &DataType::Int32
+            ]
+        );
+        let physical: Vec<_> = metadata
+            .file_metadata()
+            .schema_descr()
+            .columns()
+            .iter()
+            .map(|column| column.physical_type())
+            .collect();
+        assert_eq!(
+            physical,
+            [
+                PhysicalType::BOOLEAN,
+                PhysicalType::INT64,
+                PhysicalType::INT32,
+                PhysicalType::BYTE_ARRAY,
+                PhysicalType::INT32
+            ]
+        );
+
+        let columns = metadata.row_group(0).columns();
+        let estimate = |index: usize| {
+            estimated_chunk_bytes(fixed_leaf_bits(leaves[index]), &columns[index]).unwrap()
+        };
+        let values = |index: usize| columns[index].num_values() as u64;
+        let conservative =
+            |index: usize| 2 * columns[index].uncompressed_size() as u64 + 16 * values(index);
+        // Booleans and fixed-width leaves cost their Arrow data, far below the
+        // page-based allowance; repeated leaves add list offsets.
+        assert!(estimate(0) < values(0));
+        assert!(estimate(1) >= values(1) * 8 && estimate(1) < conservative(1) / 2);
+        assert!(estimate(2) >= values(2) * 4 && estimate(2) < conservative(2) / 2);
+        assert!(estimate(4) >= values(4) * (4 + 8));
+        // Variable-width leaves keep the page-based allowance.
+        assert_eq!(estimate(3), conservative(3));
+
+        // Admission covers what the retained-memory check counts while decoding
+        // this file.
+        let total = estimated_parquet_bytes(&schema, &metadata).unwrap();
+        let (_, decoded) = bounded_parquet_batches(&bytes, file_limits()).unwrap();
+        assert!(total >= retained_bytes(&decoded));
+
+        // Without matching leaf types, every column takes the allowance.
+        let unrelated =
+            arrow::datatypes::Schema::new(vec![Field::new("flag", DataType::Boolean, true)]);
+        assert_eq!(
+            estimated_parquet_bytes(&unrelated, &metadata).unwrap(),
+            (0..columns.len()).map(conservative).sum::<u64>()
+        );
+    }
+
+    #[test]
+    fn parquet_estimate_covers_retained_memory_for_wide_booleans() {
+        let bytes = default_parquet(&boolean_table(20_000, 90));
+        let builder =
+            ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes.clone())).unwrap();
+        let estimate = estimated_parquet_bytes(builder.schema(), builder.metadata()).unwrap();
+        let (_, decoded) = bounded_parquet_batches(&bytes, file_limits()).unwrap();
+        assert!(estimate >= retained_bytes(&decoded));
+    }
+
+    #[test]
+    fn parquet_estimate_charges_array_overhead_per_batch_not_per_row_group() {
+        let rows = 4_000;
+        let batch = RecordBatch::try_from_iter(vec![(
+            "count",
+            Arc::new(Int64Array::from_iter_values(0..rows as i64)) as ArrayRef,
+        )])
+        .unwrap();
+        let mut bytes = Vec::new();
+        let mut writer =
+            parquet::arrow::ArrowWriter::try_new(&mut bytes, batch.schema(), None).unwrap();
+        for offset in (0..rows).step_by(10) {
+            writer.write(&batch.slice(offset, 10)).unwrap();
+            writer.flush().unwrap();
+        }
+        writer.close().unwrap();
+        let builder =
+            ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes.clone())).unwrap();
+        assert_eq!(builder.metadata().num_row_groups(), 400);
+
+        // The estimate relies on the reader filling batches across row groups.
+        let (_, decoded) = bounded_parquet_batches(&bytes, file_limits()).unwrap();
+        assert_eq!(decoded.len(), rows.div_ceil(PARQUET_BATCH_ROWS as usize));
+
+        // 400 chunks of ten required Int64 values cost 80 data bytes each;
+        // array overhead follows the 4 batches.
+        let batches = (rows as u64).div_ceil(PARQUET_BATCH_ROWS);
+        assert_eq!(
+            estimated_parquet_bytes(builder.schema(), builder.metadata()).unwrap(),
+            400 * 80 + batches * array_overhead_bytes()
+        );
     }
 
     #[test]

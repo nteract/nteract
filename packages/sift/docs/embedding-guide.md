@@ -106,18 +106,23 @@ containers and compressed IPC streams are not supported by this path.
 
 Binary input defaults to 16 MiB, 100,000 rows, 256 columns, and a 128 MiB decoded
 memory guardrail (`maxBytes`, `maxRows`, `maxColumns`, `maxDecodedBytes`). Parquet
-checks footer metadata before decoding using an estimate of twice the
-uncompressed page bytes plus 16 bytes per leaf value, summed across all row
-groups. That conservative estimate can reject compact, wide tables whose actual
-Arrow allocation would be smaller: 100,000 rows across 84 boolean columns already
-exceed the default guard from the per-value allowance alone. The row, column,
+checks footer metadata before decoding, summed across all row groups. Boolean and
+fixed-width leaves (integers, floats, dates, times, timestamps, decimals,
+fixed-size binary) are charged their Arrow width per value, plus validity, list
+offsets, and per-batch array overhead, so compact wide tables such as 100,000
+rows across 90 boolean columns fit the default guard. Variable-width leaves
+(strings, binaries, dictionaries) keep a conservative allowance of twice the
+uncompressed page bytes plus 16 bytes per value, so string-heavy files can still
+be rejected below the byte, row, and column caps. The row, column,
 input-byte, and decoded-byte limits are independent ceilings, not a promise that
 every file below the first three will load. Retained Arrow allocations are also
-checked after each decoded batch. These are admission limits, not a process
-memory sandbox: dictionaries, decoder batches, summaries, copies, and temporary
-allocations add memory. Raising `maxDecodedBytes` relaxes both the Parquet estimate
-and retained-allocation checks; hosts should do so only with an appropriate
-memory budget.
+checked after each decoded batch. That check counts decoder buffer capacity,
+which can reach twice the data of a numeric column with nulls, so a file the
+footer estimate admits can still be rejected. These are admission limits, not a
+process memory sandbox: dictionaries, decoder batches, summaries, copies, and
+temporary allocations add memory. Raising `maxDecodedBytes` relaxes both the
+Parquet estimate and retained-allocation checks; hosts should do so only with an
+appropriate memory budget.
 
 This API materializes a complete file. Virtual scrolling bounds rendered DOM,
 not the loaded dataset. Sorting, filtering, and summaries cover all accepted

@@ -121,6 +121,22 @@ describe.skipIf(!existsSync(wasmPath))("loadTableFile with real WASM", () => {
     }
   });
 
+  it("loads a compact wide boolean Parquet table within the default limits", async () => {
+    const flags = Array.from({ length: 100_000 }, (_, row) => row % 3 === 0);
+    const columns = Object.fromEntries(
+      Array.from({ length: 90 }, (_, col) => [`flag_${col}`, flags]),
+    );
+    const data = await loadTableFile(writeParquet(tableToIPC(tableFromArrays(columns), "stream")));
+    try {
+      expect(data.rowCount).toBe(100_000);
+      expect(data.columns).toHaveLength(90);
+      expect(data.getCellRaw(99_999, 89)).toBe(true);
+      expect(data.getCellRaw(99_998, 89)).toBe(false);
+    } finally {
+      data.dispose?.();
+    }
+  });
+
   it.each(["parquet", "arrow-ipc"] as const)(
     "keeps Float32 and UInt32 raw values, summaries, and filters consistent in %s",
     async (format) => {
