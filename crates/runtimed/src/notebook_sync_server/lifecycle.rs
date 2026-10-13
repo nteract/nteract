@@ -180,9 +180,7 @@ pub struct StagedChangeBatch {
 #[derive(Clone)]
 pub struct StagedExecutionImport {
     pub execution_id: String,
-    pub success: bool,
-    pub execution_count: Option<i64>,
-    pub outputs: Vec<serde_json::Value>,
+    pub state: runtime_doc::ExecutionState,
 }
 
 #[derive(Clone)]

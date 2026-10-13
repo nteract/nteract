@@ -890,9 +890,7 @@ fn prepared_runtime_sidecars(
             let execution = prepared_cell.execution.as_ref()?;
             Some(StagedExecutionImport {
                 execution_id: execution.execution_id.clone(),
-                success: execution.success,
-                execution_count: prepared_cell.cell.execution_count.parse::<i64>().ok(),
-                outputs: prepared_cell.output_refs.clone(),
+                state: execution.state.clone(),
             })
         })
         .collect();
@@ -918,21 +916,60 @@ fn prepared_runtime_sidecars(
 /// publishing outputs under that new id would leave the recovered NotebookDoc
 /// pointing at missing RuntimeState. The journaled document is authoritative
 /// for this identity, so recovery reuses its exact id.
-fn bind_prepared_executions_to_staged_document(
+async fn bind_prepared_executions_to_staged_document(
     prepared: &mut PreparedInitialImport,
-    doc: &NotebookDoc,
+    execution_ids: &HashMap<String, String>,
+    notebook_id: &str,
+    notebook_path: &str,
+    execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
 ) -> Result<(), String> {
     for prepared_cell in &mut prepared.cells {
         let Some(execution) = prepared_cell.execution.as_mut() else {
             continue;
         };
-        let Some(staged_execution_id) = doc.get_execution_id(&prepared_cell.cell.id) else {
+        let Some(staged_execution_id) = execution_ids.get(&prepared_cell.cell.id) else {
             return Err(format!(
                 "source_degraded: recovered cell {} is missing its staged execution identity",
                 prepared_cell.cell.id
             ));
         };
-        execution.execution_id = staged_execution_id;
+        // Never attach provenance found by content under a different ID to
+        // the journal's execution ID. Resolve that exact durable record anew.
+        *execution = LoadedExecution::synthetic(
+            staged_execution_id.clone(),
+            prepared_cell.cell.execution_count.parse::<i64>().ok(),
+            &prepared_cell.output_refs,
+        );
+        if let Some(store) = execution_store {
+            if let Some(record) = store.read_record(staged_execution_id).await {
+                if record.execution_id != *staged_execution_id
+                    || !(record.matches_recovered_notebook_cell(
+                        notebook_id,
+                        notebook_path,
+                        &prepared_cell.cell.id,
+                        execution.state.execution_count,
+                        &prepared_cell.output_refs,
+                    ) || record.matches_notebook_cell(
+                        notebook_path,
+                        Some(notebook_path),
+                        &prepared_cell.cell.id,
+                        &prepared_cell.cell.source,
+                        execution.state.execution_count,
+                        &prepared_cell.output_refs,
+                    ))
+                {
+                    return Err(format!(
+                        "source_degraded: durable execution {staged_execution_id} does not match the recovered notebook result"
+                    ));
+                }
+                // A fresh import can journal a content-validated execution
+                // before peer persistence qualifies its record for this room.
+                // That retry must satisfy the same strict source/content
+                // admission as a fresh load; a foreign identity alone cannot
+                // recover provenance for edited source.
+                *execution = LoadedExecution::from_record(&record, &prepared_cell.output_refs);
+            }
+        }
     }
     Ok(())
 }
@@ -956,14 +993,7 @@ fn apply_runtime_sidecars(
     room.state
         .with_doc(|state| {
             for execution in executions {
-                state.create_execution(&execution.execution_id)?;
-                if !execution.outputs.is_empty() {
-                    state.set_outputs(&execution.execution_id, &execution.outputs)?;
-                }
-                if let Some(count) = execution.execution_count {
-                    state.set_execution_count(&execution.execution_id, count)?;
-                }
-                state.set_execution_done(&execution.execution_id, execution.success)?;
+                state.restore_terminal_execution(&execution.execution_id, &execution.state)?;
             }
             for comm in widget_comms {
                 state.put_comm(
@@ -1073,7 +1103,7 @@ pub(crate) async fn finalize_recovered_source(
         );
     }
 
-    let (cell_count, document_heads) = {
+    let (cell_count, document_heads, execution_ids) = {
         let mut doc = room.doc.write().await;
         // A staged frontier proves all of its causal ancestors are present;
         // version 2 no longer persists every historical staged change hash.
@@ -1085,9 +1115,24 @@ pub(crate) async fn finalize_recovered_source(
                 ));
             }
         }
-        bind_prepared_executions_to_staged_document(&mut prepared, &doc)?;
-        (doc.cell_count(), doc.get_heads_hex())
+        let execution_ids = doc
+            .get_cell_ids()
+            .into_iter()
+            .filter_map(|cell_id| {
+                doc.get_execution_id(&cell_id)
+                    .map(|execution_id| (cell_id, execution_id))
+            })
+            .collect();
+        (doc.cell_count(), doc.get_heads_hex(), execution_ids)
     };
+    bind_prepared_executions_to_staged_document(
+        &mut prepared,
+        &execution_ids,
+        &room.id.to_string(),
+        &path.to_string_lossy(),
+        execution_store,
+    )
+    .await?;
     let (executions, widget_comms) = prepared_runtime_sidecars(&prepared);
     apply_runtime_sidecars(room, &executions, &widget_comms)?;
     *room.persistence.last_save_sources.write().await = prepared.loaded_sources;
@@ -1471,7 +1516,58 @@ pub(crate) async fn retry_failed_room_initial_load_if_safe(
 #[derive(Debug, Clone)]
 struct LoadedExecution {
     execution_id: String,
-    success: bool,
+    state: runtime_doc::ExecutionState,
+}
+
+impl LoadedExecution {
+    fn from_record(
+        record: &runtimed_client::execution_store::ExecutionRecord,
+        imported_outputs: &[serde_json::Value],
+    ) -> Self {
+        let mut state = record.execution_state();
+        // Pre-output-ID records can still match current file content. Preserve
+        // every known ID and use the validated import's ID only when absent.
+        for (output, imported) in state.outputs.iter_mut().zip(imported_outputs) {
+            if output
+                .get("output_id")
+                .and_then(|value| value.as_str())
+                .is_none_or(str::is_empty)
+            {
+                if let (Some(object), Some(id)) =
+                    (output.as_object_mut(), imported.get("output_id"))
+                {
+                    object.insert("output_id".into(), id.clone());
+                }
+            }
+        }
+        Self {
+            execution_id: record.execution_id.clone(),
+            state,
+        }
+    }
+
+    fn synthetic(
+        execution_id: String,
+        execution_count: Option<i64>,
+        outputs: &[serde_json::Value],
+    ) -> Self {
+        let success = !outputs.iter().any(|output| {
+            output.get("output_type").and_then(|value| value.as_str()) == Some("error")
+        });
+        Self {
+            execution_id,
+            state: runtime_doc::ExecutionState {
+                status: if success { "done" } else { "error" }.to_string(),
+                execution_count,
+                success: Some(success),
+                outputs: outputs.to_vec(),
+                source: None,
+                cell_id: None,
+                seq: None,
+                submitted_by_actor_label: None,
+            },
+        }
+    }
 }
 
 struct DurableExecutionLookup<'a> {
@@ -1510,16 +1606,14 @@ fn durable_or_synthetic_execution(
             )
     }) {
         claimed_execution_ids.insert(record.execution_id.clone());
-        return LoadedExecution {
-            execution_id: record.execution_id.clone(),
-            success: record.terminal_success(),
-        };
+        return LoadedExecution::from_record(record, lookup.outputs);
     }
 
-    LoadedExecution {
-        execution_id: uuid::Uuid::new_v4().to_string(),
-        success: true,
-    }
+    LoadedExecution::synthetic(
+        uuid::Uuid::new_v4().to_string(),
+        lookup.execution_count,
+        lookup.outputs,
+    )
 }
 
 /// Create a new notebook with daemon-owned default metadata and one code cell.

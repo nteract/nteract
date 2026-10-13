@@ -61,7 +61,7 @@ impl ExecutionRecord {
             context_id: context_id.into(),
             notebook_id: None,
             notebook_path,
-            cell_id: None,
+            cell_id: exec.cell_id.clone(),
             status: exec.status.clone(),
             success: exec.success,
             execution_count: exec.execution_count,
@@ -139,6 +139,7 @@ impl ExecutionRecord {
         outputs: &[serde_json::Value],
     ) -> bool {
         self.schema_version == EXECUTION_RECORD_SCHEMA_VERSION
+            && self.is_terminal()
             && self.context_kind == "notebook"
             && self.context_id == context_id
             && self.notebook_path.as_deref() == notebook_path
@@ -149,6 +150,45 @@ impl ExecutionRecord {
             && self.source.as_deref() == Some(source)
             && self.execution_count == execution_count
             && outputs_match_for_reload(&self.outputs, outputs)
+    }
+
+    /// Journal recovery already supplies the execution ID. Require independent
+    /// room identity and the persisted result, but not current cell source:
+    /// users may edit a cell after executing it. Legacy path-only records also
+    /// require their original path context. This admission check is only for
+    /// an exact execution ID already owned by the recovered NotebookDoc; it
+    /// must not be used to authorize standalone result reads by path.
+    pub fn matches_recovered_notebook_cell(
+        &self,
+        notebook_id: &str,
+        notebook_path: &str,
+        cell_id: &str,
+        execution_count: Option<i64>,
+        outputs: &[serde_json::Value],
+    ) -> bool {
+        self.schema_version == EXECUTION_RECORD_SCHEMA_VERSION
+            && self.is_terminal()
+            && (self.belongs_to_notebook(notebook_id)
+                || (self.notebook_id.is_none()
+                    && self.context_kind == "notebook"
+                    && self.context_id == notebook_path
+                    && self.notebook_path.as_deref() == Some(notebook_path)))
+            && self.cell_id.as_deref().is_none_or(|id| id == cell_id)
+            && self.execution_count == execution_count
+            && outputs_match_for_reload(&self.outputs, outputs)
+    }
+
+    pub fn execution_state(&self) -> runtime_doc::ExecutionState {
+        runtime_doc::ExecutionState {
+            status: self.status.clone(),
+            execution_count: self.execution_count,
+            success: self.success,
+            outputs: self.outputs.clone(),
+            source: self.source.clone(),
+            cell_id: self.cell_id.clone(),
+            seq: self.seq,
+            submitted_by_actor_label: self.submitted_by_actor_label.clone(),
+        }
     }
 }
 
@@ -460,7 +500,7 @@ mod tests {
     #[test]
     fn notebook_record_constructor_separates_identity_from_path_context() {
         let exec: runtime_doc::ExecutionState = serde_json::from_value(
-            serde_json::json!({"status":"done","source":"1 + 1","outputs":[]}),
+            serde_json::json!({"status":"done","source":"1 + 1","cell_id":"cell-1","outputs":[]}),
         )
         .unwrap();
         let saved = ExecutionRecord::from_notebook_execution_state(
@@ -470,6 +510,8 @@ mod tests {
             &exec,
         );
         assert_eq!(saved.notebook_id.as_deref(), Some(NOTEBOOK_A));
+        assert_eq!(saved.cell_id.as_deref(), Some("cell-1"));
+        assert_eq!(saved.execution_state(), exec);
         assert_eq!(saved.context_id, "/tmp/shared.ipynb");
         assert_eq!(saved.notebook_path.as_deref(), Some("/tmp/shared.ipynb"));
         let untitled =
@@ -499,6 +541,88 @@ mod tests {
         assert!(record.belongs_to_notebook(NOTEBOOK_B));
         record.context_kind = "other".into();
         assert!(!record.belongs_to_notebook(NOTEBOOK_B));
+    }
+
+    #[test]
+    fn recovered_result_requires_notebook_identity_cell_count_and_outputs() {
+        let mut record = record("exec-1");
+        let outputs = record.outputs.clone();
+        assert!(!record.matches_recovered_notebook_cell(
+            NOTEBOOK_A,
+            "/tmp/other.ipynb",
+            "cell-1",
+            Some(1),
+            &outputs
+        ));
+        assert!(record.matches_recovered_notebook_cell(
+            NOTEBOOK_A,
+            "/tmp/a.ipynb",
+            "cell-1",
+            Some(1),
+            &outputs
+        ));
+        assert!(!record.belongs_to_notebook(NOTEBOOK_A));
+        record.notebook_id = Some(NOTEBOOK_A.into());
+        assert!(record.matches_recovered_notebook_cell(
+            NOTEBOOK_A,
+            "/tmp/a.ipynb",
+            "cell-1",
+            Some(1),
+            &outputs
+        ));
+        assert!(!record.matches_recovered_notebook_cell(
+            NOTEBOOK_B,
+            "/tmp/a.ipynb",
+            "cell-1",
+            Some(1),
+            &outputs
+        ));
+        assert!(!record.matches_recovered_notebook_cell(
+            NOTEBOOK_A,
+            "/tmp/a.ipynb",
+            "cell-2",
+            Some(1),
+            &outputs
+        ));
+        assert!(!record.matches_recovered_notebook_cell(
+            NOTEBOOK_A,
+            "/tmp/a.ipynb",
+            "cell-1",
+            Some(2),
+            &outputs
+        ));
+        assert!(!record.matches_recovered_notebook_cell(
+            NOTEBOOK_A,
+            "/tmp/a.ipynb",
+            "cell-1",
+            Some(1),
+            &[]
+        ));
+        record.source = None;
+        record.cell_id = None;
+        assert!(record.matches_recovered_notebook_cell(
+            NOTEBOOK_A,
+            "/tmp/a.ipynb",
+            "cell-1",
+            Some(1),
+            &outputs
+        ));
+        record.status = "running".into();
+        assert!(!record.matches_recovered_notebook_cell(
+            NOTEBOOK_A,
+            "/tmp/a.ipynb",
+            "cell-1",
+            Some(1),
+            &outputs
+        ));
+        assert!(!record.matches_notebook_cell(
+            "/tmp/a.ipynb",
+            Some("/tmp/a.ipynb"),
+            "cell-1",
+            "1 + 1",
+            Some(1),
+            &outputs
+        ));
     }
 
     #[tokio::test]
