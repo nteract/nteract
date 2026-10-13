@@ -144,6 +144,7 @@ test("changelog excludes reserved tags without touching the remote", () => {
   const filter = body.indexOf("bash scripts/ci/filter-unpublished-release-tags.sh");
   assert.ok(filter >= 0 && filter < body.indexOf("CHANGELOG=$(git-cliff"));
   assert.match(body, /select\(\.draft == false\)/);
+  assert.ok(body.includes("git tag -l 'v*-stable.*' --merged HEAD --sort=-creatordate"));
   assert.ok(body.includes('filter-unpublished-release-tags.sh "$RUNNER_TEMP/published-release-tags" "$TAG_NAME"'));
   assert.ok(validation.includes("      - scripts/ci/filter-unpublished-release-tags.sh\n"));
 });

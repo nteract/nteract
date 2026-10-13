@@ -181,6 +181,36 @@ class ReleaseTagTests(unittest.TestCase):
                 self.assertEqual(self.git("ls-remote", "origin"), before)
                 self.git("tag", "-d", previous)
 
+    def test_stable_retry_selects_only_ancestor_release_tags(self) -> None:
+        previous = "v2.7.5-stable.202609240900"
+        current = "v2.7.6-stable.202609251717"
+        newer = "v2.7.7-stable.202609260900"
+        self.git("tag", previous, self.source)
+        self.git("tag", current, self.later)
+        self.git("commit", "--allow-empty", "-m", "Newer release after partial publication")
+        self.git("tag", newer)
+        self.git("checkout", "--detach", self.later)
+        published = self.repo / "published-tags"
+        published.write_text("\n".join([previous, current, newer]) + "\n")
+        result = subprocess.run(
+            [
+                "bash",
+                str(CHECK.with_name("filter-unpublished-release-tags.sh")),
+                str(published),
+                current,
+            ],
+            cwd=self.repo,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(newer, self.git("tag", "-l").splitlines())
+        candidates = self.git("tag", "-l", "v*-stable.*", "--merged", "HEAD", "--sort=-creatordate")
+        self.assertEqual(candidates.splitlines(), [previous])
+        self.assertEqual(
+            self.git("log", "--format=%s", f"{previous}..HEAD"), "Main moved during build"
+        )
+
     def test_unreadable_remote_fails_instead_of_treating_tag_as_absent(self) -> None:
         self.git("remote", "set-url", "origin", str(self.remote / "missing"))
         self.assertNotEqual(self.check().returncode, 0)
