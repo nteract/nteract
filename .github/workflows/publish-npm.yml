@@ -5,7 +5,8 @@ name: Publish npm packages
 # Stable uses each package's checked-in version/latest. Nightly uses that version
 # plus the successful upstream run ID/nightly. @nteract/pi remains stable-only.
 # Linux/Windows ARM64 require their NPM_*_ARM64_ENABLED bootstrap gates, and
-# @nteract/sift requires NPM_SIFT_ENABLED. Sift is independent of the Node SDK.
+# @nteract/sift requires NPM_SIFT_ENABLED and @nteract/sift-csv requires
+# NPM_SIFT_CSV_ENABLED. Both are independent of the Node SDK and of each other.
 on:
   workflow_dispatch:
     inputs:
@@ -54,6 +55,9 @@ jobs:
       windows_arm64_enabled: ${{ steps.plan.outputs.windows_arm64_enabled }}
       sift_version: ${{ steps.sift-plan.outputs.version }}
       sift_enabled: ${{ steps.sift-plan.outputs.enabled }}
+      sift_csv_present: ${{ steps.sift-csv-plan.outputs.present }}
+      sift_csv_version: ${{ steps.sift-csv-plan.outputs.version }}
+      sift_csv_enabled: ${{ steps.sift-csv-plan.outputs.enabled }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -91,6 +95,19 @@ jobs:
         run: |
           node scripts/ci/npm-release-cli.mjs plan "$RUNNER_TEMP/release-identity.json" release-source/packages/sift/package.json "$RUNNER_TEMP/npm-release-tools/sift-plan.json"
           echo "enabled=$([ "$NPM_SIFT_ENABLED" = true ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - name: Prepare immutable Sift CSV release plan
+        id: sift-csv-plan
+        env:
+          NPM_SIFT_CSV_ENABLED: ${{ vars.NPM_SIFT_CSV_ENABLED }}
+        run: |
+          if [ ! -f release-source/packages/sift-csv/package.json ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "Sift CSV is absent from this upstream source; skipping it." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "present=true" >> "$GITHUB_OUTPUT"
+          node scripts/ci/npm-release-cli.mjs plan "$RUNNER_TEMP/release-identity.json" release-source/packages/sift-csv/package.json "$RUNNER_TEMP/npm-release-tools/sift-csv-plan.json"
+          echo "enabled=$([ "$NPM_SIFT_CSV_ENABLED" = true ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
         with:
           name: npm-release-tools
@@ -389,6 +406,9 @@ jobs:
       # generated from the same Cargo.lock.
       - name: Build Sift WASM
         run: cargo xtask wasm sift --skip-renderer-plugins
+      - uses: cargo-bins/cargo-binstall@v1.19.1
+      - name: Install cargo-about
+        run: cargo binstall cargo-about --version '=0.9.2' --no-confirm --locked
       - name: Stamp Sift build version
         run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" stamp-build "$RUNNER_TEMP/npm-release-tools/sift-plan.json" packages/sift sift
       - name: Build and test packed Sift consumer
@@ -446,3 +466,96 @@ jobs:
         run: |
           echo "@nteract/sift@$SIFT_VERSION npm publication is disabled until NPM_SIFT_ENABLED is true." >> "$GITHUB_STEP_SUMMARY"
           echo "Bootstrap it with the placeholder steps in RELEASING.md; npm-package-sift holds this run's tarball." >> "$GITHUB_STEP_SUMMARY"
+
+  pack-sift-csv:
+    if: needs.resolve-release.outputs.sift_csv_present == 'true'
+    name: Pack Sift CSV package
+    needs: [resolve-release]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+          ref: ${{ needs.resolve-release.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release-tools
+          path: ${{ runner.temp }}/npm-release-tools
+      - uses: dsherret/rust-toolchain-file@v1
+      - uses: ./.github/actions/install-wasm-pack
+      - uses: pnpm/action-setup@v6
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # The packed library embeds this binary, its glue, and the notices
+      # generated from the same Cargo.lock. Nothing in the notebook consumes
+      # this module, so there is no renderer-plugin chain to skip.
+      - name: Build Sift CSV WASM
+        run: cargo xtask wasm sift-csv
+      - uses: cargo-bins/cargo-binstall@v1.19.1
+      - name: Install cargo-about
+        run: cargo binstall cargo-about --version '=0.9.2' --no-confirm --locked
+      - name: Stamp Sift CSV build version
+        run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" stamp-build "$RUNNER_TEMP/npm-release-tools/sift-csv-plan.json" packages/sift-csv sift-csv
+      - name: Build and test packed Sift CSV consumer
+        run: pnpm --dir packages/sift-csv test:package
+      - name: Pack Sift CSV package
+        run: pnpm --dir packages/sift-csv pack --pack-destination "$RUNNER_TEMP"
+      - name: Finalize packed Sift CSV manifest
+        run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" stamp-tarball "$RUNNER_TEMP/npm-release-tools/sift-csv-plan.json" sift-csv "$RUNNER_TEMP"
+      - name: Verify Sift CSV package manifest
+        run: |
+          tar -xOf "$RUNNER_TEMP"/nteract-sift-csv-*.tgz package/package.json > "$RUNNER_TEMP/sift-csv-package.json"
+          node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" verify "$RUNNER_TEMP/npm-release-tools/sift-csv-plan.json" sift-csv "$RUNNER_TEMP/sift-csv-package.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-package-sift-csv
+          path: ${{ runner.temp }}/nteract-sift-csv-*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-sift-csv:
+    name: Publish Sift CSV package
+    needs: [resolve-release, pack-sift-csv]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release-tools
+          path: ${{ runner.temp }}/npm-release-tools
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-package-sift-csv
+          path: ${{ runner.temp }}/npm-package
+      - name: Publish Sift CSV package
+        if: needs.resolve-release.outputs.sift_csv_enabled == 'true'
+        run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" publish "$RUNNER_TEMP/npm-release-tools/sift-csv-plan.json" sift-csv "$RUNNER_TEMP/npm-package"
+      - name: Record available immutable Sift CSV release
+        if: needs.resolve-release.outputs.sift_csv_enabled == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-sift-csv-release-result
+          path: ${{ runner.temp }}/npm-result/sift-csv.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Report Sift CSV bootstrap prerequisite
+        if: needs.resolve-release.outputs.sift_csv_enabled != 'true'
+        env:
+          SIFT_CSV_VERSION: ${{ needs.resolve-release.outputs.sift_csv_version }}
+        run: |
+          echo "@nteract/sift-csv@$SIFT_CSV_VERSION npm publication is disabled until bootstrap and trusted publishing are configured." >> "$GITHUB_STEP_SUMMARY"
+          echo "Download npm-package-sift-csv and follow RELEASING.md." >> "$GITHUB_STEP_SUMMARY"
+

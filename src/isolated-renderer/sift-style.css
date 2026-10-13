@@ -1,0 +1,8 @@
+/* Notebook output styling is owned by the renderer. The embeddable package's
+   host-token defaults must not change existing desktop or cloud outputs. */
+@import "tailwindcss";
+@import "../../packages/odometer/src/style.css";
+@import "../styles/notebook-tokens.css";
+@source "../components/ui";
+@import "./sift-themes.css";
+@import "../../packages/sift/src/library.css";

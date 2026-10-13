@@ -35,6 +35,7 @@ on:
       - rust-toolchain.toml
       - packages/runtimed-node/**
       - packages/sift/package.json
+      - packages/sift-csv/package.json
       - python/runtimed/pyproject.toml
   workflow_dispatch:
 

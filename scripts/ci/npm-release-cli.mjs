@@ -13,6 +13,7 @@ import {
   releasePlan,
   stampManifest,
   stampBuildManifest,
+  standalonePackages,
   verifyManifest,
 } from "./npm-release.mjs";
 
@@ -61,10 +62,11 @@ if (command === "resolve") {
 } else if (command === "stamp" || command === "stamp-build") {
   const plan = readJson(args[0]);
   const root = args[1];
-  // Sift is a single package. The Node SDK stamps its wrapper and every native package.
-  const targets = args[2] === "sift" ? ["sift"] : ["wrapper", ...nativeTargets];
+  // A standalone package is one manifest. The Node SDK stamps its wrapper and every native package.
+  const standalone = args[2] in standalonePackages;
+  const targets = standalone ? [args[2]] : ["wrapper", ...nativeTargets];
   for (const target of targets) {
-    const path = target === "wrapper" || target === "sift" ? join(root, "package.json") : join(root, "npm", target, "package.json");
+    const path = target === "wrapper" || standalone ? join(root, "package.json") : join(root, "npm", target, "package.json");
     const stamp = command === "stamp-build" ? stampBuildManifest : stampManifest;
     writeJson(path, stamp(readJson(path), plan, target));
   }

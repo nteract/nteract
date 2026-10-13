@@ -18,7 +18,7 @@ import {
   type SiftSource,
   type TableEngineState,
 } from "@nteract/sift";
-import "@nteract/sift/style.css";
+import "./sift-style.css";
 import {
   type RefObject,
   useCallback,

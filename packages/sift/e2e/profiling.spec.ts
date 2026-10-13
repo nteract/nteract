@@ -79,14 +79,14 @@ test.describe("Dark Mode", () => {
     await page.waitForSelector(".sift-table-container");
 
     // Click theme toggle
-    await page.locator("#theme-toggle").click();
+    await page.locator('.sift-toggle-btn[data-mode="dark"]').click();
 
     // Should have dark theme attribute
     const theme = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));
     expect(theme).toBe("dark");
 
     // Toggle back
-    await page.locator("#theme-toggle").click();
+    await page.locator('.sift-toggle-btn[data-mode="light"]').click();
     const themeAfter = await page.evaluate(() =>
       document.documentElement.getAttribute("data-theme"),
     );

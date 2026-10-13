@@ -242,29 +242,32 @@ function categoryExclusionPredicate(column: string, values: Set<string>): Compou
   };
 }
 
+/**
+ * The one mapping from an engine filter to a portable predicate. Returns null
+ * for filters that select everything, such as an empty exclusion set.
+ */
+function columnFilterToPredicate(column: string, filter: ColumnFilter): FilterPredicate | null {
+  if (!filter) return null;
+  switch (filter.kind) {
+    case "range":
+      return { column, op: "between", value: [filter.min, filter.max] };
+    case "set":
+      return { column, op: "in", value: [...filter.values] };
+    case "not-in":
+      return filter.values.size > 0 ? categoryExclusionPredicate(column, filter.values) : null;
+    case "boolean":
+      return { column, op: "eq", value: filter.value };
+  }
+}
+
 export function columnFiltersToPredicates(
   columns: { key: string }[],
   filters: ColumnFilter[],
 ): FilterPredicate[] {
   const predicates: FilterPredicate[] = [];
   for (let i = 0; i < columns.length; i++) {
-    const f = filters[i];
-    if (!f) continue;
-    const col = columns[i].key;
-    switch (f.kind) {
-      case "range":
-        predicates.push({ column: col, op: "between", value: [f.min, f.max] });
-        break;
-      case "set":
-        predicates.push({ column: col, op: "in", value: [...f.values] });
-        break;
-      case "not-in":
-        if (f.values.size > 0) predicates.push(categoryExclusionPredicate(col, f.values));
-        break;
-      case "boolean":
-        predicates.push({ column: col, op: "eq", value: f.value });
-        break;
-    }
+    const predicate = columnFilterToPredicate(columns[i].key, filters[i]);
+    if (predicate) predicates.push(predicate);
   }
   return predicates;
 }
@@ -276,25 +279,8 @@ export function columnFiltersToPredicates(
 export function engineStateToExplorerState(state: TableEngineState): ExplorerState {
   const filters: FilterPredicate[] = [];
   for (const { column, filter } of state.filters) {
-    if (!filter) continue;
-    switch (filter.kind) {
-      case "range":
-        filters.push({
-          column,
-          op: "between",
-          value: [filter.min, filter.max],
-        });
-        break;
-      case "set":
-        filters.push({ column, op: "in", value: [...filter.values] });
-        break;
-      case "not-in":
-        if (filter.values.size > 0) filters.push(categoryExclusionPredicate(column, filter.values));
-        break;
-      case "boolean":
-        filters.push({ column, op: "eq", value: filter.value });
-        break;
-    }
+    const predicate = columnFilterToPredicate(column, filter);
+    if (predicate) filters.push(predicate);
   }
 
   const sort: SortEntry[] = state.sort

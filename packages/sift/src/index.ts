@@ -3,32 +3,24 @@
  *
  * React component:
  *   import { SiftTable } from '@nteract/sift'
- *   <SiftTable url="/data.arrow" onChange={handleState} />
+ *   <SiftTable source={{ kind: 'loader', load }} onChange={handleState} />
  *
  * Imperative engine:
  *   import { createTable } from '@nteract/sift'
  *   const engine = createTable(container, tableData)
  *
  * State serialization:
- *   import { explorerStateToJSON, predicateToSQL } from '@nteract/sift'
+ *   import { engineStateToExplorerState, predicateToSQL } from '@nteract/sift'
+ *
+ * Everything exported here is supported API. Internals such as the summary
+ * accumulators stay private so they can change without a major version.
  */
 
-export type { SummaryAccumulator } from "./accumulators";
-export { parseCsv } from "./csv";
-export type { CsvParseOptions } from "./csv";
+// CSV/TSV input lives in @nteract/sift-csv, which produces Arrow IPC bytes
+// for loadTableFile. Keeping the parser out of this package keeps its WASM
+// to Parquet and Arrow.
 export { loadTableFile } from "./file-data";
 export type { TableFileOptions } from "./file-data";
-// Accumulators (for custom data pipelines)
-export {
-  BooleanAccumulator,
-  CategoricalAccumulator,
-  formatCell,
-  isNullSentinel,
-  NumericAccumulator,
-  refineColumnType,
-  stringifyValue,
-  TimestampAccumulator,
-} from "./accumulators";
 export type {
   BetweenPredicate,
   ColumnPredicate,
@@ -45,6 +37,7 @@ export type {
 // Filter schema & state serialization
 export {
   columnFiltersToPredicates,
+  engineStateToExplorerState,
   explorerStateToJSON,
   predicateToEnglish,
   predicateToPandas,

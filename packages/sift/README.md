@@ -4,7 +4,7 @@ Crossfilter data explorer. [Pretext](https://github.com/chenglou/pretext) × [Ar
 
 ![Sift — crossfilter in action](https://img.runt.run/sift/crossfilter-demo.gif)
 
-[`@nteract/sift`](https://github.com/nteract) on npm. Try it at [rgbkrk.github.io/sift](https://rgbkrk.github.io/sift/).
+Published as [`@nteract/sift`](https://www.npmjs.com/package/@nteract/sift). Try it at [rgbkrk.github.io/sift](https://rgbkrk.github.io/sift/).
 
 ## Features
 
@@ -36,27 +36,26 @@ pnpm --dir packages/sift dev
 ## Use as a library
 
 The package ships JavaScript, compiled CSS, TypeScript declarations, and WASM,
-with third-party notices for the bundled code in `lib/THIRD_PARTY_NOTICES.md`.
-React and React DOM are required; no notebook, kernel, or daemon is needed.
+with notices for the Rust crates compiled into the WASM in
+`lib/THIRD_PARTY_NOTICES.md`. React and React DOM are peer dependencies; no
+notebook, kernel, or daemon is needed. Tested with React 19. Types resolve
+under TypeScript's `bundler` module resolution (Vite, webpack, esbuild).
 
 ```tsx
-import { parseCsv, SiftTable } from '@nteract/sift'
+import { loadTableFile, SiftTable } from '@nteract/sift'
 import '@nteract/sift/style.css'
 
-const data = parseCsv(csvText) // Complete file; rejects malformed/over-limit data.
-<SiftTable data={data} style={{ height: 600 }} />
+const load = useCallback(() => loadTableFile(bytes), [bytes]) // Parquet or Arrow IPC
+<SiftTable source={{ kind: 'loader', load }} style={{ height: 600 }} />
 ```
 
-For binary files, use `loadTableFile(bytes)` through a memoized React loader
-source or pass its result to imperative `createTable` (see the guide).
-The default file adapters impose independent ceilings of 16 MiB,
-100,000 rows, and 256 columns; CSV also has a 1,000,000-cell ceiling, and binary
-files have a conservative 128 MiB decoded-memory admission guard. Meeting the
-byte, row, and column ceilings alone does not guarantee acceptance.
-Virtual scrolling does not provide disk paging.
+Files load whole or fail; defaults are 16 MiB, 100,000 rows, and 256 columns.
+CSV and TSV go through [`@nteract/sift-csv`](../sift-csv), a separate WASM
+module that returns Arrow IPC bytes for `loadTableFile`, so apps that only open
+Parquet or Arrow do not carry the CSV parser.
 
-See the [embedding guide](docs/embedding-guide.md) for WASM asset setup, CSV/TSV
-options, memory limits, lifecycle, themes, and host viewer/editor integration.
+See the [embedding guide](docs/embedding-guide.md) for WASM asset setup, memory
+limits, lifecycle, styling, and host viewer/editor integration.
 
 ## Engine API
 
