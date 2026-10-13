@@ -218,7 +218,7 @@ cloud workers.
 
 ### Combine NotebookDoc and RuntimeStateDoc
 
-Rejected. The split is load-bearing:
+Rejected for these reasons:
 
 - notebook edits and runtime outputs have different write cadence;
 - notebook fields and runtime fields have different write authorities;

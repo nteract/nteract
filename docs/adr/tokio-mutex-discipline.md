@@ -6,7 +6,7 @@
 
 The daemon is a multi-tenant async server. One process holds every open room, every kernel subprocess, every blob HTTP handler, and every sync stream. A single Tokio runtime drives all of it. Under load (a notebook generating multi-megabyte image output while another room is opening a kernel while a third is shutting down) the daemon's responsiveness is determined by which futures get to run when, and what each holds when it suspends.
 
-This ADR collects the rules that keep that runtime responsive. The headline rule is the tokio-mutex-across-await ban that lives as a single paragraph in `AGENTS.md` (also available through the `CLAUDE.md` symlink) and is enforced by a CI lint. But that rule does not stand alone. It is one member of a family of concurrency invariants that all serve the same goal: no single piece of work, however large, can stall the daemon's ability to drive other work forward.
+This ADR explains the lock, queue, and socket-read rules that keep one notebook's work from delaying the rest of the daemon. `AGENTS.md` (also available through the `CLAUDE.md` symlink) forbids holding a Tokio mutex across an await, and CI enforces that rule. The rules below address the other ways work can block or corrupt concurrent operations.
 
 Neighbors:
 
@@ -50,7 +50,7 @@ The common failure mode is the **single-lock convoy**. Task A acquires lock X, t
 
 The mutex itself never deadlocks. It is functioning correctly. The bug is that A's lock-holding scope is wrong: it extended over an operation that did not need the lock.
 
-This is invisible at the call site. The code reads as "lock, do some work, return." It costs nothing under low load. It costs everything when two callers race and one of them yields.
+The problem is easy to miss at the call site: code that reads as "lock, do some work, return" may work under low load, then block other callers when an operation yields while holding the lock.
 
 ### The block-scope rule and why `drop()` doesn't satisfy the lint
 
@@ -223,7 +223,7 @@ These follow-ups are tracked but not decided here:
 
 ## References
 
-- `AGENTS.md` / `CLAUDE.md` "Tokio mutex guards stay within synchronous blocks" - the load-bearing paragraph this ADR expands.
+- `AGENTS.md` / `CLAUDE.md` "Tokio mutex guards stay within synchronous blocks" - the lock-scope rule this ADR explains.
 - `crates/runtimed/tests/tokio_mutex_lint.rs` - the CI lint and the violation-count history.
 - `async-rust-lsp::rules::mutex_across_await` - the tree-sitter rule the lint wraps. Documented inline in the crate; current version `0.3.1`.
 - `crates/notebook-sync/src/handle.rs:73,206-229` - `DocHandle::with_doc`, the canonical sync-only critical section behind a `std::sync::Mutex`.

@@ -39,9 +39,9 @@ The comm-state carve-out was exactly the kind of partial-document ownership the 
 
 2. **It blocked "RuntimeStateDoc is read-only to regular clients."** As long as the carve-out existed, the daemon and the room host both carried a comm-state exception, and the divergence-recovery work (the handoff's thread 2) could not make the clean statement "a regular client rejected on RuntimeStateDoc wrote a document it may not write at all."
 
-3. **The carve-out coupled comm topology and comm state in one object.** Before the split, `comms/{comm_id}` held both the runtime-authored topology and the bidirectional state map. "Topology" here was wider than "target, model, owning cell": it included `target_name`, `model_module`, `model_name`, `outputs`, `seq`, and `capture_msg_id` (the Output-widget routing field). The policy snapshot had to thread that needle on every write.
+3. **The carve-out coupled comm topology and comm state in one object.** Before the split, `comms/{comm_id}` held both the runtime-authored topology and the bidirectional state map. "Topology" here was wider than "target, model, owning cell": it included `target_name`, `model_module`, `model_name`, `outputs`, `seq`, and `capture_msg_id` (the Output-widget routing field). The policy snapshot had to distinguish topology from mutable state on every write.
 
-What makes this tractable is that co-location is currently providing a **cluster of co-location guarantees - three of them load-bearing** - and any split has to re-provide each deliberately:
+Keeping topology and state in one object provides three guarantees. Splitting them requires preserving or replacing each guarantee:
 
 - **Guard A (orphan-state no-op).** `set_comm_state_property` and `merge_comm_state_delta` bail `Ok` when the comm entry is absent (`doc.rs:2502-2515`, `:2533-2536`). Editor state for a comm that does not exist is silently dropped at write time. This works only because membership (topology) and state live in the same object. The split changes this from **write-rejection** (orphan state never enters the doc) to **forward-suppression** (orphan state lands and persists, but never reaches the kernel) - a real semantic shift, see Decision and the safety discussion in Consequences.
 - **The kernel-echo filter is three layers, not one.** Frontend comm changes forward to the kernel; kernel-authored echoes must not, or widgets feed back on themselves. The mechanism is: (a) **per-field LWW-authorship** - `receive_sync_and_foreign_comms` walks each comm's state map key-by-key and retains a key only if its current LWW winner's actor is foreign (`doc.rs:3200-3205`); the doc comment at `doc.rs:3169-3175` explains why a naive `fork + apply foreign-only` is unsafe (frontend writes are causally after kernel writes during a slider drag). (b) a content-hash `EchoSuppressor` with a 30s TTL (`crates/runtimed/src/runtime_agent/echo_suppression.rs`, consulted at `runtime_agent.rs:407,440-443`). (c) a no-op scalar skip in `merge_comm_state_delta` (`doc.rs:2545-2559`). Critically, layer (a) only works if state is a native per-key map - which ties this invariant to the representation question below.
@@ -102,9 +102,9 @@ write-rejection into forward-suppression. So the orphan-reclamation path is a
   - Authorization is a document bit, not a subtree diff.
   - Additive: CommsDoc gets its own frozen genesis seed; RuntimeStateDoc genesis is untouched.
   - Unblocks the clean divergence-recovery statement for RuntimeStateDoc.
-- **Cons (each maps to a load-bearing invariant that must be rebuilt, not assumed):**
+- **Cons (the split must implement these protections):**
   - **Guard A becomes forward-suppression.** Membership can no longer be inferred from CommsDoc's own keys (membership is exactly the untrusted thing multiple principals can write). It must be re-derived from RuntimeStateDoc topology on every CommsDoc receive. Orphan state now lands in the doc, so the runtime-side drop is a forward-suppression *plus* a reclamation pass, not a write rejection.
-  - **The echo filter loses its substrate, on all three layers.** Per-field LWW-authorship, the content-hash `EchoSuppressor`, and the no-op scalar skip all assume kernel and frontend writes co-locate. After the split each must be re-homed onto CommsDoc's receive path, preserving the causality argument at `doc.rs:3169-3175`. The CI guard must assert that **both** a kernel-actor-authored change **and** a content-hash echo within TTL are never forwarded to the kernel - not just the actor case.
+  - **All three echo-filter layers must move with comm state.** Per-field LWW-authorship, the content-hash `EchoSuppressor`, and the no-op scalar skip all assume kernel and frontend writes co-locate. After the split each must be re-homed onto CommsDoc's receive path, preserving the causality argument at `doc.rs:3169-3175`. The CI guard must assert that **both** a kernel-actor-authored change **and** a content-hash echo within TTL are never forwarded to the kernel - not just the actor case.
   - **GC splits into authority and atomicity.** The daemon (a pure reader of CommsDoc state for live-sync) must be given CommsDoc write authority so `remove_comm`/`clear_comms` reclaim both docs, *and* a topology-absence GC pass must reap orphans the gate suppresses. Because the two docs have independent sync heads, the delete is non-atomic: a peer can observe topology-gone/state-present (inert, covered by the membership gate) or state-gone/topology-present (surfaces a widget with identity but no values). Specify delete ordering or have readers treat present-topology/absent-state as "not yet loaded."
   - A fourth sync stream on the frontend bridge and a fourth document to bootstrap/reset.
 
@@ -126,7 +126,7 @@ The reframe behind D is real (if the kernel is the sole authority, a durable CRD
 
 ## Decision
 
-**Recommended: Option B (CommsDoc), shipped decoupled from any NotebookDoc structural change, with its three load-bearing invariants built in from the first commit, not deferred.**
+**Recommended: Option B (CommsDoc), shipped separately from any NotebookDoc structural change. All three required protections below must be implemented from the first commit.**
 
 Implementation note: this ADR is satisfied by adding CommsDoc as the fourth sync document, keeping RuntimeStateDoc as the topology/runtime document, and shipping the membership gate, echo suppression, orphan GC, save/load merge, and cloud/daemon fourth-stream acceptance tests together. It intentionally does **not** include the larger five-document split.
 

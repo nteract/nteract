@@ -12,7 +12,7 @@ Two facts make this pipeline unusual:
 
 2. **The daemon multiplexes high-volume output traffic and low-volume lifecycle signals on the same async runtime.** stdout floods, image-display churn, and widget-comm replay must not delay the `KernelIdle` that releases the queue or the `ExecutionDone` that lets a client read outputs.
 
-This ADR captures the load-bearing decisions that make those facts work. Most of these rules live as paragraph-shaped invariants in `AGENTS.md` (also available through the `CLAUDE.md` symlink) and the `execution-pipeline` skill. Writing them down as decisions surfaces both the rationale and the gaps.
+This ADR explains the execution and output-ordering rules in `AGENTS.md` (also available through the `CLAUDE.md` symlink) and the `execution-pipeline` skill, including their rationale and remaining gaps.
 
 Neighbors:
 
@@ -252,7 +252,7 @@ Execution spans two synced Automerge documents:
 | `NotebookDoc` | Cell source, structure, metadata | `0x00` |
 | `RuntimeStateDoc` | Execution queue, lifecycle, outputs, kernel status | `0x05` |
 
-The split is intentional and load-bearing:
+These documents stay separate for four reasons:
 
 1. **Different write cadence.** NotebookDoc absorbs character-level edits from human typing. RuntimeStateDoc absorbs output streams from kernels. Combining them would tie editing latency to output churn.
 2. **Different writer authority.** NotebookDoc is frontend-authoritative for source and structure. RuntimeStateDoc sync is read-only for ordinary notebook clients; validated runtime peers write runtime progress, lifecycle, outputs, and topology for accepted work, while coordinator/room-host paths own execution intent and room facts. Mutable widget values live in CommsDoc. Keeping these documents separate lets the trust gate enforce different scopes at the frame layer (see `docs/adr/identity-and-trust.md`, Decision 5).

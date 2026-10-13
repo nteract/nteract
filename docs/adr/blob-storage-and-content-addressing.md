@@ -130,9 +130,9 @@ Why this split:
    not a second durable output-manifest policy.
 
 The threshold is a constant rather than a runtime-configurable knob today.
-Anything load-bearing on its value (test fixtures, the comm-state externalizer
-in `output_prep.rs`) reaches for `DEFAULT_INLINE_THRESHOLD` so a future tune
-flips one site.
+Test fixtures and the output-manifest paths in `output_prep.rs` use
+`DEFAULT_INLINE_THRESHOLD` so changing the constant updates those callers
+together.
 
 There is a **separate, parallel** threshold for comm-state externalization:
 `COMM_STATE_BLOB_THRESHOLD = 1024` (`crates/runtimed/src/output_prep.rs:138-218`).

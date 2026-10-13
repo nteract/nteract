@@ -44,10 +44,9 @@ channel for pool status, env claims, and daemon admin; it does not carry
 typed-frame Automerge sync at all. Frame caps differ per type (see
 `crates/notebook-wire/src/lib.rs`).
 
-The split is load-bearing for permission boundaries, document authority,
-durability/lifetime, attachment identity, and fan-out scope. It is not written
-down in one place. This ADR records the decision so the boundaries become
-visible to anyone changing them.
+Each document has its own permissions, write authority, lifetime, persistence
+rules, attachment identity, and fan-out scope. This ADR records those boundaries
+for anyone changing them.
 
 This ADR is desktop-first, but the hosted publish/cloud viewer now consumes the
 same notebook/runtime/comms snapshot bundle. A closing section sketches what

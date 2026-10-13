@@ -14,8 +14,8 @@ loaded verbatim:
 - attributed to `SCHEMA_SEED_ACTOR = "nteract:notebook-schema:v5"` (`:81`)
 
 Two documents that load the same seed bytes share a byte-identical root change,
-so they share a common ancestor and merge cleanly. That shared ancestor is the
-load-bearing property behind both persistence and cross-peer sync. The cloud
+so they share a common ancestor and merge cleanly. Both persistence and
+cross-peer sync rely on that shared ancestor. The cloud
 room host pins the seed by change hash (`canonical_schema_seed_change_hashes`,
 `:2370`, from #3192) so only the canonical root is accepted into a room.
 
