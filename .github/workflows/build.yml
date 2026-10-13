@@ -181,8 +181,13 @@ jobs:
               - ".github/workflows/build.yml"
               - "crates/notebook/nsis/**"
               - "crates/notebook/src/**"
+              - "crates/notebook/tests/**"
+              - "crates/notebook/icons/**"
+              - "crates/notebook/capabilities/**"
               - "crates/notebook/tauri.conf.json"
               - "crates/notebook/Cargo.toml"
+              - "crates/notebook/build.rs"
+              - "crates/notebook/windows-app-manifest.xml"
               - "Cargo.toml"
               - "Cargo.lock"
 
@@ -374,6 +379,35 @@ jobs:
         # for Windows targets, which the Linux cross-compiler doesn't carry. Linux
         # and matrix clippy steps still cover runtimed-node natively.
         run: cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --exclude runtimed-node --all-targets -- -D warnings
+
+  # Running the harness catches Windows loader failures that clippy misses.
+  windows-notebook-tests:
+    name: Windows notebook tests
+    needs: [changes]
+    if: |
+      needs.changes.outputs.source_changed == 'true' && (
+        github.event_name != 'pull_request' ||
+        needs.changes.outputs.ci_changed == 'true' ||
+        needs.changes.outputs.windows_changed == 'true' ||
+        contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+        contains(github.event.pull_request.labels.*.name, 'ci:windows')
+      )
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Install rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-notebook-tests
+
+      - name: Run notebook unit and integration tests
+        run: cargo test -p notebook --locked
 
   windows-arm64:
     name: Windows ARM64 (compile)
@@ -1728,6 +1762,7 @@ jobs:
       - lint
       - nsis-bootstrap
       - windows-clippy
+      - windows-notebook-tests
       - windows-arm64
       - linux-arm64
       - wasm-deno
@@ -1783,6 +1818,7 @@ jobs:
           track_result "${{ needs.python-unit-tests.result }}"
           track_result "${{ needs.wasm-deno.result }}"
           track_result "${{ needs.windows-clippy.result }}"
+          track_result "${{ needs.windows-notebook-tests.result }}"
           track_result "${{ needs.windows-arm64.result }}"
           track_result "${{ needs.linux-arm64.result }}"
           track_result "${{ needs.nsis-bootstrap.result }}"
@@ -1830,6 +1866,7 @@ jobs:
             echo "| Linux runtimed-node | ${{ needs.linux-runtimed-node.result }} | GitHub-hosted | N-API package build and package smoke | Node native package / Arrow IPC integration |"
             echo "| Python Unit Tests | ${{ needs.python-unit-tests.result }} | GitHub-hosted | Python package unit tests without live daemon | Python package behavior |"
             echo "| WASM + Deno Tests | ${{ needs.wasm-deno.result }} | GitHub-hosted | runtimed-wasm, sift-wasm, renderer-plugin coherence | WASM binding / renderer artifact drift |"
+            echo "| Windows notebook tests | ${{ needs.windows-notebook-tests.result }} | GitHub-hosted windows-latest | Native notebook unit and integration tests | Windows test executable loading and behavior |"
             echo "| Windows (clippy) | ${{ needs.windows-clippy.result }} | GitHub-hosted | Windows cross-target clippy | Windows compile/lint drift |"
             echo "| Windows ARM64 (compile) | ${{ needs.windows-arm64.result }} | GitHub-hosted windows-11-vs2026-arm | Native ARM64 clippy and sidecar build | aws-lc-sys / MSVC ARM64 compile |"
             echo "| Linux ARM64 (compile) | ${{ needs.linux-arm64.result }} | GitHub-hosted ubuntu-22.04-arm | Native AArch64 clippy and sidecar build | native C deps / GTK-WebKit AArch64 compile |"

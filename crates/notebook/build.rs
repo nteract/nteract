@@ -77,6 +77,29 @@ fn maybe_disable_external_bin_for_local_checks() {
     );
 }
 
+fn tauri_attributes() -> tauri_build::Attributes {
+    let attributes = tauri_build::Attributes::new();
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows")
+        || env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc")
+    {
+        return attributes;
+    }
+
+    // Tauri attaches its app resource to binary targets, leaving the library's
+    // unit test executable without a manifest. Without Common
+    // Controls v6, the loader cannot resolve imports such as TaskDialogIndirect
+    // and exits with STATUS_ENTRYPOINT_NOT_FOUND before any test runs.
+    // Embed the same manifest through the linker for every notebook executable,
+    // including lib unit tests (rustc-link-arg-tests only covers test targets).
+    // Keep Tauri's icons/version resources, but avoid a second manifest resource.
+    // See tauri-apps/tauri's examples/api/src-tauri/build.rs workaround.
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("windows-app-manifest.xml");
+    println!("cargo:rerun-if-changed={}", manifest.display());
+    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+    println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
+    attributes.windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest())
+}
+
 fn main() {
     let out_dir = out_dir();
     build_metadata::emit_git_rerun_hints();
@@ -89,7 +112,8 @@ fn main() {
 
     maybe_disable_external_bin_for_local_checks();
 
-    tauri_build::build()
+    tauri_build::try_build(tauri_attributes())
+        .unwrap_or_else(|err| panic!("Tauri build failed: {err:#}"));
 }
 
 fn out_dir() -> PathBuf {
