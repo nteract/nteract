@@ -7,7 +7,7 @@
 | **Stable** | `v{version}-stable.{timestamp}` | Tag push (`v*`) or manual | GitHub Releases |
 | **Nightly** | `v{version}-nightly.{timestamp}` | Cron (daily, 24h cadence) or manual | GitHub Pre-releases |
 | **runtimed Python package** | same as stable/nightly | Stable/nightly release workflow | PyPI + GitHub Releases |
-| **npm packages** | Stable Node version or `<Node version>-nightly.<run ID>` | Successful stable/nightly release or manual recovery | npm (`latest` / `nightly`) |
+| **npm packages** | Each package's checked-in version, or `<version>-nightly.<run ID>` | Successful stable/nightly release or manual recovery | npm (`latest` / `nightly`) |
 
 Timestamps are UTC in `YYYYMMDDHHMM` format, e.g. `v2.0.0-stable.202507010900`.
 
@@ -89,7 +89,13 @@ To enable either ARM64 npm platform:
 3. Configure the package's npm trusted publisher for organization `nteract`, repository `nteract`, workflow `publish-npm.yml`, allowing `npm publish`.
 4. Verify the package is readable from the registry and its trusted-publisher settings are correct, then set that platform's variable to `true` in the repository's Actions variables. The next npm release publishes it alongside the other enabled platforms and includes it in the wrapper. If that wrapper version was already published without the platform, use a new successful nightly run or bump the stable package version before releasing; npm versions are immutable.
 
-`@nteract/sift` needs the same one-time bootstrap, gated by the `NPM_SIFT_ENABLED` repository variable. Until it is `true`, CI builds the WASM, runs the packed-consumer checks, and uploads `npm-package-sift`, but does not publish it. Follow the steps above with that artifact. npm configures trusted publishers in an existing package's settings, so the first version needs a maintainer publish. A new trusted-publisher configuration expires unless it completes a publish within two days: set the variable as soon as the configuration is saved, then let the next nightly publish or dispatch the workflow for a recent successful release.
+`@nteract/sift` is gated by the `NPM_SIFT_ENABLED` repository variable. Until it is `true`, CI builds the WASM, runs the packed-consumer checks, and uploads `npm-package-sift`, but does not publish it. npm configures trusted publishers in an existing package's settings, so Sift bootstraps from a placeholder instead of a CI tarball:
+
+1. An `@nteract` owner publishes a code-free `@nteract/sift@0.0.1` with `npm publish --access public` and deprecates it with a pointer to the `nightly` tag. `0.0.1` sorts below every Sift version CI publishes, so it never blocks or collides with one.
+2. Configure the trusted publisher as in step 3 above. New configurations default to staged publishing only; allow `npm publish`.
+3. Set the variable right away. A new trusted-publisher configuration expires unless it completes a publish within two days. Let the next nightly publish, or dispatch **Nightly Release**.
+
+The first nightly publishes `<Sift version>-nightly.<run ID>` under `nightly`. The next stable release publishes the checked-in Sift version and moves `latest` off the placeholder.
 
 These bootstrap publications, npm permissions, and trusted-publisher settings require separate maintainer qualification. They are not established by the source change or a local test run.
 
