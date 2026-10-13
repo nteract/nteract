@@ -223,7 +223,7 @@ These follow-ups are tracked but not decided here:
 
 ## References
 
-- `AGENTS.md` / `CLAUDE.md` "Tokio mutex guards stay within synchronous blocks" - the lock-scope rule this ADR explains.
+- `AGENTS.md` / `CLAUDE.md` - the lock-scope rule this ADR explains.
 - `crates/runtimed/tests/tokio_mutex_lint.rs` - the CI lint and the violation-count history.
 - `async-rust-lsp::rules::mutex_across_await` - the tree-sitter rule the lint wraps. Documented inline in the crate; current version `0.3.1`.
 - `crates/notebook-sync/src/handle.rs:73,206-229` - `DocHandle::with_doc`, the canonical sync-only critical section behind a `std::sync::Mutex`.

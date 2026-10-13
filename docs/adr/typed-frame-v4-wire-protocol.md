@@ -377,7 +377,7 @@ The phase fields are deliberately ordered so a later snapshot never represents l
 
 3. **Forward-compat is daemon-to-client only.** A v5 daemon can send a v4 client an unknown frame type and the v4 client will skip it. The opposite direction is closed by the preamble check. If we ever want client-side frame extensions (e.g., a future browser client that emits a new frame type the daemon doesn't recognize), we need a separate capability-negotiation step or a relaxed preamble policy. Not v4.
 
-4. **Handshake and capability responses require untyped framing in v4.** Pool, SettingsSync, the handshake JSON, and the post-handshake capability JSON all use the untyped framing. Migrating them to typed frames would require a v5 protocol bump. Worth doing as part of a future hosted-room WebSocket transport, where the URL path can carry the channel and the framing can be consistent.
+4. **Pool, SettingsSync, handshake, and capability messages require untyped framing in v4.** Pool, SettingsSync, the handshake JSON, and the post-handshake capability JSON all use the untyped framing. Migrating them to typed frames would require a v5 protocol bump. Worth doing as part of a future hosted-room WebSocket transport, where the URL path can carry the channel and the framing can be consistent.
 
 5. **Idle-peer timeout is the only liveness check.** There is no application-layer heartbeat on typed-frame connections. Presence has heartbeats (`PresenceMessage::Heartbeat`) but those are room-level, not connection-level. A peer that stops sending Presence but keeps sending Automerge sync will not be detected as orphaned. Worth considering an explicit `SessionControl::Ping` for v5.
 
