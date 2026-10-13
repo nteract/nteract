@@ -121,11 +121,11 @@ test.describe("Heart Failure (numeric-heavy)", () => {
     }
   });
 
-  test("DEATH_EVENT column shows boolean ratio bar", async ({ page }) => {
+  test("has_diabetes column shows boolean ratio bar", async ({ page }) => {
     await waitForData(page);
 
-    // DEATH_EVENT is a boolean-like column (0/1) — should render as a ratio bar
-    const deathTh = page.locator(".sift-th", { hasText: "DEATH_EVENT" });
+    // The current fixture has a typed boolean has_diabetes column.
+    const deathTh = page.locator(".sift-th", { hasText: "has_diabetes" });
     await expect(deathTh).toBeVisible({ timeout: 5_000 });
 
     // Boolean columns render a .sift-bool-bar instead of a histogram SVG
