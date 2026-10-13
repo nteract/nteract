@@ -120,6 +120,42 @@ test("the final tag check uses the built source and precedes release publication
   }
 });
 
+test("reserve the immutable tag before any build and require it at publication", () => {
+  const compute = jobs.get("compute-version");
+  assert.match(compute, /SOURCE_SHA: \$\{\{ steps\.version\.outputs\.SOURCE_SHA \}\}/);
+  assert.ok(compute.includes('check-release-tag.sh "$TAG_NAME" "$SOURCE_SHA" --reserve'));
+  assert.deepEqual(needs("build-wasm"), ["compute-version"]);
+  const body = jobs.get("prerelease");
+  assert.equal(body.match(/check-release-tag\.sh "\$TAG_NAME" "\$SOURCE_SHA" --require/g)?.length, 2);
+  // Existing tags select source. Passing an old SHA as target_commitish can
+  // demand Workflows:write after main advances, even though Contents:write is set.
+  assert.doesNotMatch(body, /^\s+target_commitish:/m);
+  const github = body.indexOf("      - name: Create GitHub Release\n");
+  const recheck = body.indexOf("      - name: Verify published release tag still matches built source\n");
+  const pypi = body.indexOf("      - name: Publish runtimed to PyPI\n");
+  const updater = body.indexOf("      - name: Update ");
+  assert.ok(github >= 0 && recheck > github && pypi > recheck && updater > pypi);
+  assert.match(body.slice(pypi, updater), /--trusted-publishing always --check-url/);
+});
+
+test("changelog excludes reserved tags without touching the remote", () => {
+  const body = jobs.get("prerelease");
+  assert.match(body, /gh api --paginate "repos\/\$GITHUB_REPOSITORY\/releases"/);
+  const filter = body.indexOf("bash scripts/ci/filter-unpublished-release-tags.sh");
+  assert.ok(filter >= 0 && filter < body.indexOf("CHANGELOG=$(git-cliff"));
+  assert.match(body, /select\(\.draft == false\)/);
+  assert.ok(body.includes("git tag -l 'v*-stable.*' --merged HEAD --sort=-creatordate"));
+  assert.ok(body.includes('filter-unpublished-release-tags.sh "$RUNNER_TEMP/published-release-tags" "$TAG_NAME"'));
+  assert.ok(validation.includes("      - scripts/ci/filter-unpublished-release-tags.sh\n"));
+});
+
+test("release channels serialize runs without cancelling active publication", () => {
+  for (const channel of ["stable", "nightly"]) {
+    const caller = workflow(`release-${channel}`);
+    assert.ok(caller.includes(`concurrency:\n  group: nteract-release-${channel}\n  cancel-in-progress: false\n`));
+  }
+});
+
 test("stable and nightly keep publishing their own plugin slice", () => {
   const plugin = jobs.get("publish-plugin");
   assert.match(plugin, /--channel "\$\{\{ inputs\.publish_plugin_channel \}\}"/);

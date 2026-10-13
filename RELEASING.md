@@ -7,7 +7,7 @@
 | **Stable** | `v{version}-stable.{timestamp}` | Tag push (`v*`) or manual | GitHub Releases |
 | **Nightly** | `v{version}-nightly.{timestamp}` | Cron (daily, 24h cadence) or manual | GitHub Pre-releases |
 | **runtimed Python package** | same as stable/nightly | Stable/nightly release workflow | PyPI + GitHub Releases |
-| **npm packages** | Stable Node version or `<Node version>-nightly.<run ID>` | Successful stable/nightly release or manual recovery | npm (`latest` / `nightly`) |
+| **npm packages** | Each package's checked-in version, or `<version>-nightly.<run ID>` | Successful stable/nightly release or manual recovery | npm (`latest` / `nightly`) |
 
 Timestamps are UTC in `YYYYMMDDHHMM` format, e.g. `v2.0.0-stable.202507010900`.
 
@@ -18,6 +18,14 @@ The desktop app, `runt` CLI, and `runtimed` daemon are all built and released to
 Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-releases run every 24 hours. Both can also be triggered manually.
 
 > **Note:** Desktop releases also build `runtimed` Python wheels and publish them to PyPI via trusted publishing. Nightly releases publish a unique pre-release version; stable releases publish the base version from `crates/runt/Cargo.toml`. `cargo xtask bump` still bumps `python/runtimed/pyproject.toml`; the release workflow stamps it again inside the ephemeral Actions checkout so PyPI publishing follows the Rust release version even if that file drifts.
+
+### Release source and partial publication
+
+The version job reserves the timestamped tag at the exact source SHA before builds begin, using the workflow's existing `GITHUB_TOKEN`. It never force-pushes a tag. A denied reservation stops the builds; a failed build may leave a source tag without a release. Do not move that tag to repair a run. Changelog generation excludes unpublished timestamped tags and the current release tag from its disposable checkout, leaving remote tags intact. Excluding the current tag also preserves release notes on a publication retry. Token-created tags do not trigger the stable tag-push workflow. Each channel serializes release runs with `cancel-in-progress: false`, so overlapping runs cannot replace each other's assets. GitHub keeps one pending run per channel by default; newer pending requests replace older pending requests without cancelling the active release.
+
+After all build and smoke gates pass, publication requires that reserved tag to still match the built source. The GitHub release uses the existing tag without `target_commitish`: that field only supplies a commit when creating a missing tag. Passing the old SHA can instead invoke GitHub's workflow-write restriction when main's workflows have advanced during the build. See [GitHub's release API contract](https://docs.github.com/en/rest/releases/releases#create-a-release). A second tag check follows GitHub publication.
+
+PyPI publication follows successful GitHub release creation and asset upload, before updater and plugin publication. This prevents a GitHub 403 from publishing Python wheels first. A later PyPI or updater failure still leaves a partial release; preserve existing artifacts and inspect the exact failed step before retrying. The existing PyPI `--check-url` and npm identity checks protect their retry paths. This does not make the registries one atomic transaction.
 
 ### Artifacts
 
@@ -89,7 +97,16 @@ To enable either ARM64 npm platform:
 3. Configure the package's npm trusted publisher for organization `nteract`, repository `nteract`, workflow `publish-npm.yml`, allowing `npm publish`.
 4. Verify the package is readable from the registry and its trusted-publisher settings are correct, then set that platform's variable to `true` in the repository's Actions variables. The next npm release publishes it alongside the other enabled platforms and includes it in the wrapper. If that wrapper version was already published without the platform, use a new successful nightly run or bump the stable package version before releasing; npm versions are immutable.
 
-`@nteract/sift` and `@nteract/sift-csv` need the same one-time bootstrap, gated by the `NPM_SIFT_ENABLED` and `NPM_SIFT_CSV_ENABLED` repository variables. Until a variable is `true`, CI builds that package's WASM, runs its packed-consumer checks, and uploads `npm-package-sift` or `npm-package-sift-csv`, but does not publish it. Follow the steps above with that artifact. npm configures trusted publishers in an existing package's settings, so the first version needs a maintainer publish. A new trusted-publisher configuration expires unless it completes a publish within two days: set the variable as soon as the configuration is saved, then let the next nightly publish or dispatch the workflow for a recent successful release.
+`@nteract/sift` is gated by the `NPM_SIFT_ENABLED` repository variable. Until it is `true`, CI builds the WASM, runs the packed-consumer checks, and uploads `npm-package-sift`, but does not publish it. npm configures trusted publishers in an existing package's settings, so Sift bootstraps from a placeholder instead of a CI tarball:
+
+1. An `@nteract` owner publishes a code-free `@nteract/sift@0.0.1` with `npm publish --access public`. `0.0.1` sorts below every Sift version CI publishes, so it never blocks or collides with one. Deprecate it once a stable release has moved `latest` to a real version.
+2. Configure the trusted publisher as in step 3 above. New configurations default to staged publishing only; allow `npm publish`.
+3. Set the variable right away. A new trusted-publisher configuration expires unless it completes a publish within two days. Let the next nightly publish, or dispatch **Nightly Release**.
+
+The first nightly publishes `<Sift version>-nightly.<run ID>` under `nightly`. The next stable release publishes the checked-in Sift version and moves `latest` off the placeholder.
+
+`@nteract/sift-csv` uses the same placeholder bootstrap with its own `NPM_SIFT_CSV_ENABLED` gate and `npm-package-sift-csv` artifact. Releases from sources without the CSV package skip that package entirely.
+
 
 These bootstrap publications, npm permissions, and trusted-publisher settings require separate maintainer qualification. They are not established by the source change or a local test run.
 
