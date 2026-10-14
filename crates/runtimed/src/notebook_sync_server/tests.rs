@@ -14506,3 +14506,302 @@ async fn cancelled_auto_launch_success_is_stopped_before_gate_reopens() {
         }
     }
 }
+
+// These fixtures exercise the production output/save/import/journal seams only.
+// No daemon, kernel, process registry, or global cleanup is started.
+#[tokio::test]
+async fn arrow_recovery_roundtrips_inline_threshold_and_blob_manifests() {
+    for size in [656, 1023, 1024, 1400] {
+        assert_arrow_recovery(size, None).await;
+    }
+}
+
+#[tokio::test]
+async fn arrow_recovery_rejects_conflict_and_reports_unavailable_content() {
+    for conflict in [
+        "size",
+        "schema",
+        "type",
+        "unknown",
+        "missing-blob",
+        "missing-chunk",
+    ] {
+        assert_arrow_recovery(1400, Some(conflict)).await;
+    }
+}
+
+async fn assert_arrow_recovery(manifest_size: usize, conflict: Option<&str>) {
+    use crate::output_store::{create_manifest, ContentRef, DEFAULT_INLINE_THRESHOLD};
+    use notebook_doc::mime::ARROW_STREAM_MANIFEST_MIME;
+    use runtimed_client::output_equivalence::{compare_outputs, OutputComparison};
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blobs = test_blob_store(&tmp);
+    let path = tmp.path().join("dataframe.ipynb");
+    let docs = tmp.path().join("docs");
+    let records_dir = tmp.path().join("executions");
+    let store = runtimed_client::execution_store::ExecutionStore::new(&records_dir);
+    let id = Uuid::new_v4();
+    tokio::fs::write(
+        &path,
+        br#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[]}"#,
+    )
+    .await
+    .unwrap();
+    let chunk = blobs
+        .put(&vec![42; 1088], "application/vnd.apache.arrow.stream")
+        .await
+        .unwrap();
+    let mut manifest = serde_json::json!({
+        "schema":{"hash":"schema-is-not-a-blob","fields":["qa_id","score"]},
+        "chunks":[{"hash":chunk,"size":1088,"rows":2}],
+        "padding":""
+    });
+    let padding = manifest_size - manifest.to_string().len();
+    manifest["padding"] = serde_json::json!("x".repeat(padding));
+    assert_eq!(manifest.to_string().len(), manifest_size);
+    let source = "import pandas as pd\npd.DataFrame({'qa_id':['RIVET_A_38473320686','RIVET_B_38473320686'],'score':[137,None]})";
+    let mut expected = {
+        let (room, _guard, ready) =
+            materialized_room_from_disk_with(id, &docs, Arc::clone(&blobs), &path, &records_dir)
+                .await;
+        assert_source_ready(&ready);
+        let raw = serde_json::json!({"output_type":"execute_result", "execution_count":1,
+            "metadata":{},"data":{ARROW_STREAM_MANIFEST_MIME:manifest}});
+        let output = create_manifest(&raw, &blobs, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap()
+            .to_json();
+        assert_eq!(
+            output["data"][ARROW_STREAM_MANIFEST_MIME]
+                .get("inline")
+                .is_some(),
+            manifest_size < DEFAULT_INLINE_THRESHOLD
+        );
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "df", "code").unwrap();
+            doc.update_source("df", source).unwrap();
+            doc.set_execution_id("df", Some("df-execution")).unwrap();
+        }
+        room.state
+            .with_doc(|state| {
+                state.create_execution_with_source_provenance(
+                    "df-execution",
+                    source,
+                    37,
+                    Some("mcp:rivet"),
+                    Some("df"),
+                )?;
+                state.set_execution_count("df-execution", 1)?;
+                state.set_outputs("df-execution", &[output])?;
+                state.set_execution_done("df-execution", true)?;
+                Ok(())
+            })
+            .unwrap();
+        save_notebook_to_disk(&room, None).await.unwrap();
+        super::peer_runtime_sync::persist_terminal_execution_records(
+            &room,
+            &store,
+            &mut HashMap::new(),
+        )
+        .await;
+        store.read_record("df-execution").await.unwrap()
+    };
+    let saved: serde_json::Value =
+        serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+    let imported = create_manifest(
+        &saved["cells"][0]["outputs"][0],
+        &blobs,
+        DEFAULT_INLINE_THRESHOLD,
+    )
+    .await
+    .unwrap()
+    .to_json();
+    assert_eq!(
+        imported["data"][ARROW_STREAM_MANIFEST_MIME]
+            .get("inline")
+            .is_some(),
+        manifest_size == 656,
+        "saved/imported transport crosses the threshold at 1023 bytes"
+    );
+    assert_eq!(
+        compare_outputs(&expected.outputs, &[imported], |hash| {
+            let blobs = Arc::clone(&blobs);
+            async move { blobs.get(&hash).await }
+        })
+        .await,
+        OutputComparison::Equivalent
+    );
+    // Fresh import must reuse the same durable provenance by content too.
+    {
+        let (_room, _guard, ready) = materialized_room_from_disk_with(
+            id,
+            &tmp.path().join("fresh-docs"),
+            Arc::clone(&blobs),
+            &path,
+            &records_dir,
+        )
+        .await;
+        assert_source_ready(&ready);
+        assert_eq!(
+            _room.doc.read().await.get_execution_id("df").as_deref(),
+            Some("df-execution")
+        );
+        assert_eq!(
+            _room
+                .state
+                .read(|state| state.get_execution("df-execution"))
+                .unwrap()
+                .unwrap()
+                .source
+                .as_deref(),
+            Some(source)
+        );
+    }
+    if let Some(conflict) = conflict {
+        if conflict == "missing-chunk" {
+            blobs.delete(&chunk).await.unwrap();
+        } else if conflict == "missing-blob" {
+            let hash = expected.outputs[0]["data"][ARROW_STREAM_MANIFEST_MIME]["blob"]
+                .as_str()
+                .unwrap();
+            blobs.delete(hash).await.unwrap();
+        } else {
+            match conflict {
+                "size" => manifest["chunks"][0]["size"] = serde_json::json!(999),
+                "schema" => manifest["schema"]["hash"] = serde_json::json!("different-schema"),
+                "type" => {
+                    manifest["chunks"][0]["content_type"] =
+                        serde_json::json!("application/conflict")
+                }
+                "unknown" => manifest["chunks"][0]["future"] = serde_json::json!("must survive"),
+                _ => unreachable!(),
+            }
+            expected.outputs[0]["data"][ARROW_STREAM_MANIFEST_MIME] = serde_json::to_value(
+                ContentRef::from_data(
+                    &manifest.to_string(),
+                    ARROW_STREAM_MANIFEST_MIME,
+                    &blobs,
+                    DEFAULT_INLINE_THRESHOLD,
+                )
+                .await
+                .unwrap(),
+            )
+            .unwrap();
+            store.write_record(expected.clone()).await.unwrap();
+        }
+        {
+            let (fresh, _guard, ready) = materialized_room_from_disk_with(
+                id,
+                &tmp.path().join("negative-fresh-docs"),
+                Arc::clone(&blobs),
+                &path,
+                &records_dir,
+            )
+            .await;
+            assert_source_ready(&ready);
+            let synthetic_id = fresh.doc.read().await.get_execution_id("df").unwrap();
+            assert_ne!(synthetic_id, "df-execution", "fresh {conflict}");
+            let state = fresh
+                .state
+                .read(|state| state.get_execution(&synthetic_id))
+                .unwrap()
+                .unwrap();
+            assert_eq!(state.source, None);
+            assert_eq!(state.seq, None);
+            assert_eq!(state.submitted_by_actor_label, None);
+        }
+        let (room, _guard, settled) =
+            materialized_room_from_disk_with(id, &docs, Arc::clone(&blobs), &path, &records_dir)
+                .await;
+        assert!(
+            matches!(settled, RoomSourceState::Failed(_)),
+            "{conflict}: {settled:?}"
+        );
+        if matches!(conflict, "missing-blob" | "missing-chunk") {
+            assert!(format!("{settled:?}").contains("cannot verify durable execution"));
+        }
+        assert!(room
+            .state
+            .read(|state| state.get_execution("df-execution"))
+            .unwrap()
+            .is_none());
+        assert!(store
+            .read_record("df-execution")
+            .await
+            .unwrap()
+            .payload_matches(&expected));
+        return;
+    }
+    // Save an edited current source without executing it; provenance remains original.
+    {
+        let (room, _guard, ready) =
+            materialized_room_from_disk_with(id, &docs, Arc::clone(&blobs), &path, &records_dir)
+                .await;
+        assert_source_ready(&ready);
+        room.doc
+            .write()
+            .await
+            .update_source("df", "# edited, never executed")
+            .unwrap();
+        save_notebook_to_disk(&room, None).await.unwrap();
+    }
+    for cycle in 0..2 {
+        // Fresh BlobStore instances also discard in-memory content caches.
+        let blobs = test_blob_store(&tmp);
+        let (room, _guard, ready) =
+            materialized_room_from_disk_with(id, &docs, Arc::clone(&blobs), &path, &records_dir)
+                .await;
+        assert_source_ready(&ready);
+        assert_eq!(
+            room.doc.read().await.get_cell("df").unwrap().source,
+            "# edited, never executed"
+        );
+        assert_eq!(
+            room.doc.read().await.get_execution_id("df").as_deref(),
+            Some("df-execution")
+        );
+        let actual = room
+            .state
+            .read(|state| state.get_execution("df-execution"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            compare_outputs(&expected.outputs, &actual.outputs, |hash| {
+                let blobs = Arc::clone(&blobs);
+                async move { blobs.get(&hash).await }
+            })
+            .await,
+            OutputComparison::Equivalent
+        );
+        assert_eq!(
+            actual.outputs[0]["output_id"],
+            expected.outputs[0]["output_id"]
+        );
+        assert_eq!(
+            actual,
+            expected.execution_state(),
+            "cycle {cycle}: all execution provenance"
+        );
+        assert_eq!(
+            actual.outputs[0]["data"][ARROW_STREAM_MANIFEST_MIME]
+                .get("inline")
+                .is_some(),
+            manifest_size < DEFAULT_INLINE_THRESHOLD
+        );
+        save_notebook_to_disk(&room, None).await.unwrap();
+        super::peer_runtime_sync::persist_terminal_execution_records(
+            &room,
+            &store,
+            &mut HashMap::new(),
+        )
+        .await;
+        expected.outputs = actual.outputs;
+        assert!(store
+            .read_record("df-execution")
+            .await
+            .unwrap()
+            .payload_matches(&expected));
+    }
+}

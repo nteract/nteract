@@ -1526,10 +1526,9 @@ async fn externalize_arrow_ref_object(
     obj.remove("hash");
     obj.insert("blob".to_string(), Value::String(hash));
     obj.insert("size".to_string(), json!(size));
-    obj.insert(
-        "content_type".to_string(),
-        Value::String(ARROW_STREAM_MIME.to_string()),
-    );
+    // Preserve explicit types so recovery can detect conflicting provenance.
+    obj.entry("content_type".to_string())
+        .or_insert_with(|| Value::String(ARROW_STREAM_MIME.to_string()));
 
     Ok(())
 }
@@ -4023,6 +4022,26 @@ mod tests {
             resolved.get("text/plain").and_then(|v| v.as_str()),
             Some("10 rows x 2 columns")
         );
+    }
+
+    #[tokio::test]
+    async fn arrow_manifest_roundtrip_preserves_explicit_content_types() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+        let hash = store.put(b"chunk", ARROW_STREAM_MIME).await.unwrap();
+        for explicit in [
+            json!(ARROW_STREAM_MIME),
+            json!("application/conflicting"),
+            Value::Null,
+        ] {
+            let mut manifest = json!({"chunks":[{"hash":hash,"size":5,"content_type":explicit}]});
+            externalize_arrow_manifest_refs(&mut manifest, &store)
+                .await
+                .unwrap();
+            assert_eq!(manifest["chunks"][0]["content_type"], explicit);
+            assert!(restore_arrow_manifest_refs(&mut manifest, &store).unwrap());
+            assert_eq!(manifest["chunks"][0]["content_type"], explicit);
+        }
     }
 
     #[tokio::test]
