@@ -17,6 +17,7 @@ import {
   expect,
   expectTypeOf,
   it,
+  onTestFailed,
   vi,
 } from "vite-plus/test";
 import type { ExecutionViewChangeset, SessionStatus } from "../src/index";
@@ -103,11 +104,15 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
   let exited: Promise<unknown> | undefined;
   let diagnostics: NativeTestDiagnostics;
 
-  async function captureSession(name: string, session: import("../src/index").Session) {
+  async function captureSession(
+    name: string,
+    session: import("../src/index").Session,
+    diagnostic: Pick<NativeTestDiagnostics, "capture">,
+  ) {
     await Promise.all([
-      diagnostics.capture(`${name}.runtime`, () => session.getRuntimeStatus()),
-      diagnostics.capture(`${name}.dependencies`, () => session.getDependencyStatus()),
-      diagnostics.capture(`${name}.executions`, async () => session.getExecutionView()),
+      diagnostic.capture(`${name}.runtime`, () => session.getRuntimeStatus()),
+      diagnostic.capture(`${name}.dependencies`, () => session.getDependencyStatus()),
+      diagnostic.capture(`${name}.executions`, async () => session.getExecutionView()),
     ]);
   }
 
@@ -271,6 +276,7 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
   it.skipIf(!executionEnabled).each([false, true])(
     "recovers execution after another session shuts down the kernel (stale=%s)",
     async (staleSnapshot) => {
+      const testDiagnostics = diagnostics.forTest(`kernel recovery (stale=${staleSnapshot})`);
       diagnostics.record("test_started", { name: "kernel recovery", staleSnapshot });
       const proxyPath = path.join(directory, `recovery-${staleSnapshot}.sock`);
       const proxy = await runtimeStateProxy(socketPath, proxyPath);
@@ -282,20 +288,31 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
         environmentMode: "notebook",
       });
       const peer = await rt.openNotebook(owner.notebookId, { socketPath });
+      let captured = false;
+      const captureFailure = async () => {
+        if (captured) return;
+        captured = true;
+        await Promise.all([
+          captureSession("owner", owner, testDiagnostics),
+          captureSession("peer", peer, testDiagnostics),
+        ]);
+      };
+      // Vitest timeouts can end a test before its body reaches catch/finally.
+      onTestFailed(captureFailure);
       try {
-        await diagnostics.step("initial environment sync", () => owner.syncEnvironment());
+        await testDiagnostics.step("initial environment sync", () => owner.syncEnvironment());
         const cell = await owner.createCell("print('recovered kernel')");
         expect(
-          (await diagnostics.step("initial execution", () => owner.executeCell(cell))).success,
+          (await testDiagnostics.step("initial execution", () => owner.executeCell(cell))).success,
         ).toBe(true);
         if (staleSnapshot) proxy.hold();
-        await diagnostics.step("peer shutdown", () => peer.shutdownKernel());
+        await testDiagnostics.step("peer shutdown", () => peer.shutdownKernel());
         if (!staleSnapshot) {
           await expect
             .poll(async () => (await owner.getRuntimeStatus()).lifecycle, { timeout: 10000 })
             .toBe("Shutdown");
         }
-        const recovered = await diagnostics.step("execution after shutdown", () =>
+        const recovered = await testDiagnostics.step("execution after shutdown", () =>
           owner.executeCell(cell),
         );
         expect(recovered.success).toBe(true);
@@ -307,15 +324,15 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
         await peer.shutdownKernel();
         await expect.poll(async () => (await owner.getRuntimeStatus()).lifecycle).toBe("Shutdown");
         proxy.hold();
-        await diagnostics.step("peer restart", () => peer.restartKernel());
+        await testDiagnostics.step("peer restart", () => peer.restartKernel());
         expect(
           (
-            await diagnostics.step("peer execution after restart", () =>
+            await testDiagnostics.step("peer execution after restart", () =>
               peer.runCell("peer_value = 'after peer restart'"),
             )
           ).success,
         ).toBe(true);
-        const continued = await diagnostics.step("owner execution after peer restart", () =>
+        const continued = await testDiagnostics.step("owner execution after peer restart", () =>
           owner.runCell("print(peer_value)"),
         );
         expect(continued.success).toBe(true);
@@ -324,7 +341,8 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
         ).toBe(true);
         expect(proxy.queuedWhileHeld()).toBe(1);
       } catch (error) {
-        await Promise.all([captureSession("owner", owner), captureSession("peer", peer)]);
+        testDiagnostics.bodyFailed(error);
+        await captureFailure();
         throw error;
       } finally {
         await peer.close();
@@ -342,6 +360,7 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
   it.skipIf(!executionEnabled)(
     "tracks real reruns, progress and retained snapshots",
     async () => {
+      const testDiagnostics = diagnostics.forTest("reruns, progress and retained snapshots");
       diagnostics.record("test_started", { name: "reruns, progress and retained snapshots" });
       const session = await rt.createNotebook({
         socketPath,
@@ -351,6 +370,13 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
         environmentMode: "notebook",
       });
       const changesets: ExecutionViewChangeset[] = [];
+      let captured = false;
+      const captureFailure = async () => {
+        if (captured) return;
+        captured = true;
+        await captureSession("session", session, testDiagnostics);
+      };
+      onTestFailed(captureFailure);
       const mismatches: string[] = [];
       const subscription = session.executionViewChanges$.subscribe((changeset) => {
         changesets.push(changeset);
@@ -361,7 +387,7 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
       });
       try {
         const cell = await session.createCell("value = 40\nprint(value + 2)");
-        const first = await diagnostics.step("first execution", () =>
+        const first = await testDiagnostics.step("first execution", () =>
           session.executeCell(cell, { timeoutMs: 60000 }),
         );
         expect(first.success).toBe(true);
@@ -374,7 +400,7 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
         const retained = session.getExecutionView();
         expect(Object.isFrozen(retained.executions[first.executionId].output_ids)).toBe(true);
         await session.setCell(cell, { source: "print(value + 3)" });
-        const second = await diagnostics.step("second execution", () =>
+        const second = await testDiagnostics.step("second execution", () =>
           session.executeCell(cell, { timeoutMs: 60000 }),
         );
         expect(second.success).toBe(true);
@@ -383,7 +409,7 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
           .toBe(second.executionId);
         expect(retained.cell_execution_ids[cell]).toBe(first.executionId);
         const progress: unknown[] = [];
-        const streamed = await diagnostics.step("streamed execution", () =>
+        const streamed = await testDiagnostics.step("streamed execution", () =>
           session.runCell(
             "import time\nprint('start', flush=True)\ntime.sleep(0.2)\nprint(value)",
             {
@@ -404,7 +430,8 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
         expect(changesets.some((change) => change.execution_upserts?.length)).toBe(true);
         expect(mismatches).toEqual([]);
       } catch (error) {
-        await captureSession("session", session);
+        testDiagnostics.bodyFailed(error);
+        await captureFailure();
         throw error;
       } finally {
         subscription.unsubscribe();

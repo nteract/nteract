@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { NativeTestDiagnostics } from "./native-test-diagnostics";
 
 const directories: string[] = [];
@@ -20,10 +20,65 @@ function fixture() {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true });
 });
 
 describe("native test diagnostics (no native runtime)", () => {
+  it("preserves operation outcomes when diagnostic storage is unavailable", async () => {
+    const { diagnostics } = fixture();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    fs.rmSync(diagnostics.directory!, { recursive: true });
+    const result = { success: false };
+    expect(await diagnostics.step("execution", async () => result)).toBe(result);
+    const failure = new Error("original launch error");
+    await expect(
+      diagnostics.step("launch", async () => {
+        throw failure;
+      }),
+    ).rejects.toBe(failure);
+    expect(() => diagnostics.daemonOutput(Buffer.from("daemon failure"))).not.toThrow();
+    await expect(
+      diagnostics.capture("runtime", async () => {
+        throw failure;
+      }),
+    ).resolves.toBeUndefined();
+    expect(diagnostics.failureSummary("execution", [])).toContain("daemon failure");
+    expect(warning).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replace a successful result that cannot be serialized", async () => {
+    const { diagnostics } = fixture();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result: { self?: unknown } = {};
+    result.self = result;
+    expect(await diagnostics.step("execution", async () => result)).toBe(result);
+  });
+
+  it("keeps late events associated with the test that started them", async () => {
+    const { diagnostics, events } = fixture();
+    const first = diagnostics.forTest("recovery stale=false");
+    const next = diagnostics.forTest("recovery stale=true");
+    let finish!: () => void;
+    const pending = first.step(
+      "execution",
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await next.capture("runtime", async () => ({ lifecycle: "Running" }));
+    finish();
+    await pending;
+    first.bodyFailed(new Error("first test failed"));
+    expect(events().map(({ event, details }) => [event, details.name ?? event])).toEqual([
+      ["step_started", "recovery stale=false: execution"],
+      ["recovery stale=true: runtime", "recovery stale=true: runtime"],
+      ["step_completed", "recovery stale=false: execution"],
+      ["test_body_failed", "recovery stale=false"],
+    ]);
+  });
+
   it("retains full output outside disposable fixtures and keeps runs separate", () => {
     const { root, diagnostics } = fixture();
     const second = new NativeTestDiagnostics(root);
