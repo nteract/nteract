@@ -156,6 +156,7 @@ function ImageViewer({ items, initialIndex, columnLabel, onClose }: ImageViewerP
 
 export function mountImageViewer(props: Omit<ImageViewerProps, "onClose">): ImageViewerHandle {
   const container = document.createElement("div");
+  container.className = "sift-root";
   document.body.appendChild(container);
   const root: Root = createRoot(container);
   let closed = false;

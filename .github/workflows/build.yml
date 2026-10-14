@@ -85,8 +85,6 @@ jobs:
               - "scripts/ci/check-docs-guidance.py"
               - "AGENTS.md"
               - "**/AGENTS.md"
-              - "CLAUDE.md"
-              - "**/CLAUDE.md"
               - "README.md"
               - "CONTRIBUTING.md"
               - "DESIGN.md"
@@ -125,8 +123,10 @@ jobs:
               - "apps/notebook-cloud/**"
               - "src/**"
               - "packages/sift/**"
+              - "packages/sift-csv/**"
               - "crates/runtimed-wasm/**"
               - "crates/sift-wasm/**"
+              - "crates/sift-csv-wasm/**"
               - "crates/nteract-predicate/**"
               - "crates/runtimed/**"
               - "crates/notebook-doc/**"
@@ -145,8 +145,10 @@ jobs:
               - "apps/notebook/src/wasm/**"
               - "crates/runtimed-wasm/**"
               - "crates/sift-wasm/**"
+              - "crates/sift-csv-wasm/**"
               - "crates/nteract-predicate/**"
               - "packages/sift/**"
+              - "packages/sift-csv/**"
               - "Cargo.toml"
               - "Cargo.lock"
               - "package.json"
@@ -378,7 +380,7 @@ jobs:
         # runtimed-node stays excluded here: napi's build script needs libnode.dll
         # for Windows targets, which the Linux cross-compiler doesn't carry. Linux
         # and matrix clippy steps still cover runtimed-node natively.
-        run: cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --exclude runtimed-node --all-targets -- -D warnings
+        run: cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude sift-csv-wasm --exclude runtimed-py --exclude runtimed-node --all-targets -- -D warnings
 
   # Running the harness catches Windows loader failures that clippy misses.
   windows-notebook-tests:
@@ -556,6 +558,12 @@ jobs:
       - name: Clippy sift-wasm
         run: cargo clippy -p sift-wasm --all-targets -- -D warnings
 
+      - name: Test sift-csv-wasm natively
+        run: cargo test -p sift-csv-wasm
+
+      - name: Clippy sift-csv-wasm
+        run: cargo clippy -p sift-csv-wasm --all-targets -- -D warnings
+
       - name: Install Deno
         run: |
           set -euo pipefail
@@ -728,6 +736,9 @@ jobs:
       - name: Run JS tests
         run: vp test run
 
+      # prepack generates THIRD_PARTY_NOTICES.md with cargo-about.
+      - uses: ./.github/actions/install-cargo-about
+
       - name: Run sift tests
         run: pnpm --filter @nteract/sift test
 
@@ -735,6 +746,14 @@ jobs:
         # Includes stale-WASM mutation guards and an isolated consumer's types,
         # imports, compiled CSS, and real WASM decode against a fresh tarball.
         run: pnpm --dir packages/sift test:package
+
+      # @nteract/sift-csv is not part of the notebook's artifact set, so build
+      # its module here before its tests and packed-consumer check.
+      - name: Build and verify @nteract/sift-csv
+        run: |
+          cargo xtask wasm sift-csv
+          pnpm --dir packages/sift-csv test
+          pnpm --dir packages/sift-csv test:package
 
       - name: Build isolated Python runtime and verify IPython compatibility
         run: |
@@ -804,6 +823,9 @@ jobs:
         run: |
           pnpm --dir apps/notebook-cloud exec node --import tsx --test test/route-load-recovery.test.ts
           pnpm --dir apps/notebook-cloud test:asset-recovery
+
+      - uses: ./.github/actions/install-cargo-about
+        if: ${{ !cancelled() && (steps.browser_e2e.outcome == 'success' || steps.browser_e2e.outcome == 'failure') }}
 
       - name: Test production packed Sift consumer
         if: ${{ !cancelled() && (steps.browser_e2e.outcome == 'success' || steps.browser_e2e.outcome == 'failure') }}
@@ -1006,7 +1028,7 @@ jobs:
       # runtimed-wasm (needs wasm-pack, tested in wasm-deno),
       # runtimed-py (needs Python/maturin, tested in runtimed-py-integration).
       - name: Clippy
-        run: cargo clippy --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude sift-csv-wasm --exclude runtimed-py --all-targets -- -D warnings
 
       - name: Dependency budget check
         run: cargo xtask check-dep-budget
@@ -1060,7 +1082,7 @@ jobs:
           include-mcp-widget: true
 
       - name: Run tests
-        run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --exclude runtimed-node --verbose
+        run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude sift-csv-wasm --exclude runtimed-py --exclude runtimed-node --verbose
 
       - name: Run kernel-launch network tests (nono attestation)
         # Exercises the real GitHub download + Sigstore attestation path for nono.

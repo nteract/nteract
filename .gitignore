@@ -85,6 +85,7 @@ python/nteract/src/nteract/_widget.html
 # verify these outputs with source fingerprints and rebuild when stale.
 /apps/notebook/src/wasm/runtimed-wasm/
 /crates/sift-wasm/pkg/
+/crates/sift-csv-wasm/pkg/
 
 # Python artifacts
 __pycache__/

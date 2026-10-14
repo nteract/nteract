@@ -1,81 +1,35 @@
-import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import ts from "typescript";
+// prepack: refuse to pack a lib/ that is missing pieces. The packed-consumer
+// test (test-package.mjs) covers behavior; this only guards against publishing
+// a stale or partial build directory.
+import { readFileSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const packageRoot = new URL("../", import.meta.url);
-
-export async function requiredWasmExports() {
-  // Use the current runtime contract, not generated declarations that could be
-  // stale alongside an old binary. New API methods automatically join this check.
-  const text = await readFile(new URL("src/predicate.ts", packageRoot), "utf8");
-  const source = ts.createSourceFile("predicate.ts", text, ts.ScriptTarget.Latest, true);
-  const contract = source.statements.find(
-    (node) => ts.isTypeAliasDeclaration(node) && node.name.text === "PredicateModule",
-  );
-  assert(
-    contract && ts.isTypeLiteralNode(contract.type),
-    "Missing PredicateModule runtime contract",
-  );
-  const names = contract.type.members
-    .filter(ts.isMethodSignature)
-    .map((method) => method.name.getText(source));
-  assert(names.length > 0, "PredicateModule must declare its WASM methods");
-  return names;
-}
-
-export async function verifyWasmPair(binary, glueUrl, required) {
-  const module = new WebAssembly.Module(binary);
-  const exported = new Set(
-    WebAssembly.Module.exports(module)
-      .filter((entry) => entry.kind === "function")
-      .map((entry) => entry.name),
-  );
-  for (const name of required) {
-    assert(
-      exported.has(name),
-      `Sift WASM binary is missing runtime export ${name}. Rebuild with cargo xtask wasm sift --skip-renderer-plugins, then pnpm run build:lib.`,
+const lib = join(dirname(fileURLToPath(import.meta.url)), "..", "lib");
+const required = [
+  "index.js",
+  "handoff.js",
+  "handoff.css",
+  "style.css",
+  "types/packages/sift/src/index.d.ts",
+  "types/packages/sift/src/handoff.d.ts",
+  "wasm/sift_wasm.js",
+  "wasm/sift_wasm_bg.wasm",
+  "THIRD_PARTY_NOTICES.md",
+  "LICENSE",
+];
+for (const file of required) {
+  try {
+    if (statSync(join(lib, file)).size === 0) throw new Error("empty");
+  } catch {
+    console.error(
+      `lib/${file} is missing. Run: cargo xtask wasm sift && pnpm build:lib && pnpm notices`,
     );
+    process.exit(1);
   }
-  const glue = await import(glueUrl.href);
-  for (const name of required) {
-    assert.equal(
-      typeof glue[name],
-      "function",
-      `Sift WASM glue is missing runtime export ${name}. Rebuild the WASM and library together.`,
-    );
-  }
-  // Instantiation validates that the glue supplies the binary's actual imports.
-  // Valid bytecode and matching export names alone do not establish ABI pairing.
-  await glue.default({ module_or_path: module });
 }
-
-async function checkLibrary() {
-  const manifest = JSON.parse(await readFile(new URL("package.json", packageRoot), "utf8"));
-  const exported = Object.values(manifest.publishConfig.exports).flatMap((entry) =>
-    typeof entry === "string" ? [entry] : Object.values(entry),
-  );
-  // The WASM and bundle carry third-party code; their notices ship beside them.
-  for (const file of [...exported, "./lib/LICENSE", "./lib/THIRD_PARTY_NOTICES.md"]) {
-    try {
-      assert((await readFile(new URL(file, packageRoot))).byteLength > 0);
-    } catch {
-      throw new Error(
-        `Missing library output ${file}. Run pnpm run build:lib before packing Sift.`,
-      );
-    }
-  }
-  const wasm = await readFile(new URL("lib/wasm/sift_wasm_bg.wasm", packageRoot));
-  await verifyWasmPair(
-    wasm,
-    new URL("lib/wasm/sift_wasm.js", packageRoot),
-    await requiredWasmExports(),
-  );
-  console.log(
-    `Verified library assets and WASM runtime ABI in ${fileURLToPath(new URL("lib/", packageRoot))}`,
-  );
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await checkLibrary();
+const glue = readFileSync(join(lib, "wasm/sift_wasm.js"), "utf8");
+if (!glue.includes("sift_wasm_bg.wasm")) {
+  console.error("lib/wasm/sift_wasm.js does not look like wasm-pack's sift-wasm glue.");
+  process.exit(1);
 }

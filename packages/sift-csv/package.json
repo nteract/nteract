@@ -1,0 +1,45 @@
+{
+  "name": "@nteract/sift-csv",
+  "version": "0.1.0",
+  "description": "CSV and TSV to Arrow IPC in WebAssembly, for @nteract/sift and any Arrow consumer",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nteract/nteract.git",
+    "directory": "packages/sift-csv"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "main": "./lib/index.js",
+  "module": "./lib/index.js",
+  "types": "./lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "import": "./lib/index.js"
+    },
+    "./wasm": "./lib/wasm/sift_csv_wasm_bg.wasm",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build:lib": "vp build --config vite.lib.config.ts && tsc -p tsconfig.lib.json",
+    "test": "vp test run",
+    "test:package": "pnpm run build:lib && node scripts/test-package.mjs",
+    "prepack": "pnpm run notices && node scripts/check-lib.mjs",
+    "notices": "node ../sift/scripts/third-party-notices.mjs lib/THIRD_PARTY_NOTICES.md sift-csv-wasm"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "apache-arrow": "^21.1.0",
+    "typescript": "~5.9.3",
+    "vite-plus": "catalog:"
+  }
+}

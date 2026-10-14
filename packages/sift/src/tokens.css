@@ -1,0 +1,121 @@
+/**
+ * Sift design tokens.
+ *
+ * Two layers:
+ *
+ * 1. Inputs a host sets on html/body (the common ancestors of tables and portals):
+ *
+ *      --sift-color-bg       table background
+ *      --sift-color-panel    header, popovers, menus, sheets
+ *      --sift-color-ink      text
+ *      --sift-color-muted    secondary text, null markers
+ *      --sift-color-rule     borders and grid lines
+ *      --sift-color-accent   histogram bars, selection, focus ring
+ *      --sift-color-true     boolean true (badges, ratio bar)
+ *      --sift-color-false    boolean false
+ *      --sift-font-family
+ *      --sift-radius-base
+ *
+ *    Neutrals fall back to the shadcn names (`--background`, `--card`,
+ *    `--foreground`, `--muted-foreground`, `--border`, `--radius`) when the
+ *    host defines them, so a shadcn app gets Sift in its own palette with no
+ *    configuration. Accent and boolean colors keep Sift's defaults unless set:
+ *    a shadcn `--primary` is a button color, often near-black, and reads badly
+ *    as a histogram bar. The font has no shadcn fallback because Tailwind's
+ *    own `--font-sans` is defined on `.sift-root` and would shadow the host's.
+ *
+ * 2. Resolved tokens (`--sift-bg`, `--sift-ink`, `--sift-row-alt`, ...) that
+ *    the stylesheet consumes. They live on `.sift-root`: the table container
+ *    and each element Sift appends to <body> (column menu, row detail sheet,
+ *    image viewer, brush overlay, category popover). Every tint is derived
+ *    from the inputs with color-mix(), so one accent and one ink are enough.
+ *
+ * Nothing is written to :root, html, or body. Dark mode follows `.dark` or
+ * `[data-theme="dark"]` on an ancestor or on the root itself.
+ */
+
+/* Shared UI primitives (Button, Popover from src/components/ui) use shadcn
+   utility names. Map them onto Sift tokens so they render in Sift's palette
+   and never read or write a host's `--background`, `--primary`, etc. */
+@theme inline {
+  --color-background: var(--sift-bg);
+  --color-foreground: var(--sift-ink);
+  --color-card: var(--sift-panel);
+  --color-card-foreground: var(--sift-ink);
+  --color-popover: var(--sift-panel);
+  --color-popover-foreground: var(--sift-ink);
+  --color-primary: var(--sift-accent);
+  --color-primary-foreground: var(--sift-on-accent);
+  --color-secondary: var(--sift-surface-2);
+  --color-secondary-foreground: var(--sift-ink);
+  --color-muted: var(--sift-surface-2);
+  --color-muted-foreground: var(--sift-muted);
+  --color-accent: var(--sift-surface-2);
+  --color-accent-foreground: var(--sift-ink);
+  --color-destructive: var(--sift-bool-false);
+  --color-destructive-foreground: #ffffff;
+  --color-border: var(--sift-rule);
+  --color-input: var(--sift-rule);
+  --color-ring: var(--sift-accent);
+
+  --radius-sm: calc(var(--sift-radius) - 4px);
+  --radius-md: calc(var(--sift-radius) - 2px);
+  --radius-lg: var(--sift-radius);
+  --radius-xl: calc(var(--sift-radius) + 4px);
+}
+
+/* --- Light --- */
+
+.sift-root {
+  color-scheme: light;
+
+  --sift-bg: var(--sift-color-bg, var(--background, oklch(1 0 0)));
+  --sift-panel: var(--sift-color-panel, var(--card, oklch(1 0 0)));
+  --sift-ink: var(--sift-color-ink, var(--foreground, oklch(0.145 0 0)));
+  --sift-muted: var(--sift-color-muted, var(--muted-foreground, oklch(0.556 0 0)));
+  --sift-rule: var(--sift-color-rule, var(--border, oklch(0.922 0 0)));
+  --sift-accent: var(--sift-color-accent, oklch(0.546 0.245 262.881));
+  --sift-bool-true: var(--sift-color-true, #22c55e);
+  --sift-bool-false: var(--sift-color-false, #ef4444);
+  --sift-font: var(--sift-font-family, Inter, ui-sans-serif, system-ui, sans-serif);
+  --sift-radius: var(--sift-radius-base, var(--radius, 0.5rem));
+
+  /* Derived from the inputs, so they follow light and dark automatically. */
+  --sift-on-accent: var(--sift-bg);
+  --sift-surface-2: color-mix(in srgb, var(--sift-ink) 6%, var(--sift-bg));
+  --sift-row-alt: color-mix(in srgb, var(--sift-ink) 2%, transparent);
+  --sift-pin-shadow: color-mix(in srgb, var(--sift-ink) 6%, transparent);
+  --sift-cat-bar-track: color-mix(in srgb, var(--sift-ink) 4%, transparent);
+  --sift-loading-code-bg: color-mix(in srgb, var(--sift-ink) 4%, transparent);
+  --sift-skeleton-bar-from: color-mix(in srgb, var(--sift-ink) 4%, transparent);
+  --sift-skeleton-bar-via: color-mix(in srgb, var(--sift-ink) 8%, transparent);
+  --sift-scrollbar-thumb: color-mix(in srgb, var(--sift-ink) 15%, transparent);
+  --sift-scrollbar-thumb-hover: color-mix(in srgb, var(--sift-ink) 30%, transparent);
+  --sift-bool-null-fg: color-mix(in srgb, var(--sift-ink) 8%, transparent);
+  --sift-bool-null-bg: color-mix(in srgb, var(--sift-ink) 3%, transparent);
+  --sift-badge-true-bg: color-mix(in srgb, var(--sift-bool-true) 12%, transparent);
+  --sift-badge-true-color: color-mix(in srgb, var(--sift-bool-true) 70%, var(--sift-ink));
+  --sift-badge-false-bg: color-mix(in srgb, var(--sift-bool-false) 12%, transparent);
+  --sift-badge-false-color: color-mix(in srgb, var(--sift-bool-false) 70%, var(--sift-ink));
+  --sift-detail-backdrop: rgba(0, 0, 0, 0.4);
+  --sift-detail-shadow: rgba(0, 0, 0, 0.1);
+}
+
+/* --- Dark --- */
+
+:is(.dark, [data-theme="dark"]) .sift-root,
+.sift-root:is(.dark, [data-theme="dark"]) {
+  color-scheme: dark;
+
+  --sift-bg: var(--sift-color-bg, var(--background, oklch(0.145 0 0)));
+  --sift-panel: var(--sift-color-panel, var(--card, oklch(0.205 0 0)));
+  --sift-ink: var(--sift-color-ink, var(--foreground, oklch(0.985 0 0)));
+  --sift-muted: var(--sift-color-muted, var(--muted-foreground, oklch(0.708 0 0)));
+  --sift-rule: var(--sift-color-rule, var(--border, oklch(1 0 0 / 10%)));
+  --sift-accent: var(--sift-color-accent, oklch(0.707 0.165 254.624));
+  --sift-bool-true: var(--sift-color-true, #4ade80);
+  --sift-bool-false: var(--sift-color-false, #f87171);
+
+  --sift-detail-backdrop: rgba(0, 0, 0, 0.6);
+  --sift-detail-shadow: rgba(0, 0, 0, 0.5);
+}

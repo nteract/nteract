@@ -12,7 +12,7 @@ Two facts make this pipeline unusual:
 
 2. **The daemon multiplexes high-volume output traffic and low-volume lifecycle signals on the same async runtime.** stdout floods, image-display churn, and widget-comm replay must not delay the `KernelIdle` that releases the queue or the `ExecutionDone` that lets a client read outputs.
 
-This ADR explains the execution and output-ordering rules in `AGENTS.md` (also available through the `CLAUDE.md` symlink) and the `execution-pipeline` skill, including their rationale and remaining gaps.
+This ADR explains the execution and output-ordering rules in `crates/runtimed/AGENTS.md` and the `execution-pipeline` skill, including their rationale and remaining gaps.
 
 Neighbors:
 

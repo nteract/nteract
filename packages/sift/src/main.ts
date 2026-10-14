@@ -10,7 +10,7 @@ import { resolveHuggingFaceParquetUrl } from "./parquet-loader";
 import { ensureModule, getModuleSync, loadIpc } from "./predicate";
 import { type Column, createTable, type TableData, type TableEngine } from "./table";
 import { createWasmTableData } from "./wasm-table-data";
-import "./style.css";
+import "./demo.css";
 
 // --- Column definitions for the generated dataset ---
 

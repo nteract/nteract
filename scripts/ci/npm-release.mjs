@@ -73,10 +73,20 @@ export function releasePlan(baseVersion, identity, linuxArm64Enabled, windowsArm
   };
 }
 
+/**
+ * Packages that release on their own, independent of the Node SDK: one
+ * package.json at the package root, no native siblings, their own release plan
+ * and NPM_*_ENABLED gate in publish-npm.yml.
+ */
+export const standalonePackages = {
+  sift: "@nteract/sift",
+  "sift-csv": "@nteract/sift-csv",
+};
+
 export function packageName(target) {
   if (target === "wrapper") return "@runtimed/node";
   if (target === "pi") return "@nteract/pi";
-  if (target === "sift") return "@nteract/sift";
+  if (target in standalonePackages) return standalonePackages[target];
   if (!nativeTargets.includes(target)) throw new Error(`Unknown native target ${target}`);
   return `@runtimed/node-${target}`;
 }

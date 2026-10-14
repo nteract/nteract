@@ -88,8 +88,7 @@ Stable-DOM-order rendering keeps every cell's iframe pinned to the same DOM node
 
 ### Three places must preserve cell DOM order
 
-The invariant lives in `AGENTS.md` (also available through the `CLAUDE.md`
-symlink). Three code sites implement it: the `stableDomOrder` memo
+The invariant lives in `apps/notebook/src/AGENTS.md`. Three code sites implement it: the `stableDomOrder` memo
 (`NotebookView.tsx`), the `order: index` style, and the parent flex container.
 Changing any of these to let React reorder the cell nodes reintroduces iframe
 reloads and loses widget state. CI does not catch this regression.

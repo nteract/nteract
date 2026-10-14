@@ -95,14 +95,13 @@ try {
   await writeFile(
     join(scratch, "consumer.tsx"),
     `
-    import { SiftTable, createTable, parseCsv, loadTableFile, setWasmUrl, type TableData } from "@nteract/sift";
+    import { SiftTable, createTable, loadTableFile, setWasmUrl, type TableData } from "@nteract/sift";
     import { SiftFocusStatus } from "@nteract/sift/handoff";
     const view = <SiftTable source={{ kind: "url", url: "/local.arrow" }} />;
     const status = <SiftFocusStatus label="Table focused" />;
     declare const data: TableData;
     createTable(document.createElement("div"), data).destroy();
     setWasmUrl("/local/sift.wasm");
-    parseCsv("name\\nAda", { typing: "text" });
     void loadTableFile(new Uint8Array(), { maxRows: 100 });
     const binaryView = <SiftTable source={{ kind: "loader", load: () => loadTableFile(new Uint8Array()) }} />;
     void binaryView;
@@ -129,27 +128,40 @@ try {
     }),
   );
 
-  // Check every generated import, not just modules touched by the smoke call.
+  // Declared dependencies and shipped imports must match in both directions:
+  // an undeclared import breaks installs, and a dependency nothing imports
+  // makes every consumer install it for no reason.
+  const imported = new Set();
   for (const file of await files(join(packed, "lib"))) {
     if (!/\.(js|ts)$/.test(file)) continue;
     const content = await readFile(file, "utf8");
-    const imports = ts.preProcessFile(content, true, true).importedFiles;
-    for (const { fileName: imported } of imports) {
-      if (imported.startsWith(".")) continue;
-      const name = imported.startsWith("@")
-        ? imported.split("/").slice(0, 2).join("/")
-        : imported.split("/")[0];
-      assert(name in dependencies, `${file} imports undeclared package ${imported}`);
+    for (const { fileName: specifier } of ts.preProcessFile(content, true, true).importedFiles) {
+      if (specifier.startsWith(".")) continue;
+      const name = specifier.startsWith("@")
+        ? specifier.split("/").slice(0, 2).join("/")
+        : specifier.split("/")[0];
+      assert(name in dependencies, `${file} imports undeclared package ${specifier}`);
+      imported.add(name);
     }
   }
-  // Notices must name third-party code from both shipped builds.
+  for (const name of Object.keys(dependencies)) {
+    assert(imported.has(name), `package.json declares ${name}, but nothing in lib/ imports it`);
+  }
+  // Notices must name the Rust crates compiled into the shipped WASM.
   const notices = await readFile(join(packed, "lib/THIRD_PARTY_NOTICES.md"), "utf8");
-  for (const name of ["parquet", "arrow-array", "rxjs"]) {
+  for (const name of ["parquet", "arrow-array"]) {
     assert.match(notices, new RegExp(`^\\| ${name} \\| `, "m"), `Notices must list ${name}`);
   }
   const css = await readFile(join(packed, "lib/style.css"), "utf8");
   assert(css.includes(".sift-table-container"), "Compiled table styles must be shipped");
   assert(!/@(?:import|source|theme)\b/.test(css), "Consumers must not need a Tailwind compiler");
+  // The stylesheet loads into host documents. It must not restyle them.
+  assert(!/:root|:host/.test(css), "Sift CSS must not define anything on the document root");
+  assert(
+    !/\*,:after,:before|\*,::after,::before/.test(css),
+    "Sift CSS must not ship a preflight reset",
+  );
+  assert(css.includes(".sift-root"), "Sift tokens must be keyed on .sift-root");
 
   const api = await import(pathToFileURL(join(packed, "lib/index.js")));
   assert.equal(typeof api.SiftTable, "function");
@@ -162,49 +174,25 @@ try {
     api.loadTableFile(new Uint8Array([1, 2, 3])),
     /Arrow|IPC|EOF|metadata|message|buffer/i,
   );
+  // One real Parquet decode proves the shipped glue and binary match. Decoder
+  // behavior is covered by the Rust tests and src/file-data.wasm.test.ts, and
+  // the public loadTableFile path by the browser smoke (it needs a canvas).
   const wasm = await import(pathToFileURL(join(packed, "lib/wasm/sift_wasm.js")));
   await wasm.default({ module_or_path: binary });
-  // A synthetic Arrow fixture exercises the shipped glue and binary together.
   const { tableFromArrays, tableToIPC } = await import("apache-arrow");
-  const handle = wasm.load_ipc(tableToIPC(tableFromArrays({ value: [3, 1, null] })));
+  const fixture = tableToIPC(tableFromArrays({ value: [3, 1, null] }), "stream");
+  const handle = wasm.load_parquet_bounded(wasm.write_parquet_ipc(fixture), 100, 16, 1 << 20);
   try {
     assert.equal(wasm.num_rows(handle), 3);
     assert.equal(wasm.is_null(handle, 2, 0), true);
-    assert.deepEqual([...wasm.store_sort_indices(handle, 0, true)], [1, 0, 2]);
   } finally {
     wasm.free(handle);
-  }
-  // Exercise the shipped bounded loaders and filters, not source stubs. The
-  // browser smoke covers the public adapter, whose text layout needs a canvas.
-  // Missing values must not become the empty-string category in either format.
-  const categories = tableToIPC(tableFromArrays({ name: [null, "", "null", "NA", null] }));
-  for (const load of [
-    () => wasm.load_ipc_bounded(categories, 5, 1, 1024 * 1024),
-    () => wasm.load_parquet_bounded(wasm.write_parquet_ipc(categories), 5, 1, 1024 * 1024),
-  ]) {
-    const categoryHandle = load();
-    try {
-      assert.equal(wasm.is_null(categoryHandle, 0, 0), true);
-      assert.equal(wasm.is_null(categoryHandle, 1, 0), false);
-      assert.equal(wasm.get_cell_string(categoryHandle, 1, 0), "");
-      assert.deepEqual(
-        [...wasm.store_filter_rows(categoryHandle, [{ kind: "set", col: 0, values: [""] }])],
-        [1],
-      );
-      assert.deepEqual(
-        [...wasm.store_filter_rows(categoryHandle, [{ kind: "not_in", col: 0, values: [""] }])],
-        [0, 2, 3, 4],
-      );
-    } finally {
-      wasm.free(categoryHandle);
-    }
   }
   if (process.argv.includes("--browser")) {
     const { testPackageBrowser } = await import("./test-package-browser.mjs");
     await testPackageBrowser({
       scratch,
       packageRoot,
-      tarballPath: join(scratch, tarball),
       wasm,
       tableFromArrays,
       tableToIPC,

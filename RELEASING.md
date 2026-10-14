@@ -81,7 +81,7 @@ The `runtimed` Python package is released by the stable and nightly release work
 
 Nightly builds publish the next patch alpha version, for example `2.4.7a202605082121`, and stable builds publish the checked-in Rust release version, for example `2.4.6`.
 
-The `publish-npm.yml` workflow publishes `@runtimed/node` and its native platform packages, and `@nteract/sift`, from the exact source of a successful stable or nightly release. Stable uses each package's checked-in version and npm's `latest` tag; nightly uses `<package version>-nightly.<upstream run ID>` and the `nightly` tag. `@nteract/pi` remains stable-only. Sift packs and publishes independently of the Node SDK, so a native build failure does not hold it back. Manual recovery requires a successful upstream release run ID and attempt. See the [npm publishing runbook](docs/runbooks/npm-publishing.md) for retry behavior, account prerequisites, consumer qualification, and the distinction between package pins and daemon compatibility.
+The `publish-npm.yml` workflow publishes `@runtimed/node` and its native platform packages, `@nteract/sift`, and `@nteract/sift-csv`, from the exact source of a successful stable or nightly release. Stable uses each package's checked-in version and npm's `latest` tag; nightly uses `<package version>-nightly.<upstream run ID>` and the `nightly` tag. `@nteract/pi` remains stable-only. Sift and Sift CSV each pack and publish independently of the Node SDK and of each other, so a native build failure does not hold them back. Manual recovery requires a successful upstream release run ID and attempt. See the [npm publishing runbook](docs/runbooks/npm-publishing.md) for retry behavior, account prerequisites, consumer qualification, and the distinction between package pins and daemon compatibility.
 
 Linux and Windows ARM64 npm publication each require a one-time bootstrap. Until a platform's repository variable is `true`, CI builds and tests its binding and uploads its tarball, but skips publishing it and omits that optional dependency from the published wrapper. Existing npm platforms continue publishing. Desktop, CLI, Python, and agent-plugin ARM64 releases do not use these gates.
 
@@ -104,6 +104,9 @@ To enable either ARM64 npm platform:
 3. Set the variable right away. A new trusted-publisher configuration expires unless it completes a publish within two days. Let the next nightly publish, or dispatch **Nightly Release**.
 
 The first nightly publishes `<Sift version>-nightly.<run ID>` under `nightly`. The next stable release publishes the checked-in Sift version and moves `latest` off the placeholder.
+
+`@nteract/sift-csv` uses the same placeholder bootstrap with its own `NPM_SIFT_CSV_ENABLED` gate and `npm-package-sift-csv` artifact. Releases from sources without the CSV package skip that package entirely.
+
 
 These bootstrap publications, npm permissions, and trusted-publisher settings require separate maintainer qualification. They are not established by the source change or a local test run.
 
