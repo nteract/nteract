@@ -1145,12 +1145,23 @@ jobs:
         run: vp test run packages/runtimed-node/tests/arrow-ipc.test.ts packages/runtimed-node/tests/native-session.test.ts packages/runtimed-node/tests/native-sync-receipt.test.ts packages/runtimed-node/tests/environment-yml.test.ts
         env:
           RUNTIMED_NODE_NATIVE_INTEGRATION: "1"
+          RUNTIMED_NODE_TEST_ARTIFACTS: ${{ runner.temp }}/runtimed-node-diagnostics
 
       - name: Test runtimed-node Python execution and recovery
         run: vp test run packages/runtimed-node/tests/native-session.test.ts
         env:
           RUNTIMED_NODE_NATIVE_INTEGRATION: "1"
           RUNTIMED_NODE_EXECUTION_INTEGRATION: "1"
+          RUNTIMED_NODE_TEST_ARTIFACTS: ${{ runner.temp }}/runtimed-node-diagnostics
+
+      - name: Upload runtimed-node session diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-runtimed-node-diagnostics
+          path: ${{ runner.temp }}/runtimed-node-diagnostics
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Smoke test runtimed-node package
         run: pnpm --dir packages/runtimed-node smoke

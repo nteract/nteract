@@ -9,8 +9,18 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, expectTypeOf, it, vi } from "vite-plus/test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  expectTypeOf,
+  it,
+  vi,
+} from "vite-plus/test";
 import type { ExecutionViewChangeset, SessionStatus } from "../src/index";
+import { NativeTestDiagnostics } from "./native-test-diagnostics";
 
 const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL("../../..", import.meta.url));
@@ -91,13 +101,23 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
   let socketPath: string;
   let daemon: ChildProcess | undefined;
   let exited: Promise<unknown> | undefined;
-  let logs = "";
+  let diagnostics: NativeTestDiagnostics;
+
+  async function captureSession(name: string, session: import("../src/index").Session) {
+    await Promise.all([
+      diagnostics.capture(`${name}.runtime`, () => session.getRuntimeStatus()),
+      diagnostics.capture(`${name}.dependencies`, () => session.getDependencyStatus()),
+      diagnostics.capture(`${name}.executions`, async () => session.getExecutionView()),
+    ]);
+  }
 
   beforeAll(async () => {
+    diagnostics = new NativeTestDiagnostics(process.env.RUNTIMED_NODE_TEST_ARTIFACTS);
     rt = require("../src/index.cjs");
     binding = require("../src/binding.cjs");
     directory = fs.mkdtempSync(path.join(os.tmpdir(), "runt-node-"));
     socketPath = path.join(directory, "daemon.sock");
+    diagnostics.record("fixture", { directory, socketPath });
     const target = path.resolve(root, process.env.CARGO_TARGET_DIR ?? "target");
     const binary = path.join(
       target,
@@ -133,19 +153,30 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
       },
     );
     exited = once(daemon, "exit");
-    const record = (chunk: Buffer) => {
-      logs = (logs + chunk.toString()).slice(-16000);
-    };
+    const record = (chunk: Buffer) => diagnostics.daemonOutput(chunk);
     daemon.stdout?.on("data", record);
     daemon.stderr?.on("data", record);
-    await vi.waitFor(
-      async () => {
-        if (daemon?.exitCode !== null) throw new Error(`Daemon exited before readiness: ${logs}`);
-        expect(await binding.queryDaemonInfo({ socketPath })).toBeTruthy();
-      },
-      { timeout: 15000 },
-    );
+    await diagnostics
+      .step("daemon readiness", () =>
+        vi.waitFor(
+          async () => {
+            if (daemon?.exitCode !== null) throw new Error("Daemon exited before readiness");
+            expect(await binding.queryDaemonInfo({ socketPath })).toBeTruthy();
+          },
+          { timeout: 15000 },
+        ),
+      )
+      .catch((error) => {
+        console.error(diagnostics.failureSummary("daemon readiness", String(error)));
+        throw error;
+      });
   }, 20000);
+
+  afterEach(({ task }) => {
+    if (task.result?.state === "fail") {
+      console.error(diagnostics.failureSummary(task.name, task.result.errors));
+    }
+  });
 
   afterAll(async () => {
     if (daemon && exited) {
@@ -240,6 +271,7 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
   it.skipIf(!executionEnabled).each([false, true])(
     "recovers execution after another session shuts down the kernel (stale=%s)",
     async (staleSnapshot) => {
+      diagnostics.record("test_started", { name: "kernel recovery", staleSnapshot });
       const proxyPath = path.join(directory, `recovery-${staleSnapshot}.sock`);
       const proxy = await runtimeStateProxy(socketPath, proxyPath);
       const owner = await rt.createNotebook({
@@ -251,17 +283,21 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
       });
       const peer = await rt.openNotebook(owner.notebookId, { socketPath });
       try {
-        await owner.syncEnvironment();
+        await diagnostics.step("initial environment sync", () => owner.syncEnvironment());
         const cell = await owner.createCell("print('recovered kernel')");
-        expect((await owner.executeCell(cell)).success).toBe(true);
+        expect(
+          (await diagnostics.step("initial execution", () => owner.executeCell(cell))).success,
+        ).toBe(true);
         if (staleSnapshot) proxy.hold();
-        await peer.shutdownKernel();
+        await diagnostics.step("peer shutdown", () => peer.shutdownKernel());
         if (!staleSnapshot) {
           await expect
             .poll(async () => (await owner.getRuntimeStatus()).lifecycle, { timeout: 10000 })
             .toBe("Shutdown");
         }
-        const recovered = await owner.executeCell(cell);
+        const recovered = await diagnostics.step("execution after shutdown", () =>
+          owner.executeCell(cell),
+        );
         expect(recovered.success).toBe(true);
         expect(recovered.executionCount).toBe(1);
         expect(recovered.outputs.some((output) => output.text?.includes("recovered kernel"))).toBe(
@@ -271,14 +307,25 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
         await peer.shutdownKernel();
         await expect.poll(async () => (await owner.getRuntimeStatus()).lifecycle).toBe("Shutdown");
         proxy.hold();
-        await peer.restartKernel();
-        expect((await peer.runCell("peer_value = 'after peer restart'")).success).toBe(true);
-        const continued = await owner.runCell("print(peer_value)");
+        await diagnostics.step("peer restart", () => peer.restartKernel());
+        expect(
+          (
+            await diagnostics.step("peer execution after restart", () =>
+              peer.runCell("peer_value = 'after peer restart'"),
+            )
+          ).success,
+        ).toBe(true);
+        const continued = await diagnostics.step("owner execution after peer restart", () =>
+          owner.runCell("print(peer_value)"),
+        );
         expect(continued.success).toBe(true);
         expect(
           continued.outputs.some((output) => output.text?.includes("after peer restart")),
         ).toBe(true);
         expect(proxy.queuedWhileHeld()).toBe(1);
+      } catch (error) {
+        await Promise.all([captureSession("owner", owner), captureSession("peer", peer)]);
+        throw error;
       } finally {
         await peer.close();
         try {
@@ -295,6 +342,7 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
   it.skipIf(!executionEnabled)(
     "tracks real reruns, progress and retained snapshots",
     async () => {
+      diagnostics.record("test_started", { name: "reruns, progress and retained snapshots" });
       const session = await rt.createNotebook({
         socketPath,
         dependencies: ["ipykernel"],
@@ -313,7 +361,9 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
       });
       try {
         const cell = await session.createCell("value = 40\nprint(value + 2)");
-        const first = await session.executeCell(cell, { timeoutMs: 60000 });
+        const first = await diagnostics.step("first execution", () =>
+          session.executeCell(cell, { timeoutMs: 60000 }),
+        );
         expect(first.success).toBe(true);
         await expect
           .poll(() => session.executions.getCellExecutionId(cell))
@@ -324,19 +374,23 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
         const retained = session.getExecutionView();
         expect(Object.isFrozen(retained.executions[first.executionId].output_ids)).toBe(true);
         await session.setCell(cell, { source: "print(value + 3)" });
-        const second = await session.executeCell(cell, { timeoutMs: 60000 });
+        const second = await diagnostics.step("second execution", () =>
+          session.executeCell(cell, { timeoutMs: 60000 }),
+        );
         expect(second.success).toBe(true);
         await expect
           .poll(() => session.executions.getCellExecutionId(cell))
           .toBe(second.executionId);
         expect(retained.cell_execution_ids[cell]).toBe(first.executionId);
         const progress: unknown[] = [];
-        const streamed = await session.runCell(
-          "import time\nprint('start', flush=True)\ntime.sleep(0.2)\nprint(value)",
-          {
-            timeoutMs: 60000,
-            onUpdate: (value) => progress.push(value),
-          },
+        const streamed = await diagnostics.step("streamed execution", () =>
+          session.runCell(
+            "import time\nprint('start', flush=True)\ntime.sleep(0.2)\nprint(value)",
+            {
+              timeoutMs: 60000,
+              onUpdate: (value) => progress.push(value),
+            },
+          ),
         );
         expect(streamed.success).toBe(true);
         expect(progress.length).toBeGreaterThan(0);
@@ -349,6 +403,9 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
         }
         expect(changesets.some((change) => change.execution_upserts?.length)).toBe(true);
         expect(mismatches).toEqual([]);
+      } catch (error) {
+        await captureSession("session", session);
+        throw error;
       } finally {
         subscription.unsubscribe();
         try {
