@@ -186,6 +186,7 @@ export class BokehSessionController {
   private transactionTimer: number | null = null;
   private inFlightTransaction: string | null = null;
   private inFlightBaseRevision = 0;
+  private localChangesRejected = false;
   private canonicalEvents = new Map<number, NteractBokehResolvedPatchEvent>();
   private drainingCanonicalEvents = false;
   private syncPromise: Promise<void> | null = null;
@@ -314,10 +315,12 @@ export class BokehSessionController {
         throw new Error("Bokeh patch request returned an invalid reply");
       }
       if (rawReply.status !== "accepted") {
+        this.localChangesRejected = true;
         this.finishTransaction(transactionId);
         this.scheduleResync(0);
       }
     } catch (error) {
+      this.localChangesRejected = true;
       this.finishTransaction(transactionId);
       this.setStatus("error", error instanceof Error ? error.message : String(error));
       this.scheduleResync();
@@ -336,7 +339,10 @@ export class BokehSessionController {
     if (this.transactionTimer !== null) window.clearTimeout(this.transactionTimer);
     this.transactionTimer = window.setTimeout(() => {
       const transactionId = this.inFlightTransaction;
-      if (transactionId) this.finishTransaction(transactionId);
+      if (transactionId) {
+        this.localChangesRejected = true;
+        this.finishTransaction(transactionId);
+      }
       this.scheduleResync(0);
     }, TRANSACTION_TIMEOUT_MS);
   }
@@ -386,8 +392,10 @@ export class BokehSessionController {
     ) {
       throw new Error("Bokeh snapshot does not belong to this output");
     }
-    await this.replaceDocument(snapshot.checkpoint);
+    const catchUp = this.canCatchUp(snapshot);
+    if (!catchUp) await this.installCheckpoint(snapshot.checkpoint);
     for (const event of snapshot.patchTail) {
+      if (catchUp && event.revision <= this.revision) continue;
       if (event.baseRevision !== this.revision || event.revision !== this.revision + 1) {
         throw new Error("Bokeh snapshot patch tail is not contiguous");
       }
@@ -405,8 +413,66 @@ export class BokehSessionController {
     this.options.onLayout();
   }
 
-  private async replaceDocument(checkpoint: NteractBokehResolvedCheckpoint): Promise<void> {
-    this.destroyDocument();
+  /**
+   * Whether the mounted document can reach the snapshot head by applying just
+   * the patch tail. Otherwise the checkpoint is reconciled first, which also
+   * overwrites local values the kernel rejected.
+   */
+  private canCatchUp(snapshot: NteractBokehSessionSnapshot): boolean {
+    if (!this.document || this.localChangesRejected) return false;
+    if (snapshot.checkpoint.revision > this.revision || snapshot.headRevision < this.revision) {
+      return false;
+    }
+    return (
+      this.revision === snapshot.checkpoint.revision ||
+      snapshot.patchTail.some((event) => event.revision === this.revision)
+    );
+  }
+
+  private async installCheckpoint(checkpoint: NteractBokehResolvedCheckpoint): Promise<void> {
+    this.localChangesRejected = false;
+    if (this.document) {
+      this.reconcileCheckpoint(this.document, checkpoint);
+    } else {
+      await this.mountDocument(checkpoint);
+    }
+  }
+
+  /**
+   * Bring the mounted document to a checkpoint in place. Decoding an object
+   * whose id already exists updates that model rather than creating a new
+   * one, so applying the checkpoint roots as a patch keeps every view mounted.
+   */
+  private reconcileCheckpoint(
+    document: BokehDocument,
+    checkpoint: NteractBokehResolvedCheckpoint,
+  ): void {
+    const roots = Array.isArray(checkpoint.document.roots)
+      ? (checkpoint.document.roots as Array<{ id?: string }>)
+      : [];
+    const rootIds = new Set(roots.map((root) => root.id));
+    for (const rootId of this.options.payload.root_ids) {
+      if (!rootIds.has(rootId)) throw new Error(`Bokeh document is missing root ${rootId}`);
+    }
+    const events: Record<string, unknown>[] = [
+      ...roots.map((root) => ({ kind: "RootAdded", model: root })),
+      ...document.all_roots
+        .filter((root) => !rootIds.has(root.id))
+        .map((root) => ({ kind: "RootRemoved", model: { id: root.id } })),
+    ];
+    if (typeof checkpoint.document.title === "string") {
+      events.push({ kind: "TitleChanged", title: checkpoint.document.title });
+    }
+    this.applyingRemote = true;
+    try {
+      document.apply_json_patch({ events }, bufferMap(checkpoint.buffers));
+      this.revision = checkpoint.revision;
+    } finally {
+      this.applyingRemote = false;
+    }
+  }
+
+  private async mountDocument(checkpoint: NteractBokehResolvedCheckpoint): Promise<void> {
     this.options.container.replaceChildren();
     this.applyingRemote = true;
     try {
@@ -472,7 +538,7 @@ export class BokehSessionController {
       return;
     }
     if (event.checkpoint) {
-      await this.replaceDocument(event.checkpoint);
+      await this.installCheckpoint(event.checkpoint);
     } else {
       const ownTransaction = !replay && event.transactionId === this.inFlightTransaction;
       // The kernel applies a patch made against an older revision on top of

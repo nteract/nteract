@@ -296,18 +296,10 @@ describe("BokehSessionController", () => {
     controller.dispose();
   });
 
-  it("serializes canonical events while a checkpoint document mounts", async () => {
-    const { controller, documents, notify, requestHost, runtime } = harness();
+  it("reconciles checkpoint events into the mounted document", async () => {
+    const { container, controller, documents, notify, requestHost } = harness();
     await controller.start();
-    let releaseMount: (() => void) | undefined;
-    const mountReleased = new Promise<void>((resolve) => {
-      releaseMount = resolve;
-    });
-    runtime.addDocumentStandalone = async (_document, element) => {
-      await mountReleased;
-      element.appendChild(document.createElement("div"));
-      return { clear: vi.fn() };
-    };
+    const mounted = container.firstElementChild;
 
     notify(NTERACT_BOKEH_SESSION_PATCH, {
       outputId: "output-1",
@@ -318,7 +310,7 @@ describe("BokehSessionController", () => {
         revision: 1,
         checkpoint: {
           revision: 1,
-          document: { roots: [{ id: "root-1" }] },
+          document: { title: "Panel", roots: [{ id: "root-1" }] },
           buffers: [],
         },
       },
@@ -334,20 +326,93 @@ describe("BokehSessionController", () => {
       },
     });
     await vi.advanceTimersByTimeAsync(200);
+    await settle();
 
     expect(requestHost).toHaveBeenCalledTimes(1);
-    releaseMount?.();
-    await settle();
-    await settle();
-
-    expect(documents).toHaveLength(2);
-    expect(documents[1].applied).toEqual([{ events: [{ kind: "ModelChanged", new: 7 }] }]);
+    expect(documents).toHaveLength(1);
+    expect(documents[0].cleared).toBe(false);
+    expect(container.firstElementChild).toBe(mounted);
+    expect(documents[0].applied).toEqual([
+      {
+        events: [
+          { kind: "RootAdded", model: { id: "root-1" } },
+          { kind: "TitleChanged", title: "Panel" },
+        ],
+      },
+      { events: [{ kind: "ModelChanged", new: 7 }] },
+    ]);
     controller.dispose();
   });
 
-  it("cleans up and resyncs when a checkpoint document fails to mount", async () => {
-    const { container, controller, documents, notify, onStatus, requestHost, runtime } = harness();
+  it("catches up from the snapshot tail without remounting the document", async () => {
+    const { controller, documents, notify, requestHost } = harness();
     await controller.start();
+    const tailEvent = (revision: number): NteractBokehResolvedPatchEvent => ({
+      sessionId: "session-1",
+      transactionId: `server-${revision}`,
+      baseRevision: revision - 1,
+      revision,
+      serverPatch: { patch: { events: [{ kind: "ModelChanged", new: revision }] }, buffers: [] },
+    });
+    requestHost.mockResolvedValueOnce({
+      schemaVersion: 1,
+      sessionId: "session-1",
+      outputId: "output-1",
+      status: "connected",
+      headRevision: 2,
+      checkpoint: { revision: 0, document: { roots: [{ id: "root-1" }] }, buffers: [] },
+      patchTail: [tailEvent(1), tailEvent(2)],
+    });
+
+    notify(NTERACT_BOKEH_SESSION_STATE, {
+      sessionId: "session-1",
+      outputId: "output-1",
+      status: "connected",
+      headRevision: 2,
+    });
+    await vi.advanceTimersByTimeAsync(200);
+    await settle();
+
+    expect(requestHost).toHaveBeenCalledTimes(2);
+    expect(documents).toHaveLength(1);
+    expect(documents[0].applied).toEqual([
+      { events: [{ kind: "ModelChanged", new: 1 }] },
+      { events: [{ kind: "ModelChanged", new: 2 }] },
+    ]);
+    controller.dispose();
+  });
+
+  it("reconciles instead of remounting after the kernel rejected a local patch", async () => {
+    const { controller, documents, requestHost } = harness();
+    await controller.start();
+    requestHost.mockImplementationOnce(async (_method, params) => ({
+      status: "error",
+      sessionId: "session-1",
+      transactionId: (params as { transactionId: string }).transactionId,
+      revision: 0,
+    }));
+
+    documents[0].emit({ kind: "ModelChanged", sync: true, attr: "value" });
+    await vi.advanceTimersByTimeAsync(50);
+    await settle();
+    await vi.advanceTimersByTimeAsync(200);
+    await settle();
+
+    expect(requestHost.mock.calls.map(([method]) => method)).toEqual([
+      NTERACT_BOKEH_SESSION_OPEN,
+      NTERACT_BOKEH_APPLY_PATCH,
+      NTERACT_BOKEH_SESSION_OPEN,
+    ]);
+    expect(documents).toHaveLength(1);
+    expect(documents[0].cleared).toBe(false);
+    expect(documents[0].applied).toEqual([
+      { events: [{ kind: "RootAdded", model: { id: "root-1" } }] },
+    ]);
+    controller.dispose();
+  });
+
+  it("cleans up and retries when the initial document fails to mount", async () => {
+    const { container, controller, documents, onStatus, requestHost, runtime } = harness();
     const mountDocument = runtime.addDocumentStandalone;
     let failNextMount = true;
     runtime.addDocumentStandalone = async (document, element) => {
@@ -358,46 +423,20 @@ describe("BokehSessionController", () => {
       }
       return mountDocument(document, element);
     };
-    requestHost.mockResolvedValueOnce({
-      schemaVersion: 1,
-      sessionId: "session-1",
-      outputId: "output-1",
-      status: "connected",
-      headRevision: 1,
-      checkpoint: {
-        revision: 1,
-        document: { roots: [{ id: "root-1" }] },
-        buffers: [],
-      },
-      patchTail: [],
-    });
 
-    notify(NTERACT_BOKEH_SESSION_PATCH, {
-      outputId: "output-1",
-      event: {
-        sessionId: "session-1",
-        transactionId: "checkpoint-1",
-        baseRevision: 0,
-        revision: 1,
-        checkpoint: {
-          revision: 1,
-          document: { roots: [{ id: "root-1" }] },
-          buffers: [],
-        },
-      },
-    });
+    await controller.start();
     await settle();
 
-    expect(documents[1].cleared).toBe(true);
+    expect(documents[0].cleared).toBe(true);
     expect(onStatus).toHaveBeenLastCalledWith("error", "mount failed");
     expect(container.querySelectorAll("div")).toHaveLength(0);
 
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
     await settle();
 
     expect(requestHost).toHaveBeenCalledTimes(2);
-    expect(documents).toHaveLength(3);
-    expect(documents[2].cleared).toBe(false);
+    expect(documents).toHaveLength(2);
+    expect(documents[1].cleared).toBe(false);
     expect(onStatus).toHaveBeenLastCalledWith("connected", undefined);
     controller.dispose();
   });
