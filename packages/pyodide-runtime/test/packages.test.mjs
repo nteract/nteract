@@ -53,8 +53,8 @@ test("shipped package versions match the initial interpreter inventory before no
   const wheels = JSON.parse(await readFile(new URL("dist/packages.json", root), "utf8"));
   const installed = JSON.parse(python.runPython("json.dumps(inventory())"));
   const included = includedPackageInventory(wheels, installed);
-  assert.ok(included.includes("pandas==2.3.1"));
-  assert.ok(!included.some((name) => name.startsWith("pyarrow==")));
+  assert.ok(included.includes("pandas==2.3.3"));
+  assert.ok(included.includes("pyarrow==22.0.0"));
   assert.ok(included.includes("numpy==2.2.5"));
   assert.ok(included.includes("matplotlib==3.8.4"));
   assert.ok(wheels.length > 10);
@@ -236,7 +236,7 @@ test("a package typo does not prevent installing bundled pandas", async () => {
       pending.destroy();
     }
     assert.equal(result.status, "ready", JSON.stringify(result));
-    assert.ok(result.installed.includes("pandas==2.3.1"));
+    assert.ok(result.installed.includes("pandas==2.3.3"));
   } finally {
     await resolver.disposeSession("session");
     plan.destroy();
@@ -392,10 +392,8 @@ test(
         ),
         0,
       );
-      // Pyodide 0.28.3 bundles no PyArrow, and PyPI has no pure wheel for it.
-      await assert.rejects(resolver.resolve(sessionKey, ["pyarrow"]), {
-        code: "unsupported_distribution",
-      });
+      const arrow = await resolver.resolve(sessionKey, ["pyarrow"]);
+      assert.equal(arrow.wheels.length, 0, "PyArrow uses the bundled distribution");
       await assert.rejects(resolver.resolve(sessionKey, ["tensorflow"]), {
         code: "unsupported_distribution",
       });

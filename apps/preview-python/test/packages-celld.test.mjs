@@ -62,10 +62,10 @@ test(
     const restored = await post("/packages", {
       operation_id: "restore",
       operation: "restore",
-      manifest: { ...result.manifest, pyodide: "0.29.4" },
+      manifest: { ...result.manifest, pyodide: "0.28.3" },
     });
     assert.equal(restored.status, "ready", JSON.stringify(restored));
-    assert.equal(restored.manifest.pyodide, "0.28.3");
+    assert.equal(restored.manifest.pyodide, "0.29.4");
     const fresh = await post("/execute", {
       execution: {
         cell_id: "package-cell",

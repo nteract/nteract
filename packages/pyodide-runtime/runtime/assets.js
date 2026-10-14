@@ -9,7 +9,11 @@ const wasmResponses = new WeakSet();
 export function importScripts() {
   throw new Error("Dynamic script loading is disabled");
 }
-export class WorkerGlobalScope {}
+export class WorkerGlobalScope {
+  static [Symbol.hasInstance](value) {
+    return value === self;
+  }
+}
 export const self = Object.create(globalThis);
 Object.defineProperty(self, "location", { value: { href: "https://python-runtime.invalid/" } });
 export async function fetch(input) {
