@@ -35,7 +35,11 @@ pub(crate) async fn handle(
             "Bokeh session is disconnected",
         );
     }
-    if request.base_revision != session.head_revision {
+    // The kernel rebases older browser patches under its document lock and
+    // publishes their canonical revision through the ordered event stream.
+    // Preserve the original base revision when forwarding; only a future
+    // revision is invalid against the daemon's current session state.
+    if request.base_revision > session.head_revision {
         return NotebookResponse::BokehSessionPatch {
             reply: BokehSessionPatchReply::Stale {
                 session_id: request.session_id,
@@ -183,6 +187,12 @@ fn patch_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use crate::notebook_sync_server::RuntimeAgentMessage;
+    use runtime_doc::{
+        BokehSessionCheckpoint, BokehSessionContentRef, BokehSessionPatchRef, BokehSessionState,
+    };
 
     fn request() -> BokehSessionPatchRequest {
         BokehSessionPatchRequest {
@@ -193,6 +203,236 @@ mod tests {
             buffers: Vec::new(),
             buffer_refs: Vec::new(),
         }
+    }
+
+    fn test_room() -> (tempfile::TempDir, NotebookRoom) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let room = NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        );
+        room.state
+            .with_doc(|doc| {
+                doc.put_bokeh_session(
+                    "session-1",
+                    &BokehSessionState {
+                        output_id: "output-1".to_string(),
+                        cell_id: "cell-1".to_string(),
+                        execution_id: "exec-1".to_string(),
+                        kernel_id: "kernel-1".to_string(),
+                        status: BokehSessionStatus::Connected,
+                        head_revision: 3,
+                        producer_name: "panel".to_string(),
+                        producer_version: "1.9.4".to_string(),
+                        bokeh_version: "3.9.1".to_string(),
+                        root_ids: vec!["p1001".to_string()],
+                        checkpoint: Some(BokehSessionCheckpoint {
+                            revision: 3,
+                            content_ref: BokehSessionContentRef {
+                                blob: "checkpoint-3".to_string(),
+                                size: 10,
+                                media_type: "application/json".to_string(),
+                            },
+                        }),
+                        patch_tail: Vec::new(),
+                    },
+                )
+            })
+            .expect("session");
+        (tmp, room)
+    }
+
+    fn session(room: &NotebookRoom) -> BokehSessionState {
+        room.state
+            .read(|doc| doc.get_bokeh_session("session-1"))
+            .expect("read session")
+            .expect("session exists")
+    }
+
+    #[tokio::test]
+    async fn older_and_current_patches_reach_runtime_without_rewriting_transaction() {
+        for base_revision in [0, 1, 3] {
+            let (_tmp, room) = test_room();
+            let before = session(&room);
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            *room.runtime_agent_request_tx.lock().await = Some(tx);
+            let mut request = request();
+            request.base_revision = base_revision;
+            request.patch = serde_json::json!({"events": [{
+                "kind": "ModelChanged", "model": {"id": "p1001"},
+                "attr": "value", "new": "browser edit",
+            }]});
+            request.buffers.push(BokehSessionBuffer {
+                id: "buffer-1".to_string(),
+                data: vec![1, 2, 3],
+            });
+            let reply = BokehSessionPatchReply::Accepted {
+                session_id: request.session_id.clone(),
+                transaction_id: request.transaction_id.clone(),
+                revision: 4,
+            };
+            let runtime = async {
+                let message = rx.recv().await.expect("forwarded request");
+                let RuntimeAgentMessage::Query(envelope, reply_tx) = message else {
+                    panic!("patch must wait for a runtime reply");
+                };
+                let RuntimeAgentRequest::ApplyBokehSessionPatch { request: forwarded } =
+                    envelope.request
+                else {
+                    panic!("expected Bokeh patch request");
+                };
+                assert_eq!(*forwarded, request);
+                assert_eq!(session(&room), before);
+                reply_tx
+                    .send(RuntimeAgentResponse::BokehSessionPatch {
+                        reply: reply.clone(),
+                    })
+                    .expect("send runtime reply");
+            };
+            let (response, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::join!(handle(&room, request.clone()), runtime)
+            })
+            .await
+            .expect("handler must forward instead of rejecting an older patch");
+
+            let NotebookResponse::BokehSessionPatch { reply: actual } = response else {
+                panic!("expected Bokeh patch response");
+            };
+            assert_eq!(actual, reply);
+            // An acknowledgement must not advance replay state ahead of the
+            // canonical kernel event (which can arrive independently).
+            assert_eq!(session(&room), before);
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn future_patch_is_stale_without_reaching_runtime() {
+        let (_tmp, room) = test_room();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(tx);
+        let mut request = request();
+        request.base_revision = 4;
+
+        let response = handle(&room, request).await;
+
+        assert!(matches!(response, NotebookResponse::BokehSessionPatch {
+            reply: BokehSessionPatchReply::Stale { session_id, transaction_id, revision: 3 },
+        } if session_id == "session-1" && transaction_id == "tx-1"));
+        assert!(rx.try_recv().is_err());
+        assert_eq!(session(&room).head_revision, 3);
+    }
+
+    #[tokio::test]
+    async fn older_patch_still_requires_a_connected_session_and_valid_payload() {
+        for case in [
+            "unknown",
+            "disconnected",
+            "closed",
+            "transaction",
+            "payload",
+            "buffers",
+            "tail",
+        ] {
+            let (_tmp, room) = test_room();
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            *room.runtime_agent_request_tx.lock().await = Some(tx);
+            let mut request = request();
+            request.base_revision = 1;
+            let mut state = session(&room);
+            let expected = match case {
+                "unknown" => {
+                    request.session_id = "missing".to_string();
+                    "unknown Bokeh session"
+                }
+                "disconnected" | "closed" => {
+                    state.status = if case == "closed" {
+                        BokehSessionStatus::Closed
+                    } else {
+                        BokehSessionStatus::Disconnected
+                    };
+                    "disconnected"
+                }
+                "transaction" => {
+                    request.transaction_id.clear();
+                    "transaction id"
+                }
+                "payload" => {
+                    request.patch = serde_json::Value::Null;
+                    "object payload"
+                }
+                "buffers" => {
+                    request.buffers = vec![
+                        BokehSessionBuffer {
+                            id: "duplicate".to_string(),
+                            data: vec![1],
+                        };
+                        2
+                    ];
+                    "duplicate inline"
+                }
+                "tail" => {
+                    state.head_revision = 3 + BOKEH_PATCH_TAIL_HARD_LIMIT as u64;
+                    state.patch_tail = (3..state.head_revision)
+                        .map(|base_revision| BokehSessionPatchRef {
+                            base_revision,
+                            revision: base_revision + 1,
+                            content_ref: BokehSessionContentRef {
+                                blob: format!("patch-{base_revision}"),
+                                size: 10,
+                                media_type: "application/json".to_string(),
+                            },
+                        })
+                        .collect();
+                    "checkpointing"
+                }
+                _ => unreachable!(),
+            };
+            room.state
+                .with_doc(|doc| doc.put_bokeh_session("session-1", &state))
+                .unwrap();
+
+            let response = handle(&room, request.clone()).await;
+
+            let NotebookResponse::BokehSessionPatch {
+                reply:
+                    BokehSessionPatchReply::Error {
+                        session_id,
+                        transaction_id,
+                        revision,
+                        error,
+                    },
+            } = response
+            else {
+                panic!("{case}: expected Bokeh patch error, got {response:?}");
+            };
+            assert_eq!(session_id, request.session_id, "{case}");
+            assert_eq!(transaction_id, request.transaction_id, "{case}");
+            assert_eq!(
+                revision,
+                (case != "unknown").then_some(state.head_revision),
+                "{case}"
+            );
+            assert!(error.contains(expected), "{case}: {error}");
+            assert!(
+                rx.try_recv().is_err(),
+                "{case}: rejected patch was forwarded"
+            );
+            assert_eq!(session(&room), state, "{case}");
+        }
+    }
+
+    #[tokio::test]
+    async fn older_patch_without_runtime_returns_no_kernel() {
+        let (_tmp, room) = test_room();
+        assert!(matches!(
+            handle(&room, request()).await,
+            NotebookResponse::NoKernel {}
+        ));
+        assert_eq!(session(&room).head_revision, 3);
     }
 
     #[tokio::test]
