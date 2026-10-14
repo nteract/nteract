@@ -14530,6 +14530,41 @@ async fn arrow_recovery_rejects_conflict_and_reports_unavailable_content() {
     }
 }
 
+/// Run the production import/recovery task without registering file lifecycle
+/// owners. Catalog rooms install watcher/autosave tasks that retain the room;
+/// dropping a caller's Arc would leave those writers alive across fixture reopens.
+async fn arrow_recovery_room_from_disk(
+    uuid: Uuid,
+    docs_dir: &Path,
+    blob_store: Arc<BlobStore>,
+    notebook_path: &Path,
+    execution_store_dir: &Path,
+) -> (Arc<NotebookRoom>, RoomSourceState) {
+    let room = Arc::new(NotebookRoom::new_fresh(
+        uuid,
+        Some(notebook_path.to_path_buf()),
+        docs_dir,
+        blob_store,
+        false,
+    ));
+    let claim = super::load::claim_room_initial_load(&room, notebook_path.to_path_buf())
+        .expect("Arrow fixture source generation should be claimable");
+    if room.durability.status().has_durable_record {
+        super::load::spawn_claimed_room_recovery_finalize(
+            claim,
+            Some(execution_store_dir.to_path_buf()),
+        );
+    } else {
+        super::load::spawn_claimed_room_initial_load(claim, execution_store_dir.to_path_buf());
+    }
+    let settled = room
+        .lifecycle
+        .wait_for_source_settled(std::time::Duration::from_secs(10))
+        .await
+        .into_current();
+    (room, settled)
+}
+
 async fn assert_arrow_recovery(manifest_size: usize, conflict: Option<&str>) {
     use crate::output_store::{create_manifest, ContentRef, DEFAULT_INLINE_THRESHOLD};
     use notebook_doc::mime::ARROW_STREAM_MANIFEST_MIME;
@@ -14561,11 +14596,12 @@ async fn assert_arrow_recovery(manifest_size: usize, conflict: Option<&str>) {
     manifest["padding"] = serde_json::json!("x".repeat(padding));
     assert_eq!(manifest.to_string().len(), manifest_size);
     let source = "import pandas as pd\npd.DataFrame({'qa_id':['RIVET_A_38473320686','RIVET_B_38473320686'],'score':[137,None]})";
+    let original_room;
     let mut expected = {
-        let (room, _guard, ready) =
-            materialized_room_from_disk_with(id, &docs, Arc::clone(&blobs), &path, &records_dir)
-                .await;
+        let (room, ready) =
+            arrow_recovery_room_from_disk(id, &docs, Arc::clone(&blobs), &path, &records_dir).await;
         assert_source_ready(&ready);
+        original_room = Arc::downgrade(&room);
         let raw = serde_json::json!({"output_type":"execute_result", "execution_count":1,
             "metadata":{},"data":{ARROW_STREAM_MANIFEST_MIME:manifest}});
         let output = create_manifest(&raw, &blobs, DEFAULT_INLINE_THRESHOLD)
@@ -14608,6 +14644,10 @@ async fn assert_arrow_recovery(manifest_size: usize, conflict: Option<&str>) {
         .await;
         store.read_record("df-execution").await.unwrap()
     };
+    assert!(
+        original_room.upgrade().is_none(),
+        "manifest_size={manifest_size}: initial room must retire before reopen"
+    );
     let saved: serde_json::Value =
         serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
     let imported = create_manifest(
@@ -14635,7 +14675,7 @@ async fn assert_arrow_recovery(manifest_size: usize, conflict: Option<&str>) {
     );
     // Fresh import must reuse the same durable provenance by content too.
     {
-        let (_room, _guard, ready) = materialized_room_from_disk_with(
+        let (_room, ready) = arrow_recovery_room_from_disk(
             id,
             &tmp.path().join("fresh-docs"),
             Arc::clone(&blobs),
@@ -14692,7 +14732,7 @@ async fn assert_arrow_recovery(manifest_size: usize, conflict: Option<&str>) {
             store.write_record(expected.clone()).await.unwrap();
         }
         {
-            let (fresh, _guard, ready) = materialized_room_from_disk_with(
+            let (fresh, ready) = arrow_recovery_room_from_disk(
                 id,
                 &tmp.path().join("negative-fresh-docs"),
                 Arc::clone(&blobs),
@@ -14712,9 +14752,8 @@ async fn assert_arrow_recovery(manifest_size: usize, conflict: Option<&str>) {
             assert_eq!(state.seq, None);
             assert_eq!(state.submitted_by_actor_label, None);
         }
-        let (room, _guard, settled) =
-            materialized_room_from_disk_with(id, &docs, Arc::clone(&blobs), &path, &records_dir)
-                .await;
+        let (room, settled) =
+            arrow_recovery_room_from_disk(id, &docs, Arc::clone(&blobs), &path, &records_dir).await;
         assert!(
             matches!(settled, RoomSourceState::Failed(_)),
             "{conflict}: {settled:?}"
@@ -14735,11 +14774,12 @@ async fn assert_arrow_recovery(manifest_size: usize, conflict: Option<&str>) {
         return;
     }
     // Save an edited current source without executing it; provenance remains original.
+    let edited_room;
     {
-        let (room, _guard, ready) =
-            materialized_room_from_disk_with(id, &docs, Arc::clone(&blobs), &path, &records_dir)
-                .await;
+        let (room, ready) =
+            arrow_recovery_room_from_disk(id, &docs, Arc::clone(&blobs), &path, &records_dir).await;
         assert_source_ready(&ready);
+        edited_room = Arc::downgrade(&room);
         room.doc
             .write()
             .await
@@ -14747,12 +14787,15 @@ async fn assert_arrow_recovery(manifest_size: usize, conflict: Option<&str>) {
             .unwrap();
         save_notebook_to_disk(&room, None).await.unwrap();
     }
+    assert!(
+        edited_room.upgrade().is_none(),
+        "manifest_size={manifest_size}: recovered room must retire before reopen"
+    );
     for cycle in 0..2 {
         // Fresh BlobStore instances also discard in-memory content caches.
         let blobs = test_blob_store(&tmp);
-        let (room, _guard, ready) =
-            materialized_room_from_disk_with(id, &docs, Arc::clone(&blobs), &path, &records_dir)
-                .await;
+        let (room, ready) =
+            arrow_recovery_room_from_disk(id, &docs, Arc::clone(&blobs), &path, &records_dir).await;
         assert_source_ready(&ready);
         assert_eq!(
             room.doc.read().await.get_cell("df").unwrap().source,
@@ -14760,7 +14803,8 @@ async fn assert_arrow_recovery(manifest_size: usize, conflict: Option<&str>) {
         );
         assert_eq!(
             room.doc.read().await.get_execution_id("df").as_deref(),
-            Some("df-execution")
+            Some("df-execution"),
+            "manifest_size={manifest_size}, cycle={cycle}"
         );
         let actual = room
             .state
