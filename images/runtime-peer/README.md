@@ -75,8 +75,13 @@ Container contract summary:
 The release train (`.github/workflows/release-common.yml`, jobs
 `image-runtime-peer-build` and `image-runtime-peer-publish`) publishes to
 `ghcr.io/nteract/runtime-peer` with `:<version>`, `:<channel>`
-(`nightly`/`stable`), and `:latest` (stable only) tags. The smoke script gates
-the push; the publish job runs only after the GitHub release exists.
+(`nightly`/`stable`), and `:latest` (stable only) tags. The build job loads the
+image locally, runs the smoke script, then pushes one channel-qualified staging
+tag (`build-<channel>-<sha>`) and records its digest. The publish job runs only
+after the GitHub release exists and promotes that exact digest with
+`docker buildx imagetools create`. A stable tag push and the nightly cron can
+build the same commit concurrently; the channel in the staging tag and the
+digest handoff keep one channel from publishing the other's image.
 
 Authentication is the job's `GITHUB_TOKEN` with `packages: write`, which can
 write only to the repository owner's GHCR namespace. That is why the image lives

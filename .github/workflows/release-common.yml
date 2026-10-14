@@ -58,8 +58,10 @@ jobs:
   compute-version:
     name: Compute Version
     runs-on: ubuntu-24.04
+    # Reserves the release tag with `git push` (scripts/ci/check-release-tag.sh
+    # --reserve), so this job needs contents: write.
     permissions:
-      contents: read
+      contents: write
     outputs:
       version: ${{ steps.version.outputs.VERSION }}
       timestamp: ${{ steps.version.outputs.TIMESTAMP }}
@@ -1483,12 +1485,16 @@ jobs:
           path: python/runtimed/dist
 
   image-runtime-peer-build:
-    # Build the runtime-peer container and push a staging tag keyed by source
-    # hash. The smoke script gates the push. The image publishes to the
-    # repository owner's GHCR namespace because GITHUB_TOKEN can only write
-    # packages there; a different namespace needs a separately reviewed
-    # credential. `packages: write` requires the same scope in the caller's
-    # ceiling (release-nightly.yml / release-stable.yml).
+    # Build the runtime-peer container, smoke it, then push one staging tag.
+    # The staging tag carries the channel and source hash because a stable
+    # tag push and the nightly cron can run on the same commit at the same
+    # time; a hash-only tag would let one channel overwrite the other's image
+    # before promotion. The publish job promotes by digest, not by tag.
+    #
+    # The image lives in the repository owner's GHCR namespace because
+    # GITHUB_TOKEN can only write packages there; another namespace needs a
+    # separately reviewed credential. `packages: write` requires the same
+    # scope in the caller's ceiling (release-nightly.yml / release-stable.yml).
     name: Build and smoke runtime-peer image
     runs-on: ubuntu-24.04
     needs: [compute-version]
@@ -1497,6 +1503,9 @@ jobs:
       packages: write
     env:
       IMAGE: ghcr.io/nteract/runtime-peer
+      STAGING_TAG: ghcr.io/nteract/runtime-peer:build-${{ inputs.version_suffix }}-${{ github.event.workflow_run.head_sha || github.sha }}
+    outputs:
+      digest: ${{ steps.push.outputs.DIGEST }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -1514,33 +1523,51 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # build-push-action supplies the Actions cache credentials that
+      # `type=gha` needs; a plain `docker build` step cannot see them.
+      # `load: true` puts the single-platform image in the local daemon so the
+      # smoke script can run it before anything reaches the registry.
       - name: Build image
-        run: |
-          docker build \
-            --load \
-            --build-arg RUNT_BUILD_CHANNEL="${RUNT_BUILD_CHANNEL}" \
-            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
-            --label "org.opencontainers.image.version=${{ needs.compute-version.outputs.version }}" \
-            --cache-from type=gha \
-            --cache-to type=gha,mode=max \
-            -t "$IMAGE:build-${{ env.NTERACT_BUILD_GIT_HASH }}" \
-            -f images/runtime-peer/Dockerfile .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/runtime-peer/Dockerfile
+          load: true
+          push: false
+          provenance: false
+          tags: ${{ env.STAGING_TAG }}
+          build-args: |
+            RUNT_BUILD_CHANNEL=${{ env.RUNT_BUILD_CHANNEL }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.compute-version.outputs.version }}
+          cache-from: type=gha,scope=runtime-peer-${{ inputs.version_suffix }}
+          cache-to: type=gha,mode=max,scope=runtime-peer-${{ inputs.version_suffix }}
 
       - name: Smoke image (gates push)
         run: |
           bash scripts/ci/runtime-peer-image-smoke.sh \
-            "$IMAGE:build-${{ env.NTERACT_BUILD_GIT_HASH }}" \
+            "$STAGING_TAG" \
             "${{ needs.compute-version.outputs.base_version }}"
 
-      - name: Push staging tag
+      - name: Push staging tag and record digest
+        id: push
         run: |
-          docker push "$IMAGE:build-${{ env.NTERACT_BUILD_GIT_HASH }}"
+          docker push "$STAGING_TAG"
+          DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "$STAGING_TAG" | sed 's/.*@//')
+          case "$DIGEST" in
+            sha256:*) ;;
+            *) echo "Could not read a registry digest for $STAGING_TAG" >&2; exit 1 ;;
+          esac
+          echo "Pushed $STAGING_TAG as $DIGEST"
+          echo "DIGEST=$DIGEST" >> "$GITHUB_OUTPUT"
 
   image-runtime-peer-publish:
-    # Promote the staging tag only after the GitHub release exists, so the
-    # `:<version>` tag never points at an image whose release failed.
-    # `:<channel>` (nightly/stable) tracks the newest release on that channel;
-    # `:latest` tracks stable only.
+    # Promote the exact digest the build job pushed, only after the GitHub
+    # release exists, so a `:<version>` tag never points at an image whose
+    # release failed and never at another channel's build. `imagetools create`
+    # retags server-side without pulling. `:<channel>` (nightly/stable) tracks
+    # the newest release on that channel; `:latest` tracks stable only.
     name: Publish runtime-peer image
     runs-on: ubuntu-24.04
     needs: [compute-version, prerelease, image-runtime-peer-build]
@@ -1549,7 +1576,11 @@ jobs:
       packages: write
     env:
       IMAGE: ghcr.io/nteract/runtime-peer
+      DIGEST: ${{ needs.image-runtime-peer-build.outputs.digest }}
     steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -1557,30 +1588,36 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Tag and push (version + channel)
+      - name: Tag digest with version and channel
         run: |
-          STAGING_TAG="$IMAGE:build-${{ env.NTERACT_BUILD_GIT_HASH }}"
-          VERSION_TAG="$IMAGE:${{ needs.compute-version.outputs.version }}"
-          CHANNEL_TAG="$IMAGE:${{ env.RUNT_BUILD_CHANNEL }}"
-          docker pull "$STAGING_TAG"
-          docker tag "$STAGING_TAG" "$VERSION_TAG"
-          docker tag "$STAGING_TAG" "$CHANNEL_TAG"
-          docker push "$VERSION_TAG"
-          docker push "$CHANNEL_TAG"
+          case "$DIGEST" in
+            sha256:*) ;;
+            *) echo "Build job did not supply a digest" >&2; exit 1 ;;
+          esac
+          docker buildx imagetools create \
+            --tag "$IMAGE:${{ needs.compute-version.outputs.version }}" \
+            --tag "$IMAGE:${{ env.RUNT_BUILD_CHANNEL }}" \
+            "$IMAGE@$DIGEST"
 
-      - name: Tag and push latest (stable only)
+      - name: Tag digest as latest (stable only)
         if: inputs.github_release_prerelease == false
         run: |
-          STAGING_TAG="$IMAGE:build-${{ env.NTERACT_BUILD_GIT_HASH }}"
-          docker tag "$STAGING_TAG" "$IMAGE:latest"
-          docker push "$IMAGE:latest"
+          docker buildx imagetools create \
+            --tag "$IMAGE:latest" \
+            "$IMAGE@$DIGEST"
 
-      - name: Verify anonymous pull (gates on package visibility)
+      - name: Verify anonymous pull matches the promoted digest
         # Fails until the package is set to public once in the org's GHCR
         # settings. That is a one-time manual step after the first publish.
         run: |
           docker logout ghcr.io
-          docker pull "$IMAGE:${{ needs.compute-version.outputs.version }}"
+          VERSION_TAG="$IMAGE:${{ needs.compute-version.outputs.version }}"
+          docker pull "$VERSION_TAG"
+          PULLED=$(docker inspect --format '{{index .RepoDigests 0}}' "$VERSION_TAG" | sed 's/.*@//')
+          if [ "$PULLED" != "$DIGEST" ]; then
+            echo "Promoted $DIGEST but anonymous pull resolved $PULLED" >&2
+            exit 1
+          fi
 
   publish-plugin:
     # Assemble this release's channel-slice of the agent plugin
