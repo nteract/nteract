@@ -24,6 +24,7 @@ pub mod client;
 pub mod daemon_connection;
 pub mod daemon_paths;
 pub mod execution_store;
+pub mod output_equivalence;
 pub mod protocol;
 pub mod runtime;
 pub mod settings_doc;

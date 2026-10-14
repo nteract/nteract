@@ -129,6 +129,8 @@ impl ExecutionRecord {
             && self.outputs == other.outputs
     }
 
+    /// Conservative, non-resolving comparison for callers without a blob store.
+    /// File admission uses identity plus `output_equivalence::compare_outputs`.
     pub fn matches_notebook_cell(
         &self,
         context_id: &str,
@@ -137,6 +139,24 @@ impl ExecutionRecord {
         source: &str,
         execution_count: Option<i64>,
         outputs: &[serde_json::Value],
+    ) -> bool {
+        self.matches_notebook_cell_identity(
+            context_id,
+            notebook_path,
+            cell_id,
+            source,
+            execution_count,
+        ) && outputs_match_for_reload(&self.outputs, outputs)
+    }
+
+    /// Admission metadata for a fresh load; pair with output equivalence before reuse.
+    pub fn matches_notebook_cell_identity(
+        &self,
+        context_id: &str,
+        notebook_path: Option<&str>,
+        cell_id: &str,
+        source: &str,
+        execution_count: Option<i64>,
     ) -> bool {
         self.schema_version == EXECUTION_RECORD_SCHEMA_VERSION
             && self.is_terminal()
@@ -149,7 +169,6 @@ impl ExecutionRecord {
                 .is_none_or(|record_cell_id| record_cell_id == cell_id)
             && self.source.as_deref() == Some(source)
             && self.execution_count == execution_count
-            && outputs_match_for_reload(&self.outputs, outputs)
     }
 
     /// Journal recovery already supplies the execution ID. Require independent
@@ -158,6 +177,8 @@ impl ExecutionRecord {
     /// require their original path context. This admission check is only for
     /// an exact execution ID already owned by the recovered NotebookDoc; it
     /// must not be used to authorize standalone result reads by path.
+    /// This convenience check does not resolve unequal content references.
+    /// Journal admission uses identity plus `output_equivalence::compare_outputs`.
     pub fn matches_recovered_notebook_cell(
         &self,
         notebook_id: &str,
@@ -165,6 +186,22 @@ impl ExecutionRecord {
         cell_id: &str,
         execution_count: Option<i64>,
         outputs: &[serde_json::Value],
+    ) -> bool {
+        self.matches_recovered_notebook_cell_identity(
+            notebook_id,
+            notebook_path,
+            cell_id,
+            execution_count,
+        ) && outputs_match_for_reload(&self.outputs, outputs)
+    }
+
+    /// Admission metadata for an exact journal execution; output verification is also required.
+    pub fn matches_recovered_notebook_cell_identity(
+        &self,
+        notebook_id: &str,
+        notebook_path: &str,
+        cell_id: &str,
+        execution_count: Option<i64>,
     ) -> bool {
         self.schema_version == EXECUTION_RECORD_SCHEMA_VERSION
             && self.is_terminal()
@@ -175,7 +212,6 @@ impl ExecutionRecord {
                     && self.notebook_path.as_deref() == Some(notebook_path)))
             && self.cell_id.as_deref().is_none_or(|id| id == cell_id)
             && self.execution_count == execution_count
-            && outputs_match_for_reload(&self.outputs, outputs)
     }
 
     pub fn execution_state(&self) -> runtime_doc::ExecutionState {
@@ -300,6 +336,8 @@ impl ExecutionStore {
             .collect()
     }
 
+    /// Conservative lookup without blob resolution. Daemon file admission uses
+    /// the shared resolving output-equivalence policy instead.
     pub async fn find_matching_notebook_cell(
         &self,
         context_id: &str,
@@ -408,22 +446,11 @@ fn outputs_match_for_reload(a: &[serde_json::Value], b: &[serde_json::Value]) ->
 }
 
 fn normalize_output_for_match(value: &serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(obj) => {
-            let mut normalized = serde_json::Map::new();
-            for (key, val) in obj {
-                if matches!(key.as_str(), "output_id" | "llm_preview" | "rich") {
-                    continue;
-                }
-                normalized.insert(key.clone(), normalize_output_for_match(val));
-            }
-            serde_json::Value::Object(normalized)
-        }
-        serde_json::Value::Array(values) => {
-            serde_json::Value::Array(values.iter().map(normalize_output_for_match).collect())
-        }
-        other => other.clone(),
+    let mut value = value.clone();
+    if let Some(object) = value.as_object_mut() {
+        crate::output_equivalence::strip_runtime_fields(object);
     }
+    value
 }
 
 fn collect_blob_hashes(

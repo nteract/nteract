@@ -1,3 +1,4 @@
+use runtimed_client::output_equivalence::{compare_outputs, OutputComparison};
 use std::collections::HashSet;
 
 use super::*;
@@ -593,18 +594,22 @@ async fn prepare_initial_import(
         let execution = if output_refs.is_empty() && execution_count.is_none() {
             None
         } else {
-            Some(durable_or_synthetic_execution(
-                &durable_records,
-                &mut claimed_execution_ids,
-                DurableExecutionLookup {
-                    context_id: &context_id,
-                    notebook_path: notebook_path.as_deref(),
-                    cell_id: &cell.id,
-                    source: &cell.source,
-                    execution_count,
-                    outputs: &output_refs,
-                },
-            ))
+            Some(
+                durable_or_synthetic_execution(
+                    &durable_records,
+                    &room.blob_store,
+                    &mut claimed_execution_ids,
+                    DurableExecutionLookup {
+                        context_id: &context_id,
+                        notebook_path: notebook_path.as_deref(),
+                        cell_id: &cell.id,
+                        source: &cell.source,
+                        execution_count,
+                        outputs: &output_refs,
+                    },
+                )
+                .await,
+            )
         };
         prepared_cells.push(PreparedInitialCell {
             cell,
@@ -919,6 +924,7 @@ fn prepared_runtime_sidecars(
 async fn bind_prepared_executions_to_staged_document(
     prepared: &mut PreparedInitialImport,
     execution_ids: &HashMap<String, String>,
+    blob_store: &BlobStore,
     notebook_id: &str,
     notebook_path: &str,
     execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
@@ -943,24 +949,65 @@ async fn bind_prepared_executions_to_staged_document(
         if let Some(store) = execution_store {
             if let Some(record) = store.read_record(staged_execution_id).await {
                 if record.execution_id != *staged_execution_id
-                    || !(record.matches_recovered_notebook_cell(
+                    || !(record.matches_recovered_notebook_cell_identity(
                         notebook_id,
                         notebook_path,
                         &prepared_cell.cell.id,
                         execution.state.execution_count,
-                        &prepared_cell.output_refs,
-                    ) || record.matches_notebook_cell(
+                    ) || record.matches_notebook_cell_identity(
                         notebook_path,
                         Some(notebook_path),
                         &prepared_cell.cell.id,
                         &prepared_cell.cell.source,
                         execution.state.execution_count,
-                        &prepared_cell.output_refs,
                     ))
                 {
                     return Err(format!(
                         "source_degraded: durable execution {staged_execution_id} does not match the recovered notebook result"
                     ));
+                }
+                // The legacy importer drops an Arrow MIME when a saved chunk is
+                // unavailable. Retain that evidence here: an omitted saved payload
+                // cannot be used to prove a provenance conflict or a match.
+                let arrow_mime = notebook_doc::mime::ARROW_STREAM_MANIFEST_MIME;
+                if prepared_cell
+                    .cell
+                    .outputs
+                    .iter()
+                    .zip(&prepared_cell.output_refs)
+                    .any(|(saved, imported)| {
+                        saved
+                            .get("data")
+                            .and_then(|data| data.get(arrow_mime))
+                            .is_some()
+                            && imported
+                                .get("data")
+                                .and_then(|data| data.get(arrow_mime))
+                                .is_none()
+                    })
+                {
+                    return Err(format!(
+                        "source_degraded: cannot verify durable execution {staged_execution_id}: saved Arrow chunk content is unavailable"
+                    ));
+                }
+                let comparison = compare_outputs(
+                    &record.outputs,
+                    &prepared_cell.output_refs,
+                    |hash| async move { blob_store.get(&hash).await },
+                )
+                .await;
+                match comparison {
+                    OutputComparison::Equivalent => {}
+                    OutputComparison::Different => {
+                        return Err(format!(
+                            "source_degraded: durable execution {staged_execution_id} does not match the recovered notebook result"
+                        ));
+                    }
+                    OutputComparison::Unavailable(reason) => {
+                        return Err(format!(
+                            "source_degraded: cannot verify durable execution {staged_execution_id}: {reason}"
+                        ));
+                    }
                 }
                 // A fresh import can journal a content-validated execution
                 // before peer persistence qualifies its record for this room.
@@ -1128,6 +1175,7 @@ pub(crate) async fn finalize_recovered_source(
     bind_prepared_executions_to_staged_document(
         &mut prepared,
         &execution_ids,
+        &room.blob_store,
         &room.id.to_string(),
         &path.to_string_lossy(),
         execution_store,
@@ -1589,22 +1637,32 @@ async fn durable_execution_records(
     }
 }
 
-fn durable_or_synthetic_execution(
+async fn durable_or_synthetic_execution(
     durable_records: &[runtimed_client::execution_store::ExecutionRecord],
+    blob_store: &BlobStore,
     claimed_execution_ids: &mut HashSet<String>,
     lookup: DurableExecutionLookup<'_>,
 ) -> LoadedExecution {
-    if let Some(record) = durable_records.iter().find(|record| {
+    for record in durable_records.iter().filter(|record| {
         !claimed_execution_ids.contains(&record.execution_id)
-            && record.matches_notebook_cell(
+            && record.matches_notebook_cell_identity(
                 lookup.context_id,
                 lookup.notebook_path,
                 lookup.cell_id,
                 lookup.source,
                 lookup.execution_count,
-                lookup.outputs,
             )
     }) {
+        if compare_outputs(&record.outputs, lookup.outputs, |hash| async move {
+            blob_store.get(&hash).await
+        })
+        .await
+            != OutputComparison::Equivalent
+        {
+            // Fresh imports have no journal identity requiring this record.
+            // Unavailable content cannot establish provenance by content.
+            continue;
+        }
         claimed_execution_ids.insert(record.execution_id.clone());
         return LoadedExecution::from_record(record, lookup.outputs);
     }
