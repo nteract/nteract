@@ -111,6 +111,10 @@ impl LaunchTrigger {
 /// the same burst size before reporting lag.
 const RUNTIME_AGENT_KERNEL_BROADCAST_CAPACITY: usize = 256;
 
+/// 25 ms polls for ingest to reach a kernel checkpoint's revision, bounded
+/// like the checkpoint request itself (10 s).
+const BOKEH_CHECKPOINT_CATCH_UP_POLLS: usize = 400;
+
 /// How long to sleep before a reconnect to enforce [`RECOVERABLE_RECONNECT_FLOOR`].
 ///
 /// Pure so the flap-floor policy is unit-testable away from the agent's
@@ -2853,7 +2857,10 @@ fn start_visualization_state_command(
         let result = async {
             let checkpoint = checkpoint_request.await?;
             if !force {
-                for _ in 0..40 {
+                // The kernel snapshots at its own head, which can run well ahead
+                // of ingest while a callback streams updates. Giving up early
+                // lets the tail reach its hard limit and forces a resync.
+                for _ in 0..BOKEH_CHECKPOINT_CATCH_UP_POLLS {
                     let caught_up = state
                         .read(|state_doc| {
                             state_doc

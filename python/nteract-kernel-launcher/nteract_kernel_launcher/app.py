@@ -386,16 +386,14 @@ class NteractKernel(IPythonKernel):
             if not isinstance(session_id, str):
                 raise TypeError("Bokeh checkpoint request requires session_id")
             session = session_registry.require(session_id)
-            checkpoint, reply_buffers = _wire_serialization(
-                session.snapshot(),
-                content_key="document",
-            )
+            revision, snapshot = session.checkpoint()
+            checkpoint, reply_buffers = _wire_serialization(snapshot, content_key="document")
             reply = {
                 "status": "ok",
                 "schema_version": BOKEH_SESSION_SCHEMA_VERSION,
                 "session_id": session_id,
                 "transaction_id": transaction_id,
-                "revision": session.revision,
+                "revision": revision,
                 "checkpoint": checkpoint,
             }
         except Exception as exc:  # noqa: BLE001

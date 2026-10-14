@@ -451,6 +451,49 @@ def test_patch_against_older_revision_is_rebased_onto_python_changes():
     assert event.client_patch is not None
 
 
+def _coalescing_session(pn):
+    slider = pn.widgets.FloatSlider(start=0, end=10, value=1)
+    text = pn.widgets.TextInput(value="a")
+    _ip, data, _metadata = _format_panel(pn.Row(slider, text))
+    session = session_registry.require(data[BOKEH_SESSION_MIME]["session_id"])
+    delivered: list[Any] = []
+    session.set_event_sink(delivered.append)
+    return slider, text, session, delivered
+
+
+def test_python_changes_in_one_loop_iteration_share_a_revision():
+    pn = _load_panel()
+
+    async def change_both():
+        slider, text, _session, delivered = _coalescing_session(pn)
+        slider.value = 2
+        text.value = "b"
+        assert delivered == []
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return delivered
+
+    [event] = asyncio.run(change_both())
+    assert (event.base_revision, event.revision) == (0, 1)
+    assert event.server_patch is not None
+    assert len(event.server_patch.content["events"]) == 2
+
+
+def test_checkpoint_includes_changes_still_waiting_for_the_loop():
+    pn = _load_panel()
+
+    async def checkpoint_before_flush():
+        slider, _text, session, delivered = _coalescing_session(pn)
+        slider.value = 4
+        revision, snapshot = session.checkpoint()
+        return revision, snapshot, delivered
+
+    revision, snapshot, delivered = asyncio.run(checkpoint_before_flush())
+    assert revision == 1
+    assert [event.revision for event in delivered] == [1]
+    assert '"value":4' in str(snapshot.content).replace(" ", "").replace("'", '"')
+
+
 def test_python_change_queues_ordered_server_event():
     pn = _load_panel()
 
