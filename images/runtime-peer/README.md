@@ -44,6 +44,10 @@ Artifact verification checks freshness and rejects the debug widget placeholder.
 The Release validation PR workflow builds this Dockerfile and runs the same
 full smoke test below on a GitHub-hosted Linux runner, without publishing an
 image. Changes to the image recipe or smoke scripts trigger that workflow.
+The daemon execution tier logs the Python interpreter, binding version and
+native-extension checksum, enables Python fault traces, and requires a clean
+interpreter exit before reporting success. A fault after the coroutine returns
+still fails the smoke test and blocks the staging push.
 
 ```bash
 # Full in-container smoke (contract prechecks + daemon execution + launch shape)

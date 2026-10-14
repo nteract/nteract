@@ -357,3 +357,54 @@ test("runtime-peer image publication keeps packages:write scoped to the two imag
     assert.match(workflowJobs(caller).get("release"), /^    permissions:\n      contents: write\n      id-token: write\n      packages: write\n/m, `${name} release job ceiling`);
   }
 });
+
+
+// Exercise only the tier-1 shell boundary. The fake Python command consumes
+// the real heredoc but never imports native code or starts a daemon/container.
+function runImagePythonTier(exitStatus) {
+  const source = readFileSync(new URL("../../images/runtime-peer/smoke.sh", import.meta.url), "utf8");
+  const tier = source.match(/^python3 [^\n]*<<'PY'[^\n]*\nimport asyncio\n[\s\S]*?\nPY\n[\s\S]*?(?=\n# --- Tier 2:)/m)?.[0];
+  assert.ok(tier, "must find the actual tier-1 Python command and its shell completion marker");
+  const fail = source.match(/^fail\(\) \{[^\n]+$/m)?.[0];
+  assert.ok(fail);
+  const fakePython = [
+    "python3() {",
+    "  printf 'python args: %s\\n' \"$*\"",
+    "  while IFS= read -r line; do",
+    "    case \"$line\" in",
+    "      'print(\"tier 1 ok\")') printf 'tier 1 ok\\n' ;;",
+    "    esac",
+    "  done",
+    "  printf 'python application body returned\\n'",
+    "  return \"$SIMULATED_PYTHON_STATUS\"",
+    "}",
+  ].join("\n");
+  return spawnSync("bash", ["-s"], {
+    input: ["set -euo pipefail", fail, fakePython, tier].join("\n"),
+    encoding: "utf8",
+    env: {...process.env, SIMULATED_PYTHON_STATUS: String(exitStatus)},
+  });
+}
+
+test("image Python tier enables fault traces and waits for a clean interpreter exit", () => {
+  const result = runImagePythonTier(0);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /python args: .*?-X ?faulthandler\b/);
+  assert.match(result.stdout, /python args: .*?-u\b/);
+  assert.ok(result.stdout.indexOf("tier 1 ok") > result.stdout.indexOf("python application body returned"),
+    "application completion alone is not a successful interpreter exit");
+});
+
+test("image Python tier fails closed when the interpreter exits 139 after its body", () => {
+  const result = runImagePythonTier(139);
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.stdout, /tier 1 ok/);
+  assert.match(result.stderr, /daemon execution tier failed.*139/);
+});
+
+test("image Python tier preserves ordinary assertion failure", () => {
+  const result = runImagePythonTier(1);
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.stdout, /tier 1 ok/);
+  assert.match(result.stderr, /daemon execution tier failed.*1/);
+});

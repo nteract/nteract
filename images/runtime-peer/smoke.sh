@@ -85,9 +85,24 @@ done
 [ -S "$SOCKET_PATH" ] || fail "daemon socket never appeared at ${SOCKET_PATH}"
 echo "daemon socket ready at ${SOCKET_PATH}"
 
-python3 - <<'PY' || fail "daemon execution tier failed"
+# Keep Python fault traces and phase markers visible if the interpreter crashes
+# after the coroutine has returned. A completed body is not a successful exit.
+python3 -X faulthandler -u - <<'PY' || fail "daemon execution tier failed (python exit: $?)"
 import asyncio
+import hashlib
+import importlib.metadata
+import sys
+from pathlib import Path
+
 import runtimed
+import runtimed._internals as native
+
+print(f"[smoke-python] interpreter: {sys.version}; executable: {sys.executable}")
+print(f"[smoke-python] runtimed distribution: {importlib.metadata.version('runtimed')}")
+native_path = Path(native.__file__)
+print(f"[smoke-python] native extension: {native_path}")
+with native_path.open("rb") as extension:
+    print(f"[smoke-python] native sha256: {hashlib.file_digest(extension, 'sha256').hexdigest()}")
 
 PNG_BYTES = bytes.fromhex(
     "89504e470d0a1a0a0000000d494844520000000100000001080600000"
@@ -154,8 +169,9 @@ async def main() -> None:
 
 
 asyncio.run(main())
-print("tier 1 ok")
+print("[smoke-python] asyncio.run returned; interpreter shutdown follows")
 PY
+echo "tier 1 ok (Python process exited cleanly)"
 
 # --- Tier 2: current_python launch-shape parity ----------------------------
 
