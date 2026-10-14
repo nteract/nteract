@@ -19,7 +19,7 @@ use runtime_doc::{CommsDocHandle, RuntimeStateHandle};
 use tokio::sync::{broadcast, RwLock};
 
 use crate::blob_store::BlobStore;
-use crate::bokeh_session::{BokehCheckpointFuture, BokehKernelPatchResponse};
+use crate::bokeh_session::{BokehCheckpointFuture, BokehCloseFuture, BokehKernelPatchResponse};
 use crate::output_blob_publisher::OutputBlobPublisher;
 use crate::output_prep::QueueCommandReceivers;
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
@@ -146,6 +146,11 @@ pub trait KernelConnection: Send {
                 "kernel does not support Bokeh document sessions"
             ))
         }
+    }
+
+    /// Build an owned close request bound to this kernel's transport.
+    fn bokeh_session_close_request(&self, _session_id: String) -> Option<BokehCloseFuture> {
+        None
     }
 
     /// Build an owned checkpoint request that does not borrow the main agent loop.

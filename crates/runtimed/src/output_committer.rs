@@ -287,7 +287,11 @@ async fn commit_output_batch(
             }
             for prepared in &prepared_outputs {
                 if let Some(session) = &prepared.bokeh_session {
-                    sd.put_bokeh_session(&session.session_id, &session.state)?;
+                    // Session provenance and terminal state survive delayed or
+                    // repeated publication of the same initial descriptor.
+                    if sd.get_bokeh_session(&session.session_id).is_none() {
+                        sd.put_bokeh_session(&session.session_id, &session.state)?;
+                    }
                 }
             }
             Ok(())
@@ -605,7 +609,7 @@ mod tests {
         handle
             .enqueue_output(OrdinaryOutputCommit {
                 execution_id: "exec-1".to_string(),
-                nbformat_value: output,
+                nbformat_value: output.clone(),
                 buffers: Vec::new(),
                 kind: OrdinaryOutputKind::DisplayData,
             })
@@ -620,7 +624,7 @@ mod tests {
         assert_eq!(session.execution_id, "exec-1");
         assert_eq!(session.kernel_id, "kernel-test");
         assert_eq!(session.head_revision, 0);
-        let checkpoint = session.checkpoint.expect("checkpoint");
+        let checkpoint = session.checkpoint.clone().expect("checkpoint");
         assert_eq!(checkpoint.revision, 0);
         let bytes = blob_store
             .get(&checkpoint.content_ref.blob)
@@ -636,6 +640,29 @@ mod tests {
             .expect("read outputs");
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["output_id"], session.output_id);
+
+        let mut closed = session;
+        closed.status = runtime_doc::BokehSessionStatus::Closed;
+        closed.head_revision = 3;
+        state
+            .with_doc(|doc| doc.put_bokeh_session("session-1", &closed))
+            .unwrap();
+        handle
+            .enqueue_output(OrdinaryOutputCommit {
+                execution_id: "exec-1".to_string(),
+                nbformat_value: output,
+                buffers: Vec::new(),
+                kind: OrdinaryOutputKind::DisplayData,
+            })
+            .await;
+        handle.flush_for_ordering().await;
+        assert_eq!(
+            state
+                .read(|doc| doc.get_bokeh_session("session-1"))
+                .unwrap(),
+            Some(closed),
+            "late initial output must not reopen a retired session or rewind its revision"
+        );
     }
 
     #[tokio::test]

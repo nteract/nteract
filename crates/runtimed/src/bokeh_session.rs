@@ -30,6 +30,8 @@ pub(crate) const BOKEH_PATCH_REQUEST: &str = "nteract_bokeh_patch_request";
 pub(crate) const BOKEH_PATCH_REPLY: &str = "nteract_bokeh_patch_reply";
 pub(crate) const BOKEH_CHECKPOINT_REQUEST: &str = "nteract_bokeh_checkpoint_request";
 pub(crate) const BOKEH_CHECKPOINT_REPLY: &str = "nteract_bokeh_checkpoint_reply";
+pub(crate) const BOKEH_CLOSE_REQUEST: &str = "nteract_bokeh_close_request";
+pub(crate) const BOKEH_CLOSE_REPLY: &str = "nteract_bokeh_close_reply";
 pub(crate) const BOKEH_EVENT: &str = "nteract_bokeh_event";
 pub(crate) const BOKEH_CHECKPOINT_MEDIA_TYPE: &str =
     "application/vnd.nteract.bokeh-checkpoint.v1+json";
@@ -67,6 +69,8 @@ pub struct BokehKernelCheckpoint {
 
 pub type BokehCheckpointFuture =
     Pin<Box<dyn Future<Output = anyhow::Result<BokehKernelCheckpoint>> + Send + 'static>>;
+
+pub type BokehCloseFuture = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'static>>;
 
 #[derive(Debug)]
 pub(crate) struct PreparedInitialBokehSession {
@@ -845,6 +849,58 @@ mod tests {
         .expect("session");
         let (changed_tx, _changed_rx) = tokio::sync::broadcast::channel(8);
         RuntimeStateHandle::new(doc, changed_tx)
+    }
+
+    #[tokio::test]
+    async fn retired_session_rejects_late_events_and_checkpoints() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let blobs = BlobStore::new(dir.path().to_path_buf());
+        let state = runtime_state(0);
+        let closed = state
+            .with_doc(|doc| {
+                let mut session = doc.get_bokeh_session("session-1").unwrap();
+                session.status = BokehSessionStatus::Closed;
+                doc.put_bokeh_session("session-1", &session)?;
+                Ok(session)
+            })
+            .unwrap();
+        let (broadcast, mut receiver) = tokio::sync::broadcast::channel(8);
+        assert!(ingest_kernel_event(
+            &patch_event(0, 1),
+            &[],
+            "kernel-1",
+            &state,
+            &blobs,
+            &OutputBlobPublisher::none(),
+            &broadcast
+        )
+        .await
+        .is_err());
+        let checkpoint = BokehKernelCheckpoint {
+            session_id: "session-1".into(),
+            revision: 2,
+            document: BokehKernelSerialization {
+                content: json!({"roots": []}),
+                buffers: vec![],
+            },
+        };
+        assert!(persist_checkpoint(
+            &checkpoint,
+            "kernel-1",
+            true,
+            &state,
+            &blobs,
+            &OutputBlobPublisher::none()
+        )
+        .await
+        .is_err());
+        assert_eq!(
+            state
+                .read(|doc| doc.get_bokeh_session("session-1"))
+                .unwrap(),
+            Some(closed)
+        );
+        assert!(receiver.try_recv().is_err());
     }
 
     fn patch_event(base_revision: u64, revision: u64) -> Value {
