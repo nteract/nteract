@@ -270,6 +270,44 @@ test("Windows smoke scripts reject bad arguments and non-native hosts", () => {
   }
 });
 
+test("runtime-peer release compilation follows real MCP widget generation and verification", () => {
+  const dockerfile = readFileSync(new URL("../../images/runtime-peer/Dockerfile", import.meta.url), "utf8");
+  const commands = dockerfile.replace(/\\\n\s*/g, " ");
+  const releaseBuild = commands.indexOf("cargo build --release -p runtimed -p runt");
+  assert.ok(releaseBuild >= 0, "image must build both release binaries");
+  const preparation = commands.slice(0, releaseBuild);
+  const frozenInstall = preparation.indexOf("pnpm install --frozen-lockfile");
+  const artifactCommands = [...preparation.matchAll(/cargo xtask artifacts (ensure|verify) ([a-z,-]+)/g)];
+  for (const scope of ["mcp-widget", "runtime", "sift", "renderer"]) {
+    const covers = (command) => command[2].split(",").some((value) => value === scope || value === "all");
+    const ensure = artifactCommands.find((command) => command[1] === "ensure" && covers(command));
+    const verify = artifactCommands.find((command) => command[1] === "verify" && covers(command));
+    assert.ok(ensure, `${scope} must be generated before release compilation`);
+    assert.ok(verify, `${scope} must pass strict artifact verification, including receipts and placeholder detection`);
+    assert.ok(frozenInstall >= 0 && ensure.index > frozenInstall && verify.index > ensure.index,
+      `${scope} must be generated after the frozen install and verified afterward`);
+  }
+});
+
+test("runtime-peer PR validation builds and smokes the release image without publishing", () => {
+  const body = validationJobs.get("runtime-peer-image");
+  assert.ok(body, "image recipe changes need a real container build before release");
+  assert.match(body, /runs-on: ubuntu-24\.04/);
+  assert.match(body, /lfs: true/);
+  assert.match(body, /uses: docker\/setup-buildx-action@v3/);
+  assert.match(body, /uses: docker\/build-push-action@v6[\s\S]*context: \.[\s\S]*file: images\/runtime-peer\/Dockerfile/);
+  assert.match(body, /load: true\n\s+push: false/);
+  assert.match(body, /RUNT_BUILD_CHANNEL=nightly/);
+  assert.match(body, /crates\/runtimed\/Cargo\.toml/);
+  const build = body.indexOf("uses: docker/build-push-action@v6");
+  const smoke = body.indexOf('bash scripts/ci/runtime-peer-image-smoke.sh "$IMAGE" "$EXPECTED_VERSION"');
+  assert.ok(smoke > build, "the existing full smoke test must run on the image just built");
+  assert.doesNotMatch(body, /continue-on-error:|docker\/login-action|docker push|push: true|packages: write/);
+  for (const path of [".dockerignore", "images/runtime-peer/**", "scripts/ci/runtime-peer-image-smoke.sh"]) {
+    assert.ok(validation.includes(`      - ${path}\n`), `missing image validation trigger: ${path}`);
+  }
+});
+
 test("runtime-peer image publication keeps packages:write scoped to the two image jobs", () => {
   const imageJobs = ["image-runtime-peer-build", "image-runtime-peer-publish"];
   for (const [id, body] of jobs) {
