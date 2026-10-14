@@ -319,3 +319,15 @@ test("runtime-peer image publication keeps packages:write scoped to the two imag
     assert.match(workflowJobs(caller).get("release"), /^    permissions:\n      contents: write\n      id-token: write\n      packages: write\n/m, `${name} release job ceiling`);
   }
 });
+
+test("editor assets job publishes a channel-named tarball with least privilege", () => {
+  const body = jobs.get("publish-notebook-cloud-assets");
+  assert.ok(body, "publish-notebook-cloud-assets must exist");
+  assert.match(body, /^    permissions:\n      contents: write\n/m, "job declares permissions");
+  assert.doesNotMatch(body, /packages: write/);
+  assert.match(body, /^    needs: \[compute-version, build-wasm, prerelease\]$/m);
+  assert.match(body, /name: wasm-artifacts/, "reuses build-wasm output");
+  assert.match(body, /skip-wasm: true/, "does not rebuild WASM");
+  assert.match(body, /notebook-cloud-assets-\$\{\{ env\.RUNT_BUILD_CHANNEL \}\}\.tar\.gz\.sha256/, "names the sidecar with the channel");
+  assert.match(body, /notebook-cloud-assets-smoke\.sh[\s\S]*gh release upload/, "smoke gates the upload");
+});

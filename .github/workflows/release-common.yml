@@ -1625,6 +1625,62 @@ jobs:
             exit 1
           fi
 
+  publish-notebook-cloud-assets:
+    # Attaches the embeddable editor tarball to the release `prerelease`
+    # created. The viewer is rebuilt from the downloaded `wasm-artifacts`; no
+    # WASM is compiled here. `contents: write` is for the release upload only.
+    name: Publish editor assets
+    runs-on: ubuntu-24.04
+    needs: [compute-version, build-wasm, prerelease]
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
+
+      - name: Set up Rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: wasm-artifacts
+
+      - uses: ./.github/actions/build-runtime-artifacts
+        with:
+          skip-wasm: true
+
+      - name: Build viewer
+        run: pnpm --dir apps/notebook-cloud build:viewer
+
+      - name: Package editor assets
+        env:
+          VERSION: ${{ needs.compute-version.outputs.version }}
+          SOURCE_SHA: ${{ needs.compute-version.outputs.source_sha }}
+          CHANNEL: ${{ env.RUNT_BUILD_CHANNEL }}
+        run: |
+          node scripts/ci/package-notebook-cloud-assets.mjs \
+            --out=editor-assets \
+            --version="$VERSION" \
+            --channel="$CHANNEL" \
+            --source-sha="$SOURCE_SHA"
+
+      - name: Smoke test editor assets
+        run: bash scripts/ci/notebook-cloud-assets-smoke.sh "editor-assets/notebook-cloud-assets-${{ env.RUNT_BUILD_CHANNEL }}.tar.gz"
+
+      - name: Upload editor assets to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: v${{ needs.compute-version.outputs.version }}
+        run: |
+          gh release upload "$TAG_NAME" \
+            "editor-assets/notebook-cloud-assets-${{ env.RUNT_BUILD_CHANNEL }}.tar.gz" \
+            "editor-assets/notebook-cloud-assets-${{ env.RUNT_BUILD_CHANNEL }}.tar.gz.sha256" \
+            --clobber --repo "$GITHUB_REPOSITORY"
+
   publish-plugin:
     # Assemble this release's channel-slice of the agent plugin
     # distribution repo (nteract/agent-plugins). One repo, two plugins:
