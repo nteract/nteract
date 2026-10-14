@@ -1,6 +1,6 @@
 [package]
 name = "sift-csv-wasm"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 description = "CSV to Arrow IPC in WebAssembly — used by @nteract/sift-csv"
 repository = "https://github.com/nteract/nteract"
