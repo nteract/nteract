@@ -12,6 +12,8 @@ on:
       - .github/workflows/pr-binary-generation.yml
       - .github/workflows/publish-npm.yml
       - .cargo/config.toml
+      - .dockerignore
+      - images/runtime-peer/**
       - scripts/ci/audit-linux-node.mjs
       - scripts/ci/audit-windows-crt-imports.mjs
       - scripts/ci/filter-unpublished-release-tags.sh
@@ -24,6 +26,7 @@ on:
       - scripts/ci/install-linuxdeploy.sh
       - scripts/ci/install-tauri-cli.sh
       - scripts/ci/fedora-appimage-smoke.sh
+      - scripts/ci/runtime-peer-image-smoke.sh
       - scripts/tests/test_release_tag.py
       - scripts/tests/audit-linux-node.test.mjs
       - scripts/tests/audit-windows-crt-imports.test.mjs
@@ -58,6 +61,39 @@ jobs:
           node-version: "24"
       - run: node --test scripts/tests/audit-linux-node.test.mjs scripts/tests/audit-windows-crt-imports.test.mjs scripts/tests/release-workflow.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
       - run: python3 -m unittest scripts/tests/test_release_tag.py -v
+
+  runtime-peer-image:
+    name: Runtime-peer image build and smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      IMAGE: nteract-runtime-peer:validation
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image without publishing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/runtime-peer/Dockerfile
+          load: true
+          push: false
+          provenance: false
+          tags: ${{ env.IMAGE }}
+          build-args: |
+            RUNT_BUILD_CHANNEL=nightly
+          cache-from: type=gha,scope=runtime-peer-validation
+          cache-to: type=gha,mode=max,scope=runtime-peer-validation
+      - name: Smoke image
+        shell: bash
+        run: |
+          EXPECTED_VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/runtimed/Cargo.toml)
+          test -n "$EXPECTED_VERSION"
+          bash scripts/ci/runtime-peer-image-smoke.sh "$IMAGE" "$EXPECTED_VERSION"
 
   windows-npm-packaging:
     name: Windows npm packaging

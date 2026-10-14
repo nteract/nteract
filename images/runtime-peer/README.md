@@ -31,11 +31,19 @@ git lfs pull   # stable renderer bundles (plotly/vega/leaflet) are LFS-tracked
 docker build -t nteract-runtime-peer:dev -f images/runtime-peer/Dockerfile .
 ```
 
-The builder stage rebuilds the generated wasm + renderer artifacts
-(`cargo xtask artifacts ensure runtime,sift,renderer`) because
-`crates/runtimed/build.rs` embeds them and panics when missing.
+The builder stage generates and verifies the runtime WASM, Sift, renderer
+plugins, and MCP output widget with
+`cargo xtask artifacts ensure runtime,sift,renderer,mcp-widget` followed by
+`cargo xtask artifacts verify runtime,sift,renderer,mcp-widget`.
+`runtimed` embeds the runtime and renderer assets; `runt` also depends on
+`runt-mcp`, whose release build requires the real `assets/_output.html` widget.
+Artifact verification checks freshness and rejects the debug widget placeholder.
 
 ## Validate
+
+The Release validation PR workflow builds this Dockerfile and runs the same
+full smoke test below on a GitHub-hosted Linux runner, without publishing an
+image. Changes to the image recipe or smoke scripts trigger that workflow.
 
 ```bash
 # Full in-container smoke (contract prechecks + daemon execution + launch shape)

@@ -113,12 +113,10 @@ WORKDIR /src
 # build context (run `git lfs pull` before building).
 COPY . .
 
-# Generated wasm, renderer, and MCP widget artifacts are gitignored but
-# required for build: crates/runtimed/build.rs embeds the first three and
-# crates/runt-mcp/build.rs refuses a release build without the real
-# assets/_output.html. `runt` depends on runt-mcp, so the mcp-widget scope is
-# required even though the image ships no MCP binary. Cache
-# mounts keep the pnpm store, cargo registry/git dirs, and the build target
+# Generated wasm, renderer plugins, and the MCP output widget are gitignored
+# but embedded by runtimed and runt-mcp (a dependency of runt). Generate and
+# verify the real assets before release compilation; placeholders cannot ship.
+# Cache mounts keep the pnpm store, cargo registry/git dirs, and the build target
 # dir warm between steps WITHIN a single build and across local rebuilds on
 # the same worker — BuildKit cache mounts are worker-local and are NOT
 # exported by --cache-to type=gha, so on a fresh CI runner these steps still
@@ -129,7 +127,8 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     pnpm install --frozen-lockfile \
-    && cargo xtask artifacts ensure runtime,sift,renderer,mcp-widget
+    && cargo xtask artifacts ensure runtime,sift,renderer,mcp-widget \
+    && cargo xtask artifacts verify runtime,sift,renderer,mcp-widget
 
 RUN --mount=type=cache,target=/src/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
