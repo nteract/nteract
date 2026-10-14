@@ -15,4 +15,19 @@ runs:
       uses: cargo-bins/cargo-binstall@v1.19.1
     - name: Install cargo-about
       shell: bash
-      run: cargo binstall cargo-about --version "=${{ inputs.version }}" --no-confirm --locked --force
+      env:
+        CARGO_ABOUT_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        # cargo-about has no default CLI feature. Keep binstall's implicit source
+        # fallback disabled so every source install explicitly builds the binary.
+        if ! cargo binstall cargo-about --version "=$CARGO_ABOUT_VERSION" --no-confirm --locked --force --disable-strategies compile; then
+          echo "Prebuilt cargo-about unavailable; building the CLI from source."
+          cargo install cargo-about --version "=$CARGO_ABOUT_VERSION" --locked --force --features cli --bin cargo-about
+        fi
+        actual_version="$(cargo about --version)"
+        if [ "$actual_version" != "cargo-about $CARGO_ABOUT_VERSION" ]; then
+          echo "Expected cargo-about $CARGO_ABOUT_VERSION, got: $actual_version" >&2
+          exit 1
+        fi
+        printf '%s\n' "$actual_version"

@@ -408,7 +408,24 @@ jobs:
         run: cargo xtask wasm sift --skip-renderer-plugins
       - uses: cargo-bins/cargo-binstall@v1.19.1
       - name: Install cargo-about
-        run: cargo binstall cargo-about --version '=0.9.2' --no-confirm --locked
+        shell: bash
+        env:
+          CARGO_ABOUT_VERSION: "0.9.2"
+        # Inline for releases whose source checkout predates the local action.
+        run: |
+          set -euo pipefail
+          # cargo-about has no default CLI feature. Keep binstall's implicit source
+          # fallback disabled so every source install explicitly builds the binary.
+          if ! cargo binstall cargo-about --version "=$CARGO_ABOUT_VERSION" --no-confirm --locked --force --disable-strategies compile; then
+            echo "Prebuilt cargo-about unavailable; building the CLI from source."
+            cargo install cargo-about --version "=$CARGO_ABOUT_VERSION" --locked --force --features cli --bin cargo-about
+          fi
+          actual_version="$(cargo about --version)"
+          if [ "$actual_version" != "cargo-about $CARGO_ABOUT_VERSION" ]; then
+            echo "Expected cargo-about $CARGO_ABOUT_VERSION, got: $actual_version" >&2
+            exit 1
+          fi
+          printf '%s\n' "$actual_version"
       - name: Stamp Sift build version
         run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" stamp-build "$RUNNER_TEMP/npm-release-tools/sift-plan.json" packages/sift sift
       - name: Build and test packed Sift consumer
@@ -500,7 +517,24 @@ jobs:
         run: cargo xtask wasm sift-csv
       - uses: cargo-bins/cargo-binstall@v1.19.1
       - name: Install cargo-about
-        run: cargo binstall cargo-about --version '=0.9.2' --no-confirm --locked
+        shell: bash
+        env:
+          CARGO_ABOUT_VERSION: "0.9.2"
+        # Inline for releases whose source checkout predates the local action.
+        run: |
+          set -euo pipefail
+          # cargo-about has no default CLI feature. Keep binstall's implicit source
+          # fallback disabled so every source install explicitly builds the binary.
+          if ! cargo binstall cargo-about --version "=$CARGO_ABOUT_VERSION" --no-confirm --locked --force --disable-strategies compile; then
+            echo "Prebuilt cargo-about unavailable; building the CLI from source."
+            cargo install cargo-about --version "=$CARGO_ABOUT_VERSION" --locked --force --features cli --bin cargo-about
+          fi
+          actual_version="$(cargo about --version)"
+          if [ "$actual_version" != "cargo-about $CARGO_ABOUT_VERSION" ]; then
+            echo "Expected cargo-about $CARGO_ABOUT_VERSION, got: $actual_version" >&2
+            exit 1
+          fi
+          printf '%s\n' "$actual_version"
       - name: Stamp Sift CSV build version
         run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" stamp-build "$RUNNER_TEMP/npm-release-tools/sift-csv-plan.json" packages/sift-csv sift-csv
       - name: Build and test packed Sift CSV consumer
