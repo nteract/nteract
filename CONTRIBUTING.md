@@ -56,6 +56,7 @@ need these artifacts; `cargo xtask dev` ensures them automatically. To rebuild:
 cargo xtask wasm              # rebuild all WASM targets
 cargo xtask wasm runtimed     # rebuild runtimed-wasm only
 cargo xtask wasm sift         # rebuild sift-wasm only
+cargo xtask wasm sift-csv     # rebuild sift-csv-wasm only; bare `wasm` skips it, `wasm --all` includes it
 ```
 
 ### MCP renderer development

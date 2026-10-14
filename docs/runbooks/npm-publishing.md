@@ -1,14 +1,17 @@
-# Publishing the Node bindings
+# Publishing the npm packages
 
 `publish-npm.yml` builds the Node SDK, `@nteract/sift`, and `@nteract/sift-csv` after a successful
 **Stable Release** or **Nightly Release** run. It retains the existing npm
 trusted-publisher identity; the build jobs have no publication credentials, and
 the publication jobs do not build source or install project dependencies.
 
+Each package publishes from its own checked-in `package.json` version. Daemon
+discovery applies to the Node SDK only.
+
 | Upstream release | npm version | Dist-tag | Default daemon discovery |
 |---|---|---|---|
-| Stable | Checked-in Node package version | `latest` | Stable channel |
-| Nightly | `<Node version>-nightly.<upstream run ID>` | `nightly` | Nightly channel |
+| Stable | Checked-in package version | `latest` | Stable channel |
+| Nightly | `<package version>-nightly.<upstream run ID>` | `nightly` | Nightly channel |
 
 The upstream run supplies the immutable source SHA. Repeating that run does not
 allocate a new npm version. The upstream attempt is recorded in the workflow's
