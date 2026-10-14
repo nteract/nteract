@@ -126,6 +126,19 @@ def _serialize_bokeh_value(value: Any) -> BokehSerialization:
     return BokehSerialization(content=encoded, buffers=buffers)
 
 
+def _current_io_loop() -> Any:
+    """The kernel's IOLoop, which runs Bokeh session callbacks."""
+    import asyncio
+
+    from tornado.ioloop import IOLoop
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return IOLoop.current(instance=False)
+    return IOLoop.current()
+
+
 def _replayable_client_patch(
     patch: dict[str, Any], buffers: Sequence[BokehBuffer]
 ) -> BokehSerialization | None:
@@ -179,6 +192,8 @@ class BokehDocumentSession:
         self._transaction_events: list[Any] = []
         self._queued_server_events: list[BokehServerEvent] = []
         self._closed = False
+        self._loop = _current_io_loop()
+        self._session_callbacks: dict[Any, Callable[[], None]] = {}
         self.document.on_change_dispatch_to(self)
 
     @property
@@ -296,6 +311,8 @@ class BokehDocumentSession:
             self._transaction_events = []
             cleanup = self._cleanup
 
+        if self._loop is not None:
+            self._loop.add_callback(self._cancel_session_callbacks)
         with suppress(KeyError, ValueError):
             self.document.remove_on_change(self)
         if cleanup is not None:
@@ -303,6 +320,60 @@ class BokehDocumentSession:
                 cleanup()
             except Exception:  # noqa: BLE001
                 log.exception("Bokeh session cleanup failed for %s", self.session_id)
+
+    def _session_callback_added(self, event: Any) -> None:
+        """Bokeh receiver for ``doc.add_next_tick_callback`` and friends.
+
+        Without a Bokeh server nothing runs session callbacks, so schedule
+        them on the kernel's IOLoop. Panel releases a ``hold()`` through a
+        next tick callback, so without this its held changes never arrive.
+        """
+        if self._loop is not None and not self._closed:
+            self._loop.add_callback(self._start_session_callback, event.callback)
+
+    def _session_callback_removed(self, event: Any) -> None:
+        if self._loop is not None:
+            self._loop.add_callback(self._stop_session_callback, event.callback)
+
+    def _start_session_callback(self, callback_obj: Any) -> None:
+        from bokeh.server.callbacks import NextTickCallback, PeriodicCallback, TimeoutCallback
+        from tornado.ioloop import PeriodicCallback as TornadoPeriodicCallback
+
+        if (
+            self._closed
+            or callback_obj in self._session_callbacks
+            or callback_obj not in self.document.session_callbacks
+        ):
+            return
+
+        def run() -> Any:
+            if callback_obj in self._session_callbacks:
+                return callback_obj.callback()
+            return None
+
+        loop = self._loop
+        assert loop is not None
+        if isinstance(callback_obj, PeriodicCallback):
+            periodic = TornadoPeriodicCallback(run, callback_obj.period)
+            periodic.start()
+            self._session_callbacks[callback_obj] = periodic.stop
+        elif isinstance(callback_obj, TimeoutCallback):
+            handle = loop.call_later(callback_obj.timeout / 1000, run)
+            self._session_callbacks[callback_obj] = lambda: loop.remove_timeout(handle)
+        elif isinstance(callback_obj, NextTickCallback):
+            self._session_callbacks[callback_obj] = lambda: None
+            loop.add_callback(run)
+
+    def _stop_session_callback(self, callback_obj: Any) -> None:
+        cancel = self._session_callbacks.pop(callback_obj, None)
+        if cancel is not None:
+            cancel()
+
+    def _cancel_session_callbacks(self) -> None:
+        callbacks = self._session_callbacks
+        self._session_callbacks = {}
+        for cancel in callbacks.values():
+            cancel()
 
     def _ensure_open(self) -> None:
         if self._closed:

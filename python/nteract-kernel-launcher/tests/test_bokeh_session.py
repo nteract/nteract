@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import threading
 from collections import deque
@@ -13,6 +14,7 @@ from nteract_kernel_launcher import _buffer_hook, _panel
 from nteract_kernel_launcher._bokeh_session import (
     BOKEH_SESSION_MIME,
     BokehBuffer,
+    BokehDocumentSession,
     BokehPatchApplyError,
     BokehSerialization,
     BokehServerEvent,
@@ -416,6 +418,66 @@ def test_python_change_queues_ordered_server_event():
     assert patch_event["attr"] == "value"
     assert patch_event["new"] == 7
     assert session.pop_server_events() == []
+
+
+def test_python_change_to_esm_component_queues_server_event():
+    pn = _load_panel()
+    param = pytest.importorskip("param")
+
+    class Counter(pn.custom.JSComponent):
+        value = param.Integer(default=0)
+
+        _esm = "export function render() {}"
+
+    async def change_from_python():
+        counter = Counter()
+        layout = pn.Column(counter)
+        _ip, data, _metadata = _format_panel(layout)
+        session = session_registry.require(data[BOKEH_SESSION_MIME]["session_id"])
+
+        counter.value = 3
+        layout.append(pn.pane.Markdown("appended"))
+        # Panel 1.9 releases the hold on the next tick of the kernel loop.
+        await asyncio.sleep(0.05)
+        return session.pop_server_events()
+
+    events = asyncio.run(change_from_python())
+    changes = [
+        (event["attr"], event.get("new"))
+        for server_event in events
+        for event in server_event.server_patch.content["events"]
+        if event["kind"] == "ModelChanged"
+    ]
+    assert ("value", 3) in changes
+    assert any(attr == "children" for attr, _ in changes)
+    assert [(event.base_revision, event.revision) for event in events] == [
+        (index, index + 1) for index in range(len(events))
+    ]
+
+
+def test_session_runs_bokeh_session_callbacks_on_the_kernel_loop():
+    pytest.importorskip("bokeh")
+    from bokeh.document import Document
+    from bokeh.models import Div
+
+    async def schedule():
+        document = Document()
+        document.add_root(Div(text="root"))
+        session = BokehDocumentSession(
+            document, document.roots, producer_name="test", producer_version="0"
+        )
+        ran = []
+        document.add_next_tick_callback(lambda: ran.append("next_tick"))
+        document.add_timeout_callback(lambda: ran.append("timeout"), 10)
+        cancelled = document.add_timeout_callback(lambda: ran.append("cancelled"), 10)
+        document.remove_timeout_callback(cancelled)
+        await asyncio.sleep(0.1)
+        session.close()
+        return ran, document.session_callbacks
+
+    ran, remaining = asyncio.run(schedule())
+    assert ran == ["next_tick", "timeout"]
+    assert not remaining
 
 
 def test_failed_patch_advances_revision_with_authoritative_checkpoint():

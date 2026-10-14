@@ -260,6 +260,20 @@ def _create_panel_session(viewable: Any) -> tuple[BokehDocumentSession, dict[str
     return session, resources, bokeh.__version__
 
 
+def _mark_document_loaded(document: Any) -> None:
+    """Tell Panel the client now holds this Document.
+
+    Panel drops model changes made inside ``hold()`` while no client has the
+    Document, expecting a later full serialization to carry them. The
+    snapshot is that serialization, so mark the Document loaded the way a
+    connecting Panel session does. Components that update inside a hold,
+    such as ``ReactiveESM`` subclasses, otherwise never emit events.
+    """
+    from panel.io.state import state
+
+    state._on_load(document)
+
+
 def _stash_buffers(
     serialized: BokehSerialization,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -292,6 +306,7 @@ def _native_panel_mimebundle(viewable: Any) -> tuple[dict[str, Any], dict[str, A
     stashed_hashes: set[str] = set()
     try:
         snapshot = session.snapshot()
+        _mark_document_loaded(session.document)
         buffer_descriptors, refs = _stash_buffers(snapshot)
         stashed_hashes = {ref["hash"] for ref in refs}
         payload = {
