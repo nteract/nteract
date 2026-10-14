@@ -71,6 +71,75 @@ function renderedScripts(container: HTMLElement): HTMLScriptElement[] {
   return Array.from(container.querySelectorAll("script"));
 }
 
+function setupNativeBokehSession() {
+  const fakeDocument = {
+    all_roots: [{ id: "root-1" }],
+    on_change: vi.fn(),
+    remove_on_change: vi.fn(),
+    create_json_patch: vi.fn(),
+    apply_json_patch: vi.fn(),
+    clear: vi.fn(),
+  };
+  const addDocumentStandalone = vi.fn(async (_document: unknown, element: HTMLElement) => {
+    const root = document.createElement("div");
+    root.dataset.testid = "native-bokeh-root";
+    element.appendChild(root);
+    return { clear: vi.fn() };
+  });
+  class BufferValue {
+    constructor(readonly buffer: ArrayBuffer) {}
+  }
+  window.Bokeh = {
+    version: "3.9.1",
+    require: (name) => {
+      if (name === "document") return { Document: { from_json: () => fakeDocument } };
+      if (name === "embed/standalone") {
+        return { add_document_standalone: addDocumentStandalone };
+      }
+      if (name === "core/serialization") return { Buffer: BufferValue };
+      return {};
+    },
+  };
+  const requestHost = vi.fn(async () => ({
+    schemaVersion: 1,
+    sessionId: "session-1",
+    outputId: "output-1",
+    status: "connected",
+    headRevision: 0,
+    checkpoint: { revision: 0, document: { roots: [{ id: "root-1" }] }, buffers: [] },
+    patchTail: [],
+  }));
+  const notifications = new Map<string, (params: unknown) => void>();
+  const subscribeHostNotification = vi.fn((method: string, listener: (params: unknown) => void) => {
+    notifications.set(method, listener);
+    return () => notifications.delete(method);
+  });
+  const { NativeRenderer } = installBokehRenderer({
+    requestHost,
+    subscribeHostNotification,
+  });
+  return { NativeRenderer, requestHost, notifications, fakeDocument, addDocumentStandalone };
+}
+
+function nativeSessionPayload() {
+  return {
+    schema_version: 1,
+    session_id: "session-1",
+    revision: 0,
+    producer: { name: "panel", version: "1.9.3" },
+    bokeh_version: "3.9.1",
+    document: { roots: [{ id: "root-1" }] },
+    root_ids: ["root-1"],
+    resources: {
+      javascript: [],
+      stylesheets: [],
+      javascript_modules: [],
+      module_exports: {},
+    },
+    buffers: [],
+  };
+}
+
 describe("Bokeh renderer plugin", () => {
   beforeEach(() => {
     stubAnimationFrames();
@@ -240,72 +309,10 @@ describe("Bokeh renderer plugin", () => {
   });
 
   it("mounts a native document session from the host snapshot", async () => {
-    const fakeDocument = {
-      all_roots: [{ id: "root-1" }],
-      on_change: vi.fn(),
-      remove_on_change: vi.fn(),
-      create_json_patch: vi.fn(),
-      apply_json_patch: vi.fn(),
-      clear: vi.fn(),
-    };
-    const addDocumentStandalone = vi.fn(async (_document: unknown, element: HTMLElement) => {
-      const root = document.createElement("div");
-      root.dataset.testid = "native-bokeh-root";
-      element.appendChild(root);
-      return { clear: vi.fn() };
-    });
-    class BufferValue {
-      constructor(readonly buffer: ArrayBuffer) {}
-    }
-    window.Bokeh = {
-      version: "3.9.1",
-      require: (name) => {
-        if (name === "document") return { Document: { from_json: () => fakeDocument } };
-        if (name === "embed/standalone") {
-          return { add_document_standalone: addDocumentStandalone };
-        }
-        if (name === "core/serialization") return { Buffer: BufferValue };
-        return {};
-      },
-    };
-    const requestHost = vi.fn(async () => ({
-      schemaVersion: 1,
-      sessionId: "session-1",
-      outputId: "output-1",
-      status: "connected",
-      headRevision: 0,
-      checkpoint: { revision: 0, document: { roots: [{ id: "root-1" }] }, buffers: [] },
-      patchTail: [],
-    }));
-    const notifications = new Map<string, (params: unknown) => void>();
-    const subscribeHostNotification = vi.fn(
-      (method: string, listener: (params: unknown) => void) => {
-        notifications.set(method, listener);
-        return () => notifications.delete(method);
-      },
-    );
-    const { NativeRenderer } = installBokehRenderer({
-      requestHost,
-      subscribeHostNotification,
-    });
+    const { NativeRenderer, requestHost, notifications } = setupNativeBokehSession();
     const { container } = render(
       <NativeRenderer
-        data={{
-          schema_version: 1,
-          session_id: "session-1",
-          revision: 0,
-          producer: { name: "panel", version: "1.9.3" },
-          bokeh_version: "3.9.1",
-          document: { roots: [{ id: "root-1" }] },
-          root_ids: ["root-1"],
-          resources: {
-            javascript: [],
-            stylesheets: [],
-            javascript_modules: [],
-            module_exports: {},
-          },
-          buffers: [],
-        }}
+        data={nativeSessionPayload()}
         mimeType={NTERACT_BOKEH_SESSION_MIME_TYPE}
         outputId="output-1"
       />,
@@ -328,6 +335,36 @@ describe("Bokeh renderer plugin", () => {
       });
     });
     expect(container).toHaveTextContent("Disconnected");
+    expect(container.querySelector('[data-testid="native-bokeh-root"]')).not.toBeNull();
+  });
+
+  it("keeps a native session mounted when an equivalent payload is re-sent", async () => {
+    const { NativeRenderer, requestHost, fakeDocument, addDocumentStandalone } =
+      setupNativeBokehSession();
+    const { container, rerender } = render(
+      <NativeRenderer
+        data={nativeSessionPayload()}
+        mimeType={NTERACT_BOKEH_SESSION_MIME_TYPE}
+        outputId="output-1"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="native-bokeh-root"]')).not.toBeNull();
+    });
+
+    rerender(
+      <NativeRenderer
+        data={structuredClone(nativeSessionPayload())}
+        mimeType={NTERACT_BOKEH_SESSION_MIME_TYPE}
+        outputId="output-1"
+      />,
+    );
+    await act(async () => {});
+
+    expect(fakeDocument.clear).not.toHaveBeenCalled();
+    expect(requestHost).toHaveBeenCalledTimes(1);
+    expect(addDocumentStandalone).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[data-testid="native-bokeh-root"]')).not.toBeNull();
   });
 });

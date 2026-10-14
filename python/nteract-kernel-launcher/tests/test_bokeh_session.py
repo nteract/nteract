@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import threading
 from collections import deque
@@ -13,6 +14,7 @@ from nteract_kernel_launcher import _buffer_hook, _panel
 from nteract_kernel_launcher._bokeh_session import (
     BOKEH_SESSION_MIME,
     BokehBuffer,
+    BokehDocumentSession,
     BokehPatchApplyError,
     BokehSerialization,
     BokehServerEvent,
@@ -57,15 +59,29 @@ def test_install_registers_panel_formatter_without_importing_panel():
     panel_was_loaded = "panel" in sys.modules
     ip, display_formatter = _formatter()
 
-    assert ("panel.viewable", "Viewable") in (
-        display_formatter.mimebundle_formatter.deferred_printers
-    )
+    printers = display_formatter.mimebundle_formatter.deferred_printers
+    assert ("panel.viewable", "Viewable") in printers
+    assert ("panel.viewable", "Viewer") in printers
     assert ("panel" in sys.modules) is panel_was_loaded
 
     _panel.uninstall(ip)
-    assert ("panel.viewable", "Viewable") not in (
-        display_formatter.mimebundle_formatter.deferred_printers
-    )
+    assert ("panel.viewable", "Viewable") not in printers
+    assert ("panel.viewable", "Viewer") not in printers
+
+
+def test_viewer_renders_as_native_document_session():
+    pn = _load_panel()
+
+    class Counter(pn.viewable.Viewer):
+        def __panel__(self):
+            return pn.Row(pn.widgets.IntSlider(value=3))
+
+    _ip, data, metadata = _format_panel(Counter())
+
+    assert BOKEH_SESSION_MIME in data
+    assert _panel._PANEL_FALLBACK_METADATA not in metadata
+    session = session_registry.require(data[BOKEH_SESSION_MIME]["session_id"])
+    assert session.root_ids == data[BOKEH_SESSION_MIME]["root_ids"]
 
 
 def test_panel_bootstrap_filter_does_not_displace_buffer_hooks():
@@ -390,8 +406,49 @@ def test_panel_patch_runs_python_callback_and_returns_only_derived_events():
     assert events[0]["new"] == 10
 
     with pytest.raises(StaleBokehRevisionError) as error:
-        session.apply_patch(base_revision=0, patch={"events": []})
+        session.apply_patch(base_revision=2, patch={"events": []})
     assert error.value.actual == 1
+
+
+def test_patch_against_older_revision_is_rebased_onto_python_changes():
+    """A browser patch racing Python-side updates applies on top of them, as
+    on a Bokeh server, instead of forcing the browser to resync."""
+    pn = _load_panel()
+
+    slider = pn.widgets.FloatSlider(start=0, end=10, value=1)
+    text = pn.widgets.TextInput(value="a")
+    layout = pn.Row(slider, text)
+    _ip, data, _metadata = _format_panel(layout)
+    payload = data[BOKEH_SESSION_MIME]
+    session = session_registry.require(payload["session_id"])
+    root_id = payload["root_ids"][0]
+    slider_model = slider._models[root_id][0]
+
+    text.value = "b"
+    slider.value = 2
+    assert [event.revision for event in session.pop_server_events()] == [1, 2]
+
+    result = session.apply_patch(
+        base_revision=0,
+        transaction_id="layout-1",
+        patch={
+            "events": [
+                {
+                    "kind": "ModelChanged",
+                    "model": {"id": slider_model.id},
+                    "attr": "value",
+                    "new": 5,
+                }
+            ]
+        },
+    )
+
+    assert slider.value == 5
+    assert text.value == "b"
+    assert (result.base_revision, result.revision) == (2, 3)
+    [event] = session.pop_server_events()
+    assert (event.transaction_id, event.base_revision, event.revision) == ("layout-1", 2, 3)
+    assert event.client_patch is not None
 
 
 def test_python_change_queues_ordered_server_event():
@@ -416,6 +473,66 @@ def test_python_change_queues_ordered_server_event():
     assert patch_event["attr"] == "value"
     assert patch_event["new"] == 7
     assert session.pop_server_events() == []
+
+
+def test_python_change_to_esm_component_queues_server_event():
+    pn = _load_panel()
+    param = pytest.importorskip("param")
+
+    class Counter(pn.custom.JSComponent):
+        value = param.Integer(default=0)
+
+        _esm = "export function render() {}"
+
+    async def change_from_python():
+        counter = Counter()
+        layout = pn.Column(counter)
+        _ip, data, _metadata = _format_panel(layout)
+        session = session_registry.require(data[BOKEH_SESSION_MIME]["session_id"])
+
+        counter.value = 3
+        layout.append(pn.pane.Markdown("appended"))
+        # Panel 1.9 releases the hold on the next tick of the kernel loop.
+        await asyncio.sleep(0.05)
+        return session.pop_server_events()
+
+    events = asyncio.run(change_from_python())
+    changes = [
+        (event["attr"], event.get("new"))
+        for server_event in events
+        for event in server_event.server_patch.content["events"]
+        if event["kind"] == "ModelChanged"
+    ]
+    assert ("value", 3) in changes
+    assert any(attr == "children" for attr, _ in changes)
+    assert [(event.base_revision, event.revision) for event in events] == [
+        (index, index + 1) for index in range(len(events))
+    ]
+
+
+def test_session_runs_bokeh_session_callbacks_on_the_kernel_loop():
+    pytest.importorskip("bokeh")
+    from bokeh.document import Document
+    from bokeh.models import Div
+
+    async def schedule():
+        document = Document()
+        document.add_root(Div(text="root"))
+        session = BokehDocumentSession(
+            document, document.roots, producer_name="test", producer_version="0"
+        )
+        ran = []
+        document.add_next_tick_callback(lambda: ran.append("next_tick"))
+        document.add_timeout_callback(lambda: ran.append("timeout"), 10)
+        cancelled = document.add_timeout_callback(lambda: ran.append("cancelled"), 10)
+        document.remove_timeout_callback(cancelled)
+        await asyncio.sleep(0.1)
+        session.close()
+        return ran, document.session_callbacks
+
+    ran, remaining = asyncio.run(schedule())
+    assert ran == ["next_tick", "timeout"]
+    assert not remaining
 
 
 def test_failed_patch_advances_revision_with_authoritative_checkpoint():

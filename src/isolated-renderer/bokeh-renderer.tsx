@@ -430,10 +430,17 @@ function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
   const [status, setStatus] = useState<NteractBokehSessionStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hasMountedDocument, setHasMountedDocument] = useState(false);
+  // The host re-sends output payloads as fresh structured clones whenever the
+  // output area re-renders. A session is identified by its id, so only a new
+  // session (or output) may tear down and remount the live document.
+  const dataRef = useRef(data);
+  dataRef.current = data;
+  const sessionKey = isBokehSessionMimePayload(data) ? data.session_id : null;
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+    const data = dataRef.current;
     setStatus(null);
     setError(null);
     setHasMountedDocument(false);
@@ -490,7 +497,7 @@ function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
       controllerRef.current?.dispose();
       controllerRef.current = null;
     };
-  }, [data, outputId]);
+  }, [sessionKey, outputId]);
 
   const disconnected = status !== null && status !== "connected";
   const statusLabel =

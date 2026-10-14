@@ -886,11 +886,18 @@ function OutputAreaSingle({
     [onWidgetUpdate, onSearchMatchCount, onNavigateToTracebackCell],
   );
 
+  // Session state advances on every Bokeh revision. Read it through a ref so
+  // revisions do not re-create handleFrameReady and re-send the output batch;
+  // the effect below forwards session updates to the bridge directly.
+  const bokehSessionsRef = useRef(bokehSessionRuntime?.sessions);
+  bokehSessionsRef.current = bokehSessionRuntime?.sessions;
+  const bokehSessionTransport = bokehSessionRuntime?.transport ?? null;
+
   const ensureBokehBridge = useCallback(() => {
     const frame = frameRef.current;
-    const runtime = bokehSessionRuntime;
-    const transport = runtime?.transport ?? null;
-    if (!frame || !runtime || !transport || bokehSessionBindings.length === 0) {
+    const sessions = bokehSessionsRef.current;
+    const transport = bokehSessionTransport;
+    if (!frame || !sessions || !transport || bokehSessionBindings.length === 0) {
       bokehBridgeRef.current?.dispose();
       bokehBridgeRef.current = null;
       bokehBridgeTransportRef.current = null;
@@ -908,9 +915,9 @@ function OutputAreaSingle({
     } else {
       bokehBridgeRef.current.setBindings(bokehSessionBindings);
     }
-    bokehBridgeRef.current.updateRuntimeSessions(runtime.sessions);
+    bokehBridgeRef.current.updateRuntimeSessions(sessions);
     return bokehBridgeRef.current;
-  }, [bokehSessionBindings, bokehSessionRuntime]);
+  }, [bokehSessionBindings, bokehSessionTransport]);
 
   const handleBokehSessionOpen = useCallback(
     (params: Parameters<BokehSessionBridgeManager["openSession"]>[0]) => {

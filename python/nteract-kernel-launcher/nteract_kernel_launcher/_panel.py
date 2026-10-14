@@ -25,12 +25,13 @@ from nteract_kernel_launcher._refs import BLOB_REF_MIME
 log = logging.getLogger("nteract_kernel_launcher")
 
 _PANEL_VIEWABLE_TYPE = "panel.viewable.Viewable"
+_PANEL_VIEWER_TYPE = "panel.viewable.Viewer"
 _PANEL_LOAD_MIME = "application/vnd.holoviews_load.v0+json"
 _PANEL_EXEC_MIME = "application/vnd.holoviews_exec.v0+json"
 _PANEL_FALLBACK_METADATA = "application/vnd.nteract.panel-fallback.v1+json"
 _PANEL_AUTOLOAD_MARKER = r"const PN_RE = /^https:\/\/cdn\.holoviz\.org\/panel"
 _PYVIZ_MANAGER_MARKER = "hv-extension-comm"
-_installed_formatters: weakref.WeakKeyDictionary[Any, tuple[Callable[..., Any], Any]] = (
+_installed_formatters: weakref.WeakKeyDictionary[Any, dict[str, tuple[Callable[..., Any], Any]]] = (
     weakref.WeakKeyDictionary()
 )
 
@@ -260,6 +261,20 @@ def _create_panel_session(viewable: Any) -> tuple[BokehDocumentSession, dict[str
     return session, resources, bokeh.__version__
 
 
+def _mark_document_loaded(document: Any) -> None:
+    """Tell Panel the client now holds this Document.
+
+    Panel drops model changes made inside ``hold()`` while no client has the
+    Document, expecting a later full serialization to carry them. The
+    snapshot is that serialization, so mark the Document loaded the way a
+    connecting Panel session does. Components that update inside a hold,
+    such as ``ReactiveESM`` subclasses, otherwise never emit events.
+    """
+    from panel.io.state import state
+
+    state._on_load(document)
+
+
 def _stash_buffers(
     serialized: BokehSerialization,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -292,6 +307,7 @@ def _native_panel_mimebundle(viewable: Any) -> tuple[dict[str, Any], dict[str, A
     stashed_hashes: set[str] = set()
     try:
         snapshot = session.snapshot()
+        _mark_document_loaded(session.document)
         buffer_descriptors, refs = _stash_buffers(snapshot)
         stashed_hashes = {ref["hash"] for ref in refs}
         payload = {
@@ -357,34 +373,54 @@ def _format_panel(viewable: Any, fallback: Callable[[Any], Any] | None) -> Any:
         return _mark_panel_fallback(_fallback_mimebundle(viewable, fallback))
 
 
+def _format_viewer(viewer: Any, fallback: Callable[[Any], Any] | None) -> Any:
+    """Render a ``Viewer`` natively.
+
+    ``Viewer._repr_mimebundle_`` renders its view through Panel's own Jupyter
+    path, bypassing the formatter registered for ``Viewable``.
+    """
+    from panel import panel
+
+    try:
+        return _native_panel_mimebundle(panel(viewer))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("native Panel document session failed; using Panel fallback: %s", exc)
+        return _mark_panel_fallback(_fallback_mimebundle(viewer, fallback))
+
+
 def install(ip: Any) -> None:
     _install_bootstrap_filter(ip)
     formatter = ip.display_formatter.mimebundle_formatter
     if formatter in _installed_formatters:
         return
 
-    previous = formatter.for_type(_PANEL_VIEWABLE_TYPE)
+    installed: dict[str, tuple[Callable[..., Any], Any]] = {}
+    for type_name, format_object in (
+        (_PANEL_VIEWABLE_TYPE, _format_panel),
+        (_PANEL_VIEWER_TYPE, _format_viewer),
+    ):
+        previous = formatter.for_type(type_name)
 
-    def panel_formatter(viewable: Any) -> Any:
-        return _format_panel(viewable, previous)
+        def panel_formatter(obj: Any, format_object=format_object, previous=previous) -> Any:
+            return format_object(obj, previous)
 
-    panel_formatter._nteract_panel_formatter = True
-    formatter.for_type(_PANEL_VIEWABLE_TYPE, panel_formatter)
-    _installed_formatters[formatter] = (panel_formatter, previous)
+        panel_formatter._nteract_panel_formatter = True
+        formatter.for_type(type_name, panel_formatter)
+        installed[type_name] = (panel_formatter, previous)
+    _installed_formatters[formatter] = installed
 
 
 def uninstall(ip: Any) -> None:
     _uninstall_bootstrap_filter(ip)
     formatter = ip.display_formatter.mimebundle_formatter
-    installed = _installed_formatters.pop(formatter, None)
-    if installed is not None:
-        panel_formatter, previous = installed
+    installed = _installed_formatters.pop(formatter, {})
+    for type_name, (panel_formatter, previous) in installed.items():
         try:
-            current = formatter.lookup_by_type(_PANEL_VIEWABLE_TYPE)
+            current = formatter.lookup_by_type(type_name)
         except KeyError:
             current = None
         if current is panel_formatter:
-            formatter.pop(_PANEL_VIEWABLE_TYPE, None)
+            formatter.pop(type_name, None)
             if previous is not None:
-                formatter.for_type(_PANEL_VIEWABLE_TYPE, previous)
+                formatter.for_type(type_name, previous)
     session_registry.clear()
