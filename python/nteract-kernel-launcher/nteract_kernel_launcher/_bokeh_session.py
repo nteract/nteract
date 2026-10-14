@@ -352,7 +352,11 @@ class BokehDocumentSession:
             return
 
         def run() -> Any:
-            if callback_obj in self._session_callbacks:
+            if (
+                not self._closed
+                and callback_obj in self._session_callbacks
+                and callback_obj in self.document.session_callbacks
+            ):
                 return callback_obj.callback()
             return None
 

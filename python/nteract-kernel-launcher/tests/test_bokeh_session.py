@@ -535,6 +535,38 @@ def test_session_runs_bokeh_session_callbacks_on_the_kernel_loop():
     assert not remaining
 
 
+@pytest.mark.parametrize("operation", ["remove", "close"])
+def test_queued_next_tick_callback_observes_cancellation(operation):
+    pytest.importorskip("bokeh")
+    from bokeh.document import Document
+    from tornado.ioloop import IOLoop
+
+    async def schedule():
+        document = Document()
+        session = BokehDocumentSession(document, [], producer_name="test", producer_version="0")
+        ran = []
+        cancelled = asyncio.Event()
+        callback = document.add_next_tick_callback(lambda: ran.append("unexpected"))
+
+        def cancel():
+            if operation == "remove":
+                document.remove_next_tick_callback(callback)
+            else:
+                session.close()
+            cancelled.set()
+
+        # The start callback queues invocation before cancellation queues cleanup.
+        IOLoop.current().add_callback(cancel)
+        try:
+            await asyncio.wait_for(cancelled.wait(), timeout=1)
+            await asyncio.sleep(0)
+            return ran
+        finally:
+            session.close()
+
+    assert asyncio.run(schedule()) == []
+
+
 def test_failed_patch_advances_revision_with_authoritative_checkpoint():
     pn = _load_panel()
 
