@@ -1094,6 +1094,13 @@ pub enum RuntimeAgentRequest {
         request: Box<BokehSessionPatchRequest>,
     },
 
+    /// Close sessions whose last authoritative notebook output was retired.
+    /// Only the coordinator sends this; viewer disconnects do not retire outputs.
+    RetireBokehSessions {
+        kernel_id: String,
+        session_ids: Vec<String>,
+    },
+
     /// Request code completions from the kernel.
     Complete { code: String, cursor_pos: usize },
 
@@ -1190,14 +1197,16 @@ impl RuntimeAgentRequest {
     /// Returns true if this request is a command (fire-and-forget).
     /// Commands don't get a response — state flows back via CRDT.
     ///
-    /// Currently: Interrupt, SendComm. Shutdown is a sync query because
+    /// Currently: Interrupt, SendComm, RetireBokehSessions. Shutdown is a sync query because
     /// the daemon must confirm the kernel is dead before LaunchKernel
     /// sends RestartKernel — otherwise CRDT-queued cells can race onto
     /// the dying kernel.
     pub fn is_command(&self) -> bool {
         matches!(
             self,
-            RuntimeAgentRequest::InterruptExecution | RuntimeAgentRequest::SendComm { .. }
+            RuntimeAgentRequest::InterruptExecution
+                | RuntimeAgentRequest::SendComm { .. }
+                | RuntimeAgentRequest::RetireBokehSessions { .. }
         )
     }
 }
@@ -1982,6 +1991,20 @@ mod tests {
             }),
         }
         .is_command());
+    }
+
+    #[test]
+    fn bokeh_retirement_is_an_internal_command_with_kernel_identity() {
+        let request = RuntimeAgentRequest::RetireBokehSessions {
+            kernel_id: "kernel-1".into(),
+            session_ids: vec!["session-1".into()],
+        };
+        assert!(request.is_command());
+        let encoded = serde_json::to_value(&request).unwrap();
+        let decoded: RuntimeAgentRequest = serde_json::from_value(encoded.clone()).unwrap();
+        assert!(decoded.is_command());
+        assert_eq!(encoded["kernel_id"], "kernel-1");
+        assert_eq!(encoded["session_ids"][0], "session-1");
     }
 
     #[test]

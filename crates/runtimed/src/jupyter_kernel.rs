@@ -33,8 +33,9 @@ use crate::async_outcome::{
 };
 use crate::bokeh_session::{
     checkpoint_request_wire, parse_checkpoint_reply, parse_patch_reply, patch_request_wire,
-    BokehCheckpointFuture, BokehKernelCheckpoint, BokehKernelPatchResponse, RawBokehKernelMessage,
-    BOKEH_CHECKPOINT_REQUEST, BOKEH_PATCH_REPLY, BOKEH_PATCH_REQUEST,
+    BokehCheckpointFuture, BokehCloseFuture, BokehKernelCheckpoint, BokehKernelPatchResponse,
+    RawBokehKernelMessage, BOKEH_CHECKPOINT_REQUEST, BOKEH_CLOSE_REPLY, BOKEH_CLOSE_REQUEST,
+    BOKEH_PATCH_REPLY, BOKEH_PATCH_REQUEST,
 };
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::output_committer::{OrdinaryOutputCommit, OrdinaryOutputKind};
@@ -3656,6 +3657,76 @@ impl KernelConnection for JupyterKernel {
             response.error_output = Some(self.output_redactor.redact_output_value(&error));
         }
         Ok(response)
+    }
+
+    fn bokeh_session_close_request(&self, session_id: String) -> Option<BokehCloseFuture> {
+        let connection_info = self.connection_info.clone()?;
+        let client_session_id = format!("{}-bokeh-close-{}", self.session_id, Uuid::new_v4());
+        Some(Box::pin(async move {
+            // A separate shell keeps queued Python execution and close replies
+            // from blocking the agent's interrupt/lifecycle/sync loop. The
+            // connection is captured from this kernel, never a replacement.
+            loop {
+                let attempt = async {
+                    let identity =
+                        jupyter_zmq_client::peer_identity_for_session(&client_session_id)?;
+                    let mut shell =
+                        jupyter_zmq_client::create_client_shell_connection_with_identity(
+                            &connection_info,
+                            &client_session_id,
+                            identity,
+                        )
+                        .await?;
+                    let request: JupyterMessage = UnknownMessage {
+                        msg_type: BOKEH_CLOSE_REQUEST.to_string(),
+                        content: serde_json::json!({
+                            "schema_version": 1,
+                            "session_id": session_id,
+                            "transaction_id": Uuid::new_v4().to_string(),
+                        }),
+                    }
+                    .into();
+                    let request_id = request.header.msg_id.clone();
+                    shell.send(request).await?;
+                    let reply = shell.read().await?;
+                    anyhow::ensure!(
+                        reply
+                            .parent_header
+                            .as_ref()
+                            .is_some_and(|parent| parent.msg_id == request_id),
+                        "Bokeh close reply had an unexpected parent"
+                    );
+                    let JupyterMessageContent::UnknownMessage(reply) = reply.content else {
+                        anyhow::bail!("Bokeh close received an unexpected reply type");
+                    };
+                    anyhow::ensure!(
+                        reply.msg_type == BOKEH_CLOSE_REPLY
+                            && reply
+                                .content
+                                .get("session_id")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(session_id.as_str())
+                            && matches!(
+                                reply
+                                    .content
+                                    .get("status")
+                                    .and_then(serde_json::Value::as_str),
+                                Some("ok" | "not_found")
+                            ),
+                        "Bokeh close failed: {}",
+                        reply.content
+                    );
+                    Ok::<_, anyhow::Error>(())
+                };
+                match tokio::time::timeout(std::time::Duration::from_secs(30), attempt).await {
+                    Ok(Ok(())) => return Ok(()),
+                    result => warn!("[bokeh-session] Retrying close for {session_id}: {result:?}"),
+                }
+                // Close is idempotent. Retry transport failures until the
+                // owning KernelSession cancels us on shutdown/restart/death.
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        }))
     }
 
     fn bokeh_session_checkpoint_request(

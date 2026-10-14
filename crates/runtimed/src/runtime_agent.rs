@@ -493,6 +493,7 @@ struct KernelSession {
     lifecycle_rx: Option<mpsc::UnboundedReceiver<LifecycleSignal>>,
     visualization_rx: Option<mpsc::Receiver<VisualizationStateCommand>>,
     visualization_tasks: HashMap<String, tokio::task::JoinHandle<()>>,
+    retirement_tasks: HashMap<String, tokio::task::JoinHandle<()>>,
     work_rx: Option<mpsc::Receiver<WorkCommand>>,
     interrupt_handle: Option<crate::jupyter_kernel::InterruptHandle>,
 }
@@ -506,6 +507,7 @@ impl KernelSession {
             lifecycle_rx: None,
             visualization_rx: None,
             visualization_tasks: HashMap::new(),
+            retirement_tasks: HashMap::new(),
             work_rx: None,
             interrupt_handle: None,
         }
@@ -521,6 +523,11 @@ impl KernelSession {
     /// channels in place: buffered signals from a torn-down kernel still
     /// drain through them.
     fn install_kernel_channels(&mut self, receivers: Option<QueueCommandReceivers>) {
+        if receivers.is_some() || self.kernel.is_none() {
+            for (_, task) in self.retirement_tasks.drain() {
+                task.abort();
+            }
+        }
         if let Some(rx) = receivers {
             for (_, task) in self.visualization_tasks.drain() {
                 task.abort();
@@ -724,6 +731,11 @@ where
     // -- 4. Main event loop -------------------------------------------------
 
     loop {
+        if session.kernel.is_none() {
+            for (_, task) in session.retirement_tasks.drain() {
+                task.abort();
+            }
+        }
         tokio::select! {
             // `biased;` makes polling order deterministic (EP-10): the
             // lifecycle arm is declared before the bounded work arm, so when
@@ -871,6 +883,18 @@ where
                                     {
                                         sync_generation
                                             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                    }
+
+                                    if let RuntimeAgentRequest::RetireBokehSessions { kernel_id, session_ids } = &envelope.request {
+                                        if let Some(kernel) = session.kernel.as_ref() {
+                                            if let Err(error) = retire_bokeh_sessions(
+                                                &ctx.state, kernel, kernel_id, session_ids,
+                                                &mut session.retirement_tasks,
+                                            ) {
+                                                warn!("[bokeh-session] Failed to retire output sessions: {error}");
+                                            }
+                                        }
+                                        continue;
                                     }
 
                                     let is_command = envelope.request.is_command();
@@ -1731,6 +1755,9 @@ where
     // -- 5. Cleanup ---------------------------------------------------------
 
     info!("[runtime-agent] Shutting down");
+    for (_, task) in session.retirement_tasks.drain() {
+        task.abort();
+    }
     for (_, task) in session.visualization_tasks.drain() {
         task.abort();
     }
@@ -2317,6 +2344,12 @@ async fn handle_runtime_agent_request(
             }
         }
 
+        RuntimeAgentRequest::RetireBokehSessions { .. } => (
+            RuntimeAgentResponse::Error {
+                error: "Bokeh retirement requires the session task owner".to_string(),
+            },
+            None,
+        ),
         RuntimeAgentRequest::ApplyBokehSessionPatch { request } => {
             if let Some(ref mut kernel) = kernel {
                 let owns_session = ctx
@@ -2723,6 +2756,50 @@ async fn handle_session_lifecycle_signal(
     handle_lifecycle_signal(signal, ctx, kernel, state).await?;
     if invalidates_kernel_generation {
         seen_execution_ids.clear();
+    }
+    Ok(())
+}
+
+fn retire_bokeh_sessions(
+    state: &RuntimeStateHandle,
+    kernel: &impl KernelConnection,
+    expected_kernel_id: &str,
+    session_ids: &[String],
+    tasks: &mut HashMap<String, tokio::task::JoinHandle<()>>,
+) -> anyhow::Result<()> {
+    if kernel.kernel_id() != expected_kernel_id {
+        return Ok(());
+    }
+    tasks.retain(|_, task| !task.is_finished());
+    for session_id in session_ids {
+        let Some(close) = kernel.bokeh_session_close_request(session_id.clone()) else {
+            continue;
+        };
+        let retired = state.with_doc(|doc| {
+            let Some(mut session) = doc.get_bokeh_session(session_id) else {
+                return Ok(false);
+            };
+            if session.kernel_id != expected_kernel_id
+                || session.status != runtime_doc::BokehSessionStatus::Connected
+            {
+                return Ok(false);
+            }
+            // Reject in-flight events/checkpoints before dispatching the close.
+            // Only the runtime agent writes this terminal transition.
+            session.status = runtime_doc::BokehSessionStatus::Closed;
+            doc.put_bokeh_session(session_id, &session)?;
+            Ok(true)
+        })?;
+        if retired {
+            let id = session_id.clone();
+            let task =
+                crate::task_supervisor::spawn_best_effort("bokeh-session-close", async move {
+                    if let Err(error) = close.await {
+                        warn!("[bokeh-session] Failed to close retired session {id}: {error}");
+                    }
+                });
+            tasks.insert(session_id.clone(), task);
+        }
     }
     Ok(())
 }
@@ -3789,6 +3866,15 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
+        fn kernel_id(&self) -> &str {
+            "kernel-test"
+        }
+        fn bokeh_session_close_request(
+            &self,
+            _: String,
+        ) -> Option<crate::bokeh_session::BokehCloseFuture> {
+            Some(Box::pin(std::future::pending()))
+        }
         async fn complete(
             &mut self,
             _: &str,
@@ -3820,6 +3906,59 @@ mod tests {
             true
         }
         fn update_launched_uv_deps(&mut self, _: Vec<String>) {}
+    }
+
+    #[tokio::test]
+    async fn bokeh_retirement_closes_before_reply_and_rejects_old_kernel_identity() {
+        let (_, _, state) = test_fixtures();
+        let original: runtime_doc::BokehSessionState = serde_json::from_value(serde_json::json!({
+            "output_id": "output-1", "execution_id": "exec-1", "cell_id": "cell-1",
+            "kernel_id": "kernel-test", "status": "connected", "head_revision": 2,
+            "producer_name": "panel", "producer_version": "1", "bokeh_version": "3"
+        }))
+        .unwrap();
+        state
+            .with_doc(|doc| doc.put_bokeh_session("session-1", &original))
+            .unwrap();
+        let ids = vec!["session-1".to_string()];
+        let mut tasks = HashMap::new();
+        retire_bokeh_sessions(&state, &MockKernel, "previous-kernel", &ids, &mut tasks).unwrap();
+        assert!(tasks.is_empty());
+        assert_eq!(
+            state
+                .read(|doc| doc.get_bokeh_session("session-1"))
+                .unwrap(),
+            Some(original.clone())
+        );
+
+        retire_bokeh_sessions(&state, &MockKernel, "kernel-test", &ids, &mut tasks).unwrap();
+        let closed = state
+            .read(|doc| doc.get_bokeh_session("session-1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(closed.status, runtime_doc::BokehSessionStatus::Closed);
+        assert_eq!(closed.head_revision, original.head_revision);
+        assert_eq!(tasks.len(), 1);
+        assert!(
+            !tasks["session-1"].is_finished(),
+            "kernel acknowledgement must not block the agent loop"
+        );
+        retire_bokeh_sessions(&state, &MockKernel, "kernel-test", &ids, &mut tasks).unwrap();
+        assert_eq!(tasks.len(), 1, "duplicate retirement is idempotent");
+        tasks.remove("session-1").unwrap().abort();
+    }
+
+    #[tokio::test]
+    async fn bokeh_retirement_tasks_are_cancelled_when_kernel_channels_change() {
+        let (_, state, _) = test_fixtures();
+        let mut session = KernelSession::new(state);
+        let task = tokio::spawn(std::future::pending::<()>());
+        let aborted = task.abort_handle();
+        session.retirement_tasks.insert("session-1".into(), task);
+        session.install_kernel_channels(None);
+        tokio::task::yield_now().await;
+        assert!(aborted.is_finished());
+        assert!(session.retirement_tasks.is_empty());
     }
 
     fn comm_state(state: serde_json::Value) -> serde_json::Value {

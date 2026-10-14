@@ -4,7 +4,9 @@ use std::sync::Arc;
 use automerge::SaveOptions;
 use notebook_doc::presence;
 use notebook_protocol::connection::{send_typed_frame, FramedReader, NotebookFrameType};
-use notebook_protocol::protocol::{NotebookBroadcast, RuntimeAgentResponse};
+use notebook_protocol::protocol::{
+    NotebookBroadcast, RuntimeAgentRequest, RuntimeAgentRequestEnvelope, RuntimeAgentResponse,
+};
 use tracing::{debug, info, warn};
 
 use crate::async_outcome::{flatten_joined_result, JoinedResult};
@@ -357,7 +359,42 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
         format!("runtime-agent:{runtime_agent_id}"),
     );
 
-    loop {
+    let mut retirement_dirty = true;
+    let mut retirement_sent = std::collections::HashSet::new();
+    'sync: loop {
+        if retirement_dirty {
+            retirement_dirty = false;
+            let retired = retired_bokeh_sessions_in_room(&room).await;
+            match retired {
+                Ok(retired) => {
+                    for (kernel_id, session_ids) in retired {
+                        let session_ids: Vec<_> = session_ids
+                            .into_iter()
+                            .filter(|session_id| {
+                                retirement_sent.insert((kernel_id.clone(), session_id.clone()))
+                            })
+                            .collect();
+                        if session_ids.is_empty() {
+                            continue;
+                        }
+                        let envelope = RuntimeAgentRequestEnvelope {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            request: RuntimeAgentRequest::RetireBokehSessions {
+                                kernel_id,
+                                session_ids,
+                            },
+                        };
+                        if let Err(error) =
+                            agent_writer.send_json(NotebookFrameType::Request, &envelope)
+                        {
+                            warn!("[bokeh-session] Failed to queue output retirement: {error}");
+                            break 'sync;
+                        }
+                    }
+                }
+                Err(error) => warn!("[bokeh-session] Failed to inspect output retirement: {error}"),
+            }
+        }
         tokio::select! {
             biased;
 
@@ -413,6 +450,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                         }
                     }
                     NotebookFrameType::RuntimeStateSync => {
+                        retirement_dirty = true;
                         if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
                             let mut state_changed = false;
                             let mut runtime_file_dirty = false;
@@ -569,6 +607,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
 
             // NotebookDoc changes (from other peers) → sync to runtime agent
             _ = changed_rx.recv() => {
+                retirement_dirty = true;
                 while changed_rx.try_recv().is_ok() {}
                 let mut doc = room.doc.write().await;
                 match doc.generate_sync_message_recovering(
@@ -595,6 +634,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
 
             // RuntimeStateDoc changes → sync to runtime agent
             _ = state_changed_rx.recv() => {
+                retirement_dirty = true;
                 while state_changed_rx.try_recv().is_ok() {}
                 let encoded = match room
                     .state
@@ -698,6 +738,77 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
         "[notebook-sync] Runtime agent sync connection closed: {}",
         runtime_agent_id
     );
+}
+
+async fn retired_bokeh_sessions_in_room(
+    room: &NotebookRoom,
+) -> Result<std::collections::HashMap<String, Vec<String>>, runtime_doc::RuntimeStateError> {
+    // ExecuteCell/RunAll hold this write lock across runtime admission and
+    // pointer replacement. Taking it first excludes their half-written state.
+    // No async blob reads or viewer state enter the retirement decision.
+    let doc = room.doc.read().await;
+    room.state.read(|state| retired_bokeh_sessions(&doc, state))
+}
+
+/// A session is live while any current notebook cell references its output.
+/// Historical execution records and viewer presence do not own live resources.
+fn retired_bokeh_sessions(
+    doc: &notebook_doc::NotebookDoc,
+    state: &runtime_doc::RuntimeStateDoc,
+) -> std::collections::HashMap<String, Vec<String>> {
+    let sessions: Vec<_> = state
+        .get_bokeh_sessions()
+        .into_iter()
+        .filter(|(_, session)| session.status == runtime_doc::BokehSessionStatus::Connected)
+        .collect();
+    if sessions.is_empty() {
+        return std::collections::HashMap::new();
+    }
+    let live_executions: std::collections::HashSet<_> = doc
+        .get_cell_ids()
+        .iter()
+        .filter_map(|cell_id| doc.get_execution_id(cell_id))
+        .collect();
+    let outputs: Vec<_> = live_executions
+        .iter()
+        .flat_map(|id| state.get_outputs(id))
+        .collect();
+    let mut retired = std::collections::HashMap::<String, Vec<String>>::new();
+    for (session_id, session) in sessions {
+        let original = state.get_output(&session.execution_id, &session.output_id);
+        let original_payload = original
+            .as_ref()
+            .and_then(|output| output.get("data"))
+            .and_then(|data| data.get(runtime_doc::BOKEH_SESSION_MIME));
+        let referenced = outputs.iter().any(|output| {
+            let Some(payload) = output
+                .get("data")
+                .and_then(|data| data.get(runtime_doc::BOKEH_SESSION_MIME))
+            else {
+                return false;
+            };
+            if let Some(id) = output
+                .get("metadata")
+                .and_then(|metadata| metadata.get(runtime_doc::BOKEH_SESSION_MIME))
+                .and_then(|metadata| metadata.get("session_id"))
+                .and_then(serde_json::Value::as_str)
+            {
+                // An update may retain output_id while replacing the Bokeh
+                // session. Conversely, copied outputs may mint a new id.
+                return id == session_id;
+            }
+            output.get("output_id").and_then(serde_json::Value::as_str)
+                == Some(session.output_id.as_str())
+                || original_payload == Some(payload)
+        });
+        if !referenced {
+            retired
+                .entry(session.kernel_id)
+                .or_default()
+                .push(session_id);
+        }
+    }
+    retired
 }
 
 async fn cleanup_runtime_agent_disconnect(room: &NotebookRoom, runtime_agent_id: &str) -> bool {
@@ -816,6 +927,194 @@ mod tests {
 
     use crate::blob_store::BlobStore;
     use crate::notebook_sync_server::KernelLaunchCommitRejection;
+
+    fn bokeh_retirement_fixture() -> (notebook_doc::NotebookDoc, runtime_doc::RuntimeStateDoc) {
+        let mut doc = notebook_doc::NotebookDoc::new("bokeh-retirement");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.set_execution_id("cell-1", Some("exec-1")).unwrap();
+        let mut state = runtime_doc::RuntimeStateDoc::new();
+        state
+            .create_execution_with_source_provenance(
+                "exec-1",
+                "panel_output",
+                0,
+                None,
+                Some("cell-1"),
+            )
+            .unwrap();
+        state
+            .append_output(
+                "exec-1",
+                &serde_json::json!({
+                    "output_type": "display_data", "output_id": "output-1",
+                    "data": {runtime_doc::BOKEH_SESSION_MIME: {"blob": "descriptor", "size": 2000}},
+                    "metadata": {runtime_doc::BOKEH_SESSION_MIME: {"session_id": "session-1"}}
+                }),
+            )
+            .unwrap();
+        state
+            .put_bokeh_session(
+                "session-1",
+                &serde_json::from_value(serde_json::json!({
+                    "output_id": "output-1", "execution_id": "exec-1", "cell_id": "cell-1",
+                    "kernel_id": "kernel-1", "status": "connected", "head_revision": 0,
+                    "producer_name": "panel", "producer_version": "1", "bokeh_version": "3"
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        (doc, state)
+    }
+
+    #[test]
+    fn bokeh_retirement_replacement_clear_and_delete() {
+        for operation in [
+            "replace",
+            "clear",
+            "delete",
+            "clear_output",
+            "replace_output",
+            "replace_bokeh_output",
+        ] {
+            let (mut doc, mut state) = bokeh_retirement_fixture();
+            assert!(retired_bokeh_sessions(&doc, &state).is_empty());
+            match operation {
+                "replace" => {
+                    doc.set_execution_id("cell-1", Some("exec-2")).unwrap();
+                }
+                "clear" => {
+                    doc.set_execution_id("cell-1", None).unwrap();
+                }
+                "delete" => {
+                    doc.delete_cell("cell-1").unwrap();
+                }
+                "clear_output" => {
+                    state.set_outputs("exec-1", &[]).unwrap();
+                }
+                "replace_output" => {
+                    state.set_outputs("exec-1", &[serde_json::json!({
+                    "output_type": "display_data", "output_id": "output-1", "data": {"text/plain": {"inline": "replaced"}}
+                })]).unwrap();
+                }
+                "replace_bokeh_output" => {
+                    let mut replacement = state.get_outputs("exec-1").remove(0);
+                    replacement["metadata"][runtime_doc::BOKEH_SESSION_MIME]["session_id"] =
+                        serde_json::json!("replacement-session");
+                    state.set_outputs("exec-1", &[replacement]).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                retired_bokeh_sessions(&doc, &state)["kernel-1"],
+                vec!["session-1"],
+                "{operation}"
+            );
+        }
+    }
+
+    #[test]
+    fn bokeh_retirement_keeps_shared_executions_and_copied_outputs() {
+        let (mut doc, mut state) = bokeh_retirement_fixture();
+        doc.add_cell(1, "cell-2", "code").unwrap();
+        doc.set_execution_id("cell-2", Some("exec-1")).unwrap();
+        doc.delete_cell("cell-1").unwrap();
+        assert!(retired_bokeh_sessions(&doc, &state).is_empty());
+
+        state
+            .create_execution_with_source_provenance("exec-copy", "copy", 1, None, Some("cell-2"))
+            .unwrap();
+        let mut copy = state.get_outputs("exec-1").remove(0);
+        copy["output_id"] = serde_json::json!("copied-output");
+        copy["data"][runtime_doc::BOKEH_SESSION_MIME] =
+            serde_json::json!({"blob": "new-descriptor", "size": 3000});
+        state.append_output("exec-copy", &copy).unwrap();
+        doc.set_execution_id("cell-2", Some("exec-copy")).unwrap();
+        state.set_outputs("exec-1", &[]).unwrap();
+        assert!(
+            retired_bokeh_sessions(&doc, &state).is_empty(),
+            "session metadata protects copied outputs even after the original is cleared"
+        );
+        doc.delete_cell("cell-2").unwrap();
+        assert_eq!(
+            retired_bokeh_sessions(&doc, &state)["kernel-1"],
+            vec!["session-1"]
+        );
+    }
+
+    #[test]
+    fn bokeh_retirement_viewer_reload_and_multiple_viewers_keep_outputs_live() {
+        let (mut doc, state) = bokeh_retirement_fixture();
+        let snapshot = doc.save();
+        let viewer_a = notebook_doc::NotebookDoc::load_with_actor(&snapshot, "viewer-a").unwrap();
+        let viewer_b = notebook_doc::NotebookDoc::load_with_actor(&snapshot, "viewer-b").unwrap();
+        assert!(retired_bokeh_sessions(&viewer_a, &state).is_empty());
+        assert!(retired_bokeh_sessions(&viewer_b, &state).is_empty());
+        drop(viewer_a);
+        let reloaded =
+            notebook_doc::NotebookDoc::load_with_actor(&snapshot, "reloaded-viewer").unwrap();
+        assert!(retired_bokeh_sessions(&doc, &state).is_empty());
+        assert!(retired_bokeh_sessions(&reloaded, &state).is_empty());
+    }
+
+    #[tokio::test]
+    async fn bokeh_retirement_waits_for_execution_pointer_admission() {
+        use std::future::Future;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (_, _, room) = test_file_backed_room(&tmp);
+        let (notebook, state) = bokeh_retirement_fixture();
+        let mut retirement = Box::pin(retired_bokeh_sessions_in_room(&room));
+        {
+            let mut doc = room.doc.write().await;
+            // Simulate the execution-admission interval: RuntimeStateDoc has
+            // work/output, but the coordinator still holds the NotebookDoc
+            // write lock while installing its authoritative execution pointer.
+            room.state
+                .with_doc(|current| {
+                    *current = state;
+                    Ok(())
+                })
+                .unwrap();
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(retirement.as_mut().poll(&mut cx).is_pending());
+            *doc = notebook;
+        }
+        assert!(retirement.await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn bokeh_retirement_initial_output_sync_and_late_publication() {
+        let (mut doc, mut agent) = bokeh_retirement_fixture();
+        let mut coordinator = runtime_doc::RuntimeStateDoc::new();
+        let mut sender = automerge::sync::State::new();
+        let mut receiver = automerge::sync::State::new();
+        // The NotebookDoc execution pointer can arrive before RuntimeStateDoc.
+        assert!(retired_bokeh_sessions(&doc, &coordinator).is_empty());
+        for _ in 0..8 {
+            if let Some(msg) = agent.generate_sync_message(&mut sender) {
+                coordinator
+                    .receive_sync_message_with_changes(&mut receiver, msg)
+                    .unwrap();
+                assert!(
+                    retired_bokeh_sessions(&doc, &coordinator).is_empty(),
+                    "a session and its output arrive atomically"
+                );
+            }
+            if let Some(msg) = coordinator.generate_sync_message(&mut receiver) {
+                agent
+                    .receive_sync_message_with_changes(&mut sender, msg)
+                    .unwrap();
+            }
+        }
+        assert!(coordinator.get_bokeh_session("session-1").is_some());
+        // The reverse ordering is also safe: the native coordinator stamps
+        // the notebook pointer before it admits the execution to the agent.
+        // A late session publication for a genuinely retired execution closes.
+        doc.set_execution_id("cell-1", Some("exec-2")).unwrap();
+        assert_eq!(
+            retired_bokeh_sessions(&doc, &coordinator)["kernel-1"],
+            vec!["session-1"]
+        );
+    }
 
     #[tokio::test]
     async fn runtime_agent_ready_waits_for_initial_state_acknowledgement() {
