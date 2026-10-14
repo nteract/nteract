@@ -15,8 +15,8 @@ export async function preparePackages(root, runtime) {
     selected.set(name, entry);
     entry.depends.forEach(visit);
   }
-  // Pyodide 0.28.3 ships no PyArrow; session.py disables Arrow display without it.
-  ["ipython", "numpy", "pandas", "matplotlib", "micropip"].forEach(visit);
+  // Pin PyArrow with the interpreter so DataFrames can emit Arrow IPC for Sift.
+  ["ipython", "numpy", "pandas", "matplotlib", "micropip", "pyarrow"].forEach(visit);
   const runtimeVersion = JSON.parse(
     await readFile(resolve(root, "runtime-lock.json"), "utf8"),
   ).pyodide;

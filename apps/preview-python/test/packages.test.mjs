@@ -305,61 +305,41 @@ const deferred = () => {
 test("previous Python 3.13 locks retain exact artifacts during runtime migration", async () => {
   const previous = {
     ...empty,
-    pyodide: "0.29.4",
+    pyodide: "0.28.3",
     requirements: ["example"],
     wheels: [wheel("example")],
   };
   const migrated = packageManifest(previous);
   assert.equal(migrated.pyodide, PACKAGE_RUNTIME_VERSION);
   assert.deepEqual(migrated.wheels, previous.wheels);
-  assert.equal(previous.pyodide, "0.29.4");
+  assert.equal(previous.pyodide, "0.28.3");
   assert.throws(() => packageManifest({ ...previous, pyodide: "0.27.0" }), /incompatible/);
   assert.throws(() =>
     packageManifest({ ...previous, wheels: [{ ...wheel("example"), sha256: "bad" }] }),
   );
   // A stale pin to a bundled dependency must still be proved in the interpreter.
+  const saved = { ...previous, requirements: ["pandas==2.3.1"], wheels: [] };
+  const before = structuredClone(saved);
   const result = await installPackageManifest(
     {
       runtime: {
         install: async ({ requirements }) => {
-          assert.deepEqual(requirements, ["pandas==2.3.3"]);
+          assert.deepEqual(requirements, ["pandas==2.3.1"]);
           return { status: "error" };
         },
       },
-      installed: ["pandas==2.3.1"],
+      installed: ["pandas==2.3.3"],
       signal: signal(),
     },
     {
       operation: "restore",
-      manifest: { ...previous, requirements: ["pandas==2.3.3"], wheels: [] },
+      manifest: saved,
     },
   );
   assert.equal(result.status, "error");
   assert.equal(result.manifest, undefined);
-  assert.match(result.error, /locked for Pyodide 0\.29\.4/);
-});
-
-test("a 0.29.4 lock naming bundled PyArrow fails restore explicitly on 0.28.3", async () => {
-  // No saved wheels: nothing is downloaded, so this runs offline.
-  const locked = { ...empty, pyodide: "0.29.4", requirements: ["pyarrow==22.0.0"], wheels: [] };
-  let asked;
-  const result = await installPackageManifest(
-    {
-      runtime: {
-        install: async ({ requirements }) => {
-          asked = requirements;
-          return { status: "error" };
-        },
-      },
-      installed: ["numpy==2.2.5", "pandas==2.3.1"],
-      signal: signal(),
-    },
-    { operation: "restore", manifest: locked },
-  );
-  assert.ok(asked.includes("pyarrow==22.0.0"), "the interpreter must be asked to prove PyArrow");
-  assert.equal(result.status, "error");
-  assert.equal(result.manifest, undefined);
-  assert.match(result.error, /locked for Pyodide 0\.29\.4.*PyArrow/);
+  assert.match(result.error, /locked for Pyodide 0\.28\.3.*Saved requirements are unchanged/);
+  assert.deepEqual(saved, before);
 });
 
 test("session inventory retains initial included packages when notebook installation adds dependencies", async () => {

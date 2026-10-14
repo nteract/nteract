@@ -51,7 +51,15 @@ await build({
     "./library-*.wasm",
   ],
   loader: { ".zip": "binary", ".py": "text" },
-  define: { process: "undefined", location: '"https://python-runtime.invalid/"' },
+  define: {
+    process: "undefined",
+    location: '"https://python-runtime.invalid/"',
+    // Pyodide 0.29 also reads these through globalThis. Keep the adapter
+    // lexical across the bundle so detection does not replace host globals.
+    "globalThis.WorkerGlobalScope": "WorkerGlobalScope",
+    "globalThis.self": "self",
+    "globalThis.importScripts": "importScripts",
+  },
   inject: ["runtime/assets.js"],
   plugins: [
     {
