@@ -232,8 +232,13 @@ class BokehDocumentSession:
         transaction_id = transaction_id or str(uuid.uuid4())
         with self._lock:
             self._ensure_open()
-            if base_revision != self._revision:
+            if base_revision > self._revision:
                 raise StaleBokehRevisionError(base_revision, self._revision)
+            # Like a Bokeh server, apply a patch made against an older revision
+            # on top of the current document (last writer wins). Rejecting it
+            # forces a full resync whenever browser layout updates race Python
+            # updates, e.g. a periodic callback animating a plot.
+            base_revision = self._revision
 
             setter = f"nteract:{self.session_id}:{transaction_id}"
             self._active_setter = setter

@@ -392,8 +392,49 @@ def test_panel_patch_runs_python_callback_and_returns_only_derived_events():
     assert events[0]["new"] == 10
 
     with pytest.raises(StaleBokehRevisionError) as error:
-        session.apply_patch(base_revision=0, patch={"events": []})
+        session.apply_patch(base_revision=2, patch={"events": []})
     assert error.value.actual == 1
+
+
+def test_patch_against_older_revision_is_rebased_onto_python_changes():
+    """A browser patch racing Python-side updates applies on top of them, as
+    on a Bokeh server, instead of forcing the browser to resync."""
+    pn = _load_panel()
+
+    slider = pn.widgets.FloatSlider(start=0, end=10, value=1)
+    text = pn.widgets.TextInput(value="a")
+    layout = pn.Row(slider, text)
+    _ip, data, _metadata = _format_panel(layout)
+    payload = data[BOKEH_SESSION_MIME]
+    session = session_registry.require(payload["session_id"])
+    root_id = payload["root_ids"][0]
+    slider_model = slider._models[root_id][0]
+
+    text.value = "b"
+    slider.value = 2
+    assert [event.revision for event in session.pop_server_events()] == [1, 2]
+
+    result = session.apply_patch(
+        base_revision=0,
+        transaction_id="layout-1",
+        patch={
+            "events": [
+                {
+                    "kind": "ModelChanged",
+                    "model": {"id": slider_model.id},
+                    "attr": "value",
+                    "new": 5,
+                }
+            ]
+        },
+    )
+
+    assert slider.value == 5
+    assert text.value == "b"
+    assert (result.base_revision, result.revision) == (2, 3)
+    [event] = session.pop_server_events()
+    assert (event.transaction_id, event.base_revision, event.revision) == ("layout-1", 2, 3)
+    assert event.client_patch is not None
 
 
 def test_python_change_queues_ordered_server_event():

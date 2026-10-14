@@ -185,6 +185,7 @@ export class BokehSessionController {
   private resyncTimer: number | null = null;
   private transactionTimer: number | null = null;
   private inFlightTransaction: string | null = null;
+  private inFlightBaseRevision = 0;
   private canonicalEvents = new Map<number, NteractBokehResolvedPatchEvent>();
   private drainingCanonicalEvents = false;
   private syncPromise: Promise<void> | null = null;
@@ -298,6 +299,7 @@ export class BokehSessionController {
     const transactionId = crypto.randomUUID();
     const buffers = extractBokehPatchBuffers(patch, this.options.runtime.Buffer, transactionId);
     this.inFlightTransaction = transactionId;
+    this.inFlightBaseRevision = this.revision;
     this.armTransactionTimeout();
     try {
       const rawReply = await this.options.requestHost(NTERACT_BOKEH_APPLY_PATCH, {
@@ -473,9 +475,15 @@ export class BokehSessionController {
       await this.replaceDocument(event.checkpoint);
     } else {
       const ownTransaction = !replay && event.transactionId === this.inFlightTransaction;
+      // The kernel applies a patch made against an older revision on top of
+      // the events in between, which may have overwritten the optimistic
+      // values here, so they have to be applied again in kernel order.
+      const rebased = ownTransaction && event.baseRevision !== this.inFlightBaseRevision;
       this.applyingRemote = true;
       try {
-        if (!ownTransaction && event.clientPatch) this.applyPatchPayload(event.clientPatch);
+        if ((!ownTransaction || rebased) && event.clientPatch) {
+          this.applyPatchPayload(event.clientPatch);
+        }
         if (event.serverPatch) this.applyPatchPayload(event.serverPatch);
         this.revision = event.revision;
       } finally {
