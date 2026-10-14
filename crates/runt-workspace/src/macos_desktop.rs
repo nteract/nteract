@@ -44,9 +44,9 @@ fn bundle_for_executable(executable: &Path) -> Result<Option<PathBuf>, String> {
     }
 }
 
-/// The running bundled MCP/CLI owns same-channel launches. Explicit other-channel
-/// requests use that channel's registered CLI. Standalone callers then search
-/// standard Applications directories in channel/name order; strict runtime joins
+/// The running bundled MCP/CLI owns same-channel launches. Otherwise use the
+/// channel's resolved CLI installation (registration, prefix, or standard path),
+/// then search Applications directories in channel/name order. Strict runtime joins
 /// never fall back from nightly to stable. No display-name LaunchServices lookup
 /// is used, and a damaged selected bundle is an error, not a fallback trigger.
 pub(super) fn resolve_bundle(
@@ -177,6 +177,27 @@ mod tests {
             )
             .unwrap(),
             stable
+        );
+    }
+
+    #[test]
+    fn headless_prefix_bundle_stays_paired_for_explicit_desktop_requests() {
+        let root = tempfile::tempdir().unwrap();
+        let applications = root.path().join("Applications");
+        fixture_bundle(&applications.join("nteract.app"));
+        let selected = fixture_bundle(&root.path().join(".local/share/nteract/stable/nteract.app"));
+        let cli = selected.join("Contents/MacOS/nteract-cli");
+        assert_eq!(
+            resolve_bundle(
+                BuildChannel::Stable,
+                BuildChannel::Stable,
+                Some(&cli),
+                || None,
+                &[applications],
+                true
+            )
+            .unwrap(),
+            selected
         );
     }
 
