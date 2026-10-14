@@ -2530,8 +2530,14 @@ mod tests {
             );
             assert_eq!(args, ["--attach-notebook-id", id]);
         }
-        let (path, args) = notebook_app_launch_target("/legacy/saved.ipynb", None);
-        assert_eq!(path, Some(std::path::Path::new("/legacy/saved.ipynb")));
+        // A Unix root alone is not absolute on Windows; use a drive-qualified path.
+        let legacy_path = if cfg!(windows) {
+            r"C:\legacy\saved.ipynb"
+        } else {
+            "/legacy/saved.ipynb"
+        };
+        let (path, args) = notebook_app_launch_target(legacy_path, None);
+        assert_eq!(path, Some(std::path::Path::new(legacy_path)));
         assert!(args.is_empty());
     }
 
