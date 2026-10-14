@@ -1,7 +1,16 @@
 import { act, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
-import { BOKEHJS_EXEC_MIME_TYPE, BOKEHJS_LOAD_MIME_TYPE } from "@/components/outputs/bokeh-mime";
+import type { BokehSessionState } from "runtimed";
+import {
+  BokehSessionRuntimeProvider,
+  type BokehSessionRuntime,
+} from "@/components/isolated/bokeh-session-context";
+import {
+  BOKEHJS_EXEC_MIME_TYPE,
+  BOKEHJS_LOAD_MIME_TYPE,
+  NTERACT_BOKEH_SESSION_MIME_TYPE,
+} from "@/components/outputs/bokeh-mime";
 import { PANEL_EXEC_MIME_TYPE, PANEL_LOAD_MIME_TYPE } from "@/components/outputs/panel-mime";
 import { setMarkdownProjectionProjector } from "@/lib/markdown-projection";
 import { OutputArea, type JupyterOutput } from "../OutputArea";
@@ -481,6 +490,86 @@ describe("OutputArea iframe theme sync", () => {
     rerender(<OutputArea outputs={outputs} isolated />);
 
     expect(mockFrameHandle.renderBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards Bokeh session revisions without resending isolated output renders", async () => {
+    const outputs: JupyterOutput[] = [
+      {
+        output_id: "bokeh-output",
+        output_type: "display_data",
+        data: {
+          [NTERACT_BOKEH_SESSION_MIME_TYPE]: {
+            schema_version: 1,
+            session_id: "session-1",
+            revision: 0,
+            producer: { name: "panel", version: "1.9.3" },
+            bokeh_version: "3.9.1",
+            document: { roots: [] },
+            root_ids: ["root-1"],
+            resources: {
+              javascript: [],
+              stylesheets: [],
+              javascript_modules: [],
+              module_exports: {},
+            },
+            buffers: [],
+          },
+        },
+        metadata: {},
+      },
+    ];
+    const transport: BokehSessionRuntime["transport"] = {
+      fetchBlob: vi.fn(),
+      applyPatch: vi.fn(),
+      subscribePatches: () => () => {},
+    };
+    const session = (headRevision: number): BokehSessionState => ({
+      output_id: "bokeh-output",
+      cell_id: "cell-1",
+      execution_id: "execution-1",
+      kernel_id: "kernel-1",
+      status: "connected",
+      head_revision: headRevision,
+      producer_name: "panel",
+      producer_version: "1.9.3",
+      bokeh_version: "3.9.1",
+      root_ids: ["root-1"],
+      checkpoint: null,
+      patch_tail: [],
+    });
+    const renderWithRevision = (headRevision: number) => (
+      <BokehSessionRuntimeProvider
+        value={{ sessions: { "session-1": session(headRevision) }, transport }}
+      >
+        <OutputArea outputs={outputs} isolated />
+      </BokehSessionRuntimeProvider>
+    );
+
+    mockFrameHandle.isReady = true;
+    try {
+      const { rerender } = render(renderWithRevision(0));
+      await waitFor(() => {
+        expect(mockFrameHandle.renderBatch).toHaveBeenCalled();
+      });
+      const initialRenders = mockFrameHandle.renderBatch.mock.calls.length;
+
+      rerender(renderWithRevision(1));
+
+      await waitFor(() => {
+        expect(mockFrameHandle.send).toHaveBeenCalledWith({
+          type: "bokeh_session_state",
+          payload: {
+            sessionId: "session-1",
+            outputId: "bokeh-output",
+            status: "connected",
+            headRevision: 1,
+          },
+        });
+      });
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalledTimes(initialRenders);
+    } finally {
+      mockFrameHandle.isReady = false;
+    }
   });
 
   it("renders a contained fallback when an isolated renderer plugin fails to load", async () => {
