@@ -33,7 +33,7 @@
         pnpm_11 = pkgs.callPackage (nixpkgs + "/pkgs/development/tools/pnpm/generic.nix") {
           nodejs = pkgs.nodejs_22;
           version = "11.9.0";
-          hash = "sha256-n5ufnfHJ1LAdv0jlfh8YMoNR+0DCjDYke/Ur9uvYJR0=";
+          hash = "sha256-+6vWny6dQEB8NkN6EbV4wflBY+43mHSZ3tu7tG0pG3Q=";
         };
 
         # Shared dependency lists
@@ -103,7 +103,7 @@
           src = filteredSrc;
           fetcherVersion = 2;
           # Update with: nix build .#pnpmDeps 2>&1 | grep 'got:'
-          hash = "sha256-n5ufnfHJ1LAdv0jlfh8YMoNR+0DCjDYke/Ur9uvYJR0=";
+          hash = "sha256-+6vWny6dQEB8NkN6EbV4wflBY+43mHSZ3tu7tG0pG3Q=";
         };
 
         jsBuild = pkgs.stdenv.mkDerivation {
