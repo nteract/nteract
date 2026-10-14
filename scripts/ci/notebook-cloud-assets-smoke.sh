@@ -74,10 +74,16 @@ const server = http.createServer((req, res) => {
 });
 server.listen(0, "127.0.0.1", async () => {
   const base = `http://127.0.0.1:${server.address().port}`;
+  // The host page loads the entry script and stylesheet from viewer/assets/,
+  // and the browser fetches the hashed WASM copy from the same directory. The
+  // wasm/runtimed-wasm/ probe covers the server-side engine copy.
+  const wasmFiles = [...listed].filter((f) => f.endsWith(".wasm"));
   const probes = [
     "/assets/notebook-cloud-viewer.js",
+    "/assets/notebook-cloud-viewer.css",
     "/output-document/index.html",
-    ...[...listed].filter((f) => f.startsWith("wasm/runtimed-wasm/") && f.endsWith(".wasm")).map((f) => "/" + f),
+    ...wasmFiles.filter((f) => f.startsWith("viewer/assets/")).map((f) => f.slice("viewer".length)),
+    ...wasmFiles.filter((f) => f.startsWith("wasm/runtimed-wasm/")).map((f) => "/" + f),
   ];
   try {
     for (const p of probes) {

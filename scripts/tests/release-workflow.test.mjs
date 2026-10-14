@@ -91,6 +91,7 @@ test("release qualification requires all binaries, wheel tests, and the AppImage
   assert.deepEqual(needs("prerelease").sort(), [
     "build-linux",
     "build-macos",
+    "build-notebook-cloud-assets",
     "build-notebook-linux",
     "build-notebook-macos-arm64",
     "build-notebook-macos-x64",
@@ -320,14 +321,33 @@ test("runtime-peer image publication keeps packages:write scoped to the two imag
   }
 });
 
-test("editor assets job publishes a channel-named tarball with least privilege", () => {
-  const body = jobs.get("publish-notebook-cloud-assets");
-  assert.ok(body, "publish-notebook-cloud-assets must exist");
-  assert.match(body, /^    permissions:\n      contents: write\n/m, "job declares permissions");
-  assert.doesNotMatch(body, /packages: write/);
-  assert.match(body, /^    needs: \[compute-version, build-wasm, prerelease\]$/m);
-  assert.match(body, /name: wasm-artifacts/, "reuses build-wasm output");
-  assert.match(body, /skip-wasm: true/, "does not rebuild WASM");
-  assert.match(body, /notebook-cloud-assets-\$\{\{ env\.RUNT_BUILD_CHANNEL \}\}\.tar\.gz\.sha256/, "names the sidecar with the channel");
-  assert.match(body, /notebook-cloud-assets-smoke\.sh[\s\S]*gh release upload/, "smoke gates the upload");
+test("editor assets are built read-only and attached by prerelease under the channel name", () => {
+  // Like nteract-notebook-ui: third-party build code (pnpm install, Vite)
+  // runs in a job with read-only contents, and the release job attaches the
+  // artifact. No job gains write access for this asset.
+  const build = jobs.get("build-notebook-cloud-assets");
+  assert.ok(build, "build-notebook-cloud-assets must exist");
+  assert.match(build, /^    permissions:\n      contents: read\n    steps:/m, "exactly contents: read");
+  assert.doesNotMatch(build, /packages: write|GH_TOKEN|gh release/);
+  assert.match(build, /^    needs: \[compute-version, build-wasm\]$/m);
+  assert.match(build, /name: wasm-artifacts/, "reuses build-wasm output");
+  assert.match(build, /skip-wasm: true/, "does not rebuild WASM");
+  assert.match(build, /--built-at="\$BUILT_AT"/, "built_at comes from the release timestamp, not the clock");
+  assert.match(build, /RELEASE_TIMESTAMP: \$\{\{ needs\.compute-version\.outputs\.timestamp \}\}/);
+  assert.match(build, /notebook-cloud-assets-smoke\.sh[\s\S]*uses: actions\/upload-artifact@v7\n\s+with:\n\s+name: notebook-cloud-assets\n/, "smoke gates the artifact upload");
+
+  const release = jobs.get("prerelease");
+  assert.match(release, /^        build-notebook-cloud-assets,$/m, "prerelease waits for the editor assets");
+  assert.match(release, /name: notebook-cloud-assets\n\s+path: \.\/notebook-cloud-assets\n/, "prerelease downloads the artifact");
+  for (const suffix of ["", ".sha256"]) {
+    assert.ok(
+      release.includes(`cp "notebook-cloud-assets/notebook-cloud-assets-\${CHANNEL}.tar.gz${suffix}" release-assets/`),
+      `stages the ${suffix || "tarball"} with the channel name`,
+    );
+    assert.ok(
+      release.includes(`./release-assets/notebook-cloud-assets-\${{ inputs.version_suffix }}.tar.gz${suffix}\n`),
+      `attaches the ${suffix || "tarball"} with the channel name`,
+    );
+  }
+  assert.doesNotMatch(release, /notebook-cloud-assets-nightly|notebook-cloud-assets-stable/, "channel is never hard-coded");
 });

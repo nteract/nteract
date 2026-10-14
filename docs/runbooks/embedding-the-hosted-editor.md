@@ -17,17 +17,20 @@ The tarball holds:
 
 | Path | Contents |
 | --- | --- |
-| `manifest.json` | Version, channel, `protocol_version`, source commit, build time, and a SHA-256 for every other file |
-| `viewer/` | The browser editor bundle: `assets/`, `plugins/`, and the OIDC callback page |
-| `output-document/` | The page that renders untrusted cell output |
-| `wasm/runtimed-wasm/` | The `runtimed-wasm` engine (`.js` glue and `.wasm`) |
-| `protocol/` | The TypeScript protocol package source and `package.json` |
+| `manifest.json` | Version, channel, `protocol_version`, source commit, `built_at`, and a SHA-256 for every other file |
+| `viewer/assets/` | The editor entry script and stylesheet, the OIDC callback script, hashed copies of the WASM engine, and `runtime-wasm-assets.json` naming them |
+| `viewer/plugins/` | Renderer plugin assets the editor loads from `rendererAssetsBasePath` |
+| `output-document/` | `index.html`, the frame that renders untrusted cell output |
+| `wasm/runtimed-wasm/` | The `runtimed-wasm` engine (`runtimed_wasm.js` and `runtimed_wasm_bg.wasm`) for the host's server |
+| `protocol/` | The TypeScript protocol package source and its `package.json` |
 | `LICENSE` | License text |
 
-The bundle has no deployment configuration baked in. One tarball serves any
-host. The tarball is reproducible from the release tag: file order, owners, and
-modification times are fixed, and the build time appears only in
-`manifest.json`.
+The bundle has no host endpoints, credentials, or origins baked in. They arrive
+through the JSON config described below. One tarball serves any host.
+
+The tarball is reproducible from its release tag. Entry order, owners, and
+modification times are fixed, and `built_at` is the release timestamp already
+encoded in the version. Repackaging the same tag gives the same bytes.
 
 `protocol/` is source, not an npm package. Import it by path.
 
@@ -46,27 +49,64 @@ mkdir editor && tar -xzf notebook-cloud-assets-stable.tar.gz -C editor
 
 Record the tarball SHA-256 next to the tag in your deployment config. The
 repository script `scripts/ci/notebook-cloud-assets-smoke.sh` does the sidecar
-check, the per-file manifest check, and a static serve test. It needs only
-`tar`, `sha256sum`, and Node 22. It also accepts an `https://` URL.
+check, the per-file manifest check, and a static serve test. It needs `tar`,
+`sha256sum`, and Node 22. It also accepts an `https://` URL, which adds `curl`.
 
 ## Serve
 
-Serve `viewer/` as static files. Put `wasm/runtimed-wasm/` and
-`output-document/` next to it at those paths. Serve `output-document/` from a
-separate origin from the editor, so output code cannot reach the host page.
+`viewer/` is a library build. It has no `index.html`. The host renders the
+page and the editor mounts into it:
+
+```html
+<link rel="stylesheet" href="/assets/notebook-cloud-viewer.css" />
+<div id="root"></div>
+<script id="nteract-cloud-auth-config" type="application/json">{ ... }</script>
+<script id="nteract-cloud-viewer-config" type="application/json">{ ... }</script>
+<script type="module" src="/assets/notebook-cloud-viewer.js"></script>
+```
+
+- Serve `viewer/assets/` at `/assets/` on the editor origin.
+- Serve `viewer/plugins/` at the URL you pass as `rendererAssetsBasePath`.
+  Keep renderer assets on their own origin or route.
+- Serve `output-document/index.html` from a separate origin and pass that
+  origin as `outputDocumentBaseUrl`. Output code must not share the editor's
+  origin.
+- The browser loads the WASM engine from `runtimedWasmModulePath` and
+  `runtimedWasmPath`. Point them at the hashed files under `viewer/assets/`;
+  `viewer/assets/runtime-wasm-assets.json` lists their names.
+- `wasm/runtimed-wasm/` is for the host's server, which imports
+  `runtimed_wasm.js` and `runtimed_wasm_bg.wasm` from it. The browser does not
+  fetch this directory.
 
 ## Runtime configuration
 
-The host supplies this at runtime. Nothing here is compiled into the assets.
+Two JSON scripts carry everything the editor needs. The authoritative field
+lists live in the release tag's source: `loadConfig` in
+`apps/notebook-cloud/viewer/cloud-viewer-config.ts` and
+`normalizeOidcAuthConfig` in `apps/notebook-cloud/viewer/oidc-auth.ts`.
 
-- OIDC provider settings: client ID, audience, issuer, redirect URI, and the
-  principal namespace that identities map into.
-- Allowed origins for cross-origin requests to your server.
-- The base URL where the output document is served.
-- The base URL for renderer assets, if they are served separately from `viewer/`.
+`#nteract-cloud-viewer-config` is required. The editor refuses to start when
+any of these keys is missing:
 
-The viewer talks to a notebook server you run or operate. That server imports
-the same `wasm/runtimed-wasm/` engine and the `protocol/` types.
+| Group | Keys |
+| --- | --- |
+| Notebook | `notebookId` |
+| Server endpoints | `catalogEndpoint`, `syncEndpoint`, `aclEndpoint`, `invitesEndpoint`, `accessRequestsEndpoint`, `workstationsEndpoint`, `workstationDefaultEndpoint`, `workstationAttachEndpoint` |
+| Snapshot and blob paths | `snapshotBasePath`, `runtimeSnapshotBasePath`, `commsSnapshotBasePath`, `blobBasePath` |
+| Asset paths | `rendererAssetsBasePath`, `runtimedWasmModulePath`, `runtimedWasmPath` |
+
+Optional keys include `headsHash`, `authorProfilesEndpoint`,
+`outputDocumentBaseUrl`, `hostCapabilities`, `featureFlags`, and `session`.
+
+`#nteract-cloud-auth-config` is optional. Its `oidc` object enables OIDC
+sign-in when it carries `issuer`, `clientId`, and `redirectUri`;
+`providerLabel`, `scope`, and `flow` are optional. Without the script, or
+without those three keys, the editor runs with no sign-in.
+
+The endpoints point at a notebook server you run. That server imports the
+engine in `wasm/runtimed-wasm/` and the types in `protocol/`. Cross-origin
+allow-lists, identity mapping, and credentials are that server's concern, not
+the editor's.
 
 ## Compatibility
 
