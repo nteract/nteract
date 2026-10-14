@@ -1566,8 +1566,12 @@ jobs:
     # Promote the exact digest the build job pushed, only after the GitHub
     # release exists, so a `:<version>` tag never points at an image whose
     # release failed and never at another channel's build. `imagetools create`
-    # retags server-side without pulling. `:<channel>` (nightly/stable) tracks
-    # the newest release on that channel; `:latest` tracks stable only.
+    # retags server-side without pulling. The build pushes a single-platform
+    # manifest, which `imagetools create` wraps in a new index by default;
+    # `--prefer-index=false` copies it as-is so every tag resolves to the
+    # build digest the anonymous-pull check compares. `:<channel>`
+    # (nightly/stable) tracks the newest release on that channel; `:latest`
+    # tracks stable only.
     name: Publish runtime-peer image
     runs-on: ubuntu-24.04
     needs: [compute-version, prerelease, image-runtime-peer-build]
@@ -1595,6 +1599,7 @@ jobs:
             *) echo "Build job did not supply a digest" >&2; exit 1 ;;
           esac
           docker buildx imagetools create \
+            --prefer-index=false \
             --tag "$IMAGE:${{ needs.compute-version.outputs.version }}" \
             --tag "$IMAGE:${{ env.RUNT_BUILD_CHANNEL }}" \
             "$IMAGE@$DIGEST"
@@ -1603,6 +1608,7 @@ jobs:
         if: inputs.github_release_prerelease == false
         run: |
           docker buildx imagetools create \
+            --prefer-index=false \
             --tag "$IMAGE:latest" \
             "$IMAGE@$DIGEST"
 

@@ -299,6 +299,14 @@ test("runtime-peer image publication keeps packages:write scoped to the two imag
   assert.match(publish, /needs: \[compute-version, prerelease, image-runtime-peer-build\]/);
   assert.match(publish, /DIGEST: \$\{\{ needs\.image-runtime-peer-build\.outputs\.digest \}\}/, "publish consumes the build digest");
   assert.match(publish, /docker buildx imagetools create[\s\S]*?"\$IMAGE@\$DIGEST"/, "promotion is by digest, not by re-pulling a mutable tag");
+  // With one manifest source, imagetools wraps it in a new index by default,
+  // so the tags would resolve to a digest the anonymous-pull check rejects.
+  const promotions = publish.match(/docker buildx imagetools create(?:[^\n]*\\\n)*[^\n]*/g) ?? [];
+  assert.equal(promotions.length, 2, "version/channel promotion and stable-only latest promotion");
+  for (const promotion of promotions) {
+    assert.match(promotion, /\n\s+--prefer-index=false \\\n/, `promotion must copy the built manifest unchanged:\n${promotion}`);
+    assert.match(promotion, /"\$IMAGE@\$DIGEST"$/, `promotion must name the built digest:\n${promotion}`);
+  }
   assert.doesNotMatch(publish, /docker pull "\$STAGING_TAG"|docker tag /, "publish must not retag from a mutable staging tag");
   assert.match(publish, /if: inputs\.github_release_prerelease == false\n\s+run: \|\n[\s\S]*?--tag "\$IMAGE:latest"/, "latest is stable-only");
   assert.match(publish, /docker logout ghcr\.io[\s\S]*?if \[ "\$PULLED" != "\$DIGEST" \]/, "anonymous pull must resolve to the promoted digest");
