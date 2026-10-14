@@ -295,11 +295,6 @@ flows.
 
 ### The runtime-peer image
 
-**Image publication is temporarily disabled for both nightly and stable releases**
-while the release workflow's registry permissions are resolved. No new image tags
-are produced. See [local build instructions](../../images/runtime-peer/README.md).
-The registry/tag scheme below describes the intended publishing setup.
-
 The runtime-peer container image bundles everything a workstation
 needs: the `runtimed` daemon, the pairing CLI, and a Python 3.12 environment
 with the kernel base packages already installed (`ipykernel`, `ipywidgets`,
@@ -308,10 +303,12 @@ installs into environments it manages). With this image there is no manual
 `pip install ipykernel` step, which is the failure mode behind the silent
 "Kernel running" traceback on machines whose system Python lacks `ipykernel`.
 
-- **Registry and tags**: `ghcr.io/anaconda/nteract-runtime-peer`, tagged with
+- **Registry and tags**: `ghcr.io/nteract/runtime-peer`, tagged with
   the release version (`:<version>`), the channel (`:nightly` / `:stable`),
-  and `:latest` (stable only). When publication resumes, the release pipeline produces these tags; the image's
-  `runtimed --version` matches the release it was built from.
+  and `:latest` (stable only). The release pipeline produces these tags; the
+  image's `runtimed --version` matches the release it was built from. Pulls
+  are anonymous. See [publication](../../images/runtime-peer/README.md#publication)
+  for the permission model.
 - **Entrypoint**: `runtimed` (no default subcommand). Run it as
   `cloud-runtime-agent` / `workstation-agent`, or pair interactively first
   (below).

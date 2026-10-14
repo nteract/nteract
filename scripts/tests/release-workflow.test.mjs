@@ -269,3 +269,29 @@ test("Windows smoke scripts reject bad arguments and non-native hosts", () => {
     assert.match(foreignWheel.stderr, /requires native Windows x64 Python/);
   }
 });
+
+test("runtime-peer image publication keeps packages:write scoped to the two image jobs", () => {
+  const imageJobs = ["image-runtime-peer-build", "image-runtime-peer-publish"];
+  for (const [id, body] of jobs) {
+    assert.match(body, /^    permissions:\n/m, `${id} must declare its own permissions instead of inheriting the caller ceiling`);
+    const grantsPackages = /^      packages: write$/m.test(body);
+    assert.equal(grantsPackages, imageJobs.includes(id), `${id} packages:write grant`);
+  }
+  for (const id of imageJobs) {
+    const body = jobs.get(id);
+    assert.ok(body, `${id} must exist`);
+    assert.match(body, /^      IMAGE: ghcr\.io\/nteract\/runtime-peer$/m, `${id} publishes to the repository owner's GHCR namespace`);
+    assert.doesNotMatch(body, /ghcr\.io\/anaconda\//, `${id} must not target a namespace GITHUB_TOKEN cannot write`);
+  }
+  assert.match(jobs.get("image-runtime-peer-build"), /runtime-peer-image-smoke\.sh[\s\S]*docker push/, "smoke must gate the staging push");
+  assert.match(jobs.get("image-runtime-peer-publish"), /needs: \[compute-version, prerelease, image-runtime-peer-build\]/);
+  assert.match(jobs.get("image-runtime-peer-publish"), /if: inputs\.github_release_prerelease == false\n\s+run: \|\n[\s\S]*?:latest"/, "latest is stable-only");
+
+  // Callers must raise the ceiling for the reusable call or GitHub rejects the
+  // whole release at validation time (the failure behind #4374).
+  for (const name of ["release-nightly", "release-stable"]) {
+    const caller = workflow(name);
+    assert.doesNotMatch(caller, /^permissions:/m, `${name} must not grant workflow-wide permissions`);
+    assert.match(workflowJobs(caller).get("release"), /^    permissions:\n      contents: write\n      id-token: write\n      packages: write\n/m, `${name} release job ceiling`);
+  }
+});

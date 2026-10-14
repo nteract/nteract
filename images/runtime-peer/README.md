@@ -72,17 +72,27 @@ Container contract summary:
 
 ## Publication
 
-**Temporarily disabled for both nightly and stable releases:** the image jobs
-were removed from the shared workflow because their `packages: write` request
-exceeded the callers' permissions and prevented the entire release from starting.
-No new runtime-peer images are published until registry permissions are resolved.
-Local builds remain available.
+The release train (`.github/workflows/release-common.yml`, jobs
+`image-runtime-peer-build` and `image-runtime-peer-publish`) publishes to
+`ghcr.io/nteract/runtime-peer` with `:<version>`, `:<channel>`
+(`nightly`/`stable`), and `:latest` (stable only) tags. The smoke script gates
+the push; the publish job runs only after the GitHub release exists.
 
-The intended publication setup builds and publishes on the release train (`.github/workflows/release-common.yml`,
-jobs `image-runtime-peer-build` and `image-runtime-peer-publish`) to `ghcr.io/anaconda/nteract-runtime-peer` with
-`:<version>`, `:<channel>` (`nightly`/`stable`), and `:latest` (stable only)
-tags. First-publish may require org GHCR package settings/visibility
-configuration; local builds work without any registry.
+Authentication is the job's `GITHUB_TOKEN` with `packages: write`, which can
+write only to the repository owner's GHCR namespace. That is why the image lives
+under `ghcr.io/nteract/` and not under another org. The reusable workflow's
+callers (`release-nightly.yml`, `release-stable.yml`) must grant
+`packages: write` in their ceiling or GitHub rejects the whole release at
+validation time; every other job in the shared workflow declares
+`contents: read` so the scope stays with the two image jobs.
+
+First publish creates the package private. An org admin sets it public once in
+the GHCR package settings; until then the publish job's anonymous-pull check
+fails. Confirm the package links to `nteract/nteract` (set from the
+`org.opencontainers.image.source` label). Pulls need no credentials afterward.
+
+Nightly tags accumulate; GHCR has no retention policy. Pruning old `build-*`
+and nightly version tags is a follow-up. Local builds work without any registry.
 
 ## Known limitations (v1)
 

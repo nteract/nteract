@@ -11,13 +11,17 @@ concurrency:
   group: nteract-release-nightly
   cancel-in-progress: false
 
-permissions:
-  contents: write
-  id-token: write
-
 jobs:
   release:
     uses: ./.github/workflows/release-common.yml
+    # Ceiling for the reusable workflow. Its jobs can request at most these
+    # scopes; each job in release-common.yml narrows further with its own
+    # `permissions:` block. `packages: write` exists only so the two
+    # runtime-peer image jobs can push to ghcr.io/nteract/runtime-peer.
+    permissions:
+      contents: write
+      id-token: write
+      packages: write
     secrets: inherit
     with:
       release_title: "Nightly Release"

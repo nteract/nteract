@@ -58,6 +58,8 @@ jobs:
   compute-version:
     name: Compute Version
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.VERSION }}
       timestamp: ${{ steps.version.outputs.TIMESTAMP }}
@@ -94,6 +96,8 @@ jobs:
     needs: [compute-version]
     name: Build WASM artifacts
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -129,6 +133,8 @@ jobs:
     # the binaries share the same glibc 2.35 floor.
     runs-on: ${{ matrix.platform.runner }}
     needs: [compute-version, build-wasm]
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -222,6 +228,8 @@ jobs:
     name: Build macOS Executables
     runs-on: macos-15
     needs: [compute-version, build-wasm]
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -290,6 +298,8 @@ jobs:
     name: Build macOS ARM64 Notebook
     runs-on: macos-15
     needs: [compute-version, build-wasm]
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -474,6 +484,8 @@ jobs:
     # Standard macOS runners are ARM64; keep the explicit x64 targets below.
     runs-on: macos-15
     needs: [compute-version, build-wasm]
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -660,6 +672,8 @@ jobs:
     name: Build Windows x64 Notebook
     runs-on: windows-2025
     needs: [compute-version, build-wasm]
+    permissions:
+      contents: read
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
@@ -851,6 +865,8 @@ jobs:
     name: Build Windows ARM64 Notebook
     runs-on: windows-11-vs2026-arm
     needs: [compute-version, build-wasm]
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -1062,6 +1078,8 @@ jobs:
     name: Build Linux ${{ matrix.platform.arch }} Notebook
     runs-on: ${{ matrix.platform.runner }}
     needs: [compute-version, build-wasm]
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -1241,6 +1259,8 @@ jobs:
     # runs natively.
     runs-on: ${{ matrix.platform.runner }}
     needs: [build-notebook-linux]
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -1282,6 +1302,8 @@ jobs:
     name: Build Python Wheels (${{ matrix.platform.target }})
     runs-on: ${{ matrix.platform.runner }}
     needs: [compute-version, build-wasm]
+    permissions:
+      contents: read
     env:
       SCCACHE_GHA_ENABLED: ${{ matrix.platform.sccache && 'true' || '' }}
       RUSTC_WRAPPER: ${{ matrix.platform.sccache && 'sccache' || '' }}
@@ -1460,12 +1482,105 @@ jobs:
           name: wheels-${{ matrix.platform.target }}
           path: python/runtimed/dist
 
-  # TEMPORARILY REMOVED: the runtime-peer image GHCR jobs (image-runtime-peer-build
-  # and image-runtime-peer-publish). They need `packages: write`, which the
-  # release-nightly.yml / release-stable.yml callers do not grant, so workflow
-  # validation failed for the whole release. Restore them together with an
-  # reviewed registry/permission setup (see images/runtime-peer/README.md).
-  # The removed definitions are preserved in commit 589e7e295a8214aedb77bfe397591a9eaa68b0a8.
+  image-runtime-peer-build:
+    # Build the runtime-peer container and push a staging tag keyed by source
+    # hash. The smoke script gates the push. The image publishes to the
+    # repository owner's GHCR namespace because GITHUB_TOKEN can only write
+    # packages there; a different namespace needs a separately reviewed
+    # credential. `packages: write` requires the same scope in the caller's
+    # ceiling (release-nightly.yml / release-stable.yml).
+    name: Build and smoke runtime-peer image
+    runs-on: ubuntu-24.04
+    needs: [compute-version]
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/nteract/runtime-peer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image
+        run: |
+          docker build \
+            --load \
+            --build-arg RUNT_BUILD_CHANNEL="${RUNT_BUILD_CHANNEL}" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --label "org.opencontainers.image.version=${{ needs.compute-version.outputs.version }}" \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            -t "$IMAGE:build-${{ env.NTERACT_BUILD_GIT_HASH }}" \
+            -f images/runtime-peer/Dockerfile .
+
+      - name: Smoke image (gates push)
+        run: |
+          bash scripts/ci/runtime-peer-image-smoke.sh \
+            "$IMAGE:build-${{ env.NTERACT_BUILD_GIT_HASH }}" \
+            "${{ needs.compute-version.outputs.base_version }}"
+
+      - name: Push staging tag
+        run: |
+          docker push "$IMAGE:build-${{ env.NTERACT_BUILD_GIT_HASH }}"
+
+  image-runtime-peer-publish:
+    # Promote the staging tag only after the GitHub release exists, so the
+    # `:<version>` tag never points at an image whose release failed.
+    # `:<channel>` (nightly/stable) tracks the newest release on that channel;
+    # `:latest` tracks stable only.
+    name: Publish runtime-peer image
+    runs-on: ubuntu-24.04
+    needs: [compute-version, prerelease, image-runtime-peer-build]
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/nteract/runtime-peer
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push (version + channel)
+        run: |
+          STAGING_TAG="$IMAGE:build-${{ env.NTERACT_BUILD_GIT_HASH }}"
+          VERSION_TAG="$IMAGE:${{ needs.compute-version.outputs.version }}"
+          CHANNEL_TAG="$IMAGE:${{ env.RUNT_BUILD_CHANNEL }}"
+          docker pull "$STAGING_TAG"
+          docker tag "$STAGING_TAG" "$VERSION_TAG"
+          docker tag "$STAGING_TAG" "$CHANNEL_TAG"
+          docker push "$VERSION_TAG"
+          docker push "$CHANNEL_TAG"
+
+      - name: Tag and push latest (stable only)
+        if: inputs.github_release_prerelease == false
+        run: |
+          STAGING_TAG="$IMAGE:build-${{ env.NTERACT_BUILD_GIT_HASH }}"
+          docker tag "$STAGING_TAG" "$IMAGE:latest"
+          docker push "$IMAGE:latest"
+
+      - name: Verify anonymous pull (gates on package visibility)
+        # Fails until the package is set to public once in the org's GHCR
+        # settings. That is a one-time manual step after the first publish.
+        run: |
+          docker logout ghcr.io
+          docker pull "$IMAGE:${{ needs.compute-version.outputs.version }}"
 
   publish-plugin:
     # Assemble this release's channel-slice of the agent plugin
@@ -1483,6 +1598,10 @@ jobs:
     # Publish only after every release build, smoke check, and the final
     # source/tag check have passed and the release has been published.
     needs: [compute-version, prerelease]
+    # Writes go to nteract/agent-plugins through CLAUDE_PLUGIN_DEPLOY_TOKEN,
+    # not GITHUB_TOKEN, so this job needs only read on its own checkout.
+    permissions:
+      contents: read
     steps:
       - name: Checkout source repo
         uses: actions/checkout@v6
