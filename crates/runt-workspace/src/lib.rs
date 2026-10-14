@@ -18,6 +18,9 @@ pub mod cli;
 pub mod file_claims;
 pub mod recent;
 
+#[cfg(any(target_os = "macos", test))]
+mod macos_desktop;
+
 // ============================================================================
 // Build Channel Branding
 // ============================================================================
@@ -695,44 +698,55 @@ fn open_notebook_installed_for(
             .map_err(|error| format!("Failed to launch {}: {error}", desktop.display()))?;
         return Ok(());
     }
-    let mut last_error = None;
-
-    #[cfg(target_os = "linux")]
-    let candidates = linux_desktop_launch_candidates(channel);
-    #[cfg(not(target_os = "linux"))]
-    let candidates = desktop_app_launch_candidates_for(channel);
-
-    for app_name in candidates {
-        if strict
-            && channel == BuildChannel::Nightly
-            && matches!(*app_name, "nteract" | "nteract-desktop")
-        {
-            continue;
+    #[cfg(target_os = "macos")]
+    {
+        let mut applications = vec![PathBuf::from("/Applications")];
+        if let Some(home) = dirs::home_dir() {
+            applications.push(home.join("Applications"));
         }
-        #[cfg(target_os = "macos")]
-        let spawn_result = {
-            let mut cmd = Command::new("open");
-            cmd.arg("-a").arg(app_name);
-            cmd.args(macos_open_args(
-                path,
-                extra_args,
-                strict && path.is_some_and(Path::is_dir),
-            ));
-            cmd.output().and_then(|output| {
-                if output.status.success() {
-                    Ok(())
-                } else {
-                    Err(std::io::Error::other(
-                        String::from_utf8_lossy(&output.stderr).trim().to_string(),
-                    ))
-                }
-            })
-        };
+        let bundle = macos_desktop::resolve_bundle(
+            channel,
+            build_channel(),
+            std::env::current_exe().ok().as_deref(),
+            || cli::resolve_channel(channel).ok(),
+            &applications,
+            strict,
+        )?;
+        let output = macos_desktop::open_command(
+            &bundle,
+            path,
+            extra_args,
+            strict && path.is_some_and(Path::is_dir),
+        )
+        .output()
+        .map_err(|error| format!("Failed to launch {}: {error}", bundle.display()))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Failed to launch {}: {}",
+                bundle.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))
+        }
+    }
 
-        #[cfg(not(target_os = "macos"))]
-        let spawn_result = {
-            // The public nteract command now names the CLI. Never launch it
-            // recursively when looking for an older Desktop launcher on PATH.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut last_error = None;
+        #[cfg(target_os = "linux")]
+        let candidates = linux_desktop_launch_candidates(channel);
+        #[cfg(not(target_os = "linux"))]
+        let candidates = desktop_app_launch_candidates_for(channel);
+
+        for app_name in candidates {
+            if strict
+                && channel == BuildChannel::Nightly
+                && matches!(*app_name, "nteract" | "nteract-desktop")
+            {
+                continue;
+            }
+            // The public nteract command names the CLI, not Desktop.
             #[cfg(target_os = "linux")]
             if is_canonical_cli_on_path(app_name) {
                 continue;
@@ -741,26 +755,21 @@ fn open_notebook_installed_for(
             if let Some(p) = path {
                 cmd.arg(p);
             }
-            for arg in extra_args {
-                cmd.arg(arg);
+            cmd.args(extra_args);
+            match cmd.spawn() {
+                Ok(_) => return Ok(()),
+                Err(e) => last_error = Some((app_name, e)),
             }
-            cmd.spawn()
-        };
-
-        match spawn_result {
-            Ok(_) => return Ok(()),
-            Err(e) => last_error = Some((app_name, e)),
         }
+        let detail = last_error
+            .map(|(candidate, e)| format!("last attempt ({candidate}) failed: {e}"))
+            .unwrap_or_else(|| "no launch candidates were attempted".to_string());
+        Err(format!(
+            "Failed to launch {}: {}",
+            desktop_display_name_for(channel),
+            detail
+        ))
     }
-
-    let detail = last_error
-        .map(|(candidate, e)| format!("last attempt ({candidate}) failed: {e}"))
-        .unwrap_or_else(|| "no launch candidates were attempted".to_string());
-    Err(format!(
-        "Failed to launch {}: {}",
-        desktop_display_name_for(channel),
-        detail
-    ))
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
