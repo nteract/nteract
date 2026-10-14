@@ -58,6 +58,10 @@ jobs:
   compute-version:
     name: Compute Version
     runs-on: ubuntu-24.04
+    # Reserves the release tag with `git push` (scripts/ci/check-release-tag.sh
+    # --reserve), so this job needs contents: write.
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.version.outputs.VERSION }}
       timestamp: ${{ steps.version.outputs.TIMESTAMP }}
@@ -94,6 +98,8 @@ jobs:
     needs: [compute-version]
     name: Build WASM artifacts
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -129,6 +135,8 @@ jobs:
     # the binaries share the same glibc 2.35 floor.
     runs-on: ${{ matrix.platform.runner }}
     needs: [compute-version, build-wasm]
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -222,6 +230,8 @@ jobs:
     name: Build macOS Executables
     runs-on: macos-15
     needs: [compute-version, build-wasm]
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -290,6 +300,8 @@ jobs:
     name: Build macOS ARM64 Notebook
     runs-on: macos-15
     needs: [compute-version, build-wasm]
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -474,6 +486,8 @@ jobs:
     # Standard macOS runners are ARM64; keep the explicit x64 targets below.
     runs-on: macos-15
     needs: [compute-version, build-wasm]
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -660,6 +674,8 @@ jobs:
     name: Build Windows x64 Notebook
     runs-on: windows-2025
     needs: [compute-version, build-wasm]
+    permissions:
+      contents: read
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
@@ -851,6 +867,8 @@ jobs:
     name: Build Windows ARM64 Notebook
     runs-on: windows-11-vs2026-arm
     needs: [compute-version, build-wasm]
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -1062,6 +1080,8 @@ jobs:
     name: Build Linux ${{ matrix.platform.arch }} Notebook
     runs-on: ${{ matrix.platform.runner }}
     needs: [compute-version, build-wasm]
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -1241,6 +1261,8 @@ jobs:
     # runs natively.
     runs-on: ${{ matrix.platform.runner }}
     needs: [build-notebook-linux]
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -1282,6 +1304,8 @@ jobs:
     name: Build Python Wheels (${{ matrix.platform.target }})
     runs-on: ${{ matrix.platform.runner }}
     needs: [compute-version, build-wasm]
+    permissions:
+      contents: read
     env:
       SCCACHE_GHA_ENABLED: ${{ matrix.platform.sccache && 'true' || '' }}
       RUSTC_WRAPPER: ${{ matrix.platform.sccache && 'sccache' || '' }}
@@ -1460,12 +1484,146 @@ jobs:
           name: wheels-${{ matrix.platform.target }}
           path: python/runtimed/dist
 
-  # TEMPORARILY REMOVED: the runtime-peer image GHCR jobs (image-runtime-peer-build
-  # and image-runtime-peer-publish). They need `packages: write`, which the
-  # release-nightly.yml / release-stable.yml callers do not grant, so workflow
-  # validation failed for the whole release. Restore them together with an
-  # reviewed registry/permission setup (see images/runtime-peer/README.md).
-  # The removed definitions are preserved in commit 589e7e295a8214aedb77bfe397591a9eaa68b0a8.
+  image-runtime-peer-build:
+    # Build the runtime-peer container, smoke it, then push one staging tag.
+    # The staging tag carries the channel and source hash because a stable
+    # tag push and the nightly cron can run on the same commit at the same
+    # time; a hash-only tag would let one channel overwrite the other's image
+    # before promotion. The publish job promotes by digest, not by tag.
+    #
+    # The image lives in the repository owner's GHCR namespace because
+    # GITHUB_TOKEN can only write packages there; another namespace needs a
+    # separately reviewed credential. `packages: write` requires the same
+    # scope in the caller's ceiling (release-nightly.yml / release-stable.yml).
+    name: Build and smoke runtime-peer image
+    runs-on: ubuntu-24.04
+    needs: [compute-version]
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/nteract/runtime-peer
+      STAGING_TAG: ghcr.io/nteract/runtime-peer:build-${{ inputs.version_suffix }}-${{ github.event.workflow_run.head_sha || github.sha }}
+    outputs:
+      digest: ${{ steps.push.outputs.DIGEST }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # build-push-action supplies the Actions cache credentials that
+      # `type=gha` needs; a plain `docker build` step cannot see them.
+      # `load: true` puts the single-platform image in the local daemon so the
+      # smoke script can run it before anything reaches the registry.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/runtime-peer/Dockerfile
+          load: true
+          push: false
+          provenance: false
+          tags: ${{ env.STAGING_TAG }}
+          build-args: |
+            RUNT_BUILD_CHANNEL=${{ env.RUNT_BUILD_CHANNEL }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.compute-version.outputs.version }}
+          cache-from: type=gha,scope=runtime-peer-${{ inputs.version_suffix }}
+          cache-to: type=gha,mode=max,scope=runtime-peer-${{ inputs.version_suffix }}
+
+      - name: Smoke image (gates push)
+        run: |
+          bash scripts/ci/runtime-peer-image-smoke.sh \
+            "$STAGING_TAG" \
+            "${{ needs.compute-version.outputs.base_version }}"
+
+      - name: Push staging tag and record digest
+        id: push
+        run: |
+          docker push "$STAGING_TAG"
+          DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "$STAGING_TAG" | sed 's/.*@//')
+          case "$DIGEST" in
+            sha256:*) ;;
+            *) echo "Could not read a registry digest for $STAGING_TAG" >&2; exit 1 ;;
+          esac
+          echo "Pushed $STAGING_TAG as $DIGEST"
+          echo "DIGEST=$DIGEST" >> "$GITHUB_OUTPUT"
+
+  image-runtime-peer-publish:
+    # Promote the exact digest the build job pushed, only after the GitHub
+    # release exists, so a `:<version>` tag never points at an image whose
+    # release failed and never at another channel's build. `imagetools create`
+    # retags server-side without pulling. The build pushes a single-platform
+    # manifest, which `imagetools create` wraps in a new index by default;
+    # `--prefer-index=false` copies it as-is so every tag resolves to the
+    # build digest the anonymous-pull check compares. `:<channel>`
+    # (nightly/stable) tracks the newest release on that channel; `:latest`
+    # tracks stable only.
+    name: Publish runtime-peer image
+    runs-on: ubuntu-24.04
+    needs: [compute-version, prerelease, image-runtime-peer-build]
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/nteract/runtime-peer
+      DIGEST: ${{ needs.image-runtime-peer-build.outputs.digest }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag digest with version and channel
+        run: |
+          case "$DIGEST" in
+            sha256:*) ;;
+            *) echo "Build job did not supply a digest" >&2; exit 1 ;;
+          esac
+          docker buildx imagetools create \
+            --prefer-index=false \
+            --tag "$IMAGE:${{ needs.compute-version.outputs.version }}" \
+            --tag "$IMAGE:${{ env.RUNT_BUILD_CHANNEL }}" \
+            "$IMAGE@$DIGEST"
+
+      - name: Tag digest as latest (stable only)
+        if: inputs.github_release_prerelease == false
+        run: |
+          docker buildx imagetools create \
+            --prefer-index=false \
+            --tag "$IMAGE:latest" \
+            "$IMAGE@$DIGEST"
+
+      - name: Verify anonymous pull matches the promoted digest
+        # Fails until the package is set to public once in the org's GHCR
+        # settings. That is a one-time manual step after the first publish.
+        run: |
+          docker logout ghcr.io
+          VERSION_TAG="$IMAGE:${{ needs.compute-version.outputs.version }}"
+          docker pull "$VERSION_TAG"
+          PULLED=$(docker inspect --format '{{index .RepoDigests 0}}' "$VERSION_TAG" | sed 's/.*@//')
+          if [ "$PULLED" != "$DIGEST" ]; then
+            echo "Promoted $DIGEST but anonymous pull resolved $PULLED" >&2
+            exit 1
+          fi
 
   publish-plugin:
     # Assemble this release's channel-slice of the agent plugin
@@ -1483,6 +1641,10 @@ jobs:
     # Publish only after every release build, smoke check, and the final
     # source/tag check have passed and the release has been published.
     needs: [compute-version, prerelease]
+    # Writes go to nteract/agent-plugins through CLAUDE_PLUGIN_DEPLOY_TOKEN,
+    # not GITHUB_TOKEN, so this job needs only read on its own checkout.
+    permissions:
+      contents: read
     steps:
       - name: Checkout source repo
         uses: actions/checkout@v6

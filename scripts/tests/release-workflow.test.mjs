@@ -269,3 +269,53 @@ test("Windows smoke scripts reject bad arguments and non-native hosts", () => {
     assert.match(foreignWheel.stderr, /requires native Windows x64 Python/);
   }
 });
+
+test("runtime-peer image publication keeps packages:write scoped to the two image jobs", () => {
+  const imageJobs = ["image-runtime-peer-build", "image-runtime-peer-publish"];
+  for (const [id, body] of jobs) {
+    assert.match(body, /^    permissions:\n/m, `${id} must declare its own permissions instead of inheriting the caller ceiling`);
+    const grantsPackages = /^      packages: write$/m.test(body);
+    assert.equal(grantsPackages, imageJobs.includes(id), `${id} packages:write grant`);
+  }
+  for (const id of imageJobs) {
+    const body = jobs.get(id);
+    assert.ok(body, `${id} must exist`);
+    assert.match(body, /^      IMAGE: ghcr\.io\/nteract\/runtime-peer$/m, `${id} publishes to the repository owner's GHCR namespace`);
+    assert.doesNotMatch(body, /ghcr\.io\/anaconda\//, `${id} must not target a namespace GITHUB_TOKEN cannot write`);
+  }
+  // compute-version reserves the release tag with `git push`; read-only would
+  // stop every release at its first step.
+  assert.match(jobs.get("compute-version"), /^    permissions:\n      contents: write$/m, "compute-version must keep tag-push access");
+
+  const build = jobs.get("image-runtime-peer-build");
+  assert.match(build, /uses: docker\/build-push-action@v6\n[\s\S]*?load: true\n\s+push: false/, "build via build-push-action so the gha cache credentials are present; load locally, do not push");
+  assert.match(build, /cache-to: type=gha/, "gha cache requested through the action, not a raw docker build");
+  assert.doesNotMatch(build, /run: \|\n\s+docker build/, "raw docker build cannot see the Actions cache credentials");
+  assert.match(build, /STAGING_TAG: ghcr\.io\/nteract\/runtime-peer:build-\$\{\{ inputs\.version_suffix \}\}-/, "staging tag must be channel-qualified so stable and nightly on one commit cannot overwrite each other");
+  assert.match(build, /runtime-peer-image-smoke\.sh[\s\S]*docker push "\$STAGING_TAG"/, "smoke must gate the staging push");
+  assert.match(build, /outputs:\n\s+digest: \$\{\{ steps\.push\.outputs\.DIGEST \}\}/, "build exports the pushed digest");
+
+  const publish = jobs.get("image-runtime-peer-publish");
+  assert.match(publish, /needs: \[compute-version, prerelease, image-runtime-peer-build\]/);
+  assert.match(publish, /DIGEST: \$\{\{ needs\.image-runtime-peer-build\.outputs\.digest \}\}/, "publish consumes the build digest");
+  assert.match(publish, /docker buildx imagetools create[\s\S]*?"\$IMAGE@\$DIGEST"/, "promotion is by digest, not by re-pulling a mutable tag");
+  // With one manifest source, imagetools wraps it in a new index by default,
+  // so the tags would resolve to a digest the anonymous-pull check rejects.
+  const promotions = publish.match(/docker buildx imagetools create(?:[^\n]*\\\n)*[^\n]*/g) ?? [];
+  assert.equal(promotions.length, 2, "version/channel promotion and stable-only latest promotion");
+  for (const promotion of promotions) {
+    assert.match(promotion, /\n\s+--prefer-index=false \\\n/, `promotion must copy the built manifest unchanged:\n${promotion}`);
+    assert.match(promotion, /"\$IMAGE@\$DIGEST"$/, `promotion must name the built digest:\n${promotion}`);
+  }
+  assert.doesNotMatch(publish, /docker pull "\$STAGING_TAG"|docker tag /, "publish must not retag from a mutable staging tag");
+  assert.match(publish, /if: inputs\.github_release_prerelease == false\n\s+run: \|\n[\s\S]*?--tag "\$IMAGE:latest"/, "latest is stable-only");
+  assert.match(publish, /docker logout ghcr\.io[\s\S]*?if \[ "\$PULLED" != "\$DIGEST" \]/, "anonymous pull must resolve to the promoted digest");
+
+  // Callers must raise the ceiling for the reusable call or GitHub rejects the
+  // whole release at validation time (the failure behind #4374).
+  for (const name of ["release-nightly", "release-stable"]) {
+    const caller = workflow(name);
+    assert.doesNotMatch(caller, /^permissions:/m, `${name} must not grant workflow-wide permissions`);
+    assert.match(workflowJobs(caller).get("release"), /^    permissions:\n      contents: write\n      id-token: write\n      packages: write\n/m, `${name} release job ceiling`);
+  }
+});
