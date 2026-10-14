@@ -54,10 +54,9 @@ The old question was "does `unified_env_on_disk()` return a Python path?" That b
 | `Partial` | Env dir exists but the expected Python executable is absent. | Route to captured repair. The directory's presence proves the notebook once owned this derived hash. |
 | `Usable` | Env dir exists and expected Python executable exists. | Route as captured cache-hit candidate. |
 
-This distinction is load-bearing. A missing dir is ambiguous and must preserve
-the existing fallback behavior. A partial dir is not ambiguous: it is a broken
-on-disk realization of this notebook's captured identity and should be rebuilt
-through the captured path.
+A missing directory is ambiguous and must preserve the existing fallback
+behavior. A partial directory means this notebook's captured environment is
+broken and should be rebuilt through the captured path.
 
 The resolution helper must therefore be typed. A plan that detects `Partial`
 only inside `acquire_prewarmed_env_with_capture()` is insufficient if the

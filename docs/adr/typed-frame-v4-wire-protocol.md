@@ -47,7 +47,7 @@ The directional-hint error strings ("Please update the CLI", "Please update the 
 
 The daemon does its own preamble read (`crates/runtimed/src/daemon.rs:2424-2443`). The daemon's preamble check validates **only the magic bytes**; it does not gate on protocol version at all. Version policy is applied after the handshake JSON is parsed and the channel is known (`daemon.rs:2456-2481`). This is what lets `Pool` accept any version: the daemon never rejects on the version byte at the preamble layer.
 
-The asymmetry is load-bearing. The client gets a friendly error string because it can render one; the daemon defers version rejection so it can produce a JSON-shaped error on the right channel.
+The client can render a friendly error string immediately. The daemon must defer version rejection until it knows the channel so it can return the appropriate JSON error.
 
 Daemon semantic compatibility and the bundled-sidecar repair transaction are
 separate from this wire version. They are defined in
@@ -90,7 +90,7 @@ Direction is enforced by the room peer loop and by the relay, not by anything in
 
 - The daemon's notebook peer loop (`crates/runtimed/src/notebook_sync_server/peer_loop.rs:358-362`) rejects `Response`, `Broadcast`, and `SessionControl` from clients with a `warn!`.
 - The Tauri relay (`crates/notebook-sync/src/relay_task.rs::pipe_frame`, `:321,336`) forwards `Response` outbound to the frontend, even though `crates/runtimed/tests/integration.rs:3156,3183` (`test_pipe_mode_only_pipes_allowed_frame_types`) excludes `RESPONSE` from its allowed-set. These are different paths (relay-mode vs pipe-mode CLI), but the naming overlap is misleading. The relay's behavior is the operative one: the frontend depends on receiving `Response` frames over the relay.
-- The runtime-agent peer reuses `Request`/`Response` (`0x01`/`0x02`) but the payloads are `RuntimeAgentRequestEnvelope`/`RuntimeAgentResponseEnvelope`, not `NotebookRequestEnvelope`. The type byte is identical; the JSON discriminant inside differs. That is a load-bearing implicit contract.
+- The runtime-agent peer reuses `Request`/`Response` (`0x01`/`0x02`) but the payloads are `RuntimeAgentRequestEnvelope`/`RuntimeAgentResponseEnvelope`, not `NotebookRequestEnvelope`. The shared frame bytes carry different envelope schemas; the receiving peer handles the schema expected on its connection.
 
 ### Forward-compatibility behavior
 
@@ -377,7 +377,7 @@ The phase fields are deliberately ordered so a later snapshot never represents l
 
 3. **Forward-compat is daemon-to-client only.** A v5 daemon can send a v4 client an unknown frame type and the v4 client will skip it. The opposite direction is closed by the preamble check. If we ever want client-side frame extensions (e.g., a future browser client that emits a new frame type the daemon doesn't recognize), we need a separate capability-negotiation step or a relaxed preamble policy. Not v4.
 
-4. **Untyped framing for handshake and capability response is load-bearing legacy.** Pool, SettingsSync, the handshake JSON, and the post-handshake capability JSON all use the untyped framing. Migrating them to typed frames would require a v5 protocol bump. Worth doing as part of a future hosted-room WebSocket transport, where the URL path can carry the channel and the framing can be consistent.
+4. **Pool, SettingsSync, handshake, and capability messages require untyped framing in v4.** Pool, SettingsSync, the handshake JSON, and the post-handshake capability JSON all use the untyped framing. Migrating them to typed frames would require a v5 protocol bump. Worth doing as part of a future hosted-room WebSocket transport, where the URL path can carry the channel and the framing can be consistent.
 
 5. **Idle-peer timeout is the only liveness check.** There is no application-layer heartbeat on typed-frame connections. Presence has heartbeats (`PresenceMessage::Heartbeat`) but those are room-level, not connection-level. A peer that stops sending Presence but keeps sending Automerge sync will not be detected as orphaned. Worth considering an explicit `SessionControl::Ping` for v5.
 

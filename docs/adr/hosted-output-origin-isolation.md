@@ -82,8 +82,8 @@ definition above is true in practice.
 
 ## Decision 2: A separate output origin does not replace the sandbox
 
-The iframe sandbox remains load-bearing. Output frames must continue to omit
-`allow-same-origin`, even when served from a separate output host.
+Output frames must continue to omit `allow-same-origin`, even when served from
+a separate output host.
 
 The separate host gives the frame its own response headers, CSP, caching,
 observability, and deploy lifecycle. The sandbox-induced opaque origin prevents

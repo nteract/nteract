@@ -162,7 +162,7 @@ ids and those ids must qualify catalog rows, open requests, windows, bridges,
 and reconnect state. The account-aware direction is described in
 `docs/memos/hosted-notebook-federation.md`.
 
-The following properties are load-bearing:
+The registry must preserve these rules:
 
 - the registry may contain zero, one, or many normalized hosted origins;
 - a missing file or empty registry means no cloud hosts are configured;

@@ -3,17 +3,17 @@
 This directory is the durable architecture register for nteract notebook rooms,
 runtime state, output transport, hosted sharing, and related daemon invariants.
 
-Exploratory research and cross-functional framing start in
-`docs/memos/`. Memos are source-grounded but not decision-authoritative; durable
-technical decisions graduate back into this ADR register.
+Research and proposals start in `docs/memos/`. Memos should cite supporting
+source code, but they do not establish architectural decisions. Record those
+decisions here.
 
 ## ADR Statuses
 
 Use only these four status terms. When a status needs qualification, add a date
 and brief clause after the status term — do not create compound pseudo-statuses.
 
-- **Accepted**: load-bearing decision that current and future work should treat
-  as the architectural source of truth.
+- **Accepted**: decision that current and future work should use as the
+  architectural source of truth.
 - **Draft**: proposed or recently extracted decision that should be reviewed
   before being used as a hard dependency.
 - **Proposed**: scoped direction for a planned change that still needs review

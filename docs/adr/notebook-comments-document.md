@@ -26,7 +26,7 @@ writer attribution are projected from admitted Automerge change actors.
 
 ## Source Constraints
 
-nteract's document split is load-bearing:
+Comments must preserve the responsibilities of the existing documents:
 
 - `NotebookDoc` owns durable notebook content.
 - `RuntimeStateDoc` owns kernel lifecycle, execution, output, environment, and

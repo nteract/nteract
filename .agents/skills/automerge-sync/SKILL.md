@@ -31,7 +31,7 @@ See `crates/automerge-store/Cargo.toml:17` and
 | Type | Role | Key detail |
 |------|------|-----------|
 | `OpId(counter, actor_index)` | Universal op identifier | `ROOT` = `(0,0)`. Counter is per-actor monotonic. Actor index is position in actor table. |
-| `ActorId` | Peer identity (`TinyVec<[u8;16]>`) | Lexicographic byte ordering is load-bearing. nteract uses `"runtimed"`, `"human:<uuid>"`. |
+| `ActorId` | Peer identity (`TinyVec<[u8;16]>`) | Lexicographic byte ordering determines actor-table indexes used by operations. nteract uses `"runtimed"`, `"human:<uuid>"`. |
 | `Change` | Batch of ops with causal deps | Has `actor_id`, `seq` (per-actor monotonic), `deps` (parent hashes), `hash` (SHA-256). |
 | `ChangeGraph` | DAG of history | `heads` = changes with no children. `has_change(&hash)` is O(1). Backs `required_heads`. |
 | `OpSet` | Materialized document (columnar) | Ops sorted by `(object, key, lamport_ts)`. Rebuilt from columns on `load()`. |

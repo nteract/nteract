@@ -43,7 +43,7 @@ So "genesis" is a first-class causal concept everywhere except the one place thi
 
 1. **It infers intent from a snapshot.** "Uninitialized" means *no one has done anything to this notebook yet* - a statement about the change graph. We reconstruct it from a point-in-time materialized view. In a CRDT those are not the same thing.
 2. **`cell_count() == 0` is not convergence-safe.** A materialized count reflects only what has arrived. A peer can observe zero cells transiently mid-sync, before changes land. The current code is correct only because the daemon seeds under a doc write lock *before* the sync handoff. The safety lives in that choreography, not in the invariant. The boolean reads as if it were self-sufficient; it is not.
-3. **`metadata.is_none()` is load-bearing coupling, not logic.** It distinguishes "pristine" from "user emptied it" only because `create_empty_notebook` happens to always write metadata. Two modules with no stated contract keep that proxy true. Change either side and the invariant silently lies.
+3. **`metadata.is_none()` depends on notebook creation always writing metadata.** It distinguishes "pristine" from "user emptied it" only because `create_empty_notebook` always writes metadata. That dependency between the two modules is undocumented; changing either side can cause the check to misclassify a notebook.
 4. **The hosts disagree.** Daemon: `cell_count == 0 && metadata.is_none()`. Cloud: `cell_count > 0`. There is no single definition of "uninitialized," which is exactly the kind of cloud-vs-desktop divergence we are trying to retire.
 
 ## Forces

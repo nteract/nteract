@@ -86,13 +86,12 @@ Iterating `cellIds` directly would mean React reconciliation calls `insertBefore
 
 Stable-DOM-order rendering keeps every cell's iframe pinned to the same DOM node for its lifetime. Drag-and-drop animation (dnd-kit's `transform`/`transition`), `order`-based visual repositioning, and Automerge cell reordering all flow through CSS. React's reconciler never has to move a cell node it has already mounted.
 
-### Why this is load-bearing across the codebase
+### Three places must preserve cell DOM order
 
 The invariant lives in `apps/notebook/src/AGENTS.md`. Three code sites implement it: the `stableDomOrder` memo
 (`NotebookView.tsx`), the `order: index` style, and the parent flex container.
-Any one of them flipping back to "iterate cellIds and let React handle order"
-reintroduces the iframe reload. CI doesn't catch this; the visible failure is a
-paper cut that is easy to misdiagnose as "iframes are slow."
+Changing any of these to let React reorder the cell nodes reintroduces iframe
+reloads and loses widget state. CI does not catch this regression.
 
 ### Hidden-group rendering composes with this
 
