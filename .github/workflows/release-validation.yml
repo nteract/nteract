@@ -4,6 +4,7 @@ name: Release validation
 on:
   pull_request:
     paths:
+      - .github/actions/install-cargo-about/**
       - .github/workflows/release-common.yml
       - .github/workflows/release-nightly.yml
       - .github/workflows/release-stable.yml
