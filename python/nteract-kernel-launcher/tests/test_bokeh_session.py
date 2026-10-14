@@ -59,15 +59,29 @@ def test_install_registers_panel_formatter_without_importing_panel():
     panel_was_loaded = "panel" in sys.modules
     ip, display_formatter = _formatter()
 
-    assert ("panel.viewable", "Viewable") in (
-        display_formatter.mimebundle_formatter.deferred_printers
-    )
+    printers = display_formatter.mimebundle_formatter.deferred_printers
+    assert ("panel.viewable", "Viewable") in printers
+    assert ("panel.viewable", "Viewer") in printers
     assert ("panel" in sys.modules) is panel_was_loaded
 
     _panel.uninstall(ip)
-    assert ("panel.viewable", "Viewable") not in (
-        display_formatter.mimebundle_formatter.deferred_printers
-    )
+    assert ("panel.viewable", "Viewable") not in printers
+    assert ("panel.viewable", "Viewer") not in printers
+
+
+def test_viewer_renders_as_native_document_session():
+    pn = _load_panel()
+
+    class Counter(pn.viewable.Viewer):
+        def __panel__(self):
+            return pn.Row(pn.widgets.IntSlider(value=3))
+
+    _ip, data, metadata = _format_panel(Counter())
+
+    assert BOKEH_SESSION_MIME in data
+    assert _panel._PANEL_FALLBACK_METADATA not in metadata
+    session = session_registry.require(data[BOKEH_SESSION_MIME]["session_id"])
+    assert session.root_ids == data[BOKEH_SESSION_MIME]["root_ids"]
 
 
 def test_panel_bootstrap_filter_does_not_displace_buffer_hooks():
