@@ -27,10 +27,13 @@ on:
       - scripts/ci/install-tauri-cli.sh
       - scripts/ci/fedora-appimage-smoke.sh
       - scripts/ci/runtime-peer-image-smoke.sh
+      - scripts/ci/runtime-peer-image-debug.sh
+      - scripts/ci/runtime-peer-binding-exit-gdb.sh
       - scripts/tests/test_release_tag.py
       - scripts/tests/audit-linux-node.test.mjs
       - scripts/tests/audit-windows-crt-imports.test.mjs
       - scripts/tests/release-workflow.test.mjs
+      - scripts/tests/runtime-peer-image-debug.test.mjs
       - scripts/tests/stage-notebook-sidecars.test.mjs
       - scripts/tests/npm-*.mjs
       - crates/runtimed-node/**
@@ -59,7 +62,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
-      - run: node --test scripts/tests/audit-linux-node.test.mjs scripts/tests/audit-windows-crt-imports.test.mjs scripts/tests/release-workflow.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
+      - run: node --test scripts/tests/audit-linux-node.test.mjs scripts/tests/audit-windows-crt-imports.test.mjs scripts/tests/release-workflow.test.mjs scripts/tests/runtime-peer-image-debug.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
       - run: python3 -m unittest scripts/tests/test_release_tag.py -v
 
   runtime-peer-image:
@@ -89,11 +92,30 @@ jobs:
           cache-from: type=gha,scope=runtime-peer-validation
           cache-to: type=gha,mode=max,scope=runtime-peer-validation
       - name: Smoke image
+        id: image-smoke
         shell: bash
         run: |
           EXPECTED_VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/runtimed/Cargo.toml)
           test -n "$EXPECTED_VERSION"
           bash scripts/ci/runtime-peer-image-smoke.sh "$IMAGE" "$EXPECTED_VERSION"
+
+      # Separate experiment: an ordinary-smoke failure still fails this job.
+      - name: Capture native binding exit stacks (diagnostic image)
+        id: image-debug
+        if: ${{ !cancelled() && (steps.image-smoke.outcome == 'success' || steps.image-smoke.outcome == 'failure') }}
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/ci/runtime-peer-image-debug.sh "$IMAGE" "$RUNNER_TEMP/runtime-peer-native-stack" 2>&1 | tee "$RUNNER_TEMP/runtime-peer-native-stack.log"
+      - name: Preserve native-stack diagnostic evidence
+        if: ${{ !cancelled() && steps.image-debug.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtime-peer-native-stack-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/runtime-peer-native-stack/
+            ${{ runner.temp }}/runtime-peer-native-stack.log
 
   windows-npm-packaging:
     name: Windows npm packaging

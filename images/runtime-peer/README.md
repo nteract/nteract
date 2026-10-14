@@ -53,6 +53,13 @@ cleanly; the first failed ping or exit stops the smoke. The launch-shape tier
 uses the standalone daemon launcher cache, so it does not add a pooled
 environment's packages to the image interpreter's import path.
 
+PR CI also runs a separate GDB probe in an unpushed diagnostic derivative.
+It verifies interpreter, libpython and native-extension bytes match the ordinary
+image and records package and linked-library differences. The ordinary image
+smoke remains the release gate: diagnostic success cannot erase its failure.
+A tracing-policy error or first failed debugger sample also fails the PR job;
+the job preserves its diagnostic logs without relaxing container permissions.
+
 ```bash
 # Full in-container smoke (contract prechecks + daemon execution + launch shape)
 bash scripts/ci/runtime-peer-image-smoke.sh nteract-runtime-peer:dev
