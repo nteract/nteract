@@ -8,8 +8,16 @@ DOM are required even for the imperative API because column controls use React.
 ## Install and assets
 
 ```sh
-npm install @nteract/sift react react-dom
+npm install --save-exact @nteract/sift react react-dom
 ```
+
+Pin an exact version. Stable nteract releases publish `@nteract/sift` to npm's
+`latest` tag; nightly releases publish `<version>-nightly.<run ID>` to `nightly`
+for hosts that track main between stables. `@nteract/sift-csv` follows the same
+channels with its own version. Both carry npm provenance from the nteract
+release workflow. Hosts that vendored a packed tarball can switch to the
+registry package: it is the same `pnpm pack` output, with the same exports,
+`lib/` layout, and `lib/THIRD_PARTY_NOTICES.md`.
 
 ```tsx
 import { SiftTable, setWasmUrl } from '@nteract/sift'
@@ -181,5 +189,7 @@ Accent and boolean colors keep Sift's defaults unless set, since a shadcn
 
 `lib/THIRD_PARTY_NOTICES.md` lists the Rust crates compiled into the WASM with
 their license texts and NOTICE files. Ship it with any app that redistributes
-Sift. Building and verifying the package from source is covered in the
-package's `AGENTS.md`.
+Sift. The JavaScript in `lib/` is first-party; every npm dependency is
+installed by the host under its own license. Building and
+verifying the package from source is covered in `packages/sift/AGENTS.md` in
+the nteract repository.

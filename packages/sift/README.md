@@ -39,7 +39,9 @@ The package ships JavaScript, compiled CSS, TypeScript declarations, and WASM,
 with notices for the Rust crates compiled into the WASM in
 `lib/THIRD_PARTY_NOTICES.md`. React and React DOM are peer dependencies; no
 notebook, kernel, or daemon is needed. Tested with React 19. Types resolve
-under TypeScript's `bundler` module resolution (Vite, webpack, esbuild).
+under TypeScript's `bundler` module resolution (Vite, webpack, esbuild). Pin an
+exact version; stable nteract releases publish to `latest` and nightlies to the
+`nightly` dist-tag.
 
 ```tsx
 import { loadTableFile, SiftTable } from '@nteract/sift'
@@ -50,7 +52,7 @@ const load = useCallback(() => loadTableFile(bytes), [bytes]) // Parquet or Arro
 ```
 
 Files load whole or fail; defaults are 16 MiB, 100,000 rows, and 256 columns.
-CSV and TSV go through [`@nteract/sift-csv`](../sift-csv), a separate WASM
+CSV and TSV go through [`@nteract/sift-csv`](https://www.npmjs.com/package/@nteract/sift-csv), a separate WASM
 module that returns Arrow IPC bytes for `loadTableFile`, so apps that only open
 Parquet or Arrow do not carry the CSV parser.
 
@@ -84,7 +86,7 @@ cargo xtask wasm sift --skip-renderer-plugins
 |-------|------|
 | Layout | [@chenglou/pretext](https://github.com/chenglou/pretext) — DOM-free text measurement |
 | Data | [Apache Arrow](https://arrow.apache.org/) — columnar, streamed via RecordBatchReader |
-| Compute | [sift-wasm](../../crates/sift-wasm/) — arrow-rs WASM kernels |
+| Compute | [sift-wasm](https://github.com/nteract/nteract/tree/main/crates/sift-wasm) — arrow-rs WASM kernels |
 | Reactivity | [RxJS](https://rxjs.dev/) — streaming pipeline |
 | Charts | SVG histograms + HTML bars |
 

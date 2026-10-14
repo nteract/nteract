@@ -72,8 +72,8 @@ curl -fsSL https://sh.nteract.io | bash
 Many crates are **not published to crates.io** (`publish = false`), including
 `runt`, `runtimed-py`, `mcp-supervisor`, `runt-mcp`, `runt-mcp-proxy`,
 `nteract-mcp`, `runtimed-node`, `runt-publish`, `nteract-markdown-engine`,
-`nteract-markdown-wasm`, `sift-wasm`, and `xtask`. Check `Cargo.toml` for the
-current list.
+`nteract-markdown-wasm`, `sift-wasm`, `sift-csv-wasm`, and `xtask`. Check
+`Cargo.toml` for the current list.
 
 ## Published Bindings
 
@@ -103,9 +103,11 @@ To enable either ARM64 npm platform:
 2. Configure the trusted publisher as in step 3 above. New configurations default to staged publishing only; allow `npm publish`.
 3. Set the variable right away. A new trusted-publisher configuration expires unless it completes a publish within two days. Let the next nightly publish, or dispatch **Nightly Release**.
 
-The first nightly publishes `<Sift version>-nightly.<run ID>` under `nightly`. The next stable release publishes the checked-in Sift version and moves `latest` off the placeholder.
+The first nightly publishes `<Sift version>-nightly.<run ID>` under `nightly`. The next stable release publishes the checked-in Sift version and moves `latest` off the placeholder; the publisher allows that because the checked-in version sorts above `0.0.1`. After it, an owner runs `npm deprecate @nteract/sift@0.0.1 "Placeholder with no code; install a real version."` and checks `npm view @nteract/sift dist-tags`.
 
 `@nteract/sift-csv` uses the same placeholder bootstrap with its own `NPM_SIFT_CSV_ENABLED` gate and `npm-package-sift-csv` artifact. Releases from sources without the CSV package skip that package entirely.
+
+Both packages are past this bootstrap: their gates are `true` and their nightlies publish with provenance. The steps above are for a new package, or for re-creating a trusted publisher.
 
 
 These bootstrap publications, npm permissions, and trusted-publisher settings require separate maintainer qualification. They are not established by the source change or a local test run.
