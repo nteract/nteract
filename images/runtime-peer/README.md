@@ -47,7 +47,11 @@ image. Changes to the image recipe or smoke scripts trigger that workflow.
 The daemon execution tier logs the Python interpreter, binding version and
 native-extension checksum, enables Python fault traces, and requires a clean
 interpreter exit before reporting success. A fault after the coroutine returns
-still fails the smoke test and blocks the staging push.
+still fails the smoke test and blocks the staging push. A bounded exit probe
+then requires 20 fresh Python processes to ping the running daemon and exit
+cleanly; the first failed ping or exit stops the smoke. The launch-shape tier
+uses the standalone daemon launcher cache, so it does not add a pooled
+environment's packages to the image interpreter's import path.
 
 ```bash
 # Full in-container smoke (contract prechecks + daemon execution + launch shape)
