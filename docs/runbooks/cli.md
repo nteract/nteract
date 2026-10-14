@@ -134,6 +134,16 @@ In development, Desktop handoff requires the resolved worktree's own endpoint;
 a socket override alone cannot redirect an existing Desktop process. On Linux,
 strict handoff resolves the selected installation's AppImage directly, including
 custom installer prefixes, rather than trusting a launcher name on PATH.
+On macOS, a bundled MCP/CLI opens its own absolute app bundle, even when another
+copy has the same display name. Standalone callers resolve the channel's CLI
+bundle, then known Applications locations. An incomplete selected bundle is an
+error; strict nightly handoff never falls back to stable.
+
+macOS `--cli` installs retain the signed app bundle under the installer prefix.
+Explicit `open` or `show_notebook` requests can launch Desktop from that bundle,
+including its normal runtime startup behavior. The installer's promise not to
+register or start a service applies to installation, not a later Desktop launch.
+Use MCP `--no-show` to omit Desktop opening.
 
 Pairing registers a machine; serving makes it available for attachment. Neither
 means a notebook kernel is ready or a cell has executed. Workstation persistence
