@@ -1,7 +1,30 @@
-# Dependencies and build artifacts
+# Dependencies and build artifacts. Root-relative patterns only match at the
+# context root, so nested copies need the `**/` form; the Dockerfile runs
+# `pnpm install` and `cargo build` itself and must never see a host's copies.
 node_modules/
+**/node_modules/
 target/
+**/target/
 dist/
+
+# Agent and tooling worktrees checked out inside the repo. They can hold whole
+# second copies of the tree with their own node_modules and target dirs.
+.claude/
+.kilo/
+.codex/
+.cursor/
+.delta/
+
+# Local dev residue that a working checkout accumulates. The image builder
+# produces every binary and wheel it ships; host-arch binaries, debug symbols,
+# framework caches, and local celld data must not enter the context.
+**/.next/
+**/.celld-local/
+**/.venv/
+**/*.dSYM/
+**/.pixi/
+crates/notebook/binaries/
+python/runtimed/src/runtimed/_bin/
 
 # IDE and editor files
 .idea/
