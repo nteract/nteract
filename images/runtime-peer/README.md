@@ -44,6 +44,24 @@ Artifact verification checks freshness and rejects the debug widget placeholder.
 The Release validation PR workflow builds this Dockerfile and runs the same
 full smoke test below on a GitHub-hosted Linux runner, without publishing an
 image. Changes to the image recipe or smoke scripts trigger that workflow.
+The daemon execution tier logs the Python interpreter, binding version and
+native-extension checksum, enables Python fault traces, and requires a clean
+interpreter exit before reporting success. A fault after the coroutine returns
+still fails the smoke test and blocks the staging push. A bounded exit probe
+then requires 20 fresh Python processes to ping the running daemon and exit
+cleanly; the first failed ping or exit stops the smoke. The launch-shape tier
+uses the standalone daemon launcher cache, so it does not add a pooled
+environment's packages to the image interpreter's import path.
+
+PR CI also runs a separate GDB probe in an unpushed diagnostic derivative.
+It verifies interpreter, libpython and native-extension bytes match the ordinary
+image and records package and linked-library differences. The ordinary image
+smoke remains the release gate: diagnostic success cannot erase its failure.
+A tracing-policy error or first failed debugger sample also fails the PR job;
+the job preserves its diagnostic logs and exact native ELF without relaxing
+container permissions. A breakpoint records the caller before a CPython thread
+exit, then continues to the first signal or normal exit. A stopped process stays
+stopped while GDB records registers, mappings, stacks and caller disassembly.
 
 ```bash
 # Full in-container smoke (contract prechecks + daemon execution + launch shape)

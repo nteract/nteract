@@ -85,9 +85,24 @@ done
 [ -S "$SOCKET_PATH" ] || fail "daemon socket never appeared at ${SOCKET_PATH}"
 echo "daemon socket ready at ${SOCKET_PATH}"
 
-python3 - <<'PY' || fail "daemon execution tier failed"
+# Keep Python fault traces and phase markers visible if the interpreter crashes
+# after the coroutine has returned. A completed body is not a successful exit.
+python3 -X faulthandler -u - <<'PY' || fail "daemon execution tier failed (python exit: $?)"
 import asyncio
+import hashlib
+import importlib.metadata
+import sys
+from pathlib import Path
+
 import runtimed
+import runtimed._internals as native
+
+print(f"[smoke-python] interpreter: {sys.version}; executable: {sys.executable}")
+print(f"[smoke-python] runtimed distribution: {importlib.metadata.version('runtimed')}")
+native_path = Path(native.__file__)
+print(f"[smoke-python] native extension: {native_path}")
+with native_path.open("rb") as extension:
+    print(f"[smoke-python] native sha256: {hashlib.file_digest(extension, 'sha256').hexdigest()}")
 
 PNG_BYTES = bytes.fromhex(
     "89504e470d0a1a0a0000000d494844520000000100000001080600000"
@@ -154,19 +169,44 @@ async def main() -> None:
 
 
 asyncio.run(main())
-print("tier 1 ok")
+print("[smoke-python] asyncio.run returned; interpreter shutdown follows")
 PY
+echo "tier 1 ok (Python process exited cleanly)"
+
+# --- Binding exit probe: bounded fresh-process daemon RPC ------------------
+
+step "binding exit probe: 20 fresh Python processes"
+# Every invocation must succeed. These are separate real RPC/exit samples,
+# not retries: the first failure stops the smoke before later tiers can pass.
+for attempt in $(seq 1 20); do
+    echo "binding exit probe ${attempt}/20 starting"
+    python3 -X faulthandler -u - <<'PY' || fail "binding exit probe ${attempt}/20 failed (python exit: $?)"
+import asyncio
+
+import runtimed
+
+
+async def main() -> None:
+    assert await asyncio.wait_for(runtimed.Client().ping(), timeout=10), "daemon ping failed"
+
+
+asyncio.run(main())
+print("[smoke-python] ping returned; interpreter shutdown follows")
+PY
+    echo "binding exit probe ${attempt}/20 exited cleanly"
+done
 
 # --- Tier 2: current_python launch-shape parity ----------------------------
 
 step "tier 2: current_python launch-shape parity"
 
-# Pick the NEWEST launcher cache: if a provider mounts a home that contains
-# stale launcher caches from earlier runs, an arbitrary `find | head -1`
-# could select one that does not belong to this daemon run.
-LAUNCHER_DIR="$(find "$HOME/.cache" -type d -name nteract_kernel_launcher 2>/dev/null -exec stat -c '%Y %n' {} + \
+# Match launcher_cache.rs: only the standalone daemon launcher cache belongs
+# on current_python's PYTHONPATH. A pooled environment's site-packages would
+# also inject its ipykernel/zmq and can be for a different Python interpreter.
+# Retain newest-cache selection for homes with stale caches from earlier runs.
+LAUNCHER_DIR="$(find "$HOME/.cache" -type d -path '*/launcher/nteract_kernel_launcher' 2>/dev/null -exec stat -c '%Y %n' {} + \
     | sort -rn | head -1 | cut -d' ' -f2-)"
-[ -n "$LAUNCHER_DIR" ] || fail "nteract_kernel_launcher cache not found after daemon launch"
+[ -n "$LAUNCHER_DIR" ] || fail "standalone nteract_kernel_launcher cache not found after daemon launch"
 PYTHONPATH_PARENT="$(dirname "$LAUNCHER_DIR")"
 echo "launcher cache at ${LAUNCHER_DIR}"
 

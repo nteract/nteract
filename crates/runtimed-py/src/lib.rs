@@ -11,6 +11,7 @@ extern crate runtimed_client as runtimed;
 use pyo3::prelude::*;
 use std::path::PathBuf;
 
+mod async_bridge;
 mod async_client;
 mod async_session;
 mod daemon_paths;
@@ -112,6 +113,8 @@ fn show_notebook_app_for_channel(channel: &str, notebook_path: Option<PathBuf>) 
 /// Python module for runtimed daemon client.
 #[pymodule]
 fn _internals(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    async_bridge::register_shutdown(m)?;
+
     // Core classes
     m.add_class::<AsyncClient>()?;
 

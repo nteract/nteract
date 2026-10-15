@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import {spawnSync} from "node:child_process";
-import {readFileSync} from "node:fs";
+import {mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
 import {test} from "node:test";
 import {fileURLToPath} from "node:url";
 
@@ -356,4 +358,165 @@ test("runtime-peer image publication keeps packages:write scoped to the two imag
     assert.doesNotMatch(caller, /^permissions:/m, `${name} must not grant workflow-wide permissions`);
     assert.match(workflowJobs(caller).get("release"), /^    permissions:\n      contents: write\n      id-token: write\n      packages: write\n/m, `${name} release job ceiling`);
   }
+});
+
+
+// Exercise only the tier-1 shell boundary. The fake Python command consumes
+// the real heredoc but never imports native code or starts a daemon/container.
+function runImagePythonTier(exitStatus) {
+  const source = readFileSync(new URL("../../images/runtime-peer/smoke.sh", import.meta.url), "utf8");
+  const tier = source.match(/^python3 [^\n]*<<'PY'[^\n]*\nimport asyncio\n[\s\S]*?\nPY\n[\s\S]*?(?=\n# --- (?:Binding exit probe:|Tier 2:))/m)?.[0];
+  assert.ok(tier, "must find the actual tier-1 Python command and its shell completion marker");
+  const fail = source.match(/^fail\(\) \{[^\n]+$/m)?.[0];
+  assert.ok(fail);
+  const fakePython = [
+    "python3() {",
+    "  printf 'python args: %s\\n' \"$*\"",
+    "  while IFS= read -r line; do",
+    "    case \"$line\" in",
+    "      'print(\"tier 1 ok\")') printf 'tier 1 ok\\n' ;;",
+    "    esac",
+    "  done",
+    "  printf 'python application body returned\\n'",
+    "  return \"$SIMULATED_PYTHON_STATUS\"",
+    "}",
+  ].join("\n");
+  return spawnSync("bash", ["-s"], {
+    input: ["set -euo pipefail", fail, fakePython, tier].join("\n"),
+    encoding: "utf8",
+    env: {...process.env, SIMULATED_PYTHON_STATUS: String(exitStatus)},
+  });
+}
+
+test("image Python tier enables fault traces and waits for a clean interpreter exit", () => {
+  const result = runImagePythonTier(0);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /python args: .*?-X ?faulthandler\b/);
+  assert.match(result.stdout, /python args: .*?-u\b/);
+  assert.ok(result.stdout.indexOf("tier 1 ok") > result.stdout.indexOf("python application body returned"),
+    "application completion alone is not a successful interpreter exit");
+});
+
+test("image Python tier fails closed when the interpreter exits 139 after its body", () => {
+  const result = runImagePythonTier(139);
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.stdout, /tier 1 ok/);
+  assert.match(result.stderr, /daemon execution tier failed.*139/);
+});
+
+test("image Python tier preserves ordinary assertion failure", () => {
+  const result = runImagePythonTier(1);
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.stdout, /tier 1 ok/);
+  assert.match(result.stderr, /daemon execution tier failed.*1/);
+});
+
+// Consume the real probe heredoc without executing Python. Shell function calls
+// share a counter, allowing a single bad exit to prove no later sample runs.
+function runImageExitProbe(failureAt, exitStatus) {
+  const source = readFileSync(new URL("../../images/runtime-peer/smoke.sh", import.meta.url), "utf8");
+  const probe = source.match(/^for attempt in .*\n[\s\S]*?^done$/m)?.[0];
+  assert.ok(probe, "must find the actual bounded fresh-process probe");
+  assert.match(probe, /await asyncio\.wait_for\(runtimed\.Client\(\)\.ping\(\), timeout=10\)/);
+  const fail = source.match(/^fail\(\) \{[^\n]+$/m)?.[0];
+  assert.ok(fail);
+  const fakePython = [
+    "calls=0",
+    "python3() {",
+    "  calls=$((calls + 1))",
+    "  printf 'python call %s args: %s\\n' \"$calls\" \"$*\"",
+    "  cat >/dev/null",
+    "  if [ \"$calls\" = \"$SIMULATED_FAILURE_AT\" ]; then",
+    "    return \"$SIMULATED_PYTHON_STATUS\"",
+    "  fi",
+    "}",
+  ].join("\n");
+  return spawnSync("bash", ["-s"], {
+    input: ["set -euo pipefail", fail, fakePython, probe].join("\n"),
+    encoding: "utf8",
+    env: {...process.env, SIMULATED_FAILURE_AT: String(failureAt), SIMULATED_PYTHON_STATUS: String(exitStatus)},
+  });
+}
+
+test("image binding exit probe requires all 20 fresh Python exits with fault traces", () => {
+  const result = runImageExitProbe(0, 0);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.match(/exited cleanly/g)?.length, 20);
+  assert.equal(result.stdout.match(/python call \d+ args: -X faulthandler -u -/g)?.length, 20);
+  assert.ok(result.stdout.indexOf("20/20 exited cleanly") > result.stdout.indexOf("python call 20"));
+});
+
+for (const exitStatus of [139, 1]) {
+  test(`image binding exit probe stops at first failed exit (${exitStatus})`, () => {
+    const result = runImageExitProbe(3, exitStatus);
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout.match(/python call/g)?.length, 3);
+    assert.equal(result.stdout.match(/exited cleanly/g)?.length, 2);
+    assert.doesNotMatch(result.stdout, /4\/20|20\/20/);
+    assert.match(result.stderr, new RegExp(`binding exit probe 3/20 failed.*${exitStatus}`));
+  });
+}
+
+// Run only the actual cache selector against real temporary directory trees.
+// A tiny stat shim supplies GNU stat's format on both macOS and Linux; find,
+// sorting and the selection/failure boundary remain the production shell code.
+function selectImageLauncher(t, entries) {
+  const fixture = mkdtempSync(join(tmpdir(), "image-launcher-"));
+  t.after(() => rmSync(fixture, {recursive: true, force: true}));
+  const fixtureHome = join(fixture, "home");
+  const bin = join(fixture, "bin");
+  mkdirSync(join(fixtureHome, ".cache"), {recursive: true});
+  mkdirSync(bin);
+  for (const [relative, timestamp] of entries) {
+    const dir = join(fixtureHome, ".cache", relative);
+    mkdirSync(dir, {recursive: true});
+    utimesSync(dir, timestamp, timestamp);
+  }
+  writeFileSync(join(bin, "stat"), [
+    `#!${process.execPath}`,
+    'const {statSync} = require("node:fs");',
+    'if (process.argv[2] !== "-c" || process.argv[3] !== "%Y %n") process.exit(2);',
+    'for (const path of process.argv.slice(4)) console.log(`${Math.floor(statSync(path).mtimeMs / 1000)} ${path}`);',
+  ].join("\n"), {mode: 0o755});
+  const source = readFileSync(new URL("../../images/runtime-peer/smoke.sh", import.meta.url), "utf8");
+  const selection = source.match(/^LAUNCHER_DIR=[\s\S]*?(?=\nCONN_FILE=)/m)?.[0];
+  assert.ok(selection, "must find the actual launcher cache selection");
+  const fail = source.match(/^fail\(\) \{[^\n]+$/m)?.[0];
+  assert.ok(fail);
+  // Substitute only the cache root; never repoint HOME or touch a real cache.
+  const result = spawnSync("bash", ["-s"], {
+    input: ["set -euo pipefail", fail, selection.replaceAll("$HOME/.cache", "$FIXTURE_HOME/.cache"), 'printf "selected parent: %s\\n" "$PYTHONPATH_PARENT"'].join("\n"),
+    encoding: "utf8",
+    env: {...process.env, FIXTURE_HOME: fixtureHome, PATH: `${bin}:${process.env.PATH}`},
+  });
+  return {...result, fixtureHome};
+}
+
+test("image launch shape excludes newer conda and UV site-packages from PYTHONPATH", (t) => {
+  const result = selectImageLauncher(t, [
+    ["runt-nightly/launcher/nteract_kernel_launcher", 100],
+    ["runt-nightly/envs/runtimed-uv-new/lib/python3.13/site-packages/nteract_kernel_launcher", 200],
+    ["runt-nightly/envs/runtimed-conda-new/lib/python3.13/site-packages/nteract_kernel_launcher", 300],
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes(`selected parent: ${result.fixtureHome}/.cache/runt-nightly/launcher\n`));
+  assert.doesNotMatch(result.stdout, /site-packages/);
+});
+
+test("image launch shape rejects environment launchers when standalone cache is missing", (t) => {
+  const result = selectImageLauncher(t, [
+    ["runt-nightly/envs/runtimed-conda-new/lib/python3.13/site-packages/nteract_kernel_launcher", 300],
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /standalone nteract_kernel_launcher cache not found/);
+  assert.doesNotMatch(result.stdout, /selected parent:/);
+});
+
+test("image launch shape still selects the newest eligible standalone cache", (t) => {
+  const result = selectImageLauncher(t, [
+    ["runt/launcher/nteract_kernel_launcher", 100],
+    ["runt-nightly/launcher/nteract_kernel_launcher", 200],
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes(`selected parent: ${result.fixtureHome}/.cache/runt-nightly/launcher\n`));
 });

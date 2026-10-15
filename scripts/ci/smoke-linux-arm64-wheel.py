@@ -81,6 +81,20 @@ def main() -> None:
             check=True,
         )
         subprocess.run([str(python), "-I", "-c", PROBE, version], cwd=root, check=True)
+        subprocess.run(
+            [
+                str(python),
+                "-I",
+                str(
+                    Path(__file__).resolve().parents[2]
+                    / "python/runtimed/tests/test_async_bridge.py"
+                ),
+                "-v",
+            ],
+            cwd=root,
+            check=True,
+            timeout=120,
+        )
 
 
 if __name__ == "__main__":
