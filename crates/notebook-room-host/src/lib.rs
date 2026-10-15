@@ -481,12 +481,28 @@ impl RoomHostEngine {
         Ok(result)
     }
 
+    fn uses_room_owned_queue(&self) -> bool {
+        self.state_doc
+            .workstation_attachment()
+            .is_some_and(|a| a.workstation_id == "celld-preview-python")
+    }
+
     pub fn runtime_queue_depth(&self) -> usize {
-        self.state_doc.read_state().queue.queued.len()
+        self.runtime_execution_activity().queue_depth
     }
 
     pub fn runtime_execution_activity(&self) -> RuntimeExecutionActivity {
-        runtime_execution_activity(&self.state_doc.read_state())
+        if self.uses_room_owned_queue() {
+            // Old execution records remain visible, but only the room's active
+            // cohort counts toward scheduling, admission limits and idle time.
+            let queue = self.state_doc.read_explicit_queue();
+            RuntimeExecutionActivity {
+                executing: queue.executing.is_some(),
+                queue_depth: queue.queued.len(),
+            }
+        } else {
+            runtime_execution_activity(&self.state_doc.read_state())
+        }
     }
 
     pub fn save_notebook(&mut self) -> Vec<u8> {
@@ -696,7 +712,7 @@ impl RoomHostEngine {
             || !current.is_some_and(|a| {
                 a.workstation_id == "celld-preview-python"
                     && a.runtime_session_id.as_deref() == Some(session_id)
-                    && matches!(a.status.as_str(), "connecting" | "ready")
+                    && matches!(a.status.as_str(), "connecting" | "ready" | "disconnected")
             })
         {
             return Err(RoomHostError::new(
@@ -1269,11 +1285,7 @@ impl RoomHostEngine {
         if entries.is_empty() {
             return Ok(());
         }
-        let queue = if self
-            .state_doc
-            .workstation_attachment()
-            .is_some_and(|a| a.workstation_id == "celld-preview-python")
-        {
+        let queue = if self.uses_room_owned_queue() {
             self.state_doc.read_explicit_queue()
         } else {
             self.state_doc.read_state().queue
@@ -1545,12 +1557,10 @@ impl RoomHostEngine {
         &mut self,
         reason: &str,
     ) -> Result<RoomHostFrameResult, RoomHostError> {
-        let state = self.state_doc.read_state();
-        let activity = runtime_execution_activity(&state);
+        let activity = self.runtime_execution_activity();
         if activity.executing || activity.queue_depth > 0 {
             return Ok(RoomHostFrameResult::empty());
         }
-        drop(state);
 
         let heads_before = self.state_doc.get_heads();
         self.state_doc

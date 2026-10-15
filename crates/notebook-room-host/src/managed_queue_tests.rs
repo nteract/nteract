@@ -259,3 +259,59 @@ fn invalid_execution_intent_is_not_normalized_by_host_projection() {
         .contains("execution intent"));
     assert_eq!(host.state_doc.get_heads(), baseline);
 }
+
+#[test]
+fn disconnected_current_session_accepts_reconnect_progress() {
+    let mut host = fixture();
+    let one = admit(&mut host, "one");
+    let mut attachment = host.workstation_attachment().unwrap();
+    attachment.status = "disconnected".to_string();
+    host.set_workstation_attachment(Some(&attachment)).unwrap();
+    let baseline = host.state_doc.get_heads();
+    let mut peer = host.state_doc.fork_with_actor(ACTOR);
+    peer.set_execution_running(&one).unwrap();
+    receive(&mut host, &payload(&mut peer, &baseline)).unwrap();
+    assert_queue(&host, Some(&one), &[]);
+}
+
+#[test]
+fn managed_activity_and_idle_ignore_history_but_preserve_active_work() {
+    let mut host = fixture();
+    host.state_doc
+        .create_execution_with_source("old-queued", "source", 0)
+        .unwrap();
+    host.state_doc
+        .create_execution_with_source("old-running", "source", 1)
+        .unwrap();
+    host.state_doc.set_execution_running("old-running").unwrap();
+    assert_eq!(host.runtime_queue_depth(), 0);
+    assert!(!host.runtime_execution_activity().executing);
+    assert_eq!(host.runtime_execution_activity().queue_depth, 0);
+    // The native/default compatibility view still reports inflight history.
+    let native = runtime_execution_activity(&host.state_doc.read_state());
+    assert!(native.executing);
+    assert_eq!(native.queue_depth, 1);
+    let one = admit(&mut host, "one");
+    assert_eq!(host.runtime_queue_depth(), 1);
+    assert!(!host.reconcile_runtime_idle_timeout("idle").unwrap().changed);
+    let baseline = host.state_doc.get_heads();
+    let mut peer = host.state_doc.fork_with_actor(ACTOR);
+    peer.set_execution_running(&one).unwrap();
+    receive(&mut host, &payload(&mut peer, &baseline)).unwrap();
+    assert!(host.runtime_execution_activity().executing);
+    assert!(!host.reconcile_runtime_idle_timeout("idle").unwrap().changed);
+    let baseline = host.state_doc.get_heads();
+    let mut peer = host.state_doc.fork_with_actor(ACTOR);
+    peer.set_execution_done(&one, true).unwrap();
+    receive(&mut host, &payload(&mut peer, &baseline)).unwrap();
+    assert!(host.reconcile_runtime_idle_timeout("idle").unwrap().changed);
+    assert_eq!(host.workstation_attachment().unwrap().status, "idle");
+    assert_eq!(
+        host.state_doc.get_execution("old-queued").unwrap().status,
+        "queued"
+    );
+    assert_eq!(
+        host.state_doc.get_execution("old-running").unwrap().status,
+        "running"
+    );
+}
