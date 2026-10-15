@@ -65,8 +65,10 @@ export class ManagedPythonRoom {
       identity: { principal: ownerPrincipal, actorLabel, scope: "runtime_peer" as const },
     };
     this.handle = new RuntimeStatePeerHandle(actorLabel);
+    this.handle.use_room_owned_queue();
     this.bridge = new PythonRuntimePeer({
       peer: this.handle,
+      roomOwnedQueue: true,
       sessionKey: sessionId,
       isCurrent: (state) => {
         const current = state as {
@@ -258,7 +260,7 @@ export class ManagedPythonRoom {
         let outgoing = this.handle.flush_runtime_state_sync();
         if (outgoing)
           this.apply(
-            await this.materializer.receiveFrame(this.peer, {
+            await this.materializer.receiveManagedRuntimeFrame(this.peer, this.sessionId, {
               type: FrameType.RUNTIME_STATE_SYNC,
               payload: outgoing,
             }),
@@ -269,7 +271,7 @@ export class ManagedPythonRoom {
           const result = this.handle.receive_frame(frame) as { reply?: number[] };
           if (result.reply)
             this.apply(
-              await this.materializer.receiveFrame(this.peer, {
+              await this.materializer.receiveManagedRuntimeFrame(this.peer, this.sessionId, {
                 type: FrameType.RUNTIME_STATE_SYNC,
                 payload: new Uint8Array(result.reply),
               }),

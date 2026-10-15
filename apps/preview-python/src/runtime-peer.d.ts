@@ -46,6 +46,8 @@ export class PythonRuntimePeer {
     prepareOutputs(outputs: Record<string, unknown>[]): Promise<Record<string, unknown>[]>;
     /** Clock for live output windows. */
     scheduler?: SchedulerLike;
+    /** Consume only the active queue owned by the colocated room. */
+    roomOwnedQueue?: boolean;
   });
   drain(): Promise<void>;
   close(options?: { preserveSession?: boolean }): Promise<void>;

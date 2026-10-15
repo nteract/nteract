@@ -297,6 +297,26 @@ export class RoomMaterializer {
     });
   }
 
+  /** Colocated managed progress has one queue owner and an atomic session fence. */
+  async receiveManagedRuntimeFrame(
+    peer: RoomPeer,
+    sessionId: string,
+    frame: TypedFrame,
+  ): Promise<RoomHostFrameResult> {
+    if (peer.identity.scope !== "runtime_peer" || frame.type !== FrameType.RUNTIME_STATE_SYNC)
+      throw new Error("Managed runtime only accepts runtime-state progress");
+    return this.withHost((host) =>
+      normalizeResult(
+        host.receive_managed_runtime_state_sync(
+          peer.id,
+          peer.identity.principal,
+          sessionId,
+          frame.payload,
+        ),
+      ),
+    );
+  }
+
   async receiveFrame(
     peer: RoomPeer,
     frame: TypedFrame,

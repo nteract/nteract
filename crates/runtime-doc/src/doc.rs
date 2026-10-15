@@ -3411,10 +3411,29 @@ impl RuntimeStateDoc {
 
     // ── Full state read ─────────────────────────────────────────────
 
+    /// Read only queue entries explicitly published by the scheduling owner.
+    /// Unlike read_state, this never synthesizes runnable work from history.
+    pub fn read_explicit_queue(&self) -> QueueState {
+        self.get_map("queue")
+            .as_ref()
+            .map(|q| {
+                let executing_eid = self.read_opt_str(q, "executing_execution_id");
+                let queued_eids = self.read_str_list(q, "queued_execution_ids");
+
+                QueueState {
+                    executing: executing_eid.map(|execution_id| QueueEntry { execution_id }),
+                    queued: queued_eids
+                        .into_iter()
+                        .map(|execution_id| QueueEntry { execution_id })
+                        .collect(),
+                }
+            })
+            .unwrap_or_default()
+    }
+
     /// Read the full runtime state snapshot.
     pub fn read_state(&self) -> RuntimeState {
         let kernel = self.get_map("kernel");
-        let queue = self.get_map("queue");
         let env = self.get_map("env");
         let trust = self.get_map("trust");
 
@@ -3470,21 +3489,7 @@ impl RuntimeStateDoc {
             })
             .unwrap_or_default();
 
-        let mut queue_state = queue
-            .as_ref()
-            .map(|q| {
-                let executing_eid = self.read_opt_str(q, "executing_execution_id");
-                let queued_eids = self.read_str_list(q, "queued_execution_ids");
-
-                QueueState {
-                    executing: executing_eid.map(|execution_id| QueueEntry { execution_id }),
-                    queued: queued_eids
-                        .into_iter()
-                        .map(|execution_id| QueueEntry { execution_id })
-                        .collect(),
-                }
-            })
-            .unwrap_or_default();
+        let mut queue_state = self.read_explicit_queue();
 
         // Read executions map
         let executions = self

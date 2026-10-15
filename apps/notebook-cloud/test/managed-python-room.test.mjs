@@ -33,6 +33,13 @@ for (const phase of ["final_start", "pre_execution"])
       setCloudPackageState: async (sessionId, value) =>
         host.set_cloud_package_state_json(sessionId, JSON.stringify(value)),
       syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
+      receiveManagedRuntimeFrame: async (peer, sessionId, frame) =>
+        host.receive_managed_runtime_state_sync(
+          peer.id,
+          peer.identity.principal,
+          sessionId,
+          frame.payload,
+        ),
       receiveFrame: async (peer, frame) =>
         host.receive_peer_frame(
           peer.id,
@@ -129,6 +136,13 @@ for (const failurePhase of ["before_install", "after_install", "unconfirmed_inst
         return host.set_cloud_package_state_json(sessionId, JSON.stringify(value));
       },
       syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
+      receiveManagedRuntimeFrame: async (peer, sessionId, frame) =>
+        host.receive_managed_runtime_state_sync(
+          peer.id,
+          peer.identity.principal,
+          sessionId,
+          frame.payload,
+        ),
       receiveFrame: async (peer, frame) =>
         host.receive_peer_frame(
           peer.id,
@@ -360,6 +374,13 @@ for (const outcome of [
           return host.set_cloud_package_state_json(session, JSON.stringify(value));
         },
         syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
+        receiveManagedRuntimeFrame: async (peer, sessionId, frame) =>
+          host.receive_managed_runtime_state_sync(
+            peer.id,
+            peer.identity.principal,
+            sessionId,
+            frame.payload,
+          ),
         receiveFrame: async (peer, frame) =>
           host.receive_peer_frame(
             peer.id,
@@ -604,6 +625,13 @@ for (const staleQueue of [false, true])
       setCloudPackageState: async (sessionId, value) =>
         host.set_cloud_package_state_json(sessionId, JSON.stringify(value)),
       syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
+      receiveManagedRuntimeFrame: async (peer, sessionId, frame) =>
+        host.receive_managed_runtime_state_sync(
+          peer.id,
+          peer.identity.principal,
+          sessionId,
+          frame.payload,
+        ),
       receiveFrame: async (peer, frame) =>
         host.receive_peer_frame(
           peer.id,
@@ -696,6 +724,13 @@ for (const checkpointOutcome of ["complete", "close", "fail"])
       setCloudPackageState: async (sessionId, value) =>
         host.set_cloud_package_state_json(sessionId, JSON.stringify(value)),
       syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
+      receiveManagedRuntimeFrame: async (peer, sessionId, frame) =>
+        host.receive_managed_runtime_state_sync(
+          peer.id,
+          peer.identity.principal,
+          sessionId,
+          frame.payload,
+        ),
       receiveFrame: async (peer, frame) =>
         host.receive_peer_frame(
           peer.id,
