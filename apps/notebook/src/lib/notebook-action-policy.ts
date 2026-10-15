@@ -64,9 +64,14 @@ export function shouldAttemptHotSyncDependencies(
 ): boolean {
   const isUvInline = envSource === "uv:inline";
   const isCondaInline = envSource === "conda:inline";
+  const isSelectedConda = envSource === "conda:existing:local";
   const hasOnlyAdditions =
-    Boolean(envSyncState?.diff?.added?.length) && !envSyncState?.diff?.removed?.length;
+    Boolean(envSyncState?.diff?.added?.length) &&
+    !envSyncState?.diff?.removed?.length &&
+    !envSyncState?.diff?.channelsChanged &&
+    !envSyncState?.diff?.denoChanged;
 
+  if (isSelectedConda) return hasOnlyAdditions;
   return (isUvInline || isCondaInline) && hasOnlyAdditions;
 }
 
@@ -173,6 +178,7 @@ export function useNotebookActionPolicy({
   const [trustApprovalHandoffPending, setTrustApprovalHandoffPending] = useState(false);
   const [envBuildCreating, setEnvBuildCreating] = useState(false);
   const [justSynced, setJustSynced] = useState(false);
+  const [dependencySyncing, setDependencySyncing] = useState(false);
   const pendingKernelStartRef = useRef(false);
   const runAllInFlightRef = useRef(false);
   const executingCellsRef = useRef(new Set<string>());
@@ -182,6 +188,12 @@ export function useNotebookActionPolicy({
     const timer = setTimeout(() => setJustSynced(false), 3000);
     return () => clearTimeout(timer);
   }, [justSynced]);
+
+  useEffect(() => {
+    if (!trustActionNotice) return;
+    const timer = setTimeout(() => setTrustActionNotice(null), 15_000);
+    return () => clearTimeout(timer);
+  }, [trustActionNotice]);
 
   useEffect(() => {
     if (!trustApprovalHandoffPending) return;
@@ -258,20 +270,53 @@ export function useNotebookActionPolicy({
 
   const performTrustedSyncDeps = useCallback(
     async (guard?: DependencyGuard): Promise<boolean> => {
-      if (shouldAttemptHotSyncDependencies(envSource, envSyncState)) {
+      const isSelectedConda = envSource === "conda:existing:local";
+      if (shouldAttemptHotSyncDependencies(envSource, envSyncState) || isSelectedConda) {
         logger.debug("[notebook-action-policy] Trying hot-sync for additions");
-        const response = await syncEnvironment(guard);
+        setDependencySyncing(true);
+        let response: NotebookResponse;
+        try {
+          response = await syncEnvironment(guard);
+        } catch (error) {
+          logger.error("[notebook-action-policy] Hot-sync request failed:", error);
+          if (isSelectedConda) {
+            setTrustActionNotice(error instanceof Error ? error.message : String(error));
+          }
+          return false;
+        } finally {
+          setDependencySyncing(false);
+        }
 
         if (response.result === "sync_environment_complete") {
           logger.debug("[notebook-action-policy] Hot-sync succeeded:", response.synced_packages);
           resetEnvProgress();
           setJustSynced(true);
+          setTrustActionNotice(null);
           return true;
         }
 
+        if (response.result === "sync_environment_failed" && isSelectedConda) {
+          logger.error("[notebook-action-policy] Hot-sync failed:", {
+            error: response.error,
+            envSource,
+            packages: envSyncState?.diff?.added,
+          });
+          setTrustActionNotice(response.error);
+          return false;
+        }
+
         if (response.result === "guard_rejected") {
-          setTrustActionNotice(response.reason);
           resetEnvProgress();
+          if (isSelectedConda) {
+            const action = guard
+              ? { kind: "sync_deps" as const, provenance: guard }
+              : captureSyncTrustAction();
+            pendingKernelStartRef.current = false;
+            setBlockedTrustAction(action);
+            setTrustDialogOpen(true);
+          } else {
+            setTrustActionNotice(response.reason);
+          }
           return false;
         }
 
@@ -298,7 +343,11 @@ export function useNotebookActionPolicy({
     [
       envSource,
       envSyncState,
+      captureSyncTrustAction,
       resetEnvProgress,
+      setDependencySyncing,
+      setTrustActionNotice,
+      setBlockedTrustAction,
       shutdownKernel,
       syncEnvironment,
       tryStartKernel,
@@ -329,10 +378,13 @@ export function useNotebookActionPolicy({
       return false;
     }
 
-    return performTrustedSyncDeps();
+    return performTrustedSyncDeps(
+      envSource === "conda:existing:local" ? blockedAction?.provenance : undefined,
+    );
   }, [
     captureSyncTrustAction,
     checkTrust,
+    envSource,
     flushSync,
     performTrustedSyncDeps,
     resetEnvProgress,
@@ -460,10 +512,11 @@ export function useNotebookActionPolicy({
 
   const handleTrustApprove = useCallback(async () => {
     const action = pendingTrustActionRef.current;
+    const hasBlockedAction = action !== null;
     const success = await approveTrust(
       action ? { observedHeads: action.provenance.observed_heads } : undefined,
     );
-    if (success && pendingKernelStartRef.current) {
+    if (success && hasBlockedAction) {
       pendingKernelStartRef.current = false;
       setTrustApprovalHandoffPending(true);
       setBlockedTrustAction(null);
@@ -472,6 +525,10 @@ export function useNotebookActionPolicy({
       } else {
         void handleTrustApprovedLaunch(action);
       }
+    } else if (success && pendingKernelStartRef.current) {
+      pendingKernelStartRef.current = false;
+      setTrustApprovalHandoffPending(true);
+      void handleTrustApprovedLaunch(null);
     }
     return success;
   }, [approveTrust, handleTrustApprovedLaunch, runTrustApprovedAction, setBlockedTrustAction]);
@@ -496,6 +553,7 @@ export function useNotebookActionPolicy({
     pendingKernelStartRef.current = false;
     setTrustApprovalHandoffPending(false);
     setBlockedTrustAction(null);
+    setTrustActionNotice(null);
   }, [setBlockedTrustAction]);
 
   const handleTrustDialogOpenChange = useCallback(
@@ -743,9 +801,11 @@ export function useNotebookActionPolicy({
     handleTrustDialogOpenChange,
     hasPendingTrustAction: pendingTrustAction !== null,
     justSynced,
+    dependencySyncing,
     openTrustDialogForKernelStart,
     pendingTrustAction,
     setTrustActionNotice,
+    clearTrustActionNotice: () => setTrustActionNotice(null),
     trustActionNotice,
     trustApprovalHandoffPending,
     trustApproveLabel: trustDialogCopy.approveLabel,

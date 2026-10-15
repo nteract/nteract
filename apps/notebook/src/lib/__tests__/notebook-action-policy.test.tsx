@@ -1,4 +1,4 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { KERNEL_STATUS, type EnvSyncState, type NotebookResponse } from "runtimed";
 import {
@@ -63,7 +63,7 @@ describe("notebook action policy helpers", () => {
     expect(isTrustedForRuntimeAction({ status: "no_dependencies" })).toBe(true);
   });
 
-  it("only hot-syncs inline uv/conda dependency additions", () => {
+  it("hot-syncs inline and selected Conda dependency changes", () => {
     const additionsOnly: EnvSyncState = {
       inSync: false,
       diff: { added: ["numpy"], removed: [], channelsChanged: false, denoChanged: false },
@@ -75,7 +75,16 @@ describe("notebook action policy helpers", () => {
 
     expect(shouldAttemptHotSyncDependencies("uv:inline", additionsOnly)).toBe(true);
     expect(shouldAttemptHotSyncDependencies("conda:inline", additionsOnly)).toBe(true);
+    expect(shouldAttemptHotSyncDependencies("conda:existing:local", additionsOnly)).toBe(true);
     expect(shouldAttemptHotSyncDependencies("pixi:inline", additionsOnly)).toBe(false);
+    expect(shouldAttemptHotSyncDependencies("uv:existing:local", additionsOnly)).toBe(false);
+    expect(shouldAttemptHotSyncDependencies("conda:existing:local", withRemoval)).toBe(false);
+    expect(
+      shouldAttemptHotSyncDependencies("conda:existing:local", {
+        inSync: false,
+        diff: { added: [], removed: [], channelsChanged: true, denoChanged: false },
+      }),
+    ).toBe(false);
     expect(shouldAttemptHotSyncDependencies("uv:inline", withRemoval)).toBe(false);
     expect(shouldAttemptHotSyncDependencies("uv:inline", null)).toBe(false);
   });
@@ -205,6 +214,89 @@ describe("useNotebookActionPolicy", () => {
 
     expect(options.approveTrust).toHaveBeenCalledWith({ observedHeads: ["head-1"] });
     expect(options.syncEnvironment).toHaveBeenCalledWith({ observed_heads: ["head-1"] });
+  });
+
+  it("hot-syncs additions to a selected Conda environment without restarting", async () => {
+    const options = createPolicyOptions({
+      envSource: "conda:existing:local",
+      kernelStatus: KERNEL_STATUS.IDLE,
+      envSyncState: {
+        inSync: false,
+        diff: { added: ["pandas"], removed: [], channelsChanged: false, denoChanged: false },
+      },
+      checkTrust: vi.fn().mockResolvedValue({ status: "trusted" }),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      await result.current.handleSyncDeps();
+    });
+
+    expect(options.syncEnvironment).toHaveBeenCalledTimes(1);
+    expect(options.shutdownKernel).not.toHaveBeenCalled();
+    expect(options.launchKernel).not.toHaveBeenCalled();
+  });
+
+  it("shows a failed Conda sync error without marking packages synced", async () => {
+    const options = createPolicyOptions({
+      envSource: "conda:existing:local",
+      kernelStatus: KERNEL_STATUS.IDLE,
+      envSyncState: {
+        inSync: false,
+        diff: { added: ["requests"], removed: [], channelsChanged: false, denoChanged: false },
+      },
+      syncEnvironment: vi.fn().mockResolvedValue({
+        result: "sync_environment_failed",
+        error: "Failed to install requests: solve failed",
+        needs_restart: false,
+      } satisfies NotebookResponse),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      expect(await result.current.handleSyncDeps()).toBe(false);
+    });
+
+    expect(result.current.justSynced).toBe(false);
+    expect(result.current.trustActionNotice).toBe("Failed to install requests: solve failed");
+    expect(options.shutdownKernel).not.toHaveBeenCalled();
+  });
+
+  it("opens dependency review when selected Conda sync is rejected despite stale trusted UI state", async () => {
+    const options = createPolicyOptions({
+      envSource: "conda:existing:local",
+      kernelStatus: KERNEL_STATUS.IDLE,
+      envSyncState: {
+        inSync: false,
+        diff: { added: ["pandas"], removed: [], channelsChanged: false, denoChanged: false },
+      },
+      checkTrust: vi.fn().mockResolvedValue({ status: "trusted" }),
+      syncEnvironment: vi
+        .fn()
+        .mockResolvedValueOnce({ result: "guard_rejected", reason: "Dependencies need review." })
+        .mockResolvedValueOnce({ result: "sync_environment_complete", synced_packages: ["pandas"] }),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      await result.current.handleSyncDeps();
+    });
+
+    expect(options.syncEnvironment).toHaveBeenCalledWith({ observed_heads: ["head-1"] });
+    expect(result.current.trustDialogOpen).toBe(true);
+    expect(result.current.pendingTrustAction).toMatchObject({
+      kind: "sync_deps",
+      provenance: { observed_heads: ["head-1"] },
+    });
+
+    await act(async () => {
+      await result.current.handleTrustApprove();
+    });
+
+    expect(options.approveTrust).toHaveBeenCalledWith({ observedHeads: ["head-1"] });
+    await waitFor(() => expect(options.syncEnvironment).toHaveBeenCalledTimes(2));
+    expect(options.syncEnvironment).toHaveBeenLastCalledWith({ observed_heads: ["head-1"] });
+    expect(options.shutdownKernel).not.toHaveBeenCalled();
   });
 
   it("clears dismissed env-build details before creating an environment", async () => {

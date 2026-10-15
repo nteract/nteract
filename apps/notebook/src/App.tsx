@@ -16,6 +16,8 @@ import {
   type CommentThreadSnapshot,
   type CommentsProjection,
   type ExecuteCellOptions,
+  type LocalEnvironmentCandidate,
+  type LocalEnvironmentDetails,
   type NotebookResponse,
   type NotebookOutlineItem,
   putBlob,
@@ -96,6 +98,7 @@ import {
   UvDependencyPanel as DependencyHeader,
 } from "@/components/environment";
 import { NotebookToolbar } from "./components/NotebookToolbar";
+import type { NotebookEnvironmentSelection } from "@/components/notebook";
 import { NotebookView } from "./components/NotebookView";
 import { PixiDependencyHeader } from "./components/PixiDependencyHeader";
 import { PresenceProvider } from "./contexts/PresenceContext";
@@ -560,6 +563,7 @@ function AppContent() {
     clearAllDependencies: clearAllCondaDeps,
     setChannels: setCondaChannels,
     setPython: setCondaPython,
+    captureEnvironment: captureCondaEnvironment,
     environmentYmlInfo,
     environmentYmlDeps,
   } = useCondaDependencies();
@@ -653,14 +657,107 @@ function AppContent() {
     runAllCells: daemonRunAllCells,
     runAllCellsGuarded,
     sendCommMessage,
+    listPythonEnvironments,
+    setPythonEnvironment,
+    getPythonEnvironmentDetails,
   } = useDaemonKernel({
     client: notebookClient,
     onExecutionCount: handleExecutionCount,
     onExecutionDone: handleExecutionDone,
   });
 
+  const [environmentInventory, setEnvironmentInventory] = useState<{
+    candidates: LocalEnvironmentCandidate[];
+    selected_id: string | null;
+    selected_name: string | null;
+    truncated: boolean;
+    error: string | null;
+  } | null>(null);
+  const [selectedPythonVersion, setSelectedPythonVersion] = useState<string | null>(null);
+  const [selectedEnvironmentDetails, setSelectedEnvironmentDetails] =
+    useState<LocalEnvironmentDetails | null>(null);
+
+  const refreshEnvironmentCandidates = useCallback(
+    async (isActive: () => boolean = () => true) => {
+      try {
+        const response = await listPythonEnvironments();
+        if (!isActive()) return;
+        if (response.result === "python_environments") {
+          setEnvironmentInventory({ ...response.selection, error: null });
+          if (response.selection.selected_id) {
+            const detail = await getPythonEnvironmentDetails();
+            if (!isActive()) return;
+            setSelectedPythonVersion(
+              detail.result === "python_environment_details"
+                ? (detail.details?.python_version ?? null)
+                : null,
+            );
+            setSelectedEnvironmentDetails(
+              detail.result === "python_environment_details" ? detail.details : null,
+            );
+          } else {
+            setSelectedPythonVersion(null);
+            setSelectedEnvironmentDetails(null);
+          }
+        } else if (response.result === "error") {
+          setEnvironmentInventory((current) =>
+            current ? { ...current, error: response.error } : null,
+          );
+        }
+      } catch (error) {
+        if (isActive())
+          setEnvironmentInventory((current) =>
+            current ? { ...current, error: String(error) } : null,
+          );
+      }
+    },
+    [getPythonEnvironmentDetails, listPythonEnvironments],
+  );
+
+  useEffect(() => {
+    if (!sessionReady || runtime !== "python" || hostedNotebookUrl) {
+      setEnvironmentInventory(null);
+      return;
+    }
+    let active = true;
+    void refreshEnvironmentCandidates(() => active);
+    return () => {
+      active = false;
+    };
+  }, [sessionReady, runtime, hostedNotebookUrl, refreshEnvironmentCandidates]);
+
+  const handleSelectEnvironment = useCallback(
+    async (candidateId: string | null) => {
+      const response = await setPythonEnvironment(candidateId);
+      if (response.result === "python_environments") {
+        setEnvironmentInventory({ ...response.selection, error: null });
+        if (candidateId) {
+          const detail = await getPythonEnvironmentDetails();
+          setSelectedPythonVersion(
+            detail.result === "python_environment_details"
+              ? (detail.details?.python_version ?? null)
+              : null,
+          );
+          setSelectedEnvironmentDetails(
+            detail.result === "python_environment_details" ? detail.details : null,
+          );
+        } else {
+          setSelectedPythonVersion(null);
+          setSelectedEnvironmentDetails(null);
+        }
+      } else if (response.result === "error") {
+        setEnvironmentInventory((current) =>
+          current ? { ...current, error: response.error } : null,
+        );
+      }
+    },
+    [getPythonEnvironmentDetails, setPythonEnvironment],
+  );
+
   // Derive values from daemon kernel
   const envSource = kernelInfo.envSource ?? null;
+  const runningEnvironmentLabel = kernelInfo.environmentName ?? null;
+  const runningEnvironmentId = kernelInfo.environmentId ?? null;
   const shellCapabilities = useMemo(
     () =>
       desktopNotebookShellCapabilities({
@@ -1343,7 +1440,10 @@ function AppContent() {
 
   const condaDerivedSyncState: EnvSyncState | null = useMemo(() => {
     // Show for conda:inline or conda:prewarmed (when user adds deps to prewarmed kernel)
-    const isCondaEnv = envSource === "conda:inline" || envSource === "conda:prewarmed";
+    const isCondaEnv =
+      envSource === "conda:inline" ||
+      envSource === "conda:prewarmed" ||
+      envSource === "conda:existing:local";
     if (!isCondaEnv || !envSyncState) return null;
     // Only show dirty state for prewarmed if there's actually a diff with conda deps
     if (envSource === "conda:prewarmed" && !envSyncState.diff?.added?.length) return null;
@@ -1515,8 +1615,10 @@ function AppContent() {
     handleTrustApproveOnly,
     handleTrustDecline,
     handleTrustDialogOpenChange,
+    clearTrustActionNotice,
     hasPendingTrustAction,
     justSynced,
+    dependencySyncing,
     openTrustDialogForKernelStart,
     setTrustActionNotice,
     trustActionNotice,
@@ -1549,6 +1651,37 @@ function AppContent() {
     resetDismissedEnvBuildDetails,
     showEnvBuildDialog,
   });
+
+  const handleApplySelectedEnvironment = useCallback(async () => {
+    if (!shellCapabilities.canExecute || !sessionReady || !environmentInventory?.selected_id)
+      return;
+    try {
+      const detail = await getPythonEnvironmentDetails();
+      if (detail.result === "error") throw new Error(detail.error);
+      if (detail.result !== "python_environment_details" || !detail.details) {
+        throw new Error("Selected environment is no longer available");
+      }
+      const trust = await checkTrust();
+      if (trust && trust.status !== "trusted" && trust.status !== "no_dependencies") {
+        setEnvironmentInventory((current) =>
+          current
+            ? { ...current, error: "Trust this notebook before applying an environment" }
+            : null,
+        );
+        return;
+      }
+      await handleRestartKernel();
+    } catch (error) {
+      setEnvironmentInventory((current) => (current ? { ...current, error: String(error) } : null));
+    }
+  }, [
+    shellCapabilities.canExecute,
+    sessionReady,
+    environmentInventory?.selected_id,
+    getPythonEnvironmentDetails,
+    checkTrust,
+    handleRestartKernel,
+  ]);
 
   const handleExecuteCell = useCallback(
     (cellId: string) => {
@@ -2098,6 +2231,29 @@ function AppContent() {
               projectContext={runtimeState.project_context}
               envTypeHint={envTypeHint}
               envProgress={envProgress.isActive || envProgress.error ? envProgress : null}
+              environmentSelection={
+                environmentInventory
+                  ? ({
+                      candidates: environmentInventory.candidates,
+                      selectedId: environmentInventory.selected_id,
+                      selectedName: environmentInventory.selected_name,
+                      runningId: runningEnvironmentId,
+                      truncated: environmentInventory.truncated,
+                      error: environmentInventory.error,
+                      onSelect: (candidateId) => {
+                        void handleSelectEnvironment(candidateId);
+                      },
+                      onApply: () => {
+                        void handleApplySelectedEnvironment();
+                      },
+                      onRefresh: () => {
+                        void refreshEnvironmentCandidates();
+                      },
+                    } satisfies NotebookEnvironmentSelection)
+                  : null
+              }
+              runningEnvironmentLabel={runningEnvironmentLabel}
+              pythonVersion={condaDependencies?.python ?? selectedPythonVersion}
               runtime={runtime}
               onStartKernel={handleStartKernel}
               onInterruptKernel={interruptKernel}
@@ -2208,6 +2364,11 @@ function AppContent() {
                     <CondaDependencyHeader
                       variant="rail"
                       dependencies={condaDependencies?.dependencies ?? []}
+                      selectedEnvironmentDependencies={
+                        envSource === "conda:existing:local"
+                          ? (selectedEnvironmentDetails?.conda_dependencies ?? [])
+                          : []
+                      }
                       channels={condaDependencies?.channels ?? []}
                       python={condaDependencies?.python ?? null}
                       loading={condaDepsLoading}
@@ -2218,9 +2379,39 @@ function AppContent() {
                       onRemove={removeCondaDependency}
                       onSetChannels={setCondaChannels}
                       onSetPython={setCondaPython}
+                      selectedEnvironmentNeedsSync={
+                        envSource === "conda:existing:local" &&
+                        selectedEnvironmentDetails !== null &&
+                        (!isCondaConfigured ||
+                          condaDependencies?.python !== selectedEnvironmentDetails.python_version ||
+                          selectedEnvironmentDetails.conda_dependencies.some(
+                            (dependency) => !condaDependencies?.dependencies.includes(dependency),
+                          ))
+                      }
+                      onImportSelectedEnvironment={async () => {
+                        const details = await getPythonEnvironmentDetails();
+                        if (details.result !== "python_environment_details" || !details.details) {
+                          setEnvironmentInventory((current) =>
+                            current
+                              ? { ...current, error: "Selected environment is unavailable" }
+                              : null,
+                          );
+                          return false;
+                        }
+                        await captureCondaEnvironment(
+                          details.details.python_version,
+                          details.details.conda_dependencies,
+                        );
+                        setSelectedEnvironmentDetails(details.details);
+                        setSelectedPythonVersion(details.details.python_version);
+                        return true;
+                      }}
                       onSyncNow={handleSyncDeps}
                       onRetryLaunch={tryStartKernel}
                       envProgress={envProgress.envType === "conda" ? envProgress : null}
+                      syncing={envProgress.isActive || dependencySyncing}
+                      syncError={trustActionNotice}
+                      onDismissSyncError={clearTrustActionNotice}
                       onResetProgress={envProgress.reset}
                       environmentYmlInfo={environmentYmlInfo}
                       environmentYmlDeps={environmentYmlDeps}

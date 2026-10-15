@@ -19,6 +19,7 @@ export interface CondaDependencyPanelProps {
   onRemove: (pkg: string) => Promise<void>;
   onSetChannels: (channels: string[]) => Promise<void>;
   onSetPython: (python: string | null) => Promise<void>;
+  onImportSelectedEnvironment?: () => Promise<boolean>;
   onSyncNow: () => Promise<boolean>;
   /** Re-launch kernel (used for retry after env creation failure) */
   onRetryLaunch?: () => Promise<boolean>;
@@ -26,6 +27,13 @@ export interface CondaDependencyPanelProps {
   envProgress?: EnvProgressState | null;
   /** Callback to reset/dismiss error state */
   onResetProgress?: () => void;
+  /** Whether a package sync is currently running. */
+  syncing?: boolean;
+  /** Package sync failure shown beside the dependency list. */
+  syncError?: string | null;
+  onDismissSyncError?: () => void;
+  selectedEnvironmentNeedsSync?: boolean;
+  selectedEnvironmentDependencies?: string[];
   // environment.yml support
   environmentYmlInfo?: EnvironmentYmlInfo | null;
   environmentYmlDeps?: EnvironmentYmlDeps | null;
@@ -46,10 +54,16 @@ export function CondaDependencyPanel({
   onRemove,
   onSetChannels,
   onSetPython,
+  onImportSelectedEnvironment,
   onSyncNow,
   onRetryLaunch,
   envProgress,
   onResetProgress,
+  syncing = false,
+  syncError,
+  onDismissSyncError,
+  selectedEnvironmentNeedsSync = false,
+  selectedEnvironmentDependencies = [],
   environmentYmlInfo,
   environmentYmlDeps,
   justSynced,
@@ -59,6 +73,10 @@ export function CondaDependencyPanel({
   const [showChannelInput, setShowChannelInput] = useState(false);
   const isRail = variant === "rail";
   const isEnvironmentYmlMode = envSource === "conda:env_yml" || Boolean(environmentYmlInfo);
+  const isSelectedCondaEnvironment = envSource === "conda:existing:local";
+  const syncRunning = syncing || loading;
+  const [importingSelectedEnvironment, setImportingSelectedEnvironment] = useState(false);
+  const visibleDependencies = [...new Set([...selectedEnvironmentDependencies, ...dependencies])];
   const environmentYmlDependencyValues = environmentYmlDeps
     ? [...environmentYmlDeps.dependencies, ...environmentYmlDeps.pip_dependencies]
     : [];
@@ -181,13 +199,19 @@ export function CondaDependencyPanel({
             <div className="flex items-start gap-2 text-xs text-red-700 dark:text-red-400">
               <AlertCircle className="size-4 mt-0.5 shrink-0" />
               <div className="flex-1 min-w-0">
-                <div className="font-medium">Environment creation failed</div>
+                <div className="font-medium">
+                  {isSelectedCondaEnvironment
+                    ? "Package sync failed"
+                    : "Environment creation failed"}
+                </div>
                 <pre className="mt-1 whitespace-pre-wrap font-mono text-[10px] opacity-80 overflow-x-auto">
                   {envProgress.error}
                 </pre>
                 {!readOnly && (
                   <div className="mt-2 text-[11px] text-red-600/80 dark:text-red-400/80">
-                    Fix channels or dependencies above, then retry.
+                    {isSelectedCondaEnvironment
+                      ? "The package was not installed. Fix the package or channels above, then retry."
+                      : "Fix channels or dependencies above, then retry."}
                   </div>
                 )}
               </div>
@@ -195,7 +219,7 @@ export function CondaDependencyPanel({
                 <div className="flex items-center gap-1 shrink-0">
                   <button
                     type="button"
-                    disabled={loading}
+                    disabled={syncRunning}
                     onClick={() => {
                       onResetProgress?.();
                       (onRetryLaunch ?? onSyncNow)();
@@ -217,6 +241,34 @@ export function CondaDependencyPanel({
                     </button>
                   )}
                 </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {isSelectedCondaEnvironment && syncError && (
+          <div className="mb-3 rounded bg-red-500/10 border border-red-200 dark:border-red-900 px-2 py-2">
+            <div className="flex items-start gap-2 text-xs text-red-700 dark:text-red-400">
+              <AlertCircle className="size-4 mt-0.5 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <div className="font-medium">Package sync failed</div>
+                <pre className="mt-1 whitespace-pre-wrap font-mono text-[10px] opacity-80 overflow-x-auto">
+                  {syncError}
+                </pre>
+                <div className="mt-2 text-[11px] text-red-600/80 dark:text-red-400/80">
+                  The failed package was removed from the dependency list. Fix the package or
+                  channels, then retry.
+                </div>
+              </div>
+              {onDismissSyncError && (
+                <button
+                  type="button"
+                  onClick={onDismissSyncError}
+                  className="text-red-500 hover:text-red-700 dark:hover:text-red-300"
+                  title="Dismiss"
+                >
+                  <X className="size-3" />
+                </button>
               )}
             </div>
           </div>
@@ -301,6 +353,32 @@ export function CondaDependencyPanel({
         )}
 
         {/* Environment drift notice - kernel restart needed */}
+        {!readOnly && selectedEnvironmentNeedsSync && (
+          <div className="mb-3 flex flex-col gap-2 rounded bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+            <span>
+              Sync the selected environment to add its Python version and requested packages to this
+              notebook.
+            </span>
+            <button
+              type="button"
+              data-testid="sync-selected-environment"
+              onClick={async () => {
+                if (!onImportSelectedEnvironment) return;
+                setImportingSelectedEnvironment(true);
+                try {
+                  await onImportSelectedEnvironment();
+                } finally {
+                  setImportingSelectedEnvironment(false);
+                }
+              }}
+              disabled={syncRunning || importingSelectedEnvironment}
+              className="self-start rounded bg-amber-600 px-2 py-1 font-medium text-white disabled:opacity-50"
+            >
+              {syncRunning || importingSelectedEnvironment ? "Syncing..." : "Sync environment"}
+            </button>
+          </div>
+        )}
+
         {!readOnly && syncState?.status === "dirty" && (
           <div
             className={cn(
@@ -312,20 +390,32 @@ export function CondaDependencyPanel({
           >
             <div className="flex items-start gap-2">
               <Info className="size-3.5 shrink-0" />
-              <span>Dependencies changed — re-initialize environment to apply</span>
+              <span>
+                {syncRunning
+                  ? isSelectedCondaEnvironment
+                    ? "Syncing packages into the selected environment..."
+                    : "Re-initializing environment..."
+                  : isSelectedCondaEnvironment
+                    ? "Selected environments support adding packages only"
+                    : "Dependencies changed — re-initialize environment to apply"}
+              </span>
             </div>
             <button
               type="button"
               onClick={onSyncNow}
-              disabled={loading}
+              disabled={syncRunning}
               data-testid="deps-restart-button"
               className={cn(
                 "flex items-center gap-1 rounded bg-amber-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-50",
                 isRail && "self-start py-1",
               )}
             >
-              <RefreshCw className={`size-3 ${loading ? "animate-spin" : ""}`} />
-              Re-initialize
+              <RefreshCw className={`size-3 ${syncRunning ? "animate-spin" : ""}`} />
+              {syncRunning
+                ? "Syncing..."
+                : isSelectedCondaEnvironment
+                  ? "Sync packages"
+                  : "Re-initialize"}
             </button>
           </div>
         )}
@@ -434,47 +524,9 @@ export function CondaDependencyPanel({
               </label>
             )}
 
-            {/* Dependencies list */}
-            {isRail ? (
-              <PackageSpecList
-                values={dependencies}
-                tone="conda"
-                emptyLabel="No dependencies. Add conda packages to create an isolated environment."
-                loading={loading}
-                onRemove={readOnly ? undefined : onRemove}
-                className="mb-3"
-              />
-            ) : dependencies.length > 0 ? (
-              <div className="mb-3 flex flex-wrap gap-1.5">
-                {dependencies.map((dep) => (
-                  <div
-                    key={dep}
-                    className="flex max-w-full items-center gap-1 rounded border bg-background px-2 py-1 text-xs"
-                  >
-                    <span className="min-w-0 truncate font-mono">{dep}</span>
-                    {!readOnly && (
-                      <button
-                        type="button"
-                        onClick={() => onRemove(dep)}
-                        className="text-muted-foreground hover:text-foreground transition-colors"
-                        disabled={loading}
-                        title={`Remove ${dep}`}
-                      >
-                        <X className="size-3" />
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="mb-3 text-xs text-muted-foreground">
-                No dependencies. Add conda packages to create an isolated environment.
-              </div>
-            )}
-
             {/* Add dependency input */}
             {!readOnly && (
-              <div className="flex gap-2">
+              <div className="mb-3 flex gap-2">
                 <input
                   type="text"
                   value={newDep}
@@ -497,6 +549,44 @@ export function CondaDependencyPanel({
                   <Plus className="size-3" />
                   Add
                 </button>
+              </div>
+            )}
+
+            {/* Dependencies list */}
+            {isRail ? (
+              <PackageSpecList
+                values={visibleDependencies}
+                tone="conda"
+                emptyLabel="No dependencies. Add conda packages to create an isolated environment."
+                loading={loading}
+                onRemove={readOnly ? undefined : onRemove}
+                className="mb-3"
+              />
+            ) : visibleDependencies.length > 0 ? (
+              <div className="mb-3 flex flex-wrap gap-1.5">
+                {visibleDependencies.map((dep) => (
+                  <div
+                    key={dep}
+                    className="flex max-w-full items-center gap-1 rounded border bg-background px-2 py-1 text-xs"
+                  >
+                    <span className="min-w-0 truncate font-mono">{dep}</span>
+                    {!readOnly && (
+                      <button
+                        type="button"
+                        onClick={() => onRemove(dep)}
+                        className="text-muted-foreground hover:text-foreground transition-colors"
+                        disabled={loading}
+                        title={`Remove ${dep}`}
+                      >
+                        <X className="size-3" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mb-3 text-xs text-muted-foreground">
+                No dependencies. Add conda packages to create an isolated environment.
               </div>
             )}
           </>
