@@ -26,10 +26,22 @@ use parquet::file::properties::WriterProperties;
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
-/// Write an Arrow IPC stream to a Parquet file. ZSTD compressed,
-/// one row group per input RecordBatch.
+/// Write an Arrow IPC stream to a Parquet file. ZSTD compressed, with the
+/// writer's default row group size (1,048,576 rows), so small inputs become a
+/// single row group regardless of how many record batches they arrive in.
 #[wasm_bindgen]
 pub fn write_parquet_ipc(ipc_bytes: &[u8]) -> Result<Vec<u8>, JsError> {
+    write_parquet_ipc_row_groups(ipc_bytes, None)
+}
+
+/// `write_parquet_ipc` with a row group row cap. Bounded row groups let the
+/// byte-range reader load and show the file a group at a time; pass `None`
+/// for the writer default.
+#[wasm_bindgen]
+pub fn write_parquet_ipc_row_groups(
+    ipc_bytes: &[u8],
+    max_row_group_rows: Option<u32>,
+) -> Result<Vec<u8>, JsError> {
     let reader = StreamReader::try_new(Cursor::new(ipc_bytes), None)
         .map_err(|e| JsError::new(&format!("ipc reader: {e}")))?;
     let schema = reader.schema();
@@ -37,7 +49,7 @@ pub fn write_parquet_ipc(ipc_bytes: &[u8]) -> Result<Vec<u8>, JsError> {
         .collect::<Result<_, _>>()
         .map_err(|e| JsError::new(&format!("ipc read batch: {e}")))?;
 
-    write_batches_to_parquet(schema, batches)
+    write_batches_to_parquet(schema, batches, max_row_group_rows)
 }
 
 /// Row shape returned by SQLite's `PRAGMA table_info(table)`:
@@ -203,7 +215,7 @@ pub fn write_parquet_from_sqlite(
     let batch = RecordBatch::try_new(schema.clone(), arrays)
         .map_err(|e| JsError::new(&format!("record batch: {e}")))?;
 
-    write_batches_to_parquet(schema, vec![batch])
+    write_batches_to_parquet(schema, vec![batch], None)
 }
 
 fn get_cell(rows: &js_sys::Array, i: usize, key: &JsValue, name: &str) -> Result<JsValue, JsError> {
@@ -630,12 +642,18 @@ impl TimestampAppender for TimestampNanosecondBuilder {
 fn write_batches_to_parquet(
     schema: Arc<Schema>,
     batches: Vec<RecordBatch>,
+    max_row_group_rows: Option<u32>,
 ) -> Result<Vec<u8>, JsError> {
     let zstd_level =
         ZstdLevel::try_new(3).map_err(|e| JsError::new(&format!("zstd level: {e}")))?;
-    let props = WriterProperties::builder()
-        .set_compression(Compression::ZSTD(zstd_level))
-        .build();
+    let mut props = WriterProperties::builder().set_compression(Compression::ZSTD(zstd_level));
+    if let Some(rows) = max_row_group_rows {
+        if rows == 0 {
+            return Err(JsError::new("max_row_group_rows must be at least 1"));
+        }
+        props = props.set_max_row_group_size(rows as usize);
+    }
+    let props = props.build();
 
     let mut buf: Vec<u8> = Vec::new();
     let mut writer = ArrowWriter::try_new(&mut buf, schema, Some(props))

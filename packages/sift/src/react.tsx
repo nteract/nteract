@@ -23,6 +23,14 @@ import {
   applyParquetColumnHints,
   pandasIndexColumnsFromHints,
 } from "./parquet-features";
+import { resolveTableFileLimits, type TableFileOptions } from "./file-data";
+import {
+  type ByteSource,
+  byteSourceFromBytes,
+  type OpenParquetFile,
+  openParquetFile,
+  type ParquetFileLimits,
+} from "./parquet-file";
 import { ensureModule, getModuleSync, loadIpc } from "./predicate";
 import {
   type Column,
@@ -63,7 +71,18 @@ export type SiftSource =
   /** Memoize the loader; each call must return a fresh, independently disposable table. */
   | { kind: "loader"; load: () => Promise<TableData> }
   | { kind: "url"; url: string }
-  | { kind: "arrow-stream-manifest"; manifest: ArrowStreamManifest };
+  | { kind: "arrow-stream-manifest"; manifest: ArrowStreamManifest }
+  /**
+   * A Parquet file read by byte range. Sift reads the footer, mounts after
+   * the first row group, and streams the rest. Memoize `source`; a new object
+   * identity reloads. `limits` bounds rows, columns and decoded memory; the
+   * file length itself is not capped.
+   */
+  | {
+      kind: "byte-source";
+      source: ByteSource;
+      limits?: Pick<TableFileOptions, "maxRows" | "maxColumns" | "maxDecodedBytes">;
+    };
 
 export type SiftLoadMilestone = {
   source: SiftSource["kind"];
@@ -91,6 +110,12 @@ export type SiftTableProps = {
   onChange?: (state: TableEngineState) => void;
   /** Called as URL/manifest data loads, decodes, and mounts. Intended for host diagnostics. */
   onLoadMilestone?: (milestone: SiftLoadMilestone) => void;
+  /**
+   * Called when a `loader`, `url`, `byte-source` or manifest source fails to
+   * load. Sift still renders its own error state; this lets the host log or
+   * surface the failure without wrapping the loader.
+   */
+  onLoadError?: (error: Error) => void;
   /** Optional control rendered in Sift's footer before built-in buttons. */
   footerControl?: ReactNode;
   /** CSS class name for the container div. */
@@ -265,6 +290,81 @@ async function detectFormat(
   };
 }
 
+// --- Progressive Parquet ---
+
+type ProgressiveParquetArgs = {
+  source: ByteSource;
+  limits: ParquetFileLimits;
+  columnOverrides?: Record<string, Partial<Column>>;
+  signal: AbortSignal;
+  emit: (milestone: Omit<SiftLoadMilestone, "elapsedMs" | "source">) => void;
+  /** Called once the file is open so cleanup can close or dispose it. */
+  onOpen: (file: OpenParquetFile) => void;
+  /**
+   * Mount the first lease; later leases go through `engine().replaceData`.
+   * `streaming` is true when more row groups follow.
+   */
+  mount: (tableData: TableData, streaming: boolean) => void;
+  engine: () => TableEngine | null;
+};
+
+/**
+ * Open a Parquet file by byte range, mount the table after the first row
+ * group, then append the remaining groups one at a time, yielding to the
+ * event loop between them. Resolves when the store is complete. Rejects with
+ * the loader error; an aborted signal rejects with its reason.
+ */
+async function streamParquetIntoEngine(args: ProgressiveParquetArgs): Promise<void> {
+  const { source, limits, columnOverrides, signal, emit, onOpen, mount, engine } = args;
+  const format = "parquet";
+  const file = await openParquetFile(source, { limits, columnOverrides, signal });
+  onOpen(file);
+  emit({ phase: "wasm-ready", format, byteLength: source.byteLength });
+  emit({
+    phase: "table-data-created",
+    format,
+    rowCount: file.rowCount,
+    chunkCount: file.rowGroupCount,
+  });
+
+  if (file.rowGroupCount > 0) {
+    await file.appendRowGroup(0);
+    emit({ phase: "first-chunk-fetched", format, chunkIndex: 0, chunkCount: file.rowGroupCount });
+  }
+  emit({ phase: "summaries-ready", format, rowCount: file.tableData.rowCount });
+  signal.throwIfAborted();
+  mount(file.tableData, file.rowGroupCount > 1);
+  emit({ phase: "engine-mounted", format, rowCount: file.tableData.rowCount });
+
+  for (let group = 1; group < file.rowGroupCount; group++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    signal.throwIfAborted();
+    const { replaced } = await file.appendRowGroup(group);
+    signal.throwIfAborted();
+    if (replaced) {
+      engine()?.replaceData(replaced, { streaming: true });
+    } else {
+      engine()?.onBatchAppended();
+    }
+    emit({
+      phase: "chunk-appended",
+      format,
+      chunkIndex: group,
+      chunkCount: file.rowGroupCount,
+      rowCount: file.tableData.rowCount,
+    });
+  }
+
+  signal.throwIfAborted();
+  const { replaced } = file.finish();
+  if (replaced) {
+    engine()?.replaceData(replaced, { streaming: false });
+  } else {
+    engine()?.setStreamingDone();
+  }
+  emit({ phase: "streaming-complete", format, rowCount: file.tableData.rowCount });
+}
+
 // --- Component ---
 
 export function SiftTable({
@@ -275,6 +375,7 @@ export function SiftTable({
   columnOverrides,
   onChange,
   onLoadMilestone,
+  onLoadError,
   footerControl,
   className,
   style,
@@ -283,6 +384,12 @@ export function SiftTable({
   const urlSource = source?.kind === "url" ? source.url : url;
   const manifestSource = source?.kind === "arrow-stream-manifest" ? source.manifest : undefined;
   const loadSource = source?.kind === "loader" ? source.load : undefined;
+  const byteSource = source?.kind === "byte-source" ? source.source : undefined;
+  // Primitive deps so an inline `limits` object does not reload on every render.
+  const byteSourceLimits = source?.kind === "byte-source" ? source.limits : undefined;
+  const byteSourceMaxRows = byteSourceLimits?.maxRows;
+  const byteSourceMaxColumns = byteSourceLimits?.maxColumns;
+  const byteSourceMaxDecodedBytes = byteSourceLimits?.maxDecodedBytes;
   const previewNotice = useMemo(() => arrowStreamPreviewNotice(manifestSource), [manifestSource]);
   const isBoundedPreview = previewNotice !== null;
   const containerRef = useRef<HTMLDivElement>(null);
@@ -301,9 +408,19 @@ export function SiftTable({
   onChangeRef.current = onChange;
   const onLoadMilestoneRef = useRef(onLoadMilestone);
   onLoadMilestoneRef.current = onLoadMilestone;
+  const onLoadErrorRef = useRef(onLoadError);
+  onLoadErrorRef.current = onLoadError;
 
   const stableOnChange = useCallback((state: TableEngineState) => {
     onChangeRef.current?.(state);
+  }, []);
+
+  /** Switch to the error state and tell the host. */
+  const reportLoadError = useCallback((cause: unknown) => {
+    const error = cause instanceof Error ? cause : new Error(String(cause));
+    setError(error.message);
+    setStatus("error");
+    onLoadErrorRef.current?.(error);
   }, []);
 
   const emitLoadMilestone = useCallback(
@@ -431,8 +548,7 @@ export function SiftTable({
         pendingData?.dispose?.();
         pendingData = undefined;
         if (cancelled) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
-        setStatus("error");
+        reportLoadError(cause);
       });
 
     return () => {
@@ -447,6 +563,90 @@ export function SiftTable({
     getEngineElement,
     getFooterControlElement,
     emitLoadMilestone,
+    reportLoadError,
+  ]);
+
+  // Stream a byte-range Parquet source: footer, first row group, mount, rest.
+  useEffect(() => {
+    if (!byteSource || !containerRef.current) return;
+
+    // See the `data` effect: this source takes over the engine, so the
+    // manifest store it supersedes must not stay reachable through the ref.
+    storeRef.current = null;
+
+    const startedAt = performance.now();
+    const controller = new AbortController();
+    let cancelled = false;
+    let openFile: OpenParquetFile | null = null;
+    let mounted = false;
+
+    setStatus("loading");
+    setError(null);
+    emitLoadMilestone(startedAt, { source: "byte-source", phase: "load-start" });
+
+    let limits: ParquetFileLimits;
+    try {
+      limits = resolveTableFileLimits({
+        maxRows: byteSourceMaxRows,
+        maxColumns: byteSourceMaxColumns,
+        maxDecodedBytes: byteSourceMaxDecodedBytes,
+      });
+    } catch (cause) {
+      reportLoadError(cause);
+      return;
+    }
+
+    streamParquetIntoEngine({
+      source: byteSource,
+      limits,
+      columnOverrides,
+      signal: controller.signal,
+      emit: (milestone) => emitLoadMilestone(startedAt, { ...milestone, source: "byte-source" }),
+      onOpen: (file) => {
+        openFile = file;
+      },
+      mount: (tableData, streaming) => {
+        if (engineRef.current) {
+          engineRef.current.replaceData(tableData, { streaming });
+        } else {
+          const engineDiv = getEngineElement();
+          if (!engineDiv) return;
+          engineRef.current = createTable(engineDiv, tableData, {
+            onChange: stableOnChange,
+            footerControl: getFooterControlElement(),
+          });
+        }
+        mounted = true;
+        setStatus("ready");
+      },
+      engine: () => engineRef.current,
+    }).catch((cause: unknown) => {
+      if (cancelled) return;
+      if (openFile && !mounted) openFile.dispose();
+      else openFile?.close();
+      openFile = null;
+      reportLoadError(cause);
+    });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      // Once mounted the engine owns the store; only the footer metadata is ours.
+      if (openFile && !mounted) openFile.dispose();
+      else openFile?.close();
+      openFile = null;
+    };
+  }, [
+    byteSource,
+    byteSourceMaxRows,
+    byteSourceMaxColumns,
+    byteSourceMaxDecodedBytes,
+    columnOverrides,
+    stableOnChange,
+    getEngineElement,
+    getFooterControlElement,
+    emitLoadMilestone,
+    reportLoadError,
   ]);
 
   // Mount engine when `data` prop is provided directly
@@ -756,11 +956,7 @@ export function SiftTable({
       // stores have already cleared this, so the append path is unaffected.
       disposePendingStore?.();
       disposePendingStore = null;
-      if (!cancelled) {
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message);
-        setStatus("error");
-      }
+      if (!cancelled) reportLoadError(err);
     });
 
     return () => {
@@ -776,12 +972,14 @@ export function SiftTable({
     getEngineElement,
     emitLoadMilestone,
     markPreviewLoaded,
+    reportLoadError,
   ]);
 
   // Load from URL when `url` prop is provided.
   // Detects format via Content-Type header + magic byte fallback:
-  // - Parquet: buffer fully, load via WASM with progressive row groups
-  // - Arrow IPC: stream batches (existing behavior)
+  // - Parquet: buffer the response, then stream row groups through the
+  //   byte-range loader so the table mounts after the first group
+  // - Arrow IPC: buffer and load whole
   useEffect(() => {
     if (!urlSource || !containerRef.current) return;
 
@@ -791,12 +989,15 @@ export function SiftTable({
 
     const sourceUrl = urlSource;
     const startedAt = performance.now();
+    const controller = new AbortController();
     let cancelled = false;
     let disposePendingStore: (() => void) | null = null;
+    /** Open Parquet footer; closed on cleanup once the engine owns the store. */
+    let openFile: OpenParquetFile | null = null;
 
-    function mountEngine(tableData: TableData) {
+    function mountEngine(tableData: TableData, streaming?: boolean) {
       if (engineRef.current) {
-        engineRef.current.replaceData(tableData);
+        engineRef.current.replaceData(tableData, { streaming });
         disposePendingStore = null;
         return;
       }
@@ -810,77 +1011,25 @@ export function SiftTable({
     }
 
     async function loadParquet(parquetBytes: Uint8Array) {
-      await ensureModule();
-      const mod = getModuleSync();
-      if (cancelled) return;
-      emitLoadMilestone(startedAt, {
-        source: "url",
-        phase: "wasm-ready",
-        format: "parquet",
-        byteLength: parquetBytes.byteLength,
+      // The response is already buffered; the ranged loader still removes the
+      // per-row-group file copy and shares its progressive mount with the
+      // byte-source path.
+      await streamParquetIntoEngine({
+        source: byteSourceFromBytes(parquetBytes),
+        limits: resolveTableFileLimits({}),
+        columnOverrides,
+        signal: controller.signal,
+        emit: (milestone) => emitLoadMilestone(startedAt, { ...milestone, source: "url" }),
+        onOpen: (file) => {
+          openFile = file;
+          disposePendingStore = () => file.dispose();
+        },
+        mount: (tableData, streaming) => {
+          mountEngine(tableData, streaming);
+          setStatus("ready");
+        },
+        engine: () => engineRef.current,
       });
-
-      const meta = mod.parquet_metadata(parquetBytes);
-      const numRowGroups = meta[0];
-
-      if (numRowGroups === 0) {
-        setError("Parquet file has no row groups.");
-        setStatus("error");
-        return;
-      }
-
-      const columnHints = mod.parquet_column_hints(parquetBytes);
-      const pandasIndexCols = pandasIndexColumnsFromHints(columnHints);
-
-      // Load first row group → mount table immediately
-      const handle = mod.load_parquet_row_group(parquetBytes, 0, 0);
-      disposePendingStore = () => mod.free(handle);
-
-      const { tableData, columns, prefetchViewport } = createWasmTableData(handle);
-      disposePendingStore = () => tableData.dispose?.();
-      tableData.prefetchViewport = prefetchViewport;
-      tableData.recomputeSummaries = () =>
-        updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
-      emitLoadMilestone(startedAt, {
-        source: "url",
-        phase: "table-data-created",
-        format: "parquet",
-        rowCount: tableData.rowCount,
-      });
-
-      applyParquetColumnHints(columns, columnHints);
-      applyColumnOverrides(columns, columnOverrides);
-
-      updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
-      emitLoadMilestone(startedAt, {
-        source: "url",
-        phase: "summaries-ready",
-        format: "parquet",
-        rowCount: tableData.rowCount,
-      });
-
-      if (cancelled) return;
-      mountEngine(tableData);
-      emitLoadMilestone(startedAt, {
-        source: "url",
-        phase: "engine-mounted",
-        format: "parquet",
-        rowCount: tableData.rowCount,
-      });
-      setStatus("ready");
-
-      // Stream remaining row groups progressively
-      for (let g = 1; g < numRowGroups; g++) {
-        if (cancelled) return;
-        await new Promise((r) => setTimeout(r, 0));
-        if (cancelled) return;
-        mod.load_parquet_row_group(parquetBytes, g, handle);
-        tableData.rowCount = mod.num_rows(handle);
-        updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
-        engineRef.current?.onBatchAppended();
-      }
-
-      engineRef.current?.setStreamingDone();
     }
 
     async function loadArrowIpc(source: Response | ReadableStream<Uint8Array>) {
@@ -993,18 +1142,27 @@ export function SiftTable({
       }
     }
 
-    loadFromUrl().catch((err) => {
-      if (!cancelled) {
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message);
-        setStatus("error");
-      }
-    });
+    loadFromUrl()
+      .catch((err) => {
+        if (!cancelled) {
+          disposePendingStore?.();
+          disposePendingStore = null;
+          reportLoadError(err);
+        }
+      })
+      .finally(() => {
+        // Footer metadata is not needed once the stream settled either way.
+        openFile?.close();
+        openFile = null;
+      });
 
     return () => {
       cancelled = true;
+      controller.abort();
       disposePendingStore?.();
       disposePendingStore = null;
+      openFile?.close();
+      openFile = null;
     };
   }, [
     urlSource,
@@ -1014,6 +1172,7 @@ export function SiftTable({
     getFooterControlElement,
     getEngineElement,
     emitLoadMilestone,
+    reportLoadError,
   ]);
 
   return (

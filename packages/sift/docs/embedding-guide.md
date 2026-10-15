@@ -111,6 +111,53 @@ paging or sampled preview.
 Lists, structs, and maps display as text. Known image structures have dedicated
 rendering.
 
+## Parquet by byte range
+
+For Parquet files you would rather not read into memory, give Sift a
+`ByteSource` instead of bytes. Sift reads the footer, then fetches each row
+group's column chunks as it decodes them; the whole file is never buffered in
+JS or WASM memory.
+
+```ts
+import type { ByteSource } from '@nteract/sift'
+
+const source: ByteSource = {
+  byteLength: stat.size,
+  // Resolve with exactly `length` bytes. The signal aborts when Sift no
+  // longer needs them (unmount, source change).
+  read: (offset, length, signal) => files.readRange(path, offset, length, { signal }),
+}
+```
+
+Back `read` with whatever the host already trusts: a file handle behind an
+IPC bridge, or a URL that honors HTTP `Range`. Return a transferable
+`Uint8Array`; avoid base64.
+
+Two ways to use it:
+
+```tsx
+// Complete or error, like loadTableFile(bytes). Resolves after every row group.
+const data = await loadTableFile(source)
+
+// Progressive: the table mounts after the first row group and the rest stream
+// in behind the streaming indicator. Memoize `source`; a new identity reloads.
+<SiftTable source={{ kind: 'byte-source', source }} onLoadError={report} />
+```
+
+The footer must carry the `PAR1` magic; anything else is rejected after a
+single read of the file tail. `maxRows`, `maxColumns`, and `maxDecodedBytes`
+apply as for bytes, from the footer and cumulatively as row groups append.
+`maxBytes` does not: the file length is not the cap, retained memory is. A file
+whose decoded rows exceed `maxDecodedBytes` still fails; raise the limit for
+hosts with memory to spare. Rows become resident as their row group loads and
+stay resident, so sort, filter, and summaries cover every loaded row.
+
+Only Parquet can be read this way. A `ByteSource` with `format: 'arrow-ipc'` is
+read whole and goes through the bytes path with its `maxBytes` check.
+
+`onLoadError` fires for `loader`, `url`, `byte-source`, and manifest sources
+when a load fails, with the same `Error` Sift renders in its error state.
+
 ## Lifecycle and host controls
 
 A `TableData` instance returned by `loadTableFile` owns one WASM store. The React
