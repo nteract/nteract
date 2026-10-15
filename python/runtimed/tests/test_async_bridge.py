@@ -24,7 +24,8 @@ def delivery_contract() -> None:
     async def main() -> None:
         with tempfile.TemporaryDirectory() as temporary:
             client = native.NativeAsyncClient(socket_path=str(Path(temporary) / "missing"))
-            assert await client.close() is None
+            # Native close returns Rust (), which IntoPyObject maps to a tuple.
+            assert await client.close() == ()
             try:
                 await client.status()
             except native.RuntimedError:

@@ -187,7 +187,20 @@ mod tests {
             let error = loop_
                 .call_method1("run_until_complete", (future,))
                 .unwrap_err();
-            assert!(error.to_string().contains("bridge panic delivery"));
+            assert!(error.is_instance_of::<pyo3_async_runtimes::err::RustPanic>(py));
+            // Preserve the locked upstream panic contract, including its
+            // payload formatting; do not require a stronger message contract.
+            let upstream = py_tokio::future_into_py_with_locals::<_, ()>(
+                py,
+                TaskLocals::new(loop_.clone()),
+                async { panic!("bridge panic delivery") },
+            )
+            .unwrap();
+            let upstream_error = loop_
+                .call_method1("run_until_complete", (upstream,))
+                .unwrap_err();
+            assert!(upstream_error.is_instance_of::<pyo3_async_runtimes::err::RustPanic>(py));
+            assert_eq!(error.to_string(), upstream_error.to_string());
 
             struct Cancelled(std::sync::mpsc::Sender<()>);
             impl Drop for Cancelled {
