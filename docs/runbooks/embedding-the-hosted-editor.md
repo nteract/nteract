@@ -125,7 +125,9 @@ The successful release's single WASM build retains `release-wasm-<run>-<attempt>
 for 90 days, including source/channel/version, build attempt, and per-file hashes.
 Recording/uploading this downstream copy is optional: storage failures do not
 fail the required WASM build or the original release artifact. The downstream
-builder fails explicitly when its retained input is unavailable.
+builder fails explicitly when its retained input is unavailable. It selects the
+latest successful WASM job attempt first; a missing receipt for that attempt
+never falls back to an older version or different bytes.
 The optional **Build editor assets** workflow validates that successful release,
 reuses its WASM and renderer bytes, then builds the viewer once. It retains
 `editor-assets-<release-run>-<release-attempt>` for 90 days with the tarball,

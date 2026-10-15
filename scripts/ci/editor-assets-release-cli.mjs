@@ -6,7 +6,7 @@ import {appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from '
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {releaseIdentity} from './npm-release.mjs';
-import {assetNames, candidateName, digest, identityFromBuildTitle, positive, publishAssets, resolveEditorCandidate, resolveWasmCandidate, validateBuildRun, validateCandidate, validateWasm} from './editor-assets-release.mjs';
+import {assetNames, candidateName, digest, identityFromBuildTitle, positive, publishAssets, resolveEditorCandidate, resolveWasmCandidate, successfulJobAtAttempt, validateBuildRun, validateCandidate, validateWasm} from './editor-assets-release.mjs';
 const env = process.env;
 const repository = env.GITHUB_REPOSITORY;
 const event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
@@ -35,7 +35,7 @@ const run = (id, attempt) => json(`/actions/runs/${positive(id)}/attempts/${posi
 const artifacts = id => pages(`/actions/runs/${positive(id)}/artifacts`, 'artifacts');
 async function successfulJob(id, attempt, name) {
   const jobs = await pages(`/actions/runs/${positive(id)}/attempts/${positive(attempt)}/jobs`, 'jobs');
-  return jobs.some(job => (job.name === name || job.name.endsWith(` / ${name}`)) && job.conclusion === 'success');
+  return successfulJobAtAttempt(jobs, attempt, name);
 }
 async function zipEntries(artifact, names) {
   const bytes = Buffer.from(await (await request(`/actions/artifacts/${positive(artifact.id)}/zip`)).arrayBuffer());

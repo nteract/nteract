@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {test} from 'node:test';
-import {assetNames, buildTitle, candidateName, digest, identityFromBuildTitle, publishAssets, resolveEditorCandidate, resolveWasmCandidate, validateBuildRun, validateWasm} from '../ci/editor-assets-release.mjs';
+import {assetNames, buildTitle, candidateName, digest, identityFromBuildTitle, publishAssets, resolveEditorCandidate, resolveWasmCandidate, successfulJobAtAttempt, validateBuildRun, validateWasm} from '../ci/editor-assets-release.mjs';
 const identity = {sourceSha: 'a'.repeat(40), channel: 'nightly', runId: '123', runAttempt: '2'};
 const wasm = {...identity, schema: 1, version: '0.7.6-nightly.202610151200', runAttempt: '1', files: {'apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm': 'b'.repeat(64)}};
 const names = assetNames(identity);
@@ -131,7 +131,7 @@ function wasmServer(attempts = ['1']) {
   return {entries, api: {
     releaseRun: async () => ({id: 123, head_sha: identity.sourceSha}),
     artifacts: async () => entries,
-    successfulJob: async () => true,
+    successfulJob: async (_id, attempt) => attempts.includes(String(attempt)),
     readWasmReceipt: async artifact => ({...wasm, runAttempt: artifact.name.split('-').at(-1)}),
   }};
 }
@@ -150,7 +150,7 @@ test('expired selected WASM fails rather than falling back to a different attemp
   const {api, entries} = wasmServer(['1', '2']); entries[1].expired = true;
   await assert.rejects(resolveWasmCandidate(identity, api), /expired/);
   api.artifacts = async () => [];
-  await assert.rejects(resolveWasmCandidate(identity, api), /No retained successful/);
+  await assert.rejects(resolveWasmCandidate(identity, api), /no retained receipt/);
 });
 test('WASM selection verifies artifact origin and receipt attempt before returning bytes', async () => {
   const {api, entries} = wasmServer(['2']);
@@ -171,4 +171,15 @@ test('optional retention cannot gate required release outputs, and editor workfl
   assert.match(release, /name: Upload WASM artifacts\n\s+uses: actions\/upload-artifact@v7/);
   for (const name of ['build-editor-assets','publish-editor-assets']) assert.match(read(name), /queue: max\n\s+cancel-in-progress: false/);
   assert.match(read('build-editor-assets'), /package_json_file: release-source\/package.json/);
+});
+
+test('a newer successful WASM job without retained bytes cannot fall back to an older receipt', async () => {
+  const {api} = wasmServer(['1']); api.successfulJob = async () => true;
+  await assert.rejects(resolveWasmCandidate(identity, api), /Successful WASM attempt 2 has no retained receipt/);
+});
+test('job identity follows its own attempt rather than the jobs endpoint used to retrieve it', () => {
+  const jobs = [{name: 'release / Build WASM artifacts', run_attempt: 1, conclusion: 'success'}];
+  assert.equal(successfulJobAtAttempt(jobs, '2', 'Build WASM artifacts'), false);
+  assert.equal(successfulJobAtAttempt(jobs, '1', 'Build WASM artifacts'), true);
+  assert.equal(successfulJobAtAttempt([{...jobs[0], conclusion: 'failure'}], '1', 'Build WASM artifacts'), false);
 });

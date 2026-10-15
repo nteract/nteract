@@ -103,13 +103,25 @@ export function identityFromBuildTitle(title) {
   return {runId: match[1], runAttempt: match[2]};
 }
 
+// A failed-jobs rerun may carry an earlier successful job forward. Its own
+// run_attempt is the byte-producing attempt, not the endpoint being queried.
+export function successfulJobAtAttempt(jobs, attempt, name) {
+  return jobs.some(job => String(job.run_attempt) === String(attempt) && (job.name === name || job.name.endsWith(` / ${name}`)) && job.conclusion === 'success');
+}
+
 export async function resolveWasmCandidate(identity, api) {
   const upstreamRun = await api.releaseRun(identity.runId, identity.runAttempt);
   const prefix = `release-wasm-${identity.runId}-`;
-  const candidates = (await api.artifacts(identity.runId)).filter(item => item.name.startsWith(prefix) && /^[1-9]\d*$/.test(item.name.slice(prefix.length)) && BigInt(item.name.slice(prefix.length)) <= BigInt(identity.runAttempt)).sort((a,b) => Number(BigInt(b.name.slice(prefix.length)) - BigInt(a.name.slice(prefix.length))));
-  for (const artifact of candidates) {
-    const attempt = artifact.name.slice(prefix.length);
+  const artifacts = await api.artifacts(identity.runId);
+  // Select the job before its artifact. Optional retention can fail even after
+  // a newer build succeeds; falling back would seal an older release version.
+  for (let attemptNumber = Number(positive(identity.runAttempt)); attemptNumber >= 1; attemptNumber--) {
+    const attempt = String(attemptNumber);
     if (!await api.successfulJob(identity.runId, attempt, 'Build WASM artifacts')) continue;
+    const matches = artifacts.filter(item => item.name === `${prefix}${attempt}`);
+    if (!matches.length) throw new Error(`Successful WASM attempt ${attempt} has no retained receipt; optional retention failed or the artifact was deleted. Create a new release, never fall back to older bytes.`);
+    if (matches.length > 1) throw new Error('Duplicate immutable WASM artifact');
+    const artifact = matches[0];
     validateArtifact(artifact, upstreamRun, `${prefix}${attempt}`);
     const receipt = await api.readWasmReceipt(artifact);
     validateWasm(receipt, identity);
