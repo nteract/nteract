@@ -1,9 +1,10 @@
 //! HTTP read server for the blob store.
 //!
-//! Serves blobs by hash over unauthenticated localhost HTTP. This is safe
-//! because blobs are content-addressed (256-bit hashes are not guessable),
-//! the endpoint is read-only, and the data is non-secret (notebook outputs
-//! the user produced locally).
+//! Serves blobs by known hash over read-only, unauthenticated loopback HTTP
+//! with wildcard CORS. Blob data may be sensitive; content addressing and
+//! lack of a listing route do not authorize reads. Native daemon control uses
+//! separate IPC endpoints. See `docs/adr/output-frame-security.md` for the
+//! output shell, consumer sandbox, and blob confidentiality boundaries.
 //!
 //! Endpoints:
 //! - `GET /blob/{hash}` — raw bytes with `Content-Type` from metadata

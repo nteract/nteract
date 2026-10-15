@@ -39,9 +39,10 @@ Neighbors:
   blob an output vs. inline it.
 - `docs/adr/hosted-notebook-artifacts.md` — how snapshot bundles and
   R2 blob storage reuse the same hash addressing.
-- `docs/adr/identity-and-trust.md` — the room-level auth gate that
-  blob HTTP currently leans on; how a connected peer earns the right to
-  upload at all.
+- `docs/adr/identity-and-trust.md` - the room-level auth gate for sync and
+  upload control. Local blob HTTP reads do not use this gate.
+- [Output frame security](output-frame-security.md) - output execution,
+  loopback HTTP access, and blob confidentiality boundaries.
 
 ## Decision 1: SHA-256 hex, content-addressed, two-level shard
 
@@ -51,9 +52,9 @@ addressing scheme has three properties baked in:
 - **Hash function: SHA-256.** Wider than blake3 deployment in the Rust crate
   ecosystem, identical to what `.ipynb` ref-mime entries already write, and
   matches the hash the hosted publish layer uses (R2 dedupes on the same key
-  shape, see `hosted-notebook-artifacts.md` Decision 2). The 256-bit width is
-  collision-safe for the foreseeable future and not guessable by an attacker
-  scanning the localhost blob origin (see Decision 4).
+  shape, see `hosted-notebook-artifacts.md` Decision 2). Collision resistance
+  supports content addressing, not read authorization. Hashes are unsalted;
+  known bytes and low-entropy candidates can be hashed (see Decision 4).
 - **Hex, not base64.** 64-character hex composes into filesystem paths
   without case-folding worries on macOS HFS+/APFS, makes hashes greppable in
   logs, and avoids URL-escaping concerns at the HTTP layer.
@@ -157,6 +158,8 @@ back to OS-assigned. The server exposes:
 
 - `GET /blob/{hash}` - raw bytes, `Content-Type` from the metadata sidecar
   (falling back to `application/octet-stream`).
+- `GET /output-frame` - reusable output shell with its own CSP; consumers
+  supply the iframe sandbox and renderer messages.
 - `GET /renderer-plugins/{name}` - raw renderer plugin assets for isolated
   output frames (markdown, bokeh, panel, sift). Introduced for the shared
   isolated renderer; the daemon serves the built plugin bundles directly.
@@ -170,7 +173,7 @@ The renderer is told which base URL to use for plugin assets via
 unset and falls back to the daemon's HTTP origin; hosted viewers point it at a
 cloud-served asset prefix.
 
-Response headers:
+Blob response headers:
 
 ```
 Cache-Control: public, max-age=31536000, immutable
@@ -178,21 +181,24 @@ Access-Control-Allow-Origin: *
 X-Content-Type-Options: nosniff
 ```
 
-`immutable` is honest here: a SHA-256 collision is the only way the bytes at a
-given URL would ever change. `Access-Control-Allow-Origin: *` is acceptable
-because the listener is loopback-only, the hash is 256 bits (not guessable),
-and the contents are user-produced. The blob HTTP origin is **not**
-authenticated; the trust model leans entirely on loopback isolation and hash
-unguessability. Renderer iframes and the MCP App load blobs from this origin
-without further auth.
+`immutable` reflects content-addressed bytes. All HTTP responses carry
+`Access-Control-Allow-Origin: *`; this is not restricted to nteract clients.
+Blob reads have no authentication or room filtering. There is no HTTP listing
+route, but known hashes permit retrieval and contents may be sensitive.
+Loopback binding and read-only serving do not establish confidentiality.
 
-The trade is explicit: anyone with code execution on the user's machine can
-already read the blob store via the filesystem, and code running in the user's
-browser cannot reach `127.0.0.1` cross-origin without a CORS-prefligh-able
-header set that this server intentionally provides only to its own clients.
-The room-level identity gate (`identity-and-trust.md`) lives at the sync
-socket layer; once a peer is authenticated it can `GET /blob/<hash>` for any
-blob in the store.
+Credentialless cross-origin GET reads can succeed where browser network
+policy permits reachability, without a CORS preflight. All non-GET methods,
+including OPTIONS and HEAD, return 405; unknown GET routes return 404. Plugin
+assets require embedded manifest membership even in development. The
+room-level identity gate (`identity-and-trust.md`) applies to sync and upload
+control, not HTTP reads.
+
+Blob responses have no CSP. The output shell has its own permissive CSP,
+including `unsafe-inline`, `unsafe-eval`, and `connect-src *`, but no CSP
+`sandbox` or `frame-ancestors` directive. Supported consumers set a sandbox
+without `allow-same-origin`; arbitrary embedders can omit it. See
+[output frame security](output-frame-security.md) for these separate boundaries.
 
 When the daemon restarts, the port may shift. The frontend resolves blob URLs
 through `BlobResolver` (Decision 7) so a port change at reconnect time is a
@@ -379,13 +385,14 @@ it should never reconstruct a cloud route shape from `notebookId` or any
 other doc-level value. On the desktop, both default to the daemon's local
 HTTP origin and the same port, but the contracts can move independently.
 
-The resolver boundary is also an authority boundary. `BlobBackend` stores bytes;
-`BlobResolver` decides how an authorized viewer obtains them. `PutBlob` and
-multipart upload only transfer bytes into the backend. They do not grant read
-access, mutate room state, or prove that a peer may reference the hash from a
-particular document path. Hosted room hosts must authorize both the upload
-surface and the later `NotebookDoc` / `RuntimeStateDoc` reference that makes the
-blob reachable.
+The resolver chooses a transport, but does not itself authorize local HTTP
+reads. `BlobBackend` stores bytes; the local `BlobResolver` constructs URLs
+that any reachable client knowing the hash can request. Hosted resolvers must
+use a serving layer that enforces the required read policy. `PutBlob` and
+multipart upload transfer bytes without mutating room state or proving that a
+peer may reference a hash from a particular document path. Hosted room hosts
+must authorize both uploads and the later `NotebookDoc` / `RuntimeStateDoc`
+references, separately from read access.
 
 1. **Port-change tolerance.** Daemon restart with a new port is one refresh
    on the resolver, not a doc rewrite.
