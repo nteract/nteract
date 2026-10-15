@@ -8,6 +8,7 @@ import {
   NotebookToolbarFrame,
   projectNotebookCommandRuntimeStatus,
   type NotebookEnvironmentManager,
+  type NotebookEnvironmentSelection,
   type NotebookShellCapabilities,
 } from "@/components/notebook";
 import type { UpdateStatus } from "../hooks/useUpdater";
@@ -57,6 +58,9 @@ interface NotebookToolbarProps {
   updateVersion?: string | null;
   onRestartToUpdate?: () => void;
   trailingControls?: ReactNode;
+  environmentSelection?: NotebookEnvironmentSelection | null;
+  runningEnvironmentLabel?: string | null;
+  pythonVersion?: string | null;
 }
 
 export function NotebookToolbar({
@@ -87,6 +91,9 @@ export function NotebookToolbar({
   updateVersion,
   onRestartToUpdate,
   trailingControls,
+  environmentSelection = null,
+  runningEnvironmentLabel = null,
+  pythonVersion = null,
 }: NotebookToolbarProps) {
   const [kernelspecs, setKernelspecs] = useState<KernelspecInfo[]>([]);
   const [condaCommandCopied, setCondaCommandCopied] = useState(false);
@@ -243,6 +250,9 @@ export function NotebookToolbar({
         runtime={runtime}
         environmentManager={envManager}
         environmentOutOfSync={depsOutOfSync}
+        environmentSelection={environmentSelection}
+        runningEnvironmentLabel={runningEnvironmentLabel}
+        pythonVersion={pythonVersion}
         runtimeStatus={{
           state: commandRuntimeStatus.state,
           label: envProgress?.isActive ? (
