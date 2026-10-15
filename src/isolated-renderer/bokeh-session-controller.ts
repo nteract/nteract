@@ -60,7 +60,11 @@ interface BokehRuntime {
 }
 
 interface BokehDeserializer {
-  references: Map<string, { type: string; setv(attrs: unknown, options: { sync: boolean }): void }>;
+  references: Map<
+    string,
+    { type: string; setv(attrs: unknown, options: { sync: boolean }): void }
+  > &
+    Map<string, unknown>;
   _decoding: boolean;
   _decode(value: unknown): unknown;
   _decode_object_ref(obj: { id: string; name: string; attributes?: unknown }): unknown;
@@ -140,9 +144,15 @@ export function deferExistingModelUpdates<T>(runtime: BokehRuntime, apply: () =>
   const decodeObjectRef = proto._decode_object_ref;
   const decode = proto.decode;
   const deferred: Array<[{ setv(attrs: unknown, options: { sync: boolean }): void }, unknown]> = [];
+  const created: Array<[Map<string, unknown>, string]> = [];
   proto._decode_object_ref = function (this: BokehDeserializer, obj) {
     const existing = this.references.get(obj.id);
-    if (existing == null || existing.type !== obj.name) return decodeObjectRef.call(this, obj);
+    if (existing == null) {
+      // Registered before its attributes are decoded; see the cleanup below.
+      created.push([this.references, obj.id]);
+      return decodeObjectRef.call(this, obj);
+    }
+    if (existing.type !== obj.name) return decodeObjectRef.call(this, obj);
     deferred.push([existing, this._decode(obj.attributes ?? {})]);
     return existing;
   };
@@ -156,6 +166,11 @@ export function deferExistingModelUpdates<T>(runtime: BokehRuntime, apply: () =>
   };
   try {
     return apply();
+  } catch (error) {
+    // A failed decode leaves its new models in the document uninitialized;
+    // a retry would find them by id and build views on unset properties.
+    for (const [references, id] of created) references.delete(id);
+    throw error;
   } finally {
     proto._decode_object_ref = decodeObjectRef;
     proto.decode = decode;

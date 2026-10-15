@@ -652,6 +652,22 @@ describe("deferExistingModelUpdates", () => {
     expect(FakeDeserializer.prototype._decode_object_ref).toBe(original);
   });
 
+  it("removes models a failed decode registered", () => {
+    const deserializer = new FakeDeserializer();
+    const runtime = {
+      Deserializer: FakeDeserializer as unknown as BokehRuntime["Deserializer"],
+    } as BokehRuntime;
+
+    expect(() =>
+      deferExistingModelUpdates(runtime, () => {
+        deserializer.decode([{ type: "object", name: "Div", id: "div", attributes: {} }]);
+        throw new Error("reference missing isn't known");
+      }),
+    ).toThrow("isn't known");
+
+    expect(deserializer.references.has("div")).toBe(false);
+  });
+
   it("keeps BokehJS's immediate update outside a patch application", () => {
     const deserializer = new FakeDeserializer();
     deserializer.references.set("row", new FakeModel("row", "Row", deserializer.log));
