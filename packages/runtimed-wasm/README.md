@@ -7,6 +7,10 @@ declarations from one retained release build. It has no npm dependencies.
 Initialize once before constructing handles. Free handles when their owner is
 finished with them. The generated declarations describe the complete API.
 
+The declarations include `Symbol.dispose`. If your TypeScript configuration sets
+`compilerOptions.lib` explicitly, include `ESNext.Disposable` alongside your usual
+libraries (for example, `["ES2022", "DOM", "ESNext.Disposable"]`).
+
 ```js
 import init, { NotebookHandle } from "@runtimed/wasm";
 
