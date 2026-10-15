@@ -21,6 +21,11 @@ class FakeDocument {
   listeners = new Set<(event: Record<string, unknown>) => void>();
   applied: Array<Record<string, unknown>> = [];
   cleared = false;
+  modelIds = new Set(["root-1"]);
+
+  get_model_by_id(id: string) {
+    return this.modelIds.has(id) ? { id } : null;
+  }
 
   on_change(listener: (event: Record<string, unknown>) => void) {
     this.listeners.add(listener);
@@ -439,6 +444,50 @@ describe("BokehSessionController", () => {
     expect(documents[0].applied).toEqual([
       { events: [{ kind: "ModelChanged", new: 1 }] },
       { events: [{ kind: "ModelChanged", new: 2 }] },
+    ]);
+    controller.dispose();
+  });
+
+  it("reconciles existing models through ModelChanged events", async () => {
+    const { controller, documents, notify } = harness();
+    await controller.start();
+    const newChild = { type: "object", name: "Div", id: "div-2", attributes: { text: "new" } };
+
+    notify(NTERACT_BOKEH_SESSION_PATCH, {
+      outputId: "output-1",
+      event: {
+        sessionId: "session-1",
+        transactionId: "checkpoint-1",
+        baseRevision: 0,
+        revision: 1,
+        checkpoint: {
+          revision: 1,
+          document: {
+            roots: [
+              {
+                type: "object",
+                name: "Row",
+                id: "root-1",
+                attributes: { children: [newChild], dark_theme: true },
+              },
+            ],
+          },
+          buffers: [],
+        },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(200);
+    await settle();
+
+    expect(documents).toHaveLength(1);
+    expect(documents[0].applied).toEqual([
+      {
+        events: [
+          { kind: "ModelChanged", model: { id: "root-1" }, attr: "children", new: [newChild] },
+          { kind: "ModelChanged", model: { id: "root-1" }, attr: "dark_theme", new: true },
+          { kind: "RootAdded", model: { id: "root-1" } },
+        ],
+      },
     ]);
     controller.dispose();
   });

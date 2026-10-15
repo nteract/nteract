@@ -35,6 +35,7 @@ interface BokehDocument {
   remove_on_change(callback: (event: BokehDocumentEvent) => void): void;
   create_json_patch(events: BokehDocumentEvent[]): Record<string, unknown>;
   apply_json_patch(patch: Record<string, unknown>, buffers?: Map<string, ArrayBuffer>): void;
+  get_model_by_id(id: string): unknown;
   clear(options?: { sync?: boolean }): void;
 }
 
@@ -115,6 +116,36 @@ function isPatchReply(value: unknown): value is NteractBokehApplyPatchResult {
     typeof value.sessionId === "string" &&
     typeof value.transactionId === "string"
   );
+}
+
+/**
+ * Replace serialized definitions of models the document already has with
+ * references, collecting their attributes as ModelChanged events. BokehJS
+ * applies an existing model's definition with `setv` while it is still
+ * decoding the rest of the patch, so listeners would see the new models of
+ * that patch before they are initialized. ModelChanged events are applied
+ * only after the whole patch has been decoded.
+ */
+function referenceExistingModels(
+  value: unknown,
+  exists: (id: string) => boolean,
+  changes: Record<string, unknown>[],
+): unknown {
+  if (Array.isArray(value))
+    return value.map((item) => referenceExistingModels(item, exists, changes));
+  if (!isRecord(value)) return value;
+  const mapped: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    mapped[key] = referenceExistingModels(item, exists, changes);
+  }
+  const isDefinition =
+    mapped.type === "object" && typeof mapped.id === "string" && typeof mapped.name === "string";
+  if (!isDefinition || !exists(mapped.id as string)) return mapped;
+  const attributes = isRecord(mapped.attributes) ? mapped.attributes : {};
+  for (const [attr, attrValue] of Object.entries(attributes)) {
+    changes.push({ kind: "ModelChanged", model: { id: mapped.id }, attr, new: attrValue });
+  }
+  return { id: mapped.id };
 }
 
 function bufferMap(buffers: NteractBokehResolvedBuffer[]): Map<string, ArrayBuffer> {
@@ -441,9 +472,9 @@ export class BokehSessionController {
   }
 
   /**
-   * Bring the mounted document to a checkpoint in place. Decoding an object
-   * whose id already exists updates that model rather than creating a new
-   * one, so applying the checkpoint roots as a patch keeps every view mounted.
+   * Bring the mounted document to a checkpoint in place, keeping every view
+   * mounted: existing models receive their checkpoint attributes as
+   * ModelChanged events and only unknown models are created.
    */
   private reconcileCheckpoint(
     document: BokehDocument,
@@ -456,8 +487,13 @@ export class BokehSessionController {
     for (const rootId of this.options.payload.root_ids) {
       if (!rootIds.has(rootId)) throw new Error(`Bokeh document is missing root ${rootId}`);
     }
+    const changes: Record<string, unknown>[] = [];
+    const exists = (id: string) => document.get_model_by_id(id) != null;
     const events: Record<string, unknown>[] = [
-      ...roots.map((root) => ({ kind: "RootAdded", model: root })),
+      ...roots.map((root) => ({
+        kind: "RootAdded",
+        model: referenceExistingModels(root, exists, changes),
+      })),
       ...document.all_roots
         .filter((root) => !rootIds.has(root.id))
         .map((root) => ({ kind: "RootRemoved", model: { id: root.id } })),
@@ -467,7 +503,7 @@ export class BokehSessionController {
     }
     this.applyingRemote = true;
     try {
-      document.apply_json_patch({ events }, bufferMap(checkpoint.buffers));
+      document.apply_json_patch({ events: [...changes, ...events] }, bufferMap(checkpoint.buffers));
       this.reapplyPendingLocalChanges();
       this.revision = checkpoint.revision;
     } finally {
