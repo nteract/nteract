@@ -30,6 +30,7 @@ describe("notebookUiPolicy", () => {
         capabilities={{
           canEditStructure: true,
           canExecute: true,
+          canViewPackages: true,
           canManageSharing: false,
           canRequestEdit: false,
           auth: { canSignIn: false, canUseAuthenticatedIdentity: false, needsAttention: false },

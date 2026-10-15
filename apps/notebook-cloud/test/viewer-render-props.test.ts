@@ -365,6 +365,15 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /activePanelId=\{renderedActiveRailPanel\}/);
   assert.match(
     sourceText,
+    /const handleTogglePackagesRail = useCallback\(\(\) => \{[\s\S]*toggleNotebookRailPanel\("packages"\)/,
+  );
+  assert.match(sourceText, /onTogglePackages=\{handleTogglePackagesRail\}/);
+  assert.match(
+    sourceText,
+    /environmentPanelOpen=\{!railCollapsed && activeRailPanel === "packages"\}/,
+  );
+  assert.match(
+    sourceText,
     /workstationsPanel=\{[\s\S]*shouldShowCloudWorkstationsPanel \? \([\s\S]*<NotebookWorkstationsPanel/,
   );
   assert.match(
