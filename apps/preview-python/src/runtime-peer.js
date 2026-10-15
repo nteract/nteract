@@ -49,6 +49,7 @@ export class PythonRuntimePeer {
   #publishLive;
   #live;
   #scheduler;
+  #roomOwnedQueue;
 
   constructor({
     peer,
@@ -59,6 +60,7 @@ export class PythonRuntimePeer {
     publishLive,
     prepareOutputs,
     scheduler,
+    roomOwnedQueue = false,
   }) {
     this.#peer = peer;
     this.#pool = pool;
@@ -68,6 +70,7 @@ export class PythonRuntimePeer {
     this.#publishLive = publishLive;
     this.#prepare = prepareOutputs;
     this.#scheduler = scheduler;
+    this.#roomOwnedQueue = roomOwnedQueue;
   }
 
   /**
@@ -231,15 +234,24 @@ export class PythonRuntimePeer {
     return this.#draining;
   }
 
+  #queuedEntries(state) {
+    // A room-owned queue is an active-session view. Historical queued records
+    // alone are never instructions to this runtime, including after reconnect.
+    const executions = state.executions ?? {};
+    const entries = this.#roomOwnedQueue
+      ? (state.queue?.queued ?? []).map(({ execution_id: id }) => [id, executions[id]])
+      : Object.entries(executions);
+    return entries
+      .filter(([, execution]) => execution?.status === "queued")
+      .sort(
+        ([idA, a], [idB, b]) => (a.seq ?? Infinity) - (b.seq ?? Infinity) || idA.localeCompare(idB),
+      );
+  }
+
   async #drain() {
     while (!this.#closed && !this.#halted) {
       this.#assertCurrent();
-      const entry = Object.entries(this.#peer.get_runtime_state().executions ?? {})
-        .filter(([, execution]) => execution.status === "queued")
-        .sort(
-          ([idA, a], [idB, b]) =>
-            (a.seq ?? Infinity) - (b.seq ?? Infinity) || idA.localeCompare(idB),
-        )[0];
+      const entry = this.#queuedEntries(this.#peer.get_runtime_state())[0];
       if (!entry) return;
       const [executionId, accepted] = entry;
       if (
@@ -322,10 +334,8 @@ export class PythonRuntimePeer {
       // usable for a later explicit execution. Never replay the failed request.
       if (!result.success) {
         this.#assertCurrent();
-        for (const [queuedId, queued] of Object.entries(
-          this.#peer.get_runtime_state().executions ?? {},
-        )) {
-          if (queued.status === "queued") this.#peer.set_execution_cancelled(queuedId);
+        for (const [queuedId] of this.#queuedEntries(this.#peer.get_runtime_state())) {
+          this.#peer.set_execution_cancelled(queuedId);
         }
         this.#peer.refresh_execution_queue();
         await this.#publish();

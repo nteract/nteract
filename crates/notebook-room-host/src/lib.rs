@@ -9,7 +9,7 @@
 
 use automerge::patches::PatchAction;
 use automerge::sync;
-use automerge::Prop;
+use automerge::{Prop, ReadDoc};
 use comments_doc::{CommentsDoc, CommentsProjection, NotebookCommentRef};
 use notebook_doc::diff::{extract_change_actor_hashes, extract_change_actors, ChangeActor};
 use notebook_doc::NotebookDoc;
@@ -17,7 +17,7 @@ use notebook_wire::frame_types;
 use nteract_identity::{ActorLabel, ConnectionScope, Principal};
 use runtime_doc::{
     runtime_state_policy_snapshot, validate_runtime_state_sync_scope, CommsDoc, QueueEntry,
-    RuntimeLifecycle, RuntimeState, RuntimeStateDoc, RuntimeStateWriteScope,
+    QueueState, RuntimeLifecycle, RuntimeState, RuntimeStateDoc, RuntimeStateWriteScope,
     WorkstationAttachmentState,
 };
 use serde::Serialize;
@@ -481,12 +481,28 @@ impl RoomHostEngine {
         Ok(result)
     }
 
+    fn uses_room_owned_queue(&self) -> bool {
+        self.state_doc
+            .workstation_attachment()
+            .is_some_and(|a| a.workstation_id == "celld-preview-python")
+    }
+
     pub fn runtime_queue_depth(&self) -> usize {
-        self.state_doc.read_state().queue.queued.len()
+        self.runtime_execution_activity().queue_depth
     }
 
     pub fn runtime_execution_activity(&self) -> RuntimeExecutionActivity {
-        runtime_execution_activity(&self.state_doc.read_state())
+        if self.uses_room_owned_queue() {
+            // Old execution records remain visible, but only the room's active
+            // cohort counts toward scheduling, admission limits and idle time.
+            let queue = self.state_doc.read_explicit_queue();
+            RuntimeExecutionActivity {
+                executing: queue.executing.is_some(),
+                queue_depth: queue.queued.len(),
+            }
+        } else {
+            runtime_execution_activity(&self.state_doc.read_state())
+        }
     }
 
     pub fn save_notebook(&mut self) -> Vec<u8> {
@@ -678,6 +694,48 @@ impl RoomHostEngine {
         scope: RuntimeStateWriteScope,
         payload: &[u8],
     ) -> Result<RoomHostFrameResult, RoomHostError> {
+        self.receive_runtime_state_sync_inner(peer_id, principal, scope, payload, false)
+    }
+
+    /// Trusted colocated managed-runtime ingress. The room alone owns its active
+    /// queue; the peer may publish accepted progress and outputs, never scheduling.
+    /// This is not a new externally selectable connection scope.
+    pub fn receive_managed_runtime_state_sync(
+        &mut self,
+        peer_id: &str,
+        principal: &str,
+        session_id: &str,
+        payload: &[u8],
+    ) -> Result<RoomHostFrameResult, RoomHostError> {
+        let current = self.state_doc.workstation_attachment();
+        if peer_id != format!("managed-python:{session_id}")
+            || !current.is_some_and(|a| {
+                a.workstation_id == "celld-preview-python"
+                    && a.runtime_session_id.as_deref() == Some(session_id)
+                    && matches!(a.status.as_str(), "connecting" | "ready" | "disconnected")
+            })
+        {
+            return Err(RoomHostError::new(
+                "Managed runtime progress belongs to a replaced session",
+            ));
+        }
+        self.receive_runtime_state_sync_inner(
+            peer_id,
+            principal,
+            RuntimeStateWriteScope::RuntimePeer,
+            payload,
+            true,
+        )
+    }
+
+    fn receive_runtime_state_sync_inner(
+        &mut self,
+        peer_id: &str,
+        principal: &str,
+        scope: RuntimeStateWriteScope,
+        payload: &[u8],
+        room_owned_queue: bool,
+    ) -> Result<RoomHostFrameResult, RoomHostError> {
         let message = sync::Message::decode(payload)
             .map_err(|e| RoomHostError::new(format!("decode runtime state sync: {e}")))?;
         let has_changes = !message.changes.is_empty();
@@ -687,8 +745,9 @@ impl RoomHostEngine {
                 "connection scope cannot write RuntimeStateDoc changes",
             ));
         }
+        let heads_before = self.state_doc.get_heads();
+        let mut managed_preview = None;
         if has_changes {
-            let heads_before = self.state_doc.get_heads();
             let peer_state = self
                 .runtime_peer_states
                 .entry(peer_id.to_string())
@@ -710,13 +769,26 @@ impl RoomHostEngine {
             let state_after = runtime_state_policy_snapshot(&preview);
             validate_runtime_state_sync_scope(&state_before, &state_after, scope)
                 .map_err(|e| RoomHostError::new(e.to_string()))?;
+            if room_owned_queue {
+                // Validate the ORIGINAL incoming delta above, before making any
+                // host projection. Invalid peer writes are never normalized away.
+                let queue = managed_queue_after_progress(&self.state_doc, &preview)?;
+                preview
+                    .set_queue(queue.executing.as_ref(), &queue.queued)
+                    .map_err(|e| RoomHostError::new(format!("project managed queue: {e}")))?;
+                managed_preview = Some((preview, preview_peer_state));
+            }
             // This is a synchronous WASM host path: no await or host callback
             // can interleave another RuntimeStateDoc writer between the
             // validated preview and the real apply below.
         }
 
-        let heads_before = self.state_doc.get_heads();
-        {
+        if let Some((preview, peer_state)) = managed_preview {
+            // Commit validated peer progress and the trusted projection together.
+            self.state_doc = preview;
+            self.runtime_peer_states
+                .insert(peer_id.to_string(), peer_state);
+        } else {
             let peer_state = self
                 .runtime_peer_states
                 .entry(peer_id.to_string())
@@ -1213,7 +1285,11 @@ impl RoomHostEngine {
         if entries.is_empty() {
             return Ok(());
         }
-        let queue = self.state_doc.read_state().queue;
+        let queue = if self.uses_room_owned_queue() {
+            self.state_doc.read_explicit_queue()
+        } else {
+            self.state_doc.read_state().queue
+        };
         let executing = queue.executing;
         let mut queued = queue.queued;
         let mut seen = HashSet::new();
@@ -1481,12 +1557,10 @@ impl RoomHostEngine {
         &mut self,
         reason: &str,
     ) -> Result<RoomHostFrameResult, RoomHostError> {
-        let state = self.state_doc.read_state();
-        let activity = runtime_execution_activity(&state);
+        let activity = self.runtime_execution_activity();
         if activity.executing || activity.queue_depth > 0 {
             return Ok(RoomHostFrameResult::empty());
         }
-        drop(state);
 
         let heads_before = self.state_doc.get_heads();
         self.state_doc
@@ -1621,6 +1695,78 @@ fn workstation_attachment_is_error(attachment: &WorkstationAttachmentState) -> b
 pub struct RuntimeExecutionActivity {
     pub executing: bool,
     pub queue_depth: usize,
+}
+
+/// Reproject only the room's active cohort. Retained execution history (including
+/// abandoned queued/running records) is never promoted into new runnable work.
+fn managed_queue_after_progress(
+    before_doc: &RuntimeStateDoc,
+    after_doc: &RuntimeStateDoc,
+) -> Result<QueueState, RoomHostError> {
+    let before_queue = before_doc.read_explicit_queue();
+    let after_queue = after_doc.read_explicit_queue();
+    let before = before_doc.read_state();
+    let after = after_doc.read_state();
+    if before_queue != after_queue {
+        return Err(RoomHostError::new(
+            "Managed runtime cannot write the room-owned queue",
+        ));
+    }
+    let active: HashSet<&str> = before_queue
+        .executing
+        .iter()
+        .chain(&before_queue.queued)
+        .map(|entry| entry.execution_id.as_str())
+        .collect();
+    for id in before.executions.keys() {
+        // Check every scalar conflict, not only the selected status: a late
+        // running write can lose to cancellation and otherwise remain hidden.
+        if !active.contains(id.as_str())
+            && execution_status_values(before_doc, id)? != execution_status_values(after_doc, id)?
+        {
+            return Err(RoomHostError::new(
+                "Managed runtime progress is outside the active queue",
+            ));
+        }
+    }
+    let mut pending: Vec<_> = active
+        .into_iter()
+        .filter_map(|id| after.executions.get(id).map(|execution| (id, execution)))
+        .filter(|(_, e)| matches!(e.status.as_str(), "queued" | "running"))
+        .collect();
+    pending.sort_by(|(id_a, a), (id_b, b)| a.seq.cmp(&b.seq).then(id_a.cmp(id_b)));
+    let mut queue = QueueState::default();
+    for (id, execution) in pending {
+        let entry = QueueEntry {
+            execution_id: id.to_string(),
+        };
+        if execution.status == "running" {
+            if queue.executing.replace(entry).is_some() {
+                return Err(RoomHostError::new(
+                    "Managed serial runtime has multiple running executions",
+                ));
+            }
+        } else {
+            queue.queued.push(entry);
+        }
+    }
+    Ok(queue)
+}
+
+fn execution_status_values<'a>(
+    doc: &'a RuntimeStateDoc,
+    id: &str,
+) -> Result<Vec<(automerge::Value<'a>, automerge::ObjId)>, RoomHostError> {
+    let read = || -> Result<_, automerge::AutomergeError> {
+        let Some((_, executions)) = doc.doc().get(automerge::ROOT, "executions")? else {
+            return Ok(Vec::new());
+        };
+        let Some((_, execution)) = doc.doc().get(executions, id)? else {
+            return Ok(Vec::new());
+        };
+        doc.doc().get_all(execution, "status")
+    };
+    read().map_err(|e| RoomHostError::new(format!("read managed execution status: {e}")))
 }
 
 fn runtime_execution_activity(state: &RuntimeState) -> RuntimeExecutionActivity {
@@ -3871,3 +4017,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod managed_queue_tests;
