@@ -94,6 +94,16 @@ export function useCondaDependencies() {
     [withLoading],
   );
 
+  const captureEnvironment = useCallback(
+    async (python: string | null, packages: string[]) => {
+      await withLoading(async () => {
+        for (const pkg of packages) await addCondaDepWasm(pkg);
+        await setCondaPythonWasm(python);
+      }, "sync selected environment");
+    },
+    [withLoading],
+  );
+
   const hasDependencies = dependencies !== null && dependencies.dependencies.length > 0;
 
   // True if conda metadata exists (even with empty deps)
@@ -109,6 +119,7 @@ export function useCondaDependencies() {
     clearAllDependencies,
     setChannels,
     setPython,
+    captureEnvironment,
     // environment.yml support
     environmentYmlInfo,
     environmentYmlDeps,

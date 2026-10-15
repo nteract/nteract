@@ -126,6 +126,79 @@ describe("PackageSpecList", () => {
   });
 });
 
+describe("CondaDependencyPanel sync status", () => {
+  const panelProps = {
+    dependencies: ["requests"],
+    channels: ["conda-forge"],
+    python: null,
+    loading: false,
+    envSource: "conda:existing:local",
+    syncState: { status: "dirty" as const, added: ["requests"], removed: [] },
+    onAdd: vi.fn(async () => undefined),
+    onRemove: vi.fn(async () => undefined),
+    onSetChannels: vi.fn(async () => undefined),
+    onSetPython: vi.fn(async () => undefined),
+    onSyncNow: vi.fn(async () => false),
+  };
+
+  it("shows active sync state and disables duplicate sync requests", () => {
+    render(<CondaDependencyHeader {...panelProps} syncing />);
+
+    expect(screen.getByText("Syncing packages into the selected environment...")).toBeDefined();
+    expect(screen.getByRole("button", { name: "Syncing..." }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("offers to capture a selected environment before package metadata exists", async () => {
+    const onImportSelectedEnvironment = vi.fn(async () => true);
+    render(
+      <CondaDependencyHeader
+        {...panelProps}
+        syncState={null}
+        selectedEnvironmentNeedsSync
+        onImportSelectedEnvironment={onImportSelectedEnvironment}
+      />,
+    );
+
+    expect(screen.getByText(/add its Python version and requested packages/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Sync environment" }));
+    await screen.findByRole("button", { name: "Sync environment" });
+    expect(onImportSelectedEnvironment).toHaveBeenCalledOnce();
+  });
+
+  it("keeps captured selected-environment packages visible with newly added packages", () => {
+    const { container } = render(
+      <CondaDependencyHeader
+        {...panelProps}
+        dependencies={["ipykernel", "pandas"]}
+        selectedEnvironmentDependencies={["ipykernel"]}
+      />,
+    );
+
+    const input = screen.getByTestId("conda-deps-add-input");
+    const capturedPackage = screen.getByText("ipykernel");
+    expect(capturedPackage).toBeVisible();
+    expect(screen.getByText("pandas")).toBeVisible();
+    expect(
+      input.compareDocumentPosition(capturedPackage) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(container.querySelectorAll('[data-testid="conda-deps-add-input"]')).toHaveLength(1);
+  });
+
+  it("shows a failed sync message without claiming packages are installed", () => {
+    render(
+      <CondaDependencyHeader
+        {...panelProps}
+        syncError="Failed to install requests: solve failed"
+      />,
+    );
+
+    expect(screen.getByText("Package sync failed")).toBeDefined();
+    expect(screen.getByText("Failed to install requests: solve failed")).toBeDefined();
+    expect(screen.getByText(/failed package was removed from the dependency list/)).toBeDefined();
+    expect(screen.queryByText("Environment synced — dependencies are ready to use")).toBeNull();
+  });
+});
+
 describe("DependencyHeader rail package copy", () => {
   it("keeps the package add row shrinkable inside the rail", () => {
     render(

@@ -169,6 +169,7 @@ export {
   type NotebookCommandToolbarUpdateAction,
   type NotebookCommandToolbarWorkstationAction,
   type NotebookEnvironmentManager,
+  type NotebookEnvironmentSelection,
 } from "./NotebookCommandToolbar";
 export { NotebookBrandMark, type NotebookBrandMarkProps } from "./NotebookBrandMark";
 export {

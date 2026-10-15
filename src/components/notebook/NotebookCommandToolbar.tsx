@@ -26,6 +26,18 @@ export type { NotebookCommandRuntimeState } from "./capabilities";
 
 export type NotebookEnvironmentManager = "uv" | "conda" | "pixi";
 
+export interface NotebookEnvironmentSelection {
+  candidates: Array<{ id: string; name: string; display_name: string; manager: string }>;
+  selectedId: string | null;
+  selectedName: string | null;
+  runningId: string | null;
+  truncated: boolean;
+  error?: string | null;
+  onSelect: (id: string | null) => void;
+  onApply: () => void;
+  onRefresh: () => void;
+}
+
 export interface NotebookCommandToolbarStatus {
   state: NotebookCommandRuntimeState;
   label: ReactNode;
@@ -62,6 +74,9 @@ export interface NotebookCommandToolbarProps {
   runtimeTarget?: NotebookShellRuntimeTargetProjection | null;
   environmentManager?: NotebookEnvironmentManager | null;
   environmentOutOfSync?: boolean;
+  environmentSelection?: NotebookEnvironmentSelection | null;
+  runningEnvironmentLabel?: string | null;
+  pythonVersion?: string | null;
   runtimeStatus?: NotebookCommandToolbarStatus | null;
   startDisabled?: boolean;
   addCellControlsDisabled?: boolean;
@@ -116,6 +131,9 @@ function NotebookCommandToolbarRow({
   runtimeTarget = null,
   environmentManager = null,
   environmentOutOfSync = false,
+  environmentSelection = null,
+  runningEnvironmentLabel = null,
+  pythonVersion = null,
   runtimeStatus,
   startDisabled = false,
   addCellControlsDisabled = false,
@@ -379,6 +397,63 @@ function NotebookCommandToolbarRow({
 
       {utilityControls}
 
+      {environmentSelection ? (
+        <div className="flex items-center gap-1" data-testid="environment-selection">
+          <label className="sr-only" htmlFor="notebook-python-environment">
+            Python environment
+          </label>
+          <select
+            id="notebook-python-environment"
+            data-testid="python-environment-select"
+            value={environmentSelection.selectedId ?? ""}
+            onChange={(event) => environmentSelection.onSelect(event.target.value || null)}
+            className="max-w-48 rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
+            title={environmentSelection.selectedName ?? "Select Python environment"}
+          >
+            <option value="">Automatic environment</option>
+            {environmentSelection.candidates.map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>
+                {candidate.display_name} ({candidate.manager})
+              </option>
+            ))}
+          </select>
+          {environmentSelection.truncated ? (
+            <span title="More than 250 environments found">250+</span>
+          ) : null}
+          <button
+            type="button"
+            onClick={environmentSelection.onRefresh}
+            data-testid="refresh-python-environments"
+            className="rounded px-2 py-1 text-xs hover:bg-muted"
+          >
+            Refresh
+          </button>
+          {environmentSelection.selectedId &&
+          environmentSelection.selectedId !== environmentSelection.runningId ? (
+            <button
+              type="button"
+              onClick={environmentSelection.onApply}
+              disabled={runtimeStatus?.state === "busy" || runtimeStatus?.state === "starting"}
+              data-testid="apply-python-environment"
+              aria-label="Apply and restart"
+              className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground hover:bg-muted disabled:opacity-50"
+              title="Restart kernel with selected environment"
+            >
+              <RotateCcw className="size-3 shrink-0" aria-hidden="true" />
+              <span className="hidden @[48rem]:inline">Apply and restart</span>
+            </button>
+          ) : null}
+          {environmentSelection.error ? (
+            <span role="alert" className="text-xs text-destructive">
+              {environmentSelection.error}
+            </span>
+          ) : null}
+          {pythonVersion ? (
+            <span className="text-xs text-muted-foreground">Python {pythonVersion}</span>
+          ) : null}
+        </div>
+      ) : null}
+
       {updateAction ? (
         <ToolbarTooltip content={updateAction.title}>
           <button
@@ -404,6 +479,7 @@ function NotebookCommandToolbarRow({
           runtimeTarget={runtimeTarget}
           showRuntimePeerIndicator={showRuntimePeerIndicator}
           runtimePeerCount={runtimePeerCount}
+          runningEnvironmentLabel={runningEnvironmentLabel}
         />
       ) : null}
 
@@ -518,12 +594,14 @@ function RuntimeEnvironmentIndicator({
   runtimeTarget,
   showRuntimePeerIndicator,
   runtimePeerCount,
+  runningEnvironmentLabel,
 }: {
   environmentManager: NotebookEnvironmentManager | null;
   runtime: string;
   runtimeTarget: NotebookShellRuntimeTargetProjection | null;
   showRuntimePeerIndicator: boolean;
   runtimePeerCount: number;
+  runningEnvironmentLabel: string | null;
 }) {
   const description = runtimeChipDescription({ environmentManager, runtime, runtimeTarget });
 
@@ -578,6 +656,14 @@ function RuntimeEnvironmentIndicator({
               />
             ) : null}
           </>
+        ) : null}
+        {runningEnvironmentLabel ? (
+          <span
+            data-testid="running-environment-name"
+            className="ml-1 max-w-32 truncate opacity-75"
+          >
+            {runningEnvironmentLabel}
+          </span>
         ) : null}
         {showRuntimePeerIndicator ? (
           <>

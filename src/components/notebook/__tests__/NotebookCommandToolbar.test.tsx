@@ -24,6 +24,60 @@ const editableToolbarCapabilities = {
 };
 
 describe("NotebookCommandToolbar", () => {
+  it("shows Apply only while the pending environment differs from the running one", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const onApply = vi.fn();
+    const onRefresh = vi.fn();
+    const toolbar = (selectedId: string | null, runningId: string | null) => (
+      <NotebookCommandToolbar
+        capabilities={editableToolbarCapabilities}
+        runtime="python"
+        runtimeStatus={runtimeStatus}
+        runningEnvironmentLabel="rankings"
+        environmentSelection={{
+          candidates: [
+            {
+              id: "candidate-1",
+              name: "rankings",
+              display_name: "rankings (Conda Root)",
+              manager: "conda",
+            },
+            {
+              id: "candidate-2",
+              name: "rankings",
+              display_name: "rankings (Other Conda Root)",
+              manager: "conda",
+            },
+          ],
+          selectedId,
+          selectedName: selectedId ? "rankings" : null,
+          runningId,
+          truncated: false,
+          onSelect,
+          onApply,
+          onRefresh,
+        }}
+      />
+    );
+    const { rerender } = render(toolbar("candidate-1", null));
+
+    expect(screen.getByTestId("running-environment-name")).toHaveTextContent("rankings");
+    expect(screen.getByTestId("apply-python-environment")).toBeVisible();
+    const applyButton = screen.getByRole("button", { name: "Apply and restart" });
+    expect(applyButton).toBeVisible();
+    expect(applyButton).toHaveClass("shrink-0", "whitespace-nowrap");
+    expect(applyButton.querySelector("svg")).toBeInTheDocument();
+    await user.click(applyButton);
+    expect(onApply).toHaveBeenCalledOnce();
+
+    rerender(toolbar("candidate-1", "candidate-1"));
+    expect(screen.queryByTestId("apply-python-environment")).toBeNull();
+
+    rerender(toolbar("candidate-1", "candidate-2"));
+    expect(screen.getByTestId("apply-python-environment")).toBeVisible();
+  });
+
   it("blocks additional startup requests while workstation attachment is pending", () => {
     const onStartRuntime = vi.fn();
     const onRunAllCells = vi.fn();

@@ -266,6 +266,22 @@ export function useDaemonKernel({
     [client],
   );
 
+  const listPythonEnvironments = useCallback(
+    () => client.listPythonEnvironments() as Promise<NotebookResponse>,
+    [client],
+  );
+
+  const setPythonEnvironment = useCallback(
+    (candidateId: string | null) =>
+      client.setPythonEnvironment(candidateId) as Promise<NotebookResponse>,
+    [client],
+  );
+
+  const getPythonEnvironmentDetails = useCallback(
+    () => client.getPythonEnvironmentDetails() as Promise<NotebookResponse>,
+    [client],
+  );
+
   const runAllCells = useCallback(
     () => client.runAllCells() as Promise<NotebookResponse>,
     [client],
@@ -305,6 +321,9 @@ export function useDaemonKernel({
     shutdownKernel,
     syncEnvironment,
     approveProjectEnvironment,
+    listPythonEnvironments,
+    setPythonEnvironment,
+    getPythonEnvironmentDetails,
     runAllCells,
     runAllCellsGuarded,
     sendCommMessage,
