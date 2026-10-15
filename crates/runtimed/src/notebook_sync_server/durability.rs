@@ -2003,7 +2003,7 @@ mod tests {
 
         let recovered = AutoCommit::load(&durability.durable_snapshot()).unwrap();
         assert_eq!(
-            recovered.get(ROOT, "peer").unwrap().unwrap().0.to_i64(),
+            recovered.get(ROOT, "peer").unwrap().unwrap().0.as_i64(),
             Some(2)
         );
         assert_eq!(durability.status().durable_heads, after_peer.durable_heads);
@@ -2280,11 +2280,11 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_i64(),
+                .as_i64(),
             Some(3)
         );
         assert_eq!(
-            recovered_doc.get(ROOT, "peer").unwrap().unwrap().0.to_i64(),
+            recovered_doc.get(ROOT, "peer").unwrap().unwrap().0.as_i64(),
             Some(2)
         );
         assert_eq!(

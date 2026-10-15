@@ -1,21 +1,24 @@
 # Automerge Fork Patches
 
-**Status:** Memo / active register, 2026-05-21; dependency and validator status checked 2026-09-04.
+**Status:** Memo / active register, 2026-05-21; dependency status checked 2026-10-09; historical validator status checked 2026-09-04.
 
-## Current dependency baseline (2026-09-04)
+## Current dependency baseline (2026-10-09)
 
-Production Rust and `runtimed-wasm` use crates.io Automerge exactly `0.11.0`
-(`Cargo.toml:57`, `Cargo.lock:627`), adopted by `ae6aef0f` on 2026-08-26.
-The frontend does not depend on the JS `@automerge/automerge` package. There is
-no workspace Automerge patch override.
+Production Rust and `runtimed-wasm` use crates.io Automerge exactly `0.12.0`
+(`Cargo.toml`, `Cargo.lock`). The frontend does not depend on the JS
+`@automerge/automerge` package. There is no workspace Automerge patch override.
+The upgrade preserves existing actor-label attribution and presence; upstream
+Authors require a separate coordinated migration and are not enabled in production.
 
-`automerge-store` retains `nteract/automerge` revision
-`3fb6af5cc3af23b79f27cebfa339c8c98987e7b7` (Rust `0.10.0`) only as the
-`automerge-legacy` dev-dependency (`crates/automerge-store/Cargo.toml:17`).
-No branch is selected by that dependency. Its tests cover bidirectional
-snapshot loading and encoded sync with representative legacy data
-(`crates/automerge-store/tests/version_compat.rs:282–352`), not every deployed
-document or every historical patch.
+`automerge-store` retains crates.io `0.11.0` as `automerge-previous` and
+`nteract/automerge` revision `3fb6af5cc3af23b79f27cebfa339c8c98987e7b7`
+(Rust `0.10.0`) as `automerge-legacy`, both dev-only compatibility peers.
+No branch is selected by the git dependency. The tests cover bidirectional
+snapshots and encoded sync with representative maps, lists, rich text and
+historical actor labels, plus preservation of 0.12 Author bytes through old
+peers (`crates/automerge-store/tests/{version_compat,author_compat}.rs`). They do
+not establish compatibility for every deployed document or old nteract's
+admission/projection behavior with new opaque actors.
 
 ## Historical fork baseline (2026-07-13)
 

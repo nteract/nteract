@@ -127,13 +127,14 @@ doc.merge_recovering(&mut fork, "external-worker-merge").ok();
 
 Reserve `fork_at(heads)` for views and diagnostics — it builds a separate historical document with its own actor stream, so don't use it as the historical write primitive.
 
-As of 2026-09-04, production and WASM use crates.io Automerge exactly `0.11.0`
-(`Cargo.toml:57`), adopted in `ae6aef0f` on 2026-08-26. The old MissingOps
-regression remains in `crates/automerge-recovery/src/lib.rs:416`; its
-"desktop patch" test name records history, not the current dependency source.
-Only `automerge-store` retains the legacy `nteract/automerge` revision
-`3fb6af5cc3af23b79f27cebfa339c8c98987e7b7` (Rust `0.10.0`) as a dev-only
-compatibility peer (`crates/automerge-store/Cargo.toml:17`).
+As of 2026-10-09, production and WASM use crates.io Automerge exactly `0.12.0`
+(`Cargo.toml`). The upgrade preserves existing actor-label attribution and
+presence; upstream Authors are not enabled in production. The old MissingOps
+regression remains in `crates/automerge-recovery/src/lib.rs`; its "desktop patch"
+test name records history, not the current dependency source. `automerge-store`
+retains crates.io `0.11.0` and the legacy `nteract/automerge` revision
+`3fb6af5cc3af23b79f27cebfa339c8c98987e7b7` (Rust `0.10.0`) as dev-only
+snapshot and encoded-sync compatibility peers (`crates/automerge-store/Cargo.toml`).
 
 `transact_at_heads_recovering` is our wrapper around upstream `set_actor`,
 `isolate`, and `integrate`, not a fork-only API. Actor restoration and
