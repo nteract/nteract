@@ -6,7 +6,7 @@ import {appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from '
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {releaseIdentity} from './npm-release.mjs';
-import {assetNames, candidateName, digest, positive, publishAssets, resolveEditorCandidate, validateArtifact, validateBuildRun, validateCandidate, validateWasm} from './editor-assets-release.mjs';
+import {assetNames, candidateName, digest, identityFromBuildTitle, positive, publishAssets, resolveEditorCandidate, resolveWasmCandidate, validateBuildRun, validateCandidate, validateWasm} from './editor-assets-release.mjs';
 const env = process.env;
 const repository = env.GITHUB_REPOSITORY;
 const event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
@@ -58,19 +58,10 @@ async function upstream(identity) {
   return releaseIdentity(value, {repository, runId: identity.runId, runAttempt: identity.runAttempt, sourceSha: identity.sourceSha});
 }
 async function wasmPlan(identity) {
-  const upstreamRun = await run(identity.runId, identity.runAttempt);
-  const prefix = `release-wasm-${identity.runId}-`;
-  const candidates = (await artifacts(identity.runId)).filter(item => item.name.startsWith(prefix) && /^[1-9]\d*$/.test(item.name.slice(prefix.length)) && BigInt(item.name.slice(prefix.length)) <= BigInt(identity.runAttempt)).sort((a,b) => Number(BigInt(b.name.slice(prefix.length)) - BigInt(a.name.slice(prefix.length))));
-  for (const artifact of candidates) {
-    const attempt = artifact.name.slice(prefix.length);
-    if (!await successfulJob(identity.runId, attempt, 'Build WASM artifacts')) continue;
-    validateArtifact(artifact, upstreamRun, `${prefix}${attempt}`);
-    const receipt = JSON.parse((await zipEntries(artifact, ['release-wasm.json']))['release-wasm.json']);
-    validateWasm(receipt, identity);
-    if (receipt.runAttempt !== attempt) throw new Error('WASM receipt attempt mismatch');
-    return {...identity, version: receipt.version, wasm: receipt, wasmArtifactId: String(artifact.id), wasmArtifactDigest: artifact.digest};
-  }
-  throw new Error('No retained successful release WASM artifact. This release may predate the workflow or its artifact expired; create a new release, do not rebuild the old identity.');
+  return resolveWasmCandidate(identity, {
+    releaseRun: run, artifacts, successfulJob,
+    readWasmReceipt: async artifact => JSON.parse((await zipEntries(artifact, ['release-wasm.json']))['release-wasm.json']),
+  });
 }
 async function findEditor(identity, excludeCurrent = false) {
   return resolveEditorCandidate(identity, {
@@ -119,16 +110,14 @@ if (command === 'prepare') {
   const build = await run(automatic ? event.workflow_run.id : env.BUILD_RUN_ID, automatic ? event.workflow_run.run_attempt : env.BUILD_RUN_ATTEMPT);
   validateBuildRun(build, repository, event.repository.default_branch);
   if (build.status !== 'completed' || build.conclusion !== 'success') throw new Error('Editor workflow must have succeeded');
-  const match = /^Editor assets for release ([1-9]\d*)\/([1-9]\d*)$/.exec(build.display_title);
-  if (!match) throw new Error('Invalid editor build title');
-  const identity = await upstream({runId: match[1], runAttempt: match[2]});
+  const identity = await upstream(identityFromBuildTitle(build.display_title));
   const previous = await findEditor(identity);
   if (!previous) throw new Error('No successful packed editor candidate; publication never builds');
   const {candidate, artifact} = previous;
-  // Revalidate the original WASM artifact identity, including its digest. Its
-  // bytes may expire after packing; the editor's sealed bytes remain sufficient.
-  const wasmArtifact = await json(`/actions/artifacts/${positive(candidate.wasmArtifactId)}`);
-  if (wasmArtifact.digest !== candidate.wasmArtifactDigest || wasmArtifact.name !== `release-wasm-${candidate.runId}-${candidate.wasm.runAttempt}` || String(wasmArtifact.workflow_run?.id) !== candidate.runId || wasmArtifact.workflow_run?.head_sha !== candidate.sourceSha) throw new Error('Original WASM artifact identity mismatch');
+  // The successful read-only pack job verified and sealed the original WASM
+  // receipt/digest. Its large input artifact may expire before this candidate.
+  // Recheck job provenance without requiring that old storage record to exist.
+  if (!await successfulJob(candidate.runId, candidate.wasm.runAttempt, 'Build WASM artifacts')) throw new Error('Original WASM build did not succeed');
   const files = await zipEntries(artifact, assetNames(candidate));
   const api = {
     repository,

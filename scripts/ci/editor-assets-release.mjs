@@ -31,7 +31,8 @@ export function validateBuildRun(run, repository, defaultBranch) {
 }
 export function validateCandidate(candidate, files) {
   if (candidate.schema !== 1) throw new Error('Unknown editor candidate schema');
-  positive(candidate.buildRunId); positive(candidate.buildRunAttempt);
+  positive(candidate.buildRunId); positive(candidate.buildRunAttempt); positive(candidate.wasmArtifactId);
+  if (!/^sha256:[a-f0-9]{64}$/.test(candidate.wasmArtifactDigest)) throw new Error('Missing sealed WASM artifact digest');
   const names = assetNames(candidate);
   if (JSON.stringify(Object.keys(candidate.sha256 ?? {}).sort()) !== JSON.stringify(names.sort())) throw new Error('Unexpected editor asset inventory');
   for (const name of names) {
@@ -58,6 +59,7 @@ export async function publishAssets(candidate, files, api) {
     const matches = existing.filter(asset => asset.name === name);
     if (matches.length > 1) throw new Error('Duplicate release asset');
     if (!matches.length) missing.push(name);
+    else if (matches[0].state !== 'uploaded') throw new Error(`Incomplete release asset ${matches[0].id} (${name}, state=${matches[0].state}); inspect/remove the incomplete upload, then retry this same editor build. No asset was deleted.`);
     else if (digest(await api.assetBytes(matches[0].id)) !== candidate.sha256[name]) throw new Error(`Existing release asset differs: ${name}`);
   }
   if (missing.length && await api.newerRelease(identity.channel, candidate.version)) throw new Error('Candidate is stale; refusing to complete older channel assets');
@@ -66,7 +68,7 @@ export async function publishAssets(candidate, files, api) {
   const result = await api.assets(release.id);
   for (const name of names) {
     const asset = result.find(entry => entry.name === name);
-    if (!asset || digest(await api.assetBytes(asset.id)) !== candidate.sha256[name]) throw new Error(`Published asset verification failed: ${name}`);
+    if (!asset || asset.state !== 'uploaded' || digest(await api.assetBytes(asset.id)) !== candidate.sha256[name]) throw new Error(`Published asset verification failed: ${name}`);
   }
   return missing.length ? 'published' : 'existing';
 }
@@ -75,7 +77,9 @@ export async function resolveEditorCandidate(identity, api, current) {
   let completedPack = false;
   for (const build of await api.buildRuns()) {
     if (build.display_title !== buildTitle(identity)) continue;
-    validateBuildRun(build, api.repository, api.defaultBranch);
+    // Wrong-branch dispatches retain the same display title after failing
+    // their guard. Ignore them rather than poisoning a valid candidate.
+    try { validateBuildRun(build, api.repository, api.defaultBranch); } catch { continue; }
     const matches = (await api.artifacts(build.id)).filter(item => item.name === candidateName(identity));
     if (matches.length > 1) throw new Error('Duplicate immutable editor candidate');
     if (matches.length) {
@@ -91,4 +95,26 @@ export async function resolveEditorCandidate(identity, api, current) {
   }
   if (completedPack) throw new Error('Successful editor candidate artifact missing/expired; create a new release candidate, never rebuild this identity');
   return null;
+}
+
+export function identityFromBuildTitle(title) {
+  const match = /^Editor assets for release ([1-9]\d*)\/([1-9]\d*)$/.exec(title);
+  if (!match) throw new Error('Invalid editor build title');
+  return {runId: match[1], runAttempt: match[2]};
+}
+
+export async function resolveWasmCandidate(identity, api) {
+  const upstreamRun = await api.releaseRun(identity.runId, identity.runAttempt);
+  const prefix = `release-wasm-${identity.runId}-`;
+  const candidates = (await api.artifacts(identity.runId)).filter(item => item.name.startsWith(prefix) && /^[1-9]\d*$/.test(item.name.slice(prefix.length)) && BigInt(item.name.slice(prefix.length)) <= BigInt(identity.runAttempt)).sort((a,b) => Number(BigInt(b.name.slice(prefix.length)) - BigInt(a.name.slice(prefix.length))));
+  for (const artifact of candidates) {
+    const attempt = artifact.name.slice(prefix.length);
+    if (!await api.successfulJob(identity.runId, attempt, 'Build WASM artifacts')) continue;
+    validateArtifact(artifact, upstreamRun, `${prefix}${attempt}`);
+    const receipt = await api.readWasmReceipt(artifact);
+    validateWasm(receipt, identity);
+    if (receipt.runAttempt !== attempt) throw new Error('WASM receipt attempt mismatch');
+    return {...identity, version: receipt.version, wasm: receipt, wasmArtifactId: String(artifact.id), wasmArtifactDigest: artifact.digest};
+  }
+  throw new Error('No retained successful release WASM artifact. This release may predate the workflow or its artifact expired; create a new release, do not rebuild the old identity.');
 }
