@@ -22,8 +22,10 @@ interface BokehDocumentEvent {
   msg_data?: {
     event_name?: string;
   };
+  value?: unknown;
   model?: {
     properties?: Record<string, { syncable?: boolean }>;
+    setv?(attrs: Record<string, unknown>, options?: { sync?: boolean }): void;
   };
 }
 
@@ -466,6 +468,7 @@ export class BokehSessionController {
     this.applyingRemote = true;
     try {
       document.apply_json_patch({ events }, bufferMap(checkpoint.buffers));
+      this.reapplyPendingLocalChanges();
       this.revision = checkpoint.revision;
     } finally {
       this.applyingRemote = false;
@@ -551,6 +554,7 @@ export class BokehSessionController {
           this.applyPatchPayload(event.clientPatch);
         }
         if (event.serverPatch) this.applyPatchPayload(event.serverPatch);
+        this.reapplyPendingLocalChanges();
         this.revision = event.revision;
       } finally {
         this.applyingRemote = false;
@@ -559,6 +563,20 @@ export class BokehSessionController {
     this.cancelSatisfiedResync();
     this.finishTransaction(event.transactionId);
     this.options.onLayout();
+  }
+
+  /**
+   * Kernel events can overwrite values the browser changed but has not sent
+   * yet. The kernel applies those changes after the event, so restore them
+   * here; otherwise the browser keeps the kernel's older value while the
+   * kernel ends up with the browser's.
+   */
+  private reapplyPendingLocalChanges(): void {
+    for (const event of this.localEvents) {
+      if (event.kind === "ModelChanged" && event.attr && event.model?.setv) {
+        event.model.setv({ [event.attr]: event.value }, { sync: false });
+      }
+    }
   }
 
   private applyPatchPayload(payload: NteractBokehResolvedPatchPayload): void {

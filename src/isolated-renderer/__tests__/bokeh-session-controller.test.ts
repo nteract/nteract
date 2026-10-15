@@ -102,7 +102,7 @@ function harness() {
           document: { roots: [{ id: "root-1" }] },
           buffers: [],
         },
-        patchTail: [],
+        patchTail: [] as NteractBokehResolvedPatchEvent[],
       };
     }
     if (method === NTERACT_BOKEH_APPLY_PATCH) {
@@ -249,6 +249,67 @@ describe("BokehSessionController", () => {
     ]);
     expect(documents).toHaveLength(1);
     expect(requestHost).toHaveBeenCalledTimes(2);
+    controller.dispose();
+  });
+
+  it("keeps a queued local change when its in-flight patch comes back rebased", async () => {
+    const { controller, documents, notify, patchRequests } = harness();
+    await controller.start();
+    const document = documents[0];
+    const setv = vi.fn();
+    const page = { properties: { dark_theme: { syncable: true } }, setv };
+
+    document.emit({
+      kind: "ModelChanged",
+      sync: true,
+      attr: "dark_theme",
+      value: false,
+      model: page,
+    });
+    await vi.advanceTimersByTimeAsync(50);
+    await settle();
+    const transactionId = patchRequests[0].transactionId as string;
+    document.emit({
+      kind: "ModelChanged",
+      sync: true,
+      attr: "dark_theme",
+      value: true,
+      model: page,
+    });
+
+    notify(NTERACT_BOKEH_SESSION_PATCH, {
+      outputId: "output-1",
+      event: {
+        sessionId: "session-1",
+        transactionId: "server-change-1",
+        baseRevision: 0,
+        revision: 1,
+        serverPatch: { patch: { events: [{ kind: "ModelChanged", new: 1 }] }, buffers: [] },
+      },
+    });
+    notify(NTERACT_BOKEH_SESSION_PATCH, {
+      outputId: "output-1",
+      event: {
+        sessionId: "session-1",
+        transactionId,
+        baseRevision: 1,
+        revision: 2,
+        clientPatch: {
+          patch: { events: [{ kind: "ModelChanged", attr: "dark_theme", new: false }] },
+          buffers: [],
+        },
+      },
+    });
+    await settle();
+
+    expect(document.applied.at(-1)).toEqual({
+      events: [{ kind: "ModelChanged", attr: "dark_theme", new: false }],
+    });
+    expect(setv).toHaveBeenLastCalledWith({ dark_theme: true }, { sync: false });
+
+    await vi.advanceTimersByTimeAsync(200);
+    await settle();
+    expect(patchRequests).toHaveLength(2);
     controller.dispose();
   });
 
