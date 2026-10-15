@@ -14,6 +14,7 @@ const runtimeStatus = {
 const editableToolbarCapabilities = {
   canEditStructure: true,
   canExecute: true,
+  canViewPackages: true,
   canManageSharing: true,
   canRequestEdit: true,
   auth: {
@@ -318,17 +319,18 @@ describe("NotebookCommandToolbar", () => {
     expect(await screen.findByRole("tooltip")).toHaveTextContent(description);
   });
 
-  it("keeps runtime metadata passive without package navigation capabilities", async () => {
+  it("toggles the packages panel from the runtime indicator", async () => {
     const user = userEvent.setup();
-    const onRunAllCells = vi.fn();
+    const onTogglePackages = vi.fn();
     render(
       <NotebookCommandToolbar
         capabilities={editableToolbarCapabilities}
         runtime="python"
         environmentManager="conda"
+        environmentPanelOpen
         environmentOutOfSync
         runtimeStatus={runtimeStatus}
-        onRunAllCells={onRunAllCells}
+        onTogglePackages={onTogglePackages}
         onRestartAndRunAll={() => {}}
         trailingControls={<button type="button">Next control</button>}
       />,
@@ -336,32 +338,49 @@ describe("NotebookCommandToolbar", () => {
 
     const indicator = screen.getByTestId("runtime-environment-indicator");
     expect(indicator).toBeVisible();
-    expect(indicator.tagName).toBe("SPAN");
+    expect(indicator.tagName).toBe("BUTTON");
     expect(indicator).toHaveTextContent("Python");
     expect(indicator).toHaveAttribute("data-env-manager", "conda");
+    expect(indicator).toHaveAttribute("aria-expanded", "true");
+    expect(indicator).toHaveAccessibleName(
+      "Python runtime · conda environment - close packages panel",
+    );
     expect(indicator).not.toHaveAttribute("title");
     expect(within(indicator).getByText("Python runtime · conda environment")).toHaveClass(
       "sr-only",
     );
-    expect(indicator).not.toHaveAttribute("role");
-    expect(indicator).not.toHaveAttribute("tabindex");
-    expect(indicator.tabIndex).toBe(-1);
-    expect(indicator.className).not.toMatch(/hover:|cursor-|ring-/);
-    expect(indicator.querySelector("button, a, [tabindex]")).toBeNull();
-    expect(screen.queryByRole("button", { name: /Python|environment panel/ })).toBeNull();
+    expect(indicator).toHaveClass("ring-1");
 
     await user.click(indicator);
-    await user.keyboard("{Enter} ");
-    expect(onRunAllCells).not.toHaveBeenCalled();
-    expect(indicator).not.toHaveFocus();
+    expect(onTogglePackages).toHaveBeenCalledOnce();
 
     screen.getByTestId("restart-run-all-button").focus();
+    await user.tab();
+    expect(indicator).toHaveFocus();
     await user.tab();
     expect(screen.getByRole("button", { name: "Next control" })).toHaveFocus();
     expect(screen.getByTestId("kernel-status")).toBeVisible();
     expect(screen.getByTestId("restart-run-all-button")).toHaveAccessibleName(
       "Dependencies changed - restart kernel and run all cells",
     );
+  });
+
+  it("keeps the environment indicator passive when package viewing is unavailable", async () => {
+    const user = userEvent.setup();
+    const onTogglePackages = vi.fn();
+    render(
+      <NotebookCommandToolbar
+        capabilities={{ ...editableToolbarCapabilities, canViewPackages: false }}
+        runtime="python"
+        environmentManager="conda"
+        onTogglePackages={onTogglePackages}
+      />,
+    );
+
+    const indicator = screen.getByTestId("runtime-environment-indicator");
+    expect(indicator.tagName).toBe("SPAN");
+    await user.click(indicator);
+    expect(onTogglePackages).not.toHaveBeenCalled();
   });
 
   it("can direct eligible users toward workstation setup without a runtime status", () => {

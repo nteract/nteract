@@ -133,6 +133,7 @@ import {
 import {
   openNotebookRailPanel,
   setNotebookRailCollapsed,
+  toggleNotebookRailPanel,
   useNotebookRailUiState,
 } from "@/components/notebook/state/rail-ui-state";
 import {
@@ -1381,6 +1382,10 @@ function AppContent() {
 
   const renderedActiveRailPanel = activeRailPanel;
 
+  const handleTogglePackagesRail = useCallback(() => {
+    if (shellCapabilities.canViewPackages) toggleNotebookRailPanel("packages");
+  }, [shellCapabilities.canViewPackages]);
+
   const handleRailPanelChange = useCallback((panelId: NotebookRailPanelId) => {
     openNotebookRailPanel(panelId);
   }, []);
@@ -2107,6 +2112,8 @@ function AppContent() {
               focusedCellId={focusedCellId}
               lastCellId={cellIds.length > 0 ? cellIds[cellIds.length - 1] : null}
               onAddCell={handleAddCell}
+              packagesPanelOpen={!railEffectivelyCollapsed && activeRailPanel === "packages"}
+              onTogglePackages={handleTogglePackagesRail}
               capabilities={shellCapabilities}
               depsOutOfSync={envSyncState ? !envSyncState.inSync : false}
               updateStatus={updateStatus}

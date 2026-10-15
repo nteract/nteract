@@ -54,6 +54,7 @@ export interface NotebookCommandToolbarProps {
     | "canEditStructure"
     | "canExecute"
     | "canRecoverRuntime"
+    | "canViewPackages"
     | "canManageSharing"
     | "canRequestEdit"
     | "auth"
@@ -61,6 +62,7 @@ export interface NotebookCommandToolbarProps {
   runtime?: string | null;
   runtimeTarget?: NotebookShellRuntimeTargetProjection | null;
   environmentManager?: NotebookEnvironmentManager | null;
+  environmentPanelOpen?: boolean;
   environmentOutOfSync?: boolean;
   runtimeStatus?: NotebookCommandToolbarStatus | null;
   startDisabled?: boolean;
@@ -75,6 +77,7 @@ export interface NotebookCommandToolbarProps {
   onRestartRuntime?: () => void;
   onRunAllCells?: () => void;
   onRestartAndRunAll?: () => void;
+  onTogglePackages?: () => void;
   updateAction?: NotebookCommandToolbarUpdateAction | null;
   workstationAction?: NotebookCommandToolbarWorkstationAction | null;
   presenceControls?: ReactNode;
@@ -115,6 +118,7 @@ function NotebookCommandToolbarRow({
   runtime = null,
   runtimeTarget = null,
   environmentManager = null,
+  environmentPanelOpen = false,
   environmentOutOfSync = false,
   runtimeStatus,
   startDisabled = false,
@@ -126,6 +130,7 @@ function NotebookCommandToolbarRow({
   onRestartRuntime,
   onRunAllCells,
   onRestartAndRunAll,
+  onTogglePackages,
   updateAction = null,
   workstationAction = null,
   presenceControls,
@@ -138,7 +143,8 @@ function NotebookCommandToolbarRow({
   trailingControls,
   className,
 }: NotebookCommandToolbarProps) {
-  const { auth, canEditStructure, canExecute, canManageSharing, canRequestEdit } = capabilities;
+  const { auth, canEditStructure, canExecute, canManageSharing, canRequestEdit, canViewPackages } =
+    capabilities;
   const showAddCellControls = Boolean(onAddCell) && (canEditStructure || addCellControlsDisabled);
   const runtimeActions = projectNotebookCommandRuntimeActions({
     capabilities: { canExecute, canRecoverRuntime: capabilities.canRecoverRuntime },
@@ -400,6 +406,9 @@ function NotebookCommandToolbarRow({
       {runtime ? (
         <RuntimeEnvironmentIndicator
           environmentManager={environmentManager}
+          canTogglePackages={canViewPackages && Boolean(onTogglePackages)}
+          environmentPanelOpen={environmentPanelOpen}
+          onTogglePackages={onTogglePackages}
           runtime={runtime}
           runtimeTarget={runtimeTarget}
           showRuntimePeerIndicator={showRuntimePeerIndicator}
@@ -509,85 +518,114 @@ function ToolbarTooltip({
 }
 
 /**
- * Passive runtime + environment chip. It never takes focus; the tooltip is a
- * hover hint, and screen readers get the same sentence from hidden text.
+ * Runtime and environment chip. Package-capable notebooks can toggle the
+ * packages rail from here; otherwise the indicator remains passive.
  */
 function RuntimeEnvironmentIndicator({
   environmentManager,
+  canTogglePackages,
+  environmentPanelOpen,
+  onTogglePackages,
   runtime,
   runtimeTarget,
   showRuntimePeerIndicator,
   runtimePeerCount,
 }: {
   environmentManager: NotebookEnvironmentManager | null;
+  canTogglePackages: boolean;
+  environmentPanelOpen: boolean;
+  onTogglePackages?: () => void;
   runtime: string;
   runtimeTarget: NotebookShellRuntimeTargetProjection | null;
   showRuntimePeerIndicator: boolean;
   runtimePeerCount: number;
 }) {
   const description = runtimeChipDescription({ environmentManager, runtime, runtimeTarget });
+  const indicatorContent = (
+    <span className="flex items-center gap-1">
+      <span className="sr-only">{description}</span>
+      {runtime === "deno" ? (
+        <>
+          <DenoIcon className="size-3" aria-hidden="true" />
+          <span aria-hidden="true">Deno</span>
+        </>
+      ) : (
+        <>
+          <PythonIcon className="size-3" aria-hidden="true" />
+          <span aria-hidden="true">Python</span>
+        </>
+      )}
+      {environmentManager ? (
+        <>
+          <span className="opacity-40" aria-hidden="true">
+            /
+          </span>
+          {environmentManager === "uv" ? (
+            <UvIcon className="size-2 text-fuchsia-600 dark:text-fuchsia-400" aria-hidden="true" />
+          ) : null}
+          {environmentManager === "conda" ? (
+            <CondaIcon
+              className="size-2.5 text-emerald-600 dark:text-emerald-400"
+              aria-hidden="true"
+            />
+          ) : null}
+          {environmentManager === "pixi" ? (
+            <PixiIcon className="size-2.5 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+          ) : null}
+        </>
+      ) : null}
+      {showRuntimePeerIndicator ? (
+        <>
+          <span className="opacity-40" aria-hidden="true">
+            /
+          </span>
+          <ServerCog className="size-2.5" aria-hidden="true" />
+        </>
+      ) : null}
+    </span>
+  );
 
   return (
     <ToolbarTooltip content={description}>
-      <span
-        data-testid="runtime-environment-indicator"
-        data-runtime={runtime}
-        data-env-manager={environmentManager || undefined}
-        data-runtime-target={runtimeTarget?.kind}
-        data-runtime-peer-count={showRuntimePeerIndicator ? runtimePeerCount : undefined}
-        className={cn(
-          "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
-          runtime === "deno"
-            ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-            : "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-        )}
-      >
-        <span className="sr-only">{description}</span>
-        {runtime === "deno" ? (
-          <>
-            <DenoIcon className="size-3" aria-hidden="true" />
-            <span aria-hidden="true">Deno</span>
-          </>
-        ) : (
-          <>
-            <PythonIcon className="size-3" aria-hidden="true" />
-            <span aria-hidden="true">Python</span>
-          </>
-        )}
-        {environmentManager ? (
-          <>
-            <span className="opacity-40" aria-hidden="true">
-              /
-            </span>
-            {environmentManager === "uv" ? (
-              <UvIcon
-                className="size-2 text-fuchsia-600 dark:text-fuchsia-400"
-                aria-hidden="true"
-              />
-            ) : null}
-            {environmentManager === "conda" ? (
-              <CondaIcon
-                className="size-2.5 text-emerald-600 dark:text-emerald-400"
-                aria-hidden="true"
-              />
-            ) : null}
-            {environmentManager === "pixi" ? (
-              <PixiIcon
-                className="size-2.5 text-amber-600 dark:text-amber-400"
-                aria-hidden="true"
-              />
-            ) : null}
-          </>
-        ) : null}
-        {showRuntimePeerIndicator ? (
-          <>
-            <span className="opacity-40" aria-hidden="true">
-              /
-            </span>
-            <ServerCog className="size-2.5" aria-hidden="true" />
-          </>
-        ) : null}
-      </span>
+      {canTogglePackages ? (
+        <button
+          type="button"
+          onClick={onTogglePackages}
+          aria-label={`${description} - ${environmentPanelOpen ? "close" : "open"} packages panel`}
+          aria-expanded={environmentPanelOpen}
+          data-testid="runtime-environment-indicator"
+          data-runtime={runtime}
+          data-env-manager={environmentManager || undefined}
+          data-runtime-target={runtimeTarget?.kind}
+          data-runtime-peer-count={showRuntimePeerIndicator ? runtimePeerCount : undefined}
+          className={cn(
+            TOOLBAR_BUTTON_FOCUS,
+            "flex items-center gap-1 rounded border-0 px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+            runtime === "deno"
+              ? "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-400"
+              : "bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 dark:text-blue-400",
+            environmentPanelOpen && "ring-1 ring-current/25",
+          )}
+        >
+          {indicatorContent}
+        </button>
+      ) : (
+        <span
+          data-testid="runtime-environment-indicator"
+          data-runtime={runtime}
+          data-env-manager={environmentManager || undefined}
+          data-runtime-target={runtimeTarget?.kind}
+          data-runtime-peer-count={showRuntimePeerIndicator ? runtimePeerCount : undefined}
+          className={cn(
+            "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
+            runtime === "deno"
+              ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+              : "bg-blue-500/10 text-blue-600 dark:text-blue-400",
+          )}
+        >
+          {indicatorContent}
+        </span>
+      )}
     </ToolbarTooltip>
   );
 }
