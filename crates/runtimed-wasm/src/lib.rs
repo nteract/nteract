@@ -54,6 +54,15 @@ pub fn __wasm_start() {
     console_error_panic_hook::set_once();
 }
 
+/// Parse a daemon broadcast frame.
+///
+/// Key order matters: Bokeh session patches define a model at its first
+/// occurrence and refer to it by id afterwards, so `serde_json` needs the
+/// workspace's `preserve_order` feature here.
+fn parse_broadcast_payload(payload: &[u8]) -> Result<serde_json::Value, serde_json::Error> {
+    serde_json::from_slice(payload)
+}
+
 /// Serialize a Rust value to a `JsValue`, forcing maps to plain JS Objects.
 ///
 /// `serde_wasm_bindgen::to_value` defaults to serializing maps as JS `Map`,
@@ -3427,8 +3436,7 @@ impl NotebookHandle {
                 });
             }
             frame_types::BROADCAST => {
-                // Parse JSON broadcast payload
-                let value = match serde_json::from_slice::<serde_json::Value>(payload) {
+                let value = match parse_broadcast_payload(payload) {
                     Ok(v) => v,
                     Err(e) => {
                         web_sys::console::warn_1(
@@ -4230,6 +4238,15 @@ mod tests {
             !data.contains_key("text/html"),
             "non-winning rich text fallbacks should still be dropped"
         );
+    }
+
+    #[test]
+    fn broadcast_payload_keeps_bokeh_key_order() {
+        let payload = r#"{"event":"bokeh_session_patch","patch":{"server_patch":{"patch":{"events":[{"kind":"ModelChanged","model":{"id":"p1"},"attr":"children","new":[{"type":"object","name":"Row","id":"r1","attributes":{"tags":[]}},{"id":"r1"}]}]}}}}"#;
+
+        let value = parse_broadcast_payload(payload.as_bytes()).unwrap();
+
+        assert_eq!(serde_json::to_string(&value).unwrap(), payload);
     }
 
     #[test]
