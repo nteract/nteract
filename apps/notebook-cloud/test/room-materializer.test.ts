@@ -1919,49 +1919,68 @@ describe("RoomMaterializer", () => {
     );
   });
 
-  for (const phase of ["hydration", "recovery"] as const)
-    it(`does not use published content when the manifest read fails during ${phase}`, async () => {
-      const state = fakeState();
-      const publishedSnapshot = await createNotebookRoomSnapshot(
-        "demo",
-        "published-cell",
-        "Published content\n",
-      );
-      const env = fakePublishedSnapshotEnv({
-        notebookId: "demo",
-        revisionId: "revision-current",
-        actorLabel: "user:dev:publisher/agent:runt-publish",
-        notebookBytes: publishedSnapshot.notebookBytes,
-        runtimeStateBytes: publishedSnapshot.runtimeStateBytes,
+  for (const failure of ["read", "future-version"] as const)
+    for (const phase of ["hydration", "recovery", "checkpoint"] as const)
+      it(`does not use published content on manifest ${failure} failure during ${phase}`, async () => {
+        const state = fakeState();
+        const publishedSnapshot = await createNotebookRoomSnapshot(
+          "demo",
+          "published-cell",
+          "Published content\n",
+        );
+        const env = fakePublishedSnapshotEnv({
+          notebookId: "demo",
+          revisionId: "revision-current",
+          actorLabel: "user:dev:publisher/agent:runt-publish",
+          notebookBytes: publishedSnapshot.notebookBytes,
+          runtimeStateBytes: publishedSnapshot.runtimeStateBytes,
+        });
+        const materializer = new RoomMaterializer("demo", state, env);
+        await materializer.checkpoint();
+        const original = await state.storage.get<Record<string, unknown>>("room-host:checkpoint");
+        const host = await checkpointHost(materializer);
+        if (failure === "future-version")
+          await state.storage.put("room-host:checkpoint", { ...original, version: 8 });
+        const selected = await state.storage.get("room-host:checkpoint");
+        let objectWrites = 0;
+        const put = env.NOTEBOOK_SNAPSHOTS!.put.bind(env.NOTEBOOK_SNAPSHOTS!);
+        env.NOTEBOOK_SNAPSHOTS!.put = async (...args) => {
+          objectWrites++;
+          return put(...args);
+        };
+        host.sync_peer = () => {
+          throw new Error(
+            "recursive use of an object detected which would lead to unsafe aliasing",
+          );
+        };
+        const get = state.storage.get.bind(state.storage);
+        state.storage.get = async <T>(key: string) => {
+          if (failure === "read" && key === "room-host:checkpoint")
+            throw new Error("injected manifest read failure");
+          return get<T>(key);
+        };
+        const peer = {
+          id: "viewer",
+          identity: authenticateDevRequest(
+            new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+          ),
+        };
+        await assert.rejects(
+          phase === "hydration"
+            ? checkpointHost(new RoomMaterializer("demo", state, env))
+            : phase === "recovery"
+              ? materializer.syncPeer(peer)
+              : materializer.checkpoint(),
+          failure === "read"
+            ? /Room checkpoint manifest could not be read/
+            : /Unsupported room checkpoint version 8/,
+        );
+        assert.deepEqual(await get("room-host:checkpoint"), selected);
+        assert.equal(objectWrites, 0, "unknown checkpoint state must not trigger object writes");
+        state.storage.get = get;
+        await state.storage.put("room-host:checkpoint", original);
+        await checkpointHost(new RoomMaterializer("demo", state, env));
       });
-      const materializer = new RoomMaterializer("demo", state, env);
-      await materializer.checkpoint();
-      const original = await state.storage.get("room-host:checkpoint");
-      const host = await checkpointHost(materializer);
-      host.sync_peer = () => {
-        throw new Error("recursive use of an object detected which would lead to unsafe aliasing");
-      };
-      const get = state.storage.get.bind(state.storage);
-      state.storage.get = async <T>(key: string) => {
-        if (key === "room-host:checkpoint") throw new Error("injected manifest read failure");
-        return get<T>(key);
-      };
-      const peer = {
-        id: "viewer",
-        identity: authenticateDevRequest(
-          new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
-        ),
-      };
-      await assert.rejects(
-        phase === "hydration"
-          ? checkpointHost(new RoomMaterializer("demo", state, env))
-          : materializer.syncPeer(peer),
-        /Room checkpoint manifest could not be read/,
-      );
-      assert.deepEqual(await get("room-host:checkpoint"), original);
-      state.storage.get = get;
-      await checkpointHost(new RoomMaterializer("demo", state, env));
-    });
 
   it("rejects runtime peer execution creation over runtime-state sync", async () => {
     const state = fakeState();

@@ -373,10 +373,10 @@ export class RoomMaterializer {
   }
 
   async checkpoint(): Promise<void> {
-    const expected = JSON.stringify(await this.state.storage.get(CHECKPOINT_META_KEY));
+    const expected = JSON.stringify(await this.loadCheckpointMetadata());
     const startedAt = Date.now();
     await this.withHost(async (host) => {
-      const previous = await this.state.storage.get<RoomCheckpointMetadata>(CHECKPOINT_META_KEY);
+      const previous = await this.loadCheckpointMetadata();
       const current = JSON.stringify(previous);
       // Detect observed replacement while queued or hydrating. This is not an
       // atomic effect fence; stale storage handles must be revoked by the host.
@@ -681,8 +681,8 @@ export class RoomMaterializer {
   ): Promise<boolean> {
     const startedAt = Date.now();
     const checkpointMetadata = JSON.stringify(await this.loadCheckpointMetadata());
-    // A committed object generation may contain unpublished work. Recover that
-    // exact generation, or leave it intact; never clear it in favor of a publication.
+    // Host-error recovery preserves the exact committed object generation. Normal
+    // hydration separately applies the published-revision selection policy.
     if (checkpointMetadata && JSON.parse(checkpointMetadata)?.version === CHECKPOINT_VERSION)
       return this.recoverHostFromCheckpointNow(operation, cause, startedAt);
     const published = await this.loadLatestPublishedSnapshotPairForCheckpoint();
@@ -817,8 +817,9 @@ export class RoomMaterializer {
   }
 
   private async loadCheckpointMetadata(): Promise<Partial<RoomCheckpointMetadata> | undefined> {
+    let metadata: Partial<RoomCheckpointMetadata> | undefined;
     try {
-      return await this.state.storage.get<Partial<RoomCheckpointMetadata>>(CHECKPOINT_META_KEY);
+      metadata = await this.state.storage.get<Partial<RoomCheckpointMetadata>>(CHECKPOINT_META_KEY);
     } catch (cause) {
       // Unknown is not absent: a failed read may hide unpublished committed work.
       throw new RoomCheckpointLoadError(
@@ -826,6 +827,9 @@ export class RoomMaterializer {
         { cause },
       );
     }
+    if (typeof metadata?.version === "number" && metadata.version > CHECKPOINT_VERSION)
+      throw new RoomCheckpointLoadError(`Unsupported room checkpoint version ${metadata.version}`);
+    return metadata;
   }
 
   private async loadCheckpoint(): Promise<{
