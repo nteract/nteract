@@ -47,6 +47,7 @@ import {
   RuntimeStatePeerHandle,
 } from "../src/runtimed-wasm.ts";
 import { ManagedPythonRoom } from "../src/managed-python-room.ts";
+import { PACKAGE_RUNTIME_VERSION } from "../../preview-python/src/package-service.js";
 import { RoomMaterializer, type RoomHostFrameResult } from "../src/room-materializer.ts";
 import {
   createWorkstationAttachJob,
@@ -5186,6 +5187,7 @@ describe("NotebookRoom materialized sync routing", () => {
 
   for (const scenario of [
     "already-installed",
+    "older-runtime-manifest",
     "inventory-failure",
     "restore-failure",
     "open-storage-failure",
@@ -5193,23 +5195,32 @@ describe("NotebookRoom materialized sync routing", () => {
     "legacy-inventory-conflict",
   ] as const) {
     it(`keeps a resumed interpreter through ${scenario}`, async (t) => {
-      const manifest = { version: 1, pyodide: "0.28.3", requirements: ["six"], wheels: [] };
+      const manifest = {
+        version: 1,
+        pyodide: scenario === "already-installed" ? PACKAGE_RUNTIME_VERSION : "0.28.3",
+        requirements: ["six"],
+        wheels: [],
+      };
       let disposed = 0;
+      let created = 0;
       const pool = new SessionPool({
         warmCount: 0,
-        create: async () => ({
-          info: {},
-          install: async () => ({ status: "ready", installed: ["six==1.0"] }),
-          execute: async () => ({ success: true, execution_count: 1, outputs: [] }),
-          dispose: async () => {
-            disposed++;
-          },
-        }),
+        create: async () => {
+          created++;
+          return {
+            info: {},
+            install: async () => ({ status: "ready", installed: ["six==1.0"] }),
+            execute: async () => ({ success: true, execution_count: 1, outputs: [] }),
+            dispose: async () => {
+              disposed++;
+            },
+          };
+        },
       });
       t.after(() => pool.close());
       const key = JSON.stringify(["user:dev:alice", "demo", "managed-job"]);
       await pool.open(key, "user:dev:alice");
-      if (scenario === "already-installed")
+      if (scenario === "already-installed" || scenario === "older-runtime-manifest")
         await pool.packages(key, "previous-install", async () => ({
           status: "ready",
           installed: ["six==1.0"],
@@ -5254,9 +5265,14 @@ describe("NotebookRoom materialized sync routing", () => {
       await reconnected.sync();
       assert.equal(disposed, 0);
       assert.equal(pool.has(key), true);
-      if (scenario === "already-installed") {
+      if (scenario === "already-installed" || scenario === "older-runtime-manifest") {
         assert.equal(reconnected.runtimeState().workstation?.status, "ready");
-        assert.equal(fixture.requests.filter((r) => r.path === "/packages").length, 0);
+        assert.equal(
+          fixture.requests.filter((r) => r.path === "/packages").length,
+          scenario === "older-runtime-manifest" ? 1 : 0,
+        );
+        assert.equal(created, 1, "package reconciliation preserves the surviving interpreter");
+        assert.equal(pool.packageInventory(key).manifest.pyodide, PACKAGE_RUNTIME_VERSION);
       } else {
         assert.equal(reconnected.runtimeState().workstation?.status, "disconnected");
         assert.equal(fixture.db.attachJobs[0].status, "running");
