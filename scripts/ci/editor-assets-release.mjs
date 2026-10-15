@@ -119,7 +119,7 @@ export async function resolveWasmCandidate(identity, api) {
     const attempt = String(attemptNumber);
     if (!await api.successfulJob(identity.runId, attempt, 'Build WASM artifacts')) continue;
     const matches = artifacts.filter(item => item.name === `${prefix}${attempt}`);
-    if (!matches.length) throw new Error(`Successful WASM attempt ${attempt} has no retained receipt; optional retention failed or the artifact was deleted. Create a new release, never fall back to older bytes.`);
+    if (!matches.length) throw new Error(`Successful WASM attempt ${attempt} has no retained receipt; optional retention failed, the artifact was deleted, or this release predates receipt retention. Create a new release, never fall back to older bytes.`);
     if (matches.length > 1) throw new Error('Duplicate immutable WASM artifact');
     const artifact = matches[0];
     validateArtifact(artifact, upstreamRun, `${prefix}${attempt}`);
@@ -128,5 +128,5 @@ export async function resolveWasmCandidate(identity, api) {
     if (receipt.runAttempt !== attempt) throw new Error('WASM receipt attempt mismatch');
     return {...identity, version: receipt.version, wasm: receipt, wasmArtifactId: String(artifact.id), wasmArtifactDigest: artifact.digest};
   }
-  throw new Error('No retained successful release WASM artifact. This release may predate the workflow or its artifact expired; create a new release, do not rebuild the old identity.');
+  throw new Error('No successful Build WASM artifacts job found at its own attempt; inspect release job records/API metadata, do not rebuild the old identity.');
 }
