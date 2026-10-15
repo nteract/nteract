@@ -75,7 +75,7 @@ and the final tarball SHA-256/SHA-512.
 
 The producer retains `npm-wasm-<release run ID>-<release attempt>` for 90 days.
 Duplicate events, producer reruns, and manual publisher retries reuse the first
-successful packed candidate. A failed/incomplete pack with no successful retained
+successful packed candidate. A failed/incomplete pack with no retained
 candidate may retry. If a successful pack's artifact expires or is deleted,
 recovery fails explicitly: create a new release identity; do not repack the old
 one. Once packing succeeds, expiry of the original WASM input does not prevent
@@ -89,6 +89,9 @@ publisher never builds, repacks, installs project dependencies, or runs package
 scripts. Both stable and nightly existing versions must have the same source
 identity and registry tarball SHA-512. It refuses conflicting immutable versions
 and stale channel promotion, and leaves existing dist-tags unchanged.
+For a conflicting stable version, bump the checked-in package version and create
+a new release. Retrying the original release reuses its original bytes and cannot
+replace an immutable npm version.
 
 Publication defaults off under `NPM_WASM_ENABLED`. The producer still packs and
 tests while disabled. Bootstrap and trusted-publisher configuration require a
@@ -115,6 +118,8 @@ For the one new npmjs.com package in this change, use these settings:
 Create the package first, then configure its trusted publisher in the package's
 Settings. Do that when a tested candidate is ready: npm requires the first
 successful trusted publish within **two days** of creating the configuration.
+Once that first publish validates the configuration, this initial deadline no
+longer applies.
 The hosted workflow uses Node 24 and verifies npm 11.5.1 or newer. CI needs no
 long-lived npm token. See npm's [trusted publishing requirements](https://docs.npmjs.com/trusted-publishers/)
 and [scoped public publication guide](https://docs.npmjs.com/creating-and-publishing-scoped-public-packages/).

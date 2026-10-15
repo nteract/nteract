@@ -645,9 +645,9 @@ jobs:
           NOTEBOOK_CLOUD_CELLD_PYTHON=1 node apps/notebook-cloud/scripts/celld-local.mjs export "$RUNNER_TEMP/main-preview-export"
           node .github/preview/pack.mjs "$RUNNER_TEMP/main-preview-export" "$GITHUB_SHA" "$RUNNER_TEMP/preview.bundle.gz"
 
-      # The release train packages this same viewer build into the embeddable
-      # editor tarball and gates the release on its smoke test. Run both here
-      # so a packaging break surfaces on the PR, not in the nightly.
+      # The optional post-release editor workflow packages this viewer build.
+      # Exercise packaging and smoke here so breaks surface on the PR before
+      # a release triggers that independent workflow.
       - name: Package and smoke the embeddable editor assets
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         run: |

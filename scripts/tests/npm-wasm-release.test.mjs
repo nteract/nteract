@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {test} from "node:test";
 import {gzipSync} from "node:zlib";
-import {candidateName, buildTitle, digest, integrity, packageManifest, packedPaths, readTarball, resolveCandidate, resolveWasmPlan, runtimeFiles, runtimeRoot, seal, validatePacked, wasmPublicationDecision, wasmReleasePlan} from "../ci/npm-wasm-release.mjs";
+import {candidateName, buildTitle, digest, integrity, packageManifest, packedPaths, packJobStatusAtAttempt, readTarball, resolveCandidate, resolveWasmPlan, runtimeFiles, runtimeRoot, seal, validatePacked, wasmPublicationDecision, wasmReleasePlan} from "../ci/npm-wasm-release.mjs";
 
 const source = JSON.parse(readFileSync(new URL("../../packages/runtimed-wasm/package.json", import.meta.url)));
 const identity = {sourceSha: "a".repeat(40), channel: "nightly", runId: "100", runAttempt: "2"};
@@ -65,6 +65,7 @@ test("WASM selection uses latest successful prior attempt, ignoring failed/futur
   };
   assert.equal((await resolveWasmPlan(source, identity, upstream, wasmApi)).wasm.runAttempt, "1");
   assert.equal((await resolveWasmPlan(source, identity, upstream, {...wasmApi, successfulJob: async () => true})).wasm.runAttempt, "2");
+  await assert.rejects(resolveWasmPlan(source, identity, upstream, {...wasmApi, successfulJob: async () => true, artifacts: async () => [attempts[0]]}), /attempt 2 has no retained receipt/);
   await assert.rejects(resolveWasmPlan(source, identity, upstream, {...wasmApi, successfulJob: async () => false}), /do not rebuild/);
   await assert.rejects(resolveWasmPlan(source, identity, upstream, {...wasmApi, readReceipt: async () => ({...wasm, runAttempt: "2"})}), /attempt mismatch/);
   await assert.rejects(resolveWasmPlan(source, identity, upstream, {...wasmApi, artifacts: async () => attempts.map(item => ({...item, expired: true}))}), /expired/);
@@ -115,7 +116,7 @@ const repository = "nteract/nteract";
 const build = {id: 200, run_attempt: 2, display_title: buildTitle(identity), head_sha: "c".repeat(40), repository: {full_name: repository}, head_repository: {full_name: repository}, path: ".github/workflows/build-wasm-npm.yml", head_branch: "main", event: "workflow_run"};
 const artifact = {id: 300, name: candidateName(identity), digest: `sha256:${"d".repeat(64)}`, workflow_run: {id: 200, head_sha: build.head_sha}};
 function api(overrides = {}) {
-  return {repository, defaultBranch: "main", buildRuns: async () => [build], artifacts: async () => [artifact], readCandidate: async () => candidate, successfulJob: async () => true, ...overrides};
+  return {repository, defaultBranch: "main", buildRuns: async () => [build], artifacts: async () => [artifact], readCandidate: async () => candidate, successfulJob: async () => true, packJobStatus: async () => "success", ...overrides};
 }
 
 test("duplicate events and failed-job retries reuse the first successful pack attempt", async () => {
@@ -128,7 +129,24 @@ test("expired or deleted successful packs fail; incomplete pack may retry", asyn
   await assert.rejects(resolveCandidate(identity, api({artifacts: async () => [{...artifact, expired: true}]})), /expired/);
   await assert.rejects(resolveCandidate(identity, api({artifacts: async () => []})), /never repack/);
   assert.equal(await resolveCandidate(identity, api({artifacts: async () => [], successfulJob: async () => false})), null);
-  await assert.rejects(resolveCandidate(identity, api({successfulJob: async () => false})), /did not succeed/);
+  await assert.rejects(resolveCandidate(identity, api({packJobStatus: async () => "failed"})), /did not succeed/);
+});
+
+test("visible candidate waits for its owning pack job; producers cannot repack it", async () => {
+  const pending = api({packJobStatus: async () => "pending"});
+  assert.equal(await resolveCandidate(identity, pending), null);
+  await assert.rejects(resolveCandidate(identity, pending, {runId: "201"}), /still running/);
+  await assert.rejects(resolveCandidate(identity, api({packJobStatus: async () => "missing"})), /did not succeed/);
+});
+
+test("pack proof distinguishes pending, failed and carried-forward job attempts", () => {
+  const job = {name: "Pack WASM npm package", run_attempt: 1, status: "completed", conclusion: "success"};
+  assert.equal(packJobStatusAtAttempt([job], "1"), "success");
+  assert.equal(packJobStatusAtAttempt([job], "2"), "missing");
+  assert.equal(packJobStatusAtAttempt([{...job, status: "in_progress", conclusion: null}], "1"), "pending");
+  for (const conclusion of ["failure", "cancelled", "skipped"]) {
+    assert.equal(packJobStatusAtAttempt([{...job, conclusion}], "1"), "failed");
+  }
 });
 
 test("untrusted enumerated runs cannot poison recovery; artifact/source mismatches fail", async () => {

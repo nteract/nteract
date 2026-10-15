@@ -7,8 +7,8 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {setTimeout as sleep} from "node:timers/promises";
 import {releaseIdentity, registryPackage} from "./npm-release.mjs";
-import {positive, validateWasm} from "./editor-assets-release.mjs";
-import {candidateName, digest, resolveCandidate, resolveWasmPlan, seal, tarballName, validatePacked, wasmPublicationDecision} from "./npm-wasm-release.mjs";
+import {positive, successfulJobAtAttempt, validateWasm} from "./editor-assets-release.mjs";
+import {candidateName, digest, packJobStatusAtAttempt, resolveCandidate, resolveWasmPlan, seal, tarballName, validatePacked, wasmPublicationDecision} from "./npm-wasm-release.mjs";
 
 const env = process.env;
 const [command, ...args] = process.argv.slice(2);
@@ -63,10 +63,8 @@ if (command === "seal") {
   }
   const run = (id, attempt) => json(`/actions/runs/${positive(id)}/attempts/${positive(attempt)}`);
   const artifacts = id => pages(`/actions/runs/${positive(id)}/artifacts`, "artifacts");
-  async function successfulJob(id, attempt, name) {
-    const jobs = await pages(`/actions/runs/${positive(id)}/attempts/${positive(attempt)}/jobs`, "jobs");
-    return jobs.some(job => (job.name === name || job.name.endsWith(` / ${name}`)) && job.conclusion === "success");
-  }
+  const jobs = (id, attempt) => pages(`/actions/runs/${positive(id)}/attempts/${positive(attempt)}/jobs`, "jobs");
+  const successfulJob = async (id, attempt, name) => successfulJobAtAttempt(await jobs(id, attempt), attempt, name);
   async function entries(artifact, names) {
     const bytes = Buffer.from(await (await request(`/actions/artifacts/${positive(artifact.id)}/zip`)).arrayBuffer());
     if (`sha256:${digest(bytes)}` !== artifact.digest) throw new Error("GitHub artifact digest mismatch");
@@ -102,8 +100,11 @@ if (command === "seal") {
   output("present", "true");
   const candidateApi = {
     repository, defaultBranch: event.repository.default_branch,
-    buildRuns: () => pages("/actions/workflows/build-wasm-npm.yml/runs", "workflow_runs"),
+    // A producer cannot predate its upstream release. Bound repeated polling
+    // without excluding earlier producer retries for the same release identity.
+    buildRuns: () => pages(`/actions/workflows/build-wasm-npm.yml/runs?created=${encodeURIComponent(`>=${upstreamRun.created_at}`)}`, "workflow_runs"),
     artifacts, successfulJob,
+    packJobStatus: async (id, attempt) => packJobStatusAtAttempt(await jobs(id, attempt), attempt),
     readCandidate: async artifact => JSON.parse((await entries(artifact, ["candidate.json"]))["candidate.json"]),
   };
   if (command === "prepare") {

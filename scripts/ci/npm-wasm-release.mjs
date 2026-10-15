@@ -1,7 +1,7 @@
 import {createHash} from "node:crypto";
 import {gunzipSync} from "node:zlib";
 import {publicationDecision, releasePlan, stampManifest, verifyManifest} from "./npm-release.mjs";
-import {digest, positive, resolveWasmCandidate, validateArtifact, validateWasm} from "./editor-assets-release.mjs";
+import {digest, positive, resolveWasmCandidate, successfulJobAtAttempt, validateArtifact, validateWasm} from "./editor-assets-release.mjs";
 
 export const runtimeRoot = "apps/notebook/src/wasm/runtimed-wasm";
 export const runtimeFiles = ["runtimed_wasm.js", "runtimed_wasm.d.ts", "runtimed_wasm_bg.wasm", "runtimed_wasm_bg.wasm.d.ts"];
@@ -96,6 +96,14 @@ export function validateBuildRun(run, repository, defaultBranch) {
   if (run.repository?.full_name !== repository || run.head_repository?.full_name !== repository || run.path !== ".github/workflows/build-wasm-npm.yml" || run.head_branch !== defaultBranch || !["workflow_run", "workflow_dispatch"].includes(run.event)) throw new Error("Untrusted WASM npm build run");
 }
 
+export function packJobStatusAtAttempt(jobs, attempt) {
+  const name = "Pack WASM npm package";
+  if (successfulJobAtAttempt(jobs, attempt, name)) return "success";
+  const job = jobs.find(job => String(job.run_attempt) === String(attempt) && (job.name === name || job.name.endsWith(` / ${name}`)));
+  if (!job) return "missing";
+  return job.status === "completed" ? "failed" : "pending";
+}
+
 export async function resolveCandidate(identity, api, current) {
   let completedPack = false;
   // The first completed candidate remains canonical on duplicate events.
@@ -111,7 +119,14 @@ export async function resolveCandidate(identity, api, current) {
       const candidate = await api.readCandidate(artifact);
       if (BigInt(positive(candidate.buildRunAttempt)) > BigInt(positive(build.run_attempt))) throw new Error("Future WASM candidate attempt");
       if (candidate.buildRunId !== String(build.id) || candidateName(candidate.plan) !== candidateName(identity) || candidate.plan.sourceSha !== identity.sourceSha || candidate.plan.channel !== identity.channel) throw new Error("WASM candidate origin mismatch");
-      if (!await api.successfulJob(build.id, candidate.buildRunAttempt, "Pack WASM npm package")) throw new Error("Retained WASM candidate pack did not succeed; refusing rebuild or publication");
+      const status = await api.packJobStatus(build.id, candidate.buildRunAttempt);
+      // Artifact upload completes before job cleanup. The independent publisher
+      // must keep polling, while another producer must never repack these bytes.
+      if (status === "pending") {
+        if (current) throw new Error("Retained WASM candidate pack is still running; wait and retry without rebuilding");
+        return null;
+      }
+      if (status !== "success") throw new Error("Retained WASM candidate pack did not succeed; refusing rebuild or publication");
       return {artifact, candidate};
     }
     for (let attempt = Number(build.run_attempt) - (String(build.id) === current?.runId ? 1 : 0); attempt >= 1; attempt--) {

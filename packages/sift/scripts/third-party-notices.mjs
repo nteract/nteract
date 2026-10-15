@@ -20,6 +20,7 @@ function aboutJson(crate) {
     [
       "about",
       "generate",
+      "--locked",
       "--format",
       "json",
       "--config",
