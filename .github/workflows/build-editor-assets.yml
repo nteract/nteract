@@ -94,10 +94,13 @@ jobs:
           merge-multiple: true
       - name: Verify retained WASM byte identity
         run: node scripts/ci/editor-assets-release-cli.mjs verify-wasm "$RUNNER_TEMP/editor-plan.json" release-source
-      - uses: dsherret/rust-toolchain-file@v1
+      - name: Select the release source Rust toolchain
+        working-directory: release-source
+        run: rustup show active-toolchain || rustup toolchain install
       - uses: pnpm/action-setup@v6
         with:
           dest: ${{ runner.temp }}/setup-pnpm
+          package_json_file: release-source/package.json
       - name: Install viewer build dependencies
         working-directory: release-source
         run: pnpm install --frozen-lockfile

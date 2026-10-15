@@ -1,7 +1,7 @@
 import {createHash} from "node:crypto";
 import {gunzipSync} from "node:zlib";
 import {publicationDecision, releasePlan, stampManifest, verifyManifest} from "./npm-release.mjs";
-import {digest, positive, validateArtifact, validateWasm} from "./editor-assets-release.mjs";
+import {digest, positive, resolveWasmCandidate, validateArtifact, validateWasm} from "./editor-assets-release.mjs";
 
 export const runtimeRoot = "apps/notebook/src/wasm/runtimed-wasm";
 export const runtimeFiles = ["runtimed_wasm.js", "runtimed_wasm.d.ts", "runtimed_wasm_bg.wasm", "runtimed_wasm_bg.wasm.d.ts"];
@@ -28,17 +28,12 @@ export function wasmReleasePlan(manifest, identity, wasm, artifact) {
 }
 
 export async function resolveWasmPlan(source, identity, upstreamRun, api) {
-  const prefix = `release-wasm-${positive(identity.runId)}-`;
-  const candidates = (await api.artifacts(identity.runId)).filter(item => item.name.startsWith(prefix) && /^[1-9]\d*$/.test(item.name.slice(prefix.length)) && BigInt(item.name.slice(prefix.length)) <= BigInt(identity.runAttempt)).sort((a, b) => Number(BigInt(b.name.slice(prefix.length)) - BigInt(a.name.slice(prefix.length))));
-  for (const artifact of candidates) {
-    const attempt = artifact.name.slice(prefix.length);
-    if (!await api.successfulJob(identity.runId, attempt, "Build WASM artifacts")) continue;
-    validateArtifact(artifact, upstreamRun, artifact.name);
-    const receipt = await api.readReceipt(artifact);
-    if (receipt.runAttempt !== attempt) throw new Error("WASM artifact attempt mismatch");
-    return wasmReleasePlan(source, identity, receipt, artifact);
-  }
-  throw new Error("No retained successful release WASM bytes; create a new release identity, never recompile this one");
+  const selected = await resolveWasmCandidate(identity, {
+    ...api, releaseRun: async () => upstreamRun, readWasmReceipt: api.readReceipt,
+  });
+  return wasmReleasePlan(source, identity, selected.wasm, {
+    id: selected.wasmArtifactId, digest: selected.wasmArtifactDigest,
+  });
 }
 
 // No extraction or package code execution in a publisher. Our npm payload has
@@ -141,4 +136,4 @@ export function wasmPublicationDecision(candidate, bytes, packument) {
   return decision;
 }
 
-export {stampManifest, digest};
+export {digest};

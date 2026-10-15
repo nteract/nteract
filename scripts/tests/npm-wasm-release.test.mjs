@@ -65,7 +65,7 @@ test("WASM selection uses latest successful prior attempt, ignoring failed/futur
   };
   assert.equal((await resolveWasmPlan(source, identity, upstream, wasmApi)).wasm.runAttempt, "1");
   assert.equal((await resolveWasmPlan(source, identity, upstream, {...wasmApi, successfulJob: async () => true})).wasm.runAttempt, "2");
-  await assert.rejects(resolveWasmPlan(source, identity, upstream, {...wasmApi, successfulJob: async () => false}), /never recompile/);
+  await assert.rejects(resolveWasmPlan(source, identity, upstream, {...wasmApi, successfulJob: async () => false}), /do not rebuild/);
   await assert.rejects(resolveWasmPlan(source, identity, upstream, {...wasmApi, readReceipt: async () => ({...wasm, runAttempt: "2"})}), /attempt mismatch/);
   await assert.rejects(resolveWasmPlan(source, identity, upstream, {...wasmApi, artifacts: async () => attempts.map(item => ({...item, expired: true}))}), /expired/);
 });

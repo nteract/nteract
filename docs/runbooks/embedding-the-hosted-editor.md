@@ -123,6 +123,9 @@ Versions are not wire-compatible across a protocol bump.
 
 The successful release's single WASM build retains `release-wasm-<run>-<attempt>`
 for 90 days, including source/channel/version, build attempt, and per-file hashes.
+Recording/uploading this downstream copy is optional: storage failures do not
+fail the required WASM build or the original release artifact. The downstream
+builder fails explicitly when its retained input is unavailable.
 The optional **Build editor assets** workflow validates that successful release,
 reuses its WASM and renderer bytes, then builds the viewer once. It retains
 `editor-assets-<release-run>-<release-attempt>` for 90 days with the tarball,
@@ -140,7 +143,12 @@ uploaded assets are downloaded and hashed again before success is reported.
 To recover a publication failure, dispatch **Publish editor assets** on the
 default branch with the successful editor build run ID and attempt. A partial
 upload resumes only the missing member after checking the existing member's
-bytes. An exact completed pair is a no-op; different bytes fail closed. Missing
+bytes. GitHub can leave an incomplete `starter` asset after an interrupted
+upload; the publisher reports its asset ID and stops without deleting anything.
+Inspect/remove that incomplete upload manually, then retry the same editor
+build. Completed uploaded assets are never replaced.
+
+An exact completed pair is a no-op; different bytes fail closed. Missing
 older assets are refused after a newer release in that channel exists.
 
 To retry an initially failed build, dispatch **Build editor assets** with the
@@ -151,6 +159,10 @@ stops for investigation. If a successful candidate's artifact expired or was
 deleted, recovery fails explicitly; use a new release candidate, never silently
 rebuild the old identity. Workflow run records must remain available to enforce
 that barrier; do not delete editor build runs while their release is supported.
+
+Once packing succeeds, the sealed editor receipt and successful original WASM
+job record are sufficient for publication: the large input WASM artifact may
+expire. The editor candidate artifact and run records must still be retained.
 
 The first supported release must include these workflows and the retained WASM
 receipt. Older releases cannot be backfilled by rebuilding their WASM. PR
