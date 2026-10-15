@@ -149,6 +149,18 @@ async fn complete_manual_launch(
             if let Err(e) = room.state.with_doc(|sd| {
                 sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
                 sd.set_kernel_info(kernel_type, kernel_type, &env_source_label)?;
+                sd.set_environment_name(
+                    launched_config
+                        .environment_name
+                        .as_deref()
+                        .unwrap_or_default(),
+                )?;
+                sd.set_environment_id(
+                    launched_config
+                        .environment_id
+                        .as_deref()
+                        .unwrap_or_default(),
+                )?;
                 sd.set_prewarmed_packages(&launched_config.prewarmed_packages)?;
                 sd.set_runtime_agent_id(runtime_agent_id)?;
                 Ok(())
@@ -324,6 +336,25 @@ pub(crate) async fn handle(
     // `LaunchSpec::Concrete(EnvSource::Unknown(_))` and pass through unchanged.
     let launch_spec = env_source;
 
+    let explicitly_selected_environment = if resolved_kernel_type == "deno" {
+        None
+    } else {
+        match crate::requests::local_python_environments::selected_launch(room).await {
+            Ok(environment) => environment,
+            Err(error) => {
+                return NotebookResponse::Error { error };
+            }
+        }
+    };
+    if room.is_hosted() && explicitly_selected_environment.is_some() {
+        return NotebookResponse::Error {
+            error: "Local Python environments cannot be selected for hosted notebooks".into(),
+        };
+    }
+    let explicit_source = explicitly_selected_environment
+        .as_ref()
+        .map(|environment| environment.env_source());
+
     // Deno kernels don't use Python environments - always use "deno" regardless
     // of what env_source was requested. Log a warning if caller passed a Python env.
     let resolved_env_source = if resolved_kernel_type == "deno" {
@@ -343,6 +374,8 @@ pub(crate) async fn handle(
             }
         }
         EnvSource::Deno
+    } else if let Some(source) = explicit_source {
+        source
     } else if matches!(launch_spec, LaunchSpec::Auto | LaunchSpec::AutoScoped(_)) {
         // Auto-detect Python environment, optionally scoped to a package manager family.
         // "auto:uv" constrains to UV sources, "auto:conda" to conda sources,
@@ -525,6 +558,7 @@ pub(crate) async fn handle(
     };
 
     let parsed_resolved = resolved_env_source.clone();
+    let is_explicit_existing_environment = explicitly_selected_environment.is_some();
 
     // For pixi:toml, verify ipykernel is declared before launching.
     // Unlike uv (`uv run --with ipykernel`) and conda:env_yml (daemon
@@ -535,7 +569,7 @@ pub(crate) async fn handle(
     // code only returned an `Error` response — the toolbar could
     // classify the spawn error generically but never rendered the
     // targeted remediation on the RPC path.
-    if matches!(parsed_resolved, EnvSource::PixiToml) {
+    if !is_explicit_existing_environment && matches!(parsed_resolved, EnvSource::PixiToml) {
         let pixi_path = notebook_path.as_ref().and_then(|nb| {
             crate::project_file::detect_project_file(nb)
                 .filter(|d| d.kind == crate::project_file::ProjectFileKind::PixiToml)
@@ -582,10 +616,12 @@ pub(crate) async fn handle(
     // For project-backed envs, promote any inline deps to the project
     // file before launching. This handles the case where add_dependency
     // wrote to CRDT metadata and then triggered a restart.
-    if matches!(
-        parsed_resolved,
-        EnvSource::PixiToml | EnvSource::Pyproject | EnvSource::EnvYml
-    ) {
+    if !is_explicit_existing_environment
+        && matches!(
+            parsed_resolved,
+            EnvSource::PixiToml | EnvSource::Pyproject | EnvSource::EnvYml
+        )
+    {
         if let Some(ref snap) = metadata_snapshot {
             let has_inline = match parsed_resolved {
                 EnvSource::PixiToml => snap
@@ -682,6 +718,9 @@ pub(crate) async fn handle(
     let pooled_env = if resolved_kernel_type == "deno" {
         info!("[notebook-sync] LaunchKernel: Deno kernel (no pooled env)");
         None
+    } else if let Some(environment) = explicitly_selected_environment.as_ref() {
+        info!("[notebook-sync] LaunchKernel: using explicitly selected interpreter");
+        Some(environment.env.clone())
     } else {
         // Python kernels require pooled environment
         match resolved_env_source.as_str() {
@@ -806,10 +845,13 @@ pub(crate) async fn handle(
     let feature_flags_for_inline = daemon.feature_flags().await;
     let bootstrap_dx = feature_flags_for_inline.bootstrap_dx;
 
-    let (pooled_env, inline_deps) = if matches!(
-        parsed_resolved,
-        EnvSource::Pep723(PackageManager::Uv)
-    ) {
+    let (pooled_env, inline_deps): (Option<crate::PooledEnv>, Option<Vec<String>>) = if let Some(
+        environment,
+    ) =
+        explicitly_selected_environment.as_ref()
+    {
+        (Some(environment.env.clone()), None)
+    } else if matches!(parsed_resolved, EnvSource::Pep723(PackageManager::Uv)) {
         // Extract PEP 723 deps from cell source
         let cells = room.doc.read().await.get_cells();
         let pep723_deps = match notebook_doc::pep723::find_pep723_in_cells(&cells) {
@@ -1491,7 +1533,7 @@ pub(crate) async fn handle(
                 return NotebookResponse::Error { error: details };
             }
         }
-    } else if matches!(parsed_resolved, EnvSource::PixiToml) {
+    } else if !is_explicit_existing_environment && matches!(parsed_resolved, EnvSource::PixiToml) {
         let outcome = crate::pixi_project::prepare_pixi_toml_environment(
             notebook_path.as_deref(),
             launch_progress_handler.clone(),
@@ -1532,12 +1574,14 @@ pub(crate) async fn handle(
     // regress to a generic kernel spawn failure. Skipped env sources
     // match the auto-launch site (prewarmed pools, pixi:*, uv:pyproject,
     // conda:env_yml, deno); pixi:toml is gated earlier in this function.
-    if matches!(
-        parsed_resolved,
-        EnvSource::Inline(PackageManager::Uv)
-            | EnvSource::Inline(PackageManager::Conda)
-            | EnvSource::Pep723(PackageManager::Uv)
-    ) {
+    if !is_explicit_existing_environment
+        && matches!(
+            parsed_resolved,
+            EnvSource::Inline(PackageManager::Uv)
+                | EnvSource::Inline(PackageManager::Conda)
+                | EnvSource::Pep723(PackageManager::Uv)
+        )
+    {
         if let Some(ref env) = pooled_env {
             let diagnostic = kernel_env::diagnose_ipykernel_async(&env.python_path).await;
             if !diagnostic.is_present() {
@@ -1619,18 +1663,22 @@ pub(crate) async fn handle(
     let python_path = pooled_env.as_ref().map(|e| e.python_path.clone());
     let prewarmed_pkgs = pooled_env.as_ref().map(|e| e.prewarmed_packages.clone());
     let feature_flags = feature_flags_for_inline;
-    let captured_env_for_config = match resolved_env_source.as_str() {
-        "uv:prewarmed" => {
-            captured_env_for_runtime(metadata_snapshot.as_ref(), CapturedEnvRuntime::Uv)
-                .filter(|c| captured_env_disk_state(c).is_captured_route())
+    let captured_env_for_config = if explicitly_selected_environment.is_some() {
+        None
+    } else {
+        match resolved_env_source.as_str() {
+            "uv:prewarmed" => {
+                captured_env_for_runtime(metadata_snapshot.as_ref(), CapturedEnvRuntime::Uv)
+                    .filter(|c| captured_env_disk_state(c).is_captured_route())
+            }
+            "conda:prewarmed" => {
+                captured_env_for_runtime(metadata_snapshot.as_ref(), CapturedEnvRuntime::Conda)
+                    .filter(|c| captured_env_disk_state(c).is_captured_route())
+            }
+            _ => None,
         }
-        "conda:prewarmed" => {
-            captured_env_for_runtime(metadata_snapshot.as_ref(), CapturedEnvRuntime::Conda)
-                .filter(|c| captured_env_disk_state(c).is_captured_route())
-        }
-        _ => None,
     };
-    let launched_config = build_launched_config(
+    let mut launched_config = build_launched_config(
         &resolved_kernel_type,
         resolved_env_source.as_str(),
         inline_deps.as_deref(),
@@ -1642,6 +1690,14 @@ pub(crate) async fn handle(
         feature_flags,
         captured_env_for_config.as_ref(),
     );
+    if let Some(environment) = explicitly_selected_environment.as_ref() {
+        let conda_channels = metadata_snapshot.as_ref().map(get_inline_conda_channels);
+        launched_config = environment.apply_to_launched_config(launched_config, conda_channels);
+        info!(
+            "[notebook-sync] Applying selected environment: {}",
+            environment.name
+        );
+    }
 
     if launch_attempt
         .as_ref()
@@ -2089,6 +2145,15 @@ mod tests {
     use super::*;
     use crate::blob_store::BlobStore;
     use crate::notebook_sync_server::{AutoLaunchAdmission, ManualLaunchAdmission, NotebookRoom};
+
+    #[test]
+    fn selected_conda_uses_the_effective_default_channels() {
+        let snapshot = notebook_doc::metadata::NotebookMetadataSnapshot::default();
+        assert_eq!(
+            get_inline_conda_channels(&snapshot),
+            vec!["conda-forge".to_string()]
+        );
+    }
 
     fn test_room() -> (tempfile::TempDir, Arc<NotebookRoom>) {
         let tmp = tempfile::TempDir::new().unwrap();

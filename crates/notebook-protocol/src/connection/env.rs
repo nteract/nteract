@@ -260,6 +260,7 @@ impl EnvSource {
             "conda:pep723" => Self::Pep723(PackageManager::Conda),
             "pixi:pep723" => Self::Pep723(PackageManager::Pixi),
             "deno" => Self::Deno,
+            value if value.contains(":existing:") => Self::Unknown(value.to_string()),
             other => Self::Unknown(other.to_string()),
         }
     }
@@ -279,7 +280,13 @@ impl EnvSource {
             Self::EnvYml => Some(PackageManager::Conda),
             Self::Deno => None,
             Self::Unknown(s) => {
-                if s.starts_with("uv:") {
+                if s.starts_with("uv:existing:") {
+                    Some(PackageManager::Uv)
+                } else if s.starts_with("conda:existing:") {
+                    Some(PackageManager::Conda)
+                } else if s.starts_with("pixi:existing:") {
+                    Some(PackageManager::Pixi)
+                } else if s.starts_with("uv:") {
                     Some(PackageManager::Uv)
                 } else if s.starts_with("conda:") {
                     Some(PackageManager::Conda)

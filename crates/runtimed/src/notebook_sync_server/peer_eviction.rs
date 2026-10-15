@@ -470,7 +470,7 @@ pub(super) async fn handle_peer_disconnect(
                     env_source.as_str(),
                     "pixi:toml" | "uv:pyproject" | "conda:env_yml"
                 );
-                if has_saved_path && !project_backed {
+                if has_saved_path && !project_backed && launched.environment_id.is_none() {
                     for runtime in [CapturedEnvRuntime::Uv, CapturedEnvRuntime::Conda] {
                         if flush_launched_deps_to_metadata(&room_for_teardown, launched, runtime)
                             .await

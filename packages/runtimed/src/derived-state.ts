@@ -50,6 +50,8 @@ export function isKernelStatus(value: string): value is KernelStatus {
 export interface KernelInfo {
   kernelType: string | undefined;
   envSource: string | undefined;
+  environmentId: string | undefined;
+  environmentName: string | undefined;
 }
 
 export interface DaemonQueueState {
@@ -168,6 +170,8 @@ export function deriveKernelInfo(state: RuntimeState): KernelInfo {
   return {
     kernelType: state.kernel.language || undefined,
     envSource: state.kernel.env_source || undefined,
+    environmentId: state.kernel.environment_id || undefined,
+    environmentName: state.kernel.environment_name || undefined,
   };
 }
 

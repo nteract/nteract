@@ -593,6 +593,9 @@ export type {
   SourceReconciliation,
   SourceReconciliationBlockedReason,
   SourceReconciliationOperation,
+  LocalEnvironmentCandidate,
+  LocalEnvironmentDetails,
+  LocalEnvironmentSelection,
 } from "./request-types";
 
 // Blob upload
