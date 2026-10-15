@@ -623,7 +623,7 @@ pub(crate) fn check_file_limit(value: u64, limit: u32, label: &str) -> Result<()
     Ok(())
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct FileMemory {
     allocations: HashMap<usize, usize>,
     pub(crate) bytes: u64,
@@ -684,7 +684,7 @@ fn collect_file_batches(
 /// Rows and retained memory accumulated across every batch admitted so far.
 /// Ranged Parquet loads decode one row group per call, so the running totals
 /// live outside the collector and the limits hold across the whole file.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct FileUsage {
     pub(crate) rows: u64,
     pub(crate) memory: FileMemory,

@@ -2,12 +2,17 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render, waitFor } from "@testing-library/react";
-import { type Table, tableFromArrays, tableToIPC } from "apache-arrow";
+import { Table, tableFromArrays, tableToIPC, Utf8, vectorFromArray } from "apache-arrow";
 import { createElement, StrictMode } from "react";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { loadTableFile } from "./file-data";
+import { typeOverridesFromHints } from "./parquet-features";
 import { type ByteSource, coalesceRanges, openParquetFile } from "./parquet-file";
-import { _resetPredicateModuleForTests, _setWasmModuleLoaderForTests } from "./predicate";
+import {
+  _resetPredicateModuleForTests,
+  _setWasmModuleLoaderForTests,
+  getModuleSync,
+} from "./predicate";
 import { SiftTable, type SiftLoadMilestone, type SiftSource } from "./react";
 
 const wasmPath = resolve(
@@ -30,6 +35,24 @@ function recordingSource(bytes: Uint8Array): ByteSource & { reads: Read[] } {
   };
 }
 
+describe("typeOverridesFromHints", () => {
+  it("pins footer types under host overrides", () => {
+    const pins = typeOverridesFromHints(
+      [
+        { name: "label", columnType: "categorical", numeric: false, pandasIndex: false },
+        { name: "idx", pandasIndex: true, sortable: false },
+        { name: "pic", columnType: "image", pandasIndex: false },
+      ],
+      { pic: { columnType: "categorical" }, other: { width: 10 } },
+    );
+    expect(pins).toEqual({
+      label: { columnType: "categorical", numeric: false },
+      pic: { columnType: "categorical" },
+      other: { width: 10 },
+    });
+  });
+});
+
 describe("coalesceRanges", () => {
   it("merges touching and near ranges and keeps distant ones apart", () => {
     expect(coalesceRanges([100, 50, 150, 50, 1000, 10], 64)).toEqual([
@@ -49,7 +72,9 @@ describe("coalesceRanges", () => {
 describe.skipIf(!existsSync(wasmPath))("byte-range Parquet with real WASM", () => {
   const ROWS_PER_GROUP = 6000;
   const GROUPS = 3;
+  const DEFAULT_LIMITS = { maxRows: 100_000, maxColumns: 256, maxDecodedBytes: 128 * 1024 * 1024 };
   let parquet: Uint8Array;
+  let writeParquet: (bytes: Uint8Array, rows?: number) => Uint8Array;
 
   beforeAll(async () => {
     const wasm = await import("sift-wasm/sift_wasm.js");
@@ -57,7 +82,7 @@ describe.skipIf(!existsSync(wasmPath))("byte-range Parquet with real WASM", () =
     await wasm.default({ module_or_path: binary });
     _resetPredicateModuleForTests();
     _setWasmModuleLoaderForTests(async () => ({ ...wasm, default: async () => undefined }));
-    const writeParquet = (
+    writeParquet = (
       wasm as unknown as {
         write_parquet_ipc_row_groups: (bytes: Uint8Array, rows?: number) => Uint8Array;
       }
@@ -275,6 +300,184 @@ describe.skipIf(!existsSync(wasmPath))("byte-range Parquet with real WASM", () =
       });
       expect(onLoadError).toHaveBeenCalledTimes(1);
       expect(onLoadError.mock.calls[0][0]).toBeInstanceOf(Error);
+    } finally {
+      view.unmount();
+    }
+  });
+
+  it("frees the store once when image refinement replaces the lease before mount", async () => {
+    // 32 leading data URIs flip the column to "image" on the first append.
+    const uris = Array.from({ length: 200 }, (_, i) => `data:image/png;base64,QUJD${i}`);
+    // Plain Utf8: apache-arrow would otherwise dictionary-encode the strings,
+    // and the sniff only looks at string and list-of-string columns.
+    const pic = vectorFromArray(uris, new Utf8());
+    const file = writeParquet(tableToIPC(new Table({ pic }), "stream"), 100);
+    const mod = getModuleSync();
+    const free = vi.spyOn(mod, "free");
+    try {
+      const opened = await openParquetFile(recordingSource(file), { limits: DEFAULT_LIMITS });
+      const before = opened.tableData;
+      expect(before.columns[0].columnType).toBe("categorical");
+      const first = await opened.appendRowGroup(0);
+      expect(first.replaced).not.toBeNull();
+      expect(first.replaced!.columns[0].columnType).toBe("image");
+      expect(opened.tableData).toBe(first.replaced);
+      // The superseded lease is already released, but the store lives on.
+      expect(free).not.toHaveBeenCalled();
+      await opened.appendRowGroup(1);
+      opened.finish();
+      opened.dispose();
+      expect(free).toHaveBeenCalledTimes(1);
+      // Releasing the old lease again is a no-op, not a double free.
+      before.dispose?.();
+      expect(free).toHaveBeenCalledTimes(1);
+
+      free.mockClear();
+      const whole = await loadTableFile(recordingSource(file));
+      expect(whole.columns[0].columnType).toBe("image");
+      whole.dispose?.();
+      expect(free).toHaveBeenCalledTimes(1);
+    } finally {
+      free.mockRestore();
+    }
+  });
+
+  it("keeps footer type hints through every append", async () => {
+    // A HuggingFace ClassLabel is an integer column the footer says to show
+    // as categorical. The writer here cannot emit that footer key, so the
+    // hint export is stubbed to return what it would parse.
+    const mod = getModuleSync();
+    const hints = vi
+      .spyOn(mod, "parquet_file_column_hints")
+      .mockReturnValue([
+        { name: "id", columnType: "categorical", numeric: false, pandasIndex: false },
+      ]);
+    try {
+      const opened = await openParquetFile(recordingSource(parquet), { limits: DEFAULT_LIMITS });
+      expect(opened.columns[0].columnType).toBe("categorical");
+      for (let group = 0; group < GROUPS; group++) {
+        const { replaced } = await opened.appendRowGroup(group);
+        expect(replaced).toBeNull();
+        expect(opened.columns[0].columnType).toBe("categorical");
+        expect(opened.columns[0].numeric).toBe(false);
+      }
+      expect(opened.finish().replaced).toBeNull();
+      expect(opened.tableData.columnSummaries[0]).toMatchObject({ kind: "categorical" });
+      opened.dispose();
+    } finally {
+      hints.mockRestore();
+    }
+  });
+
+  it("opens a schema-only file as an empty table", async () => {
+    const empty = writeParquet(
+      tableToIPC(tableFromArrays({ a: new Int32Array(0), b: new Float64Array(0) }), "stream"),
+    );
+    const source = recordingSource(empty);
+    const data = await loadTableFile(source);
+    try {
+      expect(data.rowCount).toBe(0);
+      expect(data.columns.map((c) => c.key)).toEqual(["a", "b"]);
+      expect(source.reads).toHaveLength(1);
+    } finally {
+      data.dispose?.();
+    }
+
+    const view = render(
+      createElement(SiftTable, { source: { kind: "byte-source", source: recordingSource(empty) } }),
+    );
+    try {
+      await waitFor(() => {
+        expect(view.container.querySelector(".sift-status-ready")).not.toBeNull();
+      });
+      expect(view.container.querySelector('[role="alert"]')).toBeNull();
+    } finally {
+      view.unmount();
+    }
+  });
+
+  it("rejects a row group the decoded budget cannot hold before fetching it", async () => {
+    const source = recordingSource(parquet);
+    // One 6k-row group retains roughly 150 KB; the cap admits one, not two.
+    const opened = await openParquetFile(source, {
+      limits: { ...DEFAULT_LIMITS, maxDecodedBytes: 250_000 },
+    });
+    try {
+      await opened.appendRowGroup(0);
+      const readsAfterFirst = source.reads.length;
+      await expect(opened.appendRowGroup(1)).rejects.toThrow("decoded bytes limit");
+      expect(source.reads).toHaveLength(readsAfterFirst);
+      expect(opened.loadedRows).toBe(ROWS_PER_GROUP);
+    } finally {
+      opened.dispose();
+    }
+  });
+
+  it("rejects a footer longer than the decoded budget before reading it", async () => {
+    const source = recordingSource(parquet);
+    await expect(loadTableFile(source, { maxDecodedBytes: 16 })).rejects.toThrow(
+      "footer exceeds decoded bytes limit",
+    );
+    expect(source.reads).toHaveLength(1);
+  });
+
+  it("keeps mounted rows and ends streaming when a later row group fails", async () => {
+    let reads = 0;
+    const source: ByteSource = {
+      byteLength: parquet.byteLength,
+      async read(offset, length) {
+        reads += 1;
+        // Tail, row group 0, then the host loses the file.
+        if (reads > 2) throw new Error("disk went away");
+        return parquet.subarray(offset, offset + length);
+      },
+    };
+    const onLoadError = vi.fn();
+    const onChange = vi.fn();
+    const view = render(
+      createElement(SiftTable, {
+        source: { kind: "byte-source", source },
+        onLoadError,
+        onChange,
+      }),
+    );
+    try {
+      await waitFor(() => {
+        expect(view.container.querySelector('[role="alert"]')?.textContent).toContain(
+          "disk went away",
+        );
+        // The first row group stays on screen and the stream is marked done.
+        expect(view.container.querySelector(".sift-cell")?.textContent).toBe("0");
+      });
+      expect(onLoadError).toHaveBeenCalledTimes(1);
+      expect(view.container.querySelector(".sift-status-ready")).not.toBeNull();
+      expect(view.container.querySelector(".sift-status-streaming")).toBeNull();
+    } finally {
+      view.unmount();
+    }
+  });
+
+  it("loads hosted Parquet URLs above the loadTableFile defaults", async () => {
+    // The notebook renderer sends Parquet outputs through `url` with no way
+    // to raise limits, so that path must not inherit the 100k-row default.
+    const rows = 100_001;
+    const big = writeParquet(
+      tableToIPC(tableFromArrays({ n: Int32Array.from({ length: rows }, (_, i) => i) }), "stream"),
+      50_000,
+    );
+    const url = `data:application/vnd.apache.parquet;base64,${Buffer.from(big).toString("base64")}`;
+    const onChange = vi.fn();
+    const onLoadError = vi.fn();
+    const view = render(
+      createElement(SiftTable, { source: { kind: "url", url }, onLoadError, onChange }),
+    );
+    try {
+      await waitFor(() => {
+        expect(view.container.querySelector(".sift-status-ready")).not.toBeNull();
+        expect(view.container.querySelector(".sift-cell")?.textContent).toBe("0");
+      });
+      expect(onLoadError).not.toHaveBeenCalled();
+      expect(view.container.querySelector('[role="alert"]')).toBeNull();
     } finally {
       view.unmount();
     }

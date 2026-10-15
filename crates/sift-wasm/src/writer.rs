@@ -34,9 +34,10 @@ pub fn write_parquet_ipc(ipc_bytes: &[u8]) -> Result<Vec<u8>, JsError> {
     write_parquet_ipc_row_groups(ipc_bytes, None)
 }
 
-/// `write_parquet_ipc` with a row group row cap. Bounded row groups let the
-/// byte-range reader load and show the file a group at a time; pass `None`
-/// for the writer default.
+/// `write_parquet_ipc` with a row group row cap. A file with several row
+/// groups is what the byte-range reader loads and shows a group at a time;
+/// converters (and Sift's own tests) use this to produce one. Pass `None` for
+/// the writer default.
 #[wasm_bindgen]
 pub fn write_parquet_ipc_row_groups(
     ipc_bytes: &[u8],

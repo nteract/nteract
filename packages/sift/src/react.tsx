@@ -292,6 +292,13 @@ async function detectFormat(
 
 // --- Progressive Parquet ---
 
+/** Largest limits the WASM API accepts (u32). Used where no cap is wanted. */
+const UNBOUNDED_LIMITS: ParquetFileLimits = {
+  maxRows: 0xffff_ffff,
+  maxColumns: 0xffff_ffff,
+  maxDecodedBytes: 0xffff_ffff,
+};
+
 type ProgressiveParquetArgs = {
   source: ByteSource;
   limits: ParquetFileLimits;
@@ -625,6 +632,9 @@ export function SiftTable({
       if (openFile && !mounted) openFile.dispose();
       else openFile?.close();
       openFile = null;
+      // A failure after mount leaves the rows already loaded in place. End the
+      // streaming state so the status dot and cast guard do not wait forever.
+      if (mounted) engineRef.current?.setStreamingDone();
       reportLoadError(cause);
     });
 
@@ -994,6 +1004,7 @@ export function SiftTable({
     let disposePendingStore: (() => void) | null = null;
     /** Open Parquet footer; closed on cleanup once the engine owns the store. */
     let openFile: OpenParquetFile | null = null;
+    let parquetMounted = false;
 
     function mountEngine(tableData: TableData, streaming?: boolean) {
       if (engineRef.current) {
@@ -1013,10 +1024,11 @@ export function SiftTable({
     async function loadParquet(parquetBytes: Uint8Array) {
       // The response is already buffered; the ranged loader still removes the
       // per-row-group file copy and shares its progressive mount with the
-      // byte-source path.
+      // byte-source path. Hosted URLs carry no admission limits (the notebook
+      // renderer has no way to raise them), so the loader gets the maxima.
       await streamParquetIntoEngine({
         source: byteSourceFromBytes(parquetBytes),
-        limits: resolveTableFileLimits({}),
+        limits: UNBOUNDED_LIMITS,
         columnOverrides,
         signal: controller.signal,
         emit: (milestone) => emitLoadMilestone(startedAt, { ...milestone, source: "url" }),
@@ -1026,6 +1038,7 @@ export function SiftTable({
         },
         mount: (tableData, streaming) => {
           mountEngine(tableData, streaming);
+          parquetMounted = true;
           setStatus("ready");
         },
         engine: () => engineRef.current,
@@ -1147,6 +1160,9 @@ export function SiftTable({
         if (!cancelled) {
           disposePendingStore?.();
           disposePendingStore = null;
+          // Rows already mounted stay; end the streaming state so the status
+          // dot and cast guard do not wait for groups that will never come.
+          if (parquetMounted) engineRef.current?.setStreamingDone();
           reportLoadError(err);
         }
       })

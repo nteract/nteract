@@ -11,6 +11,7 @@ import {
   applyColumnOverrides,
   applyParquetColumnHints,
   pandasIndexColumnsFromHints,
+  typeOverridesFromHints,
 } from "./parquet-features";
 import { ensureModule } from "./predicate";
 import type { Column, TableData } from "./table";
@@ -56,8 +57,9 @@ export type ParquetAppendResult = {
   rowsAppended: number;
   /**
    * Set when data-driven type refinement (for example image detection)
-   * changed a column type. Hand it to the engine with `replaceData`; the
-   * previous `tableData` lease is released when the engine swaps it out.
+   * changed a column type. Hand it to the engine with `replaceData`. The
+   * previous lease has already been released; the engine may keep rendering
+   * from it until the swap because the store lives on through this one.
    */
   replaced: TableData | null;
 };
@@ -84,10 +86,11 @@ export type OpenParquetFile = {
   /** Release footer metadata only. The store and its leases stay valid. */
   close(): void;
   /**
-   * Release the file and every table lease, freeing the store. Use when the
-   * table was never mounted or the load was cancelled before mount. Once the
-   * engine owns `tableData`, call `close()` instead; the engine frees the
-   * store when it tears down.
+   * Release the file and the current table lease, freeing the store. Use when
+   * the table was never mounted or the load was cancelled before mount. Once
+   * the engine owns `tableData`, call `close()` instead; the engine frees the
+   * store when it tears down. Superseded leases are released as they are
+   * replaced, so the current lease is the only one outstanding.
    */
   dispose(): void;
 };
@@ -110,7 +113,8 @@ function isParquetMagic(bytes: Uint8Array, at: number): boolean {
   );
 }
 
-async function readExact(
+/** `source.read` with bounds and result validation. */
+export async function readExact(
   source: ByteSource,
   offset: number,
   length: number,
@@ -190,6 +194,13 @@ export async function openParquetFile(
   if (needed + 4 > byteLength) {
     throw new Error("Parquet footer length exceeds the file length");
   }
+  // The decoded footer lives in memory for the life of the file; a footer
+  // claiming more than the whole decoded budget is rejected before it is read.
+  if (footerLength > limits.maxDecodedBytes) {
+    throw new Error(
+      `Parquet footer exceeds decoded bytes limit (${footerLength} > ${limits.maxDecodedBytes})`,
+    );
+  }
   if (needed > tailLength) {
     tailLength = needed;
     tail = await readExact(source, byteLength - tailLength, tailLength, signal);
@@ -219,11 +230,10 @@ export async function openParquetFile(
     const wasm = createWasmTableData(storeHandle);
     let tableData = wasm.tableData;
     let columns = wasm.columns;
-    // Every lease minted for this file. Each dispose is idempotent, so the
-    // engine releasing the one it owns and `dispose()` here do not conflict.
-    const leases: TableData[] = [tableData];
     applyParquetColumnHints(columns, hints);
     applyColumnOverrides(columns, columnOverrides);
+    // Type pins carried into every refresh so footer semantics survive appends.
+    const refreshOverrides = typeOverridesFromHints(hints, columnOverrides);
     tableData.prefetchViewport = wasm.prefetchViewport;
     const installSummaries = (data: TableData, cols: Column[]) => {
       data.recomputeSummaries = () =>
@@ -236,14 +246,24 @@ export async function openParquetFile(
     let finished = false;
     let appending = false;
 
+    /**
+     * Re-read column types after an append. A changed type mints a new lease;
+     * the superseded lease is released here at once. The store stays alive
+     * through the new lease, so an engine still rendering the old `TableData`
+     * keeps working until it swaps in the replacement (`replaceData` then
+     * releases the old lease again, a no-op). Without this, a lease that was
+     * never handed to anyone, such as the empty pre-mount table or any lease
+     * replaced during `loadTableFile`, would pin the store forever.
+     */
     const refresh = (): TableData | null => {
-      const refined = wasm.refreshColumnTypes(columnOverrides);
+      const refined = wasm.refreshColumnTypes(refreshOverrides);
       if (refined) {
+        const superseded = tableData;
         tableData = refined;
         columns = refined.columns;
-        leases.push(refined);
         tableData.prefetchViewport = wasm.prefetchViewport;
         installSummaries(tableData, columns);
+        superseded.dispose?.();
       } else {
         tableData.recomputeSummaries?.();
       }
@@ -304,7 +324,7 @@ export async function openParquetFile(
       close: closeFile,
       dispose() {
         closeFile();
-        for (const lease of leases) lease.dispose?.();
+        tableData.dispose?.();
       },
     };
   } catch (error) {

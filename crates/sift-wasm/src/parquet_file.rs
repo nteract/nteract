@@ -36,6 +36,9 @@ struct ParquetFile {
     arrow: ArrowReaderMetadata,
     file_len: u64,
     limits: FileLimits,
+    /// Rows and retained memory of every row group committed to the store.
+    /// Updated only after a row group both decodes and appends, so a rejected
+    /// group never shows up here.
     usage: FileUsage,
     /// One flag per row group. A row group may be appended once per file
     /// handle, so a retried fetch cannot duplicate rows in the store.
@@ -46,6 +49,65 @@ impl ParquetFile {
     fn metadata(&self) -> &Arc<ParquetMetaData> {
         self.arrow.metadata()
     }
+
+    fn remaining_decoded_bytes(&self) -> u64 {
+        u64::from(self.limits.decoded_bytes).saturating_sub(self.usage.memory.bytes)
+    }
+}
+
+/// Byte range of a column chunk, validated. The parquet crate keeps these as
+/// signed thrift values and `byte_range()` asserts on negatives, so a hostile
+/// footer must be rejected here rather than trapping the module.
+fn chunk_range(
+    column: &parquet::file::metadata::ColumnChunkMetaData,
+) -> Result<(u64, u64), String> {
+    if column.data_page_offset() < 0 {
+        return Err("Parquet column chunk data page offset is negative".to_string());
+    }
+    let start = match column.dictionary_page_offset() {
+        Some(offset) => offset,
+        None => column.data_page_offset(),
+    };
+    let start = u64::try_from(start).map_err(|_| "Parquet column chunk offset is negative")?;
+    let length = u64::try_from(column.compressed_size())
+        .map_err(|_| "Parquet column chunk size is negative")?;
+    start
+        .checked_add(length)
+        .ok_or("Parquet column chunk range overflows")?;
+    Ok((start, length))
+}
+
+/// Check every column chunk against the data region `[4, file_end)` and the
+/// reader's addressable range. parquet's sync page reader narrows offsets to
+/// `usize`, so on wasm32 anything past 4 GiB cannot be read correctly.
+fn validate_chunk_ranges(
+    metadata: &ParquetMetaData,
+    file_end: u64,
+    addressable: u64,
+) -> Result<(), String> {
+    for (group_index, group) in metadata.row_groups().iter().enumerate() {
+        if group.num_rows() < 0 || group.total_byte_size() < 0 {
+            return Err(format!(
+                "Parquet row group {group_index} has a negative size"
+            ));
+        }
+        for column in group.columns() {
+            let (offset, length) =
+                chunk_range(column).map_err(|e| format!("{e} (row group {group_index})"))?;
+            let end = offset + length;
+            if offset < 4 || end > file_end {
+                return Err(format!(
+                    "Parquet row group {group_index} column chunk lies outside the file"
+                ));
+            }
+            if end > addressable {
+                return Err(format!(
+                    "Parquet row group {group_index} lies beyond {addressable} bytes, which this build cannot address"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 static FILES: Mutex<Option<HashMap<u32, ParquetFile>>> = Mutex::new(None);
@@ -151,16 +213,7 @@ fn open_parquet_file(tail: &[u8], file_len: u64, limits: FileLimits) -> Result<u
     let metadata = ParquetMetaDataReader::decode_metadata(&tail[metadata_start..metadata_end])
         .map_err(|e| e.to_string())?;
     let file_end = file_len - FOOTER_SIZE as u64 - metadata_len as u64;
-    for (group_index, group) in metadata.row_groups().iter().enumerate() {
-        for column in group.columns() {
-            let (offset, length) = column.byte_range();
-            if offset < 4 || offset.saturating_add(length) > file_end {
-                return Err(format!(
-                    "Parquet row group {group_index} column chunk lies outside the file"
-                ));
-            }
-        }
-    }
+    validate_chunk_ranges(&metadata, file_end, usize::MAX as u64)?;
     let arrow = ArrowReaderMetadata::try_new(Arc::new(metadata), ArrowReaderOptions::default())
         .map_err(|e| e.to_string())?;
     admit_parquet_footer(arrow.schema(), arrow.metadata(), limits)?;
@@ -274,10 +327,22 @@ fn row_group_ranges(file: u32, row_group: u32) -> Result<Vec<f64>, String> {
     with_file(file, |file| {
         let group = row_group_metadata(file.metadata(), row_group)?;
         let mut ranges = Vec::with_capacity(group.columns().len() * 2);
+        let mut compressed = 0u64;
         for column in group.columns() {
-            let (offset, length) = column.byte_range();
+            let (offset, length) = chunk_range(column)?;
+            compressed = compressed.saturating_add(length);
             ranges.push(offset as f64);
             ranges.push(length as f64);
+        }
+        // Reject before the host fetches anything it cannot keep. Compressed
+        // bytes are what the fetch retains; the footer's uncompressed size is
+        // the closer estimate of decoded Arrow memory when the writer is honest.
+        let estimate = compressed.max(group.total_byte_size().max(0) as u64);
+        let remaining = file.remaining_decoded_bytes();
+        if estimate > remaining {
+            return Err(format!(
+                "Parquet row group {row_group} exceeds decoded bytes limit ({estimate} > {remaining} remaining)"
+            ));
         }
         Ok(ranges)
     })
@@ -313,6 +378,17 @@ pub fn parquet_append_row_group(
     append_row_group(file, store, row_group, ranges, data).map_err(js_err)
 }
 
+/// Everything decode needs, copied out of the registry so no lock is held
+/// while the decoder runs. A decoder trap under the lock would poison every
+/// later call on wasm32, where panics abort instead of unwinding.
+struct AppendPlan {
+    arrow: ArrowReaderMetadata,
+    limits: FileLimits,
+    usage: FileUsage,
+    expected_rows: u64,
+    reader: RangeSetReader,
+}
+
 fn append_row_group(
     file: u32,
     store: u32,
@@ -320,8 +396,8 @@ fn append_row_group(
     ranges: &[f64],
     data: &[u8],
 ) -> Result<u32, String> {
-    with_file(file, |file| {
-        let index = row_group as usize;
+    let index = row_group as usize;
+    let plan = with_file(file, |file| {
         let group = row_group_metadata(file.metadata(), row_group)?;
         let expected_rows = u64::try_from(group.num_rows())
             .map_err(|_| "Invalid negative Parquet row group row count")?;
@@ -330,49 +406,57 @@ fn append_row_group(
         }
         let reader = RangeSetReader::new(file.file_len, ranges, data)?;
         for column in group.columns() {
-            let (offset, length) = column.byte_range();
+            let (offset, length) = chunk_range(column)?;
             if !reader.covers(offset, length) {
                 return Err(format!(
                     "Parquet row group {row_group} column chunk at {offset}+{length} is not covered by the fetched ranges"
                 ));
             }
         }
-        let batch_reader =
-            ParquetRecordBatchReaderBuilder::new_with_metadata(reader, file.arrow.clone())
-                .with_row_groups(vec![index])
-                .with_batch_size(PARQUET_BATCH_ROWS as usize)
-                .build()
-                .map_err(|e| e.to_string())?;
-        // Account against a copy so a rejected row group leaves the running
-        // totals describing only what the store actually holds.
-        let mut usage = FileUsage {
-            rows: file.usage.rows,
-            memory: std::mem::take(&mut file.usage.memory),
-        };
-        let collected = collect_file_batches_into(batch_reader, file.limits, &mut usage);
-        let batches = match collected {
-            Ok(batches) => batches,
-            Err(error) => {
-                file.usage.memory = usage.memory;
-                return Err(error);
-            }
-        };
-        let decoded_rows: u64 = batches.iter().map(|batch| batch.num_rows() as u64).sum();
-        if decoded_rows != expected_rows {
-            file.usage.memory = usage.memory;
-            return Err("Parquet row group row count does not match its metadata".to_string());
-        }
-        let schema = file.arrow.schema().clone();
-        with_stores(|stores| {
-            let target = stores
-                .get_mut(&store)
-                .ok_or_else(|| format!("Invalid handle: {store}"))?;
-            append_batches_to_store(target, schema, batches)
-        })?;
+        Ok(AppendPlan {
+            arrow: file.arrow.clone(),
+            limits: file.limits,
+            // A snapshot: the registry's totals change only once the group is
+            // in the store, so a rejected group leaves them describing exactly
+            // what the store holds.
+            usage: file.usage.clone(),
+            expected_rows,
+            reader,
+        })
+    })?;
+
+    let AppendPlan {
+        arrow,
+        limits,
+        mut usage,
+        expected_rows,
+        reader,
+    } = plan;
+    let batch_reader = ParquetRecordBatchReaderBuilder::new_with_metadata(reader, arrow.clone())
+        .with_row_groups(vec![index])
+        .with_batch_size(PARQUET_BATCH_ROWS as usize)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let batches = collect_file_batches_into(batch_reader, limits, &mut usage)?;
+    let decoded_rows: u64 = batches.iter().map(|batch| batch.num_rows() as u64).sum();
+    if decoded_rows != expected_rows {
+        return Err("Parquet row group row count does not match its metadata".to_string());
+    }
+
+    with_stores(|stores| {
+        let target = stores
+            .get_mut(&store)
+            .ok_or_else(|| format!("Invalid handle: {store}"))?;
+        append_batches_to_store(target, arrow.schema().clone(), batches)
+    })?;
+    // The file may have been closed while decoding; the store still holds the
+    // rows, and a closed file cannot be appended to again, so that is fine.
+    let _ = with_file(file, |file| {
         file.usage = usage;
         file.appended[index] = true;
-        u32::try_from(decoded_rows).map_err(|_| "Parquet row group exceeds u32 rows".to_string())
-    })
+        Ok(())
+    });
+    u32::try_from(decoded_rows).map_err(|_| "Parquet row group exceeds u32 rows".to_string())
 }
 
 /// Release an open file's footer metadata. Stores created from it stay valid.
@@ -398,6 +482,8 @@ impl RangeSetReader {
             return Err("Parquet byte ranges must be [offset, length] pairs".to_string());
         }
         let mut segments = Vec::with_capacity(ranges.len() / 2);
+        // One copy out of the wasm-bindgen buffer; segments are slices of it.
+        let data = Bytes::copy_from_slice(data);
         let mut cursor = 0usize;
         for pair in ranges.chunks_exact(2) {
             let offset = range_component(pair[0], "offset")?;
@@ -411,7 +497,11 @@ impl RangeSetReader {
                 .checked_add(length)
                 .filter(|end| *end <= data.len())
                 .ok_or_else(|| "Parquet byte range data is shorter than its ranges".to_string())?;
-            segments.push((offset, Bytes::copy_from_slice(&data[cursor..end])));
+            // An empty range covers nothing; keeping it would let `locate`
+            // land on it instead of a real segment at the same offset.
+            if length > 0 {
+                segments.push((offset, data.slice(cursor..end)));
+            }
             cursor = end;
         }
         if cursor != data.len() {
@@ -687,30 +777,150 @@ mod tests {
         let batch = fixture_batch(400);
         let file = parquet_bytes(&batch, 200);
         // Measure what one row group retains, then cap just under two.
-        let handle = open_from_tail(&file, 64, limits()).unwrap();
-        let store = create_store(handle).unwrap();
-        let ranges = row_group_ranges(handle, 0).unwrap();
-        append_row_group(handle, store, 0, &ranges, &fetch_ranges(&file, &ranges)).unwrap();
-        let one_group = with_file(handle, |f| Ok(f.usage.memory.bytes)).unwrap();
+        let open = open_from_tail(&file, 64, limits()).unwrap();
+        let store = create_store(open).unwrap();
+        let ranges0 = row_group_ranges(open, 0).unwrap();
+        let ranges1 = row_group_ranges(open, 1).unwrap();
+        append_row_group(open, store, 0, &ranges0, &fetch_ranges(&file, &ranges0)).unwrap();
+        let one_group = with_file(open, |f| Ok(f.usage.memory.bytes)).unwrap();
         assert!(one_group > 0);
         free(store);
-        parquet_close(handle);
+        parquet_close(open);
 
         let mut tight = limits();
         tight.decoded_bytes = (one_group + one_group / 2) as u32;
         let handle = open_from_tail(&file, 64, tight).unwrap();
         let store = create_store(handle).unwrap();
-        let ranges = row_group_ranges(handle, 0).unwrap();
-        append_row_group(handle, store, 0, &ranges, &fetch_ranges(&file, &ranges)).unwrap();
-        let ranges = row_group_ranges(handle, 1).unwrap();
-        let error =
-            append_row_group(handle, store, 1, &ranges, &fetch_ranges(&file, &ranges)).unwrap_err();
-        assert!(error.contains("decoded bytes limit"));
-        // The rejected group left the store and the running totals alone.
+        append_row_group(handle, store, 0, &ranges0, &fetch_ranges(&file, &ranges0)).unwrap();
+        let ledger = with_file(handle, |f| Ok((f.usage.rows, f.usage.memory.bytes))).unwrap();
+        assert_eq!(ledger.0, 200);
+
+        // The footer sizes alone show the second group cannot fit, so the
+        // host is told before it fetches anything.
+        let early = row_group_ranges(handle, 1).unwrap_err();
+        assert!(early.contains("decoded bytes limit"), "{early}");
+
+        // A host that fetches anyway is stopped by the decode-time check, and
+        // the rejected group leaves the store and both ledgers untouched.
+        let late = append_row_group(handle, store, 1, &ranges1, &fetch_ranges(&file, &ranges1))
+            .unwrap_err();
+        assert!(late.contains("decoded bytes limit"), "{late}");
         assert_eq!(num_rows(store).unwrap(), 200);
-        assert_eq!(with_file(handle, |f| Ok(f.usage.rows)).unwrap(), 200);
+        assert_eq!(
+            with_file(handle, |f| Ok((f.usage.rows, f.usage.memory.bytes))).unwrap(),
+            ledger
+        );
+        assert!(!with_file(handle, |f| Ok(f.appended[1])).unwrap());
+
+        // A failed store append (freed target) also leaves the ledger alone.
         free(store);
+        let gone = append_row_group(handle, store, 1, &ranges1, &fetch_ranges(&file, &ranges1));
+        assert!(gone.is_err());
+        assert_eq!(
+            with_file(handle, |f| Ok((f.usage.rows, f.usage.memory.bytes))).unwrap(),
+            ledger
+        );
         parquet_close(handle);
+    }
+
+    /// Re-encode a file's footer with one column chunk's metadata replaced.
+    fn footer_with_chunk(
+        file: &[u8],
+        edit: impl Fn(
+            parquet::file::metadata::ColumnChunkMetaDataBuilder,
+        ) -> parquet::file::metadata::ColumnChunkMetaDataBuilder,
+    ) -> Vec<u8> {
+        use parquet::file::metadata::ParquetMetaDataWriter;
+        let metadata_len = footer_metadata_length(file).unwrap();
+        let start = file.len() - FOOTER_SIZE - metadata_len;
+        let metadata =
+            ParquetMetaDataReader::decode_metadata(&file[start..file.len() - FOOTER_SIZE]).unwrap();
+        let mut groups = metadata.row_groups().to_vec();
+        let group = groups.remove(0);
+        let mut columns = group.columns().to_vec();
+        let column = columns.remove(0);
+        columns.insert(0, edit(column.into_builder()).build().unwrap());
+        groups.insert(
+            0,
+            group
+                .into_builder()
+                .set_column_metadata(columns)
+                .build()
+                .unwrap(),
+        );
+        let rewritten = ParquetMetaData::new(metadata.file_metadata().clone(), groups);
+        let mut out = Vec::new();
+        ParquetMetaDataWriter::new(&mut out, &rewritten)
+            .finish()
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn hostile_footers_are_rejected_not_trapped() {
+        let file = parquet_bytes(&fixture_batch(30), 10);
+        let len = file.len() as u64;
+        for (label, tail) in [
+            (
+                "negative data page offset behind a dictionary page",
+                footer_with_chunk(&file, |c| c.set_data_page_offset(-1)),
+            ),
+            (
+                "negative data page offset",
+                footer_with_chunk(&file, |c| {
+                    c.set_dictionary_page_offset(None).set_data_page_offset(-1)
+                }),
+            ),
+            (
+                "negative dictionary page offset",
+                footer_with_chunk(&file, |c| c.set_dictionary_page_offset(Some(-8))),
+            ),
+            (
+                "negative compressed size",
+                footer_with_chunk(&file, |c| c.set_total_compressed_size(-100)),
+            ),
+            (
+                "offset before the magic",
+                footer_with_chunk(&file, |c| {
+                    c.set_dictionary_page_offset(None).set_data_page_offset(2)
+                }),
+            ),
+            (
+                "range past the data region",
+                footer_with_chunk(&file, |c| c.set_total_compressed_size(1 << 40)),
+            ),
+            (
+                "offset past the data region",
+                footer_with_chunk(&file, |c| {
+                    c.set_dictionary_page_offset(None)
+                        .set_data_page_offset(1 << 40)
+                }),
+            ),
+        ] {
+            let error = open_parquet_file(&tail, len, limits()).unwrap_err();
+            assert!(
+                error.contains("Parquet") && !error.is_empty(),
+                "{label}: {error}"
+            );
+        }
+        // The same footer with honest values still opens.
+        let honest = footer_with_chunk(&file, |c| c);
+        let handle = open_parquet_file(&honest, len, limits()).unwrap();
+        parquet_close(handle);
+    }
+
+    #[test]
+    fn chunks_beyond_the_addressable_range_are_rejected() {
+        let file = parquet_bytes(&fixture_batch(30), 10);
+        let metadata_len = footer_metadata_length(&file).unwrap();
+        let start = file.len() - FOOTER_SIZE - metadata_len;
+        let metadata =
+            ParquetMetaDataReader::decode_metadata(&file[start..file.len() - FOOTER_SIZE]).unwrap();
+        let file_end = (file.len() - FOOTER_SIZE - metadata_len) as u64;
+        validate_chunk_ranges(&metadata, file_end, u64::MAX).unwrap();
+        // Pretend the build can only address the first 16 bytes.
+        let error = validate_chunk_ranges(&metadata, file_end, 16).unwrap_err();
+        assert!(error.contains("cannot address"), "{error}");
     }
 
     #[test]
@@ -769,6 +979,11 @@ mod tests {
         assert!(RangeSetReader::new(1000, &[0.0, 10.0], &[0; 11])
             .unwrap_err()
             .contains("longer"));
+        // An empty range at the same offset as a real one must not shadow it.
+        let shadowed =
+            RangeSetReader::new(1000, &[100.0, 0.0, 100.0, 4.0], &[7, 8, 9, 10]).unwrap();
+        assert_eq!(shadowed.get_bytes(100, 4).unwrap().as_ref(), &[7, 8, 9, 10]);
+        assert!(shadowed.covers(100, 0));
     }
 
     #[test]

@@ -1,5 +1,10 @@
 import { applyParquetColumnHints, pandasIndexColumnsFromHints } from "./parquet-features";
-import { type ByteSource, openParquetFile, type ParquetFileLimits } from "./parquet-file";
+import {
+  type ByteSource,
+  openParquetFile,
+  type ParquetFileLimits,
+  readExact,
+} from "./parquet-file";
 import { ensureModule } from "./predicate";
 import type { TableData } from "./table";
 import { updateWasmSummaries } from "./wasm-summaries";
@@ -87,7 +92,7 @@ export async function loadTableFile(
     if (input.byteLength > maxBytes) {
       throw new Error(`Table file exceeds input bytes limit (${input.byteLength} > ${maxBytes})`);
     }
-    const bytes = await input.read(0, input.byteLength);
+    const bytes = await readExact(input, 0, input.byteLength);
     return loadTableFile(bytes, { ...options, format });
   }
   const bytes = input;
