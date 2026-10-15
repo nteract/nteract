@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {spawnSync} from "node:child_process";
-import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
+import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {test} from "node:test";
@@ -16,6 +16,7 @@ function fakeProbe(failureAt, exitStatus) {
     input: [
       "set -euo pipefail",
       "PROBE_FILE=/fake/probe.py",
+      "GDB_COMMANDS=/fake/capture.gdb",
       "calls=0",
       "gdb() {",
       "  calls=$((calls + 1))",
@@ -38,9 +39,18 @@ test("debugger probe requires 20 clean child exits and requests all-thread stack
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.match(/exited cleanly/g)?.length, 20);
   assert.equal(result.stdout.match(/--batch --nx --return-child-result/g)?.length, 20);
-  assert.equal(result.stdout.match(/thread apply all backtrace/g)?.length, 20);
+  assert.equal(result.stdout.match(/-x \/fake\/capture.gdb/g)?.length, 20);
   assert.equal(result.stdout.match(/--args python3 -X faulthandler -u \/fake\/probe.py/g)?.length, 20);
-  assert.match(result.stdout, /set disable-randomization off/);
+  const commands = probe.match(/<<'GDB'\n([\s\S]*?)^GDB$/m)?.[1];
+  assert.ok(commands, "debugger command file is retained in source");
+  assert.match(commands, /set disable-randomization off/);
+  assert.match(commands, /break PyThread_exit_thread\ncommands\n  silent\n[^\n]+\n  backtrace\n  continue\nend\nrun\n/);
+  const stopped = commands.split("\nrun\n")[1];
+  assert.match(stopped, /if \$_inferior_thread_count > 0/);
+  for (const command of ["info registers", "info proc mappings", "thread apply all backtrace", "disassemble /r"]) {
+    assert.ok(stopped.includes(command));
+  }
+  assert.doesNotMatch(stopped, /continue|signal|call /, "never resume or call into a stopped inferior");
 });
 
 for (const exitStatus of [139, 255, 1]) {
@@ -55,7 +65,7 @@ for (const exitStatus of [139, 255, 1]) {
   });
 }
 
-function fakeImageDiagnostic(t, {status = 0, mismatch = false} = {}) {
+function fakeImageDiagnostic(t, {status = 0, mismatch = false, corruptBinding = false} = {}) {
   const fixture = mkdtempSync(join(tmpdir(), "image-debug-fixture-"));
   t.after(() => rmSync(fixture, {recursive: true, force: true}));
   const bin = join(fixture, "bin");
@@ -74,6 +84,8 @@ function fakeImageDiagnostic(t, {status = 0, mismatch = false} = {}) {
     '  const entry = args[args.indexOf("--entrypoint") + 1];',
     '  if (entry === "python3") {',
     '    const kind = args.at(-1);',
+    '    if (kind === "binding") { fs.writeSync(1, Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 0xff])); process.exit(0); }',
+    '    if (kind === "verify-binding") { process.exit(process.env.FAKE_CORRUPT_BINDING === "true" ? 7 : 0); }',
     '    const changed = debug && (kind === "libraries" || process.env.FAKE_MISMATCH === "true");',
     '    console.log(JSON.stringify({[kind]: changed ? "changed" : "ordinary"}));',
     '  } else if (entry === "dpkg-query") {',
@@ -91,18 +103,24 @@ function fakeImageDiagnostic(t, {status = 0, mismatch = false} = {}) {
       ...process.env, GITHUB_ACTIONS: "true", PATH: `${bin}:${process.env.PATH}`,
       FAKE_CALLS: calls, FAKE_DOCKERFILE: join(fixture, "Dockerfile"),
       FAKE_STATUS: String(status), FAKE_MISMATCH: String(mismatch),
+      FAKE_CORRUPT_BINDING: String(corruptBinding),
     },
   });
   return {
     ...result, output,
     calls: readFileSync(calls, "utf8").trim().split("\n").map(JSON.parse),
-    dockerfile: readFileSync(join(fixture, "Dockerfile"), "utf8"),
+    dockerfile: existsSync(join(fixture, "Dockerfile")) ? readFileSync(join(fixture, "Dockerfile"), "utf8") : null,
   };
 }
 
 test("diagnostic derivative records library/package differences and preserves production identity", (t) => {
   const result = fakeImageDiagnostic(t);
   assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(readFileSync(join(result.output, "ordinary-binding.so")), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 0xff]));
+  const retained = result.calls.findIndex(args => args.at(-1) === "binding");
+  const verified = result.calls.findIndex(args => args.at(-1) === "verify-binding");
+  const rpc = result.calls.findIndex(args => args.includes("/diagnostics/probe.sh"));
+  assert.ok(retained >= 0 && retained < verified && verified < rpc);
   assert.match(result.dockerfile, /^FROM test-image:built\nUSER root\n/);
   assert.match(result.dockerfile, /--no-install-recommends --no-upgrade gdb/);
   assert.match(result.dockerfile, /USER runt\n$/);
@@ -113,6 +131,12 @@ test("diagnostic derivative records library/package differences and preserves pr
   assert.match(readFileSync(join(result.output, "gdb-probe.log"), "utf8"), /fake native stack evidence/);
   assert.ok(result.calls.every(args => ["build", "run"].includes(args[0])));
   assert.doesNotMatch(JSON.stringify(result.calls), /--privileged|--cap-add|--security-opt|sysctl/);
+});
+
+test("diagnostic refuses an invalid retained native ELF before building or probing", (t) => {
+  const result = fakeImageDiagnostic(t, {corruptBinding: true});
+  assert.equal(result.status, 7);
+  assert.ok(!result.calls.some(args => args[0] === "build" || args.includes("/diagnostics/probe.sh")));
 });
 
 test("diagnostic derivative refuses changed interpreter or native identity before RPC", (t) => {

@@ -58,7 +58,10 @@ It verifies interpreter, libpython and native-extension bytes match the ordinary
 image and records package and linked-library differences. The ordinary image
 smoke remains the release gate: diagnostic success cannot erase its failure.
 A tracing-policy error or first failed debugger sample also fails the PR job;
-the job preserves its diagnostic logs without relaxing container permissions.
+the job preserves its diagnostic logs and exact native ELF without relaxing
+container permissions. A breakpoint records the caller before a CPython thread
+exit, then continues to the first signal or normal exit. A stopped process stays
+stopped while GDB records registers, mappings, stacks and caller disassembly.
 
 ```bash
 # Full in-container smoke (contract prechecks + daemon execution + launch shape)

@@ -35,6 +35,14 @@ files = {
     "libpython": (Path(sysconfig.get_config_var("LIBDIR")) / sysconfig.get_config_var("LDLIBRARY")).resolve(),
     "binding": extensions[0].resolve(),
 }
+if sys.argv[1] == "binding":
+    sys.stdout.buffer.write(files["binding"].read_bytes())
+    sys.exit(0)
+if sys.argv[1] == "verify-binding":
+    retained = Path("/diagnostics/ordinary-binding.so")
+    assert digest(retained) == digest(files["binding"]), "retained binding differs from image"
+    print(f"retained native binding SHA256: {digest(retained)}")
+    sys.exit(0)
 if sys.argv[1] == "identity":
     result = {
         "python_version": sys.version,
@@ -73,6 +81,14 @@ record_difference() {
 }
 
 snapshot "$IMAGE" ordinary
+# Preserve the exact shipped ELF for static symbol/disassembly mapping. Both
+# invocations read files only; neither imports the native extension.
+docker run --rm --entrypoint python3 \
+    --mount "type=bind,src=${OUTPUT_DIR},dst=/diagnostics,readonly" \
+    "$IMAGE" /diagnostics/identity.py binding > "$OUTPUT_DIR/ordinary-binding.so"
+docker run --rm --entrypoint python3 \
+    --mount "type=bind,src=${OUTPUT_DIR},dst=/diagnostics,readonly" \
+    "$IMAGE" /diagnostics/identity.py verify-binding
 # This unpushed derivative is local to the PR job. Do not modify the shipped
 # Dockerfile or relax container/host tracing policy if GDB cannot run.
 docker build --pull=false --tag "$DEBUG_IMAGE" --file - "$OUTPUT_DIR" <<DOCKERFILE
