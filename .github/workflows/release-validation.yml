@@ -12,6 +12,8 @@ on:
       - .github/workflows/pr-binary-generation.yml
       - .github/workflows/publish-npm.yml
       - .cargo/config.toml
+      - .dockerignore
+      - images/runtime-peer/**
       - scripts/ci/audit-linux-node.mjs
       - scripts/ci/audit-windows-crt-imports.mjs
       - scripts/ci/filter-unpublished-release-tags.sh
@@ -25,15 +27,25 @@ on:
       - scripts/ci/install-tauri-cli.sh
       - scripts/ci/fedora-appimage-smoke.sh
       - scripts/ci/*notebook-cloud-assets*
+      - scripts/ci/editor-assets-release*
+      - scripts/ci/release-wasm-manifest.mjs
+      - .github/workflows/build-editor-assets.yml
+      - .github/workflows/publish-editor-assets.yml
       - crates/notebook-protocol/src/connection/handshake.rs
+      - scripts/ci/runtime-peer-image-smoke.sh
+      - scripts/ci/runtime-peer-image-debug.sh
+      - scripts/ci/runtime-peer-binding-exit-gdb.sh
       - scripts/tests/test_release_tag.py
       - scripts/tests/audit-linux-node.test.mjs
       - scripts/tests/audit-windows-crt-imports.test.mjs
       - scripts/tests/release-workflow.test.mjs
       - scripts/tests/notebook-cloud-assets.test.mjs
+      - scripts/tests/editor-assets-release.test.mjs
+      - scripts/tests/runtime-peer-image-debug.test.mjs
       - scripts/tests/stage-notebook-sidecars.test.mjs
       - scripts/tests/npm-*.mjs
       - crates/runtimed-node/**
+      - crates/runtimed-py/**
       - Cargo.lock
       - Cargo.toml
       - rust-toolchain.toml
@@ -41,6 +53,7 @@ on:
       - packages/sift/package.json
       - packages/sift-csv/package.json
       - python/runtimed/pyproject.toml
+      - python/runtimed/tests/test_async_bridge.py
   workflow_dispatch:
 
 permissions:
@@ -59,8 +72,94 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
-      - run: node --test scripts/tests/audit-linux-node.test.mjs scripts/tests/audit-windows-crt-imports.test.mjs scripts/tests/release-workflow.test.mjs scripts/tests/notebook-cloud-assets.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
+      - run: node --test scripts/tests/audit-linux-node.test.mjs scripts/tests/audit-windows-crt-imports.test.mjs scripts/tests/release-workflow.test.mjs scripts/tests/notebook-cloud-assets.test.mjs scripts/tests/editor-assets-release.test.mjs scripts/tests/runtime-peer-image-debug.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
       - run: python3 -m unittest scripts/tests/test_release_tag.py -v
+
+  runtime-peer-image:
+    name: Runtime-peer image build and smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      IMAGE: nteract-runtime-peer:validation
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image without publishing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/runtime-peer/Dockerfile
+          load: true
+          push: false
+          provenance: false
+          tags: ${{ env.IMAGE }}
+          build-args: |
+            RUNT_BUILD_CHANNEL=nightly
+          cache-from: type=gha,scope=runtime-peer-validation
+          cache-to: type=gha,mode=max,scope=runtime-peer-validation
+      - name: Smoke image
+        id: image-smoke
+        shell: bash
+        run: |
+          EXPECTED_VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/runtimed/Cargo.toml)
+          test -n "$EXPECTED_VERSION"
+          bash scripts/ci/runtime-peer-image-smoke.sh "$IMAGE" "$EXPECTED_VERSION"
+
+      - name: Check native async delivery and interpreter shutdown
+        if: ${{ !cancelled() && (steps.image-smoke.outcome == 'success' || steps.image-smoke.outcome == 'failure') }}
+        timeout-minutes: 3
+        run: |
+          docker run --rm --init --entrypoint python3 \
+            --mount "type=bind,src=$PWD/python/runtimed/tests/test_async_bridge.py,dst=/tmp/test_async_bridge.py,readonly" \
+            "$IMAGE" -I /tmp/test_async_bridge.py -v
+
+      # Separate experiment: an ordinary-smoke failure still fails this job.
+      - name: Capture native binding exit stacks (diagnostic image)
+        id: image-debug
+        if: ${{ !cancelled() && (steps.image-smoke.outcome == 'success' || steps.image-smoke.outcome == 'failure') }}
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/ci/runtime-peer-image-debug.sh "$IMAGE" "$RUNNER_TEMP/runtime-peer-native-stack" 2>&1 | tee "$RUNNER_TEMP/runtime-peer-native-stack.log"
+      - name: Preserve native-stack diagnostic evidence
+        if: ${{ !cancelled() && steps.image-debug.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtime-peer-native-stack-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/runtime-peer-native-stack/
+            ${{ runner.temp }}/runtime-peer-native-stack.log
+
+  python-async-bridge:
+    name: Native async bridge (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dsherret/rust-toolchain-file@v1
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: async-bridge-${{ matrix.python }}
+      - name: Test delivery ownership and nested Python context
+        shell: bash
+        run: |
+          PYO3_PYTHON="$(command -v python)"
+          PYTHON_LIB_DIR="$(python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR") or "")')"
+          export PYO3_PYTHON
+          export LD_LIBRARY_PATH="${PYTHON_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          cargo test -p runtimed-py --lib --no-default-features async_bridge:: -- --nocapture
 
   windows-npm-packaging:
     name: Windows npm packaging

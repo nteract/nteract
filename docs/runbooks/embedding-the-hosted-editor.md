@@ -1,7 +1,9 @@
 # Embedding the hosted editor
 
-Every nightly and stable nteract release attaches the browser editor as one
-tarball. A host that embeds the editor pins a release tag and a SHA-256. It does
+After a successful nightly or stable release, an independent workflow builds
+and attaches the browser editor as one tarball. The assets may arrive later
+than the desktop release; a failed editor build does not block desktop, wheels,
+or the existing npm publisher. A host that embeds the editor pins a release tag and a SHA-256. It does
 not check out a commit or build Rust and WASM itself.
 
 ## What ships
@@ -28,9 +30,10 @@ The tarball holds:
 The bundle has no host endpoints, credentials, or origins baked in. They arrive
 through the JSON config described below. One tarball serves any host.
 
-The tarball is reproducible from its release tag. Entry order, owners, and
-modification times are fixed, and `built_at` is the release timestamp already
-encoded in the version. Repackaging the same tag gives the same bytes.
+The packager fixes entry order, owners, modification times, and `built_at`
+(the timestamp encoded in the release version). This makes packaging identical
+inputs deterministic. Publication retries reuse the original packed bytes;
+rebuilding dependencies or the viewer is not a reproducibility guarantee.
 
 `protocol/` is source, not an npm package. Import it by path.
 
@@ -115,3 +118,41 @@ the editor's.
 daemon or runtime image you connect to must report the same
 `protocol_version`. Pin both to releases from the same protocol version.
 Versions are not wire-compatible across a protocol bump.
+
+## Build and publication recovery
+
+The successful release's single WASM build retains `release-wasm-<run>-<attempt>`
+for 90 days, including source/channel/version, build attempt, and per-file hashes.
+The optional **Build editor assets** workflow validates that successful release,
+reuses its WASM and renderer bytes, then builds the viewer once. It retains
+`editor-assets-<release-run>-<release-attempt>` for 90 days with the tarball,
+sidecar, and `candidate.json` (release/WASM/build identities and checksums).
+A release retry that reuses a successful earlier WASM build records that original
+WASM attempt separately from the successful release attempt.
+
+**Publish editor assets** runs afterward with write permission, checks out only
+the trusted default-branch publisher, and treats downloaded artifacts as bytes.
+It verifies the successful upstream release, immutable tag/source, artifact
+origin/digest, and asset hashes before uploading. It never runs downloaded code,
+rebuilds, replaces an existing asset, or changes a rolling channel tag. Both
+uploaded assets are downloaded and hashed again before success is reported.
+
+To recover a publication failure, dispatch **Publish editor assets** on the
+default branch with the successful editor build run ID and attempt. A partial
+upload resumes only the missing member after checking the existing member's
+bytes. An exact completed pair is a no-op; different bytes fail closed. Missing
+older assets are refused after a newer release in that channel exists.
+
+To retry an initially failed build, dispatch **Build editor assets** with the
+successful release run ID and attempt. Duplicate events and whole-workflow
+reruns first find the retained completed candidate and skip all build work.
+If packed bytes exist but their build job failed, publication/build recovery
+stops for investigation. If a successful candidate's artifact expired or was
+deleted, recovery fails explicitly; use a new release candidate, never silently
+rebuild the old identity. Workflow run records must remain available to enforce
+that barrier; do not delete editor build runs while their release is supported.
+
+The first supported release must include these workflows and the retained WASM
+receipt. Older releases cannot be backfilled by rebuilding their WASM. PR
+fixture/real-build smoke checks validate packing and static serving; they do
+not establish that a published release asset has been accepted by a host.

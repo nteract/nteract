@@ -1,0 +1,127 @@
+name: Build editor assets
+run-name: Editor assets for release ${{ github.event.workflow_run.id || inputs.release_run_id }}/${{ github.event.workflow_run.run_attempt || inputs.release_run_attempt }}
+
+# Optional downstream work cannot change the release conclusion or suppress npm.
+on:
+  workflow_run:
+    workflows: ["Stable Release", "Nightly Release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      release_run_id:
+        description: Successful release run ID (new candidates only; completed builds are reused)
+        required: true
+        type: string
+      release_run_attempt:
+        description: Successful release attempt
+        required: true
+        default: "1"
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: editor-build-${{ github.event.workflow_run.id || inputs.release_run_id }}-${{ github.event.workflow_run.run_attempt || inputs.release_run_attempt }}
+  queue: max
+  cancel-in-progress: false
+jobs:
+  resolve:
+    name: Resolve editor candidate
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      reuse: ${{ steps.plan.outputs.reuse }}
+      plan_name: editor-plan-${{ github.run_attempt }}
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+      channel: ${{ steps.plan.outputs.channel }}
+      version: ${{ steps.plan.outputs.version }}
+      wasm_artifact_id: ${{ steps.plan.outputs.wasm_artifact_id }}
+      release_run_id: ${{ steps.plan.outputs.release_run_id }}
+      candidate_name: ${{ steps.plan.outputs.candidate_name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Resolve retained WASM or reuse a completed editor build
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ inputs.release_run_attempt }}
+        run: node scripts/ci/editor-assets-release-cli.mjs prepare "$RUNNER_TEMP/editor-plan.json"
+      - uses: actions/upload-artifact@v7
+        if: steps.plan.outputs.reuse != 'true'
+        with:
+          name: editor-plan-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/editor-plan.json
+          retention-days: 90
+          if-no-files-found: error
+
+  pack-editor:
+    name: Pack editor assets
+    needs: [resolve]
+    if: needs.resolve.outputs.reuse != 'true'
+    runs-on: ubuntu-24.04
+    env:
+      RUNT_BUILD_CHANNEL: ${{ needs.resolve.outputs.channel }}
+      NTERACT_BUILD_GIT_HASH: ${{ needs.resolve.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          path: release-source
+          lfs: true
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.resolve.outputs.plan_name }}
+          path: ${{ runner.temp }}
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.resolve.outputs.wasm_artifact_id }}
+          run-id: ${{ needs.resolve.outputs.release_run_id }}
+          github-token: ${{ github.token }}
+          path: release-source
+          merge-multiple: true
+      - name: Verify retained WASM byte identity
+        run: node scripts/ci/editor-assets-release-cli.mjs verify-wasm "$RUNNER_TEMP/editor-plan.json" release-source
+      - uses: dsherret/rust-toolchain-file@v1
+      - uses: pnpm/action-setup@v6
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
+      - name: Install viewer build dependencies
+        working-directory: release-source
+        run: pnpm install --frozen-lockfile
+      - name: Verify artifacts without compiling WASM
+        working-directory: release-source
+        run: cargo xtask artifacts verify runtime sift renderer
+      - name: Build viewer once
+        working-directory: release-source
+        run: pnpm --dir apps/notebook-cloud build:viewer
+      - name: Package and smoke the release candidate
+        working-directory: release-source
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          TS="${VERSION##*.}"
+          BUILT_AT="${TS:0:4}-${TS:4:2}-${TS:6:2}T${TS:8:2}:${TS:10:2}:00Z"
+          node scripts/ci/package-notebook-cloud-assets.mjs --out="$RUNNER_TEMP/editor-assets" --version="$VERSION" --channel="$RUNT_BUILD_CHANNEL" --source-sha="$NTERACT_BUILD_GIT_HASH" --built-at="$BUILT_AT"
+          bash scripts/ci/notebook-cloud-assets-smoke.sh "$RUNNER_TEMP/editor-assets/notebook-cloud-assets-${RUNT_BUILD_CHANNEL}.tar.gz"
+      - name: Seal the exact tested bytes
+        run: node scripts/ci/editor-assets-release-cli.mjs seal "$RUNNER_TEMP/editor-plan.json" "$RUNNER_TEMP/editor-assets"
+      # No overwrite. A rerun resolves this artifact before doing build work.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.resolve.outputs.candidate_name }}
+          path: ${{ runner.temp }}/editor-assets/
+          retention-days: 90
+          if-no-files-found: error

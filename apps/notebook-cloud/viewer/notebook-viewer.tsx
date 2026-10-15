@@ -81,6 +81,7 @@ import {
   openNotebookRailPanel,
   setActiveNotebookRailPanel,
   setNotebookRailCollapsed,
+  toggleNotebookRailPanel,
   useNotebookRailUiState,
 } from "@/components/notebook/state/rail-ui-state";
 import {
@@ -923,6 +924,9 @@ export function NotebookViewer({
       status,
       workstationAttachment,
     });
+  const handleTogglePackagesRail = useCallback(() => {
+    if (shellCapabilities.canViewPackages) toggleNotebookRailPanel("packages");
+  }, [shellCapabilities.canViewPackages]);
   const isPublicViewer =
     shellCapabilities.access.isPublic &&
     shellCapabilities.access.level === "viewer" &&
@@ -1798,6 +1802,7 @@ export function NotebookViewer({
         runtime={toolbarRuntime}
         runtimeTarget={shellCapabilities.runtime.target ?? null}
         environmentManager={toolbarEnvironmentManager}
+        environmentPanelOpen={!railCollapsed && activeRailPanel === "packages"}
         runtimeStatus={cloudRuntimeStatus}
         addCellControlsDisabled={editAccessPending}
         addAfterCellId={toolbarAddAfterCellId}
@@ -1807,6 +1812,7 @@ export function NotebookViewer({
         onRestartRuntime={handleCloudRestartRuntime}
         onRunAllCells={handleCloudRunAllCells}
         onRestartAndRunAll={handleCloudRestartAndRunAll}
+        onTogglePackages={handleTogglePackagesRail}
         workstationAction={workstationAction}
       />
     </NotebookToolbarFrame>

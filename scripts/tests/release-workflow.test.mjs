@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import {spawnSync} from "node:child_process";
-import {readFileSync} from "node:fs";
+import {mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
 import {test} from "node:test";
 import {fileURLToPath} from "node:url";
 
@@ -91,7 +93,6 @@ test("release qualification requires all binaries, wheel tests, and the AppImage
   assert.deepEqual(needs("prerelease").sort(), [
     "build-linux",
     "build-macos",
-    "build-notebook-cloud-assets",
     "build-notebook-linux",
     "build-notebook-macos-arm64",
     "build-notebook-macos-x64",
@@ -271,6 +272,44 @@ test("Windows smoke scripts reject bad arguments and non-native hosts", () => {
   }
 });
 
+test("runtime-peer release compilation follows real MCP widget generation and verification", () => {
+  const dockerfile = readFileSync(new URL("../../images/runtime-peer/Dockerfile", import.meta.url), "utf8");
+  const commands = dockerfile.replace(/\\\n\s*/g, " ");
+  const releaseBuild = commands.indexOf("cargo build --release -p runtimed -p runt");
+  assert.ok(releaseBuild >= 0, "image must build both release binaries");
+  const preparation = commands.slice(0, releaseBuild);
+  const frozenInstall = preparation.indexOf("pnpm install --frozen-lockfile");
+  const artifactCommands = [...preparation.matchAll(/cargo xtask artifacts (ensure|verify) ([a-z,-]+)/g)];
+  for (const scope of ["mcp-widget", "runtime", "sift", "renderer"]) {
+    const covers = (command) => command[2].split(",").some((value) => value === scope || value === "all");
+    const ensure = artifactCommands.find((command) => command[1] === "ensure" && covers(command));
+    const verify = artifactCommands.find((command) => command[1] === "verify" && covers(command));
+    assert.ok(ensure, `${scope} must be generated before release compilation`);
+    assert.ok(verify, `${scope} must pass strict artifact verification, including receipts and placeholder detection`);
+    assert.ok(frozenInstall >= 0 && ensure.index > frozenInstall && verify.index > ensure.index,
+      `${scope} must be generated after the frozen install and verified afterward`);
+  }
+});
+
+test("runtime-peer PR validation builds and smokes the release image without publishing", () => {
+  const body = validationJobs.get("runtime-peer-image");
+  assert.ok(body, "image recipe changes need a real container build before release");
+  assert.match(body, /runs-on: ubuntu-24\.04/);
+  assert.match(body, /lfs: true/);
+  assert.match(body, /uses: docker\/setup-buildx-action@v3/);
+  assert.match(body, /uses: docker\/build-push-action@v6[\s\S]*context: \.[\s\S]*file: images\/runtime-peer\/Dockerfile/);
+  assert.match(body, /load: true\n\s+push: false/);
+  assert.match(body, /RUNT_BUILD_CHANNEL=nightly/);
+  assert.match(body, /crates\/runtimed\/Cargo\.toml/);
+  const build = body.indexOf("uses: docker/build-push-action@v6");
+  const smoke = body.indexOf('bash scripts/ci/runtime-peer-image-smoke.sh "$IMAGE" "$EXPECTED_VERSION"');
+  assert.ok(smoke > build, "the existing full smoke test must run on the image just built");
+  assert.doesNotMatch(body, /continue-on-error:|docker\/login-action|docker push|push: true|packages: write/);
+  for (const path of [".dockerignore", "images/runtime-peer/**", "scripts/ci/runtime-peer-image-smoke.sh"]) {
+    assert.ok(validation.includes(`      - ${path}\n`), `missing image validation trigger: ${path}`);
+  }
+});
+
 test("runtime-peer image publication keeps packages:write scoped to the two image jobs", () => {
   const imageJobs = ["image-runtime-peer-build", "image-runtime-peer-publish"];
   for (const [id, body] of jobs) {
@@ -321,33 +360,163 @@ test("runtime-peer image publication keeps packages:write scoped to the two imag
   }
 });
 
-test("editor assets are built read-only and attached by prerelease under the channel name", () => {
-  // Like nteract-notebook-ui: third-party build code (pnpm install, Vite)
-  // runs in a job with read-only contents, and the release job attaches the
-  // artifact. No job gains write access for this asset.
-  const build = jobs.get("build-notebook-cloud-assets");
-  assert.ok(build, "build-notebook-cloud-assets must exist");
-  assert.match(build, /^    permissions:\n      contents: read\n    steps:/m, "exactly contents: read");
-  assert.doesNotMatch(build, /packages: write|GH_TOKEN|gh release/);
-  assert.match(build, /^    needs: \[compute-version, build-wasm\]$/m);
-  assert.match(build, /name: wasm-artifacts/, "reuses build-wasm output");
-  assert.match(build, /skip-wasm: true/, "does not rebuild WASM");
-  assert.match(build, /--built-at="\$BUILT_AT"/, "built_at comes from the release timestamp, not the clock");
-  assert.match(build, /RELEASE_TIMESTAMP: \$\{\{ needs\.compute-version\.outputs\.timestamp \}\}/);
-  assert.match(build, /notebook-cloud-assets-smoke\.sh[\s\S]*uses: actions\/upload-artifact@v7\n\s+with:\n\s+name: notebook-cloud-assets\n/, "smoke gates the artifact upload");
 
-  const release = jobs.get("prerelease");
-  assert.match(release, /^        build-notebook-cloud-assets,$/m, "prerelease waits for the editor assets");
-  assert.match(release, /name: notebook-cloud-assets\n\s+path: \.\/notebook-cloud-assets\n/, "prerelease downloads the artifact");
-  for (const suffix of ["", ".sha256"]) {
-    assert.ok(
-      release.includes(`cp "notebook-cloud-assets/notebook-cloud-assets-\${CHANNEL}.tar.gz${suffix}" release-assets/`),
-      `stages the ${suffix || "tarball"} with the channel name`,
-    );
-    assert.ok(
-      release.includes(`./release-assets/notebook-cloud-assets-\${{ inputs.version_suffix }}.tar.gz${suffix}\n`),
-      `attaches the ${suffix || "tarball"} with the channel name`,
-    );
+// Exercise only the tier-1 shell boundary. The fake Python command consumes
+// the real heredoc but never imports native code or starts a daemon/container.
+function runImagePythonTier(exitStatus) {
+  const source = readFileSync(new URL("../../images/runtime-peer/smoke.sh", import.meta.url), "utf8");
+  const tier = source.match(/^python3 [^\n]*<<'PY'[^\n]*\nimport asyncio\n[\s\S]*?\nPY\n[\s\S]*?(?=\n# --- (?:Binding exit probe:|Tier 2:))/m)?.[0];
+  assert.ok(tier, "must find the actual tier-1 Python command and its shell completion marker");
+  const fail = source.match(/^fail\(\) \{[^\n]+$/m)?.[0];
+  assert.ok(fail);
+  const fakePython = [
+    "python3() {",
+    "  printf 'python args: %s\\n' \"$*\"",
+    "  while IFS= read -r line; do",
+    "    case \"$line\" in",
+    "      'print(\"tier 1 ok\")') printf 'tier 1 ok\\n' ;;",
+    "    esac",
+    "  done",
+    "  printf 'python application body returned\\n'",
+    "  return \"$SIMULATED_PYTHON_STATUS\"",
+    "}",
+  ].join("\n");
+  return spawnSync("bash", ["-s"], {
+    input: ["set -euo pipefail", fail, fakePython, tier].join("\n"),
+    encoding: "utf8",
+    env: {...process.env, SIMULATED_PYTHON_STATUS: String(exitStatus)},
+  });
+}
+
+test("image Python tier enables fault traces and waits for a clean interpreter exit", () => {
+  const result = runImagePythonTier(0);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /python args: .*?-X ?faulthandler\b/);
+  assert.match(result.stdout, /python args: .*?-u\b/);
+  assert.ok(result.stdout.indexOf("tier 1 ok") > result.stdout.indexOf("python application body returned"),
+    "application completion alone is not a successful interpreter exit");
+});
+
+test("image Python tier fails closed when the interpreter exits 139 after its body", () => {
+  const result = runImagePythonTier(139);
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.stdout, /tier 1 ok/);
+  assert.match(result.stderr, /daemon execution tier failed.*139/);
+});
+
+test("image Python tier preserves ordinary assertion failure", () => {
+  const result = runImagePythonTier(1);
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.stdout, /tier 1 ok/);
+  assert.match(result.stderr, /daemon execution tier failed.*1/);
+});
+
+// Consume the real probe heredoc without executing Python. Shell function calls
+// share a counter, allowing a single bad exit to prove no later sample runs.
+function runImageExitProbe(failureAt, exitStatus) {
+  const source = readFileSync(new URL("../../images/runtime-peer/smoke.sh", import.meta.url), "utf8");
+  const probe = source.match(/^for attempt in .*\n[\s\S]*?^done$/m)?.[0];
+  assert.ok(probe, "must find the actual bounded fresh-process probe");
+  assert.match(probe, /await asyncio\.wait_for\(runtimed\.Client\(\)\.ping\(\), timeout=10\)/);
+  const fail = source.match(/^fail\(\) \{[^\n]+$/m)?.[0];
+  assert.ok(fail);
+  const fakePython = [
+    "calls=0",
+    "python3() {",
+    "  calls=$((calls + 1))",
+    "  printf 'python call %s args: %s\\n' \"$calls\" \"$*\"",
+    "  cat >/dev/null",
+    "  if [ \"$calls\" = \"$SIMULATED_FAILURE_AT\" ]; then",
+    "    return \"$SIMULATED_PYTHON_STATUS\"",
+    "  fi",
+    "}",
+  ].join("\n");
+  return spawnSync("bash", ["-s"], {
+    input: ["set -euo pipefail", fail, fakePython, probe].join("\n"),
+    encoding: "utf8",
+    env: {...process.env, SIMULATED_FAILURE_AT: String(failureAt), SIMULATED_PYTHON_STATUS: String(exitStatus)},
+  });
+}
+
+test("image binding exit probe requires all 20 fresh Python exits with fault traces", () => {
+  const result = runImageExitProbe(0, 0);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.match(/exited cleanly/g)?.length, 20);
+  assert.equal(result.stdout.match(/python call \d+ args: -X faulthandler -u -/g)?.length, 20);
+  assert.ok(result.stdout.indexOf("20/20 exited cleanly") > result.stdout.indexOf("python call 20"));
+});
+
+for (const exitStatus of [139, 1]) {
+  test(`image binding exit probe stops at first failed exit (${exitStatus})`, () => {
+    const result = runImageExitProbe(3, exitStatus);
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout.match(/python call/g)?.length, 3);
+    assert.equal(result.stdout.match(/exited cleanly/g)?.length, 2);
+    assert.doesNotMatch(result.stdout, /4\/20|20\/20/);
+    assert.match(result.stderr, new RegExp(`binding exit probe 3/20 failed.*${exitStatus}`));
+  });
+}
+
+// Run only the actual cache selector against real temporary directory trees.
+// A tiny stat shim supplies GNU stat's format on both macOS and Linux; find,
+// sorting and the selection/failure boundary remain the production shell code.
+function selectImageLauncher(t, entries) {
+  const fixture = mkdtempSync(join(tmpdir(), "image-launcher-"));
+  t.after(() => rmSync(fixture, {recursive: true, force: true}));
+  const fixtureHome = join(fixture, "home");
+  const bin = join(fixture, "bin");
+  mkdirSync(join(fixtureHome, ".cache"), {recursive: true});
+  mkdirSync(bin);
+  for (const [relative, timestamp] of entries) {
+    const dir = join(fixtureHome, ".cache", relative);
+    mkdirSync(dir, {recursive: true});
+    utimesSync(dir, timestamp, timestamp);
   }
-  assert.doesNotMatch(release, /notebook-cloud-assets-nightly|notebook-cloud-assets-stable/, "channel is never hard-coded");
+  writeFileSync(join(bin, "stat"), [
+    `#!${process.execPath}`,
+    'const {statSync} = require("node:fs");',
+    'if (process.argv[2] !== "-c" || process.argv[3] !== "%Y %n") process.exit(2);',
+    'for (const path of process.argv.slice(4)) console.log(`${Math.floor(statSync(path).mtimeMs / 1000)} ${path}`);',
+  ].join("\n"), {mode: 0o755});
+  const source = readFileSync(new URL("../../images/runtime-peer/smoke.sh", import.meta.url), "utf8");
+  const selection = source.match(/^LAUNCHER_DIR=[\s\S]*?(?=\nCONN_FILE=)/m)?.[0];
+  assert.ok(selection, "must find the actual launcher cache selection");
+  const fail = source.match(/^fail\(\) \{[^\n]+$/m)?.[0];
+  assert.ok(fail);
+  // Substitute only the cache root; never repoint HOME or touch a real cache.
+  const result = spawnSync("bash", ["-s"], {
+    input: ["set -euo pipefail", fail, selection.replaceAll("$HOME/.cache", "$FIXTURE_HOME/.cache"), 'printf "selected parent: %s\\n" "$PYTHONPATH_PARENT"'].join("\n"),
+    encoding: "utf8",
+    env: {...process.env, FIXTURE_HOME: fixtureHome, PATH: `${bin}:${process.env.PATH}`},
+  });
+  return {...result, fixtureHome};
+}
+
+test("image launch shape excludes newer conda and UV site-packages from PYTHONPATH", (t) => {
+  const result = selectImageLauncher(t, [
+    ["runt-nightly/launcher/nteract_kernel_launcher", 100],
+    ["runt-nightly/envs/runtimed-uv-new/lib/python3.13/site-packages/nteract_kernel_launcher", 200],
+    ["runt-nightly/envs/runtimed-conda-new/lib/python3.13/site-packages/nteract_kernel_launcher", 300],
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes(`selected parent: ${result.fixtureHome}/.cache/runt-nightly/launcher\n`));
+  assert.doesNotMatch(result.stdout, /site-packages/);
+});
+
+test("image launch shape rejects environment launchers when standalone cache is missing", (t) => {
+  const result = selectImageLauncher(t, [
+    ["runt-nightly/envs/runtimed-conda-new/lib/python3.13/site-packages/nteract_kernel_launcher", 300],
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /standalone nteract_kernel_launcher cache not found/);
+  assert.doesNotMatch(result.stdout, /selected parent:/);
+});
+
+test("image launch shape still selects the newest eligible standalone cache", (t) => {
+  const result = selectImageLauncher(t, [
+    ["runt/launcher/nteract_kernel_launcher", 100],
+    ["runt-nightly/launcher/nteract_kernel_launcher", 200],
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes(`selected parent: ${result.fixtureHome}/.cache/runt-nightly/launcher\n`));
 });

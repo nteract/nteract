@@ -116,6 +116,26 @@ jobs:
 
       - uses: ./.github/actions/build-runtime-artifacts
 
+      - name: Record immutable release WASM identity
+        env:
+          RELEASE_VERSION: ${{ needs.compute-version.outputs.version }}
+        run: node scripts/ci/release-wasm-manifest.mjs
+
+      - name: Retain release WASM for independent downstream publishers
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-wasm-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: error
+          path: |
+            release-wasm.json
+            apps/notebook/src/wasm/runtimed-wasm/
+            crates/sift-wasm/pkg/
+            packages/sift/public/wasm/
+            apps/notebook/src/renderer-plugins/
+            target/xtask/*.fingerprint
+            target/xtask/renderer-*.inputs.json
+
       - name: Upload WASM artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -128,74 +148,6 @@ jobs:
             apps/notebook/src/renderer-plugins/
             target/xtask/*.fingerprint
             target/xtask/renderer-*.inputs.json
-
-  build-notebook-cloud-assets:
-    # Platform-neutral hosted editor bundle for embedding hosts. Built from the
-    # downloaded `wasm-artifacts`; nothing here compiles WASM. Third-party build
-    # code (pnpm install, Vite) runs with read-only contents; `prerelease`
-    # attaches the result to the release.
-    name: Build editor assets
-    runs-on: ubuntu-24.04
-    needs: [compute-version, build-wasm]
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          lfs: true
-          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
-
-      - name: Set up Rust
-        uses: dsherret/rust-toolchain-file@v1
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "wasm-build"
-          save-if: false
-
-      - name: Download WASM artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: wasm-artifacts
-
-      - uses: ./.github/actions/build-runtime-artifacts
-        with:
-          skip-wasm: true
-
-      - name: Build viewer
-        run: pnpm --dir apps/notebook-cloud build:viewer
-
-      - name: Package editor assets
-        env:
-          VERSION: ${{ needs.compute-version.outputs.version }}
-          SOURCE_SHA: ${{ needs.compute-version.outputs.source_sha }}
-          RELEASE_TIMESTAMP: ${{ needs.compute-version.outputs.timestamp }}
-        run: |
-          # built_at is the release timestamp already encoded in the version,
-          # so repackaging a tag yields identical bytes.
-          case "$RELEASE_TIMESTAMP" in
-            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
-            *) echo "unexpected release timestamp: $RELEASE_TIMESTAMP" >&2; exit 1 ;;
-          esac
-          TS="$RELEASE_TIMESTAMP"
-          BUILT_AT="${TS:0:4}-${TS:4:2}-${TS:6:2}T${TS:8:2}:${TS:10:2}:00Z"
-          node scripts/ci/package-notebook-cloud-assets.mjs \
-            --out=notebook-cloud-assets \
-            --version="$VERSION" \
-            --channel="$RUNT_BUILD_CHANNEL" \
-            --source-sha="$SOURCE_SHA" \
-            --built-at="$BUILT_AT"
-
-      - name: Smoke test editor assets
-        run: bash scripts/ci/notebook-cloud-assets-smoke.sh "notebook-cloud-assets/notebook-cloud-assets-${RUNT_BUILD_CHANNEL}.tar.gz"
-
-      - name: Upload editor assets
-        uses: actions/upload-artifact@v7
-        with:
-          name: notebook-cloud-assets
-          path: notebook-cloud-assets/
-          if-no-files-found: error
 
   build-linux:
     name: Build Linux ${{ matrix.platform.arch }} Executables
@@ -1820,7 +1772,6 @@ jobs:
         build-notebook-windows-x64,
         build-notebook-windows-arm64,
         build-notebook-linux,
-        build-notebook-cloud-assets,
         smoke-fedora-appimage,
         build-python-wheels,
       ]
@@ -1937,12 +1888,6 @@ jobs:
           name: nteract-notebook-ui
           path: ./notebook-ui
 
-      - name: Download editor assets
-        uses: actions/download-artifact@v8
-        with:
-          name: notebook-cloud-assets
-          path: ./notebook-cloud-assets
-
       - name: Report downloaded release artifact sizes
         run: |
           echo "Downloaded artifact directories:"
@@ -1954,8 +1899,7 @@ jobs:
             notebook-windows-arm64 \
             notebook-linux-x64 \
             notebook-linux-arm64 \
-            notebook-ui \
-            notebook-cloud-assets
+            notebook-ui
           echo ""
           echo "Downloaded artifact files:"
           find \
@@ -1967,7 +1911,6 @@ jobs:
             notebook-linux-x64 \
             notebook-linux-arm64 \
             notebook-ui \
-            notebook-cloud-assets \
             -type f -printf "%12s  %p\n" | sort -nr
 
       - name: Prepare release assets
@@ -2018,9 +1961,6 @@ jobs:
           # Platform-neutral production notebook frontend for embedding hosts.
           cp "notebook-ui/nteract-${CHANNEL}-notebook-ui.tar.gz" release-assets/
           cp "notebook-ui/nteract-${CHANNEL}-notebook-ui.tar.gz.sha256" release-assets/
-          # Platform-neutral hosted editor for embedding hosts.
-          cp "notebook-cloud-assets/notebook-cloud-assets-${CHANNEL}.tar.gz" release-assets/
-          cp "notebook-cloud-assets/notebook-cloud-assets-${CHANNEL}.tar.gz.sha256" release-assets/
           # Updater bundles + signatures
           cp "notebook-macos-arm64/nteract-${CHANNEL}-darwin-arm64.app.tar.gz" release-assets/
           cp "notebook-macos-arm64/nteract-${CHANNEL}-darwin-arm64.app.tar.gz.sig" release-assets/
@@ -2240,10 +2180,6 @@ jobs:
             echo ''
             echo "The platform-neutral production frontend is available as \`nteract-${VERSION_SUFFIX}-notebook-ui.tar.gz\`. Verify it with the adjacent \`.sha256\` file before extracting it into an embedding host."
             echo ''
-            echo '### Hosted editor (embedders)'
-            echo ''
-            echo "The browser editor, WASM engine, and protocol package are available as \`notebook-cloud-assets-${VERSION_SUFFIX}.tar.gz\`. Verify it with the adjacent \`.sha256\` file. Its \`manifest.json\` lists a SHA-256 per file and the \`protocol_version\` to match against the daemon or runtime image you connect to. See \`docs/runbooks/embedding-the-hosted-editor.md\`."
-            echo ''
             echo '### runtimed (Python — macOS, Linux, Windows)'
             echo ''
             echo '```bash'
@@ -2333,8 +2269,6 @@ jobs:
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-arm64.exe
             ./release-assets/nteract-${{ inputs.version_suffix }}-notebook-ui.tar.gz
             ./release-assets/nteract-${{ inputs.version_suffix }}-notebook-ui.tar.gz.sha256
-            ./release-assets/notebook-cloud-assets-${{ inputs.version_suffix }}.tar.gz
-            ./release-assets/notebook-cloud-assets-${{ inputs.version_suffix }}.tar.gz.sha256
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-x64.exe.sig
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-arm64.exe.sig
             ./release-assets/latest.json

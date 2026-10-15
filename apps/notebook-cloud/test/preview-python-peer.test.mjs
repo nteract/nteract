@@ -507,3 +507,35 @@ test("clear-output floods share the live document-write budget", async (t) => {
   assert.equal(clearsWhileRunning, 400, "clear operations cannot bypass the stream-write cap");
   assert.equal(clock.actions.length, 0);
 });
+
+test("room-owned adapter leaves historical queued/running entries untouched", async (t) => {
+  const peer = new RuntimeStatePeerHandle("user:dev:managed-history/test");
+  t.after(() => peer.free());
+  peer.create_execution_with_source("old-queued", "must not run", 0);
+  peer.create_execution_with_source("uncertain-running", "may already have run", 1);
+  peer.set_execution_running("uncertain-running");
+  // The default reader's compatibility projection must remain unchanged.
+  assert.deepEqual(peer.get_runtime_state().queue.queued, [{ execution_id: "old-queued" }]);
+  const before = peer.save();
+  peer.use_room_owned_queue();
+  assert.deepEqual(peer.save(), before, "opting in must not mutate history or queue");
+  assert.deepEqual(peer.get_runtime_state().queue.queued, []);
+  const history = peer.get_runtime_state().executions;
+  peer.refresh_execution_queue();
+  assert.deepEqual(peer.get_runtime_state().queue, { executing: null, queued: [] });
+  const bridge = new PythonRuntimePeer({
+    peer,
+    roomOwnedQueue: true,
+    sessionKey: "history",
+    isCurrent: () => true,
+    publish: async () => assert.fail("history is not new work"),
+    prepareOutputs: async () => assert.fail("history has no new output"),
+    pool: {
+      execute: async () => assert.fail("must never replay history"),
+      release: async () => {},
+    },
+  });
+  await bridge.drain();
+  assert.deepEqual(peer.get_runtime_state().executions, history);
+  await bridge.close();
+});

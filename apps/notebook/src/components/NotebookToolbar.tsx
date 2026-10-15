@@ -49,8 +49,15 @@ interface NotebookToolbarProps {
   onAddCell: (type: "code" | "markdown", afterCellId?: string | null) => void;
   capabilities: Pick<
     NotebookShellCapabilities,
-    "canEditStructure" | "canExecute" | "canManageSharing" | "canRequestEdit" | "auth"
+    | "canEditStructure"
+    | "canExecute"
+    | "canViewPackages"
+    | "canManageSharing"
+    | "canRequestEdit"
+    | "auth"
   >;
+  packagesPanelOpen?: boolean;
+  onTogglePackages?: () => void;
   listKernelspecs?: () => Promise<KernelspecInfo[]>;
   depsOutOfSync?: boolean;
   updateStatus?: UpdateStatus;
@@ -81,6 +88,8 @@ export function NotebookToolbar({
   lastCellId,
   onAddCell,
   capabilities,
+  packagesPanelOpen = false,
+  onTogglePackages,
   depsOutOfSync = false,
   listKernelspecs,
   updateStatus,
@@ -242,6 +251,7 @@ export function NotebookToolbar({
         capabilities={capabilities}
         runtime={runtime}
         environmentManager={envManager}
+        environmentPanelOpen={packagesPanelOpen}
         environmentOutOfSync={depsOutOfSync}
         runtimeStatus={{
           state: commandRuntimeStatus.state,
@@ -270,6 +280,7 @@ export function NotebookToolbar({
         onRestartRuntime={onRestartKernel}
         onRunAllCells={onRunAllCells}
         onRestartAndRunAll={onRestartAndRunAll}
+        onTogglePackages={onTogglePackages}
         updateAction={
           updateStatus === "available" && onRestartToUpdate
             ? {

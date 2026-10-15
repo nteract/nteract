@@ -6,11 +6,11 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use pyo3_async_runtimes::tokio::future_into_py;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use crate::async_bridge::future_into_py;
 use crate::error::to_py_err;
 use crate::output::{Cell, PyExecutionViewChangeset, PyRuntimeState};
 use crate::session_core::{self, SessionState};

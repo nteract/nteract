@@ -5,8 +5,8 @@
 use std::path::PathBuf;
 
 use pyo3::prelude::*;
-use pyo3_async_runtimes::tokio::future_into_py;
 
+use crate::async_bridge::future_into_py;
 use crate::async_session::AsyncSession;
 use crate::daemon_paths::{get_socket_path, resolve_notebook_path};
 use crate::error::to_py_err;
