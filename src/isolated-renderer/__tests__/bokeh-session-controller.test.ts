@@ -8,6 +8,7 @@ import {
 } from "@/components/isolated/rpc-methods";
 import {
   BokehSessionController,
+  deferExistingModelUpdates,
   extractBokehPatchBuffers,
   type BokehRuntime,
 } from "../bokeh-session-controller";
@@ -21,11 +22,6 @@ class FakeDocument {
   listeners = new Set<(event: Record<string, unknown>) => void>();
   applied: Array<Record<string, unknown>> = [];
   cleared = false;
-  modelIds = new Set(["root-1"]);
-
-  get_model_by_id(id: string) {
-    return this.modelIds.has(id) ? { id } : null;
-  }
 
   on_change(listener: (event: Record<string, unknown>) => void) {
     this.listeners.add(listener);
@@ -448,7 +444,7 @@ describe("BokehSessionController", () => {
     controller.dispose();
   });
 
-  it("reconciles existing models through ModelChanged events", async () => {
+  it("reconciles a checkpoint by applying its roots to the mounted document", async () => {
     const { controller, documents, notify } = harness();
     await controller.start();
     const newChild = { type: "object", name: "Div", id: "div-2", attributes: { text: "new" } };
@@ -483,59 +479,14 @@ describe("BokehSessionController", () => {
     expect(documents[0].applied).toEqual([
       {
         events: [
-          { kind: "ModelChanged", model: { id: "root-1" }, attr: "children", new: [newChild] },
-          { kind: "ModelChanged", model: { id: "root-1" }, attr: "dark_theme", new: true },
-          { kind: "RootAdded", model: { id: "root-1" } },
-        ],
-      },
-    ]);
-    controller.dispose();
-  });
-
-  it("applies redefinitions of existing models in patches as ModelChanged events", async () => {
-    const { controller, documents, notify } = harness();
-    await controller.start();
-    const existing = {
-      type: "object",
-      name: "Row",
-      id: "root-1",
-      attributes: { dark_theme: true },
-    };
-    const added = { type: "object", name: "Div", id: "div-2", attributes: { text: "new" } };
-
-    notify(NTERACT_BOKEH_SESSION_PATCH, {
-      outputId: "output-1",
-      event: {
-        sessionId: "session-1",
-        transactionId: "server-change-1",
-        baseRevision: 0,
-        revision: 1,
-        serverPatch: {
-          patch: {
-            events: [
-              {
-                kind: "ModelChanged",
-                model: { id: "page-1" },
-                attr: "main",
-                new: [existing, added],
-              },
-            ],
-          },
-          buffers: [],
-        },
-      },
-    });
-    await settle();
-
-    expect(documents[0].applied).toEqual([
-      {
-        events: [
-          { kind: "ModelChanged", model: { id: "root-1" }, attr: "dark_theme", new: true },
           {
-            kind: "ModelChanged",
-            model: { id: "page-1" },
-            attr: "main",
-            new: [{ id: "root-1" }, added],
+            kind: "RootAdded",
+            model: {
+              type: "object",
+              name: "Row",
+              id: "root-1",
+              attributes: { children: [newChild], dark_theme: true },
+            },
           },
         ],
       },
@@ -621,5 +572,99 @@ describe("BokehSessionController", () => {
     expect(documents).toHaveLength(1);
     expect(document.cleared).toBe(false);
     controller.dispose();
+  });
+});
+
+/** Mirrors BokehJS: existing ids are updated mid-decode, new models finalize last. */
+class FakeDeserializer {
+  references = new Map<string, FakeModel>();
+  _decoding = false;
+  log: string[] = [];
+  private finalizable: FakeModel[] = [];
+
+  decode(value: unknown) {
+    if (this._decoding) return this._decode(value);
+    this._decoding = true;
+    const decoded = this._decode(value);
+    this._decoding = false;
+    for (const model of this.finalizable.splice(0)) this.log.push(`finalize ${model.id}`);
+    return decoded;
+  }
+
+  _decode(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map((item) => this._decode(item));
+    if (value && typeof value === "object") {
+      const obj = value as { type?: string; id?: string; name?: string; attributes?: unknown };
+      if (obj.type === "object" && obj.id && obj.name) {
+        return this._decode_object_ref(obj as { id: string; name: string; attributes?: unknown });
+      }
+      return Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, this._decode(v)]));
+    }
+    return value;
+  }
+
+  _decode_object_ref(obj: { id: string; name: string; attributes?: unknown }) {
+    const existing = this.references.get(obj.id);
+    if (existing) {
+      existing.setv(this._decode(obj.attributes ?? {}), { sync: false });
+      return existing;
+    }
+    const model = new FakeModel(obj.id, obj.name, this.log);
+    this.references.set(obj.id, model);
+    this._decode(obj.attributes ?? {});
+    this.finalizable.push(model);
+    return model;
+  }
+}
+
+class FakeModel {
+  constructor(
+    readonly id: string,
+    readonly type: string,
+    private readonly log: string[],
+  ) {}
+
+  setv(_attrs: unknown, _options: { sync: boolean }) {
+    this.log.push(`setv ${this.id}`);
+  }
+}
+
+describe("deferExistingModelUpdates", () => {
+  it("updates existing models only after the patch's new models are finalized", () => {
+    const deserializer = new FakeDeserializer();
+    deserializer.references.set("row", new FakeModel("row", "Row", deserializer.log));
+    const runtime = {
+      Deserializer: FakeDeserializer as unknown as BokehRuntime["Deserializer"],
+    } as BokehRuntime;
+    const original = FakeDeserializer.prototype._decode_object_ref;
+    const patch = [
+      {
+        type: "object",
+        name: "Row",
+        id: "row",
+        attributes: { children: [{ type: "object", name: "Div", id: "div", attributes: {} }] },
+      },
+    ];
+
+    deferExistingModelUpdates(runtime, () => deserializer.decode(patch));
+
+    expect(deserializer.log).toEqual(["finalize div", "setv row"]);
+    expect(FakeDeserializer.prototype._decode_object_ref).toBe(original);
+  });
+
+  it("keeps BokehJS's immediate update outside a patch application", () => {
+    const deserializer = new FakeDeserializer();
+    deserializer.references.set("row", new FakeModel("row", "Row", deserializer.log));
+
+    deserializer.decode([
+      {
+        type: "object",
+        name: "Row",
+        id: "row",
+        attributes: { children: [{ type: "object", name: "Div", id: "div", attributes: {} }] },
+      },
+    ]);
+
+    expect(deserializer.log).toEqual(["setv row", "finalize div"]);
   });
 });

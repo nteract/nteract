@@ -35,7 +35,6 @@ interface BokehDocument {
   remove_on_change(callback: (event: BokehDocumentEvent) => void): void;
   create_json_patch(events: BokehDocumentEvent[]): Record<string, unknown>;
   apply_json_patch(patch: Record<string, unknown>, buffers?: Map<string, ArrayBuffer>): void;
-  get_model_by_id(id: string): unknown;
   clear(options?: { sync?: boolean }): void;
 }
 
@@ -56,7 +55,16 @@ interface BokehRuntime {
     ): BokehDocument;
   };
   Buffer: new (buffer: ArrayBuffer) => BokehBufferValue;
+  Deserializer?: { prototype: BokehDeserializer };
   addDocumentStandalone(document: BokehDocument, element: HTMLElement): Promise<BokehViewManager>;
+}
+
+interface BokehDeserializer {
+  references: Map<string, { type: string; setv(attrs: unknown, options: { sync: boolean }): void }>;
+  _decoding: boolean;
+  _decode(value: unknown): unknown;
+  _decode_object_ref(obj: { id: string; name: string; attributes?: unknown }): unknown;
+  decode(value: unknown, buffers?: unknown): unknown;
 }
 
 interface BokehSessionControllerOptions {
@@ -119,41 +127,39 @@ function isPatchReply(value: unknown): value is NteractBokehApplyPatchResult {
 }
 
 /**
- * Replace serialized definitions of models the document already has with
- * references, collecting their attributes as ModelChanged events. BokehJS
- * applies an existing model's definition with `setv` while it is still
- * decoding the rest of the patch, so listeners would see the new models of
- * that patch before they are initialized. ModelChanged events are applied
- * only after the whole patch has been decoded.
+ * Run `apply` with BokehJS updating existing models only after a patch's new
+ * models are finalized. Decoding a definition of a model the document already
+ * has calls `setv` mid-decode, so change listeners would build views for new
+ * models that are not initialized yet (UnsetValueError) and the affected
+ * output would disappear. The updates still happen before the patch's events
+ * are applied, in decoding order, as Bokeh intends.
  */
-function referenceExistingModels(
-  value: unknown,
-  exists: (id: string) => boolean,
-  changes: Record<string, unknown>[],
-): unknown {
-  if (Array.isArray(value))
-    return value.map((item) => referenceExistingModels(item, exists, changes));
-  if (!isRecord(value)) return value;
-  const mapped: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    mapped[key] = referenceExistingModels(item, exists, changes);
+export function deferExistingModelUpdates<T>(runtime: BokehRuntime, apply: () => T): T {
+  const proto = runtime.Deserializer?.prototype;
+  if (!proto?._decode_object_ref || !proto.decode) return apply();
+  const decodeObjectRef = proto._decode_object_ref;
+  const decode = proto.decode;
+  const deferred: Array<[{ setv(attrs: unknown, options: { sync: boolean }): void }, unknown]> = [];
+  proto._decode_object_ref = function (this: BokehDeserializer, obj) {
+    const existing = this.references.get(obj.id);
+    if (existing == null || existing.type !== obj.name) return decodeObjectRef.call(this, obj);
+    deferred.push([existing, this._decode(obj.attributes ?? {})]);
+    return existing;
+  };
+  proto.decode = function (this: BokehDeserializer, value, buffers) {
+    const outermost = !this._decoding;
+    const decoded = decode.call(this, value, buffers);
+    if (outermost) {
+      for (const [model, attributes] of deferred.splice(0)) model.setv(attributes, { sync: false });
+    }
+    return decoded;
+  };
+  try {
+    return apply();
+  } finally {
+    proto._decode_object_ref = decodeObjectRef;
+    proto.decode = decode;
   }
-  const isDefinition =
-    mapped.type === "object" && typeof mapped.id === "string" && typeof mapped.name === "string";
-  if (!isDefinition || !exists(mapped.id as string)) return mapped;
-  const attributes = isRecord(mapped.attributes) ? mapped.attributes : {};
-  for (const [attr, attrValue] of Object.entries(attributes)) {
-    changes.push({ kind: "ModelChanged", model: { id: mapped.id }, attr, new: attrValue });
-  }
-  return { id: mapped.id };
-}
-
-/** Patch events with existing models referenced, their attributes applied first. */
-function referenceExistingModelsInEvents(document: BokehDocument, events: unknown[]): unknown[] {
-  const changes: Record<string, unknown>[] = [];
-  const exists = (id: string) => document.get_model_by_id(id) != null;
-  const referenced = events.map((event) => referenceExistingModels(event, exists, changes));
-  return [...changes, ...referenced];
 }
 
 function bufferMap(buffers: NteractBokehResolvedBuffer[]): Map<string, ArrayBuffer> {
@@ -505,9 +511,8 @@ export class BokehSessionController {
     }
     this.applyingRemote = true;
     try {
-      document.apply_json_patch(
-        { events: referenceExistingModelsInEvents(document, events) },
-        bufferMap(checkpoint.buffers),
+      deferExistingModelUpdates(this.options.runtime, () =>
+        document.apply_json_patch({ events }, bufferMap(checkpoint.buffers)),
       );
       this.reapplyPendingLocalChanges();
       this.revision = checkpoint.revision;
@@ -622,10 +627,9 @@ export class BokehSessionController {
 
   private applyPatchPayload(payload: NteractBokehResolvedPatchPayload): void {
     if (!this.document) throw new Error("Bokeh document is not mounted");
-    const events = Array.isArray(payload.patch.events) ? payload.patch.events : [];
-    this.document.apply_json_patch(
-      { ...payload.patch, events: referenceExistingModelsInEvents(this.document, events) },
-      bufferMap(payload.buffers),
+    const document = this.document;
+    deferExistingModelUpdates(this.options.runtime, () =>
+      document.apply_json_patch(payload.patch, bufferMap(payload.buffers)),
     );
   }
 
