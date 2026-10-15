@@ -213,10 +213,21 @@ test.describe("embedded notebook presentation", () => {
       ).toBe(true);
       const indicator = notebook.getByTestId("runtime-environment-indicator");
       await expect(indicator).toBeVisible();
-      await expect(indicator).not.toHaveAttribute("tabindex");
-      await expect(indicator).not.toHaveAttribute("role", "button");
+      await expect(indicator).toHaveRole("button");
+      await expect(indicator).toHaveAttribute("aria-expanded", "false");
       await indicator.click();
+      await expect(rail).toHaveAttribute("data-collapsed", "false");
+      await expect(indicator).toHaveAttribute("aria-expanded", "true");
+      await expect(notebook.getByRole("heading", { name: "Packages", exact: true })).toBeVisible();
+      if (viewport.width < 600) {
+        await expect(toolbar).toBeHidden();
+        await notebook.getByRole("button", { name: "Packages", exact: true }).click();
+      } else {
+        await expect(toolbar).toBeVisible();
+        await indicator.click();
+      }
       await expect(rail).toHaveAttribute("data-collapsed", "true");
+      await expect(indicator).toHaveAttribute("aria-expanded", "false");
       await expect(toolbar).toBeVisible();
       await expect(notebook.getByRole("button", { name: "Comments", exact: true })).toHaveCount(0);
     });
