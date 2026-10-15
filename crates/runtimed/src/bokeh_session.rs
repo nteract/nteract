@@ -1011,6 +1011,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn canonical_patch_keeps_bokeh_key_order() {
+        // BokehJS defines a model at its first occurrence and resolves later
+        // occurrences as references, so reordering keys breaks decoding.
+        let server_patch = r#"{"events":[{"kind":"ModelChanged","model":{"id":"p1"},"attr":"children","new":[{"type":"object","name":"Row","id":"r1","attributes":{"tags":[]}},{"id":"r1"}]}]}"#;
+        let mut event = patch_event(0, 1);
+        event["server_patch"] = json!({
+            "patch": serde_json::from_str::<Value>(server_patch).expect("patch json"),
+            "buffers": [],
+        });
+        let dir = tempfile::tempdir().expect("tempdir");
+        let blob_store = BlobStore::new(dir.path().join("blobs"));
+        let (broadcast_tx, mut broadcast_rx) = tokio::sync::broadcast::channel(4);
+
+        ingest_kernel_event(
+            &event,
+            &[],
+            "kernel-1",
+            &runtime_state(0),
+            &blob_store,
+            &OutputBlobPublisher::none(),
+            &broadcast_tx,
+        )
+        .await
+        .expect("ingest patch");
+
+        match broadcast_rx.recv().await.expect("broadcast") {
+            NotebookBroadcast::BokehSessionPatch { patch } => {
+                let server_patch_out = patch.server_patch.expect("server patch").patch;
+                assert_eq!(
+                    serde_json::to_string(&server_patch_out).unwrap(),
+                    server_patch
+                );
+            }
+            NotebookBroadcast::Comm { .. } => panic!("expected Bokeh patch broadcast"),
+        }
+    }
+
+    #[tokio::test]
     async fn canonical_noop_event_advances_revision_and_broadcasts() {
         let dir = tempfile::tempdir().expect("tempdir");
         let blob_store = BlobStore::new(dir.path().join("blobs"));
