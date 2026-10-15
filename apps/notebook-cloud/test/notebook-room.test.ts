@@ -1,4 +1,10 @@
 import { before, describe, it } from "node:test";
+import {
+  loadCheckpointObjects,
+  storeCheckpointObjects,
+  type CheckpointObjects,
+} from "../src/room-checkpoint-storage.ts";
+import type { R2Bucket, R2ObjectBody, R2PutOptions } from "../src/cloudflare-types.ts";
 import assert from "node:assert/strict";
 import type {
   CloudflareWebSocket,
@@ -60,10 +66,10 @@ before(async () => {
 describe("NotebookRoom owner package operations", () => {
   it("fences execution before a managed startup entry exists", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     await state.drain();
     const harness = roomHarness(room);
-    const materializer = new RoomMaterializer("demo", state.state, {} as Env);
+    const materializer = createMaterializer("demo", state.state, {} as Env);
     harness.materializers.set("demo", materializer as never);
     await materializer.setWorkstationAttachment({
       workstation_id: "celld-preview-python",
@@ -188,10 +194,10 @@ describe("NotebookRoom owner package operations", () => {
             }),
           },
         } as unknown as Env;
-        const room = new NotebookRoom(state.state, env);
+        const room = createRoom(state.state, env);
         await state.drain();
         const harness = roomHarness(room);
-        const materializer = new RoomMaterializer("demo", state.state, {} as Env);
+        const materializer = createMaterializer("demo", state.state, {} as Env);
         harness.materializers.set("demo", materializer as never);
         await materializer.setWorkstationAttachment({
           workstation_id: "celld-preview-python",
@@ -363,10 +369,10 @@ describe("NotebookRoom owner package operations", () => {
         return statement;
       };
       const env = { DB: db } as unknown as Env;
-      const room = new NotebookRoom(state.state, env);
+      const room = createRoom(state.state, env);
       await state.drain();
       const harness = roomHarness(room);
-      const materializer = new RoomMaterializer("demo", state.state, env);
+      const materializer = createMaterializer("demo", state.state, env);
       harness.materializers.set("demo", materializer as never);
       await materializer.setWorkstationAttachment({
         workstation_id: "celld-preview-python",
@@ -478,10 +484,10 @@ describe("NotebookRoom owner package operations", () => {
       return statement;
     };
     const env = { DB: db } as unknown as Env;
-    const room = new NotebookRoom(state.state, env);
+    const room = createRoom(state.state, env);
     await state.drain();
     const harness = roomHarness(room);
-    const materializer = new RoomMaterializer("demo", state.state, env);
+    const materializer = createMaterializer("demo", state.state, env);
     harness.materializers.set("demo", materializer as never);
     await materializer.setWorkstationAttachment({
       workstation_id: "celld-preview-python",
@@ -581,10 +587,10 @@ describe("NotebookRoom owner package operations", () => {
       return statement;
     };
     const env = { DB: db } as unknown as Env;
-    const room = new NotebookRoom(state.state, env);
+    const room = createRoom(state.state, env);
     await state.drain();
     const harness = roomHarness(room);
-    const materializer = new RoomMaterializer("demo", state.state, env);
+    const materializer = createMaterializer("demo", state.state, env);
     harness.materializers.set("demo", materializer as never);
     const attachment = {
       workstation_id: "celld-preview-python",
@@ -695,10 +701,10 @@ describe("NotebookRoom owner package operations", () => {
         };
         const env = {} as Env;
         env.DB = db;
-        const room = new NotebookRoom(state.state, env);
+        const room = createRoom(state.state, env);
         await state.drain();
         const harness = roomHarness(room);
-        const materializer = new RoomMaterializer("demo", state.state, {} as Env);
+        const materializer = createMaterializer("demo", state.state, {} as Env);
         harness.materializers.set("demo", materializer as never);
         await materializer.setWorkstationAttachment({
           workstation_id: "celld-preview-python",
@@ -870,7 +876,7 @@ describe("NotebookRoom owner package operations", () => {
 describe("NotebookRoom presence rewrite", () => {
   it("reports an unexpected execution request failure and accepts the next request", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     await state.drain();
     const backgroundErrors: unknown[] = [];
     const waitUntil = state.state.waitUntil;
@@ -941,7 +947,7 @@ describe("NotebookRoom presence rewrite", () => {
 
   it("lets the next socket sync satisfy a waiting execution request", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     await state.drain();
     const harness = roomHarness(room);
     const socket = new FakeSocket();
@@ -1041,7 +1047,7 @@ describe("NotebookRoom presence rewrite", () => {
 
   it("does not broadcast an in-flight cursor update after announcing the peer's departure", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     await state.drain();
     const harness = roomHarness(room);
     const identity = authenticateDevRequest(
@@ -1088,7 +1094,7 @@ describe("NotebookRoom presence rewrite", () => {
   for (const event of ["close", "error"] as const) {
     it(`records ${event} evidence and broadcasts one departure for a hibernation socket`, async () => {
       const state = hibernatedState([]);
-      const room = new NotebookRoom(state.state, {} as Env);
+      const room = createRoom(state.state, {} as Env);
       await state.drain();
       const harness = roomHarness(room);
       const socket = new FakeSocket();
@@ -1163,7 +1169,7 @@ describe("NotebookRoom presence rewrite", () => {
     });
   }
   it("builds room-ready rosters from current peers", () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const harness = roomHarness(room);
     const ownerIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
@@ -1353,7 +1359,7 @@ describe("NotebookRoom presence rewrite", () => {
   });
 
   it("drops unsupported presence payloads without surfacing a room load rejection", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
     );
@@ -1404,7 +1410,7 @@ describe("NotebookRoom presence rewrite", () => {
   });
 
   it("broadcasts authenticated presence without durable room history", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
     );
@@ -1524,7 +1530,7 @@ describe("NotebookRoom peer lifecycle", () => {
   });
 
   it("closes peers after repeated rejected frames without echoing the threshold rejection", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
     );
@@ -1584,7 +1590,7 @@ describe("NotebookRoom peer lifecycle", () => {
         setWebSocketAutoResponse?: (pair: { request: string; response: string }) => void;
       };
       state.setWebSocketAutoResponse = (pair) => pairs.push(pair);
-      new NotebookRoom(state, {} as Env);
+      createRoom(state, {} as Env);
       assert.equal(pairs.length, 1);
       assert.equal(pairs[0].request, LIVENESS_PING);
       assert.equal(pairs[0].response, LIVENESS_PONG);
@@ -1592,7 +1598,7 @@ describe("NotebookRoom peer lifecycle", () => {
       // Hibernation wake = a fresh constructor run against the SAME durable
       // state. Re-arming per wake must be an idempotent re-set of the same
       // pair — the load-bearing claim behind arming in the constructor.
-      new NotebookRoom(state, {} as Env);
+      createRoom(state, {} as Env);
       assert.equal(pairs.length, 2);
       assert.equal(pairs[1].request, pairs[0].request);
       assert.equal(pairs[1].response, pairs[0].response);
@@ -1601,7 +1607,7 @@ describe("NotebookRoom peer lifecycle", () => {
       // lacks setWebSocketAutoResponse. The second conjunct of the feature
       // detection must keep the constructor from throwing — a TypeError
       // here is a total room outage, not a degraded probe.
-      assert.doesNotThrow(() => new NotebookRoom(fakeState(), {} as Env));
+      assert.doesNotThrow(() => createRoom(fakeState(), {} as Env));
     } finally {
       globals.WebSocketRequestResponsePair = original;
     }
@@ -1612,12 +1618,12 @@ describe("NotebookRoom peer lifecycle", () => {
       setWebSocketAutoResponse?: (pair: unknown) => void;
     };
     bare.setWebSocketAutoResponse = (pair) => uncalled.push(pair);
-    new NotebookRoom(bare, {} as Env);
+    createRoom(bare, {} as Env);
     assert.equal(uncalled.length, 0);
   });
 
   it("answers liveness pings without counting them toward rejected-frame close", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
     );
@@ -1649,7 +1655,7 @@ describe("NotebookRoom peer lifecycle", () => {
   });
 
   it("swallows pong send failures on a closing socket", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
     );
@@ -1671,7 +1677,7 @@ describe("NotebookRoom peer lifecycle", () => {
   });
 
   it("does not count server-side room host failures toward peer close", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
     );
@@ -1716,7 +1722,7 @@ describe("NotebookRoom peer lifecycle", () => {
   });
 
   it("keeps the socket open when initial room-host peer sync is degraded", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
     );
@@ -1752,7 +1758,7 @@ describe("NotebookRoom peer lifecycle", () => {
   });
 
   it("closes the socket when initial room-host peer sync fails for non-storage errors", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
     );
@@ -1785,7 +1791,7 @@ describe("NotebookRoom peer lifecycle", () => {
   });
 
   it("reports materialized sync storage degradation without rejecting the frame", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
     );
@@ -1825,7 +1831,7 @@ describe("NotebookRoom peer lifecycle", () => {
   });
 
   it("does not silently resurrect a removed hibernated peer", () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
     );
@@ -1852,7 +1858,7 @@ describe("NotebookRoom peer lifecycle", () => {
   });
 
   it("broadcasts the original frame before peer-left cleanup for failed peers", () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const staleIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=stale&operator=desktop:a&scope=editor"),
     );
@@ -1906,7 +1912,7 @@ describe("NotebookRoom peer lifecycle", () => {
       },
     });
     const state = hibernatedState([socket.asCloudflareWebSocket()]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
 
     await state.drain();
 
@@ -1972,7 +1978,7 @@ describe("NotebookRoom peer lifecycle", () => {
       otherSocket.asCloudflareWebSocket(),
       newSocket.asCloudflareWebSocket(),
     ]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
 
     await state.drain();
@@ -1995,7 +2001,7 @@ describe("NotebookRoom peer lifecycle", () => {
 
   it("publishes a sanitized runtime-peer workstation attachment", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     const viewerSocket = new FakeSocket();
     const viewerPeer = {
@@ -2083,7 +2089,7 @@ describe("NotebookRoom peer lifecycle", () => {
       cpuCount: 16,
       memoryBytes: 64 * 1024 ** 3,
     });
-    const room = new NotebookRoom(state.state, { DB: db } as unknown as Env);
+    const room = createRoom(state.state, { DB: db } as unknown as Env);
     const harness = roomHarness(room);
     const runtimePeer = {
       id: "runtime-gpu",
@@ -2135,7 +2141,7 @@ describe("NotebookRoom peer lifecycle", () => {
   it("does not erase host-owned hardware facts when the registry lookup fails", async () => {
     const state = hibernatedState([]);
     const db = new ResumeNotebookD1({ workstationLookupFails: true });
-    const room = new NotebookRoom(state.state, { DB: db } as unknown as Env);
+    const room = createRoom(state.state, { DB: db } as unknown as Env);
     const harness = roomHarness(room);
     const retainedAttachment = {
       workstation_id: "ws-lab2",
@@ -2204,7 +2210,7 @@ describe("NotebookRoom peer lifecycle", () => {
 
   it("does not cache selected runtime session for ignored stale runtime-peer publishes", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     const runtimePeer = {
       id: "runtime",
@@ -2252,7 +2258,7 @@ describe("NotebookRoom peer lifecycle", () => {
 
   it("publishes workstation attachment control updates through the room host", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     const viewerSocket = new FakeSocket();
     const viewerPeer = {
@@ -2323,7 +2329,7 @@ describe("NotebookRoom peer lifecycle", () => {
 
   it("reports workstation attachment control when checkpoint persistence fails", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     harness.materializers.set("demo", {
       receiveFrame: async () => noopMaterializedResult(),
@@ -2371,7 +2377,7 @@ describe("NotebookRoom peer lifecycle", () => {
   it("disconnects runtime peers when replacement workstation attachment control is published", async () => {
     const state = alarmCapableState();
     const compute = new FakeOwnerComputeIndexNamespace();
-    const room = new NotebookRoom(state.state, roomEnvWithComputeIndex(compute));
+    const room = createRoom(state.state, roomEnvWithComputeIndex(compute));
     const harness = roomHarness(room);
     const runtimeSocket = new FakeSocket();
     const runtimePeer = {
@@ -2442,7 +2448,7 @@ describe("NotebookRoom peer lifecycle", () => {
 
   it("keeps runtime peers when replacement workstation attachment control is ignored as stale", async () => {
     const state = alarmCapableState();
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     const runtimeSocket = new FakeSocket();
     const runtimePeer = {
@@ -2501,7 +2507,7 @@ describe("NotebookRoom peer lifecycle", () => {
   it("does not resurrect a runtime-peer compute summary after attachment clear wins", async () => {
     const state = hibernatedState([]);
     const compute = new FakeOwnerComputeIndexNamespace();
-    const room = new NotebookRoom(state.state, roomEnvWithComputeIndex(compute));
+    const room = createRoom(state.state, roomEnvWithComputeIndex(compute));
     const harness = roomHarness(room);
     const runtimePeer: PeerForTest = {
       id: "runtime",
@@ -2580,7 +2586,7 @@ describe("NotebookRoom peer lifecycle", () => {
   });
 
   it("disconnects anonymous viewers when public link access is revoked", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const harness = roomHarness(room);
     const anonymousSocket = new FakeSocket();
     const signedInViewerSocket = new FakeSocket();
@@ -2642,7 +2648,7 @@ describe("NotebookRoom peer lifecycle", () => {
 
   it("keeps runtime peers when replacement workstation attachment publish fails", async () => {
     const state = alarmCapableState();
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     const runtimeSocket = new FakeSocket();
     const runtimePeer = {
@@ -2697,7 +2703,7 @@ describe("NotebookRoom peer lifecycle", () => {
 
   it("projects runtime-peer workstation metadata into the attachment", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     const runtimePeer = {
       id: "runtime",
@@ -2750,7 +2756,7 @@ describe("NotebookRoom peer lifecycle", () => {
 
   it("allows only the selected workstation to refresh runtime-peer attachment state", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     let attachmentReads = 0;
     harness.materializers.set("demo", {
@@ -2807,7 +2813,7 @@ describe("NotebookRoom peer lifecycle", () => {
 
   it("allows only the matching selected runtime session to rejoin after disconnect", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     harness.materializers.set("demo", {
       receiveFrame: async () => noopMaterializedResult(),
@@ -2843,7 +2849,7 @@ describe("NotebookRoom peer lifecycle", () => {
   });
 
   it("rejects runtime-peer upgrades for idle selected sessions", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const harness = roomHarness(room);
     harness.materializers.set("demo", {
       receiveFrame: async () => noopMaterializedResult(),
@@ -2887,7 +2893,7 @@ describe("NotebookRoom peer lifecycle", () => {
 
   it("refreshes the selected runtime session cache when a runtime peer publishes", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     let attachmentReads = 0;
     let publishedAttachment: unknown;
@@ -2973,7 +2979,7 @@ describe("NotebookRoom peer lifecycle", () => {
 
   it("invalidates the selected runtime session cache after runtime-peer-gone repair", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     let attachmentReads = 0;
     let selectedAttachment: Record<string, unknown> = {
@@ -3056,7 +3062,7 @@ describe("NotebookRoom peer lifecycle", () => {
 
 describe("NotebookRoom materialized sync routing", () => {
   it("acknowledges no-op sync control frames without persisted room history", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=viewer&operator=desktop:a&scope=viewer"),
     );
@@ -3084,7 +3090,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("acknowledges changed materialized sync frames without persisted room history", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
     );
@@ -3126,7 +3132,7 @@ describe("NotebookRoom materialized sync routing", () => {
   it("republishes compute summary when execution changes queue depth", async () => {
     const state = hibernatedState([]);
     const compute = new FakeOwnerComputeIndexNamespace();
-    const room = new NotebookRoom(state.state, roomEnvWithComputeIndex(compute));
+    const room = createRoom(state.state, roomEnvWithComputeIndex(compute));
     const harness = roomHarness(room);
     const ownerSocket = new FakeSocket();
     const ownerPeer: PeerForTest = {
@@ -3217,7 +3223,7 @@ describe("NotebookRoom materialized sync routing", () => {
   it("coalesces same-depth compute summary publishes while an index write is pending", async () => {
     const state = hibernatedState([]);
     const compute = new BlockingOwnerComputeIndexNamespace();
-    const room = new NotebookRoom(state.state, roomEnvWithComputeIndex(compute));
+    const room = createRoom(state.state, roomEnvWithComputeIndex(compute));
     const harness = roomHarness(room);
     const ownerSocket = new FakeSocket();
     const ownerPeer: PeerForTest = {
@@ -3310,7 +3316,7 @@ describe("NotebookRoom materialized sync routing", () => {
   it("retries same-depth compute summary after owner index write failure", async () => {
     const state = hibernatedState([]);
     const compute = new FailingFirstOwnerComputeIndexNamespace();
-    const room = new NotebookRoom(state.state, roomEnvWithComputeIndex(compute));
+    const room = createRoom(state.state, roomEnvWithComputeIndex(compute));
     const harness = roomHarness(room);
     const ownerPeer: PeerForTest = {
       id: "owner",
@@ -3398,7 +3404,7 @@ describe("NotebookRoom materialized sync routing", () => {
     const state = hibernatedState([]);
     const compute = new FakeOwnerComputeIndexNamespace();
     const db = new CountingNotebookOwnerD1();
-    const room = new NotebookRoom(state.state, roomEnvWithComputeIndex(compute, db));
+    const room = createRoom(state.state, roomEnvWithComputeIndex(compute, db));
     const harness = roomHarness(room);
     const ownerPeer: PeerForTest = {
       id: "owner",
@@ -3488,7 +3494,7 @@ describe("NotebookRoom materialized sync routing", () => {
     const state = hibernatedState([]);
     const compute = new FakeOwnerComputeIndexNamespace();
     const db = new CountingNotebookOwnerD1();
-    const room = new NotebookRoom(state.state, roomEnvWithComputeIndex(compute, db));
+    const room = createRoom(state.state, roomEnvWithComputeIndex(compute, db));
     const harness = roomHarness(room);
     const runtimePeer: PeerForTest = {
       id: "runtime",
@@ -3547,7 +3553,7 @@ describe("NotebookRoom materialized sync routing", () => {
   it("retries same-depth dirty summary after failed active update", async () => {
     const state = hibernatedState([]);
     const compute = new FailingNumberedOwnerComputeIndexNamespace(2);
-    const room = new NotebookRoom(state.state, roomEnvWithComputeIndex(compute));
+    const room = createRoom(state.state, roomEnvWithComputeIndex(compute));
     const harness = roomHarness(room);
     const runtimePeer: PeerForTest = {
       id: "runtime",
@@ -3629,7 +3635,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("delivers materialized sync outbound frames to connected viewer peers", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const editorIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
     );
@@ -3685,7 +3691,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("rejects editor-scoped PUT_BLOB frames on the WebSocket path", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
     );
@@ -3711,7 +3717,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("accepts owner-scoped REQUEST frames on the WebSocket path", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner"),
     );
@@ -3760,7 +3766,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("forwards owner runtime-agent command REQUEST frames to attached runtime peers", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const ownerIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
     );
@@ -3837,7 +3843,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("forwards runtime-agent command REQUEST frames only to the newest runtime peer", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const ownerIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
     );
@@ -3899,7 +3905,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("forwards runtime-agent command REQUEST frames only to the selected runtime session", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const ownerIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
     );
@@ -3984,7 +3990,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("replaces duplicate runtime peers for the same workstation only", () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const sameWorkstationIdentity = authenticateDevRequest(
       new Request(
         "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:old&scope=runtime_peer",
@@ -4043,7 +4049,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("breaks equal runtime-peer timestamps in favor of the later connection", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const ownerIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
     );
@@ -4106,7 +4112,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("routes hosted completion REQUEST frames through the active runtime peer response", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const ownerIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
     );
@@ -4190,7 +4196,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("rejects late hosted completion responses from replaced runtime sessions", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const ownerIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
     );
@@ -4302,7 +4308,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("settles the oldest hosted completion when the pending query cap evicts it", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const ownerIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
     );
@@ -4362,7 +4368,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("settles expired hosted completions when pending queries are pruned", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const ownerIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
     );
@@ -4415,7 +4421,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("counts unmatched runtime-peer RESPONSE frames toward rejected-frame close", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const runtimeIdentity = authenticateDevRequest(
       new Request(
         "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:new&scope=runtime_peer",
@@ -4455,7 +4461,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("rejects forwarded runtime-agent command REQUEST frames when no runtime peer is attached", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
     );
@@ -4498,7 +4504,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("rejects hosted execution requests and repairs stale ready attachments with no runtime peer", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
     );
@@ -4561,7 +4567,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("allows hosted execution requests to queue while attach is connecting", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
     );
@@ -4719,7 +4725,7 @@ describe("NotebookRoom materialized sync routing", () => {
       ),
     });
     await fixture.materializer.checkpoint();
-    const saved = await fixture.state.storage.get<ArrayBuffer>("room-host:runtime-state-doc");
+    const saved = (await readCheckpointBodies(fixture.state)).runtime_state;
     const previous = RuntimeStatePeerHandle.load(
       new Uint8Array(saved!),
       "user:dev:alice/managed-python:managed-job",
@@ -5440,7 +5446,7 @@ describe("NotebookRoom materialized sync routing", () => {
         ),
       });
       await fixture.materializer.checkpoint();
-      const saved = await fixture.state.storage.get<ArrayBuffer>("room-host:runtime-state-doc");
+      const saved = (await readCheckpointBodies(fixture.state)).runtime_state;
       const oldRuntime = RuntimeStatePeerHandle.load(
         new Uint8Array(saved!),
         "user:dev:alice/managed-python:managed-job",
@@ -5995,7 +6001,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("preserves startup errors and accepts a retry on the same peer", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
     );
@@ -6076,7 +6082,7 @@ describe("NotebookRoom materialized sync routing", () => {
 
   it("creates an owner-scoped resume attach job when owner execution finds no runtime peer", async () => {
     const db = new ResumeNotebookD1();
-    const room = new NotebookRoom(fakeState(), { DB: db } as unknown as Env);
+    const room = createRoom(fakeState(), { DB: db } as unknown as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
     );
@@ -6150,7 +6156,7 @@ describe("NotebookRoom materialized sync routing", () => {
 
   it("creates an owner-scoped resume attach job when idle owner execution finds no runtime peer", async () => {
     const db = new ResumeNotebookD1();
-    const room = new NotebookRoom(fakeState(), { DB: db } as unknown as Env);
+    const room = createRoom(fakeState(), { DB: db } as unknown as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
     );
@@ -6233,8 +6239,8 @@ describe("NotebookRoom materialized sync routing", () => {
     const db = new ResumeNotebookD1();
     const state = fakeState();
     const env = { DB: db } as unknown as Env;
-    const room = new NotebookRoom(state, env);
-    const materializer = new RoomMaterializer("demo", state, env);
+    const room = createRoom(state, env);
+    const materializer = createMaterializer("demo", state, env);
     const harness = roomHarness(room);
     harness.materializers.set("demo", materializer as never);
     await materializer.setWorkstationAttachment({
@@ -6303,8 +6309,8 @@ describe("NotebookRoom materialized sync routing", () => {
     const db = new ResumeNotebookD1();
     const state = alarmCapableState();
     const env = { DB: db } as unknown as Env;
-    const room = new NotebookRoom(state.state, env);
-    const materializer = new RoomMaterializer("demo", state.state, env);
+    const room = createRoom(state.state, env);
+    const materializer = createMaterializer("demo", state.state, env);
     const harness = roomHarness(room);
     harness.materializers.set("demo", materializer as never);
     await materializer.setWorkstationAttachment({
@@ -6393,7 +6399,7 @@ describe("NotebookRoom materialized sync routing", () => {
 
   it("rejects non-owner execution without creating a resume attach job", async () => {
     const db = new ResumeNotebookD1();
-    const room = new NotebookRoom(fakeState(), { DB: db } as unknown as Env);
+    const room = createRoom(fakeState(), { DB: db } as unknown as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=editor"),
     );
@@ -6437,7 +6443,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("rejects response-bearing runtime REQUEST frames instead of acknowledging no-ops", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
     );
@@ -6492,7 +6498,7 @@ describe("NotebookRoom materialized sync routing", () => {
 
   it("rejects non-owner REQUEST frames on the WebSocket path", async () => {
     for (const scope of ["editor", "viewer", "runtime_peer"] as const) {
-      const room = new NotebookRoom(fakeState(), {} as Env);
+      const room = createRoom(fakeState(), {} as Env);
       const identity = authenticateDevRequest(
         new Request(
           `https://cloud.test/n/demo/sync?user=${scope}&operator=desktop:a&scope=${scope}`,
@@ -6557,7 +6563,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("accepts runtime peer PUT_BLOB frames on the WebSocket path", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request(
         "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
@@ -6587,7 +6593,7 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   it("closes stale runtime sessions before they can author room frames", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const harness = roomHarness(room);
     const socket = new FakeSocket();
     const runtimePeer = {
@@ -6662,7 +6668,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
 
   it("arms the alarm when the last runtime_peer leaves and reconciles on fire", async () => {
     const state = alarmCapableState();
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
 
     // A reconcile-recording fake materializer stands in for the wasm host.
@@ -6701,7 +6707,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
 
   it("skips peer-gone reconcile when idle teardown already materialized", async () => {
     const state = alarmCapableState();
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     const attachment = {
       workstation_id: "ws-lab2",
@@ -6767,7 +6773,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
 
   it("tears down an idle runtime after the TTL without considering viewer sockets", async () => {
     const state = alarmCapableState();
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     const runtimeSocket = new FakeSocket();
     const viewerSocket = new FakeSocket();
@@ -6828,7 +6834,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
 
   it("clears a racing peer-gone watch after idle teardown owns the room state", async () => {
     const state = alarmCapableState();
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     const runtimeSocket = new FakeSocket();
     const runtimePeer = peerWithScope("rt", "runtime_peer");
@@ -6868,7 +6874,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
 
   it("suppresses peer-gone watch when idle teardown drops a dead runtime socket", async () => {
     const state = alarmCapableState();
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     const runtimeSocket = new FakeSocket({ throwOnSend: true });
     const runtimePeer = peerWithScope("rt", "runtime_peer");
@@ -6931,7 +6937,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
 
   it("rearms idle cleanup when managed Python publishes completion", async () => {
     const state = alarmCapableState();
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     harness.peers.set("rt", peerWithScope("rt", "runtime_peer"));
     let executing = true;
@@ -6964,7 +6970,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
 
   it("does not arm idle teardown while execution is active or queued", async () => {
     const state = alarmCapableState();
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     harness.peers.set("rt", peerWithScope("rt", "runtime_peer"));
     harness.materializers.set("demo", {
@@ -6982,7 +6988,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
 
   it("preserves a future idle deadline while the runtime peer is transiently absent", async () => {
     const state = alarmCapableState();
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     let idleReconciles = 0;
     harness.materializers.set("demo", {
@@ -7023,7 +7029,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
   it("publishes active runtime peers to the owner compute index", async () => {
     const compute = new FakeOwnerComputeIndexNamespace();
     const env = roomEnvWithComputeIndex(compute);
-    const room = new NotebookRoom(fakeState(), env);
+    const room = createRoom(fakeState(), env);
     const harness = roomHarness(room);
     const runtimePeer = {
       ...peerWithScope("rt", "runtime_peer"),
@@ -7072,7 +7078,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
     const state = hibernatedState([]);
     const compute = new FakeOwnerComputeIndexNamespace();
     const env = roomEnvWithComputeIndex(compute);
-    const room = new NotebookRoom(state.state, env);
+    const room = createRoom(state.state, env);
     const harness = roomHarness(room);
     const runtimePeer = peerWithScope("rt", "runtime_peer");
     harness.peers.set(runtimePeer.id, runtimePeer);
@@ -7108,7 +7114,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
 
   it("disarms (no reconcile) when a runtime_peer rejoins within the grace window", async () => {
     const state = alarmCapableState();
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     let reconcileCalls = 0;
     harness.materializers.set("demo", {
@@ -7142,7 +7148,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
 
   it("a fired alarm is a no-op when a runtime_peer is present", async () => {
     const state = alarmCapableState();
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     let reconcileCalls = 0;
     harness.materializers.set("demo", {
@@ -7166,7 +7172,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
 
   it("runs manual runtime-state repair through the internal room-host control path", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     const viewerSocket = new FakeSocket();
     const viewerPeer = peerWithScope("viewer", "viewer");
@@ -7219,7 +7225,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
   });
 
   it("skips runtime-state repair when the expected runtime session is stale", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const harness = roomHarness(room);
     let checkpointed = 0;
     let reconcileCalls = 0;
@@ -7280,7 +7286,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
   });
 
   it("repairs RuntimeStateDoc when the expected runtime session still owns the attachment", async () => {
-    const room = new NotebookRoom(fakeState(), {} as Env);
+    const room = createRoom(fakeState(), {} as Env);
     const harness = roomHarness(room);
     let checkpointed = 0;
     let repairReason: string | undefined;
@@ -7343,7 +7349,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
 
   it("refuses manual runtime-state repair while a runtime_peer is connected", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     let reconcileCalls = 0;
     harness.materializers.set("demo", {
@@ -7374,7 +7380,7 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
 
   it("force-repairs by disconnecting runtime peers before reconciliation", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     const harness = roomHarness(room);
     let checkpointed = 0;
     let reconcileCalls = 0;
@@ -7454,7 +7460,7 @@ describe("NotebookRoom room summary", () => {
   it("writes deduped human occupants and ignores runtime peers", async () => {
     const state = alarmCapableState();
     const bucket = new FakeRoomSummaryBucket();
-    const room = new NotebookRoom(state.state, roomEnvWithSnapshots(bucket));
+    const room = createRoom(state.state, roomEnvWithSnapshots(bucket));
     const harness = roomHarness(room);
 
     const beforeAlice = harness.roomSummaryOccupantKeys();
@@ -7517,7 +7523,7 @@ describe("NotebookRoom room summary", () => {
   it("republishes when a participant's strongest scope changes (viewer to editor)", async () => {
     const state = alarmCapableState();
     const bucket = new FakeRoomSummaryBucket();
-    const room = new NotebookRoom(state.state, roomEnvWithSnapshots(bucket));
+    const room = createRoom(state.state, roomEnvWithSnapshots(bucket));
     const harness = roomHarness(room);
 
     const beforeViewer = harness.roomSummaryOccupantKeys();
@@ -7546,7 +7552,7 @@ describe("NotebookRoom room summary", () => {
   it("writes an empty summary and disarms refresh when the occupant set empties", async () => {
     const state = alarmCapableState();
     const bucket = new FakeRoomSummaryBucket();
-    const room = new NotebookRoom(state.state, roomEnvWithSnapshots(bucket));
+    const room = createRoom(state.state, roomEnvWithSnapshots(bucket));
     const harness = roomHarness(room);
     harness.materializers.set("demo", {
       receiveFrame: async () => noopMaterializedResult(),
@@ -7575,7 +7581,7 @@ describe("NotebookRoom room summary", () => {
   it("publishes and re-arms the summary on refresh alarms", async () => {
     const state = alarmCapableState();
     const bucket = new FakeRoomSummaryBucket();
-    const room = new NotebookRoom(state.state, roomEnvWithSnapshots(bucket));
+    const room = createRoom(state.state, roomEnvWithSnapshots(bucket));
     const harness = roomHarness(room);
     harness.peers.set("alice", summaryPeer("alice", "alice", "owner"));
     harness.publishRoomSummary("demo", "peer_joined");
@@ -7612,7 +7618,7 @@ describe("NotebookRoom room summary", () => {
     const state = alarmCapableState([socket.asCloudflareWebSocket()]);
     const bucket = new FakeRoomSummaryBucket();
 
-    new NotebookRoom(state.state, roomEnvWithSnapshots(bucket));
+    createRoom(state.state, roomEnvWithSnapshots(bucket));
     await state.drain();
 
     assert.deepEqual(bucket.summary("demo").occupants, [
@@ -7830,10 +7836,10 @@ async function managedPythonAdmissionFixture(
             },
     },
   } as unknown as Env;
-  let room = new NotebookRoom(state.state, env);
+  let room = createRoom(state.state, env);
   await state.drain();
   let harness = roomHarness(room);
-  let materializer = new RoomMaterializer("demo", state.state, env);
+  let materializer = createMaterializer("demo", state.state, env);
   harness.materializers.set("demo", materializer as never);
   await materializer.setWorkstationAttachment({
     workstation_id: "celld-preview-python",
@@ -7938,9 +7944,20 @@ async function managedPythonAdmissionFixture(
     reconstruct: async (runtimeState?: Uint8Array) => {
       await state.drain();
       await materializer.checkpoint();
-      if (runtimeState)
-        await state.state.storage.put("room-host:runtime-state-doc", runtimeState.slice().buffer);
-      room = new NotebookRoom(state.state, env);
+      if (runtimeState) {
+        const metadata = await state.state.storage.get<{ documents: CheckpointObjects }>(
+          "room-host:checkpoint",
+        );
+        const bodies = await readCheckpointBodies(state.state);
+        bodies.runtime_state = runtimeState.slice().buffer;
+        const documents = await storeCheckpointObjects(
+          checkpointBucket(state.state),
+          "demo",
+          bodies,
+        );
+        await state.state.storage.put("room-host:checkpoint", { ...metadata, documents });
+      }
+      room = createRoom(state.state, env);
       harness = roomHarness(room);
       materializer = (
         room as unknown as { materializerFor(n: string): RoomMaterializer }
@@ -8079,30 +8096,52 @@ function roomEnvWithSnapshots(bucket: FakeRoomSummaryBucket): Env {
   };
 }
 
-class FakeRoomSummaryBucket {
-  readonly objects = new Map<string, string>();
+class FakeRoomSummaryBucket implements R2Bucket {
+  readonly objects = new Map<string, string | ArrayBuffer>();
   readonly puts: Array<{ key: string; value: string }> = [];
-
   summary(notebookId: string): NotebookRoomSummary {
     const value = this.objects.get(roomSummaryKey(notebookId));
-    assert.ok(value, `expected room summary for ${notebookId}`);
-    return JSON.parse(value) as NotebookRoomSummary;
+    assert.equal(typeof value, "string", "expected room summary for " + notebookId);
+    return JSON.parse(value as string) as NotebookRoomSummary;
   }
-
-  async get(): Promise<null> {
-    return null;
+  async get(key: string): Promise<R2ObjectBody | null> {
+    const value = this.objects.get(key);
+    if (value === undefined) return null;
+    const bytes = typeof value === "string" ? new TextEncoder().encode(value).buffer : value;
+    return {
+      key,
+      size: bytes.byteLength,
+      version: "fixture",
+      etag: "fixture",
+      httpEtag: "fixture",
+      uploaded: new Date(0),
+      body: new Response(bytes).body!,
+      arrayBuffer: async () => bytes.slice(0),
+      text: async () => new TextDecoder().decode(bytes),
+      writeHttpMetadata: () => {},
+    };
   }
-
-  async head(): Promise<null> {
-    return null;
+  async head(key: string) {
+    return this.get(key);
   }
-
-  async put(key: string, value: string): Promise<never> {
-    this.objects.set(key, value);
-    this.puts.push({ key, value });
-    return { key } as never;
+  async put(
+    key: string,
+    value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null,
+    options?: R2PutOptions,
+  ) {
+    if (options?.onlyIf?.etagDoesNotMatch === "*" && this.objects.has(key)) return null;
+    const stored =
+      typeof value === "string"
+        ? value
+        : value instanceof ArrayBuffer
+          ? value.slice(0)
+          : ArrayBuffer.isView(value)
+            ? value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)
+            : await new Response(value).arrayBuffer();
+    this.objects.set(key, stored);
+    if (typeof value === "string") this.puts.push({ key, value });
+    return this.get(key);
   }
-
   async delete(key: string): Promise<void> {
     this.objects.delete(key);
   }
@@ -8712,10 +8751,10 @@ for (const race of ["failure", "replacement"] as const)
         get: () => ({ fetch: async () => Response.json({}) }),
       },
     } as unknown as Env;
-    const room = new NotebookRoom(state.state, env);
+    const room = createRoom(state.state, env);
     await state.drain();
     const harness = roomHarness(room);
-    const materializer = new RoomMaterializer("demo", state.state, {} as Env);
+    const materializer = createMaterializer("demo", state.state, {} as Env);
     harness.materializers.set("demo", materializer as never);
     await materializer.setWorkstationAttachment({
       workstation_id: "celld-preview-python",
@@ -8822,7 +8861,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
   for (const deferred of [false, true])
     it(`keeps replacement listeners alive after repeated ${deferred ? "deferred" : "direct"} old-peer removal`, async () => {
       const fixture = hibernatedState([]);
-      const room = new NotebookRoom(fixture.state, {} as Env);
+      const room = createRoom(fixture.state, {} as Env);
       await fixture.drain();
       const harness = roomHarness(room);
       harness.materializers.set("demo", fakeMaterializer(noopMaterializedResult()));
@@ -8863,7 +8902,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
 
   it("keeps newly busy peers after the idle catalog await", async () => {
     const fixture = alarmCapableState();
-    const room = new NotebookRoom(fixture.state, {} as Env);
+    const room = createRoom(fixture.state, {} as Env);
     await fixture.drain();
     const peer = peerWithScope("rt", "runtime_peer");
     roomHarness(room).peers.set(peer.id, peer);
@@ -8895,7 +8934,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
 
   it("publishes and checkpoints accepted idle reconciliation despite catalog failure", async () => {
     const fixture = alarmCapableState();
-    const room = new NotebookRoom(fixture.state, {} as Env);
+    const room = createRoom(fixture.state, {} as Env);
     await fixture.drain();
     const peer = peerWithScope("rt", "runtime_peer");
     roomHarness(room).peers.set(peer.id, peer);
@@ -8911,7 +8950,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
         deliveries++;
       },
     });
-    const materializer = new RoomMaterializer("demo", fixture.state, {} as Env);
+    const materializer = createMaterializer("demo", fixture.state, {} as Env);
     roomHarness(room).materializers.set("demo", materializer as never);
     await materializer.setWorkstationAttachment({
       workstation_id: "ws",
@@ -8938,9 +8977,9 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
 
   it("honors real host busy refusal when execution queues after idle activity", async () => {
     const fixture = alarmCapableState();
-    const room = new NotebookRoom(fixture.state, {} as Env);
+    const room = createRoom(fixture.state, {} as Env);
     await fixture.drain();
-    const materializer = new RoomMaterializer("demo", fixture.state, {} as Env);
+    const materializer = createMaterializer("demo", fixture.state, {} as Env);
     roomHarness(room).materializers.set("demo", materializer as never);
     const peer = peerWithScope("rt", "runtime_peer");
     roomHarness(room).peers.set(peer.id, peer);
@@ -9003,7 +9042,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
   for (const operation of ["cancel", "fail", "disconnect"] as const)
     it(`rejects awaited ${operation} when checkpoint persistence fails`, async () => {
       const fixture = hibernatedState([]);
-      const room = new NotebookRoom(fixture.state, {} as Env);
+      const room = createRoom(fixture.state, {} as Env);
       await fixture.drain();
       let deliveries = 0,
         closed = 0;
@@ -9055,7 +9094,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
     for (const arm of [false, true])
       it(`preserves ${kind} watch replacement during ${arm ? "arm" : "disarm"} refresh`, async () => {
         const fixture = alarmCapableState();
-        const room = new NotebookRoom(fixture.state, {} as Env);
+        const room = createRoom(fixture.state, {} as Env);
         await fixture.drain();
         const key = kind === "summary" ? "room_summary_refresh" : "runtime_peer_gone_watch";
         const alarmKey = `${key}_alarm_at`;
@@ -9102,7 +9141,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
   for (const phase of ["attachment", "reconcile"] as const)
     it(`cancels consumed peer watch after rejoin/disarm during ${phase}`, async () => {
       const fixture = alarmCapableState();
-      const room = new NotebookRoom(fixture.state, {} as Env);
+      const room = createRoom(fixture.state, {} as Env);
       await fixture.drain();
       await fixture.state.storage.put("runtime_peer_gone_watch", "demo");
       await fixture.state.storage.put("runtime_peer_gone_watch_alarm_at", 0);
@@ -9151,7 +9190,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
   for (const outcome of ["busy", "idempotent"] as const)
     it(`handles idle reconcile ${outcome} without guessing from changed:false`, async () => {
       const fixture = alarmCapableState();
-      const room = new NotebookRoom(fixture.state, {} as Env);
+      const room = createRoom(fixture.state, {} as Env);
       await fixture.drain();
       await fixture.state.storage.put("runtime_idle_watch", "demo");
       await fixture.state.storage.put("runtime_idle_watch_alarm_at", 0);
@@ -9195,7 +9234,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
   for (const phase of ["authorization", "registry", "attachment"] as const)
     it(`denies a removed runtime peer after ${phase} await`, async () => {
       const fixture = hibernatedState([]);
-      const room = new NotebookRoom(fixture.state, {} as Env);
+      const room = createRoom(fixture.state, {} as Env);
       await fixture.drain();
       const peer = peerWithScope("rt", "runtime_peer");
       const harness = roomHarness(room);
@@ -9255,10 +9294,10 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
   for (const phase of ["idle_activity", "idle_busy", "idle_catalog", "peer", "attachment"] as const)
     it(`publishes accepted real host changes before a stale ${phase} continuation exits`, async (t) => {
       const fixture = alarmCapableState();
-      const room = new NotebookRoom(fixture.state, {} as Env);
+      const room = createRoom(fixture.state, {} as Env);
       await fixture.drain();
       const harness = roomHarness(room);
-      const materializer = new RoomMaterializer("demo", fixture.state, {} as Env);
+      const materializer = createMaterializer("demo", fixture.state, {} as Env);
       harness.materializers.set("demo", materializer as never);
       const attachment = {
         workstation_id: "ws-lab2",
@@ -9405,10 +9444,10 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
       const fixture = alarmCapableState();
       const db = new ResumeNotebookD1();
       const env = { DB: db } as unknown as Env;
-      const room = new NotebookRoom(fixture.state, env);
+      const room = createRoom(fixture.state, env);
       await fixture.drain();
       const harness = roomHarness(room);
-      const materializer = new RoomMaterializer("demo", fixture.state, env);
+      const materializer = createMaterializer("demo", fixture.state, env);
       harness.materializers.set("demo", materializer as never);
       for (const id of ["old", "new"])
         db.attachJobs.push({
@@ -9532,9 +9571,9 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
   for (const lookup of ["lazy", "equivalent_refresh", "invalidated"] as const)
     it(`runs consumed peer recovery when ${lookup} populates the same selected session`, async () => {
       const fixture = alarmCapableState();
-      const room = new NotebookRoom(fixture.state, {} as Env);
+      const room = createRoom(fixture.state, {} as Env);
       await fixture.drain();
-      const materializer = new RoomMaterializer("demo", fixture.state, {} as Env);
+      const materializer = createMaterializer("demo", fixture.state, {} as Env);
       roomHarness(room).materializers.set("demo", materializer as never);
       await materializer.setWorkstationAttachment({
         workstation_id: "ws-lab2",
@@ -9678,7 +9717,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
 
   it("preserves a replacement peer watch during delayed clear", async () => {
     const fixture = alarmCapableState();
-    const room = new NotebookRoom(fixture.state, {} as Env);
+    const room = createRoom(fixture.state, {} as Env);
     await fixture.drain();
     await fixture.state.storage.put("runtime_peer_gone_watch", "demo");
     await fixture.state.storage.put("runtime_peer_gone_watch_alarm_at", 200);
@@ -9697,7 +9736,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
 
   it("does not reschedule from an alarm snapshot replaced during reads", async () => {
     const fixture = alarmCapableState();
-    const room = new NotebookRoom(fixture.state, {} as Env);
+    const room = createRoom(fixture.state, {} as Env);
     await fixture.drain();
     await fixture.state.storage.put("runtime_peer_gone_watch_alarm_at", 100);
     await fixture.state.storage.setAlarm!(200);
@@ -9715,7 +9754,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
 
   it("does not tear down runtime after a new idle watch arrives during activity", async () => {
     const fixture = alarmCapableState();
-    const room = new NotebookRoom(fixture.state, {} as Env);
+    const room = createRoom(fixture.state, {} as Env);
     await fixture.drain();
     await fixture.state.storage.put("runtime_idle_watch", "demo");
     await fixture.state.storage.put("runtime_idle_watch_alarm_at", 1);
@@ -9742,7 +9781,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
 
   it("preserves a replacement idle watch during the activity await", async () => {
     const fixture = alarmCapableState();
-    const room = new NotebookRoom(fixture.state, {} as Env);
+    const room = createRoom(fixture.state, {} as Env);
     await fixture.drain();
     await fixture.state.storage.put("runtime_idle_watch", "demo");
     await fixture.state.storage.put("runtime_idle_watch_alarm_at", 100);
@@ -9772,7 +9811,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
 
   it("does not consume a replaced due alarm or reconcile its runtime", async () => {
     const fixture = alarmCapableState();
-    const room = new NotebookRoom(fixture.state, {} as Env);
+    const room = createRoom(fixture.state, {} as Env);
     await fixture.drain();
     await fixture.state.storage.put("runtime_peer_gone_watch", "demo");
     await fixture.state.storage.put("runtime_peer_gone_watch_alarm_at", 1);
@@ -9820,8 +9859,8 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
           }
           await put(key, value);
         };
-        const old = new NotebookRoom(state.state, {} as Env);
-        const fresh = claim === "delayed" ? new NotebookRoom(state.state, {} as Env) : old;
+        const old = createRoom(state.state, {} as Env);
+        const fresh = claim === "delayed" ? createRoom(state.state, {} as Env) : old;
         const harness = fresh as unknown as {
           materializerFor(n: string): RoomMaterializer;
           checkpointRoomHost(n: string, m: RoomMaterializer, operation: string): Promise<boolean>;
@@ -9831,7 +9870,13 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
           const materializer = harness.materializerFor("demo");
           assert.equal(await harness.checkpointRoomHost("demo", materializer, "test"), true);
           assert.ok(await state.state.storage.get("room-host:checkpoint"));
-          assert.ok(await state.state.storage.get("room-host:notebook-doc"));
+          assert.ok(
+            (
+              await state.state.storage.get<{ documents: CheckpointObjects }>(
+                "room-host:checkpoint",
+              )
+            )?.documents.notebook,
+          );
           assert.equal(
             await state.state.storage.get("room-host:activation-current"),
             "previous-activation",
@@ -9846,9 +9891,9 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
 
   it("reports skipped persistence from the materializer instead of success", async () => {
     const state = hibernatedState([]);
-    const room = new NotebookRoom(state.state, {} as Env);
+    const room = createRoom(state.state, {} as Env);
     await state.drain();
-    const materializer = new RoomMaterializer("demo", state.state, {} as Env);
+    const materializer = createMaterializer("demo", state.state, {} as Env);
     let release!: () => void;
     Object.assign(materializer, {
       operationQueue: new Promise<void>((resolve) => {
@@ -9869,7 +9914,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
   for (const event of ["close", "error"] as const)
     it(`detaches fallback socket listeners through ${event} peer removal`, async () => {
       const state = hibernatedState([]);
-      const room = new NotebookRoom(state.state, {} as Env);
+      const room = createRoom(state.state, {} as Env);
       await state.drain();
       const harness = roomHarness(room);
       const socket = new FakeSocket({ captureListeners: true });
@@ -9929,3 +9974,34 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
       assert.equal(dispatchCalls, 1, "no dispatch fires for the removed peer");
     });
 });
+
+// Supply durable object bodies to pure room fixtures, shared across reconstruction.
+const checkpointBuckets = new WeakMap<DurableObjectState, R2Bucket>();
+function checkpointBucket(state: DurableObjectState): R2Bucket {
+  let bucket = checkpointBuckets.get(state);
+  if (!bucket) {
+    bucket = new FakeRoomSummaryBucket();
+    checkpointBuckets.set(state, bucket);
+  }
+  return bucket;
+}
+function checkpointEnv(state: DurableObjectState, env: Env): Env {
+  if (env.NOTEBOOK_SNAPSHOTS) checkpointBuckets.set(state, env.NOTEBOOK_SNAPSHOTS);
+  return { ...env, NOTEBOOK_SNAPSHOTS: env.NOTEBOOK_SNAPSHOTS ?? checkpointBucket(state) };
+}
+function createRoom(state: DurableObjectState, env: Env): NotebookRoom {
+  return new NotebookRoom(state, checkpointEnv(state, env));
+}
+function createMaterializer(
+  notebookId: string,
+  state: DurableObjectState,
+  env: Env,
+): RoomMaterializer {
+  return new RoomMaterializer(notebookId, state, checkpointEnv(state, env));
+}
+async function readCheckpointBodies(state: DurableObjectState) {
+  const metadata = await state.storage.get<{ documents: CheckpointObjects }>(
+    "room-host:checkpoint",
+  );
+  return loadCheckpointObjects(checkpointBucket(state), "demo", metadata?.documents);
+}

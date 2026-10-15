@@ -646,7 +646,7 @@ describe("RoomHostHandle", () => {
 
 describe("RoomMaterializer", () => {
   it("projects a saved package change when sync has no changed notebook cells", async () => {
-    const materializer = new RoomMaterializer("demo", fakeState(), {} as Env);
+    const materializer = new RoomMaterializer("demo", fakeState(), checkpointEnv());
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
     );
@@ -694,7 +694,7 @@ describe("RoomMaterializer", () => {
 
   it("preserves concurrent owner package edits and persists successful package intent", async () => {
     const state = fakeState();
-    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner"),
     );
@@ -723,7 +723,7 @@ describe("RoomMaterializer", () => {
       const removed = { ...manifest, requirements: [] };
       await materializer.compareSetCloudPackageManifest(manifest, removed);
       await materializer.checkpoint();
-      const reloaded = new RoomMaterializer("demo", state, {} as Env);
+      const reloaded = new RoomMaterializer("demo", state, checkpointEnv(state));
       assert.deepEqual(await reloaded.getCloudPackageManifest(), removed);
       await syncMaterializerWithClient(reloaded, peer, owner);
       assert.equal(
@@ -736,7 +736,7 @@ describe("RoomMaterializer", () => {
   });
 
   it("rejects stale package completion and inventory after restart or release", async () => {
-    const materializer = new RoomMaterializer("demo", fakeState(), {} as Env);
+    const materializer = new RoomMaterializer("demo", fakeState(), checkpointEnv());
     const selected = {
       workstation_id: "celld-preview-python",
       display_name: "Cloud Python",
@@ -779,7 +779,7 @@ describe("RoomMaterializer", () => {
   });
 
   it("times out a causal fence even while checkpoint I/O blocks the host queue", async () => {
-    const materializer = new RoomMaterializer("blocked", fakeState(), {} as Env);
+    const materializer = new RoomMaterializer("blocked", fakeState(), checkpointEnv());
     let release!: () => void;
     (materializer as unknown as { operationQueue: Promise<void> }).operationQueue = new Promise(
       (resolve) => {
@@ -804,7 +804,7 @@ describe("RoomMaterializer", () => {
   });
 
   it("waits for causal notebook edits without blocking the sync that supplies them", async () => {
-    const materializer = new RoomMaterializer("causal", fakeState(), {} as Env);
+    const materializer = new RoomMaterializer("causal", fakeState(), checkpointEnv());
     const owner = NotebookHandle.create_bootstrap("user:dev:alice/desktop:causal");
     const peer = {
       id: "owner",
@@ -835,7 +835,7 @@ describe("RoomMaterializer", () => {
 
   for (const change of ["failure", "replacement"] as const)
     it(`rejects managed execution if ${change} wins admission`, async () => {
-      const materializer = new RoomMaterializer("managed-admission", fakeState(), {} as Env);
+      const materializer = new RoomMaterializer("managed-admission", fakeState(), checkpointEnv());
       const owner = NotebookHandle.create_bootstrap("user:dev:alice/browser:test");
       const peer = {
         id: "owner",
@@ -906,7 +906,7 @@ describe("RoomMaterializer", () => {
 
   it("seeds a brand-new hosted room with one initial code cell", async () => {
     const state = fakeState();
-    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
 
     await syncMaterializerWithClient(
@@ -933,11 +933,19 @@ describe("RoomMaterializer", () => {
     };
     const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
 
-    await syncMaterializerWithClient(new RoomMaterializer("demo", state, {} as Env), peer, viewer);
+    await syncMaterializerWithClient(
+      new RoomMaterializer("demo", state, checkpointEnv(state)),
+      peer,
+      viewer,
+    );
     const firstCells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string }>;
     assertInitialEmptyCodeCell(firstCells);
 
-    await syncMaterializerWithClient(new RoomMaterializer("demo", state, {} as Env), peer, viewer);
+    await syncMaterializerWithClient(
+      new RoomMaterializer("demo", state, checkpointEnv(state)),
+      peer,
+      viewer,
+    );
     const secondCells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string }>;
     assertInitialEmptyCodeCell(secondCells);
     assert.equal(secondCells[0]?.id, firstCells[0]?.id);
@@ -957,7 +965,7 @@ describe("RoomMaterializer", () => {
       identity: editorIdentity,
     };
     const editor = NotebookHandle.create_bootstrap(editorIdentity.actorLabel);
-    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     await syncMaterializerWithClient(materializer, editorPeer, editor);
     editor.add_cell(0, "cell-1", "markdown");
     editor.update_source("cell-1", "Durable room checkpoint\n");
@@ -972,15 +980,9 @@ describe("RoomMaterializer", () => {
     await materializer.checkpoint();
 
     const keys = [...(await state.storage.list({ prefix: "room-host:" })).keys()].sort();
-    assert.deepEqual(keys, [
-      "room-host:checkpoint",
-      "room-host:comments-doc",
-      "room-host:comms-doc",
-      "room-host:notebook-doc",
-      "room-host:runtime-state-doc",
-    ]);
+    assert.deepEqual(keys, ["room-host:checkpoint"]);
 
-    const reloaded = new RoomMaterializer("demo", state, {} as Env);
+    const reloaded = new RoomMaterializer("demo", state, checkpointEnv(state));
     const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
     await syncMaterializerWithClient(
       reloaded,
@@ -1003,7 +1005,7 @@ describe("RoomMaterializer", () => {
 
   it("projects comment author labels from the room-host CommentsDoc", async () => {
     const state = fakeState();
-    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     const editorIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
     );
@@ -1032,7 +1034,7 @@ describe("RoomMaterializer", () => {
 
   it("recovers comments after checkpoint and rejects viewer writes", async () => {
     const state = fakeState();
-    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     const editorIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=editor"),
     );
@@ -1054,7 +1056,7 @@ describe("RoomMaterializer", () => {
     );
     await materializer.checkpoint();
 
-    const reloaded = new RoomMaterializer("demo", state, {} as Env);
+    const reloaded = new RoomMaterializer("demo", state, checkpointEnv(state));
     const viewerIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=bob&operator=browser:b&scope=viewer"),
     );
@@ -1089,7 +1091,7 @@ describe("RoomMaterializer", () => {
       identity: editorIdentity,
     };
     const editor = NotebookHandle.create_bootstrap(editorIdentity.actorLabel);
-    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     await syncMaterializerWithClient(materializer, editorPeer, editor);
     editor.add_cell(0, "old-cell", "markdown");
     editor.update_source("old-cell", "Old unversioned checkpoint\n");
@@ -1106,7 +1108,7 @@ describe("RoomMaterializer", () => {
       saved_at: "2026-05-23T00:00:00.000Z",
     });
 
-    const reloaded = new RoomMaterializer("demo", state, {} as Env);
+    const reloaded = new RoomMaterializer("demo", state, checkpointEnv(state));
     const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
     await syncMaterializerWithClient(
       reloaded,
@@ -1146,7 +1148,7 @@ describe("RoomMaterializer", () => {
       }),
     ]);
 
-    const reloaded = new RoomMaterializer("demo", state, {} as Env);
+    const reloaded = new RoomMaterializer("demo", state, checkpointEnv(state));
     const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
     await syncMaterializerWithClient(
       reloaded,
@@ -1702,7 +1704,7 @@ describe("RoomMaterializer", () => {
       }),
     ]);
 
-    const reloaded = new RoomMaterializer("demo", state, {} as Env);
+    const reloaded = new RoomMaterializer("demo", state, checkpointEnv(state));
     const checkpointHost = await (
       reloaded as unknown as {
         loadHost(): Promise<{ sync_peer: (peerId: string, connectionScope: string) => unknown }>;
@@ -1917,52 +1919,53 @@ describe("RoomMaterializer", () => {
     );
   });
 
-  it("loads a published snapshot when checkpoint reads are temporarily unavailable", async () => {
-    const state = fakeState();
-    const publishedSnapshot = await createNotebookRoomSnapshot(
-      "demo",
-      "published-cell",
-      "Recovered after checkpoint read failure\n",
-    );
-    const originalGet = state.storage.get.bind(state.storage);
-    state.storage.get = async (key: string) => {
-      if (key.startsWith("room-host:")) {
-        throw new Error("Exceeded allowed rows written in Durable Objects free tier.");
-      }
-      return originalGet(key);
-    };
-
-    const env = fakePublishedSnapshotEnv({
-      notebookId: "demo",
-      revisionId: "revision-current",
-      actorLabel: "user:dev:publisher/agent:runt-publish",
-      notebookBytes: publishedSnapshot.notebookBytes,
-      runtimeStateBytes: publishedSnapshot.runtimeStateBytes,
-    });
-
-    const reloaded = new RoomMaterializer("demo", state, env);
-    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
-    await syncMaterializerWithClient(
-      reloaded,
-      {
-        id: "peer-viewer",
+  for (const phase of ["hydration", "recovery"] as const)
+    it(`does not use published content when the manifest read fails during ${phase}`, async () => {
+      const state = fakeState();
+      const publishedSnapshot = await createNotebookRoomSnapshot(
+        "demo",
+        "published-cell",
+        "Published content\n",
+      );
+      const env = fakePublishedSnapshotEnv({
+        notebookId: "demo",
+        revisionId: "revision-current",
+        actorLabel: "user:dev:publisher/agent:runt-publish",
+        notebookBytes: publishedSnapshot.notebookBytes,
+        runtimeStateBytes: publishedSnapshot.runtimeStateBytes,
+      });
+      const materializer = new RoomMaterializer("demo", state, env);
+      await materializer.checkpoint();
+      const original = await state.storage.get("room-host:checkpoint");
+      const host = await checkpointHost(materializer);
+      host.sync_peer = () => {
+        throw new Error("recursive use of an object detected which would lead to unsafe aliasing");
+      };
+      const get = state.storage.get.bind(state.storage);
+      state.storage.get = async <T>(key: string) => {
+        if (key === "room-host:checkpoint") throw new Error("injected manifest read failure");
+        return get<T>(key);
+      };
+      const peer = {
+        id: "viewer",
         identity: authenticateDevRequest(
           new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
         ),
-      },
-      viewer,
-    );
-
-    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
-    assert.deepEqual(
-      cells.map((cell) => [cell.id, cell.source]),
-      [["published-cell", "Recovered after checkpoint read failure\n"]],
-    );
-  });
+      };
+      await assert.rejects(
+        phase === "hydration"
+          ? checkpointHost(new RoomMaterializer("demo", state, env))
+          : materializer.syncPeer(peer),
+        /Room checkpoint manifest could not be read/,
+      );
+      assert.deepEqual(await get("room-host:checkpoint"), original);
+      state.storage.get = get;
+      await checkpointHost(new RoomMaterializer("demo", state, env));
+    });
 
   it("rejects runtime peer execution creation over runtime-state sync", async () => {
     const state = fakeState();
-    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     const runtimeIdentity = authenticateDevRequest(
       new Request(
         "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
@@ -1981,7 +1984,7 @@ describe("RoomMaterializer", () => {
 
   it("publishes host-owned workstation attachment over runtime-state sync", async () => {
     const state = fakeState();
-    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     const viewerIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
     );
@@ -2054,7 +2057,7 @@ describe("RoomMaterializer", () => {
   });
 
   it("does not replace explicit compute with a newer automatic selection", async () => {
-    const materializer = new RoomMaterializer("demo", fakeState(), {} as Env);
+    const materializer = new RoomMaterializer("demo", fakeState(), checkpointEnv());
     const selected = {
       workstation_id: "explicit",
       display_name: "My compute",
@@ -2082,7 +2085,7 @@ describe("RoomMaterializer", () => {
 
   it("passes through ignored stale workstation attachment publishes", async () => {
     const state = fakeState();
-    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     const current = {
       workstation_id: "ws-current",
       display_name: "Current workstation",
@@ -2119,7 +2122,7 @@ describe("RoomMaterializer", () => {
 
   it("allows owner-scoped CommsDoc changes to existing runtime comm topology", async () => {
     const state = fakeState();
-    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     const runtimeIdentity = authenticateDevRequest(
       new Request(
         "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
@@ -2193,7 +2196,7 @@ describe("RoomMaterializer", () => {
 
   it("allows loaded owner handles to author CommsDoc changes with the connection actor", async () => {
     const state = fakeState();
-    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     const runtimeIdentity = authenticateDevRequest(
       new Request(
         "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
@@ -2255,7 +2258,7 @@ describe("RoomMaterializer", () => {
 
   it("fans out owner CommsDoc changes to already-open peers", async () => {
     const state = fakeState();
-    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     const runtimeIdentity = authenticateDevRequest(
       new Request(
         "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
@@ -2333,7 +2336,7 @@ describe("RoomMaterializer", () => {
 
   it("rejects owner-scoped RuntimeStateDoc execution changes", async () => {
     const state = fakeState();
-    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     const runtimeIdentity = authenticateDevRequest(
       new Request(
         "https://cloud.test/n/demo/sync?user=alice&operator=runtime:py&scope=runtime_peer",
@@ -3060,6 +3063,23 @@ function applyCommsOutboundToRuntimePeer(
   return replies;
 }
 
+const checkpointEnvironments = new WeakMap<DurableObjectState, Env>();
+function checkpointEnv(state?: DurableObjectState): Env {
+  const existing = state && checkpointEnvironments.get(state);
+  if (existing) return existing;
+  const env: Env = {
+    NOTEBOOK_ROOMS: {
+      idFromName: (name) => ({ toString: () => name }),
+      get: () => {
+        throw new Error("Unexpected room binding lookup");
+      },
+    },
+    NOTEBOOK_SNAPSHOTS: new FakeR2Bucket(),
+  };
+  if (state) checkpointEnvironments.set(state, env);
+  return env;
+}
+
 function fakeState(): DurableObjectState {
   const values = new Map<string, unknown>();
   return {
@@ -3258,8 +3278,9 @@ class FakeR2Bucket implements R2Bucket {
   async put(
     key: string,
     value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null,
-    _options?: R2PutOptions,
-  ): Promise<R2Object> {
+    options?: R2PutOptions,
+  ): Promise<R2Object | null> {
+    if (options?.onlyIf?.etagDoesNotMatch === "*" && this.objects.has(key)) return null;
     const bytes =
       typeof value === "string"
         ? new TextEncoder().encode(value).buffer
@@ -3312,9 +3333,9 @@ class FakeR2Object implements R2ObjectBody {
 describe("RoomMaterializer stale-activation replacement checks (#4295)", () => {
   it("allows this materializer's concurrent queued checkpoints", async () => {
     const state = fakeState();
-    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     await Promise.all([materializer.checkpoint(), materializer.checkpoint()]);
-    assert.equal((await state.storage.list()).size, 5);
+    assert.equal((await state.storage.list()).size, 1);
   });
   for (const boundary of ["queue", "hydration"] as const)
     it(`preserves a replacement checkpoint after ${boundary} before storage mutation`, async () => {
@@ -3327,15 +3348,16 @@ describe("RoomMaterializer stale-activation replacement checks (#4295)", () => {
       const held = new Promise<void>((resolve) => {
         release = resolve;
       });
-      const materializer = new RoomMaterializer("demo", state, {} as Env);
+      const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
       if (boundary === "queue") {
         await materializer.getRuntimeQueueDepth();
         Object.assign(materializer, { operationQueue: held });
         entered();
       } else {
         const get = state.storage.get.bind(state.storage);
+        let metadataReads = 0;
         state.storage.get = async <T>(key: string) => {
-          if (key === "room-host:notebook-doc") {
+          if (key === "room-host:checkpoint" && ++metadataReads === 2) {
             entered();
             await held;
           }
@@ -3395,7 +3417,7 @@ describe("RoomMaterializer stale-activation replacement checks (#4295)", () => {
 
   it("propagates checkpoint storage failures", async () => {
     const state = fakeState();
-    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     state.storage.put = async () => {
       throw new Error("storage unavailable");
     };
@@ -3413,11 +3435,263 @@ describe("RoomMaterializer stale-activation replacement checks (#4295)", () => {
 
   it("writes checkpoints when no replacement is observed", async () => {
     const state = fakeState();
-    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     await materializer.checkpoint();
     assert.ok(
       await state.storage.get("room-host:checkpoint"),
       "the current activation checkpoints normally",
     );
+  });
+});
+
+type CheckpointHost = Awaited<ReturnType<typeof createEmptyRoomHost>>;
+function checkpointHost(materializer: RoomMaterializer): Promise<CheckpointHost> {
+  return (materializer as unknown as { loadHost(): Promise<CheckpointHost> }).loadHost();
+}
+
+async function seedLegacyCheckpoint(state: DurableObjectState, host: CheckpointHost) {
+  const bodies = {
+    notebook: host.save_notebook(),
+    runtime_state: host.save_runtime_state_doc(),
+    comms: host.save_comms_doc(),
+    comments: host.save_comments_doc(),
+  };
+  for (const [kind, key] of Object.entries({
+    notebook: "notebook-doc",
+    runtime_state: "runtime-state-doc",
+    comms: "comms-doc",
+    comments: "comments-doc",
+  }))
+    await state.storage.put(
+      `room-host:${key}`,
+      arrayBufferFromBytes(bodies[kind as keyof typeof bodies]),
+    );
+  await state.storage.put("room-host:checkpoint", {
+    version: 6,
+    notebook_heads: Array.from(host.get_heads_hex()),
+    runtime_state_heads: Array.from(host.get_runtime_state_heads_hex()),
+    comms_doc_heads: Array.from(host.get_comms_doc_heads_hex()),
+    comments_doc_heads: Array.from(host.get_comments_doc_heads_hex()),
+    saved_at: "2026-06-01T00:00:00.000Z",
+    published_revision_id: null,
+    published_notebook_heads: null,
+    published_runtime_state_heads: null,
+    published_comms_doc_heads: null,
+    published_comments_doc_heads: null,
+  });
+  return bodies;
+}
+
+describe("RoomMaterializer object checkpoint commits", () => {
+  for (const failure of ["object", "manifest"] as const)
+    it(`retains the previous committed generation after a ${failure} write failure`, async () => {
+      const state = fakeState();
+      const env = checkpointEnv(state);
+      const materializer = new RoomMaterializer("demo", state, env);
+      await materializer.checkpoint();
+      const original = await state.storage.get("room-host:checkpoint");
+      const originalHost = await checkpointHost(materializer);
+      const priorHeads = Array.from(originalHost.get_runtime_state_heads_hex());
+      // Mutate only fixture state; no interpreter or code execution is involved.
+      await materializer.setWorkstationAttachment({
+        workstation_id: "fixture",
+        display_name: "Fixture",
+        provider: "runtime_peer",
+        default_environment_label: "Fixture",
+        environment_policy: "runtime_peer",
+        status: "ready",
+        updated_at: "2026-10-15T00:00:00Z",
+      });
+      if (failure === "object")
+        env.NOTEBOOK_SNAPSHOTS!.put = async () => {
+          throw new Error("injected object failure");
+        };
+      else
+        state.storage.put = async () => {
+          throw new Error("injected manifest failure");
+        };
+      await assert.rejects(
+        materializer.checkpoint(),
+        failure === "object" ? /runtime_state object write failed/ : /manifest commit failed/,
+      );
+      assert.deepEqual(await state.storage.get("room-host:checkpoint"), original);
+      const reloaded = await checkpointHost(new RoomMaterializer("demo", state, env));
+      assert.deepEqual(Array.from(reloaded.get_runtime_state_heads_hex()), priorHeads);
+      assert.equal(reloaded.get_workstation_attachment_json(), "null");
+    });
+
+  it("selects a generation only after every body write completes, and rechecks replacement", async () => {
+    const state = fakeState();
+    const env = checkpointEnv(state);
+    const materializer = new RoomMaterializer("demo", state, env);
+    let entered!: () => void;
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const put = env.NOTEBOOK_SNAPSHOTS!.put.bind(env.NOTEBOOK_SNAPSHOTS!);
+    let calls = 0;
+    env.NOTEBOOK_SNAPSHOTS!.put = async (...args) => {
+      if (++calls === 4) {
+        entered();
+        await held;
+      }
+      return put(...args);
+    };
+    const saving = materializer.checkpoint();
+    await waiting;
+    assert.equal(await state.storage.get("room-host:checkpoint"), undefined);
+    await state.storage.put("room-host:checkpoint", "replacement");
+    release();
+    await assert.rejects(saving, /replaced before manifest commit/);
+    assert.equal(await state.storage.get("room-host:checkpoint"), "replacement");
+  });
+
+  for (const failure of ["missing", "corrupt"] as const)
+    it(`does not fall back to published content when a committed body is ${failure}`, async () => {
+      const snapshot = await createNotebookRoomSnapshot(
+        "demo",
+        "published",
+        "Old published content\n",
+      );
+      const env = fakePublishedSnapshotEnv({
+        notebookId: "demo",
+        revisionId: "revision-current",
+        actorLabel: "user:dev:publisher/agent:runt-publish",
+        notebookBytes: snapshot.notebookBytes,
+        runtimeStateBytes: snapshot.runtimeStateBytes,
+      });
+      const state = fakeState();
+      const materializer = new RoomMaterializer("demo", state, env);
+      await materializer.checkpoint();
+      const original = await state.storage.get<{
+        documents: { runtime_state: { sha256: string; byte_length: number } };
+      }>("room-host:checkpoint");
+      assert.ok(original);
+      const reference = original.documents.runtime_state;
+      const bucket = env.NOTEBOOK_SNAPSHOTS as FakeR2Bucket;
+      const key = `n/demo/room-checkpoints/${reference.sha256}.am`;
+      const originalBody = bucket.objects.get(key)!;
+      if (failure === "missing") bucket.objects.delete(key);
+      else bucket.objects.set(key, new ArrayBuffer(reference.byte_length));
+      await assert.rejects(
+        checkpointHost(new RoomMaterializer("demo", state, env)),
+        /Committed room checkpoint could not be loaded/,
+      );
+      assert.deepEqual(await state.storage.get("room-host:checkpoint"), original);
+      // Repairing the immutable storage fixture makes the same selected generation readable.
+      bucket.objects.set(key, originalBody);
+      await checkpointHost(new RoomMaterializer("demo", state, env));
+    });
+
+  it("preserves v6 no-baseline hydration precedence despite a newer checkpoint timestamp", async () => {
+    const state = fakeState();
+    const local = await createNotebookRoomSnapshot("demo", "local", "Local\n");
+    const localHost = await loadRoomHostSnapshot(local.notebookBytes, local.runtimeStateBytes);
+    await seedLegacyCheckpoint(state, localHost);
+    const published = await createNotebookRoomSnapshot("demo", "published", "Published\n");
+    const env = fakePublishedSnapshotEnv({
+      notebookId: "demo",
+      revisionId: "revision-current",
+      actorLabel: "user:dev:publisher/agent:runt-publish",
+      notebookBytes: published.notebookBytes,
+      runtimeStateBytes: published.runtimeStateBytes,
+    });
+    const loaded = await checkpointHost(new RoomMaterializer("demo", state, env));
+    assert.deepEqual(Array.from(loaded.get_heads_hex()), published.notebookHeads);
+  });
+
+  it("preserves all four documents and execution history through v6 to v7 and restart above 2.2MB", async () => {
+    const state = fakeState();
+    const env = checkpointEnv(state);
+    const snapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "cell-source",
+      "Current cell source\n",
+    );
+    // Deterministic incompressible source, copied into historical accepted executions.
+    const sourceBytes = new Uint8Array(600_000);
+    let seed = 0x12345678;
+    for (let index = 0; index < sourceBytes.length; index++) {
+      seed ^= seed << 13;
+      seed ^= seed >>> 17;
+      seed ^= seed << 5;
+      sourceBytes[index] = seed & 255;
+    }
+    const source = Buffer.from(sourceBytes).toString("base64");
+    const runtime = new RuntimeStatePeerHandle("system/schema:notebook-cloud-room");
+    for (let index = 0; index < 5; index++) {
+      const id = `historical-${index}`;
+      runtime.create_execution_with_source(id, source, index);
+      runtime.set_execution_count(id, index + 1);
+      runtime.append_output_json(
+        id,
+        JSON.stringify({
+          output_type: "stream",
+          output_id: `output-${index}`,
+          name: "stdout",
+          text: `historical result ${index}`,
+        }),
+      );
+      runtime.set_execution_done(id, true);
+    }
+    runtime.put_comm_json(
+      "widget",
+      "jupyter.widget",
+      "anywidget",
+      "AnyModel",
+      JSON.stringify({ value: 42 }),
+      0,
+    );
+    const host = await loadRoomHostSnapshot(
+      snapshot.notebookBytes,
+      runtime.save(),
+      runtime.save_comms_doc(),
+    );
+    const materializer = new RoomMaterializer("demo", state, env);
+    Object.assign(materializer, { hostReady: Promise.resolve(host) });
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=editor"),
+    );
+    const editor = NotebookHandle.create_bootstrap(identity.actorLabel);
+    editor.init_comments_sync_target("comments:demo");
+    const peer = { id: "comments-fixture", identity };
+    await syncCommentsMaterializerWithClient(materializer, peer, editor);
+    editor.create_comment_thread(
+      "thread",
+      "message",
+      { kind: "notebook" },
+      "Historical comment",
+      undefined,
+      "2026-10-15T00:00:00Z",
+    );
+    await applyCommentsClientChangesToMaterializer(materializer, peer, editor);
+    const originalBodies = await seedLegacyCheckpoint(state, host);
+    assert.ok(originalBodies.runtime_state.byteLength > 2_200_000);
+    const legacy = new RoomMaterializer("demo", state, env);
+    await legacy.checkpoint();
+    const manifest = await state.storage.get<{ version: number }>("room-host:checkpoint");
+    assert.equal(manifest?.version, 7);
+    assert.ok(JSON.stringify(manifest).length < 4096);
+    // Legacy bodies are retained; migration does not delete the previous recovery data.
+    assert.deepEqual(
+      await state.storage.get("room-host:runtime-state-doc"),
+      arrayBufferFromBytes(originalBodies.runtime_state),
+    );
+    const loaded = await checkpointHost(new RoomMaterializer("demo", state, env));
+    assert.deepEqual(loaded.save_notebook(), originalBodies.notebook);
+    assert.deepEqual(loaded.save_runtime_state_doc(), originalBodies.runtime_state);
+    assert.deepEqual(loaded.save_comms_doc(), originalBodies.comms);
+    assert.deepEqual(loaded.save_comments_doc(), originalBodies.comments);
+    const viewer = NotebookHandle.load_snapshot(
+      loaded.save_notebook(),
+      loaded.save_runtime_state_doc(),
+    );
+    assert.deepEqual(viewer.get_runtime_state(), runtime.get_runtime_state());
+    assert.equal((viewer.get_execution_by_id("historical-4") as { status: string }).status, "done");
+    assert.deepEqual(loaded.get_comments_projection(), host.get_comments_projection());
   });
 });
