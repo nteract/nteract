@@ -296,6 +296,11 @@ const TARGETS: &[Target] = &[
         matches: 1,
     },
     Target {
+        path: "packages/runtimed-wasm/package.json",
+        format: Format::Json,
+        matches: 1,
+    },
+    Target {
         path: "packages/notebook-host/package.json",
         format: Format::Json,
         matches: 1,

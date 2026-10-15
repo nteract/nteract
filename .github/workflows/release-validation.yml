@@ -11,6 +11,8 @@ on:
       - .github/workflows/release-validation.yml
       - .github/workflows/pr-binary-generation.yml
       - .github/workflows/publish-npm.yml
+      - .github/workflows/build-wasm-npm.yml
+      - packages/runtimed-wasm/**
       - .cargo/config.toml
       - .dockerignore
       - images/runtime-peer/**
@@ -19,6 +21,7 @@ on:
       - scripts/ci/filter-unpublished-release-tags.sh
       - scripts/ci/check-release-tag.sh
       - scripts/ci/npm-release*
+      - scripts/ci/npm-wasm-*
       - scripts/ci/smoke-windows-node-addon.cjs
       - scripts/ci/smoke-windows-wheel.py
       - scripts/ci/smoke-linux-arm64-wheel.py

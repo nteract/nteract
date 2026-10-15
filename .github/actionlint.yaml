@@ -7,6 +7,9 @@ self-hosted-runner:
 # https://github.com/rhysd/actionlint/issues/680
 # npm-publish.test.mjs verifies the exact queue/cancellation settings.
 paths:
+  .github/workflows/build-wasm-npm.yml:
+    ignore:
+      - '^unexpected key "queue" for "concurrency" section\.'
   .github/workflows/publish-npm.yml:
     ignore:
       - '^unexpected key "queue" for "concurrency" section\.'

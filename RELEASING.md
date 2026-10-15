@@ -107,6 +107,25 @@ The first nightly publishes `<Sift version>-nightly.<run ID>` under `nightly`. T
 
 `@nteract/sift-csv` uses the same placeholder bootstrap with its own `NPM_SIFT_CSV_ENABLED` gate and `npm-package-sift-csv` artifact. Releases from sources without the CSV package skip that package entirely.
 
+`@runtimed/wasm` uses its own `NPM_WASM_ENABLED` gate, defaulting off. Its separate
+**Build WASM npm package** workflow packs and tests the retained release WASM
+without compiling it again, even while publication is disabled. Successful
+tarballs are retained as `npm-wasm-<release run ID>-<release attempt>` for 90 days
+and reused on publisher retries; expired/deleted successful candidates require a
+new release identity. The WASM jobs are independent of all existing npm jobs.
+
+An `@runtimed` owner must publish a code-free `@runtimed/wasm@0.0.1` placeholder,
+configure its trusted publisher for organization `nteract`, repository `nteract`,
+workflow filename `publish-npm.yml`, leave Environment name blank, and allow
+direct `npm publish`. Verify the
+registry package and publisher settings, then set `NPM_WASM_ENABLED=true`.
+Complete the first trusted publish within two days of creating the configuration
+under npm's [current setup requirements](https://docs.npmjs.com/trusted-publishers/).
+After the first stable package moves `latest` to a real version, deprecate the
+placeholder. The workflow does not create the placeholder, change npm trust or
+credentials, or enable its own gate. See the [WASM publishing runbook](docs/runbooks/npm-publishing.md#runtime-wasm)
+for immutable retry and consumer verification details.
+
 Both packages are past this bootstrap: their gates are `true` and their nightlies publish with provenance. The steps above are for a new package, or for re-creating a trusted publisher.
 
 

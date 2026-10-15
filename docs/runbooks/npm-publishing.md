@@ -1,6 +1,7 @@
 # Publishing the npm packages
 
-`publish-npm.yml` builds the Node SDK, `@nteract/sift`, and `@nteract/sift-csv` after a successful
+`publish-npm.yml` builds the Node SDK, `@nteract/sift`, and `@nteract/sift-csv`, and
+resolves the independently packed `@runtimed/wasm`, after a successful
 **Stable Release** or **Nightly Release** run. It retains the existing npm
 trusted-publisher identity; the build jobs have no publication credentials, and
 the publication jobs do not build source or install project dependencies.
@@ -46,6 +47,79 @@ Consumers should pin an exact Sift version, as with the SDK.
 and `NPM_SIFT_CSV_ENABLED` gate. Its pack job builds `crates/sift-csv-wasm`
 through `cargo xtask wasm sift-csv`. The two Sift packages do not depend on each
 other at publish time; a host pins each independently.
+
+## Runtime WASM
+
+`@runtimed/wasm` is an independent, dependency-free ESM package with generated
+bindings, declarations, an explicit binary export, and build metadata. Existing
+desktop/cloud imports and the private `runtimed` TypeScript package are unchanged.
+See its [initialization examples](../../packages/runtimed-wasm/README.md).
+
+**Build WASM npm package** (`build-wasm-npm.yml`) follows successful stable and
+nightly releases. It verifies the release's retained
+`release-wasm-<run ID>-<attempt>` artifact, including source, channel, successful
+WASM job attempt, artifact digest, and file checksums. A successful earlier WASM
+attempt can be reused when only failed release jobs were rerun. It copies the
+matching generated JavaScript, binary, and declarations without recompilation,
+adds notices from the release source's dependency graph, and packs once.
+
+The final tarball is exercised in an isolated consumer: synchronous and async
+byte initialization, precompiled-module and Response initialization, the default
+paired binary URL, document mutation/save, and TypeScript NodeNext/bundler
+resolution. These Node/WASM checks do not launch a daemon or kernel, or establish
+browser, desktop, or host compatibility. `build-info.json` records source and
+release identity, protocol source constants, Cargo.lock and genesis hashes,
+and the shipped WASM checksums. The external `candidate.json` also records the
+original release artifact ID/digest, build attempt, every packed file checksum,
+and the final tarball SHA-256/SHA-512.
+
+The producer retains `npm-wasm-<release run ID>-<release attempt>` for 90 days.
+Duplicate events, producer reruns, and manual publisher retries reuse the first
+successful packed candidate. A failed/incomplete pack with no successful retained
+candidate may retry. If a successful pack's artifact expires or is deleted,
+recovery fails explicitly: create a new release identity; do not repack the old
+one. Once packing succeeds, expiry of the original WASM input does not prevent
+publishing the sealed tarball while that tarball is still retained.
+
+The existing **Publish npm packages** workflow independently resolves that
+producer and passes only verified data and trusted helpers to its WASM OIDC job.
+It waits up to 30 minutes for the producer, then fails with a retry instruction.
+No existing SDK, Sift, CSV, or Pi job depends on that wait or WASM success. The
+publisher never builds, repacks, installs project dependencies, or runs package
+scripts. Both stable and nightly existing versions must have the same source
+identity and registry tarball SHA-512. It refuses conflicting immutable versions
+and stale channel promotion, and leaves existing dist-tags unchanged.
+
+Publication defaults off under `NPM_WASM_ENABLED`. The producer still packs and
+tests while disabled. Bootstrap and trusted-publisher configuration require a
+maintainer; see [RELEASING.md](../../RELEASING.md#published-bindings). To recover,
+dispatch the producer if its initial pack failed, then dispatch **Publish npm
+packages** with the same successful upstream release run ID/attempt. Neither
+manual path accepts arbitrary source refs. Sources predating this package skip
+WASM without changing existing package eligibility.
+
+For the one new npmjs.com package in this change, use these settings:
+
+| Field | Value |
+|---|---|
+| Package / scope | `@runtimed/wasm` / `@runtimed` |
+| Visibility | Public (`npm publish --access public`) |
+| First publication | Code-free `0.0.1` placeholder, published manually by a scope owner |
+| GitHub organization / repository | `nteract` / `nteract` |
+| Trusted workflow filename | `publish-npm.yml` |
+| Environment name | Leave blank; the publisher job declares no environment |
+| Allowed action | Enable direct `npm publish` |
+| Stable / nightly tags | `latest` / `nightly` |
+| Repository gate | `NPM_WASM_ENABLED=true`, only after setup is verified |
+
+Create the package first, then configure its trusted publisher in the package's
+Settings. Do that when a tested candidate is ready: npm requires the first
+successful trusted publish within **two days** of creating the configuration.
+The hosted workflow uses Node 24 and verifies npm 11.5.1 or newer. CI needs no
+long-lived npm token. See npm's [trusted publishing requirements](https://docs.npmjs.com/trusted-publishers/)
+and [scoped public publication guide](https://docs.npmjs.com/creating-and-publishing-scoped-public-packages/).
+Keep the gate disabled until the package, scope access, and publisher settings
+are confirmed. After the first stable release, deprecate the placeholder.
 
 ## Package coordination and daemon compatibility
 
@@ -111,7 +185,8 @@ Legacy stable native packages may have no release metadata, so an existing
 version is not proof that the requested source was newly delivered.
 
 The workflow uses `npm publish --tag` and does not use `npm dist-tag` to repair
-tags. npm OIDC publishing does not supply general npm account access. A package
+tags. This workflow needs only npm's direct-publish permission, not the separate
+trusted-publisher permission for dist-tag management. A package
 that already exists with an incorrect tag or contents needs separate maintainer
 investigation; changing a dist-tag cannot repair immutable package contents.
 
