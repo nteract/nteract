@@ -492,6 +492,57 @@ describe("BokehSessionController", () => {
     controller.dispose();
   });
 
+  it("applies redefinitions of existing models in patches as ModelChanged events", async () => {
+    const { controller, documents, notify } = harness();
+    await controller.start();
+    const existing = {
+      type: "object",
+      name: "Row",
+      id: "root-1",
+      attributes: { dark_theme: true },
+    };
+    const added = { type: "object", name: "Div", id: "div-2", attributes: { text: "new" } };
+
+    notify(NTERACT_BOKEH_SESSION_PATCH, {
+      outputId: "output-1",
+      event: {
+        sessionId: "session-1",
+        transactionId: "server-change-1",
+        baseRevision: 0,
+        revision: 1,
+        serverPatch: {
+          patch: {
+            events: [
+              {
+                kind: "ModelChanged",
+                model: { id: "page-1" },
+                attr: "main",
+                new: [existing, added],
+              },
+            ],
+          },
+          buffers: [],
+        },
+      },
+    });
+    await settle();
+
+    expect(documents[0].applied).toEqual([
+      {
+        events: [
+          { kind: "ModelChanged", model: { id: "root-1" }, attr: "dark_theme", new: true },
+          {
+            kind: "ModelChanged",
+            model: { id: "page-1" },
+            attr: "main",
+            new: [{ id: "root-1" }, added],
+          },
+        ],
+      },
+    ]);
+    controller.dispose();
+  });
+
   it("reconciles instead of remounting after the kernel rejected a local patch", async () => {
     const { controller, documents, requestHost } = harness();
     await controller.start();

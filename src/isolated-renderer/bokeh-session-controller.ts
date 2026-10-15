@@ -148,6 +148,14 @@ function referenceExistingModels(
   return { id: mapped.id };
 }
 
+/** Patch events with existing models referenced, their attributes applied first. */
+function referenceExistingModelsInEvents(document: BokehDocument, events: unknown[]): unknown[] {
+  const changes: Record<string, unknown>[] = [];
+  const exists = (id: string) => document.get_model_by_id(id) != null;
+  const referenced = events.map((event) => referenceExistingModels(event, exists, changes));
+  return [...changes, ...referenced];
+}
+
 function bufferMap(buffers: NteractBokehResolvedBuffer[]): Map<string, ArrayBuffer> {
   return new Map(buffers.map((buffer) => [buffer.id, buffer.data]));
 }
@@ -473,8 +481,7 @@ export class BokehSessionController {
 
   /**
    * Bring the mounted document to a checkpoint in place, keeping every view
-   * mounted: existing models receive their checkpoint attributes as
-   * ModelChanged events and only unknown models are created.
+   * mounted.
    */
   private reconcileCheckpoint(
     document: BokehDocument,
@@ -487,13 +494,8 @@ export class BokehSessionController {
     for (const rootId of this.options.payload.root_ids) {
       if (!rootIds.has(rootId)) throw new Error(`Bokeh document is missing root ${rootId}`);
     }
-    const changes: Record<string, unknown>[] = [];
-    const exists = (id: string) => document.get_model_by_id(id) != null;
     const events: Record<string, unknown>[] = [
-      ...roots.map((root) => ({
-        kind: "RootAdded",
-        model: referenceExistingModels(root, exists, changes),
-      })),
+      ...roots.map((root) => ({ kind: "RootAdded", model: root })),
       ...document.all_roots
         .filter((root) => !rootIds.has(root.id))
         .map((root) => ({ kind: "RootRemoved", model: { id: root.id } })),
@@ -503,7 +505,10 @@ export class BokehSessionController {
     }
     this.applyingRemote = true;
     try {
-      document.apply_json_patch({ events: [...changes, ...events] }, bufferMap(checkpoint.buffers));
+      document.apply_json_patch(
+        { events: referenceExistingModelsInEvents(document, events) },
+        bufferMap(checkpoint.buffers),
+      );
       this.reapplyPendingLocalChanges();
       this.revision = checkpoint.revision;
     } finally {
@@ -617,7 +622,11 @@ export class BokehSessionController {
 
   private applyPatchPayload(payload: NteractBokehResolvedPatchPayload): void {
     if (!this.document) throw new Error("Bokeh document is not mounted");
-    this.document.apply_json_patch(payload.patch, bufferMap(payload.buffers));
+    const events = Array.isArray(payload.patch.events) ? payload.patch.events : [];
+    this.document.apply_json_patch(
+      { ...payload.patch, events: referenceExistingModelsInEvents(this.document, events) },
+      bufferMap(payload.buffers),
+    );
   }
 
   private cancelSatisfiedResync(): void {
