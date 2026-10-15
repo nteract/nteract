@@ -1009,7 +1009,6 @@ pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
     } else if launched.environment_id.is_some() {
         // UV/Pixi selected environments are intentionally not package-managed
         // through notebook metadata. Selected Conda has a tracked baseline.
-        return;
     } else {
         // Kernel launched with prewarmed - check if metadata now has inline deps
         let current_inline = check_inline_deps(&current_metadata);

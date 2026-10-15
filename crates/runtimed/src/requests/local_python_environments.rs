@@ -228,7 +228,7 @@ async fn selection(room: &NotebookRoom) -> (LocalEnvironmentSelection, Vec<Candi
     let selected_id = room
         .local_environment_selection
         .lock()
-        .expect("environment selection poisoned")
+        .unwrap_or_else(|error| error.into_inner())
         .clone();
     let selected = selected_id
         .as_ref()
@@ -251,6 +251,7 @@ async fn selection(room: &NotebookRoom) -> (LocalEnvironmentSelection, Vec<Candi
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -382,7 +383,7 @@ mod tests {
         let prefix = tempfile::TempDir::new().unwrap();
         let python = prefix.path().join("bin/python3.12");
         let packages = prefix.path().join("lib/python3.12/site-packages");
-        std::fs::create_dir_all(&python.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
         std::fs::create_dir_all(&packages).unwrap();
         std::fs::write(&python, "not executed").unwrap();
 
@@ -415,7 +416,7 @@ pub(crate) async fn get_details(room: &Arc<NotebookRoom>) -> NotebookResponse {
     let id = room
         .local_environment_selection
         .lock()
-        .expect("environment selection poisoned")
+        .unwrap_or_else(|error| error.into_inner())
         .clone();
     let Some(id) = id else {
         return NotebookResponse::PythonEnvironmentDetails { details: None };
@@ -554,7 +555,7 @@ pub(crate) async fn set(
     *room
         .local_environment_selection
         .lock()
-        .expect("environment selection poisoned") = candidate_id.clone();
+        .unwrap_or_else(|error| error.into_inner()) = candidate_id.clone();
     current.selected_id = candidate_id;
     let selected = current
         .selected_id
@@ -570,7 +571,7 @@ pub(crate) async fn selected_launch(
     let Some(id) = room
         .local_environment_selection
         .lock()
-        .expect("environment selection poisoned")
+        .unwrap_or_else(|error| error.into_inner())
         .clone()
     else {
         return Ok(None);
