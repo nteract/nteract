@@ -100,6 +100,8 @@ export interface KernelState {
   name: string;
   language: string;
   env_source: string;
+  environment_id: string;
+  environment_name: string;
   /**
    * Runtime-peer liveness heartbeat. Cloud runtime peers stamp this when their
    * room link is alive so viewers can distinguish "never attached" from
@@ -421,6 +423,8 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
     name: "",
     language: "",
     env_source: "",
+    environment_id: "",
+    environment_name: "",
     last_seen: null,
   },
   queue: {

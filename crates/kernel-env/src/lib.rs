@@ -325,6 +325,87 @@ fn site_packages_has_ipykernel(site_packages: &std::path::Path) -> bool {
     false
 }
 
+/// Check the documented site-packages location for an interpreter without
+/// executing it. `None` means the layout is not one this detector supports;
+/// `Some(false)` means it is supported but no ipykernel evidence was found.
+#[cfg(feature = "runtime")]
+pub fn interpreter_site_packages_has_ipykernel(python_path: &std::path::Path) -> Option<bool> {
+    let executable_dir = python_path.parent()?;
+
+    #[cfg(windows)]
+    let prefix = if executable_dir
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("Scripts"))
+    {
+        executable_dir.parent()?
+    } else {
+        executable_dir
+    };
+    #[cfg(windows)]
+    let site_packages = prefix.join("Lib").join("site-packages");
+
+    #[cfg(not(windows))]
+    let site_packages = {
+        if executable_dir.file_name()? != "bin" {
+            return None;
+        }
+        let prefix = executable_dir.parent()?;
+        let lib_dir = prefix.join("lib");
+        let site_packages = match executable_version(python_path) {
+            Some(version) => lib_dir
+                .join(format!("python{version}"))
+                .join("site-packages"),
+            None => {
+                let entries = std::fs::read_dir(&lib_dir).ok()?;
+                let matching: Vec<_> = entries
+                    .flatten()
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_str()
+                            .is_some_and(|name| name.starts_with("python"))
+                            && entry.path().join("site-packages").is_dir()
+                    })
+                    .map(|entry| entry.path().join("site-packages"))
+                    .collect();
+                let [only] = matching.as_slice() else {
+                    return None;
+                };
+                only.clone()
+            }
+        };
+        if !site_packages.is_dir() {
+            return None;
+        }
+        site_packages
+    };
+
+    if !site_packages.is_dir() {
+        return None;
+    }
+    Some(site_packages_has_ipykernel(&site_packages))
+}
+
+#[cfg(all(feature = "runtime", not(windows)))]
+fn executable_version(python_path: &std::path::Path) -> Option<String> {
+    let resolved = std::fs::canonicalize(python_path).unwrap_or_else(|_| python_path.to_path_buf());
+    for path in [resolved.as_path(), python_path] {
+        let Some(executable) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(minor) = executable.strip_prefix("python") else {
+            continue;
+        };
+        let mut parts = minor.split('.');
+        let major = parts.next()?;
+        let minor = parts.next()?;
+        if !major.is_empty() && !minor.is_empty() && parts.next().is_none() {
+            return Some(format!("{major}.{minor}"));
+        }
+    }
+    None
+}
+
 #[cfg(feature = "runtime")]
 fn sibling_site_packages_with_ipykernel(purelib: &std::path::Path) -> Vec<std::path::PathBuf> {
     let Some(python_dir) = purelib.parent() else {
@@ -502,6 +583,52 @@ mod site_packages_has_ipykernel_tests {
             ("ipykernelfoo-1.0.dist-info", "dir"),
         ]);
         assert!(!site_packages_has_ipykernel(tmp.path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interpreter_filesystem_check_uses_the_exact_version_directory() {
+        let prefix = TempDir::new().unwrap();
+        let python = prefix.path().join("bin").join("python");
+        let py311 = prefix.path().join("lib/python3.11/site-packages");
+        let py312 = prefix.path().join("lib/python3.12/site-packages");
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+        std::fs::write(&python, "not executed").unwrap();
+        std::fs::create_dir_all(&py311).unwrap();
+        std::fs::create_dir_all(py312.join("ipykernel")).unwrap();
+
+        assert_eq!(
+            interpreter_site_packages_has_ipykernel(&python),
+            None,
+            "ambiguous multi-version prefix must not borrow sibling evidence"
+        );
+
+        std::fs::remove_dir_all(prefix.path().join("lib/python3.12")).unwrap();
+        assert_eq!(
+            interpreter_site_packages_has_ipykernel(&python),
+            Some(false),
+            "the exact resolved site-packages directory has no ipykernel"
+        );
+        std::fs::create_dir_all(py311.join("ipykernel")).unwrap();
+        assert_eq!(interpreter_site_packages_has_ipykernel(&python), Some(true));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn interpreter_filesystem_check_uses_windows_lib_site_packages() {
+        let prefix = TempDir::new().unwrap();
+        let python = prefix.path().join("python.exe");
+        let site_packages = prefix.path().join("Lib").join("site-packages");
+        std::fs::write(&python, "not executed").unwrap();
+        std::fs::create_dir_all(site_packages.join("ipykernel")).unwrap();
+
+        assert_eq!(interpreter_site_packages_has_ipykernel(&python), Some(true));
+    }
+
+    #[test]
+    fn unsupported_interpreter_layout_is_not_confirmed() {
+        let python = TempDir::new().unwrap().path().join("python");
+        assert_eq!(interpreter_site_packages_has_ipykernel(&python), None);
     }
 
     #[test]

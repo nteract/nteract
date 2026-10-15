@@ -1984,10 +1984,10 @@ async fn handle_runtime_agent_request(
                     .python_path
                     .as_ref()
                     .map(|python| runtimed_client::PooledEnv {
-                        env_type: if env_source.package_manager() == Some(PackageManager::Conda) {
-                            runtimed_client::EnvType::Conda
-                        } else {
-                            runtimed_client::EnvType::Uv
+                        env_type: match env_source.package_manager() {
+                            Some(PackageManager::Conda) => runtimed_client::EnvType::Conda,
+                            Some(PackageManager::Pixi) => runtimed_client::EnvType::Pixi,
+                            _ => runtimed_client::EnvType::Uv,
                         },
                         venv_path: venv.clone(),
                         python_path: python.clone(),
@@ -2127,10 +2127,10 @@ async fn handle_runtime_agent_request(
                     .python_path
                     .as_ref()
                     .map(|python| runtimed_client::PooledEnv {
-                        env_type: if env_source.package_manager() == Some(PackageManager::Conda) {
-                            runtimed_client::EnvType::Conda
-                        } else {
-                            runtimed_client::EnvType::Uv
+                        env_type: match env_source.package_manager() {
+                            Some(PackageManager::Conda) => runtimed_client::EnvType::Conda,
+                            Some(PackageManager::Pixi) => runtimed_client::EnvType::Pixi,
+                            _ => runtimed_client::EnvType::Uv,
                         },
                         venv_path: venv.clone(),
                         python_path: python.clone(),
@@ -2647,6 +2647,9 @@ async fn run_sync_environment(
                             message: msg.clone(),
                         },
                     );
+                    if !is_current() {
+                        return None;
+                    }
                     Some(RuntimeAgentResponse::Error { error: msg })
                 }
             }

@@ -71,6 +71,7 @@ pub(crate) mod get_history;
 pub(crate) mod guarded;
 pub(crate) mod interrupt_execution;
 pub(crate) mod launch_kernel;
+pub(crate) mod local_python_environments;
 pub(crate) mod reconcile_notebook_source;
 pub(crate) mod run_all_cells;
 pub(crate) mod save_notebook;
@@ -134,6 +135,9 @@ pub(crate) fn trim_runtime_executions_for_doc(
 /// carry large payloads (doc bytes, comm messages) that would bloat log lines.
 pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
     match req {
+        NotebookRequest::ListPythonEnvironments {} => "ListPythonEnvironments",
+        NotebookRequest::SetPythonEnvironment { .. } => "SetPythonEnvironment",
+        NotebookRequest::GetPythonEnvironmentDetails {} => "GetPythonEnvironmentDetails",
         NotebookRequest::LaunchKernel { .. } => "LaunchKernel",
         NotebookRequest::ExecuteCell { .. } => "ExecuteCell",
         NotebookRequest::ExecuteCellGuarded { .. } => "ExecuteCellGuarded",
@@ -398,6 +402,13 @@ pub(crate) async fn handle_notebook_request(
     // would fight the cloud room over runtime state.
     if let Some(bridge) = daemon.hosted_bridge_for_room(room.id).await {
         match &request {
+            NotebookRequest::ListPythonEnvironments {}
+            | NotebookRequest::SetPythonEnvironment { .. }
+            | NotebookRequest::GetPythonEnvironmentDetails {} => {
+                return NotebookResponse::Error {
+                    error: "Local environment selection is unavailable for hosted notebooks".into(),
+                };
+            }
             NotebookRequest::ExecuteCell {
                 cell_id,
                 execution_id,
@@ -468,6 +479,13 @@ pub(crate) async fn handle_notebook_request(
     }
 
     match request {
+        NotebookRequest::ListPythonEnvironments {} => local_python_environments::list(room).await,
+        NotebookRequest::SetPythonEnvironment { candidate_id } => {
+            local_python_environments::set(room, candidate_id).await
+        }
+        NotebookRequest::GetPythonEnvironmentDetails {} => {
+            local_python_environments::get_details(room).await
+        }
         NotebookRequest::LaunchKernel {
             kernel_type,
             env_source,

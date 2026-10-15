@@ -719,7 +719,6 @@ pub(crate) fn compute_env_sync_diff(
             }
         }
 
-        // Check channels
         if let Some(ref launched_channels) = launched.conda_channels {
             let current_channels = current
                 .runt
@@ -727,9 +726,14 @@ pub(crate) fn compute_env_sync_diff(
                 .as_ref()
                 .map(|c| &c.channels[..])
                 .unwrap_or(&[]);
+            let effective_channels = if launched.environment_id.is_some() {
+                get_inline_conda_channels(current)
+            } else {
+                current_channels.to_vec()
+            };
 
-            // Channels are ordered, so compare as slices
-            if launched_channels.as_slice() != current_channels {
+            // Channels are ordered, so compare as slices.
+            if launched_channels.as_slice() != effective_channels.as_slice() {
                 channels_changed = true;
             }
         }
@@ -977,7 +981,7 @@ pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
         }
     }
 
-    // Check if we're tracking inline deps or deno config
+    // Selected local environments are tracked from an empty Conda baseline.
     let is_tracking = launched.uv_deps.is_some()
         || launched.conda_deps.is_some()
         || launched.pixi_deps.is_some()
@@ -1002,6 +1006,10 @@ pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
         }) {
             warn!("[runtime-state] {}", e);
         }
+    } else if launched.environment_id.is_some() {
+        // UV/Pixi selected environments are intentionally not package-managed
+        // through notebook metadata. Selected Conda has a tracked baseline.
+        return;
     } else {
         // Kernel launched with prewarmed - check if metadata now has inline deps
         let current_inline = check_inline_deps(&current_metadata);
@@ -1559,6 +1567,10 @@ pub(crate) async fn flush_launched_deps_to_metadata(
     launched: &LaunchedEnvConfig,
     runtime: CapturedEnvRuntime,
 ) -> bool {
+    if launched.environment_id.is_some() {
+        return false;
+    }
+
     let Some(new_deps) = effective_user_deps_from_launched(launched, runtime) else {
         return false;
     };
@@ -1632,6 +1644,59 @@ pub(crate) async fn flush_launched_deps_to_metadata(
     }
     drop(doc);
     changed
+}
+
+pub(super) async fn remove_selected_conda_dependencies(
+    room: &NotebookRoom,
+    failed_packages: &[String],
+) -> Result<(), String> {
+    let mut doc = room.doc.write().await;
+    let rollback_actor = doc.get_actor_id();
+    let rollback_snapshot = doc.save();
+    let heads = doc.get_heads();
+    let failed_names: Vec<String> = failed_packages
+        .iter()
+        .map(|package| notebook_doc::metadata::extract_package_name(package))
+        .collect();
+    let changed = doc
+        .transact_at_heads_recovering(
+            &heads,
+            Some("runtimed:metadata"),
+            "selected-conda-failed-package-rollback",
+            |doc| {
+                let Some(mut snapshot) = doc.get_metadata_snapshot() else {
+                    return Ok(false);
+                };
+                let Some(conda) = snapshot.runt.conda.as_mut() else {
+                    return Ok(false);
+                };
+                let before = conda.dependencies.len();
+                conda.dependencies.retain(|dependency| {
+                    let name = notebook_doc::metadata::extract_package_name(dependency);
+                    !failed_names
+                        .iter()
+                        .any(|failed| name.eq_ignore_ascii_case(failed))
+                });
+                let changed = conda.dependencies.len() != before;
+                if changed {
+                    doc.set_metadata_snapshot(&snapshot)?;
+                }
+                Ok(changed)
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    if changed {
+        super::durability::commit_daemon_notebook_mutation(
+            room,
+            &mut doc,
+            &heads,
+            &rollback_snapshot,
+            &rollback_actor,
+            "failed selected Conda package rollback",
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 /// Full dep-shape captured in notebook metadata plus its env_id.
@@ -5089,8 +5154,8 @@ pub(crate) async fn promote_inline_deps_to_project(
 
 /// Handle sync environment request - hot-install new packages without kernel restart.
 ///
-/// Only supported for UV inline dependencies when there are only additions (no removals).
-/// Conda and other env types fall back to restart.
+/// Supports additions-only sync for UV inline and Conda inline/selected environments.
+/// Removals and other environment types require restart.
 pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
     // Read launched config from room
     let launched = {
@@ -5106,13 +5171,43 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
         }
     };
 
-    // For project-backed environments, promote inline deps to the project file.
-    // Project envs can't hot-install — they need a kernel restart.
     let env_source = room
         .state
         .read(|sd| sd.read_state().kernel.env_source.clone())
         .unwrap_or_default();
-    if env_source == "pixi:toml" || env_source == "uv:pyproject" || env_source == "conda:env_yml" {
+    let selected_conda_environment =
+        launched.environment_id.is_some() && env_source == "conda:existing:local";
+    let initial_metadata = {
+        let doc = room.doc.read().await;
+        doc.get_metadata_snapshot()
+    };
+    if selected_conda_environment
+        && launched.conda_channels.as_ref().is_some_and(|channels| {
+            initial_metadata
+                .as_ref()
+                .is_some_and(|metadata| get_inline_conda_channels(metadata) != *channels)
+        })
+    {
+        return NotebookResponse::SyncEnvironmentFailed {
+            error: "Selected Conda environment channels changed; restart the kernel before syncing packages".into(),
+            needs_restart: true,
+        };
+    }
+
+    if launched.environment_id.is_some() && !selected_conda_environment {
+        return NotebookResponse::SyncEnvironmentFailed {
+            error: "Only selected Conda environments support notebook dependency sync".to_string(),
+            needs_restart: false,
+        };
+    }
+
+    // For project-backed environments, promote inline deps to the project file.
+    // Project envs can't hot-install — they need a kernel restart.
+    if !selected_conda_environment
+        && (env_source == "pixi:toml"
+            || env_source == "uv:pyproject"
+            || env_source == "conda:env_yml")
+    {
         match promote_inline_deps_to_project(room, &env_source, &launched).await {
             Ok(promoted) if promoted.is_empty() => {
                 return NotebookResponse::SyncEnvironmentComplete {
@@ -5138,16 +5233,20 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
     }
 
     // Read current metadata from the doc
-    let current_metadata = {
-        let doc = room.doc.read().await;
-        doc.get_metadata_snapshot()
-    };
-
-    let Some(current_metadata) = current_metadata else {
+    let Some(current_metadata) = initial_metadata else {
         return NotebookResponse::SyncEnvironmentComplete {
             synced_packages: vec![],
         };
     };
+
+    if selected_conda_environment {
+        let trust = verify_trust_from_snapshot(&current_metadata, &room.trusted_packages);
+        if trust_needs_approval(&trust.status) {
+            return NotebookResponse::GuardRejected {
+                reason: "Notebook dependencies changed or are untrusted. Review and approve them before syncing.".into(),
+            };
+        }
+    }
 
     // Determine what packages need installing.
     // For inline-dep kernels, compute_env_sync_diff gives the drift.
@@ -5165,6 +5264,13 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
             };
         };
         if !diff.removed.is_empty() || diff.channels_changed || diff.deno_changed {
+            if selected_conda_environment {
+                return NotebookResponse::SyncEnvironmentFailed {
+                    error: "Selected Conda environments support adding packages only; removals or channel changes are not applied"
+                        .to_string(),
+                    needs_restart: true,
+                };
+            }
             return NotebookResponse::SyncEnvironmentFailed {
                 error: "Environment changes include removals or config changes that require a kernel restart".to_string(),
                 needs_restart: true,
@@ -5175,9 +5281,31 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
                 packages: diff.added.clone(),
             }
         } else if launched.conda_deps.is_some() {
+            let current_channels = current_metadata
+                .runt
+                .conda
+                .as_ref()
+                .map(|conda| conda.channels.as_slice())
+                .unwrap_or(&[]);
             notebook_protocol::protocol::EnvKind::Conda {
                 packages: diff.added.clone(),
-                channels: get_inline_conda_channels(&current_metadata),
+                channels: if selected_conda_environment {
+                    if launched
+                        .conda_channels
+                        .as_deref()
+                        .is_some_and(|channels| channels == current_channels)
+                    {
+                        current_channels.to_vec()
+                    } else {
+                        launched
+                            .conda_channels
+                            .clone()
+                            .filter(|channels| !channels.is_empty())
+                            .unwrap_or_else(|| get_inline_conda_channels(&current_metadata))
+                    }
+                } else {
+                    vec![]
+                },
             }
         } else {
             return NotebookResponse::SyncEnvironmentFailed {
@@ -5186,6 +5314,22 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
             };
         };
         (diff.added, env_kind)
+    } else if selected_conda_environment {
+        let added = get_inline_conda_deps(&current_metadata).unwrap_or_default();
+        if added.is_empty() {
+            return NotebookResponse::SyncEnvironmentComplete {
+                synced_packages: vec![],
+            };
+        }
+        let env_kind = notebook_protocol::protocol::EnvKind::Conda {
+            packages: added.clone(),
+            channels: launched
+                .conda_channels
+                .clone()
+                .filter(|channels| !channels.is_empty())
+                .unwrap_or_else(|| get_inline_conda_channels(&current_metadata)),
+        };
+        (added, env_kind)
     } else {
         // Prewarmed kernel — check if user added inline deps
         let inline = check_inline_deps(&current_metadata);
@@ -5212,7 +5356,7 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
                 }
                 let env_kind = notebook_protocol::protocol::EnvKind::Conda {
                     packages: added.clone(),
-                    channels: get_inline_conda_channels(&current_metadata),
+                    channels: launched.conda_channels.clone().unwrap_or_default(),
                 };
                 (added, env_kind)
             }
@@ -5258,7 +5402,8 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
                             }
                         }
                         notebook_protocol::protocol::EnvKind::Conda { .. } => {
-                            // Promote prewarmed to conda:inline baseline if needed
+                            // Promote prewarmed or selected Conda to the
+                            // successfully installed package baseline.
                             if config.conda_deps.is_none() {
                                 config.conda_deps = Some(vec![]);
                             }
@@ -5286,6 +5431,20 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
         }
         Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
             error!("[notebook-sync] SyncEnvironment failed: {}", error);
+            if selected_conda_environment {
+                let failed_packages = match &env_kind {
+                    notebook_protocol::protocol::EnvKind::Conda { packages, .. } => packages,
+                    _ => unreachable!("selected Conda sync uses Conda env kind"),
+                };
+                if let Err(rollback_error) =
+                    remove_selected_conda_dependencies(room, failed_packages).await
+                {
+                    return NotebookResponse::SyncEnvironmentFailed {
+                        error: format!("{error}; failed to remove uninstalled packages from notebook metadata: {rollback_error}"),
+                        needs_restart: false,
+                    };
+                }
+            }
             sync_environment_agent_error_response(error)
         }
         Ok(_) => {
