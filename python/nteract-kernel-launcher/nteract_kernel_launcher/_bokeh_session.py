@@ -191,6 +191,8 @@ class BokehDocumentSession:
         self._active_setter: str | None = None
         self._transaction_events: list[Any] = []
         self._queued_server_events: list[BokehServerEvent] = []
+        self._pending_events: list[Any] = []
+        self._flush_scheduled = False
         self._closed = False
         self._loop = _current_io_loop()
         self._session_callbacks: dict[Any, Callable[[], None]] = {}
@@ -210,9 +212,14 @@ class BokehDocumentSession:
             self._event_sink = sink
 
     def snapshot(self) -> BokehSerialization:
+        return self.checkpoint()[1]
+
+    def checkpoint(self) -> tuple[int, BokehSerialization]:
+        """The current revision and a document snapshot taken at it."""
         with self._lock:
             self._ensure_open()
-            return self._snapshot_unlocked()
+            self._flush_pending_unlocked()
+            return self._revision, self._snapshot_unlocked()
 
     def _snapshot_unlocked(self) -> BokehSerialization:
         return _serialize_bokeh_value(self.document.to_json())
@@ -232,6 +239,7 @@ class BokehDocumentSession:
         transaction_id = transaction_id or str(uuid.uuid4())
         with self._lock:
             self._ensure_open()
+            self._flush_pending_unlocked()
             if base_revision > self._revision:
                 raise StaleBokehRevisionError(base_revision, self._revision)
             # Like a Bokeh server, apply a patch made against an older revision
@@ -302,6 +310,7 @@ class BokehDocumentSession:
 
     def pop_server_events(self) -> list[BokehServerEvent]:
         with self._lock:
+            self._flush_pending_unlocked()
             events = self._queued_server_events
             self._queued_server_events = []
             return events
@@ -314,6 +323,7 @@ class BokehDocumentSession:
             self._event_sink = None
             self._queued_server_events = []
             self._transaction_events = []
+            self._pending_events = []
             cleanup = self._cleanup
 
         if self._loop is not None:
@@ -422,11 +432,32 @@ class BokehDocumentSession:
                 self._transaction_events.append(event)
                 return
 
-            patch = self._serialize_events_unlocked([event])
-            if patch is None:
-                return
-            self._revision += 1
-            server_event = BokehServerEvent(
+            self._pending_events.append(event)
+            if self._loop is None:
+                self._flush_pending_unlocked()
+            elif not self._flush_scheduled:
+                # One revision per IOLoop iteration instead of one per change:
+                # every revision costs the runtime a durable write, and a
+                # periodic callback updating a plot changes many properties.
+                self._flush_scheduled = True
+                self._loop.add_callback(self._flush_pending)
+
+    def _flush_pending(self) -> None:
+        with self._lock:
+            self._flush_pending_unlocked()
+
+    def _flush_pending_unlocked(self) -> None:
+        self._flush_scheduled = False
+        events = self._pending_events
+        self._pending_events = []
+        if self._closed or not events:
+            return
+        patch = self._serialize_events_unlocked(events)
+        if patch is None:
+            return
+        self._revision += 1
+        self._deliver_event_unlocked(
+            BokehServerEvent(
                 session_id=self.session_id,
                 transaction_id=str(uuid.uuid4()),
                 base_revision=self._revision - 1,
@@ -435,7 +466,7 @@ class BokehDocumentSession:
                 server_patch=patch,
                 checkpoint=None,
             )
-            self._deliver_event_unlocked(server_event)
+        )
 
     def _deliver_event_unlocked(self, event: BokehServerEvent) -> None:
         if self._event_sink is None:

@@ -22,8 +22,10 @@ interface BokehDocumentEvent {
   msg_data?: {
     event_name?: string;
   };
+  value?: unknown;
   model?: {
     properties?: Record<string, { syncable?: boolean }>;
+    setv?(attrs: Record<string, unknown>, options?: { sync?: boolean }): void;
   };
 }
 
@@ -53,7 +55,20 @@ interface BokehRuntime {
     ): BokehDocument;
   };
   Buffer: new (buffer: ArrayBuffer) => BokehBufferValue;
+  Deserializer?: { prototype: BokehDeserializer };
   addDocumentStandalone(document: BokehDocument, element: HTMLElement): Promise<BokehViewManager>;
+}
+
+interface BokehDeserializer {
+  references: Map<
+    string,
+    { type: string; setv(attrs: unknown, options: { sync: boolean }): void }
+  > &
+    Map<string, unknown>;
+  _decoding: boolean;
+  _decode(value: unknown): unknown;
+  _decode_object_ref(obj: { id: string; name: string; attributes?: unknown }): unknown;
+  decode(value: unknown, buffers?: unknown): unknown;
 }
 
 interface BokehSessionControllerOptions {
@@ -113,6 +128,53 @@ function isPatchReply(value: unknown): value is NteractBokehApplyPatchResult {
     typeof value.sessionId === "string" &&
     typeof value.transactionId === "string"
   );
+}
+
+/**
+ * Run `apply` with BokehJS updating existing models only after a patch's new
+ * models are finalized. Decoding a definition of a model the document already
+ * has calls `setv` mid-decode, so change listeners would build views for new
+ * models that are not initialized yet (UnsetValueError) and the affected
+ * output would disappear. The updates still happen before the patch's events
+ * are applied, in decoding order, as Bokeh intends.
+ */
+export function deferExistingModelUpdates<T>(runtime: BokehRuntime, apply: () => T): T {
+  const proto = runtime.Deserializer?.prototype;
+  if (!proto?._decode_object_ref || !proto.decode) return apply();
+  const decodeObjectRef = proto._decode_object_ref;
+  const decode = proto.decode;
+  const deferred: Array<[{ setv(attrs: unknown, options: { sync: boolean }): void }, unknown]> = [];
+  const created: Array<[Map<string, unknown>, string]> = [];
+  proto._decode_object_ref = function (this: BokehDeserializer, obj) {
+    const existing = this.references.get(obj.id);
+    if (existing == null) {
+      // Registered before its attributes are decoded; see the cleanup below.
+      created.push([this.references, obj.id]);
+      return decodeObjectRef.call(this, obj);
+    }
+    if (existing.type !== obj.name) return decodeObjectRef.call(this, obj);
+    deferred.push([existing, this._decode(obj.attributes ?? {})]);
+    return existing;
+  };
+  proto.decode = function (this: BokehDeserializer, value, buffers) {
+    const outermost = !this._decoding;
+    const decoded = decode.call(this, value, buffers);
+    if (outermost) {
+      for (const [model, attributes] of deferred.splice(0)) model.setv(attributes, { sync: false });
+    }
+    return decoded;
+  };
+  try {
+    return apply();
+  } catch (error) {
+    // A failed decode leaves its new models in the document uninitialized;
+    // a retry would find them by id and build views on unset properties.
+    for (const [references, id] of created) references.delete(id);
+    throw error;
+  } finally {
+    proto._decode_object_ref = decodeObjectRef;
+    proto.decode = decode;
+  }
 }
 
 function bufferMap(buffers: NteractBokehResolvedBuffer[]): Map<string, ArrayBuffer> {
@@ -186,6 +248,7 @@ export class BokehSessionController {
   private transactionTimer: number | null = null;
   private inFlightTransaction: string | null = null;
   private inFlightBaseRevision = 0;
+  private localChangesRejected = false;
   private canonicalEvents = new Map<number, NteractBokehResolvedPatchEvent>();
   private drainingCanonicalEvents = false;
   private syncPromise: Promise<void> | null = null;
@@ -314,10 +377,12 @@ export class BokehSessionController {
         throw new Error("Bokeh patch request returned an invalid reply");
       }
       if (rawReply.status !== "accepted") {
+        this.localChangesRejected = true;
         this.finishTransaction(transactionId);
         this.scheduleResync(0);
       }
     } catch (error) {
+      this.localChangesRejected = true;
       this.finishTransaction(transactionId);
       this.setStatus("error", error instanceof Error ? error.message : String(error));
       this.scheduleResync();
@@ -336,7 +401,10 @@ export class BokehSessionController {
     if (this.transactionTimer !== null) window.clearTimeout(this.transactionTimer);
     this.transactionTimer = window.setTimeout(() => {
       const transactionId = this.inFlightTransaction;
-      if (transactionId) this.finishTransaction(transactionId);
+      if (transactionId) {
+        this.localChangesRejected = true;
+        this.finishTransaction(transactionId);
+      }
       this.scheduleResync(0);
     }, TRANSACTION_TIMEOUT_MS);
   }
@@ -386,8 +454,10 @@ export class BokehSessionController {
     ) {
       throw new Error("Bokeh snapshot does not belong to this output");
     }
-    await this.replaceDocument(snapshot.checkpoint);
+    const catchUp = this.canCatchUp(snapshot);
+    if (!catchUp) await this.installCheckpoint(snapshot.checkpoint);
     for (const event of snapshot.patchTail) {
+      if (catchUp && event.revision <= this.revision) continue;
       if (event.baseRevision !== this.revision || event.revision !== this.revision + 1) {
         throw new Error("Bokeh snapshot patch tail is not contiguous");
       }
@@ -405,8 +475,68 @@ export class BokehSessionController {
     this.options.onLayout();
   }
 
-  private async replaceDocument(checkpoint: NteractBokehResolvedCheckpoint): Promise<void> {
-    this.destroyDocument();
+  /**
+   * Whether the mounted document can reach the snapshot head by applying just
+   * the patch tail. Otherwise the checkpoint is reconciled first, which also
+   * overwrites local values the kernel rejected.
+   */
+  private canCatchUp(snapshot: NteractBokehSessionSnapshot): boolean {
+    if (!this.document || this.localChangesRejected) return false;
+    if (snapshot.checkpoint.revision > this.revision || snapshot.headRevision < this.revision) {
+      return false;
+    }
+    return (
+      this.revision === snapshot.checkpoint.revision ||
+      snapshot.patchTail.some((event) => event.revision === this.revision)
+    );
+  }
+
+  private async installCheckpoint(checkpoint: NteractBokehResolvedCheckpoint): Promise<void> {
+    this.localChangesRejected = false;
+    if (this.document) {
+      this.reconcileCheckpoint(this.document, checkpoint);
+    } else {
+      await this.mountDocument(checkpoint);
+    }
+  }
+
+  /**
+   * Bring the mounted document to a checkpoint in place, keeping every view
+   * mounted.
+   */
+  private reconcileCheckpoint(
+    document: BokehDocument,
+    checkpoint: NteractBokehResolvedCheckpoint,
+  ): void {
+    const roots = Array.isArray(checkpoint.document.roots)
+      ? (checkpoint.document.roots as Array<{ id?: string }>)
+      : [];
+    const rootIds = new Set(roots.map((root) => root.id));
+    for (const rootId of this.options.payload.root_ids) {
+      if (!rootIds.has(rootId)) throw new Error(`Bokeh document is missing root ${rootId}`);
+    }
+    const events: Record<string, unknown>[] = [
+      ...roots.map((root) => ({ kind: "RootAdded", model: root })),
+      ...document.all_roots
+        .filter((root) => !rootIds.has(root.id))
+        .map((root) => ({ kind: "RootRemoved", model: { id: root.id } })),
+    ];
+    if (typeof checkpoint.document.title === "string") {
+      events.push({ kind: "TitleChanged", title: checkpoint.document.title });
+    }
+    this.applyingRemote = true;
+    try {
+      deferExistingModelUpdates(this.options.runtime, () =>
+        document.apply_json_patch({ events }, bufferMap(checkpoint.buffers)),
+      );
+      this.reapplyPendingLocalChanges();
+      this.revision = checkpoint.revision;
+    } finally {
+      this.applyingRemote = false;
+    }
+  }
+
+  private async mountDocument(checkpoint: NteractBokehResolvedCheckpoint): Promise<void> {
     this.options.container.replaceChildren();
     this.applyingRemote = true;
     try {
@@ -472,7 +602,7 @@ export class BokehSessionController {
       return;
     }
     if (event.checkpoint) {
-      await this.replaceDocument(event.checkpoint);
+      await this.installCheckpoint(event.checkpoint);
     } else {
       const ownTransaction = !replay && event.transactionId === this.inFlightTransaction;
       // The kernel applies a patch made against an older revision on top of
@@ -485,6 +615,7 @@ export class BokehSessionController {
           this.applyPatchPayload(event.clientPatch);
         }
         if (event.serverPatch) this.applyPatchPayload(event.serverPatch);
+        this.reapplyPendingLocalChanges();
         this.revision = event.revision;
       } finally {
         this.applyingRemote = false;
@@ -495,9 +626,26 @@ export class BokehSessionController {
     this.options.onLayout();
   }
 
+  /**
+   * Kernel events can overwrite values the browser changed but has not sent
+   * yet. The kernel applies those changes after the event, so restore them
+   * here; otherwise the browser keeps the kernel's older value while the
+   * kernel ends up with the browser's.
+   */
+  private reapplyPendingLocalChanges(): void {
+    for (const event of this.localEvents) {
+      if (event.kind === "ModelChanged" && event.attr && event.model?.setv) {
+        event.model.setv({ [event.attr]: event.value }, { sync: false });
+      }
+    }
+  }
+
   private applyPatchPayload(payload: NteractBokehResolvedPatchPayload): void {
     if (!this.document) throw new Error("Bokeh document is not mounted");
-    this.document.apply_json_patch(payload.patch, bufferMap(payload.buffers));
+    const document = this.document;
+    deferExistingModelUpdates(this.options.runtime, () =>
+      document.apply_json_patch(payload.patch, bufferMap(payload.buffers)),
+    );
   }
 
   private cancelSatisfiedResync(): void {
