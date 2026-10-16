@@ -19,8 +19,10 @@ notebook room admits notebook work.
 
 Keep three authorities distinct:
 
-1. **Notebook access:** a verified principal may read, edit, or execute according
-   to the notebook's permissions.
+1. **Notebook access:** a verified principal may read or edit according to the
+   notebook's permissions. Hosted execution requests remain owner-only under the
+   [current policy](../../apps/notebook-cloud/AGENTS.md); this proposal does not
+   introduce a shared-editor execute capability.
 2. **Compute allocation:** the provider allows that principal to use a target,
    resource budget, and environment. Notebook sharing alone does not grant this.
 3. **Runtime attachment:** the room admits the selected runtime session, permitting
@@ -58,9 +60,23 @@ existing clients while negotiating the new contract explicitly: a managed grant
 must fail closed without a current generation. This memo does not claim that
 all current runtimes already enforce the proposed grant rules.
 
+For the proposed contract, admission mode is durable notebook-service policy,
+not a claim chosen by the peer. Once managed admission is selected, cancelling
+or clearing its session cannot reopen legacy no-selection/no-session-ID paths.
+Changing that policy requires an authorized host operation.
+
+Reuse `runtime_session_id` as the opaque attachment generation, rather than
+adding another counter. The notebook admission service assigns it once in the
+launch operation; the room's current selection determines whether it is active.
+The operation remembers its assigned ID, not a second independently mutable
+current selection.
+
 ## Proposed launch and attachment contract
 
-These are logical guarantees, not a new endpoint or SDK inventory:
+These are logical guarantees, not a new endpoint or SDK inventory. A provider
+controller here means the target platform's existing allocation/lifecycle system,
+which may live outside nteract. The adapter integrates that system; this memo does
+not claim nteract already includes a universal provider controller.
 
 - Admission carries verified platform context, notebook ID, requested resources
   and environment, and an idempotency key. Derive the acting principal from
@@ -95,13 +111,21 @@ merely because it still has an old credential.
 
 Persist terminal intent for a generation, with a reason such as user stop, idle
 expiry, revocation or replacement. Fence execution authority immediately. For
-managed compute, reconcile until the provider acknowledges the required stopped
-state; display cleanup pending if confirmation is unavailable. For imported
-compute, complete detach without invoking resource stop/delete. Keep this policy
-separate from disconnect detection.
+managed compute, the notebook admission service records pending termination in
+its durable launch-operation store. Its scheduled reconciler retries the
+provider's idempotent stop/reconcile operation until acknowledgement of the
+required stopped state; the provider controller still owns resource mutation.
+The reconciler must resume from storage after service restart. Display cleanup
+pending if confirmation is unavailable. For imported compute, complete detach
+without invoking resource stop/delete. Keep this policy separate from disconnect
+detection.
 
-A transient reconnect within a valid session lease may keep its generation.
-Runtime process replacement receives a new generation and fences the old one.
+A transient reconnect may keep a nonterminal selected generation after validating
+or renewing its grant. Presence TTL is a liveness signal, grant expiry bounds
+authority, and explicit terminal policy retires the generation; no additional
+"session lease" is proposed. A presence timeout alone does not mint or retire
+a generation. Runtime process replacement receives a new generation and fences
+the old one.
 A controller process restart does not itself replace a still-valid runtime.
 Late allocation results after cancellation are recorded and reconciled only for
 resources this application owns; they cannot attach to the retired generation.
@@ -112,11 +136,18 @@ Do not automatically replay accepted code whose external side effects are unknow
 | State | Authority or storage |
 | --- | --- |
 | Notebook content and accepted execution/output provenance | Notebook host and its durable document/journal storage |
-| Current session selection and generation | Authoritative room/session record |
+| Launch operation, idempotency fingerprint, assigned session ID, pending termination and provider acknowledgement | Notebook admission service's durable operation store and scheduled reconciler |
+| Admission mode and current session selection | Authoritative notebook/room state; the room selects an operation's assigned `runtime_session_id` |
 | Compute resource and desired lifecycle | Existing provider controller |
 | Device enrollment and revocation | Device/enrollment registry |
 | Presence and readiness projection | Bounded lease/cache, derived from authoritative state |
 | Large outputs, source snapshots and checkpoints | Object storage or local filesystem, referenced by small metadata |
+
+The first adapter must specify atomic operation creation and serialized activation
+of the room selection, including recovery between these steps. Existing attach-job
+rows and RuntimeStateDoc attachment projections must not become two competing
+selection authorities. Exact durable schemas and storage placement remain open;
+a disposable DO cache cannot be the only copy of launch or termination intent.
 
 Redis may be a reconstructable index or notification channel if measurements
 justify it. A TTL cache cannot be the sole proof of which runtime may publish or
@@ -147,7 +178,8 @@ Qualify the boundary with observable scenarios:
 - Stop/idle/cancel survives controller failure without a supervisor restart loop;
   imported detach never invokes destructive provider operations.
 - Existing enrollment records and running imported workstations continue working.
-  Negotiated managed-grant rules cannot silently downgrade to legacy admission.
+  Clearing a managed selection or omitting peer metadata cannot downgrade its
+  server-owned policy to legacy admission.
 - Completed outputs and exact accepted execution provenance survive runtime
   replacement. Python memory and working files have separate lifecycle policies.
 - Pin the application, WASM/protocol, native runtime and provider revisions; verify
