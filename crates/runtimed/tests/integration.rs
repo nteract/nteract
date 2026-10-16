@@ -244,6 +244,33 @@ async fn wait_for_daemon(client: &PoolClient) -> bool {
     false
 }
 
+async fn assert_running_daemon_ready(
+    client: &PoolClient,
+    daemon_task: &mut tokio::task::JoinHandle<()>,
+    context: &str,
+) {
+    let mut last_ping_error = None;
+    let readiness = tokio::time::timeout(DAEMON_READY_TIMEOUT, async {
+        loop {
+            match client.ping().await {
+                Ok(()) => return,
+                Err(error) => last_ping_error = Some(error),
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    });
+    let result = tokio::select! {
+        result = &mut *daemon_task => {
+            panic!("{context} exited before readiness: {result:?}");
+        }
+        result = readiness => result,
+    };
+    assert!(
+        result.is_ok(),
+        "{context} did not become ready within {DAEMON_READY_TIMEOUT:?}; last ping error: {last_ping_error:?}"
+    );
+}
+
 /// Wait until initial Automerge sync has delivered the daemon-created
 /// `cells` map to this client.
 ///
@@ -310,29 +337,29 @@ async fn stop_daemon_for_replacement(
 
 // A task join is not a Windows process-exit boundary: accepted pipe handlers
 // and their cancelled overlapped I/O may still own the old named pipe.
-async fn stop_receipt_daemon_for_replacement(
+async fn stop_daemon_and_transport_for_replacement(
     pool: &PoolClient,
     task: &mut tokio::task::JoinHandle<()>,
     socket: &Path,
 ) {
     pool.shutdown().await.expect("clean shutdown accepted");
-    let result = tokio::time::timeout(Duration::from_secs(2), async {
-        (&mut *task)
-            .await
-            .expect("daemon task completed successfully");
-        #[cfg(windows)]
-        windows_restart::wait_for_pipe_release(socket)
-            .await
-            .expect("old pipe released");
-        #[cfg(not(windows))]
-        let _ = socket;
-    })
-    .await;
-    if let Err(error) = result {
-        task.abort();
-        let _ = task.await;
-        panic!("daemon and transport did not stop before replacement: {error}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    match tokio::time::timeout_at(deadline, &mut *task).await {
+        Ok(result) => result.expect("daemon task completed successfully"),
+        Err(error) => {
+            task.abort();
+            let _ = task.await;
+            panic!("daemon task did not stop before replacement: {error}");
+        }
     }
+    // The task has been joined. A pipe-release failure must not poll it again.
+    #[cfg(windows)]
+    tokio::time::timeout_at(deadline, windows_restart::wait_for_pipe_release(socket))
+        .await
+        .expect("old pipe released within shutdown deadline")
+        .expect("old pipe released");
+    #[cfg(not(windows))]
+    let _ = socket;
 }
 
 #[cfg(windows)]
@@ -1267,7 +1294,7 @@ async fn test_strict_sync_receipt_cross_peer_and_restart_without_export() {
     drop(changed);
     drop(peer);
     drop(owner);
-    stop_receipt_daemon_for_replacement(&pool, &mut daemon_handle, &socket_path).await;
+    stop_daemon_and_transport_for_replacement(&pool, &mut daemon_handle, &socket_path).await;
 
     // No SaveNotebook request or .ipynb file exists: restart must use recovery.
     let daemon = Daemon::new_for_test(replacement_config(config, &temp_dir, "receipt")).unwrap();
@@ -1289,7 +1316,7 @@ async fn test_strict_sync_receipt_cross_peer_and_restart_without_export() {
         "accepted = 2"
     );
     drop(recovered);
-    stop_receipt_daemon_for_replacement(&pool, &mut daemon_handle, &socket_path).await;
+    stop_daemon_and_transport_for_replacement(&pool, &mut daemon_handle, &socket_path).await;
 }
 
 #[tokio::test]
@@ -4563,10 +4590,18 @@ async fn test_notebook_sync_uuid_imports_saved_file_without_recovery_journal() {
 
     let daemon = Daemon::new_for_test(config.clone()).unwrap();
     let mut daemon_handle = tokio::spawn(async move {
-        daemon.run().await.ok();
+        daemon
+            .run()
+            .await
+            .expect("initial saved-import daemon failed");
     });
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client).await);
+    assert_running_daemon_ready(
+        &pool_client,
+        &mut daemon_handle,
+        "initial saved-import daemon",
+    )
+    .await;
 
     let opened = connect::connect_open(socket_path.clone(), saved_path.clone(), "open")
         .await
@@ -4575,7 +4610,7 @@ async fn test_notebook_sync_uuid_imports_saved_file_without_recovery_journal() {
     assert_session_ready(&opened.handle, "initial saved notebook open").await;
     assert_eq!(opened.handle.get_cells().len(), 3);
     drop(opened);
-    stop_daemon_for_replacement(&pool_client, &mut daemon_handle).await;
+    stop_daemon_and_transport_for_replacement(&pool_client, &mut daemon_handle, &socket_path).await;
 
     if config.notebook_docs_dir.exists() {
         std::fs::remove_dir_all(&config.notebook_docs_dir).unwrap();
@@ -4585,12 +4620,20 @@ async fn test_notebook_sync_uuid_imports_saved_file_without_recovery_journal() {
     let restarted =
         Daemon::new_for_test(replacement_config(config, &temp_dir, "no-journal")).unwrap();
     let mut restarted_handle = tokio::spawn(async move {
-        restarted.run().await.ok();
+        restarted
+            .run()
+            .await
+            .expect("replacement saved-import daemon failed");
     });
     let restarted_pool = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&restarted_pool).await);
+    assert_running_daemon_ready(
+        &restarted_pool,
+        &mut restarted_handle,
+        "replacement saved-import daemon",
+    )
+    .await;
 
-    let rejoined = connect::connect(socket_path, notebook_id, "rejoin")
+    let rejoined = connect::connect(socket_path.clone(), notebook_id, "rejoin")
         .await
         .expect("registry-backed UUID should reconnect without a journal");
     assert_session_ready(&rejoined.handle, "registry-only UUID recovery").await;
@@ -4601,7 +4644,8 @@ async fn test_notebook_sync_uuid_imports_saved_file_without_recovery_journal() {
         .any(|cell| cell.source == "persisted_value_2 = 2"));
 
     drop(rejoined);
-    stop_daemon_for_replacement(&restarted_pool, &mut restarted_handle).await;
+    stop_daemon_and_transport_for_replacement(&restarted_pool, &mut restarted_handle, &socket_path)
+        .await;
 }
 
 /// A recovery journal is preserved when the last saved `.ipynb` disappears,

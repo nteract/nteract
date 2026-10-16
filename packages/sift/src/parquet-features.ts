@@ -25,6 +25,32 @@ export function applyParquetColumnHints(columns: Column[], hints: ParquetColumnH
   }
 }
 
+/**
+ * Column type pins for `refreshColumnTypes`: footer semantics (for example a
+ * HuggingFace `ClassLabel` shown as categorical) under host overrides. Without
+ * these, a refresh after each appended row group would re-derive the type
+ * from the physical Arrow array and drop the hint.
+ */
+export function typeOverridesFromHints(
+  hints: ParquetColumnHint[],
+  columnOverrides?: Record<string, Partial<Column>>,
+): Record<string, Partial<Column>> {
+  const pinned: Record<string, Partial<Column>> = {};
+  for (const hint of hints) {
+    if (hint.columnType === undefined && hint.numeric === undefined) continue;
+    const pin: Partial<Column> = {};
+    if (hint.columnType !== undefined) pin.columnType = hint.columnType;
+    if (hint.numeric !== undefined) pin.numeric = hint.numeric;
+    pinned[hint.name] = pin;
+  }
+  if (columnOverrides) {
+    for (const [name, override] of Object.entries(columnOverrides)) {
+      pinned[name] = { ...pinned[name], ...override };
+    }
+  }
+  return pinned;
+}
+
 export function pandasIndexColumnsFromHints(hints: ParquetColumnHint[]): Set<string> {
   return new Set(hints.filter((hint) => hint.pandasIndex).map((hint) => hint.name));
 }

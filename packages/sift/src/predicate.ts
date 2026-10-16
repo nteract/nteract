@@ -22,6 +22,14 @@ export type ViewportCells = {
   nulls: boolean[];
 };
 
+/** Footer summary returned by `parquet_file_info`. */
+export type ParquetFileInfo = {
+  num_rows: number;
+  num_row_groups: number;
+  row_group_rows: number[];
+  column_names: string[];
+};
+
 type PredicateModule = {
   // Data store
   load_ipc(ipc_bytes: Uint8Array): number;
@@ -49,6 +57,29 @@ type PredicateModule = {
     total_rows: number,
   ): ParquetColumnHint[];
   load_parquet_row_group(parquet_bytes: Uint8Array, row_group: number, handle: number): number;
+  // Byte-range Parquet: open from the footer, decode row groups from fetched ranges
+  parquet_footer_length(tail: Uint8Array): number;
+  parquet_open(
+    tail: Uint8Array,
+    file_len: number,
+    max_rows: number,
+    max_columns: number,
+    max_decoded_bytes: number,
+  ): number;
+  parquet_file_info(file: number): ParquetFileInfo;
+  parquet_file_column_hints(file: number): ParquetColumnHint[];
+  parquet_create_store(file: number): number;
+  /** Flat `[offset, length, ...]` per column chunk of one row group. */
+  parquet_row_group_ranges(file: number, row_group: number): Float64Array;
+  /** Decode one row group from `data`, the concatenation of `ranges`. Returns rows appended. */
+  parquet_append_row_group(
+    file: number,
+    store: number,
+    row_group: number,
+    ranges: Float64Array,
+    data: Uint8Array,
+  ): number;
+  parquet_close(file: number): void;
   cast_column(handle: number, col: number, target_type: string): void;
   has_original_column(handle: number, col: number): boolean;
   undo_cast_column(handle: number, col: number): string;

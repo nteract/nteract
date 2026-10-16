@@ -37,6 +37,8 @@ Worker layouts, or auth shortcuts wholesale.
 
 Related docs:
 
+- [Output frame security](output-frame-security.md), the current shared shell
+  and local HTTP boundaries; this ADR's hosted requirements are separate.
 - `src/components/isolated/AGENTS.md`
 - `docs/adr/deployment-topology.md`
 - `docs/adr/hosted-credential-transport.md`
@@ -112,8 +114,10 @@ Output document JavaScript must not receive:
 - URLs that imply editor/owner authority.
 
 Output documents communicate with the parent through the existing explicit
-`postMessage` bridge. The parent validates message source, expected frame
-session, and renderer protocol shape before accepting messages. The output
+`postMessage` bridge. Current parent receive paths bind messages to the expected
+iframe window and check protocol shape. The local reload generation is not an
+authenticated on-wire session. Hosted deployments must enforce any required
+origin/session authentication separately. The output
 frame may ask the parent to resolve a blob or send a widget message through the
 existing renderer bridge; it must not open `/n/:id/sync` or any authenticated
 notebook-room WebSocket itself.
@@ -167,8 +171,10 @@ Cloudflare-local URLs. The host provides a `BlobResolver`:
 - notebook-cloud maps blob refs to `/api/n/:id/blobs/:hash` for the prototype;
 - production can map blob refs to a signed, cookie-free blob/output origin.
 
-The output document origin may fetch only the blob URLs the parent gives it.
-For private notebooks, those URLs should be short-lived capabilities scoped to
+Hosted blob serving must restrict reads to the scope delegated by the parent.
+This is a deployment requirement, not a network restriction enforced by the
+current renderer or unauthenticated local blob HTTP server. For private
+notebooks, those URLs should be short-lived capabilities scoped to
 the notebook, revision/render batch, hash, and viewer. For public published
 notebooks, content-addressed public URLs are acceptable only when the notebook
 is deliberately public. In both cases, attribution and ACL decisions stay
