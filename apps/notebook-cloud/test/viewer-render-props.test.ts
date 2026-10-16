@@ -566,8 +566,10 @@ test("cloud viewer presents live-room failures as one host notice", () => {
   assert.match(sourceText, /const signedOutNotebookSignInRequired =/);
   assert.match(
     sourceText,
-    /Boolean\(authConfig\.localDev \|\| authConfig\.oidc\)[\s\S]*authState\.mode === "anonymous"[\s\S]*!isPublicViewer[\s\S]*!notebookHasReadableSnapshot[\s\S]*isTransportReconnectError\(connectionError\)/,
+    /const signedOutNotebookStageGated =\s*signedOutNotebookSignInRequired && !notebookHasReadableSnapshot/,
   );
+  assert.match(sourceText, /cloudNotebookSignInRequired\(\{/);
+  assert.match(sourceText, /signInRequiredOwnedByStage: signedOutNotebookStageGated/);
   assert.match(sourceText, /signInRequired: signedOutNotebookSignInRequired/);
   assert.match(sourceText, /signInRequired=\{signedOutNotebookSignInRequired\}/);
   assert.match(noticesText, /const connectionNotice = connectionError/);

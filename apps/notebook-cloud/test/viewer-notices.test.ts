@@ -11,7 +11,11 @@ import {
   CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC,
   cloudConnectionErrorAcceptsAccessDiagnostic,
 } from "../viewer/connection-diagnostics";
-import { CloudNotebookNotices, cloudNotebookHasNotices } from "../viewer/notices";
+import {
+  CloudNotebookNotices,
+  cloudNotebookHasNotices,
+  cloudNotebookSignInRequired,
+} from "../viewer/notices";
 
 globalThis.React = React;
 
@@ -727,4 +731,168 @@ test("startup failure displays compute recovery without a request rejection", ()
   assert.match(html, /Retry compute/);
   assert.match(html, /session limit/);
   assert.doesNotMatch(html, /Unable to load notebook/);
+});
+
+test("signed-out cached reconnects retain retry feedback and offer account sign-in", () => {
+  const input = {
+    signInAvailable: true,
+    hasReadableSnapshot: true,
+    sustainedReconnecting: true,
+    sessionStatus: "ready" as const,
+    statusKind: "loading" as const,
+    hasAppSession: false,
+    authState: authState("anonymous"),
+    isPublicViewer: false,
+    connectionError: "cloud sync socket failed",
+  };
+  assert.equal(cloudNotebookSignInRequired(input), true);
+  for (const status of [
+    { kind: "ready" as const, message: "Cached notebook" },
+    { kind: "loading" as const, message: "Connecting to live notebook room..." },
+  ]) {
+    const props = {
+      ...input,
+      signInRequired: cloudNotebookSignInRequired({ ...input, statusKind: status.kind }),
+      signInRequiredOwnedByStage: false,
+      hasReadableSnapshot: true,
+      authRenewal: { kind: "idle" as const, message: null },
+      sustainedReconnecting: true,
+      syncHealStalled: true,
+      status,
+      onResetAuth: () => {},
+      onSignInAgain: () => {},
+    };
+    assert.equal(cloudNotebookHasNotices(props), true);
+    const html = renderToStaticMarkup(React.createElement(CloudNotebookNotices, props));
+    assert.match(html, /You’re signed out/);
+    assert.equal(html.match(/Reconnecting\./g)?.length, 1);
+    assert.doesNotMatch(html, /Sign in required/);
+    assert.match(
+      html,
+      /We’re retrying the connection\. You’re signed out; you can sign in to use your account\./,
+    );
+    assert.match(html, /<button[^>]*>[\s\S]*Sign in[\s\S]*<\/button>/);
+    assert.doesNotMatch(html, /Sync is stalled|Loading notebook|expired/i);
+  }
+});
+
+test("a failed or pending session check cannot establish missing sign-in", () => {
+  const input = {
+    signInAvailable: true,
+    hasReadableSnapshot: true,
+    sustainedReconnecting: true,
+    sessionStatus: "ready" as const,
+    statusKind: "loading" as const,
+    hasAppSession: false,
+    authState: authState("anonymous"),
+    isPublicViewer: false,
+    connectionError: "cloud sync socket failed",
+  };
+  for (const alternative of [
+    { sustainedReconnecting: false },
+    { sessionStatus: "loading" as const },
+    { sessionStatus: "error" as const },
+    { hasAppSession: true },
+    { authState: authState("oidc") },
+    { authState: authState("oidc_expired") },
+    { isPublicViewer: true },
+    { signInAvailable: false },
+    { connectionError: null },
+    { connectionError: CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC },
+  ]) {
+    assert.equal(cloudNotebookSignInRequired({ ...input, ...alternative }), false);
+  }
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      ...input,
+      signInRequired: cloudNotebookSignInRequired({ ...input, sessionStatus: "error" }),
+      hasReadableSnapshot: true,
+      authRenewal: { kind: "idle", message: null },
+      sustainedReconnecting: true,
+      status: { kind: "ready", message: "Cached notebook" },
+      onResetAuth: () => {},
+      onSignInAgain: () => {},
+    }),
+  );
+  assert.match(html, /Reconnecting\./);
+  assert.doesNotMatch(html, /Sign in required/);
+});
+
+test("the signed-out stage gate does not also promise automatic reconnection", () => {
+  const props = {
+    authState: authState("anonymous"),
+    authRenewal: { kind: "idle" as const, message: null },
+    connectionError: "cloud sync socket failed",
+    signInRequired: true,
+    signInRequiredOwnedByStage: true,
+    sustainedReconnecting: true,
+    syncHealStalled: true,
+    status: { kind: "loading" as const, message: "Connecting to live notebook room..." },
+    onResetAuth: () => {},
+  };
+  assert.equal(cloudNotebookHasNotices(props), false);
+  assert.equal(renderToStaticMarkup(React.createElement(CloudNotebookNotices, props)), "");
+});
+
+test("a cached public reader with cleared peer identity keeps optional account recovery", () => {
+  const input = {
+    signInAvailable: true,
+    sessionStatus: "ready" as const,
+    statusKind: "loading" as const,
+    hasAppSession: false,
+    authState: authState("anonymous"),
+    isPublicViewer: true,
+    hasReadableSnapshot: true,
+    sustainedReconnecting: true,
+    connectionError: "cloud sync socket failed",
+  };
+  assert.equal(cloudNotebookSignInRequired(input), false);
+  // Teardown clears peer identity before the next admission can establish public access.
+  const afterTeardown = { ...input, isPublicViewer: false };
+  assert.equal(
+    cloudNotebookSignInRequired({ ...afterTeardown, sustainedReconnecting: false }),
+    false,
+  );
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      ...afterTeardown,
+      signInRequired: cloudNotebookSignInRequired(afterTeardown),
+      authRenewal: { kind: "idle", message: null },
+      status: { kind: "ready", message: "Cached public notebook" },
+      onResetAuth: () => {},
+      onSignInAgain: () => {},
+    }),
+  );
+  assert.match(html, /Reconnecting\./);
+  assert.match(html, /retrying the connection/);
+  assert.match(html, /you can sign in to use your account/);
+  assert.doesNotMatch(html, /Sign in required|edits are kept|expired/i);
+  assert.equal(
+    cloudNotebookSignInRequired({
+      ...afterTeardown,
+      hasReadableSnapshot: false,
+      sustainedReconnecting: false,
+    }),
+    true,
+    "unreadable notebooks can still present the existing stage gate immediately",
+  );
+});
+
+test("empty public notebooks do not gain a sign-in stage gate after a failed reconnect", () => {
+  for (const statusKind of ["empty", "ready", "error"] as const) {
+    assert.equal(
+      cloudNotebookSignInRequired({
+        signInAvailable: true,
+        sessionStatus: "ready",
+        hasAppSession: false,
+        authState: authState("anonymous"),
+        isPublicViewer: false,
+        hasReadableSnapshot: false,
+        sustainedReconnecting: true,
+        statusKind,
+        connectionError: "cloud sync socket failed",
+      }),
+      false,
+    );
+  }
 });
