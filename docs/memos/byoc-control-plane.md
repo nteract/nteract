@@ -7,6 +7,20 @@ Companion to [compute-session-index.md](compute-session-index.md),
 [aws-rust-room-host.md](aws-rust-room-host.md), and ADR
 [deployment-topology.md](../adr/deployment-topology.md).
 
+> **Current-source note (October 16, 2026):** This July memo records historical
+> observations, options and pricing assumptions; it is not a current inventory.
+> At `655b66d89a841953925d58ca38b4daa75c29ec17`,
+> [OwnerComputeIndex](../../apps/notebook-cloud/src/compute-session-index.ts)
+> has an `alarm()` that expires workstation leases,
+> [the route layer](../../apps/notebook-cloud/src/index.ts) has
+> `routeWorkstationDeregister`, and
+> [listActiveWorkstationAttachJobs](../../apps/notebook-cloud/src/storage.ts)
+> expires stale jobs during polling. These supersede the missing-alarm,
+> missing-deregistration and create-only-expiry claims below; they do not establish
+> that every historical symptom is resolved in every deployment. See the proposed
+> [cloud compute admission contract](cloud-compute-admission.md) for managed
+> launch, enrolled native workstations and lifecycle boundaries.
+
 ## Context
 
 The workstation control plane was shaped for the Cloudflare free tier: poll on a
