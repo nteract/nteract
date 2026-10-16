@@ -8,7 +8,7 @@ import {join} from "node:path";
 import {setTimeout as sleep} from "node:timers/promises";
 import {releaseIdentity} from "./npm-release.mjs";
 import {positive, successfulJobAtAttempt, validateWasm} from "./editor-assets-release.mjs";
-import {candidateName, digest, packJobStatusAtAttempt, publishWasmPackage, resolveCandidate, resolveWasmPlan, seal, tarballName, validatePacked, waitForWasmPublication} from "./npm-wasm-release.mjs";
+import {candidateName, digest, packJobStatusAtAttempt, publishWasmPackage, resolveCandidate, resolveWasmPlan, seal, tarballName, validatePacked, waitForWasmPublication, wasmVerificationRecovery} from "./npm-wasm-release.mjs";
 
 const env = process.env;
 const [command, ...args] = process.argv.slice(2);
@@ -37,7 +37,7 @@ if (command === "seal") {
     if (version[0] < 11 || (version[0] === 11 && (version[1] < 5 || (version[1] === 5 && version[2] < 1)))) throw new Error("npm 11.5.1 or newer is required for trusted publishing");
     decision = await publishWasmPackage(candidate, bytes, {
       publish: () => execFileSync("npm", ["publish", tarball, "--tag", candidate.plan.distTag, "--access", "public", "--provenance", "--ignore-scripts"], {stdio: "inherit"}),
-      onAccepted: () => summary(`npm accepted the upload of ${manifest.name}@${manifest.version}; registry integrity is not verified yet. If visibility remains pending, run npm-wasm-release-cli.mjs verify-published against this same retained candidate before any publication retry.`),
+      onAccepted: () => summary(`npm accepted the upload of ${manifest.name}@${manifest.version}; registry integrity is not verified yet. ${wasmVerificationRecovery}`),
     });
   }
   summary(`@runtimed/wasm@${manifest.version}: **${decision === "existing" ? "existing" : "published"}**; verified immutable integrity ${candidate.integrity}; source ${candidate.plan.sourceSha}.`);

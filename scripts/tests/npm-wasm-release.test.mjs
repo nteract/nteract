@@ -197,7 +197,11 @@ test("failed upload or registry lookup is not silently retried or called verifie
   assert.equal(reads, 1);
   await assert.rejects(waitForWasmPublication(candidate, bytes, {
     fetchPackage: async () => {throw new Error("HTTP 503");}, wait: () => assert.fail("lookup errors must remain visible"),
-  }), /HTTP 503/);
+  }), error => {
+    assert.match(error.message, /HTTP 503.*npm-wasm-publish-input-\*.*verify-published/);
+    assert.equal(error.cause.message, "HTTP 503");
+    return true;
+  });
 });
 
 test("verification-only CLI reads exact public metadata without npm, OIDC, or an enabled gate", () => {
