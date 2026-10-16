@@ -20,6 +20,7 @@ function aboutJson(crate) {
     [
       "about",
       "generate",
+      "--locked",
       "--format",
       "json",
       "--config",
@@ -28,7 +29,12 @@ function aboutJson(crate) {
       join(repoRoot, "crates", crate, "Cargo.toml"),
       "--fail",
     ],
-    { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "inherit"],
+      maxBuffer: 32 * 1024 * 1024,
+    },
   );
   return JSON.parse(json);
 }

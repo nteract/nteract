@@ -870,6 +870,8 @@ importers:
 
   packages/runtimed-node/npm/win32-x64-msvc: {}
 
+  packages/runtimed-wasm: {}
+
   packages/sift:
     dependencies:
       '@chenglou/pretext':
