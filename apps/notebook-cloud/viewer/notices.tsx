@@ -37,9 +37,8 @@ export interface CloudNotebookNoticesProps {
   loadingOwnedByShell?: boolean;
   /**
    * The route has no authenticated browser identity and the live-room join is
-   * retrying without a readable public snapshot. This is different from stale
-   * or expired auth: the browser needs to start a sign-in flow before the room
-   * can become readable.
+   * retrying. Offer sign-in without hiding readable cached content or claiming
+   * that a socket failure proves access restrictions or token expiry.
    */
   signInRequired?: boolean;
   /**
@@ -129,6 +128,44 @@ export function isTransportReconnectError(error: string): boolean {
   return TRANSPORT_RECONNECT_ERROR_SHAPES.some((shape) => shape.test(error));
 }
 
+/**
+ * Offer account recovery only after a successful check confirms no session.
+ * A socket failure cannot prove a cached notebook is private: public admission
+ * may be pending again after teardown, so retain debounced retry feedback and
+ * keep inline account sign-in optional.
+ */
+export function cloudNotebookSignInRequired({
+  signInAvailable,
+  sessionStatus,
+  hasAppSession,
+  authState,
+  isPublicViewer,
+  hasReadableSnapshot,
+  sustainedReconnecting,
+  statusKind,
+  connectionError,
+}: {
+  signInAvailable: boolean;
+  sessionStatus: "loading" | "ready" | "error";
+  hasAppSession: boolean;
+  authState: CloudPrototypeAuthState;
+  isPublicViewer: boolean;
+  hasReadableSnapshot: boolean;
+  sustainedReconnecting: boolean;
+  statusKind: ViewerStatus["kind"];
+  connectionError: string | null;
+}): boolean {
+  return (
+    signInAvailable &&
+    sessionStatus === "ready" &&
+    !hasAppSession &&
+    authState.mode === "anonymous" &&
+    !isPublicViewer &&
+    (hasReadableSnapshot ? sustainedReconnecting : statusKind === "loading") &&
+    Boolean(connectionError && isTransportReconnectError(connectionError))
+  );
+}
+
 export function cloudNotebookHasNotices({
   authState,
   authRenewal,
@@ -186,8 +223,7 @@ export function cloudNotebookHasNotices({
     shouldShowSignInRequiredNotice ||
     shouldShowAuthNotice ||
     shouldShowAuthRenewalNotice ||
-    sustainedReconnecting ||
-    (syncHealStalled && !sustainedReconnecting) ||
+    (!signInRequired && (sustainedReconnecting || syncHealStalled)) ||
     Boolean(offlineMergeNotice) ||
     Boolean(connectionNotice) ||
     Boolean(rendererAssetError) ||
@@ -298,16 +334,18 @@ export function CloudNotebookNotices({
 
       {shouldShowSignInRequiredNotice ? (
         <NotebookNotice
-          tone="warning"
+          tone={hasReadableSnapshot ? "info" : "warning"}
           icon={<LogIn />}
-          title="Sign in required."
+          title={hasReadableSnapshot ? "Reconnecting." : "Sign in required."}
           actions={
             onSignInAgain ? (
               <SignInNoticeAction onSignInAgain={onSignInAgain}>Sign in</SignInNoticeAction>
             ) : null
           }
         >
-          Sign in to open the live notebook room.
+          {hasReadableSnapshot
+            ? "We’re retrying the connection. You’re signed out; you can sign in to use your account."
+            : "Sign in to open the live notebook room."}
         </NotebookNotice>
       ) : null}
 
@@ -339,13 +377,13 @@ export function CloudNotebookNotices({
         </NotebookNotice>
       ) : null}
 
-      {sustainedReconnecting ? (
+      {sustainedReconnecting && !signInRequired ? (
         <NotebookNotice tone="info" icon={<CloudOff />} title="Reconnecting.">
           Your edits are kept locally and will sync when the connection returns.
         </NotebookNotice>
       ) : null}
 
-      {syncHealStalled && !sustainedReconnecting ? (
+      {syncHealStalled && !sustainedReconnecting && !signInRequired ? (
         <NotebookNotice tone="info" icon={<CloudOff />} title="Sync is stalled.">
           Your edits are kept locally. This clears as soon as the room catches up.
         </NotebookNotice>

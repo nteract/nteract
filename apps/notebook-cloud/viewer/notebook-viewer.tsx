@@ -153,7 +153,7 @@ import type { ResolvedCell } from "./render-resolution";
 import {
   CloudNotebookNotices,
   cloudNotebookHasNotices,
-  isTransportReconnectError,
+  cloudNotebookSignInRequired,
   shouldShowCloudAnonymousViewerAuthNotice,
 } from "./notices";
 import {
@@ -1690,25 +1690,27 @@ export function NotebookViewer({
   const notebookHasReadableSnapshot =
     notebookCellIds.length > 0 ||
     (!connectionError && snapshotResolvedRef.current && status.kind === "ready");
-  // The route has no authenticated identity and the live-room join is retrying
-  // without a readable public snapshot: a hard sign-in wall, distinct from stale
-  // or expired auth. This owns the whole stage (NotebookAccessGate below) instead
-  // of riding the thin notice banner, so the signed-out canvas reads as gated
-  // rather than an empty/broken notebook.
-  const signedOutNotebookSignInRequired =
-    Boolean(authConfig.localDev || authConfig.oidc) &&
-    appSessionStatus.status !== "loading" &&
-    !hasAppSession &&
-    authState.mode === "anonymous" &&
-    !isPublicViewer &&
-    !notebookHasReadableSnapshot &&
-    status.kind === "loading" &&
-    Boolean(connectionError && isTransportReconnectError(connectionError));
+  // A confirmed signed-out session needs an action even when cached cells
+  // remain readable. Keep that recovery separate from gating the whole stage.
+  const signedOutNotebookSignInRequired = cloudNotebookSignInRequired({
+    signInAvailable: Boolean(authConfig.localDev || authConfig.oidc),
+    sessionStatus: appSessionStatus.status,
+    hasAppSession,
+    authState,
+    isPublicViewer,
+    hasReadableSnapshot: notebookHasReadableSnapshot,
+    sustainedReconnecting,
+    statusKind: status.kind,
+    connectionError,
+  });
+  // Cached content stays visible; only an unreadable notebook needs a stage gate.
+  const signedOutNotebookStageGated =
+    signedOutNotebookSignInRequired && !notebookHasReadableSnapshot;
   const notebookBodyAccessBlocked = cloudConnectionDiagnosticBlocksNotebookBody(connectionError);
   // A signed-out gate blocks the body just like an access diagnostic: quiet the
   // presence/edit/identity chrome so the header does not advertise collaboration
   // affordances behind a sign-in wall.
-  const notebookStageGated = notebookBodyAccessBlocked || signedOutNotebookSignInRequired;
+  const notebookStageGated = notebookBodyAccessBlocked || signedOutNotebookStageGated;
   // Behind a gate the catalog title is unknown, so `notebookTitle` falls back to
   // the humanized URL slug — a guessed, CSS-truncated fragment (e.g. "Ob…") that
   // reads as broken. Show a clean intentional label instead until access resolves.
@@ -1891,7 +1893,7 @@ export function NotebookViewer({
     hasReadableSnapshot: notebookHasReadableSnapshot,
     signInRequired: signedOutNotebookSignInRequired,
     loadingOwnedByShell: true,
-    signInRequiredOwnedByStage: signedOutNotebookSignInRequired,
+    signInRequiredOwnedByStage: signedOutNotebookStageGated,
     offlineMergeNotice,
     rendererAssetError,
     sustainedReconnecting,
@@ -1922,7 +1924,7 @@ export function NotebookViewer({
       hasReadableSnapshot={notebookHasReadableSnapshot}
       loadingOwnedByShell
       signInRequired={signedOutNotebookSignInRequired}
-      signInRequiredOwnedByStage={signedOutNotebookSignInRequired}
+      signInRequiredOwnedByStage={signedOutNotebookStageGated}
       offlineMergeNotice={offlineMergeNotice}
       rendererAssetError={rendererAssetError}
       sustainedReconnecting={sustainedReconnecting}
@@ -1940,7 +1942,7 @@ export function NotebookViewer({
   // the surface reads as intentionally gated. The primary action reuses
   // CloudNotebookSignInButton, the single sign-in source of truth, so its copy
   // and OIDC-vs-localDev priority cannot drift from the rest of the app.
-  const signedOutGate = signedOutNotebookSignInRequired ? (
+  const signedOutGate = signedOutNotebookStageGated ? (
     <NotebookAccessGate
       tone="info"
       icon={<LogIn aria-hidden="true" />}
