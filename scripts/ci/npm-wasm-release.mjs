@@ -1,6 +1,7 @@
 import {createHash} from "node:crypto";
 import {gunzipSync} from "node:zlib";
-import {publicationDecision, releasePlan, stampManifest, verifyManifest} from "./npm-release.mjs";
+import {setTimeout as sleep} from "node:timers/promises";
+import {publicationDecision, registryPackage, releasePlan, stampManifest, verifyManifest} from "./npm-release.mjs";
 import {digest, positive, resolveWasmCandidate, successfulJobAtAttempt, validateArtifact, validateWasm} from "./editor-assets-release.mjs";
 
 export const runtimeRoot = "apps/notebook/src/wasm/runtimed-wasm";
@@ -147,6 +148,43 @@ export function wasmPublicationDecision(candidate, bytes, packument) {
     // the same immutable tarball and source, not just a matching version.
     for (const key of ["channel", "sourceSha", "runId"]) if (existing.nteractRelease?.[key] !== manifest.nteractRelease[key]) throw new Error("Existing WASM source identity differs");
     if (existing.dist?.integrity !== candidate.integrity) throw new Error("Existing immutable WASM tarball differs");
+  }
+  return decision;
+}
+
+// npm can accept an upload before the public registry exposes the version.
+// This wait only reads metadata: it never repeats the upload or weakens the
+// exact source/integrity and stale-channel checks used before publication.
+export const wasmVerificationRecovery = "Download the original npm-wasm-publish-input-* artifact from this publisher run, then run node <dir>/npm-wasm-release-cli.mjs verify-published <dir> against its extracted directory before retrying publication; do not rebuild or blindly republish.";
+
+export async function waitForWasmPublication(candidate, bytes, {
+  fetchPackage = registryPackage, timeoutMs = 900_000, intervalMs = 15_000,
+  now = () => performance.now(), wait = sleep, onWait = message => console.error(message),
+} = {}) {
+  const {manifest} = validatePacked(candidate, bytes);
+  const deadline = now() + timeoutMs;
+  for (;;) {
+    let packument;
+    try {packument = await fetchPackage(manifest.name);}
+    catch (error) {throw new Error(`Unable to verify WASM npm visibility: ${error.message}. ${wasmVerificationRecovery}`, {cause: error});}
+    if (wasmPublicationDecision(candidate, bytes, packument) === "existing") return;
+    const remaining = deadline - now();
+    if (remaining <= 0) break;
+    onWait(`Waiting for npm visibility of ${manifest.name}@${manifest.version}; ${Math.ceil(remaining / 1000)}s remaining. No upload is repeated.`);
+    await wait(Math.min(intervalMs, remaining));
+  }
+  throw new Error(`WASM npm visibility is still pending after ${timeoutMs}ms for ${manifest.name}@${manifest.version}. An accepted upload may still be processing. ${wasmVerificationRecovery}`);
+}
+
+export async function publishWasmPackage(candidate, bytes, {
+  fetchPackage = registryPackage, publish, onAccepted = () => {}, visibility,
+}) {
+  const {manifest} = validatePacked(candidate, bytes);
+  const decision = wasmPublicationDecision(candidate, bytes, await fetchPackage(manifest.name));
+  if (decision === "publish") {
+    await publish();
+    onAccepted();
+    await waitForWasmPublication(candidate, bytes, {...visibility, fetchPackage});
   }
   return decision;
 }

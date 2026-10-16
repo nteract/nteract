@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import {readFileSync} from "node:fs";
+import {mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
+import {spawnSync} from "node:child_process";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
 import {test} from "node:test";
 import {gzipSync} from "node:zlib";
-import {candidateName, buildTitle, digest, integrity, packageManifest, packedPaths, packJobStatusAtAttempt, readTarball, resolveCandidate, resolveWasmPlan, runtimeFiles, runtimeRoot, seal, validatePacked, wasmPublicationDecision, wasmReleasePlan} from "../ci/npm-wasm-release.mjs";
+import {candidateName, buildTitle, digest, integrity, packageManifest, packedPaths, packJobStatusAtAttempt, publishWasmPackage, readTarball, resolveCandidate, resolveWasmPlan, runtimeFiles, runtimeRoot, seal, validatePacked, waitForWasmPublication, wasmPublicationDecision, wasmReleasePlan} from "../ci/npm-wasm-release.mjs";
 
 const source = JSON.parse(readFileSync(new URL("../../packages/runtimed-wasm/package.json", import.meta.url)));
 const identity = {sourceSha: "a".repeat(40), channel: "nightly", runId: "100", runAttempt: "2"};
@@ -110,6 +113,116 @@ for (const channel of ["stable", "nightly"]) {
 test("stale missing version fails without changing a channel", () => {
   const newer = {...JSON.parse(files["package.json"]), version: `${source.version}-nightly.101`, nteractRelease: {...identity, runId: "101"}};
   assert.throws(() => wasmPublicationDecision(candidate, bytes, {versions: {[newer.version]: newer}, "dist-tags": {nightly: newer.version}}), /backwards/);
+});
+
+const publishedManifest = {...JSON.parse(files["package.json"]), dist: {integrity: candidate.integrity}};
+const visible = {versions: {[plan.version]: publishedManifest}, "dist-tags": {nightly: plan.version}};
+function visibilityClock() {
+  let elapsed = 0;
+  const waits = [];
+  return {get elapsed() {return elapsed;}, waits, options: {
+    now: () => elapsed, wait: async ms => {waits.push(ms); elapsed += ms;}, onWait: () => {},
+  }};
+}
+
+test("accepted upload waits through five minutes of processing without another upload", async () => {
+  const clock = visibilityClock();
+  const events = [];
+  const result = await publishWasmPackage(candidate, bytes, {
+    fetchPackage: async name => {assert.equal(name, source.name); events.push("read"); return clock.elapsed >= 300_000 ? visible : empty;},
+    publish: async () => {events.push("upload");},
+    onAccepted: () => {events.push("accepted");}, visibility: clock.options,
+  });
+  assert.equal(result, "publish");
+  assert.equal(clock.elapsed, 300_000);
+  assert.equal(events.filter(event => event === "upload").length, 1);
+  assert.deepEqual(events.slice(0, 4), ["read", "upload", "accepted", "read"]);
+  assert(clock.waits.every(ms => ms > 0 && ms <= 15_000));
+});
+
+test("invisible accepted upload fails at the bounded deadline with verification-only recovery", async () => {
+  const clock = visibilityClock();
+  let uploads = 0;
+  await assert.rejects(publishWasmPackage(candidate, bytes, {
+    fetchPackage: async () => empty, publish: async () => {uploads++;}, visibility: clock.options,
+  }), /visibility is still pending after 900000ms.*verify-published.*do not rebuild or blindly republish/);
+  assert.equal(clock.elapsed, 900_000);
+  assert.equal(uploads, 1);
+});
+
+test("visibility checks once at the deadline and never sleep past it", async () => {
+  const clock = visibilityClock();
+  await waitForWasmPublication(candidate, bytes, {
+    ...clock.options, timeoutMs: 37, intervalMs: 15,
+    fetchPackage: async () => clock.elapsed === 37 ? visible : empty,
+  });
+  assert.deepEqual(clock.waits, [15, 15, 7]);
+});
+
+test("existing exact version skips upload and visibility waiting", async () => {
+  const clock = visibilityClock();
+  assert.equal(await publishWasmPackage(candidate, bytes, {
+    fetchPackage: async () => visible, publish: () => assert.fail("must not upload"),
+    onAccepted: () => assert.fail("must not claim a new upload"), visibility: clock.options,
+  }), "existing");
+  assert.equal(clock.elapsed, 0);
+});
+
+test("visibility fails closed on changed source/integrity, malformed registry, or stale channel", async () => {
+  const newer = {...publishedManifest, version: `${source.version}-nightly.101`, nteractRelease: {...identity, runId: "101"}};
+  const cases = [
+    [{...visible, versions: {[plan.version]: {...publishedManifest, dist: {integrity: "sha512-wrong"}}}}, /tarball differs/],
+    [{...visible, versions: {[plan.version]: {...publishedManifest, nteractRelease: {...identity, sourceSha: "f".repeat(40)}}}}, /identity/],
+    [{versions: [], "dist-tags": {}}, /Invalid registry metadata/],
+    [{versions: {[newer.version]: newer}, "dist-tags": {nightly: newer.version}}, /backwards/],
+  ];
+  for (const [packument, error] of cases) {
+    const clock = visibilityClock();
+    let reads = 0, uploads = 0;
+    await assert.rejects(publishWasmPackage(candidate, bytes, {
+      fetchPackage: async () => ++reads === 1 ? empty : packument,
+      publish: async () => {uploads++;}, visibility: clock.options,
+    }), error);
+    assert.equal(uploads, 1);
+    assert.equal(clock.elapsed, 0);
+  }
+});
+
+test("failed upload or registry lookup is not silently retried or called verified", async () => {
+  let reads = 0;
+  await assert.rejects(publishWasmPackage(candidate, bytes, {
+    fetchPackage: async () => {reads++; return empty;}, publish: async () => {throw new Error("upload rejected");},
+    onAccepted: () => assert.fail("upload was not accepted"),
+  }), /upload rejected/);
+  assert.equal(reads, 1);
+  await assert.rejects(waitForWasmPublication(candidate, bytes, {
+    fetchPackage: async () => {throw new Error("HTTP 503");}, wait: () => assert.fail("lookup errors must remain visible"),
+  }), error => {
+    assert.match(error.message, /HTTP 503.*npm-wasm-publish-input-\*.*verify-published/);
+    assert.equal(error.cause.message, "HTTP 503");
+    return true;
+  });
+});
+
+test("verification-only CLI reads exact public metadata without npm, OIDC, or an enabled gate", () => {
+  const directory = mkdtempSync(join(tmpdir(), "wasm-visibility-test-"));
+  try {
+    writeFileSync(join(directory, "candidate.json"), JSON.stringify(candidate));
+    writeFileSync(join(directory, "runtimed-wasm.tgz"), bytes);
+    const preload = join(directory, "registry.mjs");
+    writeFileSync(preload, `import assert from 'node:assert/strict';
+      globalThis.fetch = async (url, options) => {
+        assert.equal(url, 'https://registry.npmjs.org/%40runtimed%2Fwasm');
+        assert.deepEqual(options.headers, {'Cache-Control': 'no-cache'});
+        return new Response(${JSON.stringify(JSON.stringify(visible))});
+      };`);
+    const environment = {...process.env, PATH: "", NPM_WASM_ENABLED: "false"};
+    for (const name of ["GITHUB_STEP_SUMMARY", "GITHUB_EVENT_PATH", "GH_TOKEN", "NODE_AUTH_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"]) delete environment[name];
+    const result = spawnSync(process.execPath, ["--import", preload, new URL("../ci/npm-wasm-release-cli.mjs", import.meta.url).pathname, "verify-published", directory], {env: environment, encoding: "utf8"});
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /existing.*verified immutable integrity/);
+    assert(result.stdout.includes(candidate.integrity));
+  } finally {rmSync(directory, {recursive: true, force: true});}
 });
 
 const repository = "nteract/nteract";
