@@ -191,12 +191,19 @@ Source builds default to the nightly channel (affects cache/socket namespaces). 
 
 ## Security model
 
-`runtimed` is a per-user daemon. The OS account is the security boundary — cross-user access is denied, same-UID access is trusted.
+`runtimed` is a per-user daemon. Native control IPC and blob HTTP have separate
+access boundaries. See [output frame security](../../docs/adr/output-frame-security.md).
 
-- Unix socket at `~/.cache/<namespace>/runtimed.sock`, mode `0600`
-- Socket directory kept owner-private (`0700`)
-- `RUNTIMED_SOCKET_PATH` is a capability-bearing pointer — only set it for processes that should control the daemon
-- Blob HTTP server binds `127.0.0.1`, read-only, content-addressed
+- Unix control sockets use mode `0600`; the default socket directory uses
+  `0700`. These permissions restrict other OS users; same-UID clients are trusted.
+- Windows control IPC uses named pipes. Unix mode bits do not establish the
+  Windows pipe's access policy.
+- `RUNTIMED_SOCKET_PATH` selects the control endpoint. Only configure it for
+  processes intended to control the daemon; knowing its path does not bypass
+  OS permissions.
+- Blob HTTP binds `127.0.0.1` and is read-only and content-addressed. It has
+  wildcard CORS, no read authentication or room filtering, and no listing route.
+  Loopback TCP is not a UID boundary; stored data may be sensitive.
 
 ## Python bindings (runtimed-py)
 
