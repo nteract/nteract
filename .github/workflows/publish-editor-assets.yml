@@ -1,0 +1,44 @@
+name: Publish editor assets
+# This trusted default-branch workflow only reads and hashes retained bytes.
+# A publish retry never invokes the builder, pnpm, Cargo or artifact scripts.
+on:
+  workflow_run:
+    workflows: ["Build editor assets"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful Build editor assets run ID (including a reuse-only run)
+        required: true
+        type: string
+      build_run_attempt:
+        description: Successful editor workflow attempt
+        required: true
+        default: "1"
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: editor-assets-publish
+  queue: max
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Validate and publish the immutable asset pair
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          BUILD_RUN_ATTEMPT: ${{ inputs.build_run_attempt }}
+        run: node scripts/ci/editor-assets-release-cli.mjs publish

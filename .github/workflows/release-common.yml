@@ -116,6 +116,32 @@ jobs:
 
       - uses: ./.github/actions/build-runtime-artifacts
 
+      # Downstream artifact retention is optional; it must never change the
+      # desktop/wheel release conclusion or suppress the existing npm publisher.
+      - name: Record immutable release WASM identity
+        id: wasm-receipt
+        continue-on-error: true
+        env:
+          RELEASE_VERSION: ${{ needs.compute-version.outputs.version }}
+        run: node scripts/ci/release-wasm-manifest.mjs
+
+      - name: Retain release WASM for independent downstream publishers
+        if: steps.wasm-receipt.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-wasm-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: error
+          path: |
+            release-wasm.json
+            apps/notebook/src/wasm/runtimed-wasm/
+            crates/sift-wasm/pkg/
+            packages/sift/public/wasm/
+            apps/notebook/src/renderer-plugins/
+            target/xtask/*.fingerprint
+            target/xtask/renderer-*.inputs.json
+
       - name: Upload WASM artifacts
         uses: actions/upload-artifact@v7
         with:

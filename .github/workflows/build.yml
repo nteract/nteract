@@ -685,6 +685,20 @@ jobs:
           NOTEBOOK_CLOUD_CELLD_PYTHON=1 node apps/notebook-cloud/scripts/celld-local.mjs export "$RUNNER_TEMP/main-preview-export"
           node .github/preview/pack.mjs "$RUNNER_TEMP/main-preview-export" "$GITHUB_SHA" "$RUNNER_TEMP/preview.bundle.gz"
 
+      # The optional post-release editor workflow packages this viewer build.
+      # Exercise packaging and smoke here so breaks surface on the PR before
+      # a release triggers that independent workflow.
+      - name: Package and smoke the embeddable editor assets
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        run: |
+          node scripts/ci/package-notebook-cloud-assets.mjs \
+            --out="$RUNNER_TEMP/notebook-cloud-assets" \
+            --version="0.0.0-ci.${GITHUB_RUN_ID}" \
+            --channel=nightly \
+            --source-sha="$GITHUB_SHA" \
+            --built-at="$(git show -s --format=%cI HEAD)"
+          bash scripts/ci/notebook-cloud-assets-smoke.sh "$RUNNER_TEMP/notebook-cloud-assets/notebook-cloud-assets-nightly.tar.gz"
+
       - name: Upload main cloud deployment bundle
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

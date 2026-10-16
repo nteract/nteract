@@ -10,3 +10,9 @@ paths:
   .github/workflows/publish-npm.yml:
     ignore:
       - '^unexpected key "queue" for "concurrency" section\.'
+  .github/workflows/build-editor-assets.yml:
+    ignore:
+      - '^unexpected key "queue" for "concurrency" section\.'
+  .github/workflows/publish-editor-assets.yml:
+    ignore:
+      - '^unexpected key "queue" for "concurrency" section\.'
