@@ -2666,6 +2666,7 @@ fn test_room_with_path_and_store(
         identity: RoomIdentity::new(persist_path),
         connections: RoomConnections::default(),
         hosted: AtomicBool::new(false),
+        local_environment_selection: std::sync::Mutex::new(None),
         evicted: AtomicBool::new(false),
         blob_store,
         trust_state: Arc::new(RwLock::new(TrustState {
@@ -8313,6 +8314,8 @@ async fn test_notebook_sync_path_handshake_reuses_existing_room() {
 #[test]
 fn test_compute_env_sync_diff_in_sync() {
     let launched = LaunchedEnvConfig {
+        environment_id: None,
+        environment_name: None,
         uv_deps: Some(vec!["numpy".to_string(), "pandas".to_string()]),
         conda_deps: None,
         conda_channels: None,
@@ -8339,6 +8342,8 @@ fn test_compute_env_sync_diff_in_sync() {
 #[test]
 fn test_compute_env_sync_diff_added() {
     let launched = LaunchedEnvConfig {
+        environment_id: None,
+        environment_name: None,
         uv_deps: Some(vec!["numpy".to_string()]),
         conda_deps: None,
         conda_channels: None,
@@ -8365,6 +8370,8 @@ fn test_compute_env_sync_diff_added() {
 #[test]
 fn test_compute_env_sync_diff_removed() {
     let launched = LaunchedEnvConfig {
+        environment_id: None,
+        environment_name: None,
         uv_deps: Some(vec!["numpy".to_string(), "pandas".to_string()]),
         conda_deps: None,
         conda_channels: None,
@@ -8390,6 +8397,8 @@ fn test_compute_env_sync_diff_removed() {
 #[test]
 fn test_compute_env_sync_diff_added_and_removed() {
     let launched = LaunchedEnvConfig {
+        environment_id: None,
+        environment_name: None,
         uv_deps: Some(vec!["numpy".to_string(), "old-pkg".to_string()]),
         conda_deps: None,
         conda_channels: None,
@@ -8415,6 +8424,8 @@ fn test_compute_env_sync_diff_added_and_removed() {
 #[test]
 fn test_compute_env_sync_diff_conda_channels_changed() {
     let launched = LaunchedEnvConfig {
+        environment_id: None,
+        environment_name: None,
         uv_deps: None,
         conda_deps: Some(vec!["scipy".to_string()]),
         conda_channels: Some(vec!["conda-forge".to_string()]),
@@ -8438,6 +8449,23 @@ fn test_compute_env_sync_diff_conda_channels_changed() {
     assert!(diff.added.is_empty());
     assert!(diff.removed.is_empty());
     assert!(diff.channels_changed);
+}
+
+#[test]
+fn selected_conda_sync_diff_detects_channel_changes() {
+    let launched = LaunchedEnvConfig {
+        environment_id: Some("conda-candidate-id".into()),
+        conda_deps: Some(vec!["pandas".into()]),
+        conda_channels: Some(vec!["conda-forge".into()]),
+        ..LaunchedEnvConfig::default()
+    };
+    let mut snapshot = snapshot_with_conda(vec!["pandas".into()]);
+    snapshot.runt.conda.as_mut().unwrap().channels = vec!["defaults".into()];
+
+    let diff = compute_env_sync_diff(&launched, &snapshot).expect("channel drift is reported");
+    assert!(diff.channels_changed);
+    assert!(diff.added.is_empty());
+    assert!(diff.removed.is_empty());
 }
 
 #[test]
@@ -8816,6 +8844,229 @@ async fn test_check_and_broadcast_sync_state_captured_uv_prewarmed_reports_addit
         "added dep post-capture must surface as drift"
     );
     assert_eq!(state.env.added, vec!["polars".to_string()]);
+}
+
+#[tokio::test]
+async fn selected_conda_environment_reports_new_notebook_dependencies() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _path) = test_room_with_path(&tmp, "selected-conda-drift.ipynb");
+    let snapshot = snapshot_with_conda(vec!["pandas".to_string()]);
+    room.doc
+        .write()
+        .await
+        .set_metadata_snapshot(&snapshot)
+        .unwrap();
+    *room.runtime_agent_launched_config.write().await = Some(LaunchedEnvConfig {
+        environment_id: Some("python:opaque-id".into()),
+        conda_deps: Some(vec![]),
+        conda_channels: Some(vec!["conda-forge".into()]),
+        venv_path: Some(PathBuf::from("/tmp/conda-env")),
+        python_path: Some(PathBuf::from("/tmp/conda-env/bin/python")),
+        ..LaunchedEnvConfig::default()
+    });
+    room.state
+        .with_doc(|sd| {
+            sd.set_kernel_info("python", "python", "conda:existing:local")?;
+            sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+        })
+        .unwrap();
+
+    check_and_broadcast_sync_state(&room).await;
+
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
+    assert!(!state.env.in_sync);
+    assert_eq!(state.env.added, vec!["pandas".to_string()]);
+    assert!(state.env.removed.is_empty());
+
+    let channel_change = {
+        let mut changed = snapshot;
+        changed.runt.conda.as_mut().unwrap().channels = vec!["defaults".to_string()];
+        changed
+    };
+    room.runtime_agent_launched_config
+        .write()
+        .await
+        .as_mut()
+        .unwrap()
+        .conda_deps = Some(vec!["pandas".to_string()]);
+    room.doc
+        .write()
+        .await
+        .set_metadata_snapshot(&channel_change)
+        .unwrap();
+    check_and_broadcast_sync_state(&room).await;
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
+    assert!(
+        state.env.channels_changed,
+        "channel-only differences must remain visible and block hot-sync"
+    );
+}
+
+#[test]
+fn selected_conda_sync_rejects_unapproved_exact_dependency_snapshot() {
+    let snapshot = snapshot_with_conda(vec!["pandas".to_string()]);
+    let trust = verify_trust_from_snapshot(&snapshot, &unavailable_test_store());
+    assert_eq!(trust.status, runt_trust::TrustStatus::Untrusted);
+    assert!(!matches!(
+        trust.status,
+        runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
+    ));
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = open_test_store(&tmp);
+    let info = runt_trust::extract_trust_info(&snapshot_metadata_hashmap(&snapshot));
+    store.add_from_info(&info, "test").unwrap();
+    let approved = verify_trust_from_snapshot(&snapshot, &store);
+    assert_eq!(approved.status, runt_trust::TrustStatus::Trusted);
+    assert!(matches!(
+        approved.status,
+        runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
+    ));
+}
+
+#[tokio::test]
+async fn selected_conda_environment_is_not_flushed_over_notebook_metadata() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _path) = test_room_with_path(&tmp, "selected-conda-no-flush.ipynb");
+    let requested = snapshot_with_conda(vec!["pandas".into(), "scipy".into()]);
+    room.doc
+        .write()
+        .await
+        .set_metadata_snapshot(&requested)
+        .unwrap();
+    let launched = LaunchedEnvConfig {
+        environment_id: Some("conda-candidate-id".into()),
+        conda_deps: Some(vec!["pandas".into()]),
+        ..LaunchedEnvConfig::default()
+    };
+    assert!(!flush_launched_deps_to_metadata(&room, &launched, CapturedEnvRuntime::Conda).await);
+    assert_eq!(
+        room.doc
+            .read()
+            .await
+            .get_metadata_snapshot()
+            .unwrap()
+            .runt
+            .conda
+            .unwrap()
+            .dependencies,
+        vec!["pandas", "scipy"]
+    );
+}
+
+#[tokio::test]
+async fn failed_selected_conda_sync_removes_failed_packages_from_metadata() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _path) = test_room_with_path(&tmp, "selected-conda-failed-sync.ipynb");
+    let requested = snapshot_with_conda(vec!["requests".into(), "scipy".into()]);
+    room.doc
+        .write()
+        .await
+        .set_metadata_snapshot(&requested)
+        .unwrap();
+
+    super::metadata::remove_selected_conda_dependencies(&room, &["requests".to_string()])
+        .await
+        .unwrap();
+
+    assert_eq!(
+        room.doc
+            .read()
+            .await
+            .get_metadata_snapshot()
+            .unwrap()
+            .runt
+            .conda
+            .unwrap()
+            .dependencies,
+        vec!["scipy"]
+    );
+}
+
+#[tokio::test]
+async fn selected_conda_sync_requires_dependency_guard_before_installing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _path) = test_room_with_path(&tmp, "selected-conda-guard.ipynb");
+    *room.runtime_agent_launched_config.write().await = Some(LaunchedEnvConfig {
+        environment_id: Some("conda-candidate-id".into()),
+        conda_deps: Some(vec![]),
+        conda_channels: Some(vec!["conda-forge".into()]),
+        ..LaunchedEnvConfig::default()
+    });
+    room.state
+        .with_doc(|sd| {
+            sd.set_kernel_info("python", "python", "conda:existing:local")?;
+            sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+        })
+        .unwrap();
+    room.doc
+        .write()
+        .await
+        .set_metadata_snapshot(&snapshot_with_conda(vec!["pandas".into()]))
+        .unwrap();
+
+    let response = crate::requests::sync_environment::handle(&room, None).await;
+    assert!(matches!(response, NotebookResponse::GuardRejected { .. }));
+}
+
+#[tokio::test]
+async fn selected_conda_sync_checks_trust_for_current_metadata_snapshot() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _path) = test_room_with_path(&tmp, "selected-conda-current-trust.ipynb");
+    room.doc
+        .write()
+        .await
+        .set_metadata_snapshot(&snapshot_with_conda(vec!["pandas".into()]))
+        .unwrap();
+    *room.runtime_agent_launched_config.write().await = Some(LaunchedEnvConfig {
+        environment_id: Some("conda-candidate-id".into()),
+        conda_deps: Some(vec![]),
+        conda_channels: Some(vec!["conda-forge".into()]),
+        ..LaunchedEnvConfig::default()
+    });
+    room.state
+        .with_doc(|sd| {
+            sd.set_kernel_info("python", "python", "conda:existing:local")?;
+            sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+        })
+        .unwrap();
+
+    let response = handle_sync_environment(&room).await;
+    assert!(matches!(response, NotebookResponse::GuardRejected { .. }));
+}
+
+#[tokio::test]
+async fn selected_conda_sync_requires_restart_when_channels_change() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _path) = test_room_with_path(&tmp, "selected-conda-channels.ipynb");
+    let mut metadata = snapshot_with_conda(vec!["pandas".into()]);
+    metadata.runt.conda.as_mut().unwrap().channels = vec!["defaults".into()];
+    room.doc
+        .write()
+        .await
+        .set_metadata_snapshot(&metadata)
+        .unwrap();
+    *room.runtime_agent_launched_config.write().await = Some(LaunchedEnvConfig {
+        environment_id: Some("conda-candidate-id".into()),
+        conda_deps: Some(vec![]),
+        conda_channels: Some(vec!["conda-forge".into()]),
+        ..LaunchedEnvConfig::default()
+    });
+    room.state
+        .with_doc(|sd| {
+            sd.set_kernel_info("python", "python", "conda:existing:local")?;
+            sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+        })
+        .unwrap();
+
+    let response = handle_sync_environment(&room).await;
+    assert!(matches!(
+        response,
+        NotebookResponse::SyncEnvironmentFailed {
+            needs_restart: true,
+            ..
+        }
+    ));
 }
 
 #[tokio::test]
@@ -12304,6 +12555,75 @@ fn sync_environment_failure_contract_distinguishes_agent_error_from_transport_er
         }
         other => panic!("unexpected response: {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn sync_environment_allows_additions_for_explicit_conda_environment() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _path) = test_room_with_path(&tmp, "selected-env.ipynb");
+    *room.runtime_agent_launched_config.write().await = Some(LaunchedEnvConfig {
+        environment_id: Some("python:opaque-id".into()),
+        conda_deps: Some(vec![]),
+        conda_channels: Some(vec!["conda-forge".into()]),
+        venv_path: Some(PathBuf::from("/tmp/conda-env")),
+        python_path: Some(PathBuf::from("/tmp/conda-env/bin/python")),
+        ..LaunchedEnvConfig::default()
+    });
+    room.state
+        .with_doc(|sd| {
+            sd.set_kernel_info("python", "python", "conda:existing:local")?;
+            sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+        })
+        .unwrap();
+    let mut metadata = notebook_doc::metadata::NotebookMetadataSnapshot::default();
+    metadata.runt.conda = Some(notebook_doc::metadata::CondaInlineMetadata {
+        dependencies: vec!["pandas".into()],
+        channels: vec!["conda-forge".into()],
+        python: None,
+    });
+    room.doc
+        .write()
+        .await
+        .set_metadata_snapshot(&metadata)
+        .unwrap();
+    room.state
+        .with_doc(|sd| {
+            sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
+            Ok(())
+        })
+        .unwrap();
+
+    let launched = room
+        .runtime_agent_launched_config
+        .read()
+        .await
+        .as_ref()
+        .unwrap()
+        .clone();
+    let diff = compute_env_sync_diff(&launched, &metadata).unwrap();
+    assert_eq!(diff.added, vec!["pandas".to_string()]);
+    assert!(diff.removed.is_empty());
+
+    let response = handle_sync_environment(&room).await;
+    assert!(matches!(response, NotebookResponse::GuardRejected { .. }));
+    assert_eq!(
+        room.runtime_agent_launched_config
+            .read()
+            .await
+            .as_ref()
+            .and_then(|config| config.conda_deps.clone()),
+        Some(Vec::new()),
+        "the selected environment baseline remains unchanged when no agent can install packages"
+    );
+    assert!(compute_env_sync_diff(
+        room.runtime_agent_launched_config
+            .read()
+            .await
+            .as_ref()
+            .unwrap(),
+        &metadata,
+    )
+    .is_some_and(|diff| diff.added == vec!["pandas".to_string()]));
 }
 
 // ── Regression tests for #2351: outputs not serialized to notebook ───

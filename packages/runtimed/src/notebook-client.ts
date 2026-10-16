@@ -213,6 +213,18 @@ export class NotebookClient {
     }
   }
 
+  async listPythonEnvironments(): Promise<NotebookResponse> {
+    return this.sendRequest({ type: "list_python_environments" });
+  }
+
+  async setPythonEnvironment(candidateId: string | null): Promise<NotebookResponse> {
+    return this.sendRequest({ type: "set_python_environment", candidate_id: candidateId });
+  }
+
+  async getPythonEnvironmentDetails(): Promise<NotebookResponse> {
+    return this.sendRequest({ type: "get_python_environment_details" });
+  }
+
   /** Hot-sync environment — install new packages without restart (UV only). */
   async syncEnvironment(guard?: DependencyGuard): Promise<NotebookResponse> {
     try {

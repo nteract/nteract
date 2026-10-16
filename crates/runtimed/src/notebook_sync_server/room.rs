@@ -1543,6 +1543,8 @@ pub struct NotebookRoom {
     /// Hosted rooms are cloud-authoritative and must not auto-launch local kernels.
     /// Read via `is_hosted()`; set once via `mark_hosted()` before peers attach.
     pub(crate) hosted: AtomicBool,
+    /// Pending local environment choice; never synchronized to peers.
+    pub(crate) local_environment_selection: std::sync::Mutex<Option<String>>,
     /// Latched by eviction (reaper or ShutdownNotebook) after the final
     /// autosave flush, right before legacy sidecar cleanup and file-claim
     /// release hand the path to other daemon processes. Once set,
@@ -2270,6 +2272,7 @@ impl NotebookRoom {
             identity: RoomIdentity::new(persist_path),
             connections: RoomConnections::default(),
             hosted: AtomicBool::new(false),
+            local_environment_selection: std::sync::Mutex::new(None),
             evicted: AtomicBool::new(false),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),

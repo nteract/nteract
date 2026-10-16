@@ -156,6 +156,13 @@ pub struct KernelState {
     pub language: String,
     #[serde(default)]
     pub env_source: String,
+    /// Opaque identity for an explicitly selected local environment.
+    #[serde(default)]
+    pub environment_id: String,
+    /// Non-path identity label for an explicitly selected local environment.
+    /// Absolute paths never enter RuntimeStateDoc.
+    #[serde(default)]
+    pub environment_name: String,
     /// ID of the runtime agent subprocess that owns this kernel (e.g., "runtime-agent:a1b2c3d4").
     /// Used for provenance: identifying which runtime agent is running and detecting stale ones.
     #[serde(default)]
@@ -204,6 +211,8 @@ impl Default for KernelState {
             name: String::new(),
             language: String::new(),
             env_source: String::new(),
+            environment_id: String::new(),
+            environment_name: String::new(),
             runtime_agent_id: String::new(),
             lifecycle: RuntimeLifecycle::NotStarted,
             error_reason: None,
@@ -1395,6 +1404,26 @@ impl RuntimeStateDoc {
         self.doc.put(&kernel, "name", name)?;
         self.doc.put(&kernel, "language", language)?;
         self.doc.put(&kernel, "env_source", env_source)?;
+        Ok(())
+    }
+
+    /// Set an opaque active environment identity.
+    pub fn set_environment_id(&mut self, id: &str) -> Result<(), RuntimeStateError> {
+        let kernel = self.scaffold_map("kernel")?;
+        let current = self.read_str(&kernel, "environment_id");
+        if current != id {
+            self.doc.put(&kernel, "environment_id", id)?;
+        }
+        Ok(())
+    }
+
+    /// Set a non-path active environment name for shared display.
+    pub fn set_environment_name(&mut self, name: &str) -> Result<(), RuntimeStateError> {
+        let kernel = self.scaffold_map("kernel")?;
+        let current = self.read_str(&kernel, "environment_name");
+        if current != name {
+            self.doc.put(&kernel, "environment_name", name)?;
+        }
         Ok(())
     }
 
@@ -3480,6 +3509,8 @@ impl RuntimeStateDoc {
                     name: self.read_str(k, "name"),
                     language: self.read_str(k, "language"),
                     env_source: self.read_str(k, "env_source"),
+                    environment_id: self.read_str(k, "environment_id"),
+                    environment_name: self.read_str(k, "environment_name"),
                     runtime_agent_id: self.read_str(k, "runtime_agent_id"),
                     lifecycle,
                     error_reason,
@@ -4519,6 +4550,21 @@ mod tests {
         assert_eq!(state.kernel.name, "charming-toucan");
         assert_eq!(state.kernel.language, "python");
         assert_eq!(state.kernel.env_source, "uv:prewarmed");
+    }
+
+    #[test]
+    fn test_environment_name_is_path_free_shared_identity() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_environment_id("python:opaque-id").unwrap();
+        doc.set_environment_name("rankings").unwrap();
+        let state = doc.read_state();
+        assert_eq!(state.kernel.environment_id, "python:opaque-id");
+        assert_eq!(state.kernel.environment_name, "rankings");
+        assert!(!state.kernel.environment_name.contains('/'));
+        assert!(!state.kernel.environment_name.contains('\\'));
+        let serialized = serde_json::to_string(&state).unwrap();
+        assert!(!serialized.contains("C:/"));
+        assert!(!serialized.contains("C:\\\\"));
     }
 
     #[test]

@@ -16,6 +16,9 @@ type MissingUnionMember<Union extends string, Values extends readonly string[]> 
 >;
 
 export const NOTEBOOK_REQUEST_TYPES = [
+  "list_python_environments",
+  "set_python_environment",
+  "get_python_environment_details",
   "launch_kernel",
   "execute_cell",
   "execute_cell_guarded",
@@ -48,6 +51,8 @@ export const NOTEBOOK_REQUEST_TYPES_EXHAUSTIVE: MissingUnionMember<
   : never = true;
 
 export const NOTEBOOK_RESPONSE_RESULTS = [
+  "python_environments",
+  "python_environment_details",
   "notebook_sync_acknowledged",
   "kernel_launched",
   "kernel_already_running",

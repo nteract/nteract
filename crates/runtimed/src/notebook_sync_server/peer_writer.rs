@@ -490,6 +490,9 @@ fn request_required_scope(
     use notebook_protocol::protocol::NotebookRequest;
 
     match request {
+        NotebookRequest::ListPythonEnvironments {}
+        | NotebookRequest::SetPythonEnvironment { .. }
+        | NotebookRequest::GetPythonEnvironmentDetails {} => RequestRequiredScope::Owner,
         NotebookRequest::LaunchKernel { .. }
         | NotebookRequest::ExecuteCell { .. }
         | NotebookRequest::ExecuteCellGuarded { .. }

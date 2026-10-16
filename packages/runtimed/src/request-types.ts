@@ -33,6 +33,8 @@ export interface DenoLaunchedConfig {
 }
 
 export interface LaunchedEnvConfig extends FeatureFlags {
+  environment_id?: string | null;
+  environment_name?: string | null;
   uv_deps?: string[] | null;
   conda_deps?: string[] | null;
   conda_channels?: string[] | null;
@@ -99,7 +101,31 @@ export interface BlobUploadPart {
   size: number;
 }
 
+export interface LocalEnvironmentCandidate {
+  id: string;
+  name: string;
+  display_name: string;
+  manager: string;
+}
+
+export interface LocalEnvironmentSelection {
+  candidates: LocalEnvironmentCandidate[];
+  selected_id: string | null;
+  selected_name: string | null;
+  truncated: boolean;
+}
+
+export interface LocalEnvironmentDetails {
+  prefix: string;
+  python_executable: string;
+  python_version: string | null;
+  conda_dependencies: string[];
+}
+
 export type NotebookRequest =
+  | { type: "list_python_environments" }
+  | { type: "set_python_environment"; candidate_id: string | null }
+  | { type: "get_python_environment_details" }
   | {
       type: "launch_kernel";
       kernel_type: string;
@@ -176,6 +202,8 @@ export interface CompletionItem {
 export type ExecutionIdRejectionReason = "malformed" | "already_exists" | "duplicate_in_request";
 
 export type NotebookResponse =
+  | { result: "python_environments"; selection: LocalEnvironmentSelection }
+  | { result: "python_environment_details"; details: LocalEnvironmentDetails | null }
   | {
       result: "kernel_launched";
       kernel_type: string;

@@ -35,6 +35,12 @@ pub struct FeatureFlags {
 /// Used to detect when notebook metadata has drifted from the running kernel.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct LaunchedEnvConfig {
+    /// Opaque identity for an explicitly selected local environment.
+    #[serde(default)]
+    pub environment_id: Option<String>,
+    /// Non-path display label for an explicitly selected environment.
+    #[serde(default)]
+    pub environment_name: Option<String>,
     /// UV inline deps (if env_source is "uv:inline")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uv_deps: Option<Vec<String>>,
@@ -99,6 +105,36 @@ pub struct LaunchedEnvConfig {
     /// Packages pre-installed in the prewarmed environment (empty for inline envs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prewarmed_packages: Vec<String>,
+}
+
+/// Local environment visible to a notebook room. Prefixes never cross the
+/// wire; candidates are revalidated by the daemon when selected/applied.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LocalEnvironmentCandidate {
+    pub id: String,
+    pub name: String,
+    pub display_name: String,
+    pub manager: String,
+}
+
+/// Full selected prefix returned only to the local runtime owner.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LocalEnvironmentDetails {
+    pub prefix: String,
+    pub python_executable: String,
+    #[serde(default)]
+    pub python_version: Option<String>,
+    #[serde(default)]
+    pub conda_dependencies: Vec<String>,
+}
+
+/// Environment selection state returned to the local owner only.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LocalEnvironmentSelection {
+    pub candidates: Vec<LocalEnvironmentCandidate>,
+    pub selected_id: Option<String>,
+    pub selected_name: Option<String>,
+    pub truncated: bool,
 }
 
 /// Deno configuration captured at kernel launch time.
@@ -634,6 +670,12 @@ fn default_comm_channel() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum NotebookRequest {
+    /// Discover local Python environments without executing candidate Python.
+    ListPythonEnvironments {},
+    /// Set or clear room-local pending environment selection.
+    SetPythonEnvironment { candidate_id: Option<String> },
+    /// Fetch local-only selected-prefix detail for the owner UI.
+    GetPythonEnvironmentDetails {},
     /// Launch a kernel for this notebook room.
     /// If a kernel is already running, returns info about the existing kernel.
     LaunchKernel {
@@ -816,6 +858,14 @@ pub enum NotebookRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum NotebookResponse {
+    /// Local environment inventory and pending selection for the owner.
+    PythonEnvironments {
+        selection: LocalEnvironmentSelection,
+    },
+    /// Owner-only details for an explicitly selected candidate.
+    PythonEnvironmentDetails {
+        details: Option<LocalEnvironmentDetails>,
+    },
     /// The addressed notebook authority has accepted these required heads.
     /// Descendant changes may already be present; this is not a visible-state
     /// equality check or an .ipynb export receipt.
@@ -1112,7 +1162,7 @@ pub enum RuntimeAgentRequest {
     },
 
     /// Hot-install packages into the running kernel's environment.
-    /// Supported for UV and Conda inline dependencies (additions only).
+    /// Supported for UV and Conda dependencies (additions only).
     SyncEnvironment(EnvKind),
 }
 
@@ -1569,6 +1619,18 @@ mod tests {
     #[test]
     fn wire_action_names_match_ts_discriminators() {
         let cases: Vec<(&str, serde_json::Value)> = vec![
+            (
+                "list_python_environments",
+                serde_json::json!({ "action": "list_python_environments" }),
+            ),
+            (
+                "set_python_environment",
+                serde_json::json!({ "action": "set_python_environment", "candidate_id": "conda:test" }),
+            ),
+            (
+                "get_python_environment_details",
+                serde_json::json!({ "action": "get_python_environment_details" }),
+            ),
             (
                 "launch_kernel",
                 serde_json::json!({

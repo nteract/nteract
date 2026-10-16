@@ -17,11 +17,26 @@ pub(crate) async fn handle(
         return rejection.into_response();
     }
 
+    let selected_conda_environment = room
+        .runtime_agent_launched_config
+        .read()
+        .await
+        .as_ref()
+        .is_some_and(|config| config.environment_id.is_some())
+        && room
+            .state
+            .read(|sd| sd.read_state().kernel.env_source == "conda:existing:local")
+            .unwrap_or(false);
+
     if let Some(guard) = guard {
         let doc = room.doc.read().await;
         if let Err(rejection) = guarded::validate_sync_environment(&doc, &guard.observed_heads) {
             return rejection.into_response();
         }
+    } else if selected_conda_environment {
+        return NotebookResponse::GuardRejected {
+            reason: "Review and approve the notebook dependencies before syncing.".into(),
+        };
     }
 
     handle_sync_environment(room).await

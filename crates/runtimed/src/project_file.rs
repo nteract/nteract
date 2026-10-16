@@ -7,7 +7,43 @@
 //! This is adapted from `crates/notebook/src/project_file.rs` for use in
 //! the daemon's environment auto-detection.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
+
+const CONDA_REGISTRY_MAX_BYTES: u64 = 1024 * 1024;
+const CONDA_REGISTRY_MAX_ENTRIES: usize = 2_000;
+
+fn read_conda_registry_entries() -> Vec<String> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let Ok(file) = std::fs::File::open(home.join(".conda").join("environments.txt")) else {
+        return Vec::new();
+    };
+    read_conda_registry_entries_from(file)
+}
+
+fn read_conda_registry_entries_from(reader: impl Read) -> Vec<String> {
+    let mut bytes = Vec::new();
+    if reader
+        .take(CONDA_REGISTRY_MAX_BYTES)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return Vec::new();
+    }
+    parse_conda_registry_entries(&bytes)
+}
+
+fn parse_conda_registry_entries(bytes: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(CONDA_REGISTRY_MAX_ENTRIES)
+        .map(str::to_owned)
+        .collect()
+}
 
 /// The type of project file detected.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,7 +287,12 @@ pub fn resolve_conda_env_prefix(yml_path: &Path) -> Option<PathBuf> {
 }
 
 /// Standard conda environment search directories.
-fn conda_env_search_dirs() -> Vec<PathBuf> {
+pub(crate) fn conda_env_search_dirs() -> Vec<PathBuf> {
+    let registry_entries = read_conda_registry_entries();
+    conda_env_search_dirs_from_registry(&registry_entries)
+}
+
+fn conda_env_search_dirs_from_registry(registry_entries: &[String]) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
     let mut push_unique = |p: PathBuf| {
@@ -291,24 +332,67 @@ fn conda_env_search_dirs() -> Vec<PathBuf> {
         push_unique(home.join(".local").join("share").join("mamba").join("envs"));
     }
 
-    // ~/.conda/environments.txt — conda's env registry, lists full paths to envs.
-    // Extract parent dirs (the "envs/" directories) from each registered env path.
-    if let Some(home) = dirs::home_dir() {
-        let registry = home.join(".conda").join("environments.txt");
-        if let Ok(content) = std::fs::read_to_string(&registry) {
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    let env_path = PathBuf::from(trimmed);
-                    if let Some(parent) = env_path.parent() {
-                        push_unique(parent.to_path_buf());
-                    }
-                }
-            }
+    // The registry lists full environment paths. Extract parent directories.
+    for path in registry_entries {
+        let env_path = PathBuf::from(path);
+        if let Some(parent) = env_path.parent() {
+            push_unique(parent.to_path_buf());
         }
     }
 
     dirs
+}
+
+/// Enumerate existing Conda prefixes from known env roots and Conda's registry.
+/// This inspects immediate entries only and never executes an interpreter.
+pub fn discover_conda_envs() -> Vec<(String, PathBuf)> {
+    let registry_entries = read_conda_registry_entries();
+    let roots = conda_env_search_dirs_from_registry(&registry_entries);
+    discover_conda_envs_in_roots(roots, &registry_entries)
+}
+
+fn discover_conda_envs_in_roots(
+    roots: impl IntoIterator<Item = PathBuf>,
+    registry_entries: &[String],
+) -> Vec<(String, PathBuf)> {
+    let mut candidates = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    let mut remaining_entries = 2_000;
+    for root in roots.into_iter().take(256) {
+        if remaining_entries == 0 {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries.flatten().take(remaining_entries) {
+            remaining_entries -= 1;
+            let prefix = entry.path();
+            let python = conda_python_path(&prefix);
+            if !python.is_file() || !seen.insert(python.clone()) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            candidates.push((name, prefix));
+        }
+    }
+
+    for path in registry_entries {
+        let prefix = PathBuf::from(path);
+        let python = conda_python_path(&prefix);
+        if python.is_file() && seen.insert(python) {
+            let name = prefix
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            candidates.push((name, prefix));
+        }
+    }
+
+    candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    candidates
 }
 
 /// Parse an environment.yml file using rattler's serde_yaml parser.
@@ -377,6 +461,47 @@ mod tests {
 
     fn write_file(dir: &Path, name: &str, content: &str) {
         std::fs::write(dir.join(name), content).unwrap();
+    }
+
+    #[test]
+    fn discover_conda_envs_is_immediate_sorted_and_supports_spaces() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("Conda Root").join("envs");
+        let zeta = root.join("zeta");
+        let alpha = root.join("alpha");
+        std::fs::create_dir_all(&zeta).unwrap();
+        std::fs::create_dir_all(&alpha).unwrap();
+        let zeta_python = conda_python_path(&zeta);
+        let alpha_python = conda_python_path(&alpha);
+        std::fs::create_dir_all(zeta_python.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(alpha_python.parent().unwrap()).unwrap();
+        std::fs::write(zeta_python, b"").unwrap();
+        std::fs::write(alpha_python, b"").unwrap();
+        std::fs::create_dir_all(root.join("nested").join("child")).unwrap();
+
+        let candidates = discover_conda_envs_in_roots([root.clone(), root], &[]);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].0, "alpha");
+        assert_eq!(candidates[1].0, "zeta");
+        assert!(candidates
+            .iter()
+            .all(|(_, prefix)| prefix.to_string_lossy().contains(' ')));
+    }
+
+    #[test]
+    fn conda_registry_parser_caps_entries() {
+        let registry = (0..=CONDA_REGISTRY_MAX_ENTRIES)
+            .map(|index| format!("/envs/{index}\n"))
+            .collect::<String>();
+        let entries = parse_conda_registry_entries(registry.as_bytes());
+        assert_eq!(entries.len(), CONDA_REGISTRY_MAX_ENTRIES);
+    }
+
+    #[test]
+    fn conda_registry_reader_caps_bytes() {
+        let input = vec![b'a'; CONDA_REGISTRY_MAX_BYTES as usize + 1];
+        let entries = read_conda_registry_entries_from(input.as_slice());
+        assert_eq!(entries, vec!["a".repeat(CONDA_REGISTRY_MAX_BYTES as usize)]);
     }
 
     #[test]
