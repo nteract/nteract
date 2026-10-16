@@ -6,39 +6,39 @@ import {appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileS
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {setTimeout as sleep} from "node:timers/promises";
-import {releaseIdentity, registryPackage} from "./npm-release.mjs";
+import {releaseIdentity} from "./npm-release.mjs";
 import {positive, successfulJobAtAttempt, validateWasm} from "./editor-assets-release.mjs";
-import {candidateName, digest, packJobStatusAtAttempt, resolveCandidate, resolveWasmPlan, seal, tarballName, validatePacked, wasmPublicationDecision} from "./npm-wasm-release.mjs";
+import {candidateName, digest, packJobStatusAtAttempt, publishWasmPackage, resolveCandidate, resolveWasmPlan, seal, tarballName, validatePacked, waitForWasmPublication} from "./npm-wasm-release.mjs";
 
 const env = process.env;
 const [command, ...args] = process.argv.slice(2);
 const readJson = path => JSON.parse(readFileSync(path, "utf8"));
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 const output = (name, value) => appendFileSync(env.GITHUB_OUTPUT, `${name}=${value}\n`);
-const summary = value => appendFileSync(env.GITHUB_STEP_SUMMARY, `${value}\n`);
+const summary = value => env.GITHUB_STEP_SUMMARY ? appendFileSync(env.GITHUB_STEP_SUMMARY, `${value}\n`) : console.log(value);
 
 if (command === "seal") {
   writeJson(join(args[1], "candidate.json"), seal(readJson(args[0]), readFileSync(join(args[1], tarballName)), env.GITHUB_RUN_ID, env.GITHUB_RUN_ATTEMPT));
-} else if (command === "publish") {
+} else if (command === "publish" || command === "verify-published") {
   // No checkout, dependency install, source build, or lifecycle scripts here.
-  if (env.NPM_WASM_ENABLED !== "true") throw new Error("WASM npm publication gate is disabled");
+  if (command === "publish" && env.NPM_WASM_ENABLED !== "true") throw new Error("WASM npm publication gate is disabled");
   const candidate = readJson(join(args[0], "candidate.json"));
   const tarball = join(args[0], tarballName);
   const bytes = readFileSync(tarball);
   const {manifest} = validatePacked(candidate, bytes);
-  const npmVersion = execFileSync("npm", ["--version"], {encoding: "utf8"}).trim();
-  if (!/^\d+\.\d+\.\d+$/.test(npmVersion)) throw new Error("Invalid npm CLI version");
-  const version = npmVersion.split(".").map(Number);
-  if (version[0] < 11 || (version[0] === 11 && (version[1] < 5 || (version[1] === 5 && version[2] < 1)))) throw new Error("npm 11.5.1 or newer is required for trusted publishing");
-  const decision = wasmPublicationDecision(candidate, bytes, await registryPackage(manifest.name));
-  if (decision === "publish") {
-    execFileSync("npm", ["publish", tarball, "--tag", candidate.plan.distTag, "--access", "public", "--provenance", "--ignore-scripts"], {stdio: "inherit"});
-    let verified = false;
-    for (let attempt = 0; attempt < 12; attempt++) {
-      if (wasmPublicationDecision(candidate, bytes, await registryPackage(manifest.name)) === "existing") { verified = true; break; }
-      await sleep(5000);
-    }
-    if (!verified) throw new Error("Published WASM tarball integrity has not appeared in registry metadata; retry this retained candidate");
+  let decision = "existing";
+  if (command === "verify-published") {
+    // Public registry reads need neither npm/OIDC nor the publication gate.
+    await waitForWasmPublication(candidate, bytes);
+  } else {
+    const npmVersion = execFileSync("npm", ["--version"], {encoding: "utf8"}).trim();
+    if (!/^\d+\.\d+\.\d+$/.test(npmVersion)) throw new Error("Invalid npm CLI version");
+    const version = npmVersion.split(".").map(Number);
+    if (version[0] < 11 || (version[0] === 11 && (version[1] < 5 || (version[1] === 5 && version[2] < 1)))) throw new Error("npm 11.5.1 or newer is required for trusted publishing");
+    decision = await publishWasmPackage(candidate, bytes, {
+      publish: () => execFileSync("npm", ["publish", tarball, "--tag", candidate.plan.distTag, "--access", "public", "--provenance", "--ignore-scripts"], {stdio: "inherit"}),
+      onAccepted: () => summary(`npm accepted the upload of ${manifest.name}@${manifest.version}; registry integrity is not verified yet. If visibility remains pending, run npm-wasm-release-cli.mjs verify-published against this same retained candidate before any publication retry.`),
+    });
   }
   summary(`@runtimed/wasm@${manifest.version}: **${decision === "existing" ? "existing" : "published"}**; verified immutable integrity ${candidate.integrity}; source ${candidate.plan.sourceSha}.`);
 } else {
