@@ -14339,8 +14339,10 @@ async fn auto_launch_no_peers_abort_readmits_reconnect_that_raced_the_abort() {
     next.release_without_cooldown();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn auto_launch_no_peers_abort_does_not_readmit_after_shutdown_during_reset() {
+    use std::future::Future;
+
     let (_tmp, room) = gate_test_room();
     let attempt = match room.try_begin_auto_launch() {
         AutoLaunchAdmission::Admitted(attempt) => attempt,
@@ -14349,47 +14351,35 @@ async fn auto_launch_no_peers_abort_does_not_readmit_after_shutdown_during_reset
     room.connections
         .active_peers
         .store(1, std::sync::atomic::Ordering::Relaxed);
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))
+        .unwrap();
 
     // Hold the handle lock that reset_starting_state awaits after updating its
-    // projection. This opens the exact interleaving where Shutdown arrives
-    // during the abort's awaited reset rather than before its first check.
-    let abort = {
+    // projection. Poll directly so cancellation cannot race ahead of the
+    // abort's first check; a fresh room's initial NotStarted is not a barrier.
+    let mut abort = Box::pin(release_attempt_and_readmit_if_peer_waiting(&room, attempt));
+    {
         let _handle_guard = room.runtime_agent_handle.try_lock().unwrap();
-        let abort = tokio::spawn({
-            let room = Arc::clone(&room);
-            async move { release_attempt_and_readmit_if_peer_waiting(&room, attempt).await }
-        });
-        let mut reached_blocked_reset = false;
-        for _ in 0..10_000 {
-            if room
-                .state
-                .read(|sd| sd.read_state().kernel.lifecycle)
-                .unwrap()
-                == RuntimeLifecycle::NotStarted
-            {
-                reached_blocked_reset = true;
-                break;
-            }
-            std::thread::yield_now();
-        }
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
         assert!(
-            reached_blocked_reset,
-            "abort must reach the handle-clear await before cancellation"
+            abort.as_mut().poll(&mut cx).is_pending(),
+            "abort must block on the held handle lock before cancellation"
+        );
+        assert_eq!(
+            room.state
+                .read(|sd| sd.read_state().kernel.lifecycle)
+                .unwrap(),
+            RuntimeLifecycle::NotStarted,
+            "abort must reset Resolving before reaching the handle-clear await"
         );
         assert_eq!(room.cancel_in_flight_launch(), Some(1));
-        abort
-    };
+    }
 
     assert!(
-        abort.await.unwrap().is_none(),
+        abort.await.is_none(),
         "accepted shutdown must suppress the reconnect-driven successor"
     );
-    for _ in 0..20 {
-        if room.launch_completion(1).is_some() {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
     assert_eq!(room.test_auto_launch_admissions(), 1);
     assert_eq!(
         room.launch_completion(1),
