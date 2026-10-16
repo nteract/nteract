@@ -21,6 +21,9 @@
 // to Parquet and Arrow.
 export { loadTableFile } from "./file-data";
 export type { TableFileOptions } from "./file-data";
+// Byte-range Parquet: hosts implement ByteSource over a file, IPC call, or
+// Range-capable URL and pass it to loadTableFile or a `byte-source` SiftSource.
+export type { ByteSource } from "./parquet-file";
 export type {
   BetweenPredicate,
   ColumnPredicate,
