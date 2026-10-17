@@ -101,6 +101,10 @@ configured durability boundary. The server sends durable heads separately from
 protocol messages; the browser displays Saved only when those heads cover all
 local changes. Hibernation/restart resets ephemeral sync state and reconnects
 clients for a new handshake. A protocol acknowledgment alone is not Saved.
+The browser keeps at most one binary frame awaiting its own durable receipt;
+typing continues locally and accumulates in the next batch. Unsolicited peer
+broadcasts do not release this transport window. Automerge's own in-flight
+flag does not impose this bound when local heads keep advancing.
 
 Pending binary replicas are journaled in IndexedDB, keyed by account and Page,
 and merge after reconnect or reopening a tab. Cleanup compares journal revisions
@@ -255,11 +259,27 @@ NOTEBOOK_CLOUD_OIDC_TOKEN_AUTH_METHOD=none
 NOTEBOOK_CLOUD_OIDC_USERINFO=true
 ```
 
-The initial deployment on 2026-10-17 runs application revision
+The initial deployment on 2026-10-17 ran application revision
 `c4a5cceaad48e6955f2c6cd2a7ff2956223045aa` (celld deployment version
 `cad376b1fcf3e067`). Any Anaconda account may sign in; workspaces remain private
 to each account. A fresh persistent session secret was generated on the host.
 No local development state or private reference document was uploaded.
+
+The CRDT rollout on the same date runs application revision
+`44740c901804931503fe4f376ad26836073b1295`, celld version
+`da40b87bf4fa8fac`. It preserves the original OIDC configuration, session secret,
+and S3 prefix. The optional, memory-only editor workbench is available at
+<https://m.runtimed.run/editor-spike/preview.htm>, built separately from spike
+revision `0c554757e65ada690930785d45d151a8233e0682` (PR #4453). Its generated
+fixture is not connected to private Pages and resets on reload.
+
+Live browser checks verified title editing, sustained typing, two-tab delivery,
+pending-journal recovery, Unicode, and Saved status after convergence. The
+rollout caught and fixed premature release of shared Automerge handles and
+unbounded client send cadence under bucket durability; both have regression
+tests. Public viewer, WASM, and workbench hashes match the release manifest.
+The workbench converged its two in-browser replicas and fit a narrow viewport;
+this does not qualify native mobile keyboard/IME behavior or live comments.
 
 | Component | Deployment |
 | --- | --- |
