@@ -76,6 +76,12 @@ export const fixtures: Fixture[] = [
     expectedText: ["Markdown Plugin", "Item 1", "print('hello')"],
   },
   {
+    label: "Mermaid (Markdown plugin)",
+    mimeType: "text/markdown",
+    data: "```mermaid\nflowchart LR\naccTitle: Notebook execution\nA[Edit source] --> B[Display output]\n```",
+    expectedText: ["Edit source", "Display output"],
+  },
+  {
     label: "Plotly (plugin)",
     mimeType: "application/vnd.plotly.v1+json",
     data: JSON.stringify({

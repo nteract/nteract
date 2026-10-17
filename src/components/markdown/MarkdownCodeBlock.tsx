@@ -1,6 +1,7 @@
 import { Check, Copy } from "lucide-react";
 import { useState } from "react";
 import { StaticCodeBlock, type ColorTheme } from "@/components/editor/static-highlight";
+import { MermaidDiagram } from "./MermaidDiagram";
 import {
   markdownCodeBlockCopyButtonClassName,
   markdownCodeBlockLabelClassName,
@@ -31,7 +32,19 @@ export function MarkdownCodeBlock({
   copyErrorMessage = "Failed to copy markdown code block:",
 }: MarkdownCodeBlockProps) {
   const [copied, setCopied] = useState(false);
+  const [showSource, setShowSource] = useState(false);
   const languageLabel = markdownCodeBlockLanguageLabel(language);
+  const isMermaid = languageLabel.toLowerCase() === "mermaid";
+  const source = (
+    <StaticCodeBlock
+      code={code}
+      colorTheme={colorTheme}
+      isDark={isDark}
+      language={language}
+      className={preClassName}
+      style={markdownCodeBlockPreStyle}
+    />
+  );
 
   const copyCode = async () => {
     try {
@@ -60,6 +73,16 @@ export function MarkdownCodeBlock({
         >
           {languageLabel}
         </span>
+        {isMermaid && (
+          <button
+            type="button"
+            className={`${markdownCodeBlockCopyButtonClassName} ml-auto w-auto px-2 whitespace-nowrap`}
+            aria-pressed={showSource}
+            onClick={() => setShowSource((shown) => !shown)}
+          >
+            {showSource ? "Show diagram" : "Show source"}
+          </button>
+        )}
         {enableCopy && (
           <button
             type="button"
@@ -72,14 +95,7 @@ export function MarkdownCodeBlock({
           </button>
         )}
       </div>
-      <StaticCodeBlock
-        code={code}
-        colorTheme={colorTheme}
-        isDark={isDark}
-        language={language}
-        className={preClassName}
-        style={markdownCodeBlockPreStyle}
-      />
+      {isMermaid && !showSource ? <MermaidDiagram source={code} fallback={source} /> : source}
     </div>
   );
 }
