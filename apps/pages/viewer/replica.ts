@@ -2,12 +2,19 @@ import * as A from "@automerge/automerge/slim";
 import { block, type Page, type Snapshot, type Kind } from "../src/document.ts";
 import { newActor, SYNC_PROTOCOL, validatePage, MAX_SYNC_BYTES } from "../src/sync.ts";
 import { clearPending, pendingReplicas, savePending, type PendingReplica } from "./journal.ts";
+import {
+  prepareComment,
+  projectComments,
+  validateComments,
+  type ProjectedThread,
+} from "../src/comments.ts";
 
 export type SyncStatus = "connecting" | "syncing" | "saved" | "offline" | "signed_out" | "rejected";
 export interface ReplicaUpdate {
   page: Snapshot | null;
   status: SyncStatus;
   error: string | null;
+  comments: ProjectedThread[];
 }
 
 /** Isolate unreadable journals without deleting their only recovery bytes. */
@@ -260,7 +267,12 @@ export class PageReplica {
         }
       : null;
     for (const observer of this.observers) observer.after();
-    this.changed({ page, status: this.status, error: this.problem });
+    this.changed({
+      page,
+      status: this.status,
+      error: this.problem,
+      comments: doc?.page_id ? projectComments(doc) : [],
+    });
   }
   private schedule() {
     if (this.flushTimer) return;
@@ -337,6 +349,7 @@ export class PageReplica {
     try {
       next = A.change(next, action);
       validatePage(next, this.pageId!);
+      validateComments(next, this.doc, A.getActorId(this.doc).slice(0, 32));
     } catch (error) {
       A.free(next);
       throw error;
@@ -354,6 +367,15 @@ export class PageReplica {
   }
   text(id: string | null, source: string) {
     this.change((d) => A.updateText(d, id ? ["blocks", id, "markdown"] : ["title"], source));
+  }
+  comment(input: Record<string, unknown>) {
+    if (!this.doc) throw Error("Wait for the document to connect");
+    const operation = prepareComment(this.doc, input);
+    this.change(operation.apply);
+    return operation.threadId;
+  }
+  commentAuthorId() {
+    return this.doc ? A.getActorId(this.doc).slice(0, 32) : "";
   }
   add(kind: Kind) {
     const value = block({ kind, markdown: "" });

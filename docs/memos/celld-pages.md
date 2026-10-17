@@ -1,7 +1,8 @@
 # Standalone Pages on celld
 
 **Status:** Realtime CRDT prototype plus proposed direction, 2026-10-17.
-WYSIWYG, sharing, comments, presence, and incremental persistence remain planned.
+Live comments are implemented in private Pages. WYSIWYG, sharing, presence,
+and incremental persistence remain planned.
 
 ## Purpose and deployment boundary
 
@@ -26,7 +27,7 @@ route. It does not use the notebook preview router or PR-close lifecycle.
 `apps/pages` builds its own Worker, WASM, and browser bundle. One private
 workspace Durable Object serves each authenticated account, with a separate
 Automerge document per Page. A Page contains a title, ordered stable block IDs,
-and a block map. Blocks contain Markdown or agent instructions plus metadata.
+a block map, and comment threads. Blocks contain Markdown or agent instructions plus metadata.
 Parser node IDs are rendering details, not persisted block identities.
 
 The HTTP tool API implements a subset of Spaces-shaped reads, guarded edits,
@@ -40,7 +41,8 @@ distinguish acknowledged work from local edits. Server handlers use celld's
 WebSocket output gate and recheck endpoint sessions before writes and broadcasts.
 See the [README](../../apps/pages/README.md#storage-and-identity) for admission,
 recovery, and durability limits. This is neither a drop-in Spaces connector nor
-an MCP server. Execution, sharing, comments, and offline app loading are absent.
+an MCP server. Comments use that same document and sync stream. Execution,
+sharing, and offline app loading are absent.
 
 Server-login mode admits endpoint-local sessions and rejects raw provider
 tokens, matching notebook-cloud's isolation for a shared OAuth client.
@@ -127,7 +129,7 @@ Comments inherit space access. Owners and editors may create/reply/resolve/reope
 threads; viewers may read them. A commenter-only role can be considered later.
 
 Apply the same authorization to space discovery, Page reads and mutations,
-change history, future comments, subscriptions, and tool transports. Resolve
+change history, comments, subscriptions, and tool transports. Resolve
 each Page's actual parent space on the server; a supplied space or Page ID is
 not proof of access. Delegated agent credentials are bounded by both their
 granted scope and the principal's current space membership. Revocation must
@@ -151,9 +153,13 @@ is not enabled by this design update or on the initial deployment.
 ## Editor: blocks inside a document
 
 Design toward WYSIWYG within blocks and selections that span blocks. Block
-boundaries should not force isolated editor instances. The textarea interface
+boundaries should not force isolated editor instances. The current CodeMirror source interface
 is a prototype, not the target editing architecture; editor choice and visual
-design remain open.
+design remain open. Markdown need not remain canonical editable state: Kyle
+clarified in the editor thread that Markdown at export is acceptable. Evaluate
+a rich Automerge model and its binding independently from the Rust parser and
+renderer capabilities shared with notebooks. Adoption requires an explicit
+migration of existing content, tool projections, and comment anchors.
 
 Represent a selection with stable start/end block IDs, positions within their
 canonical source, direction, and an observed document revision. Source positions
@@ -178,7 +184,7 @@ hash guards, idempotency, explicit commit outcomes, and capability discovery.
 | Adapter | Proposed purpose |
 | --- | --- |
 | HTTP | Reads, bounded mutations, retries, and automation without an open editor |
-| WebSocket | Implemented: binary Automerge sync and durable-head acknowledgments. Planned: presence and comment streams |
+| WebSocket | Implemented: binary Automerge sync and durable-head acknowledgments. Live comments use the same CRDT stream. Planned: presence |
 | WebMCP | Tools exposed by the signed-in page, calling the same operation client as the UI |
 
 WebMCP exposes browser-side JavaScript tools; it is not a backend sync protocol.
@@ -248,19 +254,42 @@ resolvers derive from admitted Automerge authorship, not writable author fields.
 Keep actor checks at every ingress path, including semantic API operations and
 the raw sync path. An actor ID is not authentication by itself.
 
-The thread/message model is reusable, but `NotebookCommentRef` and
-`CommentAnchor` currently carry notebook/cell semantics. Add explicit Page,
-block, and block-source-range targets rather than disguising blocks as cells.
-Start with create/reply/resolve/reopen operations and stable thread/message IDs.
-Allow comments to survive a deleted target as explicitly orphaned/page-level
-threads; do not silently attach them to unrelated text. Range recovery must
-distinguish exact matches, ambiguous matches, and missing targets.
+The implementation uses explicit Page block/range targets, stable thread/message
+IDs, replies, resolve/reopen, and author-only message edit/tombstone operations.
+It follows the notebook authorship principle without importing Rust notebook/cell
+schemas into the Worker. The Spaces-shaped API is a subset: reactions and thread
+deletion are explicitly unsupported, and semantic writes retain mandatory sequence
+and idempotency guards. Browser composers expose create/reply/resolve/reopen;
+message editing/deletion are currently API-only.
 
-A separate comments document inside the same Page authority is a candidate,
-not a settled schema. Decide whether content and comments share a commit cursor
-or have explicit separate cursors, and define deletion/anchoring consistency.
-The Rust model cannot simply be imported into this JavaScript Worker: evaluate
-a small WASM interface or extraction of a shared core before copying it.
+Comments live in a map inside each Page document. Content, anchors, and discussion
+therefore share causal history, durable heads, a server commit sequence, and the
+existing pending-journal recovery. This avoids another synchronization and
+persistence boundary while the data model is small. A separate CommentsDoc can be
+reconsidered if measured size or access policy requires it; it is not necessary
+for the current private prototype.
+
+The admitted actor's account prefix determines authorship. Existing messages and
+thread origins cannot be replaced, and raw sync enforces ownership just as HTTP
+does. Concurrent body edits preserve Automerge text identity. A message tombstone
+hides even a concurrent body edit; history is not purged. Resolve/reopen replaces
+an attributed status object, with all conflict alternatives validated and the
+Automerge winner projected. Client timestamps are display metadata.
+
+Selection targets store source text object IDs and opaque Automerge cursors,
+with the head on the last selected character. Context exposes exclusive UTF-16
+offsets and a bounded quote. Deleting the final selected character, deleting the
+block, or replacing its source object detaches the thread conservatively; it
+stays visible without a guessed reattachment. The HTTP API and source composer
+create within-block selections; richer cross-block selection belongs to the editor
+integration. These anchors will need migration if rich text becomes canonical.
+
+Old Pages acquire one comments map under the workspace queue before sync,
+advancing the commit sequence once while preserving history and receipts.
+Protocol v2 requires refreshed clients. The local protocol smoke exercises API
+comment pushes, raw CRDT replies, resolution, and reconnect against real celld;
+unit tests cover concurrent operations, ownership, migration, and failure/restart.
+Shared-space authorization remains required before multi-account collaboration.
 
 ## Persistence closer to the primitives
 
@@ -338,8 +367,8 @@ does not qualify either remote backend.
 4. Measure and implement incremental persistence with recovery qualification.
 5. Extend the implemented CRDT editing and reconnect flow with presence and
    change illumination, then qualify it across shared-space permissions.
-6. Integrate CommentsDoc thread operations, Page/source anchors, and live comment
-   UI with shared-space permissions and admitted authorship.
+6. Extend the implemented live comments with shared-space permissions, richer
+   editor anchors, and the remaining API/UI operations.
 7. Integrate the separate WYSIWYG spike, including cross-block selection and
    undo, into the complete shared editing and commenting fixture.
 8. Add WebMCP/remote MCP adapters over the established operation contract.

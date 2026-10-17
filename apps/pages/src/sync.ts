@@ -1,12 +1,14 @@
 import * as A from "@automerge/automerge/slim";
 import { checkSize, hash, validateJson, type Page } from "./document.ts";
 import { PageError, object, requireValue, text } from "./errors.ts";
+import { validateComments } from "./comments.ts";
 
-export const SYNC_PROTOCOL = "nteract-pages-automerge-v1";
+export const SYNC_PROTOCOL = "nteract-pages-automerge-v2";
 export const MAX_SYNC_BYTES = 2 * 1024 * 1024;
 
 // The account is admitted at ingress. Client suffixes distinguish replicas,
-// not authenticated people. Never derive account identity from an actor ID.
+// not authenticated people. Authenticate the account before checking its prefix;
+// comment projections may then use admitted object IDs for account attribution.
 export async function actorPrefix(principal: string): Promise<string> {
   return (await hash(`pages-actor-v1:${principal}`)).slice(0, 32);
 }
@@ -32,8 +34,8 @@ function noConflicts(value: object, keys: string[]) {
 
 /** Validate raw CRDT ingress, including identity and hidden structural conflicts. */
 export function validatePage(doc: A.Doc<Page>, pageId: string): void {
-  exactKeys(doc, ["schema_version", "page_id", "title", "order", "blocks"]);
-  noConflicts(doc, ["schema_version", "page_id", "title", "order", "blocks"]);
+  exactKeys(doc, ["schema_version", "page_id", "title", "order", "blocks", "comments"]);
+  noConflicts(doc, ["schema_version", "page_id", "title", "order", "blocks", "comments"]);
   requireValue(
     doc.schema_version === 2 && doc.page_id === pageId,
     "invalid_page_schema",
@@ -75,6 +77,7 @@ export function validatePage(doc: A.Doc<Page>, pageId: string): void {
       "Order references a missing block",
     );
   checkSize(doc);
+  validateComments(doc);
 }
 
 export function receiveAdmitted(
@@ -109,6 +112,7 @@ export function receiveAdmitted(
       );
     }
     validatePage(next, doc.page_id);
+    validateComments(next, doc, prefix);
     return { doc: next, state: result[1], changed: changes.length > 0 };
   } catch (error) {
     A.free(next);

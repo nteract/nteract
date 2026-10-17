@@ -9,8 +9,16 @@ import {
   type Page,
 } from "./document.ts";
 import { PageError, json, object, readBody, requireValue, text } from "./errors.ts";
+import { COMMENT_ACTIONS, prepareComment, projectComments, validateComments } from "./comments.ts";
 
-import { actorPrefix, receiveAdmitted, SYNC_PROTOCOL, newActor, MAX_SYNC_BYTES } from "./sync.ts";
+import {
+  actorPrefix,
+  receiveAdmitted,
+  SYNC_PROTOCOL,
+  newActor,
+  MAX_SYNC_BYTES,
+  validatePage,
+} from "./sync.ts";
 import { readServerAppSession } from "../../notebook-cloud/src/oidc-session-store.ts";
 import type { ServerOidcEnvironment } from "../../notebook-cloud/src/server-oidc.ts";
 import type { CloudflareWebSocket } from "../../notebook-cloud/src/cloudflare-types.ts";
@@ -33,6 +41,7 @@ interface Change {
   changed_block_ids: string[];
   deleted_block_ids: string[];
   title_changed: boolean;
+  comments_changed?: boolean;
 }
 interface Saved {
   bytes: Uint8Array;
@@ -53,7 +62,7 @@ interface Catalog {
 // Budget the entire value, including history/receipts, before crossing storage.
 // Binary bytes plus JSON metadata form a portable application budget, not a
 // claim about celld's internal serialization or fleet durability setting.
-export function checkStorageBudget(values: Record<string, unknown>): void {
+export function checkStorageBudget(values: Record<string, unknown>, limit = 1536 * 1024): void {
   for (const value of Object.values(values)) {
     let binaryBytes = 0;
     const encoded = JSON.stringify(value, (_key, item) => {
@@ -64,7 +73,7 @@ export function checkStorageBudget(values: Record<string, unknown>): void {
       return item;
     });
     requireValue(
-      binaryBytes + new TextEncoder().encode(encoded).length <= 1536 * 1024,
+      binaryBytes + new TextEncoder().encode(encoded).length <= limit,
       "page_limit_exceeded",
       "Stored Page or catalog exceeds the 1.5 MiB budget, including history and receipts",
     );
@@ -83,6 +92,9 @@ export const CAPABILITIES = {
     "edit_page",
     "patch_page",
     "read_page_changes",
+    "list_page_comments",
+    "manage_page_comment",
+    "reply_page_comment",
   ],
   block_kinds: ["markdown", "agent_instructions"],
   views: ["editing", "full"],
@@ -105,13 +117,19 @@ export const CAPABILITIES = {
     retained_receipts: 128,
   },
   sync: { protocol: SYNC_PROTOCOL, transport: "websocket", endpoint: "/api/sync" },
+  comments: {
+    actions: COMMENT_ACTIONS,
+    targets: ["block", "selection"],
+    reactions: false,
+    delete_thread: false,
+    limits: { threads: 500, messages_per_thread: 500, message_bytes: 16000 },
+  },
   unsupported: [
     "multi_user_sharing",
     "scratch",
     "excerpts",
     "in_block_anchors",
     "native_artifacts",
-    "comments",
     "files",
     "execution",
     "offline_sync",
@@ -123,6 +141,45 @@ export class PagesWorkspace {
   private queue: Promise<unknown> = Promise.resolve();
   private peers = new Set<SyncPeer>();
   private queuedBytes = 0;
+  /** Upgrade once under the workspace queue, before any replica can create threads. */
+  private async ensureComments(id: string, principal: string) {
+    const saved = await this.state.storage.get<Saved>(id);
+    if (!saved) throw new PageError("not_found", "Page not found", 404);
+    let doc = A.load<Page>(new Uint8Array(saved.bytes), {
+      actor: newActor(await actorPrefix(principal)),
+    });
+    try {
+      if (doc.comments) return;
+      doc = A.change(doc, (d) => {
+        d.comments = {};
+      });
+      const sequence = saved.sequence + 1;
+      const values = {
+        [id]: {
+          ...saved,
+          bytes: A.save(doc),
+          sequence,
+          events: [
+            ...saved.events,
+            {
+              sequence,
+              actor: principal,
+              changed_block_ids: [],
+              deleted_block_ids: [],
+              title_changed: false,
+              comments_changed: true,
+            },
+          ].slice(-128),
+        },
+      };
+      // Reserve bounded migration headroom so a legacy Page at the normal
+      // budget remains readable. Subsequent user mutations use the usual cap.
+      checkStorageBudget(values, 1536 * 1024 + 4096);
+      await this.state.storage.put(values);
+    } finally {
+      A.free(doc);
+    }
+  }
   constructor(
     private readonly state: {
       storage: Storage;
@@ -180,6 +237,7 @@ export class PagesWorkspace {
     if (pageId) {
       requireValue(/^page_[a-f0-9]{32}$/.test(pageId), "invalid_request", "Invalid Page ID");
       requireValue(await this.state.storage.get(pageId), "not_found", "Page not found");
+      await this.ensureComments(pageId, principal);
     }
     const pair = new WebSocketPair();
     const peer: SyncPeer = {
@@ -301,6 +359,8 @@ export class PagesWorkspace {
               .filter((b) => !received.doc.order.includes(b.id))
               .map((b) => b.id),
             title_changed: before.title !== after.title,
+            comments_changed:
+              canonical(projectComments(doc)) !== canonical(projectComments(received.doc)),
           };
           const entry = catalog.pages.find((p) => p.page_id === pageId);
           requireValue(entry, "not_found", "Page is not in the space catalog");
@@ -501,11 +561,40 @@ export class PagesWorkspace {
 
     const id = text(input.page_id, "page_id", 100);
     requireValue(/^page_[a-f0-9]{32}$/.test(id), "invalid_request", "Invalid Page ID");
+    await this.ensureComments(id, principal);
     const saved = await this.state.storage.get<Saved>(id);
     if (!saved) throw new PageError("not_found", "Page not found", 404);
     const doc = A.load<Page>(new Uint8Array(saved.bytes));
     try {
       const full = await snapshot(doc, saved.sequence);
+      if (operation === "list_page_comments") {
+        requireValue(
+          input.state == null || input.state === "open" || input.state === "resolved",
+          "invalid_request",
+          "Use open or resolved state",
+        );
+        const limit = input.limit ?? 100;
+        requireValue(
+          Number.isSafeInteger(limit) && Number(limit) >= 1 && Number(limit) <= 500,
+          "invalid_request",
+          "Use limit 1–500",
+        );
+        const threads = projectComments(doc).filter(
+          (t) =>
+            (!input.state || t.state === input.state) &&
+            (!input.block_id ||
+              (t.target.kind === "block"
+                ? t.target.blockId === input.block_id
+                : t.target.anchor.blockId === input.block_id ||
+                  t.target.head.blockId === input.block_id)),
+        );
+        return {
+          page_id: id,
+          sequence: saved.sequence,
+          threads: threads.slice(0, Number(limit)),
+          truncated: threads.length > Number(limit),
+        };
+      }
       if (operation === "read_page")
         return {
           ...selectSnapshot(full, input),
@@ -534,10 +623,13 @@ export class PagesWorkspace {
           title: full.title,
           title_hash: full.title_hash,
           block_order: full.blocks.map((b) => b.id),
+          comments_changed: changes.some((c) => c.comments_changed),
         };
       }
       requireValue(
-        operation === "edit_page" || operation === "patch_page",
+        ["edit_page", "patch_page", "manage_page_comment", "reply_page_comment"].includes(
+          operation,
+        ),
         "unsupported_capability",
         "Unsupported operation",
       );
@@ -563,21 +655,43 @@ export class PagesWorkspace {
       // idempotency key fail closed instead of replaying after the receipt window.
       if (input.base_sequence !== saved.sequence)
         throw new PageError("edit_conflict", "Page changed; reread and rebuild the edit", 409);
-      requireValue(Array.isArray(input.operations), "invalid_request", "Missing operations");
+      const comment =
+        operation === "manage_page_comment" || operation === "reply_page_comment"
+          ? prepareComment(
+              doc,
+              operation === "reply_page_comment" ? { ...input, action: "reply" } : input,
+            )
+          : null;
+      if (!comment)
+        requireValue(Array.isArray(input.operations), "invalid_request", "Missing operations");
       if (operation === "edit_page")
         requireValue(
-          !input.operations.some((op) => object(op).op === "patch_block_markdown"),
+          !(input.operations as unknown[]).some((op) => object(op).op === "patch_block_markdown"),
           "unsupported_capability",
           "Use patch_page for literal patches with partial receipts",
         );
-      const edited = await edit(
-        doc,
-        input.operations,
-        operation === "patch_page",
-        newActor(await actorPrefix(principal)),
-      );
+      const prefix = await actorPrefix(principal);
+      const edited = comment
+        ? (() => {
+            let next = A.clone(doc, { actor: newActor(prefix) });
+            try {
+              next = A.change(next, comment.apply);
+              validatePage(next, id);
+              validateComments(next, doc, prefix);
+              return { doc: next, receipts: [] };
+            } catch (error) {
+              A.free(next);
+              throw error;
+            }
+          })()
+        : await edit(
+            doc,
+            input.operations as unknown[],
+            operation === "patch_page",
+            newActor(await actorPrefix(principal)),
+          );
       try {
-        if (edited.receipts.every((receipt) => receipt.status === "rejected")) {
+        if (!comment && edited.receipts.every((receipt) => receipt.status === "rejected")) {
           return {
             commit_status: "not_committed",
             through_sequence: saved.sequence,
@@ -591,6 +705,16 @@ export class PagesWorkspace {
           new_sequence: sequence,
           through_sequence: sequence,
           operation_results: edited.receipts,
+          ...(comment
+            ? {
+                page_id: id,
+                sequence,
+                thread_id: comment.threadId,
+                message_id: comment.messageId,
+                thread: projectComments(edited.doc).find((t) => t.id === comment.threadId),
+                truncated: false,
+              }
+            : {}),
         };
         const before = new Map(full.blocks.map((b) => [b.id, b.hash]));
         const event: Change = {
@@ -603,6 +727,7 @@ export class PagesWorkspace {
             .filter((b) => !edited.doc.order.includes(b.id))
             .map((b) => b.id),
           title_changed: full.title !== after.title,
+          comments_changed: !!comment,
         };
         const receipts = { ...saved.receipts, [receiptKey]: { digest, result } };
         const keys = Object.keys(receipts).filter((k) => k !== "create");

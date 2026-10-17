@@ -10,6 +10,7 @@ import { initializeMarkdown } from "./markdown";
 import { store } from "./store";
 import { openPageLink } from "./links";
 import { LiveEditor } from "./LiveEditor";
+import { Comments, type CommentSelection } from "./Comments";
 import "./style.css";
 function Markdown({ source }: { source: string }) {
   if (!source.trim()) return null;
@@ -33,6 +34,9 @@ function App() {
   const [editing, setEditing] = useState<string | null | undefined>(undefined),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  const [selection, setSelection] = useState<{ blockId: string; range: CommentSelection } | null>(
+    null,
+  );
   useEffect(() => {
     void store.refresh();
     const guard = (event: BeforeUnloadEvent) => {
@@ -44,7 +48,13 @@ function App() {
     window.addEventListener("beforeunload", guard);
     return () => window.removeEventListener("beforeunload", guard);
   }, []);
-  useEffect(() => setEditing(undefined), [state.page?.page_id]);
+  useEffect(() => {
+    setEditing(undefined);
+    setSelection(null);
+  }, [state.page?.page_id]);
+  useEffect(() => {
+    setSelection(null);
+  }, [editing]);
   async function run(action: () => Promise<unknown> | unknown) {
     setBusy(true);
     setError("");
@@ -176,12 +186,57 @@ function App() {
                     </button>
                   </div>
                   {editing === b.id && replica ? (
-                    <LiveEditor replica={replica} id={b.id} onError={setError} />
+                    <LiveEditor
+                      replica={replica}
+                      id={b.id}
+                      onError={setError}
+                      onSelection={(range) => setSelection(range ? { blockId: b.id, range } : null)}
+                    />
                   ) : (
                     <Markdown source={b.markdown} />
                   )}
+                  {replica && (
+                    <Comments
+                      replica={replica}
+                      blockId={b.id}
+                      name={state.name}
+                      editable={editable}
+                      selection={selection?.blockId === b.id ? selection.range : null}
+                      onCommented={() => setSelection(null)}
+                      threads={state.comments.filter((t) =>
+                        t.target.kind === "block"
+                          ? t.target.blockId === b.id
+                          : t.target.anchor.blockId === b.id,
+                      )}
+                    />
+                  )}
                 </section>
               ))}
+              {replica &&
+                state.comments.some(
+                  (t) =>
+                    !page.blocks.some(
+                      (b) =>
+                        b.id ===
+                        (t.target.kind === "block" ? t.target.blockId : t.target.anchor.blockId),
+                    ),
+                ) && (
+                  <Comments
+                    replica={replica}
+                    name={state.name}
+                    editable={editable}
+                    threads={state.comments.filter(
+                      (t) =>
+                        !page.blocks.some(
+                          (b) =>
+                            b.id ===
+                            (t.target.kind === "block"
+                              ? t.target.blockId
+                              : t.target.anchor.blockId),
+                        ),
+                    )}
+                  />
+                )}
               <div className="append">
                 <button
                   disabled={!editable}

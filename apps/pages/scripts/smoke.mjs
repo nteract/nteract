@@ -138,6 +138,52 @@ try {
     "concurrent convergence",
   );
   assert.deepEqual(A.getHeads(a.doc), A.getHeads(b.doc));
+  const beforeComment = await tool(cookie, "read_page", { page_id: id });
+  const comment = await tool(cookie, "manage_page_comment", {
+    page_id: id,
+    action: "add",
+    block_id: block,
+    selected_text: "Hello 🌍",
+    body: "API discussion",
+    base_sequence: beforeComment.content.through_sequence,
+    idempotency_key: crypto.randomUUID(),
+  });
+  await until(
+    () =>
+      a.doc.comments?.[comment.thread_id] &&
+      b.doc.comments?.[comment.thread_id] &&
+      a.saved() &&
+      b.saved(),
+    "HTTP comment reaches both replicas",
+  );
+  const replyId = crypto.randomUUID();
+  a.doc = A.change(a.doc, (d) => {
+    d.comments[comment.thread_id].messages[replyId] = {
+      body: "Replica reply",
+      createdAt: new Date().toISOString(),
+      editedAt: null,
+      deletedAt: null,
+    };
+  });
+  a.send();
+  await until(
+    () => b.doc.comments?.[comment.thread_id].messages[replyId] && a.saved() && b.saved(),
+    "raw CRDT reply convergence",
+  );
+  const discussion = await tool(cookie, "list_page_comments", { page_id: id });
+  assert.equal(discussion.threads[0].messages.length, 2);
+  assert.equal(discussion.threads[0].selectionContext.text, "Hello 🌍");
+  await tool(cookie, "manage_page_comment", {
+    page_id: id,
+    action: "resolve",
+    thread_id: comment.thread_id,
+    base_sequence: discussion.sequence,
+    idempotency_key: crypto.randomUUID(),
+  });
+  await until(
+    () => b.doc.comments[comment.thread_id].status.value === "resolved" && b.saved(),
+    "resolved comments push live",
+  );
   a.socket.close();
   await until(() => a.closed, "disconnect");
   a.doc = A.change(a.doc, (d) => A.splice(d, ["blocks", block, "markdown"], 0, 0, "offline "));
@@ -171,7 +217,7 @@ try {
   b.send();
   await until(() => restored.closed && b.saved(), "session revocation");
   console.log(
-    "PASS: real celld OIDC + binary CRDT convergence, Unicode, HTTP push, reconnect, and socket revocation",
+    "PASS: real celld OIDC + binary CRDT convergence, Unicode, HTTP push, reconnect, comments, and socket revocation",
   );
 } finally {
   for (const p of peers) {

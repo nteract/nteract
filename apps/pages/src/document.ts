@@ -1,5 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { PageError, object, requireValue, text } from "./errors.ts";
+import type { CommentThread } from "./comments.ts";
 
 export type Kind = "markdown" | "agent_instructions";
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -15,6 +16,7 @@ export type Page = {
   title: string;
   order: string[];
   blocks: Record<string, Block>;
+  comments?: Record<string, CommentThread>;
 };
 export interface BlockSnapshot extends Block {
   hash: string;
@@ -116,6 +118,7 @@ export function createPage(
       title: text(title, "title", 1024),
       order: blocks.map((b) => b.id),
       blocks: Object.fromEntries(blocks.map((b) => [b.id, b])),
+      comments: {},
     },
     actor ? { actor } : undefined,
   );

@@ -10,10 +10,12 @@ export function LiveEditor({
   replica,
   id,
   onError,
+  onSelection,
 }: {
   replica: PageReplica;
   id: string | null;
   onError: (message: string) => void;
+  onSelection?: (selection: { text: string; occurrence: number } | null) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -34,6 +36,19 @@ export function LiveEditor({
           EditorView.lineWrapping,
           EditorView.contentAttributes.of({ "aria-label": id ? "Markdown source" : "Page title" }),
           EditorView.updateListener.of((update) => {
+            if (onSelection && (update.selectionSet || update.docChanged)) {
+              const { from, to } = update.state.selection.main,
+                source = update.state.doc.toString();
+              const text = source.slice(from, to);
+              let occurrence = 0,
+                index = -1;
+              if (text)
+                do {
+                  index = source.indexOf(text, index + 1);
+                  occurrence++;
+                } while (index >= 0 && index < from);
+              onSelection(text ? { text, occurrence } : null);
+            }
             if (remote || !update.docChanged) return;
             try {
               const edits: { from: number; to: number; insert: string }[] = [];
