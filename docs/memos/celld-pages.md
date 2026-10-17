@@ -12,14 +12,13 @@ Pages experience without changing the notebook-cloud deployment lifecycle.
 Later integration into a single offering should preserve stable document
 identities and operations; it does not require a shared deployment today.
 
-The proposed origin is `https://m.runtimed.run`, using the existing Anaconda
-public-PKCE client, with wildcard callback approval reported by the project
-owner; acceptance at this exact callback still needs live qualification. The
-[application README](../../apps/pages/README.md) records the configuration and
-remaining qualification. No public deployment, DNS record, or production login
-qualification is delivered by this prototype. Host selection remains open.
-Use a separate fleet/store, session secret, runtime pin, and ingress route.
-The notebook preview router currently does not admit this hostname.
+The prototype is deployed at `https://m.runtimed.run` on lab1, using the
+existing Anaconda public-PKCE client. Live browser sign-in and the exact
+callback completed on 2026-10-17. Any Anaconda account may sign in; each account
+has private Pages. The [application README](../../apps/pages/README.md) records
+the deployment configuration and verification boundaries. Pages has a separate
+S3 prefix, session secret, celld 0.6.1 runtime, systemd service, and exact ingress
+route. It does not use the notebook preview router or PR-close lifecycle.
 
 ## Current implementation
 

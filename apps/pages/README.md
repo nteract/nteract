@@ -178,7 +178,7 @@ can also set `NOTEBOOK_CLOUD_OIDC_CLIENT_SECRET` and
 The D1 binding is for auth transactions and sessions; Pages use Durable Object
 storage. No public deployment is created by build or dev.
 
-### Proposed `m.runtimed.run` deployment
+### Live `m.runtimed.run` deployment
 
 Use the production Anaconda public-PKCE client already configured for
 `*.runtimed.run`, with the following public settings (verified against the
@@ -196,18 +196,54 @@ NOTEBOOK_CLOUD_OIDC_TOKEN_AUTH_METHOD=none
 NOTEBOOK_CLOUD_OIDC_USERINFO=true
 ```
 
-Generate a separate persistent session secret; never copy a notebook preview's
-secret or local development state. The callback still needs a live browser
-qualification; provider discovery alone does not prove wildcard acceptance.
+The initial deployment on 2026-10-17 runs application revision
+`c4a5cceaad48e6955f2c6cd2a7ff2956223045aa` (celld deployment version
+`cad376b1fcf3e067`). Any Anaconda account may sign in; workspaces remain private
+to each account. A fresh persistent session secret was generated on the host.
+No local development state or private reference document was uploaded.
 
-The current notebook preview router does not accept `m.runtimed.run`. Pages
-needs an exact ingress route to its own private Worker listener, ahead of the
-wildcard preview route, plus its own DNS record. Keep the operator listener
-private. Use a separately pinned celld runtime: the application was tested with
-0.6.1, while lab1's shared runtime was observed at 0.5.1. Do not replace that
-shared binary to deploy Pages. Host selection, storage destination, ingress,
-and live login qualification remain pending; this configuration is not a claim
-that the hostname is deployed.
+| Component | Deployment |
+| --- | --- |
+| Host / service | lab1 / `nteract-pages.service`, dedicated `nteract-pages` Unix user |
+| Runtime | `/opt/nteract-pages/celld`, celld 0.6.1; official Linux release verified with GitHub artifact attestation |
+| Runtime archive SHA-256 | `79a8253cff5d4e8a4a9f7a2611e393390f7fe9025f00e88467875b007c44866b` |
+| Fleet / state | `s3://nteract-celld-lab-621741996708/standalone/pages`, `CELLD_DURABILITY=bucket` |
+| Worker / operator listeners | `127.0.0.1:9471` / `127.0.0.1:19471` |
+| Local cache | `/var/lib/nteract-pages/cache`; S3 is the durable authority |
+| Release files | `/opt/nteract-pages/releases/<source-sha>`; manifest and runtime attestation in `/opt/nteract-pages` |
+| Session secret / deployment receipt | Root-only `/etc/nteract-pages` |
+| Limits | 1 GiB systemd memory ceiling, one CPU, 128 MiB V8 heaps, 2 MiB ingress bodies |
+
+Cloudflare DNS points this exact hostname to lab1's existing tunnel. Its exact
+ingress rules precede the wildcard preview rule and admit only the viewer
+assets, root page, OIDC callback, and implemented API routes. Other paths
+return 404, including development and celld operator endpoints. The separately
+owned `inet nteract_pages` nftables table restricts both service listeners to
+root and the Pages service user. Cloudflared runs as root. Other preview users
+cannot connect directly, even from the same host.
+
+The shared celld binary remains 0.5.1. Existing controller, router, and operator
+processes were unchanged; cloudflared was restarted to load the focused route
+addition. Pages is deployed manually and does not track PR pushes or disappear
+when a PR closes. Do not use the notebook preview installer to update it.
+
+For updates, rebuild and verify an exact source revision, preserve the Worker
+variables and session secret, and deploy only to the Pages prefix with its
+pinned runtime. Record the new deployment version. A code rollback redeploys a
+retained release to that same prefix; it does not undo state migrations.
+Stopping `nteract-pages.service` preserves S3 state. Route withdrawal should
+remove only the two exact Pages ingress entries and its owned DNS record;
+never restore an old whole-tunnel configuration over later unrelated changes.
+
+Live checks established browser Anaconda login and callback, Page creation,
+title and Markdown editing, rendered content surviving a reload, rejected
+anonymous/cross-origin/raw-bearer writes, private operator
+routes, and denied listener access from the preview Unix user. A synthetic Page
+was created through the private operator listener, then restored after stopping
+the service and moving its local cache aside. This proves recovery from S3 for
+that Page, not multi-node failover or a load/cost qualification. An early request
+during the restart returned `NodeUnavailable`; the read succeeded once the new
+node was ready. Readiness should be checked before admitting traffic on restart.
 
 ## Verification
 
