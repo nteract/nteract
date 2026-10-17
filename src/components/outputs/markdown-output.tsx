@@ -203,7 +203,7 @@ export function MarkdownOutput({
 
           // Code blocks with syntax highlighting
           code({ className, children, ...props }) {
-            const match = /language-(\w+)/.exec(className || "");
+            const match = /(?:^|\s)language-([^\s]+)/.exec(className || "");
             const language = match ? match[1] : "";
             const codeContent = String(children).replace(/\n$/, "");
 

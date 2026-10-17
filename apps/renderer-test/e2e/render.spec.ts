@@ -35,6 +35,30 @@ test.describe("Renderer plugin fixtures", () => {
     await waitForDefaultFixtures(page);
   });
 
+  test("host Mermaid SVG admission blocks active markup and resource requests", async ({
+    page,
+  }) => {
+    const requests: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("example.invalid")) requests.push(request.url());
+    });
+    await page.goto("/?scenario=mermaid-host");
+    await expect(page.locator("svg.pele")).toBeVisible();
+    const admission = page.getByTestId("svg-admission");
+    await expect(admission.locator("rect")).toBeAttached();
+    await expect(page.getByRole("heading", { name: "Host SVG admission" })).toBeVisible();
+    await expect(
+      admission.locator("script,style,foreignObject,iframe,a,image,use,animate,[onload],[href]"),
+    ).toHaveCount(0);
+    await expect(admission.locator("path")).not.toHaveAttribute("marker-end");
+    await expect(admission.locator("path")).not.toHaveAttribute("fill");
+    await expect(admission.locator("rect")).toHaveCSS("position", "static");
+    await expect(admission.locator("rect")).toHaveCSS("fill", "rgb(18, 52, 86)");
+    await expect(page.locator("svg.pele a, svg.pele image")).toHaveCount(0);
+    expect(await page.evaluate(() => Reflect.get(window, "mermaidProbe"))).toBeUndefined();
+    expect(requests).toEqual([]);
+  });
+
   test("Mermaid survives the sandboxed plugin path, source toggles, and invalid edits", async ({
     page,
   }) => {

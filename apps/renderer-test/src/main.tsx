@@ -13,6 +13,7 @@ import { createRoot } from "react-dom/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fixtures, getFixtureOutputs, markdownFixture, type Fixture } from "./fixtures";
 import type { OutputBlobResolver } from "@/components/isolated/output-manifest";
+import { MarkdownCodeBlock } from "@/components/markdown/MarkdownCodeBlock";
 
 type RendererLoader = () => Promise<{ rendererCode: string; rendererCss: string }>;
 
@@ -415,8 +416,48 @@ function VanillaRemountScenarioApp() {
   );
 }
 
+function MermaidHostScenarioApp() {
+  const admission = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let disposed = false;
+    void import("@/components/markdown/mermaid-renderer").then(({ sanitizeMermaidSvg }) => {
+      if (disposed) return;
+      admission.current?.replaceChildren(
+        sanitizeMermaidSvg(`<svg xmlns="http://www.w3.org/2000/svg" onload="window.mermaidProbe=true">
+        <script>window.mermaidProbe=true</script><style>body{display:none}</style>
+        <foreignObject><iframe src="https://example.invalid/mermaid-probe"></iframe></foreignObject>
+        <a href="javascript:window.mermaidProbe=true"><text>Link</text></a>
+        <image href="https://example.invalid/mermaid-probe"/><use href="https://example.invalid/mermaid-probe#x"/>
+        <rect width="20" height="20" style="position:fixed;fill:#123456;stroke:url(https://example.invalid/mermaid-probe)"/>
+        <path marker-end="url(https://example.invalid/mermaid-probe#x)" fill="url(https://example.invalid/mermaid-probe)"/>
+        <animate attributeName="href" values="javascript:window.mermaidProbe=true"/>
+      </svg>`),
+      );
+    });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+  return (
+    <main style={{ maxWidth: 700, margin: 20 }}>
+      <h1>Host SVG admission</h1>
+      <div data-testid="svg-admission" ref={admission} />
+      <MarkdownCodeBlock
+        language="mermaid"
+        colorTheme="classic"
+        code={
+          'flowchart LR\nA[Edit source] --> B[Display output]\nclick A "https://example.invalid/mermaid-probe"'
+        }
+      />
+    </main>
+  );
+}
+
 function App() {
   const scenario = new URLSearchParams(window.location.search).get("scenario");
+  if (scenario === "mermaid-host") {
+    return <MermaidHostScenarioApp />;
+  }
   if (scenario === "delayed-bundle") {
     return <SingleFixtureApp fixture={markdownFixture} loader={delayedRendererLoader} />;
   }

@@ -50,7 +50,19 @@ purifier.addHook("uponSanitizeAttribute", (_node, attribute) => {
         style.removeProperty(property);
     }
     attribute.attrValue = style.cssText;
-  } else if (["fill", "stroke", "filter", "clip-path", "mask"].includes(attribute.attrName)) {
+  } else if (
+    [
+      "fill",
+      "stroke",
+      "filter",
+      "clip-path",
+      "mask",
+      "marker-start",
+      "marker-mid",
+      "marker-end",
+      "cursor",
+    ].includes(attribute.attrName)
+  ) {
     if (/\\|url\s*\(/i.test(attribute.attrValue) && !localReference.test(attribute.attrValue)) {
       attribute.keepAttr = false;
     }

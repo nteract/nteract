@@ -122,4 +122,15 @@ describe("Mermaid Markdown blocks", () => {
     await screen.findByText("Diagram: flowchart LR; A-->B");
     expect(mount.mock.calls[0][1]).toBe("flowchart LR; A-->B");
   });
+
+  it.each(["mermaid-example", "mermaid.js"])(
+    "keeps %s MIME fences as ordinary code",
+    (language) => {
+      vi.stubGlobal("self", {});
+      render(<MarkdownOutput content={`\`\`\`${language}\nflowchart LR; A-->B\n\`\`\``} />);
+      expect(screen.getByText(language)).toBeVisible();
+      expect(screen.queryByRole("button", { name: "Show source" })).toBeNull();
+      expect(mount).not.toHaveBeenCalled();
+    },
+  );
 });

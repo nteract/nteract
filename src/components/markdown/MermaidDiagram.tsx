@@ -14,7 +14,7 @@ const diagramStyle = {
   contain: "content",
 } as CSSProperties;
 
-/** Shared by projected cells and the isolated Markdown output renderer. */
+/** Shared by host projections (cells, outputs, comments) and isolated Markdown. */
 export function MermaidDiagram({ source, fallback }: { source: string; fallback: ReactNode }) {
   const container = useRef<HTMLDivElement>(null);
   const id = useId();
