@@ -33,6 +33,34 @@ function fixture() {
 }
 
 describe("room checkpoint objects", () => {
+  it("selects a complete generation from one new body and committed references", async () => {
+    const { bucket, bodies, writes } = fixture();
+    const references = await storeCheckpointObjects(bucket, "demo", bodies);
+    const runtime = new Uint8Array([1, 2, 3]).buffer;
+    const next = await storeCheckpointObjects(
+      bucket,
+      "demo",
+      { runtime_state: runtime },
+      references,
+    );
+    assert.equal(writes(), 5);
+    assert.deepEqual(await loadCheckpointObjects(bucket, "demo", next), {
+      ...bodies,
+      runtime_state: runtime,
+    });
+    assert.deepEqual(await storeCheckpointObjects(bucket, "demo", {}, next), next);
+    assert.equal(writes(), 5);
+  });
+
+  it("rejects omitted bodies without committed references before uploading", async () => {
+    const { bucket, bodies, writes } = fixture();
+    await assert.rejects(
+      storeCheckpointObjects(bucket, "demo", { notebook: bodies.notebook }),
+      /Missing runtime_state checkpoint body/,
+    );
+    assert.equal(writes(), 0);
+  });
+
   it("roundtrips all four bodies above the 2.2MB KV row limit and reuses unchanged bodies", async () => {
     const { bucket, bodies, objects, writes } = fixture();
     const references = await storeCheckpointObjects(bucket, "notebook/a", bodies);
