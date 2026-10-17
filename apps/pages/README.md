@@ -328,6 +328,15 @@ tests. Public viewer, WASM, and workbench hashes match the release manifest.
 The workbench converged its two in-browser replicas and fit a narrow viewport;
 this does not qualify native mobile keyboard/IME behavior or live comments.
 
+The comments rollout uses application revision
+`07e24ccac6890afbb9c646f2fc2ad3365b0d2673`, celld version
+`c6ce59dd23facddf`, adopted on 2026-10-17. It preserves the same auth settings,
+secret, and S3 prefix. Public viewer, Automerge WASM, and editor-workbench hashes
+match the release manifest. Live two-tab checks verified thread creation,
+replies, resolution/reopening, durable Saved state, and reload persistence.
+Existing Pages retain their content while acquiring the comments map. Refresh
+old tabs for protocol v2. This rollout does not enable shared-space access.
+
 | Component | Deployment |
 | --- | --- |
 | Host / service | lab1 / `nteract-pages.service`, dedicated `nteract-pages` Unix user |
