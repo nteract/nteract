@@ -8,6 +8,9 @@ This is an initial service, not a full Spaces replacement. The account owns one
 workspace Durable Object, with an independent Automerge document per Page.
 There are no kernels or executable cells. Code fences are document content.
 
+See the [design memo](../../docs/memos/celld-pages.md) for the proposed editor,
+operation transports, attribution, comments, and incremental persistence work.
+
 ## Run locally
 
 Requires Node, pnpm, Rust with `wasm32-unknown-unknown`, and celld 0.6.1 or later
@@ -213,6 +216,8 @@ pnpm --dir apps/pages typecheck
 pnpm --dir apps/pages build
 # With the dev service running:
 pnpm --dir apps/pages smoke
+# Generated-content payload comparison; no service or credentials required:
+pnpm --dir apps/pages probe:storage
 ```
 
 The tests cover concurrent text merging, stale guards, atomic rollback, partial
