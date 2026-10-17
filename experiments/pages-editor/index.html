@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Pages · editor workbench</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <div>
+        <span class="eyebrow">NTERACT / EDITOR STUDY 01</span>
+        <h1>Two views. One shared draft.</h1>
+        <p>
+          Edit a block, see your peer’s selection, then pause delivery and try concurrent changes.
+        </p>
+      </div>
+      <div class="connection">
+        <label><input id="connected" type="checkbox" checked /> Deliver changes automatically</label
+        ><button id="sync">Sync now</button><output id="status" aria-live="polite"></output>
+      </div>
+    </header>
+    <main>
+      <div class="editors">
+        <section class="replica">
+          <div class="byline">
+            <h2>Alice</h2>
+            <span>Replica A</span>
+          </div>
+          <nav id="toolbar-a" aria-label="Alice formatting"></nav>
+          <div id="editor-a"></div>
+        </section>
+        <section class="replica">
+          <div class="byline">
+            <h2>Bob</h2>
+            <span>Replica B</span>
+          </div>
+          <nav id="toolbar-b" aria-label="Bob formatting"></nav>
+          <div id="editor-b"></div>
+        </section>
+      </div>
+      <aside class="scope">
+        <strong>Local research fixture.</strong> Automerge rich text within each stable Page block
+        is canonical here. This is a schema experiment, not connected to Pages. Markdown export
+        normalizes supported syntax; tables, math, HTML and instructions remain opaque. Page IDs,
+        order and metadata are preserved. Enter/Backspace split and join paragraphs inside a block;
+        cross-Page-block editing is deferred. Presence is ephemeral and expires after 30 seconds.
+        Reload resets all edits.
+      </aside>
+      <details>
+        <summary>Inspect source, anchors, and Automerge state</summary>
+        <p>
+          “Anchor selection” captures Automerge cursors in the rich-text stream. It is not a comment
+          service or a Markdown source offset. Deleted ranges can collapse; quote mismatch is
+          reported.
+        </p>
+        <div class="inspectors">
+          <pre id="inspect-a"></pre>
+          <pre id="inspect-b"></pre>
+        </div>
+      </details>
+      <p id="notice" role="status"></p>
+    </main>
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

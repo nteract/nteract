@@ -1,0 +1,255 @@
+:root {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  color: #243c35;
+  background: #f5f5ef;
+  font-synthesis: none;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+header,
+main {
+  max-width: 1500px;
+  margin: auto;
+  padding: 32px 44px;
+}
+header {
+  display: flex;
+  gap: 40px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #d4ddd2;
+}
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.17em;
+  color: #547568;
+}
+h1 {
+  font-family: Georgia, serif;
+  font-weight: 400;
+  font-size: 38px;
+  letter-spacing: -0.03em;
+  margin: 14px 0;
+}
+header p {
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 0;
+  max-width: 650px;
+}
+.connection {
+  font-size: 13px;
+  display: grid;
+  gap: 14px;
+  min-width: 230px;
+}
+.connection output {
+  color: #527464;
+  font-size: 12px;
+}
+.editors {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px;
+}
+.replica {
+  background: #fffefa;
+  border: 1px solid #d4ddd2;
+  min-width: 0;
+}
+.byline {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  border-bottom: 1px solid #e2e7df;
+}
+.byline h2 {
+  font-size: 15px;
+  margin: 0;
+}
+.byline span {
+  font-size: 11px;
+  color: #728176;
+}
+nav {
+  padding: 10px 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  border-bottom: 1px solid #e2e7df;
+}
+button {
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid #d4ddd2;
+  border-radius: 4px;
+  background: #fafbf7;
+  color: #294c3d;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+button:hover {
+  background: #e5eee5;
+}
+button:focus-visible,
+summary:focus-visible {
+  outline: 2px solid #538364;
+  outline-offset: 2px;
+}
+.ProseMirror {
+  font-family: Georgia, serif;
+  font-size: 17px;
+  line-height: 1.7;
+  padding: 24px 32px;
+  min-height: 700px;
+  outline: none;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.ProseMirror:focus {
+  box-shadow: inset 0 0 0 2px #a9c5ad;
+}
+.ProseMirror h1 {
+  font-size: 30px;
+  line-height: 1.3;
+  margin: 12px 0 24px;
+}
+.ProseMirror p {
+  margin: 16px 0;
+}
+.ProseMirror a {
+  color: #356e60;
+  text-underline-offset: 3px;
+}
+.ProseMirror pre {
+  font:
+    13px/1.65 ui-monospace,
+    monospace;
+  background: #f0f3eb;
+  padding: 14px;
+  white-space: pre-wrap;
+}
+.ProseMirror ul,
+.ProseMirror ol {
+  padding-left: 24px;
+}
+.ProseMirror li p {
+  margin: 2px 0;
+}
+.opaque {
+  margin: 20px 0;
+  border-left: 3px solid #d3b87a;
+  padding-left: 12px;
+}
+.opaque small {
+  font: 11px system-ui;
+  color: #826934;
+}
+.opaque pre {
+  margin: 6px 0;
+  font-size: 12px;
+}
+.ProseMirror-selectednode {
+  outline: 2px solid #b39c69;
+}
+.scope {
+  font-size: 13px;
+  line-height: 1.7;
+  max-width: 1050px;
+  margin: 26px 0;
+  color: #526257;
+}
+details {
+  border-top: 1px solid #d4ddd2;
+  padding: 18px 0;
+  font-size: 13px;
+}
+summary {
+  cursor: pointer;
+}
+.inspectors {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+.inspectors pre {
+  overflow: auto;
+  max-height: 520px;
+  white-space: pre-wrap;
+  font-size: 11px;
+  background: #eaf0e8;
+  padding: 16px;
+}
+#notice {
+  font-size: 13px;
+  color: #8d522d;
+}
+@media (max-width: 850px) {
+  header,
+  main {
+    padding: 24px 18px;
+  }
+  header {
+    display: block;
+  }
+  .connection {
+    margin-top: 24px;
+  }
+  .editors,
+  .inspectors {
+    grid-template-columns: 1fr;
+  }
+  .ProseMirror {
+    min-height: 400px;
+    padding: 20px;
+  }
+  h1 {
+    font-size: 30px;
+  }
+}
+.page-block {
+  position: relative;
+  margin: 0 24px;
+  border-bottom: 1px solid #eef0e8;
+}
+.page-block:last-child {
+  border-bottom: 0;
+}
+.page-block .ProseMirror {
+  min-height: 0;
+  padding: 8px 10px;
+}
+.page-block .ProseMirror:focus {
+  box-shadow: inset 2px 0 #a9c5ad;
+}
+.page-block .ProseMirror h1 {
+  margin: 20px 0 12px;
+}
+.peer-selection {
+  background: #d5c5ee80;
+}
+.peer-caret {
+  position: absolute;
+  border-left: 2px solid #8c60ad;
+  pointer-events: none;
+  z-index: 2;
+}
+.peer-caret span {
+  position: absolute;
+  left: -2px;
+  bottom: 100%;
+  background: #8c60ad;
+  color: white;
+  font: 10px system-ui;
+  padding: 2px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.peer-caret[hidden] {
+  display: none;
+}
