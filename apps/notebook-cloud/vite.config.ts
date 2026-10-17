@@ -39,6 +39,10 @@ export default defineConfig({
     },
     rolldownOptions: {
       output: {
+        // The viewer is served directly. Minify whitespace too; Vite's ES
+        // library default retains it for downstream bundlers.
+        minify: true,
+        comments: { annotation: false },
         entryFileNames: "assets/notebook-cloud-viewer.js",
         chunkFileNames: "assets/[name]-[hash].js",
         assetFileNames: (assetInfo) => {
