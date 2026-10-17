@@ -202,6 +202,7 @@ export class PagesWorkspace {
       JSON.stringify({
         type: "hello",
         protocol: SYNC_PROTOCOL,
+        flow_control: "durable-received",
         page_id: pageId,
         actor_prefix: await actorPrefix(principal),
       }),
@@ -248,7 +249,7 @@ export class PagesWorkspace {
           peer.state,
           new Uint8Array(data),
         );
-        await this.broadcast();
+        await this.broadcast(peer);
       } catch (error) {
         if (error instanceof PageError) {
           peer.socket.send(
@@ -346,7 +347,7 @@ export class PagesWorkspace {
     }
   }
 
-  private async broadcast() {
+  private async broadcast(received?: SyncPeer) {
     const catalog = await this.state.storage.get<Catalog>("catalog");
     for (const peer of this.peers) {
       try {
@@ -364,7 +365,14 @@ export class PagesWorkspace {
         // The heads describe storage read after its successful commit. A
         // protocol response alone is not a durable acknowledgement.
         peer.socket.send(
-          JSON.stringify({ type: "durable", heads: result.heads, sequence: result.sequence }),
+          JSON.stringify({
+            type: "durable",
+            heads: result.heads,
+            sequence: result.sequence,
+            // Only this peer's admitted binary frame earns a flow-control ack.
+            // Unsolicited updates from another writer must not open its window.
+            received: peer === received,
+          }),
         );
       } catch {
         this.closePeer(peer, 4011, "Sync interrupted; reconnect to recover");

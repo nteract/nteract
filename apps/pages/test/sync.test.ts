@@ -255,3 +255,72 @@ test("browser title edits retain usable nested Automerge objects through sync", 
     replica.dispose();
   }
 });
+
+test("browser coalesces typing until its own durable receipt, not another peer's update", async (t) => {
+  const { PageReplica } = await import("../viewer/replica.ts");
+  const { room, id, block } = await setup(),
+    p = await peer();
+  await sync(room, id, p);
+  const frames: Uint8Array[] = [];
+  const replica = new PageReplica(
+    principal,
+    id,
+    () => {},
+    () => {},
+    async () => true,
+  );
+  replica.doc = p.doc;
+  replica["sync"] = p.local;
+  replica["socket"] = {
+    readyState: WebSocket.OPEN,
+    send: (frame: Uint8Array) => frames.push(frame),
+    close() {},
+  } as unknown as WebSocket;
+  t.after(() => replica.dispose());
+  await replica["control"]({
+    type: "hello",
+    protocol: "nteract-pages-automerge-v1",
+    flow_control: "durable-received",
+    page_id: id,
+    actor_prefix: await actorPrefix(principal),
+  });
+  replica.text(block, "first");
+  replica["send"]();
+  assert.equal(frames.length, 1);
+  for (let i = 0; i < 40; i++) {
+    replica.text(block, `typing ${i}`);
+    replica["send"]();
+  }
+  assert.equal(frames.length, 1, "typing does not grow the network queue");
+  p.remote = await room.receiveSync(principal, id, p.remote, frames[0]);
+  const reply = await room.generateSync(id, p.remote);
+  p.remote = reply.state;
+  if (reply.message)
+    [replica.doc, replica["sync"]] = A.receiveSyncMessage(
+      replica.doc!,
+      replica["sync"],
+      reply.message,
+    );
+  await replica["control"]({
+    type: "durable",
+    heads: reply.heads,
+    sequence: reply.sequence,
+    received: false,
+  });
+  replica["send"]();
+  assert.equal(frames.length, 1, "an unsolicited broadcast is not our receipt");
+  await replica["control"]({
+    type: "durable",
+    heads: reply.heads,
+    sequence: reply.sequence,
+    received: true,
+  });
+  replica["send"]();
+  assert.equal(frames.length, 2);
+  p.remote = await room.receiveSync(principal, id, p.remote, frames[1]);
+  const saved = (await room.call(principal, {
+    operation: "read_page",
+    arguments: { page_id: id },
+  })) as { content: Snapshot };
+  assert.equal(saved.content.blocks[0].markdown, "typing 39");
+});

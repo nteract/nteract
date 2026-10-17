@@ -53,6 +53,7 @@ export class PageReplica {
   private socket: WebSocket | null = null;
   private active = true;
   private ready = false;
+  private awaitingReceipt = false;
   private paused = false;
   private discarded = false;
   private attempts = 0;
@@ -107,6 +108,7 @@ export class PageReplica {
       this.socket = socket;
       this.sync = A.initSyncState();
       this.ready = false;
+      this.awaitingReceipt = false;
       this.durableHeads = null;
       socket.onmessage = (event) => {
         this.inbound = this.inbound
@@ -177,6 +179,7 @@ export class PageReplica {
     if (message.type === "hello") {
       if (
         message.protocol !== SYNC_PROTOCOL ||
+        message.flow_control !== "durable-received" ||
         message.page_id !== this.pageId ||
         typeof message.actor_prefix !== "string" ||
         !/^[a-f0-9]{32}$/.test(message.actor_prefix)
@@ -217,6 +220,7 @@ export class PageReplica {
         throw Error("Invalid durable acknowledgement");
       this.durableHeads = message.heads;
       this.sequence = message.sequence as number;
+      if (message.received === true) this.awaitingReceipt = false;
       this.emit();
       this.schedule();
     } else if (message.type === "rejected") {
@@ -301,6 +305,7 @@ export class PageReplica {
     if (
       !this.active ||
       !this.ready ||
+      this.awaitingReceipt ||
       this.paused ||
       !this.doc ||
       this.socket?.readyState !== WebSocket.OPEN
@@ -317,7 +322,13 @@ export class PageReplica {
       this.socket.close(4008, "Sync frame too large");
       return;
     }
-    if (message) this.socket.send(message);
+    if (message) {
+      // Automerge may generate another message when local heads advance even
+      // with a message in flight. Bound transport work independently so slow
+      // durable commits coalesce typing instead of overflowing the server.
+      this.awaitingReceipt = true;
+      this.socket.send(message);
+    }
   }
   change(action: (doc: Page) => void) {
     if (!this.doc?.page_id || this.paused || this.status === "signed_out")
