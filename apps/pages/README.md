@@ -10,6 +10,9 @@ There are no kernels or executable cells. Code fences are document content.
 
 See the [design memo](../../docs/memos/celld-pages.md) for the proposed editor,
 operation transports, attribution, comments, and incremental persistence work.
+Space-level sharing is an intended feature, following nteract notebook-room
+permissions, with Pages inheriting access from their space. Private account
+workspaces are the current prototype behavior; sharing is not yet enabled.
 
 ## Run locally
 

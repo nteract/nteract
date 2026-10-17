@@ -1,7 +1,7 @@
 # Standalone Pages on celld
 
 **Status:** Working prototype plus proposed direction, 2026-10-17. The editor,
-transports, attribution, comments, and incremental persistence below are not
+sharing, transports, attribution, comments, and incremental persistence below are not
 implemented unless explicitly listed as current behavior.
 
 ## Purpose and deployment boundary
@@ -15,7 +15,9 @@ identities and operations; it does not require a shared deployment today.
 The prototype is deployed at `https://m.runtimed.run` on lab1, using the
 existing Anaconda public-PKCE client. Live browser sign-in and the exact
 callback completed on 2026-10-17. Any Anaconda account may sign in; each account
-has private Pages. The [application README](../../apps/pages/README.md) records
+currently has private Pages. This is the initial behavior; the intended model
+includes permissions and sharing for each space, following notebook-room
+sharing. The [application README](../../apps/pages/README.md) records
 the deployment configuration and verification boundaries. Pages has a separate
 S3 prefix, session secret, celld 0.6.1 runtime, systemd service, and exact ingress
 route. It does not use the notebook preview router or PR-close lifecycle.
@@ -41,6 +43,56 @@ Independent agent credentials scoped to Pages remain future work. A separate
 bearer-only installation requires explicit `PAGES_ALLOW_PROVIDER_BEARER=true`
 and must not reuse that shared client. Missing configuration never enables
 provider-bearer access, and server-login mode always rejects it.
+
+## Space identity and sharing
+
+Space-level sharing is a product requirement. A personal space starts private,
+but an account is not the permanent boundary of collaboration. Each space has
+a stable identity, an owner, and explicit membership permissions. Its Pages
+inherit access from that space. Signing in with Anaconda establishes identity;
+it does not grant access to other accounts' spaces.
+
+Use nteract's [hosted sharing model](../prd/hosted-sharing-invites.md),
+[sharing types](../../apps/notebook-cloud/src/sharing.ts), and
+[invite storage](../../apps/notebook-cloud/src/sharing-storage.ts) as references.
+Adapt the resource boundary to a space rather than copying notebook identifiers
+or runtime-peer permissions. The proposed first roles are:
+
+| Role | Space permissions |
+| --- | --- |
+| Owner | Manage membership and space settings; read and edit Pages. |
+| Editor | Read, create, and edit Pages within the space; cannot grant access. |
+| Viewer | Read Pages; cannot change content or membership. |
+
+Invite and revoke access through authenticated principals, resolving pending
+invitations through verified provider identity as notebook sharing does.
+Writable document metadata and display names cannot grant membership. Public
+links, ownership transfer, and per-Page permission overrides are separate
+decisions; they are not implied by opening sign-in to all Anaconda accounts.
+Future comments inherit space access, with comment-writing permissions specified
+explicitly when that feature is introduced.
+
+Apply the same authorization to space discovery, Page reads and mutations,
+change history, future comments, subscriptions, and tool transports. Resolve
+each Page's actual parent space on the server; a supplied space or Page ID is
+not proof of access. Delegated agent credentials are bounded by both their
+granted scope and the principal's current space membership. Revocation must
+stop future reads/writes and invalidate existing subscriptions; already-read
+content cannot be recalled from a client's device.
+
+The current account-derived workspace address needs a migration to explicit
+space identity and an account's accessible-space index. Preserve existing Page
+and block IDs, history, actor attribution, and private ownership during that
+migration. A space-owned Durable Object can keep membership checks and admitted
+content mutations under one authority; if Pages move into separate objects,
+define permission fencing and revocation ordering rather than relying on a
+stale membership cache. Existing account-bound drafts will also need space/Page
+identity and access-loss handling without transferring drafts to another user.
+
+The first implementation should qualify owner/editor/viewer behavior for both
+browser and API access, invitation acceptance, revocation during an open session,
+cross-space ID substitution, and migration of existing private Pages. Sharing
+is not enabled by this design update or on the initial deployment.
 
 ## Editor: blocks inside a document
 
@@ -210,11 +262,13 @@ does not qualify either remote backend.
 ## Suggested slices
 
 1. Independently deploy and qualify the current browsing/editing prototype.
-2. Establish actor/session identity, scoped API credentials, and durable receipts.
-3. Measure and implement incremental persistence with recovery qualification.
-4. Add WebSocket subscriptions and change illumination using the shared events.
-5. Prototype document-wide WYSIWYG selection and introduce comment operations.
-6. Add WebMCP/remote MCP adapters over the established operation contract.
+2. Introduce stable space identities, inherited Page permissions, and sharing
+   with a migration from the initial private workspaces.
+3. Establish actor/session identity, scoped API credentials, and durable receipts.
+4. Measure and implement incremental persistence with recovery qualification.
+5. Add WebSocket subscriptions and change illumination using the shared events.
+6. Prototype document-wide WYSIWYG selection and introduce comment operations.
+7. Add WebMCP/remote MCP adapters over the established operation contract.
 
 Editor exploration can proceed independently. None of these slices requires
 changing notebook-cloud's release cadence or making the first UI expose every
