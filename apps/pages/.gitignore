@@ -1,0 +1,4 @@
+dist/
+.celld/
+.dev.vars
+test-results/
