@@ -12,7 +12,7 @@ export interface ReplicaUpdate {
 
 /** Isolate unreadable journals without deleting their only recovery bytes. */
 export function restorePending(base: A.Doc<Page>, pageId: string, records: PendingReplica[]) {
-  let doc = A.clone(base, { actor: A.getActorId(base) });
+  let doc = A.load<Page>(A.save(base), { actor: A.getActorId(base) });
   const recovered: PendingReplica[] = [],
     unreadable: PendingReplica[] = [];
   for (const record of records) {
@@ -24,9 +24,7 @@ export function restorePending(base: A.Doc<Page>, pageId: string, records: Pendi
       candidate = A.clone(doc, { actor: A.getActorId(doc) });
       candidate = A.merge(candidate, loaded);
       validatePage(candidate, pageId);
-      A.free(doc);
-      doc = candidate;
-      candidate = null;
+      [doc] = A.applyChanges(doc, A.getChanges(doc, candidate));
       recovered.push(record);
     } catch {
       unreadable.push(record);
@@ -332,9 +330,14 @@ export class PageReplica {
       A.free(next);
       throw error;
     }
+    // clone() shares unchanged materialized objects with its source. Swapping
+    // in the clone and freeing the source leaves those objects' WASM handles
+    // dangling (notably blocks after a title-only edit). Admit validated bytes
+    // into the existing handle instead, then release only the preview clone.
+    const changes = A.getChanges(this.doc, next);
+    A.free(next);
     this.willChange();
-    A.free(this.doc);
-    this.doc = next;
+    [this.doc] = A.applyChanges(this.doc, changes);
     this.emit();
     this.schedule();
   }

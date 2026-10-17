@@ -172,6 +172,7 @@ test("concurrent Unicode edits and block insertions converge without replacing i
 
 test("unreadable recovery records are retained while valid replicas merge", async () => {
   const { restorePending } = await import("../viewer/replica.ts");
+  const { validatePage } = await import("../src/sync.ts");
   const { room, id, block } = await setup(),
     a = await peer(),
     b = await peer();
@@ -191,6 +192,7 @@ test("unreadable recovery records are retained while valid replicas merge", asyn
   assert.deepEqual(restored.recovered, records.slice(1));
   assert.equal(A.getHeads(base).length, 0, "caller retains its original document");
   A.free(base);
+  validatePage(restored.doc, id);
   A.free(restored.doc);
   A.free(a.doc);
   A.free(b.doc);
@@ -222,5 +224,34 @@ test("raw sync metadata obeys the same JSON contract as HTTP tools", async () =>
     await assert.rejects(sync(room, id, p), /plain JSON/);
     assert.deepEqual(storage.values, before);
     A.free(p.doc);
+  }
+});
+
+test("browser title edits retain usable nested Automerge objects through sync", async () => {
+  const { PageReplica } = await import("../viewer/replica.ts");
+  const { validatePage } = await import("../src/sync.ts");
+  const { room, id, block } = await setup(),
+    p = await peer();
+  await sync(room, id, p);
+  const replica = new PageReplica(
+    principal,
+    id,
+    () => {},
+    () => {},
+    async () => true,
+  );
+  replica.doc = p.doc;
+  try {
+    replica.text(null, "Renamed");
+    validatePage(replica.doc!, id);
+    replica.text(null, "Renamed again");
+    replica.text(block, "Still editable");
+    p.doc = replica.doc!;
+    await sync(room, id, p);
+    replica.doc = p.doc;
+    validatePage(replica.doc, id);
+    assert.equal(replica.doc.blocks[block].markdown, "Still editable");
+  } finally {
+    replica.dispose();
   }
 });
