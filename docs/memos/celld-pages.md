@@ -13,7 +13,8 @@ Later integration into a single offering should preserve stable document
 identities and operations; it does not require a shared deployment today.
 
 The proposed origin is `https://m.runtimed.run`, using the existing Anaconda
-public-PKCE client and its approved wildcard callback arrangement. The
+public-PKCE client, with wildcard callback approval reported by the project
+owner; acceptance at this exact callback still needs live qualification. The
 [application README](../../apps/pages/README.md) records the configuration and
 remaining qualification. No public deployment, DNS record, or production login
 qualification is delivered by this prototype. Host selection remains open.
@@ -38,7 +39,9 @@ execution, sharing, comments, raw CRDT ingress, or offline synchronization.
 Server-login mode admits endpoint-local sessions and rejects raw provider
 tokens, matching notebook-cloud's isolation for a shared OAuth client.
 Independent agent credentials scoped to Pages remain future work. A separate
-bearer-only installation is supported, but must not reuse that shared client.
+bearer-only installation requires explicit `PAGES_ALLOW_PROVIDER_BEARER=true`
+and must not reuse that shared client. Missing configuration never enables
+provider-bearer access, and server-login mode always rejects it.
 
 ## Editor: blocks inside a document
 

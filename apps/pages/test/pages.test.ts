@@ -318,6 +318,7 @@ test("verified OIDC bearer chooses the workspace; spoofed identity headers and i
   let forwarded: string | null = null;
   const env: Env = {
     ...fixture.env,
+    PAGES_ALLOW_PROVIDER_BEARER: "true",
     PAGES_WORKSPACES: {
       idFromName(name) {
         names.push(name);
@@ -365,6 +366,18 @@ test("verified OIDC bearer chooses the workspace; spoofed identity headers and i
     1,
     "server mode must reject even valid provider tokens before routing",
   );
+  for (const setting of [undefined, "false", "TRUE"]) {
+    const withoutOptIn = await worker.fetch(
+      new Request("https://pages.example/api/tools", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${fixture.token}` },
+        body: "{}",
+      }),
+      { ...env, PAGES_ALLOW_PROVIDER_BEARER: setting },
+    );
+    assert.equal(withoutOptIn.status, 401);
+    assert.equal(names.length, 1, "provider bearer access requires an explicit opt-in");
+  }
   const invalid = await worker.fetch(
     new Request("https://pages.example/api/tools", {
       method: "POST",

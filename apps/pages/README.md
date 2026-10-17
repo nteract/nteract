@@ -41,8 +41,9 @@ tokens into browser storage. Server-login deployments (the default) accept only
 their own session cookie with same-origin checks, and reject raw provider tokens.
 This prevents a token issued through a shared OAuth client on another endpoint
 from directly accessing Pages. Agent credentials scoped to Pages are not yet
-implemented. Dedicated bearer-only installations can omit
-`NOTEBOOK_CLOUD_OIDC_FLOW=server` and send an OIDC access token in
+implemented. Dedicated bearer-only installations must explicitly set
+`PAGES_ALLOW_PROVIDER_BEARER=true`, omit `NOTEBOOK_CLOUD_OIDC_FLOW=server`,
+and send an OIDC access token in
 `Authorization: Bearer …`; do not use that mode with the shared preview client.
 Workspace addressing binds the configured issuer and verified principal.
 Client-supplied identity headers are discarded.

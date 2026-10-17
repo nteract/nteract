@@ -19,6 +19,7 @@ export { PagesWorkspace } from "./workspace.ts";
 
 export interface Env extends ServerOidcEnvironment {
   PAGES_WORKSPACES: DurableObjectNamespace;
+  PAGES_ALLOW_PROVIDER_BEARER?: string;
 }
 const issuers = new Map<string, ReturnType<typeof createLocalOidcIssuer>>();
 const noProfile = async () => {};
@@ -91,7 +92,7 @@ export default {
           // Shared OAuth clients issue tokens usable at multiple endpoints.
           // Match notebook-cloud: server-login deployments admit only their
           // own session, minted after this origin's state/PKCE exchange.
-          if (serverOidcEnabled(env))
+          if (serverOidcEnabled(env) || env.PAGES_ALLOW_PROVIDER_BEARER !== "true")
             throw new PageError(
               "unauthorized",
               "Use the server sign-in session for this endpoint",
