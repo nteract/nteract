@@ -351,6 +351,20 @@ test("verified OIDC bearer chooses the workspace; spoofed identity headers and i
   assert.match(names[0], /alice/);
   assert.match(names[0], /auth.stage.anaconda.com/);
   assert.doesNotMatch(names[0], /admin/);
+  const sharedClientReplay = await worker.fetch(
+    new Request("https://pages.example/api/tools", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${fixture.token}`, Origin: "https://pages.example" },
+      body: "{}",
+    }),
+    { ...env, NOTEBOOK_CLOUD_OIDC_FLOW: "server" },
+  );
+  assert.equal(sharedClientReplay.status, 401);
+  assert.equal(
+    names.length,
+    1,
+    "server mode must reject even valid provider tokens before routing",
+  );
   const invalid = await worker.fetch(
     new Request("https://pages.example/api/tools", {
       method: "POST",

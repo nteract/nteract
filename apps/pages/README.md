@@ -34,8 +34,13 @@ in ignored `dist/.dev.vars`, retained on restart, and never sent to the browser.
 
 The service reuses nteract's server OIDC and session implementation directly
 from `apps/notebook-cloud/src`. It does not fork the auth protocol or copy
-tokens into browser storage. Agents send an OIDC access token in `Authorization:
-Bearer …`; browsers use the server session cookie with same-origin checks.
+tokens into browser storage. Server-login deployments (the default) accept only
+their own session cookie with same-origin checks, and reject raw provider tokens.
+This prevents a token issued through a shared OAuth client on another endpoint
+from directly accessing Pages. Agent credentials scoped to Pages are not yet
+implemented. Dedicated bearer-only installations can omit
+`NOTEBOOK_CLOUD_OIDC_FLOW=server` and send an OIDC access token in
+`Authorization: Bearer …`; do not use that mode with the shared preview client.
 Workspace addressing binds the configured issuer and verified principal.
 Client-supplied identity headers are discarded.
 
@@ -168,6 +173,37 @@ can also set `NOTEBOOK_CLOUD_OIDC_CLIENT_SECRET` and
 `NOTEBOOK_CLOUD_LOCAL_OIDC` for a public deployment. Terminate TLS at ingress.
 The D1 binding is for auth transactions and sessions; Pages use Durable Object
 storage. No public deployment is created by build or dev.
+
+### Proposed `m.runtimed.run` deployment
+
+Use the production Anaconda public-PKCE client already configured for
+`*.runtimed.run`, with the following public settings (verified against the
+existing host configuration and provider discovery on 2026-10-17):
+
+```text
+NOTEBOOK_CLOUD_OIDC_FLOW=server
+NOTEBOOK_CLOUD_PUBLIC_ORIGIN=https://m.runtimed.run
+NOTEBOOK_CLOUD_OIDC_REDIRECT_URI=https://m.runtimed.run/oidc
+NOTEBOOK_CLOUD_OIDC_ISSUER=https://auth.anaconda.com/api/auth
+NOTEBOOK_CLOUD_OIDC_CLIENT_ID=1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0
+NOTEBOOK_CLOUD_OIDC_AUDIENCE=anaconda,1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0
+NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE=runtimed-pages-anaconda
+NOTEBOOK_CLOUD_OIDC_TOKEN_AUTH_METHOD=none
+NOTEBOOK_CLOUD_OIDC_USERINFO=true
+```
+
+Generate a separate persistent session secret; never copy a notebook preview's
+secret or local development state. The callback still needs a live browser
+qualification; provider discovery alone does not prove wildcard acceptance.
+
+The current notebook preview router does not accept `m.runtimed.run`. Pages
+needs an exact ingress route to its own private Worker listener, ahead of the
+wildcard preview route, plus its own DNS record. Keep the operator listener
+private. Use a separately pinned celld runtime: the application was tested with
+0.6.1, while lab1's shared runtime was observed at 0.5.1. Do not replace that
+shared binary to deploy Pages. Host selection, storage destination, ingress,
+and live login qualification remain pending; this configuration is not a claim
+that the hostname is deployed.
 
 ## Verification
 

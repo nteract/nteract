@@ -5,7 +5,10 @@ import {
   serverOidcSessionStatus,
   type ServerOidcEnvironment,
 } from "../../notebook-cloud/src/server-oidc.ts";
-import { readServerAppSession } from "../../notebook-cloud/src/oidc-session-store.ts";
+import {
+  readServerAppSession,
+  serverOidcEnabled,
+} from "../../notebook-cloud/src/oidc-session-store.ts";
 import { authenticateOidcRequest, AuthError } from "../../notebook-cloud/src/identity.ts";
 import type { DurableObjectNamespace } from "../../notebook-cloud/src/cloudflare-types.ts";
 import { createLocalOidcIssuer } from "@nteract/local-oidc";
@@ -85,6 +88,15 @@ export default {
         requireValue(request.method === "POST", "method_not_allowed", "Use POST");
         let principal: string;
         if (request.headers.has("Authorization")) {
+          // Shared OAuth clients issue tokens usable at multiple endpoints.
+          // Match notebook-cloud: server-login deployments admit only their
+          // own session, minted after this origin's state/PKCE exchange.
+          if (serverOidcEnabled(env))
+            throw new PageError(
+              "unauthorized",
+              "Use the server sign-in session for this endpoint",
+              401,
+            );
           const identity = await authenticateOidcRequest(request, env);
           principal = identity.principal;
           if (request.headers.has("Origin")) assertSameOrigin(request, env);
