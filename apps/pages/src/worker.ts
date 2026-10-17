@@ -85,6 +85,26 @@ export default {
         });
       }
       if (url.pathname === "/api/capabilities") return json(CAPABILITIES);
+      if (url.pathname === "/api/sync") {
+        assertSameOrigin(request, env);
+        requireValue(
+          request.method === "GET" && request.headers.get("Upgrade")?.toLowerCase() === "websocket",
+          "invalid_request",
+          "Use a WebSocket upgrade",
+        );
+        if (request.headers.has("Authorization"))
+          throw new PageError("unauthorized", "Use this endpoint's session cookie", 401);
+        const session = await readServerAppSession(env, request, Math.floor(Date.now() / 1000));
+        if (!session) throw new PageError("unauthorized", "Sign in to sync Pages", 401);
+        const principal = JSON.stringify([env.NOTEBOOK_CLOUD_OIDC_ISSUER, session.principal]);
+        const headers = new Headers({
+          Upgrade: "websocket",
+          "x-pages-principal": principal,
+          Cookie: request.headers.get("Cookie") ?? "",
+        });
+        const stub = env.PAGES_WORKSPACES.get(env.PAGES_WORKSPACES.idFromName(principal));
+        return stub.fetch(new Request("https://pages.internal/sync" + url.search, { headers }));
+      }
       if (url.pathname === "/api/tools") {
         requireValue(request.method === "POST", "method_not_allowed", "Use POST");
         let principal: string;

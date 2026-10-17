@@ -10,6 +10,19 @@ import {
 } from "./document.ts";
 import { PageError, json, object, readBody, requireValue, text } from "./errors.ts";
 
+import { actorPrefix, receiveAdmitted, SYNC_PROTOCOL, newActor, MAX_SYNC_BYTES } from "./sync.ts";
+import { readServerAppSession } from "../../notebook-cloud/src/oidc-session-store.ts";
+import type { ServerOidcEnvironment } from "../../notebook-cloud/src/server-oidc.ts";
+import type { CloudflareWebSocket } from "../../notebook-cloud/src/cloudflare-types.ts";
+
+interface SyncPeer {
+  socket: CloudflareWebSocket;
+  principal: string;
+  pageId: string | null;
+  state: A.SyncState;
+  request: Request;
+  queued: number;
+}
 export interface Storage {
   get<T>(key: string): Promise<T | undefined>;
   put(values: Record<string, unknown>): Promise<void>;
@@ -38,15 +51,20 @@ interface Catalog {
 }
 
 // Budget the entire value, including history/receipts, before crossing storage.
-// JSON with byte arrays is a conservative, portable application budget, not a
+// Binary bytes plus JSON metadata form a portable application budget, not a
 // claim about celld's internal serialization or fleet durability setting.
 export function checkStorageBudget(values: Record<string, unknown>): void {
   for (const value of Object.values(values)) {
-    const encoded = JSON.stringify(value, (_key, item) =>
-      item instanceof Uint8Array ? Array.from(item) : item,
-    );
+    let binaryBytes = 0;
+    const encoded = JSON.stringify(value, (_key, item) => {
+      if (item instanceof Uint8Array) {
+        binaryBytes += item.byteLength;
+        return null;
+      }
+      return item;
+    });
     requireValue(
-      new TextEncoder().encode(encoded).length <= 1536 * 1024,
+      binaryBytes + new TextEncoder().encode(encoded).length <= 1536 * 1024,
       "page_limit_exceeded",
       "Stored Page or catalog exceeds the 1.5 MiB budget, including history and receipts",
     );
@@ -86,6 +104,7 @@ export const CAPABILITIES = {
     retained_changes: 128,
     retained_receipts: 128,
   },
+  sync: { protocol: SYNC_PROTOCOL, transport: "websocket", endpoint: "/api/sync" },
   unsupported: [
     "multi_user_sharing",
     "scratch",
@@ -95,7 +114,6 @@ export const CAPABILITIES = {
     "comments",
     "files",
     "execution",
-    "raw_crdt_ingress",
     "offline_sync",
   ],
 };
@@ -103,15 +121,268 @@ export const CAPABILITIES = {
 /** One Durable Object per authenticated principal; each page is an independent Automerge document. */
 export class PagesWorkspace {
   private queue: Promise<unknown> = Promise.resolve();
-  constructor(private readonly state: { storage: Storage }) {}
+  private peers = new Set<SyncPeer>();
+  private queuedBytes = 0;
+  constructor(
+    private readonly state: {
+      storage: Storage;
+      acceptWebSocket?(socket: CloudflareWebSocket): void;
+      getWebSockets?(): CloudflareWebSocket[];
+    },
+    private readonly env?: ServerOidcEnvironment,
+  ) {
+    // A hibernated instance has lost its ephemeral sync state. Ask clients to
+    // start a fresh handshake; their document and pending journal survive.
+    for (const socket of state.getWebSockets?.() ?? []) {
+      try {
+        socket.close(4000, "Reconnect after hibernation");
+      } catch {}
+    }
+  }
+
+  private enqueue<T>(action: () => Promise<T>): Promise<T> {
+    const task = this.queue.then(action);
+    this.queue = task.catch(() => {});
+    return task;
+  }
+
+  private async authorized(peer: SyncPeer): Promise<boolean> {
+    if (!this.env) return false;
+    const session = await readServerAppSession(
+      this.env,
+      peer.request,
+      Math.floor(Date.now() / 1000),
+    );
+    return (
+      !!session &&
+      JSON.stringify([this.env.NOTEBOOK_CLOUD_OIDC_ISSUER, session.principal]) === peer.principal
+    );
+  }
+
+  private closePeer(peer: SyncPeer, code: number, reason: string) {
+    this.peers.delete(peer);
+    try {
+      peer.socket.close(code, reason);
+    } catch {
+      /* Already disconnected. */
+    }
+  }
+
+  private async connect(request: Request, principal: string): Promise<Response> {
+    requireValue(this.peers.size < 64, "connection_limit", "Too many open connections");
+    const catalog = await this.state.storage.get<Catalog>("catalog");
+    requireValue(
+      !catalog || catalog.principal === principal,
+      "unauthorized",
+      "Workspace identity mismatch",
+    );
+    const pageId = new URL(request.url).searchParams.get("page");
+    if (pageId) {
+      requireValue(/^page_[a-f0-9]{32}$/.test(pageId), "invalid_request", "Invalid Page ID");
+      requireValue(await this.state.storage.get(pageId), "not_found", "Page not found");
+    }
+    const pair = new WebSocketPair();
+    const peer: SyncPeer = {
+      socket: pair[1],
+      principal,
+      pageId,
+      state: A.initSyncState(),
+      request,
+      queued: 0,
+    };
+    requireValue(await this.authorized(peer), "unauthorized", "Sign in to sync Pages");
+    requireValue(
+      this.state.acceptWebSocket,
+      "unsupported_runtime",
+      "Runtime must support gated WebSockets",
+    );
+    this.state.acceptWebSocket(peer.socket);
+    this.peers.add(peer);
+    peer.socket.send(
+      JSON.stringify({
+        type: "hello",
+        protocol: SYNC_PROTOCOL,
+        page_id: pageId,
+        actor_prefix: await actorPrefix(principal),
+      }),
+    );
+    await this.broadcast();
+    return new Response(null, { status: 101, webSocket: pair[0] } as ResponseInit);
+  }
+
+  webSocketMessage(socket: CloudflareWebSocket, data: string | ArrayBuffer): Promise<void> {
+    const peer = [...this.peers].find((peer) => peer.socket === socket);
+    if (!peer) {
+      socket.close(4000, "Reconnect after hibernation");
+      return Promise.resolve();
+    }
+    const bytes = typeof data === "string" ? data.length * 2 : data.byteLength;
+    if (bytes > MAX_SYNC_BYTES || peer.queued >= 16 || this.queuedBytes + bytes > 4 * 1024 * 1024) {
+      this.closePeer(peer, 4008, "Too many queued frames");
+      return Promise.resolve();
+    }
+    peer.queued++;
+    this.queuedBytes += bytes;
+    // Returning this promise keeps celld's event output gate attached through
+    // persistence and every broadcast. celld 0.6.1 also gates self-polled
+    // sockets through durability tickets; this path uses handler capture.
+    return this.enqueue(async () => {
+      try {
+        if (!this.peers.has(peer)) return;
+        if (!(await this.authorized(peer))) {
+          this.closePeer(peer, 4001, "Sign in again");
+          return;
+        }
+        if (data === "ping") {
+          peer.socket.send("pong");
+          return;
+        }
+        requireValue(
+          peer.pageId && data instanceof ArrayBuffer,
+          "invalid_sync",
+          "Send binary Automerge sync frames",
+        );
+        peer.state = await this.receiveSync(
+          peer.principal,
+          peer.pageId,
+          peer.state,
+          new Uint8Array(data),
+        );
+        await this.broadcast();
+      } catch (error) {
+        if (error instanceof PageError) {
+          peer.socket.send(
+            JSON.stringify({ type: "rejected", code: error.code, message: error.message }),
+          );
+          this.closePeer(peer, 4002, "Sync rejected; local changes retained");
+        } else this.closePeer(peer, 4011, "Sync interrupted; reconnect to recover");
+      } finally {
+        peer.queued--;
+        this.queuedBytes -= bytes;
+      }
+    });
+  }
+
+  webSocketClose(socket: CloudflareWebSocket) {
+    this.webSocketError(socket);
+  }
+  webSocketError(socket: CloudflareWebSocket) {
+    const peer = [...this.peers].find((peer) => peer.socket === socket);
+    if (peer) this.peers.delete(peer);
+  }
+
+  /** Caller holds the workspace queue, shared by HTTP and WebSocket writes. */
+  async receiveSync(
+    principal: string,
+    pageId: string,
+    state: A.SyncState,
+    message: Uint8Array,
+  ): Promise<A.SyncState> {
+    const catalog = await this.state.storage.get<Catalog>("catalog");
+    requireValue(catalog?.principal === principal, "unauthorized", "Workspace identity mismatch");
+    const saved = await this.state.storage.get<Saved>(pageId);
+    requireValue(saved, "not_found", "Page not found");
+    const doc = A.load<Page>(new Uint8Array(saved.bytes));
+    try {
+      const received = receiveAdmitted(doc, state, message, await actorPrefix(principal));
+      try {
+        if (received.changed) {
+          const before = await snapshot(doc, saved.sequence);
+          const after = await snapshot(received.doc, saved.sequence + 1);
+          const hashes = new Map(before.blocks.map((b) => [b.id, b.hash]));
+          const event: Change = {
+            sequence: after.through_sequence,
+            actor: principal,
+            changed_block_ids: after.blocks
+              .filter((b) => hashes.get(b.id) !== b.hash)
+              .map((b) => b.id),
+            deleted_block_ids: before.blocks
+              .filter((b) => !received.doc.order.includes(b.id))
+              .map((b) => b.id),
+            title_changed: before.title !== after.title,
+          };
+          const entry = catalog.pages.find((p) => p.page_id === pageId);
+          requireValue(entry, "not_found", "Page is not in the space catalog");
+          entry.title = after.title;
+          entry.updated_at = new Date().toISOString();
+          const values = {
+            catalog,
+            [pageId]: {
+              ...saved,
+              bytes: A.save(received.doc),
+              sequence: after.through_sequence,
+              events: [...saved.events, event].slice(-128),
+            },
+          };
+          checkStorageBudget(values);
+          await this.state.storage.put(values);
+        }
+        return received.state;
+      } finally {
+        A.free(received.doc);
+      }
+    } finally {
+      A.free(doc);
+    }
+  }
+
+  async generateSync(
+    pageId: string,
+    state: A.SyncState,
+  ): Promise<{
+    state: A.SyncState;
+    message: Uint8Array | null;
+    heads: string[];
+    sequence: number;
+  }> {
+    const saved = await this.state.storage.get<Saved>(pageId);
+    requireValue(saved, "not_found", "Page not found");
+    const doc = A.load<Page>(new Uint8Array(saved.bytes));
+    try {
+      const [next, message] = A.generateSyncMessage(doc, state);
+      return { state: next, message, heads: A.getHeads(doc), sequence: saved.sequence };
+    } finally {
+      A.free(doc);
+    }
+  }
+
+  private async broadcast() {
+    const catalog = await this.state.storage.get<Catalog>("catalog");
+    for (const peer of this.peers) {
+      try {
+        // Recheck before outbound data, too: a logged-out idle socket must not
+        // keep reading just because another peer is the one making edits.
+        if (!(await this.authorized(peer))) {
+          this.closePeer(peer, 4001, "Sign in again");
+          continue;
+        }
+        peer.socket.send(JSON.stringify({ type: "catalog", pages: catalog?.pages ?? [] }));
+        if (!peer.pageId) continue;
+        const result = await this.generateSync(peer.pageId, peer.state);
+        peer.state = result.state;
+        if (result.message) peer.socket.send(result.message);
+        // The heads describe storage read after its successful commit. A
+        // protocol response alone is not a durable acknowledgement.
+        peer.socket.send(
+          JSON.stringify({ type: "durable", heads: result.heads, sequence: result.sequence }),
+        );
+      } catch {
+        this.closePeer(peer, 4011, "Sync interrupted; reconnect to recover");
+      }
+    }
+  }
 
   fetch(request: Request): Promise<Response> {
     // Hashing and storage are async. Serialize across those awaits, not only SQLite writes.
-    const task = this.queue.then(async () => {
+    const task = this.enqueue(async () => {
       try {
         const principal = request.headers.get("x-pages-principal");
         requireValue(principal, "unauthorized", "Missing admitted identity");
-        return json(await this.call(principal, await readBody(request)));
+        if (request.headers.get("Upgrade")?.toLowerCase() === "websocket")
+          return await this.connect(request, principal);
+        const result = await this.call(principal, await readBody(request));
+        await this.broadcast();
+        return json(result);
       } catch (error) {
         if (error instanceof PageError)
           return json(
@@ -131,7 +402,6 @@ export class PagesWorkspace {
         );
       }
     });
-    this.queue = task.catch(() => {});
     return task;
   }
 
@@ -188,6 +458,7 @@ export class PagesWorkspace {
         id,
         input.title ?? "Untitled",
         input.block_units ?? (input.markdown === undefined ? [] : [input.markdown]),
+        newActor(await actorPrefix(principal)),
       );
       try {
         const content = await snapshot(doc, 1);
@@ -291,7 +562,12 @@ export class PagesWorkspace {
           "unsupported_capability",
           "Use patch_page for literal patches with partial receipts",
         );
-      const edited = await edit(doc, input.operations, operation === "patch_page");
+      const edited = await edit(
+        doc,
+        input.operations,
+        operation === "patch_page",
+        newActor(await actorPrefix(principal)),
+      );
       try {
         if (edited.receipts.every((receipt) => receipt.status === "rejected")) {
           return {

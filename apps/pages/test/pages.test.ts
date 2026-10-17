@@ -418,6 +418,11 @@ test("the complete storage value is budgeted, including receipts and catalog", (
   );
   assert.throws(() => checkStorageBudget({ catalog: "x".repeat(1536 * 1024) }), /budget/);
   checkStorageBudget({ page: { bytes: new Uint8Array(100), receipts: {} } });
+  checkStorageBudget({ page: { bytes: new Uint8Array(1024 * 1024).fill(255), receipts: {} } });
+  assert.throws(
+    () => checkStorageBudget({ page: { bytes: new Uint8Array(1536 * 1024), receipts: {} } }),
+    /budget/,
+  );
 });
 
 test("metadata rejects non-finite JSON numbers and excessive nesting before Automerge", () => {
@@ -432,4 +437,34 @@ test("metadata rejects non-finite JSON numbers and excessive nesting before Auto
     () => createPage("test", "Title", [{ markdown: "x", metadata: nested }]),
     /nesting/,
   );
+});
+
+test("WebSocket ingress requires same-origin endpoint session and cannot route spoofed identities", async () => {
+  let routed = false;
+  const env = {
+    NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example",
+    PAGES_WORKSPACES: {
+      idFromName() {
+        routed = true;
+        throw Error("unexpected route");
+      },
+    },
+  } as unknown as Env;
+  for (const [headers, status] of [
+    [{ Upgrade: "websocket" }, 403],
+    [{ Upgrade: "websocket", Origin: "https://evil.example" }, 403],
+    [{ Upgrade: "websocket", Origin: "https://pages.example", "x-pages-principal": "admin" }, 401],
+    [
+      { Upgrade: "websocket", Origin: "https://pages.example", Authorization: "Bearer forged" },
+      401,
+    ],
+    [{ Origin: "https://pages.example" }, 400],
+  ] as const) {
+    const response = await worker.fetch(
+      new Request("https://pages.example/api/sync", { headers }),
+      env,
+    );
+    assert.equal(response.status, status);
+    assert.equal(routed, false);
+  }
 });

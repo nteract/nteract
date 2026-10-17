@@ -1,161 +1,181 @@
-import { chromium } from "@playwright/test";
+// Protocol integration against a running local celld, including real OIDC sessions.
 import assert from "node:assert/strict";
-import { mkdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
+import WebSocket from "ws";
+import * as A from "@automerge/automerge/slim";
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9890";
-const browser = await chromium.launch({ headless: true });
-const errors = [];
-try {
-  const first = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-  const page = await first.newPage();
-  page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto(origin);
-  await page.getByRole("link", { name: "Sign in", exact: true }).click();
-  await page.getByRole("button", { name: "Sign out" }).waitFor();
-  const tool = (tab, operation, args) =>
-    tab.evaluate(
-      async ({ operation, args }) => {
-        const r = await fetch("/api/tools", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ operation, arguments: args }),
-        });
-        return { status: r.status, body: await r.json() };
-      },
-      { operation, args },
-    );
-  const created = await tool(page, "create_page", {
-    title: "A place to think together",
-    idempotency_key: crypto.randomUUID(),
-    block_units: [
-      {
-        markdown:
-          "## One document, many perspectives\n\nA quiet place for ideas to take shape. People and agents can work on the same Markdown, with **stable blocks**, explicit changes, and a shared history.",
-      },
-      {
-        markdown:
-          "### What we're working toward\n\n- A document that stays with you\n- Tools that can read before they write\n- Small changes that preserve someone else's work",
-      },
-      {
-        markdown:
-          "| Surface | Role |\n| --- | --- |\n| Markdown | The thought itself |\n| Automerge | Shared document history |\n| celld | A durable home |",
-      },
-      {
-        kind: "agent_instructions",
-        markdown:
-          "Keep proposals separate from decisions. Link to the evidence. Ask before publishing. [Capability contract](/api/capabilities)",
-      },
-      { markdown: "" },
-    ],
+assert.equal(
+  new URL(origin).hostname,
+  "localhost",
+  "This generated-fixture probe uses local OIDC only",
+);
+await A.initializeWasm(
+  await readFile(new URL(import.meta.resolve("@automerge/automerge/automerge.wasm"))),
+);
+async function login(user) {
+  const cookies = new Map();
+  let url = `${origin}/api/auth/login`;
+  for (let i = 0; i < 12; i++) {
+    if (new URL(url).pathname === "/dev/oidc/authorize" && user) {
+      const next = new URL(url);
+      next.searchParams.set("login_hint", user);
+      url = next.href;
+    }
+    const response = await fetch(url, {
+      redirect: "manual",
+      headers: { Cookie: [...cookies].map(([k, v]) => `${k}=${v}`).join("; ") },
+    });
+    for (const cookie of response.headers.getSetCookie()) {
+      const pair = cookie.split(";")[0],
+        at = pair.indexOf("=");
+      cookies.set(pair.slice(0, at), pair.slice(at + 1));
+    }
+    if (!response.headers.has("location")) {
+      assert.equal(response.status, 200);
+      break;
+    }
+    url = new URL(response.headers.get("location"), url).href;
+    assert.equal(new URL(url).origin, origin);
+  }
+  return [...cookies].map(([k, v]) => `${k}=${v}`).join("; ");
+}
+async function tool(cookie, operation, args) {
+  const response = await fetch(`${origin}/api/tools`, {
+    method: "POST",
+    headers: { Origin: origin, Cookie: cookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ operation, arguments: args }),
   });
-  assert.equal(created.status, 200, JSON.stringify(created.body));
-  const id = created.body.page_id;
-  await page.goto(`${origin}/?page=${id}`);
-  await page.getByRole("heading", { name: "A place to think together", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Edit", exact: true }).first().click();
-  await page
-    .getByLabel("Markdown source")
-    .fill(
-      "## Shared, with care\n\nYour edits are saved as Markdown with **stable identity**. A clear thought, kept intact.",
+  const value = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(value));
+  return value;
+}
+async function until(predicate, label) {
+  const deadline = Date.now() + 15000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw Error(`Timed out: ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+const peers = [];
+function peer(cookie, id, doc) {
+  const p = {
+    doc,
+    state: A.initSyncState(),
+    heads: null,
+    error: null,
+    closed: false,
+    ready: false,
+  };
+  p.socket = new WebSocket(`${origin.replace("http", "ws")}/api/sync?page=${id}`, {
+    headers: { Origin: origin, Cookie: cookie },
+  });
+  p.send = () => {
+    const [s, m] = A.generateSyncMessage(p.doc, p.state);
+    p.state = s;
+    if (m) p.socket.send(m);
+  };
+  p.socket.on("message", (raw, binary) => {
+    try {
+      if (binary) {
+        [p.doc, p.state] = A.receiveSyncMessage(p.doc, p.state, new Uint8Array(raw));
+        p.send();
+        return;
+      }
+      const m = JSON.parse(raw.toString());
+      if (m.type === "hello") {
+        p.doc ??= A.init({ actor: m.actor_prefix + crypto.randomUUID().replaceAll("-", "") });
+        p.ready = true;
+        p.send();
+      } else if (m.type === "durable") p.heads = m.heads;
+      else if (m.type === "rejected") p.error = Error(JSON.stringify(m));
+    } catch (e) {
+      p.error = e;
+    }
+  });
+  p.socket.on("error", (error) => {
+    p.error = error;
+  });
+  p.socket.on("close", () => {
+    p.closed = true;
+  });
+  p.saved = () => {
+    if (p.error) throw p.error;
+    return (
+      !!p.doc &&
+      !!p.heads &&
+      A.hasHeads(p.doc, p.heads) &&
+      A.getChangesSince(p.doc, p.heads).length === 0
     );
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  await page.getByRole("heading", { name: "Shared, with care" }).waitFor();
-  assert.equal(
-    await page.locator(".block pre").count(),
-    0,
-    "Empty Markdown must not become a code box",
+  };
+  peers.push(p);
+  return p;
+}
+try {
+  const cookie = await login(),
+    secondCookie = await login();
+  const created = await tool(cookie, "create_page", {
+    idempotency_key: crypto.randomUUID(),
+    title: "CRDT protocol fixture",
+    markdown: "Hello 🌍 middle",
+  });
+  const id = created.page_id,
+    block = created.content.blocks[0].id;
+  const a = peer(cookie, id),
+    b = peer(secondCookie, id);
+  await until(() => a.saved() && b.saved(), "initial sync");
+  a.doc = A.change(a.doc, (d) => A.splice(d, ["blocks", block, "markdown"], 0, 0, "left "));
+  b.doc = A.change(b.doc, (d) =>
+    A.splice(d, ["blocks", block, "markdown"], d.blocks[block].markdown.length, 0, " right"),
   );
-  const popupReady = first.waitForEvent("page");
-  await page.getByRole("link", { name: "Capability contract" }).click();
-  const popup = await popupReady;
-  await popup.waitForLoadState();
-  assert.equal(new URL(popup.url()).pathname, "/api/capabilities");
-  await popup.close();
-  await mkdir("test-results", { recursive: true });
-  await page.screenshot({ path: "test-results/pages-wide.png", fullPage: true });
-  const second = await browser.newContext();
-  const peer = await second.newPage();
-  await peer.goto(origin);
-  await peer.getByRole("link", { name: "Sign in", exact: true }).click();
-  await peer.getByRole("button", { name: "Sign out" }).waitFor();
-  const read = await tool(peer, "read_page", { page_id: id });
-  assert.equal(read.status, 200);
-  const content = read.body.content,
-    block = content.blocks[0];
-  await page.getByRole("button", { name: "Edit", exact: true }).first().click();
-  await page.getByLabel("Markdown source").fill("My unsaved contribution");
-  const args = {
+  a.send();
+  b.send();
+  await until(
+    () =>
+      a.saved() &&
+      b.saved() &&
+      a.doc.blocks[block].markdown === "left Hello 🌍 middle right" &&
+      b.doc.blocks[block].markdown === a.doc.blocks[block].markdown,
+    "concurrent convergence",
+  );
+  assert.deepEqual(A.getHeads(a.doc), A.getHeads(b.doc));
+  a.socket.close();
+  await until(() => a.closed, "disconnect");
+  a.doc = A.change(a.doc, (d) => A.splice(d, ["blocks", block, "markdown"], 0, 0, "offline "));
+  const current = await tool(secondCookie, "read_page", { page_id: id });
+  await tool(secondCookie, "edit_page", {
     page_id: id,
-    base_sequence: content.through_sequence,
+    base_sequence: current.content.through_sequence,
     idempotency_key: crypto.randomUUID(),
     operations: [
-      {
-        op: "replace_block_markdown",
-        block_id: block.id,
-        expected_hash: block.hash,
-        markdown: "## Shared, with care\n\nA second device contributed this line.",
-      },
+      { op: "set_title", title: "Tool push", expected_title_hash: current.content.title_hash },
     ],
-  };
-  const saved = await tool(peer, "edit_page", args);
-  assert.equal(saved.status, 200);
-  const replay = await tool(peer, "edit_page", args);
-  assert.deepEqual(replay.body, saved.body);
-  const stale = await tool(page, "edit_page", { ...args, idempotency_key: crypto.randomUUID() });
-  assert.equal(stale.status, 409);
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  await page.getByRole("alert").filter({ hasText: "Page changed" }).waitFor();
-  assert.equal(await page.getByLabel("Markdown source").inputValue(), "My unsaved contribution");
-  assert.equal(await page.getByLabel("Markdown source").isEditable(), true);
-  await page.getByRole("button", { name: "Compare with saved page" }).click();
-  await page.getByRole("heading", { name: "Current saved version" }).waitFor();
-  assert.match(await page.locator(".comparison pre").innerText(), /second device/);
-  await page.getByRole("button", { name: "Cancel", exact: true }).click();
-  await page.reload();
-  await page.getByText("A second device contributed this line.", { exact: true }).waitFor();
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: "test-results/pages-narrow.png", fullPage: true });
-  const dimensions = await page.evaluate(() => ({
-    content: document.documentElement.scrollWidth,
-    viewport: innerWidth,
-  }));
-  assert.ok(dimensions.content <= dimensions.viewport, JSON.stringify(dimensions));
-  await page.getByRole("button", { name: "Edit", exact: true }).first().click();
-  await page.getByLabel("Markdown source").fill("Draft survives signing in again");
-  await page.evaluate(() => fetch("/api/auth/session", { method: "POST" }));
-  await page.reload();
-  await page.getByRole("link", { name: "Sign in", exact: true }).click();
-  await page.getByLabel("Markdown source").waitFor();
-  assert.equal(
-    await page.getByLabel("Markdown source").inputValue(),
-    "Draft survives signing in again",
+  });
+  await until(() => b.doc.title === "Tool push" && b.saved(), "HTTP pushes through WebSocket");
+  const restored = peer(cookie, id, A.load(A.save(a.doc), { actor: A.getActorId(a.doc) }));
+  await until(
+    () =>
+      restored.saved() &&
+      b.saved() &&
+      b.doc.blocks[block].markdown.startsWith("offline ") &&
+      restored.doc.title === "Tool push",
+    "reconnect merge",
   );
-  await page.getByRole("button", { name: "Cancel", exact: true }).click();
-  assert.deepEqual(errors, []);
+  assert.deepEqual(A.getHeads(restored.doc), A.getHeads(b.doc));
+  // Logout invalidates an already-open socket before it can receive another edit.
+  const logout = await fetch(`${origin}/api/auth/session`, {
+    method: "POST",
+    headers: { Origin: origin, Cookie: cookie },
+  });
+  assert.equal(logout.status, 200);
+  b.doc = A.change(b.doc, (d) => A.splice(d, ["blocks", block, "markdown"], 0, 0, "valid "));
+  b.send();
+  await until(() => restored.closed && b.saved(), "session revocation");
   console.log(
-    JSON.stringify(
-      {
-        ok: true,
-        page_id: id,
-        verified: [
-          "OIDC login",
-          "create",
-          "render Markdown",
-          "edit",
-          "second browser session",
-          "idempotent replay",
-          "stale-write rejection",
-          "390px layout",
-          "working evidence links",
-          "empty Markdown",
-          "recoverable UI conflict",
-          "draft recovery after sign-in",
-        ],
-        screenshots: ["test-results/pages-wide.png", "test-results/pages-narrow.png"],
-      },
-      null,
-      2,
-    ),
+    "PASS: real celld OIDC + binary CRDT convergence, Unicode, HTTP push, reconnect, and socket revocation",
   );
 } finally {
-  await browser.close();
+  for (const p of peers) {
+    p.socket.terminate();
+    if (p.doc) A.free(p.doc);
+  }
 }

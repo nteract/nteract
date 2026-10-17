@@ -415,3 +415,13 @@ textarea {
     display: none;
   }
 }
+
+.live-editor {
+  border: 1px solid #d4d9cc;
+  border-radius: 5px;
+  background: #fffefb;
+  margin: 12px 0;
+}
+.live-editor .cm-editor.cm-focused {
+  outline: 2px solid #8d9c82;
+}

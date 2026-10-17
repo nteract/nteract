@@ -23,6 +23,7 @@ await copyFile(
   require.resolve("@automerge/automerge/automerge.wasm"),
   path.join(app, "dist/automerge.wasm"),
 );
+await copyFile(path.join(app, "dist/automerge.wasm"), path.join(app, "dist/public/automerge.wasm"));
 await build({
   stdin: {
     contents:

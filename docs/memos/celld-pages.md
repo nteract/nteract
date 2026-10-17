@@ -1,8 +1,7 @@
 # Standalone Pages on celld
 
-**Status:** Working prototype plus proposed direction, 2026-10-17. The editor,
-sharing, transports, attribution, comments, and incremental persistence below are not
-implemented unless explicitly listed as current behavior.
+**Status:** Realtime CRDT prototype plus proposed direction, 2026-10-17.
+WYSIWYG, sharing, comments, presence, and incremental persistence remain planned.
 
 ## Purpose and deployment boundary
 
@@ -33,9 +32,15 @@ Parser node IDs are rendering details, not persisted block identities.
 The HTTP tool API implements a subset of Spaces-shaped reads, guarded edits,
 literal patches, idempotency receipts, and sequence-based change reads.
 Structural batches are atomic; literal patch batches report partial results.
-The browser polls and performs explicit saves with conflict/draft recovery.
-This is neither a drop-in Spaces connector nor an MCP server. It has no
-execution, sharing, comments, raw CRDT ingress, or offline synchronization.
+The browser edits a real Automerge replica through CodeMirror and exchanges
+binary sync messages with the workspace over WebSocket. There is no content
+polling or explicit save. HTTP tool changes broadcast to the same live replicas.
+IndexedDB retains pending changes for reconnect/reopening; durable-head controls
+distinguish acknowledged work from local edits. Server handlers use celld's
+WebSocket output gate and recheck endpoint sessions before writes and broadcasts.
+See the [README](../../apps/pages/README.md#storage-and-identity) for admission,
+recovery, and durability limits. This is neither a drop-in Spaces connector nor
+an MCP server. Execution, sharing, comments, and offline app loading are absent.
 
 Server-login mode admits endpoint-local sessions and rejects raw provider
 tokens, matching notebook-cloud's isolation for a shared OAuth client.
@@ -43,6 +48,55 @@ Independent agent credentials scoped to Pages remain future work. A separate
 bearer-only installation requires explicit `PAGES_ALLOW_PROVIDER_BEARER=true`
 and must not reuse that shared client. Missing configuration never enables
 provider-bearer access, and server-login mode always rejects it.
+
+## Required complete experience
+
+The delivery target is a fully editable realtime document with comments and
+space-level sharing, reusing the capabilities already present in notebooks.
+The current visual design and private realtime prototype are a starting
+point. Realtime editing and comments are required product capabilities, not
+optional additions after the document experience is considered complete.
+
+The WYSIWYG editor investigation remains a separate spike starting from main,
+with this service as its intended integration target. Editor selection should
+not block work on shared-space identity, admitted authorship, comment operations,
+and collaboration contracts. Those contracts must also leave room for the
+spike's eventual editor transactions and source/selection mapping.
+
+The end-to-end acceptance scenario is two different authenticated people opening
+the same shared space and Page in separate browsers:
+
+- Both can type and see the other's edits promptly, without manual refresh or
+  explicit whole-block saves. Concurrent edits converge without silently
+  replacing one person's text. Remote edits preserve local selection and
+  composition; undo does not erase another author's work.
+- Both can create anchored comment threads, reply, resolve, and reopen them,
+  with updates arriving live. Comments have admitted authorship, remain attached
+  through supported edits, and become visibly orphaned when their target is lost.
+- Presence and change illumination make collaborators and recent changes
+  understandable, while durable authorship remains distinct from transient UI.
+- Viewer restrictions and membership revocation apply to reads, mutations,
+  comments, and live connections. The first comment-writing policy follows
+  content-writing access: owners and editors may participate; viewers read.
+- Reconnection and service restart recover committed content and comments
+  without losing acknowledged edits, duplicating replies, or replaying old
+  edits over newer work. Connection/save status accurately distinguishes local
+  work, acknowledged durable work, and failed or uncertain outcomes.
+- Browser edits and agent operations affect the same documents, with the same
+  permission and attribution rules. A scoped-agent transport is qualified
+  separately; the absence of that adapter must not create a second document.
+
+WebSocket delivery of saved snapshots alone does not satisfy concurrent editing.
+The browser now uses admitted Automerge sync to preserve concurrent intent.
+Keep guarded HTTP tool edits as an
+adapter over the same document authority. Full offline editing is a separate
+capability from safely reconnecting an interrupted live editing session.
+
+Integrate and verify the complete flow locally before updating the live service:
+shared space, two editors, one viewer, concurrent typing, threaded comments,
+revocation, reconnect, and restart. WYSIWYG interaction and cross-block selection
+join that same fixture when the editor spike selects an approach. The deployed
+prototype does not meet this completion bar yet.
 
 ## Space identity and sharing
 
@@ -69,8 +123,8 @@ invitations through verified provider identity as notebook sharing does.
 Writable document metadata and display names cannot grant membership. Public
 links, ownership transfer, and per-Page permission overrides are separate
 decisions; they are not implied by opening sign-in to all Anaconda accounts.
-Future comments inherit space access, with comment-writing permissions specified
-explicitly when that feature is introduced.
+Comments inherit space access. Owners and editors may create/reply/resolve/reopen
+threads; viewers may read them. A commenter-only role can be considered later.
 
 Apply the same authorization to space discovery, Page reads and mutations,
 change history, future comments, subscriptions, and tool transports. Resolve
@@ -124,7 +178,7 @@ hash guards, idempotency, explicit commit outcomes, and capability discovery.
 | Adapter | Proposed purpose |
 | --- | --- |
 | HTTP | Reads, bounded mutations, retries, and automation without an open editor |
-| WebSocket | The same operations plus resumable committed-change subscriptions and ephemeral presence |
+| WebSocket | Implemented: binary Automerge sync and durable-head acknowledgments. Planned: presence and comment streams |
 | WebMCP | Tools exposed by the signed-in page, calling the same operation client as the UI |
 
 WebMCP exposes browser-side JavaScript tools; it is not a backend sync protocol.
@@ -133,7 +187,7 @@ The [current draft](https://webmachinelearning.github.io/webmcp/) uses
 the adapter. Browser execution context does not establish a separately verified
 agent identity. A remote MCP adapter can be added independently.
 
-For WebSocket commands, correlate request IDs with the existing idempotency
+For future semantic WebSocket commands, correlate request IDs with the existing idempotency
 keys. Emit committed events only after the corresponding persistence boundary.
 Resume by sequence, deduplicate replay, and return an explicit resync requirement
 when retention is exceeded. Bound queues and disconnect slow consumers with a
@@ -141,10 +195,11 @@ recoverable cursor. Presence has a TTL and is not part of durable content histor
 Revocation/expiry must terminate or reauthorize subscriptions; browser upgrades
 need same-origin checks. Do not place reusable credentials in WebSocket URLs.
 
-The first socket protocol can carry semantic operations. Accepting raw Automerge
-sync is a separate capability requiring actor admission, document/schema checks,
-permission enforcement, and recovery tests. A socket alone does not add offline
-editing or authorize client-supplied changes.
+The implemented socket protocol carries Automerge sync with actor admission,
+document/schema checks, account authorization, and recovery tests. Semantic
+operations remain available over HTTP. A socket alone does not authorize
+client-supplied changes or provide offline app loading. Shared-space membership
+must replace the account-only access boundary before multi-user sharing ships.
 
 ## Attribution and illumination
 
@@ -155,10 +210,12 @@ may aid display but cannot prove authorship or grant permissions. Specify the
 delegated credential's page/workspace scope, permitted operations, expiry, and
 revocation before enabling independent agent writes.
 
-Current Pages history records the authenticated account for a batch; Automerge
-actors are not yet bound to that account/session. Do not derive trusted text
-authorship from those existing actors. A migration must retain old attribution
-as unknown or batch-level evidence rather than inventing historical authors.
+Current Pages history records the authenticated account for a batch. Newly
+admitted Automerge actors carry a deterministic account prefix and a random
+replica suffix; the server verifies the prefix against the signed-in account,
+never the other way around. This authenticates the account, not an independently
+verified device, agent, or person behind a suffix. Existing historical actors
+remain unknown or batch-level evidence; do not invent historical authorship.
 
 Reuse nteract's separation between text-patch events and temporary editor
 decorations: see [text-attribution.ts](../../src/components/editor/text-attribution.ts)
@@ -172,11 +229,11 @@ representation rather than a fabricated inserted-text range.
 
 ## Comments
 
-Reuse the authored-change model in
+Live threaded comments are part of the required document experience. Reuse the authored-change model in
 [CommentsDoc](../../crates/comments-doc/AGENTS.md): thread/message creators and
 resolvers derive from admitted Automerge authorship, not writable author fields.
 Keep actor checks at every ingress path, including semantic API operations and
-any future raw sync path. An actor ID is not authentication by itself.
+the raw sync path. An actor ID is not authentication by itself.
 
 The thread/message model is reusable, but `NotebookCommentRef` and
 `CommentAnchor` currently carry notebook/cell semantics. Add explicit Page,
@@ -266,9 +323,13 @@ does not qualify either remote backend.
    with a migration from the initial private workspaces.
 3. Establish actor/session identity, scoped API credentials, and durable receipts.
 4. Measure and implement incremental persistence with recovery qualification.
-5. Add WebSocket subscriptions and change illumination using the shared events.
-6. Prototype document-wide WYSIWYG selection and introduce comment operations.
-7. Add WebMCP/remote MCP adapters over the established operation contract.
+5. Extend the implemented CRDT editing and reconnect flow with presence and
+   change illumination, then qualify it across shared-space permissions.
+6. Integrate CommentsDoc thread operations, Page/source anchors, and live comment
+   UI with shared-space permissions and admitted authorship.
+7. Integrate the separate WYSIWYG spike, including cross-block selection and
+   undo, into the complete shared editing and commenting fixture.
+8. Add WebMCP/remote MCP adapters over the established operation contract.
 
 Editor exploration can proceed independently. None of these slices requires
 changing notebook-cloud's release cadence or making the first UI expose every

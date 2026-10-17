@@ -30,7 +30,7 @@ test("background refresh respects a user selection still loading", async (t) => 
     for (let i = 0; i < 10 && pending.length < count; i++) await new Promise(setImmediate);
     assert.equal(pending.length, count);
   }
-  const store = new PagesStore(),
+  const store = new PagesStore({ realtime: false }),
     initial = store.refresh();
   await until(1);
   pending.shift()!.resolve(Response.json({ content: { page_id: "a" } }));
@@ -74,4 +74,42 @@ test("evidence links resolve safely, including relative links and anchors", () =
   assert.equal(resolvePageLink("#heading", base), `${base}#heading`);
   assert.equal(resolvePageLink("javascript:alert(1)", base), null);
   assert.equal(resolvePageLink("data:text/html,hello", base), null);
+});
+
+test("returning to the current Page cancels an in-flight navigation", async (t) => {
+  const oldHistory = Object.getOwnPropertyDescriptor(globalThis, "history");
+  Object.defineProperty(globalThis, "history", {
+    configurable: true,
+    value: { replaceState() {} },
+  });
+  t.after(() => {
+    if (oldHistory) Object.defineProperty(globalThis, "history", oldHistory);
+    else Reflect.deleteProperty(globalThis, "history");
+  });
+  let resolve!: (value: Response) => void;
+  let wait = false;
+  t.mock.method(globalThis, "fetch", async (_url: string, options?: RequestInit) => {
+    const { arguments: args } = JSON.parse(String(options?.body));
+    if (wait)
+      return new Promise<Response>((r) => {
+        resolve = r;
+      });
+    return Response.json({ content: { page_id: args.page_id } });
+  });
+  const store = new PagesStore({ realtime: false });
+  await store.open("a");
+  let disposed = false;
+  store.replica = {
+    pageId: "a",
+    dispose() {
+      disposed = true;
+    },
+  } as unknown as NonNullable<typeof store.replica>;
+  wait = true;
+  const navigation = store.open("b");
+  await store.open("a");
+  resolve(Response.json({ content: { page_id: "b" } }));
+  await navigation;
+  assert.equal(store.getSnapshot().page?.page_id, "a");
+  assert.equal(disposed, false);
 });

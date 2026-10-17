@@ -1,3 +1,4 @@
+import { PageReplica, type SyncStatus } from "./replica.ts";
 import type { Snapshot } from "../src/document.ts";
 export interface Entry {
   page_id: string;
@@ -12,6 +13,7 @@ interface State {
   pages: Entry[];
   page: Snapshot | null;
   error: string | null;
+  syncStatus: SyncStatus;
 }
 export class ToolError extends Error {
   constructor(
@@ -23,6 +25,8 @@ export class ToolError extends Error {
   }
 }
 export class PagesStore {
+  replica: PageReplica | null = null;
+  constructor(private readonly options = { realtime: true }) {}
   private state: State = {
     accountKey: null,
     ready: false,
@@ -31,6 +35,7 @@ export class PagesStore {
     pages: [],
     page: null,
     error: null,
+    syncStatus: "connecting",
   };
   private listeners = new Set<() => void>();
   private epoch = 0;
@@ -72,6 +77,8 @@ export class PagesStore {
       const { session } = await response.json();
       if (epoch !== this.epoch) return;
       if (!session) {
+        this.replica?.dispose();
+        this.replica = null;
         this.epoch++;
         this.creationKey = null;
         this.requestedPageId = null;
@@ -79,6 +86,8 @@ export class PagesStore {
         return;
       }
       if (this.account && this.account !== session.account_key) {
+        this.replica?.dispose();
+        this.replica = null;
         this.epoch++;
         this.selection++;
         this.creationKey = null;
@@ -105,6 +114,7 @@ export class PagesStore {
         new URLSearchParams(location.search).get("page") ??
         pages[0]?.page_id;
       if (id) await this.open(id);
+      else if (!this.replica) this.startReplica(null);
     } catch (error) {
       if (epoch === this.epoch)
         this.publish({
@@ -117,10 +127,55 @@ export class PagesStore {
     this.requestedPageId = id;
     const epoch = this.epoch,
       selection = ++this.selection;
+    if (this.replica?.pageId === id) return;
     const { content } = await this.tool<{ content: Snapshot }>("read_page", { page_id: id });
     if (epoch !== this.epoch || selection !== this.selection) return;
-    this.publish({ page: content });
+    this.replica?.dispose();
+    this.replica = null;
+    this.publish({ page: content, syncStatus: "connecting" });
+    this.startReplica(id);
     history.replaceState(null, "", `/?page=${encodeURIComponent(id)}`);
+  }
+  private startReplica(id: string | null) {
+    const epoch = this.epoch;
+    if (this.options.realtime && this.account) {
+      const account = this.account;
+      const replica: PageReplica = new PageReplica(
+        account,
+        id,
+        (update) => {
+          if (epoch !== this.epoch || this.replica !== replica || this.account !== account) return;
+          this.publish({
+            ...(update.page && this.state.signedIn ? { page: update.page } : {}),
+            syncStatus: update.status,
+            error: update.error,
+          });
+        },
+        (pages) => {
+          if (epoch === this.epoch && this.replica === replica) {
+            this.publish({ pages });
+            if (!id && !this.requestedPageId && pages[0])
+              void this.open(pages[0].page_id).catch((error) =>
+                this.publish({ error: String(error) }),
+              );
+          }
+        },
+        async () => {
+          const response = await fetch("/api/auth/session");
+          if (!response.ok) throw Error("Sign-in renewal is temporarily unavailable");
+          const { session } = await response.json();
+          if (epoch !== this.epoch || this.replica !== replica) return false;
+          if (!session || session.account_key !== account) {
+            this.publish({ signedIn: false, page: null, pages: [], syncStatus: "signed_out" });
+            return false;
+          }
+          this.publish({ signedIn: true });
+          return true;
+        },
+      );
+      this.replica = replica;
+      replica.start();
+    }
   }
   async create() {
     const epoch = this.epoch;
@@ -133,11 +188,23 @@ export class PagesStore {
     if (epoch !== this.epoch) return;
     this.creationKey = null;
     await this.open(page_id);
-    await this.refresh();
+    if (!this.options.realtime) await this.refresh();
+  }
+  async reopenSaved() {
+    const replica = this.replica,
+      epoch = this.epoch;
+    if (!replica?.pageId) return;
+    await replica.discardPending();
+    if (epoch !== this.epoch || this.replica !== replica) return;
+    replica.dispose();
+    this.replica = null;
+    await this.open(replica.pageId);
   }
   async signOut() {
     const response = await fetch("/api/auth/session", { method: "POST" });
     if (!response.ok) throw new Error("Could not sign out");
+    this.replica?.dispose();
+    this.replica = null;
     this.epoch++;
     this.selection++;
     this.account = null;

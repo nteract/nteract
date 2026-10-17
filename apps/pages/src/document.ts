@@ -69,7 +69,7 @@ function metadata(value: unknown): Block["metadata"] {
   );
   return result as Block["metadata"];
 }
-function validateJson(value: unknown, depth = 0): void {
+export function validateJson(value: unknown, depth = 0): void {
   requireValue(depth <= 32, "invalid_page_schema", "Metadata nesting exceeds 32 levels");
   if (value === null || typeof value === "string" || typeof value === "boolean") return;
   if (typeof value === "number") {
@@ -97,20 +97,28 @@ export function block(value: unknown): Block {
     metadata: metadata(unit.metadata),
   };
 }
-export function createPage(pageId: string, title: unknown, units: unknown): A.Doc<Page> {
+export function createPage(
+  pageId: string,
+  title: unknown,
+  units: unknown,
+  actor?: string,
+): A.Doc<Page> {
   requireValue(
     Array.isArray(units) && units.length <= 100,
     "invalid_page_schema",
     "Provide up to 100 block_units",
   );
   const blocks = units.map(block);
-  const doc = A.from<Page>({
-    schema_version: 2,
-    page_id: pageId,
-    title: text(title, "title", 1024),
-    order: blocks.map((b) => b.id),
-    blocks: Object.fromEntries(blocks.map((b) => [b.id, b])),
-  });
+  const doc = A.from<Page>(
+    {
+      schema_version: 2,
+      page_id: pageId,
+      title: text(title, "title", 1024),
+      order: blocks.map((b) => b.id),
+      blocks: Object.fromEntries(blocks.map((b) => [b.id, b])),
+    },
+    actor ? { actor } : undefined,
+  );
   try {
     checkSize(doc);
     return doc;
@@ -250,6 +258,7 @@ export async function edit(
   doc: A.Doc<Page>,
   operations: unknown,
   patchOnly = false,
+  actor?: string,
 ): Promise<{ doc: A.Doc<Page>; receipts: Receipt[] }> {
   requireValue(
     Array.isArray(operations) && operations.length > 0 && operations.length <= 100,
@@ -257,7 +266,7 @@ export async function edit(
     "Provide 1–100 operations",
   );
   // Clone before mutation: failed batches and failed persistence never advance the live doc.
-  let next = A.clone(doc);
+  let next = A.clone(doc, actor ? { actor } : undefined);
   const receipts: Receipt[] = [];
   const patched = new Set<string>();
   try {
@@ -352,7 +361,7 @@ export async function edit(
             const nextKind = op.block_kind === undefined ? b.kind : kind(op.block_kind);
             next = A.change(next, (d) => {
               A.updateText(d, ["blocks", b.id, "markdown"], markdown);
-              d.blocks[b.id].kind = nextKind;
+              if (d.blocks[b.id].kind !== nextKind) d.blocks[b.id].kind = nextKind;
             });
             affected.push(b.id);
           } else if (op.op === "delete_block") {
@@ -388,7 +397,9 @@ export async function edit(
         const accepted = operations
           .slice(0, i)
           .filter((_, index) => receipts[index].status === "applied");
-        next = accepted.length ? (await edit(doc, accepted)).doc : A.clone(doc);
+        next = accepted.length
+          ? (await edit(doc, accepted, false, actor)).doc
+          : A.clone(doc, { actor });
         receipts.push({
           operation_index: i,
           status: "rejected",

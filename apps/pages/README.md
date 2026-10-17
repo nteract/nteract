@@ -13,6 +13,10 @@ operation transports, attribution, comments, and incremental persistence work.
 Space-level sharing is an intended feature, following nteract notebook-room
 permissions, with Pages inheriting access from their space. Private account
 workspaces are the current prototype behavior; sharing is not yet enabled.
+The complete product target is a collaboratively editable realtime document
+with live threaded comments, following the notebook experience. Explicit saves
+and polling do not satisfy that target. The WYSIWYG spike is separate work,
+intended to integrate with this service's shared documents and comments.
 
 ## Run locally
 
@@ -30,6 +34,11 @@ nonce validation, server token exchange, and HttpOnly session flow against
 `@nteract/local-oidc`. This local provider automatically grants `dev@localhost`;
 it is not a production login challenge. Both request and configured public
 origin must be loopback before its routes can run.
+
+`pnpm --dir apps/pages test` checks document and sync invariants; `typecheck`
+checks the browser and Worker. With the dev server running, `pnpm --dir
+apps/pages smoke` exercises real OIDC sessions and binary WebSocket peers,
+including concurrent edits, tool pushes, reconnect, and session revocation.
 
 `PAGES_PORT` changes the port. State survives process restarts in
 `dist/.celld/dev`. The build preserves that directory. Do not delete `dist` to
@@ -71,20 +80,50 @@ A storage exception returns `commit_status: unknown`, because an acknowledged
 write and a failed reply are different things. Fleet bucket durability remains
 the operator's celld configuration; local dev proves local restart recovery.
 
-The browser polls every 15 seconds and submits explicit guarded saves. The
-current transport does not accept untrusted Automerge deltas or provide offline
-editing. The CRDT is real storage, but this is not yet a browser sync protocol.
-Two devices can read and edit; stale saves are rejected and retain the local
-draft. The editor can compare the current saved block before the user explicitly
-chooses a new base. Drafts are retained in per-tab `sessionStorage`, keyed to an
-opaque account identifier, and recover after signing back in to the same account.
-No OIDC credentials enter browser storage. Raw HTML and MDX remain source text
-when they need an isolated renderer.
+The browser owns an Automerge replica and edits it directly through CodeMirror.
+`/api/sync?page=<id>` exchanges binary Automerge sync messages over WebSocket;
+there is no content polling or manual save. Tool edits and browser edits update
+the same document. Text changes preserve CRDT identity, remote selections use
+Automerge cursors, and remote transactions are excluded from local undo history.
+This is a Markdown source editor; WYSIWYG and cross-block selection remain separate work.
 
-Each stored Page value and the catalog have a conservative 1.5 MiB JSON budget
-(including byte arrays, receipts, and history), checked before persistence.
+The handshake requires a same-origin, endpoint-local session cookie. Every
+incoming change must carry the admitted account's actor prefix; random suffixes
+distinguish replicas, not independently verified people or agent sessions.
+Schema, immutable Page identity, and storage budgets are checked on a clone
+before commit. HTTP operations mint actors with the same account binding.
+Older stored history remains readable without inventing historical attribution.
+Sessions are checked before incoming mutations and outgoing broadcasts.
+
+Sockets use Durable Object `acceptWebSocket` and awaited `webSocketMessage`
+handlers so celld's output gate holds acknowledgments and broadcasts until the
+configured durability boundary. The server sends durable heads separately from
+protocol messages; the browser displays Saved only when those heads cover all
+local changes. Hibernation/restart resets ephemeral sync state and reconnects
+clients for a new handshake. A protocol acknowledgment alone is not Saved.
+
+Pending binary replicas are journaled in IndexedDB, keyed by account and Page,
+and merge after reconnect or reopening a tab. Cleanup compares journal revisions
+so another tab's newer pending edits cannot be deleted. A recovery download is
+available for rejected or unsaved work. Rejected edits can be explicitly discarded
+to reopen the saved version; unreadable journal records remain downloadable.
+The journal is best-effort browser storage:
+quota failure is visible, and closing before its asynchronous write completes can
+lose unacknowledged work. Full offline app loading is not supported. Old per-tab
+source drafts remain available to copy from the previous editor. Pending document
+content remains in IndexedDB after sign-out for recovery on
+the same account; signing out does not remove local document copies. No OIDC
+credentials enter browser storage. Raw HTML and MDX remain source text when they
+need an isolated renderer.
+
+Each stored Page value and the catalog have a 1.5 MiB budget, counting binary
+bytes directly plus JSON metadata, receipts, and history, checked before persistence.
 This can become the limiting factor before the 1 MiB content limit. A rejected
 size check is definite and does not modify stored content.
+Sync frames are capped at 2 MiB and queued input at 4 MiB per workspace. These
+are wire/queue bounds, not expanded decoding bounds for compressed Automerge
+input. Adversarial decompression and multi-tenant load remain unqualified;
+the deployment's CPU, isolate-heap, and service-memory limits remain necessary.
 
 ## Tool contract
 

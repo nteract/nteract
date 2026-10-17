@@ -12,6 +12,9 @@
   },
   "dependencies": {
     "@automerge/automerge": "3.4.1",
+    "@codemirror/commands": "^6.10.3",
+    "@codemirror/state": "^6.6.0",
+    "@codemirror/view": "^6.40.0",
     "@nteract/local-oidc": "workspace:*",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
@@ -21,8 +24,10 @@
     "@types/node": "^20.10.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.1.5",
+    "@types/ws": "^8.18.1",
     "esbuild": "^0.28.0",
     "tsx": "^4.21.0",
-    "typescript": "~5.8.3"
+    "typescript": "~5.8.3",
+    "ws": "^8.20.1"
   }
 }
