@@ -203,6 +203,19 @@ must replace the account-only access boundary before multi-user sharing ships.
 
 ## Attribution and illumination
 
+The separate editor workbench can be served as a static research preview from
+this deployment without adopting its native rich-text schema. Its two local
+replicas and custom presence are an interaction fixture, not the service's
+multi-device editor. Keep that boundary explicit while comparing adapters.
+
+Wordgard is another candidate for that comparison. The author's July 2026
+[external-model discussion](https://discuss.wordgard.net/t/strongly-referencing-document-positions/19)
+describes observing editor updates and applying external changes; his
+[Markdown discussion](https://discuss.wordgard.net/t/wordgard-markdown/16)
+describes serialization as separate work. These dated comments do not establish
+current package availability or an Automerge binding. No Wordgard fixture,
+mobile/IME qualification, or drop-in integration is claimed here.
+
 Separate the account authorizing an operation, its human/agent session, and its
 operation ID. Bind admitted actor identities to authenticated credentials or a
 server-issued session/delegation. Caller-supplied agent names and transport labels

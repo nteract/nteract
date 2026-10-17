@@ -1,6 +1,6 @@
 import { build } from "esbuild";
 import { spawnSync } from "node:child_process";
-import { copyFile, mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -57,6 +57,24 @@ await writeFile(
   path.join(app, "dist/public/_headers"),
   "/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: same-origin\n  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\n",
 );
+// Optional static research artifact, built separately from its reviewed source.
+// It has generated content and never reads or writes the account's Pages.
+const workbench = process.env.PAGES_EDITOR_WORKBENCH_DIST;
+const workbenchTarget = path.join(app, "dist/public/editor-spike");
+await rm(workbenchTarget, { recursive: true, force: true });
+if (workbench) {
+  await mkdir(workbenchTarget, { recursive: true });
+  for (const file of ["main.js", "style.css"])
+    await copyFile(path.join(workbench, file), path.join(workbenchTarget, file));
+  const html = (await readFile(path.join(workbench, "index.html"), "utf8"))
+    .replace('href="/style.css"', 'href="/editor-spike/style.css"')
+    .replace('src="/main.js"', 'src="/editor-spike/main.js"')
+    .replace(
+      "<strong>Local research fixture.</strong>",
+      "<strong>Research workbench — changes stay in this browser and reset on reload.</strong>",
+    );
+  await writeFile(path.join(workbenchTarget, "index.html"), html);
+}
 await writeFile(
   path.join(app, "dist/wrangler.json"),
   JSON.stringify(

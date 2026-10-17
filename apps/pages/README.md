@@ -195,6 +195,23 @@ adapting a tool workflow that expects these features.
 
 ## Deployment
 
+### Optional editor workbench
+
+The separate [editor spike PR](https://github.com/nteract/nteract/pull/4453)
+provides a generated-content research fixture. Build its pinned source with
+`npm ci && npm test && npm run build` in `experiments/pages-editor`, then set
+`PAGES_EDITOR_WORKBENCH_DIST` to that build's absolute `dist` path when running
+the Pages build. The three static files are mounted at
+`/editor-spike/index.html`, with the main service's CSP. Only those named files
+are copied; source maps, local state, and source checkouts are excluded. A build
+without the variable removes this optional generated directory.
+
+This preview uses two replicas in one browser, resets on reload, and has no
+account-Page transport or persistence. It does not migrate existing documents
+or claim production presence. Record both source revisions in deployment
+receipts. A real document integration still needs an explicit Markdown adapter
+or coordinated rich-text schema migration.
+
 The build writes a self-contained celld project to `dist`: Worker JavaScript,
 Automerge WASM, Markdown WASM, viewer assets, and `wrangler.json`. Deploy that
 directory to a **separate celld fleet/store**; a fleet has one application.
