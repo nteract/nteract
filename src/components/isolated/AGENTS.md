@@ -1,8 +1,16 @@
 # Isolated output frame — security model and renderers
 
-Untrusted cell outputs render inside a sandboxed iframe. Tauri loads the iframe from the `nteract-frame` custom URI scheme so the iframe receives its own CSP. Omitting `allow-same-origin` prevents direct same-origin DOM and storage access to the parent and other frames. Host adapters must keep privileged native bridges out of output frames. The plain browser dev host uses `srcDoc` with the same sandbox-induced opaque origin behavior. See [output frame security](../../../docs/adr/output-frame-security.md) for the current implementation and its limits.
+Outputs that require isolation render inside a sandboxed iframe. Tauri loads the iframe from the `nteract-frame` custom URI scheme so the iframe receives its own CSP. Omitting `allow-same-origin` prevents direct same-origin DOM and storage access to the parent and other frames. Host adapters must keep privileged native bridges out of output frames. The plain browser dev host uses `srcDoc` with the same sandbox-induced opaque origin behavior. See [output frame security](../../../docs/adr/output-frame-security.md) for the current implementation and its limits.
 
 Scope: `src/components/isolated/**`, `src/isolated-renderer/**`.
+
+Structured Markdown projections can render in the host when
+`canRenderMarkdownProjectionInHost` admits them; raw HTML still requires the
+sandbox. This includes Mermaid diagrams in cells, outputs, and comments. Their
+generated SVG must pass through `mermaid-renderer.ts`'s DOMPurify and CSS admission
+policy before insertion, with links and images disabled. Do not substitute raw
+SVG insertion or treat the source as trusted. Browser coverage for this host
+boundary lives alongside the sandboxed renderer tests in `apps/renderer-test`.
 
 ## Security model
 

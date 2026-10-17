@@ -131,7 +131,9 @@ fn collect_block(
         }
         NodeKind::List => collect_list(source, &mut context, block, 0),
         NodeKind::Table => collect_table(source, &mut context, block),
-        NodeKind::CodeBlock => collect_code_block(source, &mut context, block),
+        NodeKind::CodeBlock | NodeKind::MermaidBlock => {
+            collect_code_block(source, &mut context, block)
+        }
         NodeKind::MathBlock => {
             context.add_run(
                 block.span.start,
@@ -631,6 +633,7 @@ fn block_kind(block: &ProjectedNode) -> &'static str {
         NodeKind::List => "list",
         NodeKind::Blockquote => "blockquote",
         NodeKind::CodeBlock => "code",
+        NodeKind::MermaidBlock => "mermaid",
         NodeKind::Html | NodeKind::Mdx => "isolated",
         NodeKind::Island => "island",
         NodeKind::MathBlock => "math",
@@ -1519,6 +1522,24 @@ mod tests {
         assert!(json.contains("\"codeMeta\":\"live\""));
         assert!(json.contains("\"semantic\":\"code-block\""));
         assert!(json.contains("wasm.project"));
+    }
+
+    #[test]
+    fn mermaid_json_preserves_source_ranges_and_code_fallback_runs() {
+        let source = "🦀\n\n```mermaid live\nflowchart LR\nA --> B\n```";
+        let json: serde_json::Value = serde_json::from_str(&project_to_json(source)).unwrap();
+        let block = &json["blocks"][1];
+        assert_eq!(block["kind"], "mermaid");
+        assert_eq!(block["codeLanguage"], "mermaid");
+        assert_eq!(block["codeMeta"], "live");
+        assert_eq!(block["text"], "flowchart LR\nA --> B");
+        assert_eq!(block["sourceSpanByte"][0], 6);
+        assert_eq!(block["sourceSpanUtf16"][0], 4);
+        assert!(json["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|run| { run["blockId"] == block["blockId"] && run["semantic"] == "code-block" }));
     }
 
     #[test]
