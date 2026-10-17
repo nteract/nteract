@@ -183,7 +183,7 @@ export class PagesStore {
     const { page_id } = await this.tool<{ page_id: string }>("create_page", {
       idempotency_key: this.creationKey,
       title: "Untitled",
-      block_units: [{ markdown: "Start with a thought." }],
+      block_units: [{ markdown: "Start with a thought.", format: "automerge-rich-text-v1" }],
     });
     if (epoch !== this.epoch) return;
     this.creationKey = null;

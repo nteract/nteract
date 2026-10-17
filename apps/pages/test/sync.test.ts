@@ -279,7 +279,7 @@ test("browser coalesces typing until its own durable receipt, not another peer's
   t.after(() => replica.dispose());
   await replica["control"]({
     type: "hello",
-    protocol: "nteract-pages-automerge-v1",
+    protocol: "nteract-pages-automerge-v3",
     flow_control: "durable-received",
     page_id: id,
     actor_prefix: await actorPrefix(principal),

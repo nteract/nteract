@@ -339,3 +339,33 @@ pnpm --dir apps/pages probe:storage
 The tests cover concurrent text merging, stale guards, atomic rollback, partial
 patches, Unicode, stable identity, idempotency, storage failure, HTTP call
 serialization, change cursors, workspace separation, and CSRF boundaries.
+
+## Realtime WYSIWYG spike
+
+The stacked editor branch mounts ProseMirror on the same browser PageReplica
+and `/api/sync` transport. New browser prose blocks use the versioned
+`automerge-rich-text-v1` representation. Existing Markdown blocks convert through
+the guarded `enable_rich_text` operation; instruction blocks keep their source
+editor. Stable block IDs and metadata are retained.
+
+Rich content lives in `richText` (Automerge marks and block markers). The old
+`markdown` field is immutable import provenance. HTTP snapshots export the rich
+field as Markdown; semantic Markdown tool edits update the rich field too.
+This avoids two independently editable copies. Unknown imported syntax stays
+opaque. The app advertises supported text formats and uses sync protocol v3,
+so older source-only clients stop at the handshake instead of corrupting rich
+content. Deployment must update the Worker and browser together.
+
+Presence uses bounded, ephemeral messages over the authenticated Page socket,
+with server-assigned session identity and CRDT cursor endpoints. It is not
+stored in the Page history. Peer selections expire after 30 seconds and only
+render once their causal heads are available. Current sharing remains limited
+to devices on the same account.
+
+The ProseMirror binding is pinned to 0.2.0, including its internal position-map
+helpers. A scoped remote-join repair is retained from the isolated fixture.
+Paragraphs within a Page block support range editing, formatting and undo;
+selection across Page blocks is deferred. Real-device IME and accessibility
+qualification remain outstanding. The Markdown parser dependency is pinned to
+14.2.0 because newer registry metadata requested an unavailable linkify-it
+version during installation; audit this pin before promoting the spike.

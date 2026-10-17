@@ -1,8 +1,9 @@
 import * as A from "@automerge/automerge/slim";
+import { RICH_FORMAT, isRich, validateRich } from "./richtext.mjs";
 import { checkSize, hash, validateJson, type Page } from "./document.ts";
 import { PageError, object, requireValue, text } from "./errors.ts";
 
-export const SYNC_PROTOCOL = "nteract-pages-automerge-v1";
+export const SYNC_PROTOCOL = "nteract-pages-automerge-v3";
 export const MAX_SYNC_BYTES = 2 * 1024 * 1024;
 
 // The account is admitted at ingress. Client suffixes distinguish replicas,
@@ -52,8 +53,8 @@ export function validatePage(doc: A.Doc<Page>, pageId: string): void {
     requireValue(/^[a-f0-9-]{36}$/.test(id), "invalid_page_schema", "Invalid block ID");
     noConflicts(blocks, [id]);
     const block = object(raw);
-    exactKeys(block, ["id", "kind", "markdown", "metadata"]);
-    noConflicts(block, ["id", "kind", "markdown", "metadata"]);
+    exactKeys(block, ["id", "kind", "markdown", "metadata", "format", "richText"]);
+    noConflicts(block, ["id", "kind", "markdown", "metadata", "format", "richText"]);
     requireValue(block.id === id, "invalid_page_schema", "Block identity cannot change");
     requireValue(
       block.kind === "markdown" || block.kind === "agent_instructions",
@@ -61,6 +62,16 @@ export function validatePage(doc: A.Doc<Page>, pageId: string): void {
       "Invalid block kind",
     );
     text(block.markdown, "markdown");
+    if (block.format !== undefined || block.richText !== undefined) {
+      requireValue(
+        block.format === RICH_FORMAT &&
+          block.kind === "markdown" &&
+          typeof block.richText === "string",
+        "invalid_page_schema",
+        "Invalid rich text representation",
+      );
+      validateRich(raw);
+    }
     validateJson(object(block.metadata));
     requireValue(
       new TextEncoder().encode(JSON.stringify(block.metadata)).length <= 8192,
@@ -109,6 +120,20 @@ export function receiveAdmitted(
       );
     }
     validatePage(next, doc.page_id);
+    for (const [id, prior] of Object.entries(doc.blocks)) {
+      const current = next.blocks[id];
+      if (current && isRich(prior))
+        requireValue(
+          isRich(current) && current.markdown === prior.markdown,
+          "invalid_page_schema",
+          "Rich text provenance cannot be edited; reopen with the current editor",
+        );
+      if (current && !isRich(prior) && isRich(current))
+        throw new PageError(
+          "invalid_page_schema",
+          "Convert existing blocks through enable_rich_text",
+        );
+    }
     return { doc: next, state: result[1], changed: changes.length > 0 };
   } catch (error) {
     A.free(next);

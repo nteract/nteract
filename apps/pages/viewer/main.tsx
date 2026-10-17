@@ -10,6 +10,9 @@ import { initializeMarkdown } from "./markdown";
 import { store } from "./store";
 import { openPageLink } from "./links";
 import { LiveEditor } from "./LiveEditor";
+import { RichEditor } from "./RichEditor";
+import { isRich } from "../src/richtext.mjs";
+import type { Snapshot } from "../src/document.ts";
 import "./style.css";
 function Markdown({ source }: { source: string }) {
   if (!source.trim()) return null;
@@ -55,6 +58,27 @@ function App() {
     } finally {
       setBusy(false);
     }
+  }
+  async function editBlock(id: string) {
+    const replica = store.replica;
+    if (!replica?.pageId) return;
+    if (replica.doc?.blocks[id]?.kind === "agent_instructions") {
+      setEditing(id);
+      return;
+    }
+    if (!replica.isSaved())
+      throw Error("Wait for current edits to save before converting this block");
+    const { content } = await store.tool<{ content: Snapshot }>("read_page", {
+      page_id: replica.pageId,
+    });
+    const block = content.blocks.find((b) => b.id === id);
+    if (!block) throw Error("Block was removed");
+    await store.tool("edit_page", {
+      page_id: replica.pageId,
+      base_sequence: content.through_sequence,
+      idempotency_key: crypto.randomUUID(),
+      operations: [{ op: "enable_rich_text", block_id: id, expected_hash: block.hash }],
+    });
   }
   const page = state.page,
     replica = store.replica;
@@ -113,7 +137,7 @@ function App() {
               to become something.
             </h1>
             <p>
-              Write in Markdown. Keep your documents with you.
+              Write together. Keep your documents with you.
               <br />
               Edit the same pages live across your devices.
             </p>
@@ -166,16 +190,27 @@ function App() {
                   className={`block ${b.kind === "agent_instructions" ? "instructions" : ""}`}
                   key={b.id}
                 >
-                  <div className="block-tools">
-                    {b.kind === "agent_instructions" && <span>Agent instructions</span>}
-                    <button
-                      disabled={!editable}
-                      onClick={() => setEditing(editing === b.id ? undefined : b.id)}
-                    >
-                      {editing === b.id ? "Done" : "Edit"}
-                    </button>
-                  </div>
-                  {editing === b.id && replica ? (
+                  {!isRich(b) && (
+                    <div className="block-tools">
+                      {b.kind === "agent_instructions" && <span>Agent instructions</span>}
+                      <button
+                        disabled={!editable}
+                        onClick={() =>
+                          editing === b.id ? setEditing(undefined) : void run(() => editBlock(b.id))
+                        }
+                      >
+                        {editing === b.id ? "Done" : "Edit"}
+                      </button>
+                    </div>
+                  )}
+                  {isRich(b) && replica?.doc?.blocks[b.id] ? (
+                    <RichEditor
+                      replica={replica}
+                      id={b.id}
+                      editable={editable}
+                      onError={setError}
+                    />
+                  ) : editing === b.id && replica ? (
                     <LiveEditor replica={replica} id={b.id} onError={setError} />
                   ) : (
                     <Markdown source={b.markdown} />
@@ -214,7 +249,7 @@ function App() {
               )}
               <LegacyDraft account={state.accountKey} />
               <div className="page-bottom">
-                Markdown, kept together.<span>Live across your devices</span>
+                Your words, kept together.<span>Live across your devices</span>
               </div>
             </article>
           </>

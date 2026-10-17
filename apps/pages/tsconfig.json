@@ -8,9 +8,23 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
     "esModuleInterop": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "baseUrl": "../..",
-    "paths": { "@/*": ["src/*"] }
+    "paths": {
+      "@/*": [
+        "src/*"
+      ]
+    },
+    "allowJs": true
   },
-  "include": ["src/**/*.ts", "viewer/**/*.ts", "viewer/**/*.tsx", "test/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "viewer/**/*.ts",
+    "viewer/**/*.tsx",
+    "test/**/*.ts"
+  ]
 }

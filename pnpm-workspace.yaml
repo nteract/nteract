@@ -38,6 +38,7 @@ catalog:
   vitest: npm:@voidzero-dev/vite-plus-test@0.1.16
   vite-plus: 0.1.16
 overrides:
+  'prosemirror-markdown>markdown-it': 14.2.0
   vite: 'catalog:'
   vitest: 'catalog:'
   '@codemirror/language': 6.12.2

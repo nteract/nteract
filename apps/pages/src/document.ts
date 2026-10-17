@@ -1,4 +1,13 @@
 import * as A from "@automerge/automerge/slim";
+import {
+  RICH_FORMAT,
+  isRich,
+  enableRich,
+  setRichMarkdown,
+  blockMarkdown,
+  projectedBlock,
+  richSize,
+} from "./richtext.mjs";
 import { PageError, object, requireValue, text } from "./errors.ts";
 
 export type Kind = "markdown" | "agent_instructions";
@@ -7,6 +16,8 @@ export interface Block {
   id: string;
   kind: Kind;
   markdown: string;
+  format?: "automerge-rich-text-v1";
+  richText?: string;
   metadata: { [key: string]: Json };
 }
 export type Page = {
@@ -49,7 +60,9 @@ export async function hash(value: string): Promise<string> {
   return Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 export function blockHash(block: Block): Promise<string> {
-  return hash(canonical([block.kind, block.markdown, block.metadata]));
+  return hash(
+    canonical([block.kind, blockMarkdown(block), block.metadata, block.format ?? "markdown"]),
+  );
 }
 function kind(value: unknown): Kind {
   requireValue(
@@ -90,7 +103,18 @@ export function validateJson(value: unknown, depth = 0): void {
 }
 export function block(value: unknown): Block {
   const unit = typeof value === "string" ? { markdown: value } : object(value);
+  requireValue(
+    unit.format === undefined || unit.format === RICH_FORMAT,
+    "invalid_page_schema",
+    "Unsupported text format",
+  );
+  requireValue(
+    unit.format === undefined || kind(unit.kind) === "markdown",
+    "invalid_page_schema",
+    "Instructions remain source text",
+  );
   return {
+    ...(unit.format === RICH_FORMAT ? { format: RICH_FORMAT, richText: "" } : {}),
     id: crypto.randomUUID(),
     kind: kind(unit.kind),
     markdown: text(unit.markdown, "markdown"),
@@ -109,7 +133,7 @@ export function createPage(
     "Provide up to 100 block_units",
   );
   const blocks = units.map(block);
-  const doc = A.from<Page>(
+  let doc = A.from<Page>(
     {
       schema_version: 2,
       page_id: pageId,
@@ -120,6 +144,9 @@ export function createPage(
     actor ? { actor } : undefined,
   );
   try {
+    doc = A.change(doc, (d) => {
+      for (const b of blocks) if (isRich(b)) setRichMarkdown(d, b.id, b.markdown);
+    });
     checkSize(doc);
     return doc;
   } catch (error) {
@@ -129,7 +156,10 @@ export function createPage(
 }
 export function checkSize(doc: A.Doc<Page>): void {
   requireValue(
-    doc.order.length <= 1000 && new TextEncoder().encode(JSON.stringify(doc)).length <= 1024 * 1024,
+    doc.order.length <= 1000 &&
+      new TextEncoder().encode(JSON.stringify(doc)).length +
+        Object.values(doc.blocks).reduce((total, b) => total + richSize(b), 0) <=
+        1024 * 1024,
     "page_limit_exceeded",
     "Page exceeds 1000 blocks or 1 MiB of content",
   );
@@ -142,7 +172,10 @@ export async function snapshot(doc: A.Doc<Page>, sequence: number): Promise<Snap
     title_hash: await hash(doc.title),
     through_sequence: sequence,
     blocks: await Promise.all(
-      doc.order.map(async (id) => ({ ...doc.blocks[id], hash: await blockHash(doc.blocks[id]) })),
+      doc.order.map(async (id) => ({
+        ...projectedBlock(doc.blocks[id]),
+        hash: await blockHash(doc.blocks[id]),
+      })),
     ),
   };
 }
@@ -317,7 +350,10 @@ export async function edit(
           );
           const blocks = units.map(block);
           next = A.change(next, (d) => {
-            for (const b of blocks) d.blocks[b.id] = b;
+            for (const b of blocks) {
+              d.blocks[b.id] = b;
+              if (isRich(b)) setRichMarkdown(d, b.id, b.markdown);
+            }
             d.order.splice(index, 0, ...blocks.map((b) => b.id));
           });
           created.push(...blocks.map((b) => b.id));
@@ -340,7 +376,10 @@ export async function edit(
           affected.push(b.id);
         } else {
           const b = await guarded(next, op);
-          if (op.op === "replace_block_markdown" || op.op === "patch_block_markdown") {
+          if (op.op === "enable_rich_text") {
+            next = A.change(next, (d) => enableRich(d, b.id));
+            affected.push(b.id);
+          } else if (op.op === "replace_block_markdown" || op.op === "patch_block_markdown") {
             requireValue(
               op.block_units === undefined,
               "unsupported_capability",
@@ -356,11 +395,18 @@ export async function edit(
             }
             const markdown =
               op.op === "patch_block_markdown"
-                ? patchText(b.markdown, op.replacements)
+                ? patchText(blockMarkdown(b), op.replacements)
                 : text(op.markdown, "markdown");
             const nextKind = op.block_kind === undefined ? b.kind : kind(op.block_kind);
             next = A.change(next, (d) => {
-              A.updateText(d, ["blocks", b.id, "markdown"], markdown);
+              if (isRich(b)) {
+                requireValue(
+                  nextKind === "markdown",
+                  "invalid_page_schema",
+                  "Rich prose cannot become instructions",
+                );
+                setRichMarkdown(d, b.id, markdown);
+              } else A.updateText(d, ["blocks", b.id, "markdown"], markdown);
               if (d.blocks[b.id].kind !== nextKind) d.blocks[b.id].kind = nextKind;
             });
             affected.push(b.id);

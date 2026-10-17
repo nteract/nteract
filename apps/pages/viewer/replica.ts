@@ -1,7 +1,10 @@
 import * as A from "@automerge/automerge/slim";
+import { RICH_FORMAT, isRich, projectedBlock, setRichMarkdown } from "../src/richtext.mjs";
 import { block, type Page, type Snapshot, type Kind } from "../src/document.ts";
 import { newActor, SYNC_PROTOCOL, validatePage, MAX_SYNC_BYTES } from "../src/sync.ts";
 import { clearPending, pendingReplicas, savePending, type PendingReplica } from "./journal.ts";
+
+import { presence, type Presence } from "../src/presence.ts";
 
 export type SyncStatus = "connecting" | "syncing" | "saved" | "offline" | "signed_out" | "rejected";
 export interface ReplicaUpdate {
@@ -85,6 +88,51 @@ export class PageReplica {
     this.scope = JSON.stringify([account, pageId]);
   }
 
+  readonly peers = new Map<string, { value: Presence; at: number }>();
+  private presenceObservers = new Set<() => void>();
+  private localPresence: Presence | null = null;
+  private presenceTimer: ReturnType<typeof setTimeout> | undefined;
+  watchPresence(fn: () => void) {
+    this.presenceObservers.add(fn);
+    return () => {
+      this.presenceObservers.delete(fn);
+    };
+  }
+  private paintPresence() {
+    for (const fn of this.presenceObservers) fn();
+  }
+  publishPresence(value: Presence | null) {
+    this.localPresence = value;
+    if (!this.presenceTimer)
+      this.presenceTimer = setTimeout(() => {
+        this.presenceTimer = undefined;
+        this.sendPresence();
+      }, 80);
+  }
+  private sendPresence() {
+    if (this.ready && this.socket?.readyState === WebSocket.OPEN)
+      this.socket.send(JSON.stringify({ type: "presence", value: this.localPresence }));
+  }
+  private composing = 0;
+  private resumeEditors = new Set<() => void>();
+  holdRemote() {
+    this.composing++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (--this.composing === 0) {
+        for (const resume of this.resumeEditors) resume();
+        this.resumeEditors.clear();
+      }
+    };
+  }
+  private waitForEditors() {
+    return this.composing
+      ? new Promise<void>((resolve) => this.resumeEditors.add(resolve))
+      : Promise.resolve();
+  }
+
   start() {
     void this.connect();
   }
@@ -120,6 +168,8 @@ export class PageReplica {
             else if (event.data instanceof ArrayBuffer) {
               if (!this.doc || event.data.byteLength > MAX_SYNC_BYTES)
                 throw Error("Invalid sync frame");
+              await this.waitForEditors();
+              if (this.socket !== socket || !this.active) return;
               this.willChange();
               [this.doc, this.sync] = A.receiveSyncMessage(
                 this.doc,
@@ -144,13 +194,18 @@ export class PageReplica {
         this.heartbeat = setInterval(() => {
           if (this.socket !== socket) return;
           if (Date.now() - this.receivedAt > 45000) socket.close(4000, "Reconnect");
-          else if (socket.readyState === WebSocket.OPEN) socket.send("ping");
+          else if (socket.readyState === WebSocket.OPEN) {
+            socket.send("ping");
+            this.sendPresence();
+          }
         }, 15000);
       };
       socket.onclose = (event) => {
         if (this.socket !== socket) return;
         clearInterval(this.heartbeat);
         this.socket = null;
+        this.peers.clear();
+        this.paintPresence();
         this.ready = false;
         if (!this.active || this.paused) return;
         if (event.code === 4008) {
@@ -208,6 +263,13 @@ export class PageReplica {
       this.status = "syncing";
       this.emit();
       this.schedule();
+    } else if (message.type === "presence") {
+      if (typeof message.session_id !== "string" || !/^[a-f0-9-]{36}$/.test(message.session_id))
+        throw Error("Invalid presence session");
+      const value = presence(message.value);
+      if (value) this.peers.set(message.session_id, { value, at: Date.now() });
+      else this.peers.delete(message.session_id);
+      this.paintPresence();
     } else if (message.type === "catalog") {
       if (Array.isArray(message.pages))
         this.catalog(message.pages as { page_id: string; title: string; updated_at: string }[]);
@@ -253,7 +315,7 @@ export class PageReplica {
           title_hash: "",
           through_sequence: this.sequence,
           blocks: doc.order.map((id) => ({
-            ...doc.blocks[id],
+            ...projectedBlock(doc.blocks[id]),
             metadata: JSON.parse(JSON.stringify(doc.blocks[id].metadata)),
             hash: "",
           })),
@@ -353,12 +415,18 @@ export class PageReplica {
     this.schedule();
   }
   text(id: string | null, source: string) {
+    if (id && isRich(this.doc?.blocks[id])) throw Error("Use the rich editor for this block");
     this.change((d) => A.updateText(d, id ? ["blocks", id, "markdown"] : ["title"], source));
   }
   add(kind: Kind) {
-    const value = block({ kind, markdown: "" });
+    const value = block({
+      kind,
+      markdown: "",
+      ...(kind === "markdown" ? { format: RICH_FORMAT } : {}),
+    });
     this.change((d) => {
       d.blocks[value.id] = value;
+      if (isRich(value)) setRichMarkdown(d, value.id, "");
       d.order.push(value.id);
     });
     return value.id;
@@ -374,6 +442,7 @@ export class PageReplica {
     this.active = false;
     this.paused = true;
     clearTimeout(this.timer);
+    clearTimeout(this.presenceTimer);
     clearInterval(this.heartbeat);
     clearTimeout(this.flushTimer);
     this.socket?.close(1000, "Reopening saved version");
@@ -412,6 +481,8 @@ export class PageReplica {
   }
   dispose() {
     this.active = false;
+    for (const resume of this.resumeEditors) resume();
+    this.resumeEditors.clear();
     clearTimeout(this.timer);
     clearInterval(this.heartbeat);
     clearTimeout(this.flushTimer);

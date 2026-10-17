@@ -15,7 +15,11 @@ import { readServerAppSession } from "../../notebook-cloud/src/oidc-session-stor
 import type { ServerOidcEnvironment } from "../../notebook-cloud/src/server-oidc.ts";
 import type { CloudflareWebSocket } from "../../notebook-cloud/src/cloudflare-types.ts";
 
+import { presence } from "./presence.ts";
+
 interface SyncPeer {
+  sessionId: string;
+  lastPresenceAt: number;
   socket: CloudflareWebSocket;
   principal: string;
   pageId: string | null;
@@ -84,10 +88,12 @@ export const CAPABILITIES = {
     "patch_page",
     "read_page_changes",
   ],
+  text_formats: ["markdown", "automerge-rich-text-v1"],
   block_kinds: ["markdown", "agent_instructions"],
   views: ["editing", "full"],
   streams: ["content"],
   edit_operations: [
+    "enable_rich_text",
     "set_title",
     "insert_markdown",
     "replace_block_markdown",
@@ -183,6 +189,8 @@ export class PagesWorkspace {
     }
     const pair = new WebSocketPair();
     const peer: SyncPeer = {
+      sessionId: crypto.randomUUID(),
+      lastPresenceAt: 0,
       socket: pair[1],
       principal,
       pageId,
@@ -205,6 +213,7 @@ export class PagesWorkspace {
         flow_control: "durable-received",
         page_id: pageId,
         actor_prefix: await actorPrefix(principal),
+        session_id: peer.sessionId,
       }),
     );
     await this.broadcast();
@@ -238,6 +247,17 @@ export class PagesWorkspace {
           peer.socket.send("pong");
           return;
         }
+        if (typeof data === "string" && peer.pageId) {
+          requireValue(data.length <= 8192, "invalid_presence", "Presence frame too large");
+          const message = JSON.parse(data);
+          requireValue(message.type === "presence", "invalid_presence", "Unknown control message");
+          const value = presence(message.value);
+          if (Date.now() - peer.lastPresenceAt >= 50 || value === null) {
+            peer.lastPresenceAt = Date.now();
+            await this.broadcastPresence(peer, value);
+          }
+          return;
+        }
         requireValue(
           peer.pageId && data instanceof ArrayBuffer,
           "invalid_sync",
@@ -264,12 +284,34 @@ export class PagesWorkspace {
     });
   }
 
+  private async broadcastPresence(peer: SyncPeer, value: ReturnType<typeof presence>) {
+    const payload = JSON.stringify({ type: "presence", session_id: peer.sessionId, value });
+    for (const recipient of this.peers) {
+      if (
+        recipient === peer ||
+        recipient.pageId !== peer.pageId ||
+        recipient.principal !== peer.principal
+      )
+        continue;
+      if (await this.authorized(recipient)) {
+        try {
+          recipient.socket.send(payload);
+        } catch {
+          this.peers.delete(recipient);
+        }
+      } else this.closePeer(recipient, 4001, "Sign in again");
+    }
+  }
+
   webSocketClose(socket: CloudflareWebSocket) {
     this.webSocketError(socket);
   }
   webSocketError(socket: CloudflareWebSocket) {
     const peer = [...this.peers].find((peer) => peer.socket === socket);
-    if (peer) this.peers.delete(peer);
+    if (peer) {
+      this.peers.delete(peer);
+      return this.broadcastPresence(peer, null);
+    }
   }
 
   /** Caller holds the workspace queue, shared by HTTP and WebSocket writes. */
