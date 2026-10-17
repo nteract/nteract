@@ -202,7 +202,7 @@ provides a generated-content research fixture. Build its pinned source with
 `npm ci && npm test && npm run build` in `experiments/pages-editor`, then set
 `PAGES_EDITOR_WORKBENCH_DIST` to that build's absolute `dist` path when running
 the Pages build. The three static files are mounted at
-`/editor-spike/index.html`, with the main service's CSP. Only those named files
+`/editor-spike/preview.htm`, with the main service's CSP. Only those named files
 are copied; source maps, local state, and source checkouts are excluded. A build
 without the variable removes this optional generated directory.
 

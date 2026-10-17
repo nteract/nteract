@@ -73,7 +73,7 @@ if (workbench) {
       "<strong>Local research fixture.</strong>",
       "<strong>Research workbench — changes stay in this browser and reset on reload.</strong>",
     );
-  await writeFile(path.join(workbenchTarget, "index.html"), html);
+  await writeFile(path.join(workbenchTarget, "preview.htm"), html);
 }
 await writeFile(
   path.join(app, "dist/wrangler.json"),
