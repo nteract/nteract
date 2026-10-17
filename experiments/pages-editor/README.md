@@ -107,3 +107,97 @@ The detailed checkout evidence and integration questions live in this worktree's
 `.context/pages-editor-research.md`. No code was copied from the Pages branch or
 modified in its reference worktree. Its uncommitted state was evolving during
 this experiment, so its deployment/API must be rechecked before integration.
+
+## Wordgard and the document boundary
+
+The product clarification is that Pages should offer WYSIWYG editing and may
+use Markdown only at export. Its editable storage does not need to be Markdown.
+This experiment owns editor and binding research; the Pages implementation owns
+service integration and deployment. Notebook Markdown requirements remain a
+separate consumer of shared parsing/rendering capabilities.
+
+Evaluate three choices independently:
+
+| Choice | What we gain | What we still own |
+| --- | --- | --- |
+| Adopt Wordgard's editor and built-in collaboration | Browser input, document model, history and versioned change protocol | A deliberate replacement or separation of the existing Automerge collaboration authority; this is not a drop-in binding |
+| Adopt Wordgard's editor with an Automerge binding | Browser input and rendering, while keeping app document and sync ownership | Transaction/patch translation, schema semantics, cursor mapping, selective undo, presence, and merge repair policy |
+| Learn from Wordgard and extend our crates/renderer | Control over shared projection and edit contracts | Input, selection navigation, IME, clipboard, accessibility and browser maintenance if we also replace the editor |
+
+The second is the leading hypothesis to test against the ProseMirror fixture.
+This updates the earlier source-versus-rich comparison above; it is a research
+direction, not an adoption decision. Learning from Wordgard's transaction and
+rendering design can proceed under either outcome.
+
+### Source findings
+
+Inspected upstream commit `ece17b815ac0263f2f9efb967fa938eefa2ff4b9` on
+2026-10-17; its package manifest says 0.6.0. This is source inspection, not a
+claim about the current npm release or a tested dependency in this fixture.
+
+- `ChangeSet.iterChanges` exposes replaced token ranges and preserved ranges
+  with mark modifications. `mapPos` carries affinity and optional deletion
+  tracking. This is a concrete adapter boundary, but its positions count editor
+  tokens; they are not automatically Automerge text offsets or stable cursors.
+- `Wordgard.dispatch` applies transaction appenders, updates state, notifies
+  transaction listeners, and defers DOM work. A binding must consume all emitted
+  transactions in order, including appended ones, and handle mutation failure;
+  observing an edit does not make it atomic with CRDT mutation.
+- The collaboration module keeps a server-confirmed version and rebases pending
+  changes against a central authority. Using its editor does not require using
+  that protocol. An Automerge binding should not run two independent merge
+  authorities over the same document.
+- Corrections enforce schema constraints locally but skip remote transactions.
+  The built-in collaboration protocol integrates them explicitly. An Automerge
+  adapter must define deterministic projection/repair behavior for merged
+  structure; simply setting the remote annotation is insufficient.
+- History maps earlier events through transactions marked `addToHistory=false`.
+  Remote origin and history inclusion are separate annotations. Peer-preserving
+  undo must be qualified through our binding rather than inferred from that API.
+- Wordgard handles selection movement and draws the caret itself. Its input
+  source still contains composition and Safari-specific handling. These are
+  substantial capabilities to adopt or maintain, not benefits Rust parsing
+  provides automatically.
+
+### Binding experiment and decision gates
+
+Keep stable Page block identity, kind and metadata outside editor-specific
+objects. First compare the editors over the same supported Automerge rich-text
+schema and generated fixture. Native marks and block markers are a starting
+point; nested structures and split/join behavior still need explicit semantics.
+Storing a whole editor JSON snapshot in Automerge would not establish useful
+character-level or structural merging.
+
+The binding should translate local replacement/format/structure transactions
+into scoped Automerge operations, turn remote patches into incremental editor
+transactions without echo, and map editor selections to stable CRDT positions.
+Presence remains ephemeral application/session state; the editor provides its
+visual representation. Agent edits should mutate the same document model.
+Markdown parsing and export become adapters over this model, with explicit
+handling for unsupported syntax and metadata.
+
+Use a shared conformance corpus for ProseMirror and Wordgard: concurrent text
+and formatting-boundary edits; nested list split/join versus peer insertion;
+local undo after remote changes; deleted selection/comment anchors; reordered
+and delayed delivery; save/load and reconnect; and exact projection agreement
+once replicas converge. Cross-Page-block replacement needs a later document-wide
+transaction and undo contract. Qualify real iOS/Android composition, selection,
+clipboard and accessibility separately from headless transaction tests.
+
+The useful Rust work should follow behavior proven by that corpus: shared
+schema validation, edit/patch receipts, projection identity and position mapping,
+plus Markdown import/export. Keep DOM geometry and browser composition in the
+browser adapter. Notebook Markdown can remain source-native while Pages is rich;
+share semantic projection capabilities where they fit rather than forcing one
+storage representation onto both.
+
+Sources:
+
+- [Wordgard differences from ProseMirror](https://wordgard.net/docs/prosemirror/)
+- [Pinned change model](https://code.haverbeke.berlin/wordgard/wordgard/src/commit/ece17b815ac0263f2f9efb967fa938eefa2ff4b9/src/doc/change.ts)
+- [Pinned editor dispatch and listeners](https://code.haverbeke.berlin/wordgard/wordgard/src/commit/ece17b815ac0263f2f9efb967fa938eefa2ff4b9/src/editor/editor.ts)
+- [Pinned corrections](https://code.haverbeke.berlin/wordgard/wordgard/src/commit/ece17b815ac0263f2f9efb967fa938eefa2ff4b9/src/state/correction.ts)
+- [Pinned collaboration](https://code.haverbeke.berlin/wordgard/wordgard/src/commit/ece17b815ac0263f2f9efb967fa938eefa2ff4b9/src/collab/collab.ts)
+- [Pinned history](https://code.haverbeke.berlin/wordgard/wordgard/src/commit/ece17b815ac0263f2f9efb967fa938eefa2ff4b9/src/history/history.ts)
+
+No Wordgard binding or browser fixture has been implemented or qualified yet.
