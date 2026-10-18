@@ -1,8 +1,10 @@
 # Authenticated Automerge integration spike
 
 Disposable research fixture for adding nteract account authorization to upstream
-Repo 3/Subduction. It is not a deployable service or a replacement for Pages or
-the notebook room host. No production dependency or document format changes.
+Repo 3/Subduction. The root fixture is not a replacement for the notebook room
+host. The nested [native Pages prototype](pages/README.md) exercises the same
+pinned backend in a separately deployable celld service. Neither changes the
+production notebook dependency or document format.
 
 The [infrastructure memo](../README.md)
 and [document-contract memo](../../extensible-automerge-document-contracts.md)
