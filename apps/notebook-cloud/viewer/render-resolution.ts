@@ -46,6 +46,16 @@ export function createOutputResolutionCache(): OutputResolutionCache {
   return new Map();
 }
 
+/** Reuse a successful shared-store resolution on later full materializations. */
+export function cacheOutputResolution(
+  cache: OutputResolutionCache,
+  raw: unknown,
+  resolved: JupyterOutput,
+): void {
+  const key = outputResolutionCacheKey(raw);
+  if (key) setOutputResolutionCacheEntry(cache, key, resolved);
+}
+
 export async function resolveCell(
   cell: RenderCell,
   blobResolver: BlobResolver,

@@ -7,6 +7,7 @@ import {
   type BlobResolver,
   type CellChangeset,
   type CommChanges,
+  type ExecutionViewSnapshot,
 } from "runtimed";
 import {
   getCellIdsSnapshot,
@@ -22,6 +23,7 @@ import {
   applyExecutionViewChangeset,
   applyOutputChangeset,
 } from "@/components/notebook/state/runtime-store-projection";
+import { getOutputById } from "@/components/notebook/state/output-store";
 import {
   cloudConnectionErrorAcceptsAccessDiagnostic,
   cloudConnectionErrorWithAccessDiagnostic,
@@ -41,7 +43,7 @@ import {
   type CloudSyncAuth,
 } from "./collaborator-auth";
 import { useCloudAuthStore } from "./cloud-auth-context";
-import { materializeCloudNotebookView } from "./cloud-view-model";
+import { materializeCloudNotebookView, readCloudNotebookView } from "./cloud-view-model";
 import { cloudPresenceFromControl, normalizeCloudPresencePayload } from "./live-presence";
 import {
   CloudConnectionStatusBridge,
@@ -97,7 +99,12 @@ import {
   resetNotebookProjectionUnlessPreserved,
 } from "@/components/notebook/state/projection-lifecycle";
 import { CloudViewerPresenceStore } from "./presence";
-import { createOutputResolutionCache, type ResolvedCell } from "./render-resolution";
+import {
+  cacheOutputResolution,
+  createOutputResolutionCache,
+  resolveCellSync,
+  type ResolvedCell,
+} from "./render-resolution";
 import { loadRenderSnapshotHandle, loadSnapshotPairHandle } from "./runtimed-wasm-client";
 import { isRuntimedWasmAssetFailure } from "./runtimed-wasm-failure";
 import { subscribeSerializedCloudCellChanges } from "./serialized-cell-changes";
@@ -682,9 +689,6 @@ export function useCloudViewerSession({
     let disposed = false;
     let subscriptions: Array<{ unsubscribe: () => void }> = [];
     let materializeSequence = 0;
-    // Full bootstrap/fallback materialization captures cells before awaiting
-    // blobs. Incremental projections may advance while those blobs load.
-    let liveProjectionRevision = 0;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let pendingTransport: CloudWebSocketTransport | null = null;
     // Recoverable sync rejections on the CURRENT connection (reset on each
@@ -1027,85 +1031,105 @@ export function useCloudViewerSession({
 
     const materializeLiveCells = async (liveRuntime: CloudSyncRuntime): Promise<void> => {
       const sequence = ++materializeSequence;
-      const revision = liveProjectionRevision;
-      const snapshotIsCurrent = () =>
-        !disposed && sequence === materializeSequence && revision === liveProjectionRevision;
+      const isCurrent = () => !disposed && sequence === materializeSequence;
       const previousNotebookLanguage = notebookLanguageRef.current;
       const rawCellCount = liveRuntime.handle.cell_count();
       if (rawCellCount === 0 && !mayShowEmptyLiveNotebook(liveRuntime)) {
         return;
       }
-      // Warm loads: a painted notebook is already on screen as 'ready';
-      // the live pass replaces it in place, so don't demote the status to
-      // a 'loading' notice over fully visible content.
       const paintedContentShowing = paintOriginRef.current && materializedCellCount() > 0;
-      const materialized = await materializeCloudNotebookView(liveRuntime.handle, {
+      const snapshot = readCloudNotebookView(liveRuntime.handle, {
         blobResolver,
         defaultNotebookLanguage: previousNotebookLanguage ?? "python",
-        outputResolutionCache,
-        callbacks: {
-          shouldContinue: snapshotIsCurrent,
-          onInitialCells(syncCells) {
-            if (syncCells.length === 0) return;
-            liveMaterializedRef.current = true;
-            paintOriginRef.current = false;
-            markCloudViewerLoadMilestone("live-initial-cells");
-            preloadSiftWasm(syncCells);
-            applyResolvedCells(syncCells);
-            if (!paintedContentShowing) {
-              setStatus({
-                kind: "loading",
-                message: `Rendering ${syncCells.length} live cells while resolving output payloads...`,
-              });
-            }
-          },
-          onCellResolved(resolvedCell, _index, progressiveCells) {
-            if (progressiveCells.length === 0) return;
-            liveMaterializedRef.current = true;
-            paintOriginRef.current = false;
-            preloadSiftWasm([resolvedCell]);
-            applyResolvedCells(progressiveCells);
-          },
-        },
       });
-      if (materialized.rawCellCount === 0) {
-        if (!mayShowEmptyLiveNotebook(liveRuntime)) {
-          return;
+      const syncCells = snapshot.rawCells.map((cell, index) =>
+        resolveCellSync(
+          cell,
+          blobResolver,
+          index,
+          snapshot.notebookLanguage,
+          outputResolutionCache,
+        ),
+      );
+      // Cells and pointers are projected only in this synchronous turn. Blob
+      // completions write individual outputs through the shared generation
+      // guards; they never replay captured source, order, or execution pointers.
+      applyResolvedCells(syncCells);
+      preloadSiftWasm(syncCells);
+      if (syncCells.length > 0) {
+        markCloudViewerLoadMilestone("live-initial-cells");
+        if (!paintedContentShowing) {
+          setStatus({
+            kind: "loading",
+            message: `Rendering ${syncCells.length} live cells while resolving output payloads...`,
+          });
         }
       }
-      if (disposed || sequence !== materializeSequence) return;
-      // Only restart an already-pending full pass. Normal live updates stay on
-      // the changeset path, and resolved blobs remain reusable in the cache.
-      if (revision !== liveProjectionRevision) return materializeLiveCells(liveRuntime);
-      notebookLanguageRef.current = materialized.notebookLanguage;
+      liveMaterializedRef.current = true;
+      paintOriginRef.current = false;
+      notebookLanguageRef.current = snapshot.notebookLanguage;
       metadataStore.refresh(liveRuntime.handle);
       applyExecutionViewChangeset(liveRuntime.handle.project_execution_view_changeset?.());
-
-      await projectCloudWidgetComms(
+      // Bootstrap frames may have reached WASM before the viewer subscribed.
+      // Seed the authoritative summaries even when the WASM diff is now empty.
+      const executionUpserts: Array<[string, ExecutionViewSnapshot]> = [];
+      for (const cell of syncCells) {
+        if (!cell.executionId) continue;
+        const execution = liveRuntime.handle.get_execution_by_id(cell.executionId) as
+          | ExecutionViewSnapshot
+          | undefined;
+        if (execution) executionUpserts.push([cell.executionId, execution]);
+      }
+      applyExecutionViewChangeset({ execution_upserts: executionUpserts });
+      const outputs: Array<[string, unknown]> = [];
+      const outputCells = new Map<string, ResolvedCell>();
+      const rawOutputs = new Map<string, unknown>();
+      for (const [index, cell] of snapshot.rawCells.entries()) {
+        if (!Array.isArray(cell.outputs)) continue;
+        const resolvedOutputs = new Map(
+          syncCells[index].outputs.map((output) => [output.output_id, output]),
+        );
+        for (const raw of cell.outputs) {
+          if (typeof raw !== "object" || raw === null || typeof raw.output_id !== "string")
+            continue;
+          outputs.push([raw.output_id, resolvedOutputs.get(raw.output_id) ?? raw]);
+          rawOutputs.set(raw.output_id, raw);
+          outputCells.set(raw.output_id, syncCells[index]);
+        }
+      }
+      const outputResolution = applyOutputChangeset(outputs, [], {
+        blobResolver,
+        logger: { warn: (message, ...details) => console.warn(message, ...details) },
+        onOutputApplied: (outputId) => {
+          if (!isCurrent()) return;
+          const output = getOutputById(outputId);
+          const cell = outputCells.get(outputId);
+          if (output)
+            cacheOutputResolution(outputResolutionCache, rawOutputs.get(outputId), output);
+          if (output && cell) preloadSiftWasm([{ ...cell, outputs: [output] }]);
+        },
+      });
+      const widgetResolution = projectCloudWidgetComms(
         widgetStore,
-        materialized.widgetComms,
+        snapshot.widgetComms,
         projectedWidgetCommIdsRef,
         {
           isAllowedBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
-          shouldContinue: snapshotIsCurrent,
+          shouldContinue: isCurrent,
         },
       );
-      if (disposed || sequence !== materializeSequence) return;
-      if (revision !== liveProjectionRevision) return materializeLiveCells(liveRuntime);
-      liveMaterializedRef.current = true;
-      paintOriginRef.current = false;
-      const resolvedCells = materialized.cells;
-      preloadSiftWasm(resolvedCells);
-      applyResolvedCells(resolvedCells);
+      await Promise.all([outputResolution, widgetResolution]);
+      if (!isCurrent()) return;
+      const currentCellCount = materializedCellCount();
       setStatus(
-        resolvedCells.length === 0
+        currentCellCount === 0
           ? { kind: "empty", message: "This notebook room has no cells yet." }
           : {
               kind: "ready",
-              message: `Rendering ${resolvedCells.length} cells from the live notebook room.`,
+              message: `Rendering ${currentCellCount} cells from the live notebook room.`,
             },
       );
-      if (resolvedCells.length > 0) {
+      if (currentCellCount > 0) {
         markCloudViewerLoadMilestone("live-ready");
       }
     };
@@ -1491,11 +1515,6 @@ export function useCloudViewerSession({
           liveRuntime.engine.presence$.subscribe((payload) => {
             emitPresence(normalizeCloudPresencePayload(payload));
           }),
-          // Invalidate at emission, before the serialized cell projection can
-          // wait behind another materialization.
-          liveRuntime.engine.cellChanges$.subscribe(() => {
-            liveProjectionRevision += 1;
-          }),
           subscribeSerializedCloudCellChanges({
             cellChanges$: liveRuntime.engine.cellChanges$,
             materializeChangeset: (changeset) => materializeLiveChangeset(changeset, liveRuntime),
@@ -1507,24 +1526,27 @@ export function useCloudViewerSession({
           // deduplicated workstation$ projection (useWorkstationAttachment);
           // no per-host shadow state.
           liveRuntime.engine.runtimeState$.subscribe((state) => {
-            liveProjectionRevision += 1;
             setRuntimeState(state);
           }),
           liveRuntime.engine.executionViewChanges$.subscribe((changeset) => {
-            liveProjectionRevision += 1;
             applyExecutionViewChangeset(changeset);
           }),
           liveRuntime.engine.outputIdChanges$.subscribe(({ changed, removed_ids }) => {
-            liveProjectionRevision += 1;
+            const rawOutputs = new Map(changed);
             void applyOutputChangeset(changed, removed_ids, {
               blobResolver,
               logger: { warn: (message, ...details) => console.warn(message, ...details) },
+              onOutputApplied: (outputId) => {
+                if (disposed || liveRuntimeRef.current !== liveRuntime) return;
+                const output = getOutputById(outputId);
+                if (output)
+                  cacheOutputResolution(outputResolutionCache, rawOutputs.get(outputId), output);
+              },
             }).catch((error: unknown) => {
               console.warn("[notebook-cloud] output store projection failed", error);
             });
           }),
           liveRuntime.engine.commChanges$.subscribe((changes) => {
-            liveProjectionRevision += 1;
             recordCloudWidgetCommChangesDiagnostic(liveRuntime, changes);
             applyWidgetCommChangesToStore(widgetStore, changes, {
               shouldSuppressEcho: (commId, state) =>
@@ -1567,7 +1589,6 @@ export function useCloudViewerSession({
           // mutation echoes discounted by the offline-merge tracker.
           liveRuntime.engine.notebookDocChanged$.subscribe(() => {
             if (disposed || liveRuntimeRef.current !== liveRuntime) return;
-            liveProjectionRevision += 1;
             metadataStore.refresh(liveRuntime.handle);
             offlineMergeTracker.noteLocalDocActivity();
           }),
