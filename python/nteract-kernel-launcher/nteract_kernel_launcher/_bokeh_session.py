@@ -136,6 +136,21 @@ def _combine_patches(patches: Sequence[BokehSerialization]) -> BokehSerializatio
     )
 
 
+def _defined_model_ids(patch: dict[str, Any]) -> set[str]:
+    """Models the client already knows, including nested Bokeh definitions."""
+    model_ids: set[str] = set()
+    pending: list[Any] = [patch]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            if value.get("type") == "object" and isinstance(value.get("id"), str):
+                model_ids.add(value["id"])
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return model_ids
+
+
 def _current_io_loop() -> Any:
     """The kernel's IOLoop, which runs Bokeh session callbacks."""
     import asyncio
@@ -200,6 +215,7 @@ class BokehDocumentSession:
         self._revision = 0
         self._active_setter: str | None = None
         self._transaction_patches: list[BokehSerialization] = []
+        self._transaction_client_models: set[str] = set()
         self._queued_server_events: list[BokehServerEvent] = []
         self._pending_patches: list[BokehSerialization] = []
         self._flush_scheduled = False
@@ -259,6 +275,7 @@ class BokehDocumentSession:
             base_revision = self._revision
 
             setter = f"nteract:{self.session_id}:{transaction_id}"
+            self._transaction_client_models = _defined_model_ids(patch)
             self._active_setter = setter
             self._transaction_patches = []
             serialized_patch: Any = patch
@@ -272,6 +289,7 @@ class BokehDocumentSession:
                 self.document.apply_json_patch(serialized_patch, setter=setter)
             except Exception as exc:
                 self._active_setter = None
+                self._transaction_client_models = set()
                 self._transaction_patches = []
                 base_revision = self._revision
                 self._revision += 1
@@ -296,6 +314,7 @@ class BokehDocumentSession:
 
             derived_patches = self._transaction_patches
             self._active_setter = None
+            self._transaction_client_models = set()
             self._transaction_patches = []
             self._revision += 1
             derived = _combine_patches(derived_patches)
@@ -332,6 +351,7 @@ class BokehDocumentSession:
             self._closed = True
             self._event_sink = None
             self._queued_server_events = []
+            self._transaction_client_models = set()
             self._transaction_patches = []
             self._pending_patches = []
             cleanup = self._cleanup
@@ -418,10 +438,15 @@ class BokehDocumentSession:
         if self._event_transform is not None:
             self._event_transform(patch_events)
 
-        serializer = Serializer(
-            references=self.document.models.synced_references,
-            deferred=True,
-        )
+        references = self.document.models.synced_references
+        # Bokeh marks client-created models synced only after apply_json_patch
+        # returns. Callbacks run before then, but must already reference these
+        # models by ID; redefining them can replay streamed data twice in JS.
+        for model_id in self._transaction_client_models:
+            model = self.document.get_model_by_id(model_id)
+            if model is not None:
+                references.add(model)
+        serializer = Serializer(references=references, deferred=True)
         serialized = _serialize_bokeh_value(
             Serialized(
                 content={"events": serializer.encode(patch_events)},

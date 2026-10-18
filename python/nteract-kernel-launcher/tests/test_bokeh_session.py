@@ -578,6 +578,81 @@ def test_new_models_replay_streams_once(nested, binary, transaction):
     asyncio.run(change_and_replay())
 
 
+@pytest.mark.parametrize("nested", [False, True], ids=["root", "property"])
+@pytest.mark.parametrize("binary", [False, True], ids=["lists", "buffers"])
+def test_callback_references_client_created_models_without_redefining_them(nested, binary):
+    pytest.importorskip("bokeh")
+    from bokeh.core.serialization import Serialized, Serializer
+    from bokeh.document import Document
+    from bokeh.models import ColumnDataSource, CustomJS
+    from nteract_kernel_launcher._bokeh_session import _serialize_bokeh_value
+
+    np = pytest.importorskip("numpy")
+    document = Document()
+    holder = CustomJS(code="")
+    trigger = CustomJS(code="")
+    document.add_root(holder)
+    document.add_root(trigger)
+    session = BokehDocumentSession(
+        document, document.roots, producer_name="test", producer_version="0"
+    )
+    source = ColumnDataSource(data={"x": np.array([1, 2], dtype="float64") if binary else [1, 2]})
+
+    def stream_and_reference(model):
+        model.stream({"x": np.array([3], dtype="float64") if binary else [3]})
+        holder.args = {"source": model}
+
+    if nested:
+        trigger.on_change("args", lambda attr, old, new: stream_and_reference(new["source"]))
+    else:
+
+        def on_root(event):
+            if event.kind == "RootAdded" and event.model.id == source.id:
+                stream_and_reference(event.model)
+
+        document.on_change(on_root)
+
+    try:
+        session.snapshot()
+        serializer = Serializer(deferred=True)
+        if nested:
+            client_event = {
+                "kind": "ModelChanged",
+                "model": {"id": trigger.id},
+                "attr": "args",
+                "new": serializer.encode({"source": source}),
+            }
+        else:
+            client_event = {"kind": "RootAdded", "model": serializer.encode(source)}
+        client = _serialize_bokeh_value(
+            Serialized(content={"events": [client_event]}, buffers=serializer.buffers)
+        )
+        result = session.apply_patch(
+            base_revision=0,
+            transaction_id="client-source",
+            patch=client.content,
+            buffers=client.buffers,
+        )
+        assert result.derived is not None
+        stream, reference = result.derived.content["events"]
+        assert stream["kind"] == "ColumnsStreamed"
+        # BokehJS decodes every definition before applying any event. Redefining
+        # this client model with its already-streamed data would append the row twice.
+        assert reference["new"]["entries"] == [["source", {"id": source.id}]]
+        assert list(holder.args["source"].data["x"]) == [1, 2, 3]
+        assert len(result.derived.buffers) == (1 if binary else 0)
+        [event] = session.pop_server_events()
+        assert (event.transaction_id, event.base_revision, event.revision) == (
+            "client-source",
+            0,
+            1,
+        )
+        assert event.client_patch is not None
+        assert event.client_patch.buffers == client.buffers
+    finally:
+        session.close()
+
+
 @pytest.mark.parametrize("failure", ["callback", "serialization"])
 def test_failed_transaction_discards_partial_patches_and_recovers(failure):
     pytest.importorskip("bokeh")
