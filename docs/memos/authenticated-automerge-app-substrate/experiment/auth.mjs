@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-/** Find the production verifier without baking in .context versus experiments. */
+/** Find the production verifier without fixing the fixture's repository depth. */
 function defaultIdentityModuleUrl() {
   let directory = dirname(fileURLToPath(import.meta.url));
   while (true) {

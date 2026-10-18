@@ -20,7 +20,7 @@ peers (`crates/automerge-store/tests/{version_compat,author_compat}.rs`). They d
 not establish compatibility for every deployed document or old nteract's
 admission/projection behavior with new opaque actors.
 
-The [authenticated application infrastructure research](authenticated-automerge-app-substrate.md)
+The [authenticated application infrastructure research](authenticated-automerge-app-substrate/README.md)
 evaluates experimental Repo 3 and Subduction policy hooks before another
 repository extraction or engine fork. This research does not change the
 production dependency baseline. Owning matching WASM packaging and bindings is

@@ -4,8 +4,8 @@ Disposable research fixture for adding nteract account authorization to upstream
 Repo 3/Subduction. It is not a deployable service or a replacement for Pages or
 the notebook room host. No production dependency or document format changes.
 
-The [infrastructure memo](../../docs/memos/authenticated-automerge-app-substrate.md)
-and [document-contract memo](../../docs/memos/extensible-automerge-document-contracts.md)
+The [infrastructure memo](../README.md)
+and [document-contract memo](../../extensible-automerge-document-contracts.md)
 describe the research questions. [UPSTREAM.md](UPSTREAM.md) records the pinned
 source, adapter patch, runtime evidence, and integration limits.
 

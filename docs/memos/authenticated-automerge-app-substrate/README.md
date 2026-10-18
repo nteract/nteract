@@ -12,7 +12,7 @@ repository implementation.
 
 This work is independent of the [Pages prototype PR](https://github.com/nteract/nteract/pull/4451).
 Pages is a useful consumer and comparison point, not a required dependency of
-the shared infrastructure. [Extensible document contracts](extensible-automerge-document-contracts.md)
+the shared infrastructure. [Extensible document contracts](../extensible-automerge-document-contracts.md)
 describes the separate question of what applications may store and edit.
 
 ## What the source evaluation established
@@ -62,9 +62,9 @@ than production's OIDC/API-key fallback mapping. Existing ACL principal strings
 need explicit compatibility mapping before adoption. Neither a document URL, an
 email/display name, a client-supplied driver label,
 nor a valid signing key alone grants access. This follows the existing
-[identity](../adr/identity-and-trust.md),
-[credential transport](../adr/hosted-credential-transport.md), and
-[room authorization](../adr/hosted-room-authorization.md) contracts.
+[identity](../../adr/identity-and-trust.md),
+[credential transport](../../adr/hosted-credential-transport.md), and
+[room authorization](../../adr/hosted-room-authorization.md) contracts.
 
 The spike needs an explicit binding between a verified principal and each
 admitted signing key, with resource scope and expiry/revocation behavior.
@@ -109,7 +109,7 @@ between independent WASM instances.
 
 celld, a Durable Object, and a native relay are hosting choices. S3/R2 are storage
 choices. Neither choice establishes acknowledgment semantics. Preserve the local
-daemon's [acknowledged-head recovery contract](../adr/automerge-document-storage.md),
+daemon's [acknowledged-head recovery contract](../../adr/automerge-document-storage.md),
 and document the exact guarantee of each hosted adapter separately. The existing
 `automerge-store` contract is a useful reference; its presence is not proof that
 production room paths already use that implementation.
@@ -127,8 +127,9 @@ Automerge diff. The RxJS sync engine emits attribution events before coalescing
 materialization work. The editor applies the text first, then decorates inserted
 ranges and maps those ranges through later edits. Preserve that ordering and the
 separation between precise text events and coalesced cell invalidations. Current
-attribution attaches the incoming batch's actor set to each patch; it does not
-establish individual authorship for each range in a mixed-author batch.
+attribution attaches the incoming batch's actor set to each patch. That is
+sufficient for this visual affordance; exact per-range or per-character
+authorship in mixed-author batches is not an adoption requirement.
 
 Pinned Repo 3 supplies patches and before/after documents, but
 [Document.applyMutation](https://github.com/automerge/automerge-repo/blob/afec0444191a5a662e065f24193bef58ab07122a/packages/automerge-repo/src/Document.ts#L87-L115)
@@ -156,8 +157,9 @@ The next editor fixture must demonstrate:
 - Local echoes, initial load, live remote edits, and reconnect catch-up follow
   deliberate display rules. Observation preserves causal frontiers even when no
   visible patch exists; coalescing must not silently erase required edit events.
-- Account and driver labels come from trusted provenance. Mixed-author batches
-  expose ambiguity instead of attributing every patch to the sending connection.
+- Account and driver labels come from trusted identity context. Batch-level
+  attribution is sufficient for illumination; a mixed-author batch may use a
+  combined or neutral visual cue. Authorization is enforced independently.
 
 Keep the existing Rust/WASM and RxJS/editor path as the baseline. Full Repo
 adoption would need an explicit event adapter; reuse of only the lower backend
@@ -167,7 +169,7 @@ document solely to reconstruct observations we already have.
 
 ## Bounded spike and evidence
 
-The initial [runnable spike](../../experiments/authenticated-automerge/README.md)
+The initial [runnable spike](experiment/README.md)
 now passes a clean pinned build and 19 tests on Node 24.22. Published Subduction
 0.23.0 already has the policy interfaces: the tested Repo adapter patch forwards
 `policy` and `ephemeralPolicy` without changing WASM or the wire protocol. This

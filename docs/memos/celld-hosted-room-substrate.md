@@ -16,7 +16,7 @@ Related:
 - [Deployment Topology](../adr/deployment-topology.md) — Decision 1 names
   Cloudflare as the current hosted document engine and points at
   `aws-rust-room-host.md` as the only proposed alternative.
-- [Authenticated Automerge application infrastructure](authenticated-automerge-app-substrate.md)
+- [Authenticated Automerge application infrastructure](authenticated-automerge-app-substrate/README.md)
   explores reusable synchronization and account authorization independently
   of the host runtime choice. It does not qualify Subduction on celld or
   change the promotion gates below.

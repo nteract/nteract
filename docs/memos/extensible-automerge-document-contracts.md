@@ -6,7 +6,7 @@ change is established by this memo.
 Applications should be able to share authenticated synchronization without
 sharing a universal notebook or Page schema. Typed tools can provide good editor
 and agent APIs while preserving content introduced by tools they do not know.
-The [infrastructure spike](authenticated-automerge-app-substrate.md) evaluates
+The [infrastructure spike](authenticated-automerge-app-substrate/README.md) evaluates
 that separation against upstream Repo 3 and Subduction.
 
 Two questions remain independent: **who may read or write this document**, and
@@ -163,7 +163,7 @@ newer schema version or discard unknown data merely to mount an older editor.
 | Unauthorized runtime writes | Ordinary writer rejected by native role gate; actual RuntimeStateDoc field validation remains untested |
 | Comments and revoked presence | Live presence revocation passed; comment authorship and anchor integration remain untested |
 
-The [spike](../../experiments/authenticated-automerge/README.md) tests small
+The [spike](authenticated-automerge-app-substrate/experiment/README.md) tests small
 representative documents. Complete the remaining fixtures
 before changing Pages or notebook admission. Results should distinguish fixture
 proof, real editor behavior, and deployment behavior. A later ADR can record a

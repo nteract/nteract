@@ -3,7 +3,7 @@
     "baseUrl": ".",
     "paths": {
       "runtimed": [
-        "../../packages/runtimed/src/scope-capabilities.ts"
+        "../../../../packages/runtimed/src/scope-capabilities.ts"
       ]
     }
   }

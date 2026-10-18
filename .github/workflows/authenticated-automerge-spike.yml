@@ -3,7 +3,7 @@ name: Authenticated Automerge spike
 on:
   pull_request:
     paths:
-      - experiments/authenticated-automerge/**
+      - docs/memos/authenticated-automerge-app-substrate/experiment/**
       - apps/notebook-cloud/src/identity.ts
       - apps/notebook-cloud/src/auth-shared.ts
       - apps/notebook-cloud/src/loopback.ts
@@ -14,7 +14,7 @@ on:
   push:
     branches: [main]
     paths:
-      - experiments/authenticated-automerge/**
+      - docs/memos/authenticated-automerge-app-substrate/experiment/**
       - apps/notebook-cloud/src/identity.ts
       - apps/notebook-cloud/src/auth-shared.ts
       - apps/notebook-cloud/src/loopback.ts
@@ -38,13 +38,13 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: experiments/authenticated-automerge
+        working-directory: docs/memos/authenticated-automerge-app-substrate/experiment
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           sparse-checkout: |
-            experiments/authenticated-automerge
+            docs/memos/authenticated-automerge-app-substrate/experiment
             apps/notebook-cloud/src
             packages/runtimed/src
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
