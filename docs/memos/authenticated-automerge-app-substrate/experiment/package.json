@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "upstream/packages/*"
+    "upstream/packages/*",
+    "pages"
   ],
   "dependencies": {
     "@automerge/automerge": "3.5.0",

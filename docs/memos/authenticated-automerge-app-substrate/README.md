@@ -1,7 +1,9 @@
 # Authenticated Automerge infrastructure for applications
 
-**Status:** Research proposal, 2026-10-17. The integration spike is authorized;
-adoption, production deployment, and dependency changes remain undecided.
+**Status:** Research and isolated application prototype, 2026-10-18. The
+integration fixture is merged. A separately deployable
+[native Pages experiment](experiment/pages/README.md) now tests the editor and
+authenticated backend on celld. Production notebook adoption remains undecided.
 
 We want another application to reuse document loading, synchronization,
 persistence, presence, and authenticated attribution without rebuilding our

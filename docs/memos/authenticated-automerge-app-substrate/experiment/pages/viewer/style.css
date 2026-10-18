@@ -1,0 +1,338 @@
+:root {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  color: #252b29;
+  background: #f9f9f5;
+  font-synthesis: none;
+  font-size: 16px;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input,
+textarea {
+  font: inherit;
+}
+button,
+a {
+  touch-action: manipulation;
+}
+button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.35rem;
+  cursor: pointer;
+}
+button:hover {
+  background: #e9eee8;
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+a {
+  color: inherit;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #dfe3dc;
+  padding: 0.9rem 1.4rem;
+}
+.brand {
+  font:
+    1.6rem Georgia,
+    serif;
+  text-decoration: none;
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  font-size: 0.85rem;
+  color: #59655d;
+}
+.primary {
+  background: #315c47;
+  color: white;
+  text-decoration: none;
+  padding: 0.6rem 0.9rem;
+  border-radius: 0.35rem;
+}
+.primary:hover {
+  background: #244b38;
+}
+.page-list {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.8rem 1.4rem;
+  overflow: auto;
+  border-bottom: 1px solid #e4e6e0;
+  white-space: nowrap;
+}
+.page-list [aria-current="page"] {
+  background: #e5ece4;
+}
+.welcome {
+  padding: 5rem 1.5rem;
+  max-width: 800px;
+  margin: auto;
+}
+.welcome h1 {
+  font:
+    2.4rem Georgia,
+    serif;
+}
+.document {
+  display: flex;
+  gap: 2.5rem;
+  max-width: 1160px;
+  margin: 2rem auto;
+  padding: 0 1.5rem 6rem;
+}
+.document article {
+  min-width: 0;
+  max-width: 760px;
+  flex: 1;
+  margin: auto;
+}
+.with-comments article {
+  margin: 0;
+}
+.document-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #647368;
+  font-size: 0.8rem;
+}
+.title {
+  width: 100%;
+  border: 0;
+  background: none;
+  font:
+    2.5rem Georgia,
+    serif;
+  margin: 1rem 0 1.7rem;
+  outline: none;
+  color: inherit;
+}
+.toolbar-host {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f9f9f5;
+  border-bottom: 1px solid #dfe3dc;
+  min-height: 46px;
+}
+.rich-toolbar {
+  display: flex;
+  gap: 0.15rem;
+  overflow-x: auto;
+  white-space: nowrap;
+  font-size: 0.85rem;
+  padding: 0.15rem 0;
+}
+.ProseMirror {
+  outline: 0;
+  line-height: 1.75;
+  padding: 0.75rem 0;
+  min-height: 64px;
+  overflow-wrap: anywhere;
+}
+.ProseMirror p {
+  margin: 0.7rem 0;
+}
+.ProseMirror pre,
+.opaque pre {
+  background: #eef0e9;
+  padding: 0.8rem;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+.ProseMirror code {
+  font-size: 0.9em;
+}
+.ProseMirror img {
+  max-width: 100%;
+}
+.ProseMirror h1,
+.ProseMirror h2,
+.ProseMirror h3 {
+  line-height: 1.3;
+}
+.page-block {
+  position: relative;
+  border-bottom: 1px solid transparent;
+}
+.comment-block {
+  display: block;
+  margin-left: auto;
+  color: #73816f;
+  font-size: 0.78rem;
+  padding: 0.25rem 0.5rem;
+}
+.add-block {
+  margin-top: 1.5rem;
+  color: #647368;
+}
+.comments {
+  width: 285px;
+  flex-shrink: 0;
+  align-self: flex-start;
+  position: sticky;
+  top: 1rem;
+  font-size: 0.85rem;
+}
+.comments-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.comments h2 {
+  font-size: 1rem;
+}
+.comments textarea {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  border: 1px solid #d5ddd4;
+  background: white;
+  border-radius: 0.3rem;
+  padding: 0.5rem;
+  margin: 0.5rem 0;
+}
+.thread {
+  border-top: 1px solid #dce1d9;
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+.message p {
+  white-space: pre-wrap;
+  margin: 0.4rem 0 1rem;
+}
+.quote {
+  display: block;
+  border-left: 2px solid #d6bc71;
+  text-align: left;
+  border-radius: 0;
+  padding: 0.3rem 0.6rem;
+  max-height: 100px;
+  overflow: auto;
+  margin-bottom: 0.8rem;
+}
+.resolved {
+  opacity: 0.6;
+}
+.muted {
+  color: #778176;
+}
+.error {
+  background: #f6e7de;
+  color: #874731;
+  padding: 0.7rem 1rem;
+  white-space: pre-wrap;
+}
+.peer-caret {
+  position: relative;
+  border-left: 2px solid #8161aa;
+  pointer-events: none;
+}
+.peer-caret > span {
+  position: absolute;
+  bottom: 100%;
+  left: -2px;
+  background: #8161aa;
+  color: white;
+  font: 11px system-ui;
+  padding: 2px 4px;
+  white-space: nowrap;
+  border-radius: 2px;
+}
+.peer-selection {
+  background: #8263ac2b;
+}
+.remote-edit {
+  border-bottom: 2px solid #b9914b;
+  animation: illumination 2s ease-out;
+}
+.comment-passage {
+  background: #e9d69535;
+  border-bottom: 1px solid #d6bc71;
+}
+.comment-passage-active {
+  background: #e9d69588;
+}
+.opaque small {
+  color: #7d836f;
+}
+@keyframes illumination {
+  from {
+    background: #f2d39377;
+  }
+  to {
+    background: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .remote-edit {
+    animation: none;
+  }
+}
+@media (max-width: 800px) {
+  header {
+    padding: 0.8rem 1rem;
+  }
+  .header-actions > span {
+    display: none;
+  }
+  .page-list {
+    padding: 0.7rem 1rem;
+  }
+  .document {
+    display: block;
+    margin: 1rem auto;
+    padding: 0 1rem 4rem;
+  }
+  .title {
+    font-size: 2rem;
+    margin: 1rem 0;
+  }
+  .comments {
+    position: relative;
+    width: 100%;
+    margin-top: 2rem;
+    border-top: 1px solid #d5ddd4;
+    padding-top: 0.75rem;
+  }
+  .with-comments article {
+    margin: auto;
+  }
+  .rich-toolbar button {
+    padding: 0.6rem 0.55rem;
+  }
+  .ProseMirror {
+    font-size: 1.05rem;
+  }
+  .comment-block {
+    padding: 0.4rem;
+  }
+  .document-meta button {
+    padding: 0.5rem;
+  }
+  .toolbar-host {
+    top: 0;
+  }
+}
+
+.peer-caret > span {
+  max-width: calc(100vw - 2rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
