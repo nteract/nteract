@@ -1,8 +1,9 @@
 # Standalone Pages on celld
 
 **Status:** Realtime CRDT prototype plus proposed direction, 2026-10-17.
-Live comments are implemented in private Pages. WYSIWYG, sharing, presence,
-and incremental persistence remain planned.
+Private Pages implement rich editing, live comments, named presence, transient
+change illumination, and scoped agent operations. Sharing and incremental
+persistence remain planned.
 
 ## Purpose and deployment boundary
 
@@ -33,20 +34,23 @@ Parser node IDs are rendering details, not persisted block identities.
 The HTTP tool API implements a subset of Spaces-shaped reads, guarded edits,
 literal patches, idempotency receipts, and sequence-based change reads.
 Structural batches are atomic; literal patch batches report partial results.
-The browser edits a real Automerge replica through CodeMirror and exchanges
+The browser edits a real Automerge replica through ProseMirror (rich blocks)
+or CodeMirror (source blocks) and exchanges
 binary sync messages with the workspace over WebSocket. There is no content
 polling or explicit save. HTTP tool changes broadcast to the same live replicas.
 IndexedDB retains pending changes for reconnect/reopening; durable-head controls
 distinguish acknowledged work from local edits. Server handlers use celld's
 WebSocket output gate and recheck endpoint sessions before writes and broadcasts.
 See the [README](../../apps/pages/README.md#storage-and-identity) for admission,
-recovery, and durability limits. This is neither a drop-in Spaces connector nor
-an MCP server. Comments use that same document and sync stream. Execution,
+recovery, and durability limits. This is a Spaces-shaped subset, not a drop-in
+Spaces connector. A local stdio MCP adapter and TypeScript SDK expose its guarded
+operations. Comments use that same document and sync stream. Execution,
 sharing, and offline app loading are absent.
 
 Server-login mode admits endpoint-local sessions and rejects raw provider
 tokens, matching notebook-cloud's isolation for a shared OAuth client.
-Independent agent credentials scoped to Pages remain future work. A separate
+Independent agent credentials are approved through an endpoint session and
+bound to one Page, its account, operations, and an expiry. A separate
 bearer-only installation requires explicit `PAGES_ALLOW_PROVIDER_BEARER=true`
 and must not reuse that shared client. Missing configuration never enables
 provider-bearer access, and server-login mode always rejects it.
@@ -184,7 +188,8 @@ hash guards, idempotency, explicit commit outcomes, and capability discovery.
 | Adapter | Proposed purpose |
 | --- | --- |
 | HTTP | Reads, bounded mutations, retries, and automation without an open editor |
-| WebSocket | Implemented: binary Automerge sync and durable-head acknowledgments. Live comments use the same CRDT stream. Planned: presence |
+| WebSocket | Binary Automerge sync, durable-head acknowledgments, comments and presence for browsers; sequence-based semantic events for agents |
+| TypeScript / stdio MCP | Guarded reads, edits and comments, plus live Page resource subscriptions |
 | WebMCP | Tools exposed by the signed-in page, calling the same operation client as the UI |
 
 WebMCP exposes browser-side JavaScript tools; it is not a backend sync protocol.
@@ -246,12 +251,50 @@ per-character authorship; deletions do not manufacture an inserted-text range.
 Current private-account peers share one color and account name.
 
 Keep the authenticated principal separate from the driver: Kyle Kelley can edit
-through mobile, a browser, or ChatGPT acting on his behalf. A future API should
-bind the driver to its admitted credential/session and associate it with change
-actors; arbitrary browser metadata must not claim verified agent identity.
-Driver context describes how edits were made and grants no extra permissions.
-Until that binding exists, browser edits made by an assistant under Kyle's
-session correctly show Kyle's name. Unknown historical actors remain unknown.
+through mobile, a browser, or ChatGPT acting on his behalf. The API binds
+the approved driver to its credential and server-issued change actor. Browser
+edits made by an assistant under Kyle's session still show Kyle's name. Driver
+context grants no extra permissions. Unknown historical actors remain unknown.
+
+### Scoped agent access
+
+The first integration is a TypeScript client plus a local stdio MCP adapter,
+not a native Node binding or hosted MCP authorization server. Browser clients
+retain full Automerge replicas; agents express guarded semantic operations
+and subscribe to durable changes. Both use the same document mutation layer.
+
+A CLI generates an opaque 256-bit credential and opens an approval request
+containing only its SHA-256 hash. The signed-in user approves one existing Page,
+read/edit/comment permissions, a client-supplied driver name, and an expiry
+(default one hour, maximum eight). D1 stores the hash and grant, bound to the
+service origin, OIDC issuer/client, and principal. The raw credential stays in a
+new owner-only local file. This bootstrap is service-specific, not a claim of
+OAuth or remote-MCP compatibility. A future hosted adapter needs its own
+standards-compliant authorization flow.
+
+Authorization runs at HTTP ingress and again inside the serialized workspace
+operation. Event sockets recheck scope and expiry on input and before output;
+revoking a grant asks the workspace to close invalid subscribers immediately.
+Page discovery, creation and cross-Page operations are outside a grant's scope.
+Shared-space membership must later further restrict grants, never be bypassed
+by them. Sign-out leaves explicitly granted connections active until expiry or
+revocation.
+
+Agent operations use a server-only actor namespace disjoint from browser UUID-v4
+actors, including before the agent's first edit. An immutable actor-to-driver
+registry is persisted beside the document, receipts and sequence. Raw sync cannot
+claim those actors or mutate the registry. Receipts and change events carry the
+operation ID and authenticated account/approved driver attribution; browsers
+receive author mappings before sync frames so recent-edit illumination can
+resolve them. The label is user-approved context, not verified vendor identity.
+
+The Node client never automatically retries mutations. Preserve the original
+idempotency key after an uncertain outcome, inspect partial patch results, and
+reread on stale guards. Its event socket uses an Authorization header, never a
+credential in a URL, resumes from the last sequence and stops on revocation.
+The server emits an initial catch-up and then only new committed sequences;
+ordinary reads must not emit resource updates and create a notification loop.
+MCP keeps explicit Page IDs on every tool call and exposes only permitted tools.
 
 Reuse nteract's separation between text-patch events and temporary editor
 decorations: see [text-attribution.ts](../../src/components/editor/text-attribution.ts)

@@ -1,3 +1,4 @@
+import { AgentConnections } from "./AgentConnections";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import * as A from "@automerge/automerge/slim";
@@ -159,6 +160,7 @@ function App() {
             </nav>
             <footer>
               <span>{state.name}</span>
+              <a href="/?connections=1">Connections</a>
               <button disabled={busy} onClick={() => void run(() => store.signOut())}>
                 Sign out
               </button>
@@ -367,7 +369,16 @@ Promise.all([
     await A.initializeWasm(new Uint8Array(await response.arrayBuffer()));
   }),
 ])
-  .then(() => createRoot(document.getElementById("root")!).render(<App />))
+  .then(() =>
+    createRoot(document.getElementById("root")!).render(
+      new URL(location.href).searchParams.has("connect") ||
+        new URL(location.href).searchParams.has("connections") ? (
+        <AgentConnections />
+      ) : (
+        <App />
+      ),
+    ),
+  )
   .catch((error) => {
     document.getElementById("root")!.textContent = String(error);
   });

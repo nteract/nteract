@@ -1,3 +1,4 @@
+import { readAgentGrant, authorizeAgentOperation, manageAgentAccess } from "./agent-access.ts";
 import {
   beginServerOidcLogin,
   completeServerOidcLogin,
@@ -13,7 +14,7 @@ import { authenticateOidcRequest, AuthError } from "../../notebook-cloud/src/ide
 import type { DurableObjectNamespace } from "../../notebook-cloud/src/cloudflare-types.ts";
 import { createLocalOidcIssuer } from "@nteract/local-oidc";
 import { CAPABILITIES } from "./workspace.ts";
-import { PageError, json, requireValue } from "./errors.ts";
+import { PageError, json, readBody, requireValue } from "./errors.ts";
 import { hash } from "./document.ts";
 export { PagesWorkspace } from "./workspace.ts";
 
@@ -84,6 +85,68 @@ export default {
           headers: response.headers,
         });
       }
+      if (url.pathname === "/api/agent") {
+        requireValue(request.method === "GET", "method_not_allowed", "Use GET");
+        const grant = await readAgentGrant(env, request);
+        if (!grant)
+          throw new PageError("unauthorized", "Connection is missing, expired or revoked", 401);
+        return json({ connection: grant });
+      }
+      if (url.pathname === "/api/agent-connections") {
+        if (request.method !== "GET") assertSameOrigin(request, env);
+        return await manageAgentAccess(
+          request,
+          env,
+          async (principal, pageId) => {
+            const stub = env.PAGES_WORKSPACES.get(env.PAGES_WORKSPACES.idFromName(principal));
+            const result = await stub.fetch(
+              new Request("https://pages.internal/tools", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "x-pages-principal": principal },
+                body: JSON.stringify({
+                  operation: "read_page",
+                  arguments: { page_id: pageId, include_content: false },
+                }),
+              }),
+            );
+            if (!result.ok) throw new PageError("not_found", "Page not found in your account", 404);
+          },
+          async (principal) => {
+            const stub = env.PAGES_WORKSPACES.get(env.PAGES_WORKSPACES.idFromName(principal));
+            await stub.fetch(
+              new Request("https://pages.internal/recheck", {
+                method: "POST",
+                headers: { "x-pages-principal": principal },
+              }),
+            );
+          },
+        );
+      }
+      if (url.pathname === "/api/events") {
+        requireValue(
+          request.method === "GET" && request.headers.get("Upgrade")?.toLowerCase() === "websocket",
+          "invalid_request",
+          "Use a WebSocket upgrade",
+        );
+        if (request.headers.has("Origin")) assertSameOrigin(request, env);
+        const grant = await readAgentGrant(env, request);
+        if (!grant)
+          throw new PageError("unauthorized", "Connection is missing, expired or revoked", 401);
+        authorizeAgentOperation(grant, {
+          operation: "read_page",
+          arguments: { page_id: url.searchParams.get("page") },
+        });
+        const stub = env.PAGES_WORKSPACES.get(env.PAGES_WORKSPACES.idFromName(grant.principal));
+        return stub.fetch(
+          new Request("https://pages.internal/events" + url.search, {
+            headers: {
+              Upgrade: "websocket",
+              "x-pages-principal": grant.principal,
+              Authorization: request.headers.get("Authorization")!,
+            },
+          }),
+        );
+      }
       if (url.pathname === "/api/capabilities") return json(CAPABILITIES);
       if (url.pathname === "/api/sync") {
         assertSameOrigin(request, env);
@@ -108,6 +171,24 @@ export default {
       if (url.pathname === "/api/tools") {
         requireValue(request.method === "POST", "method_not_allowed", "Use POST");
         let principal: string;
+        const grant = await readAgentGrant(env, request);
+        if (grant) {
+          if (request.headers.has("Origin")) assertSameOrigin(request, env);
+          const body = await readBody(request);
+          authorizeAgentOperation(grant, body);
+          const stub = env.PAGES_WORKSPACES.get(env.PAGES_WORKSPACES.idFromName(grant.principal));
+          return stub.fetch(
+            new Request("https://pages.internal/tools", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "x-pages-principal": grant.principal,
+                Authorization: request.headers.get("Authorization")!,
+              },
+              body: JSON.stringify(body),
+            }),
+          );
+        }
         if (request.headers.has("Authorization")) {
           // Shared OAuth clients issue tokens usable at multiple endpoints.
           // Match notebook-cloud: server-login deployments admit only their

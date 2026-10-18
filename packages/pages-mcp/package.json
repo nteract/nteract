@@ -1,0 +1,29 @@
+{
+  "name": "@nteract/pages-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "pages-mcp": "./dist/cli.js",
+    "pages-connect": "./dist/connect.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:integration": "node test/integration.mjs"
+  },
+  "dependencies": {
+    "@nteract/pages-client": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "~5.8.3"
+  }
+}

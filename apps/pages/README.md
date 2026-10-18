@@ -16,8 +16,8 @@ permissions, with Pages inheriting access from their space. Private account
 workspaces are the current prototype behavior; sharing is not yet enabled.
 The complete product target is a collaboratively editable realtime document
 with live threaded comments, following the notebook experience. Explicit saves
-and polling do not satisfy that target. The WYSIWYG spike is separate work,
-intended to integrate with this service's shared documents and comments.
+and polling do not satisfy that target. The integrated WYSIWYG editor edits
+the same shared documents; its separate workbench remains available for research.
 
 ## Run locally
 
@@ -47,15 +47,51 @@ reconnect, and session revocation.
 rebuild if you want to retain local Pages. The dev session secret is generated
 in ignored `dist/.dev.vars`, retained on restart, and never sent to the browser.
 
+## Connect an agent
+
+Build the TypeScript SDK and stdio MCP adapter from the repository root:
+
+```sh
+pnpm --dir packages/pages-client build
+pnpm --dir packages/pages-mcp build
+node packages/pages-mcp/dist/connect.js https://m.runtimed.run page_<id> ChatGPT /absolute/private/connection.json
+```
+
+Open the printed approval URL in your signed-in browser. Check the Page, client
+name, permissions, and expiry before approving. The URL contains a token hash,
+not the credential. The CLI waits for approval and creates a new owner-only
+connection file; it never overwrites an existing file. Keep that file out of Git.
+Then configure the harness to run `node /absolute/repo/packages/pages-mcp/dist/cli.js`
+with `PAGES_CONNECTION_FILE=/absolute/private/connection.json` in its environment.
+See [the MCP package](../../packages/pages-mcp/README.md) for a configuration example.
+
+This first adapter runs locally over stdio. It is not a remotely hosted MCP OAuth
+endpoint. No browser cookie or Anaconda token is copied into the harness.
+Connections can be revoked at `/?connections=1`; sign-out does not revoke them.
+The client-supplied driver name is a label approved by the account holder, not
+proof of a particular model or vendor. The service binds it to the admitted
+credential and records edits as, for example, “ChatGPT · on behalf of Kyle Kelley.”
+Agents perform guarded semantic edits and comments, not synthetic keystrokes or
+raw Automerge writes. All admitted edits update the same live document.
+
+The [TypeScript client](../../packages/pages-client/README.md) provides the same
+operations without MCP. Its WebSocket event subscription resumes by sequence;
+MCP exposes it through Page resource subscriptions. Content is not polled.
+With the local celld server running, `pnpm --dir packages/pages-mcp test:integration`
+checks approval, scoped calls, actual stdio MCP, live notifications, and revocation
+using generated local fixtures. It does not access production accounts.
+
 ## Storage and identity
 
 The service reuses nteract's server OIDC and session implementation directly
 from `apps/notebook-cloud/src`. It does not fork the auth protocol or copy
 tokens into browser storage. Server-login deployments (the default) accept only
-their own session cookie with same-origin checks, and reject raw provider tokens.
+their own session cookie with same-origin checks or a scoped Pages agent
+credential, and reject raw provider tokens.
 This prevents a token issued through a shared OAuth client on another endpoint
-from directly accessing Pages. Agent credentials scoped to Pages are not yet
-implemented. Dedicated bearer-only installations must explicitly set
+from directly accessing Pages. Agent credentials are approved for one Page,
+read/edit/comment permissions, and an expiry of at most eight hours.
+Dedicated bearer-only installations must explicitly set
 `PAGES_ALLOW_PROVIDER_BEARER=true`, omit `NOTEBOOK_CLOUD_OIDC_FLOW=server`,
 and send an OIDC access token in
 `Authorization: Bearer …`; do not use that mode with the shared preview client.
@@ -83,12 +119,14 @@ A storage exception returns `commit_status: unknown`, because an acknowledged
 write and a failed reply are different things. Fleet bucket durability remains
 the operator's celld configuration; local dev proves local restart recovery.
 
-The browser owns an Automerge replica and edits it directly through CodeMirror.
+The browser owns an Automerge replica and edits rich blocks through ProseMirror,
+with CodeMirror available for Markdown source blocks.
 `/api/sync?page=<id>` exchanges binary Automerge sync messages over WebSocket;
 there is no content polling or manual save. Tool edits and browser edits update
 the same document. Text changes preserve CRDT identity, remote selections use
 Automerge cursors, and remote transactions are excluded from local undo history.
-This is a Markdown source editor; WYSIWYG and cross-block selection remain separate work.
+Rich blocks retain their Automerge text and expose Markdown projections to tools.
+Cross-block behavior and native mobile composition need further qualification.
 
 The handshake requires a same-origin, endpoint-local session cookie. Every
 incoming change must carry the admitted account's actor prefix; random suffixes

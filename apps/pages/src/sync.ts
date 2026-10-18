@@ -117,9 +117,12 @@ export function receiveAdmitted(
     for (const change of changes) {
       const actor = A.decodeChange(change).actor;
       requireValue(
-        actor.length === 64 && actor.startsWith(prefix) && /^[a-f0-9]+$/.test(actor),
+        actor.length === 64 &&
+          actor.startsWith(prefix) &&
+          /^[a-f0-9]+$/.test(actor) &&
+          actor[44] === "4",
         "forbidden_actor",
-        "Change actor does not belong to the admitted account",
+        "Change actor must be a browser replica of the admitted account; agent actors are server-only",
       );
     }
     validatePage(next, doc.page_id);

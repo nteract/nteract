@@ -96,9 +96,12 @@ export class PageReplica {
   }
 
   readonly peers = new Map<string, { value: Presence; at: number; displayName: string | null }>();
+  private agentAuthors: Record<string, { display_name: string; driver: string }> = {};
   private accountActorPrefix: string | null = null;
   private accountDisplayName: string | null = null;
   actorDisplayName(actor: string): string {
+    const agent = this.agentAuthors[actor];
+    if (agent) return `${agent.driver} · on behalf of ${agent.display_name || "your account"}`;
     return this.accountActorPrefix && actor.startsWith(this.accountActorPrefix)
       ? this.accountDisplayName || "Another session"
       : "Unknown author";
@@ -279,6 +282,26 @@ export class PageReplica {
       this.status = "syncing";
       this.emit();
       this.schedule();
+    } else if (message.type === "authors") {
+      if (
+        message.authors &&
+        typeof message.authors === "object" &&
+        !Array.isArray(message.authors)
+      ) {
+        this.agentAuthors = Object.fromEntries(
+          Object.entries(message.authors).filter(([actor, raw]) => {
+            const a = raw as Record<string, unknown>;
+            return (
+              /^[a-f0-9]{64}$/.test(actor) &&
+              a &&
+              typeof a.display_name === "string" &&
+              typeof a.driver === "string" &&
+              a.display_name.length <= 160 &&
+              a.driver.length <= 80
+            );
+          }),
+        ) as Record<string, { display_name: string; driver: string }>;
+      }
     } else if (message.type === "presence") {
       if (typeof message.session_id !== "string" || !/^[a-f0-9-]{36}$/.test(message.session_id))
         throw Error("Invalid presence session");

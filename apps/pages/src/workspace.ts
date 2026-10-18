@@ -1,3 +1,9 @@
+import {
+  readAgentGrant,
+  authorizeAgentOperation,
+  agentActorId,
+  type AgentGrant,
+} from "./agent-access.ts";
 import * as A from "@automerge/automerge/slim";
 import {
   canonical,
@@ -25,7 +31,15 @@ import type { CloudflareWebSocket } from "../../notebook-cloud/src/cloudflare-ty
 
 import { presence, presenceDisplayName } from "./presence.ts";
 
+export interface AgentAuthor {
+  display_name: string;
+  driver: string;
+  driver_id: string;
+}
 interface SyncPeer {
+  eventsOnly: boolean;
+  lastSequence: number;
+  sentInitialEvent: boolean;
   sessionId: string;
   lastPresenceAt: number;
   socket: CloudflareWebSocket;
@@ -47,8 +61,11 @@ interface Change {
   deleted_block_ids: string[];
   title_changed: boolean;
   comments_changed?: boolean;
+  operation_id?: string;
+  attribution?: AgentAuthor;
 }
 interface Saved {
+  authors?: Record<string, AgentAuthor>;
   bytes: Uint8Array;
   sequence: number;
   events: Change[];
@@ -124,6 +141,17 @@ export const CAPABILITIES = {
     retained_receipts: 128,
   },
   sync: { protocol: SYNC_PROTOCOL, transport: "websocket", endpoint: "/api/sync" },
+  agent_access: {
+    approval_endpoint: "/api/agent-connections",
+    scope: "single_page",
+    permissions: ["read", "edit", "comment"],
+    max_lifetime_seconds: 28800,
+    events: {
+      protocol: "nteract-pages-events-v1",
+      transport: "websocket",
+      endpoint: "/api/events",
+    },
+  },
   comments: {
     actions: COMMENT_ACTIONS,
     targets: ["block", "selection"],
@@ -212,6 +240,15 @@ export class PagesWorkspace {
 
   private async authorized(peer: SyncPeer): Promise<boolean> {
     if (!this.env) return false;
+    if (peer.eventsOnly) {
+      const grant = await readAgentGrant(this.env, peer.request);
+      return (
+        !!grant &&
+        grant.principal === peer.principal &&
+        grant.page_id === peer.pageId &&
+        grant.permissions.includes("read")
+      );
+    }
     const session = await readServerAppSession(
       this.env,
       peer.request,
@@ -249,8 +286,18 @@ export class PagesWorkspace {
       requireValue(await this.state.storage.get(pageId), "not_found", "Page not found");
       await this.ensureComments(pageId, principal);
     }
+    const eventsOnly = new URL(request.url).pathname === "/events";
+    const since = Number(new URL(request.url).searchParams.get("since") ?? 0);
+    requireValue(
+      Number.isSafeInteger(since) && since >= 0,
+      "invalid_request",
+      "Invalid change cursor",
+    );
     const pair = new WebSocketPair();
     const peer: SyncPeer = {
+      eventsOnly,
+      lastSequence: eventsOnly ? since : 0,
+      sentInitialEvent: false,
       sessionId: crypto.randomUUID(),
       lastPresenceAt: 0,
       socket: pair[1],
@@ -272,7 +319,7 @@ export class PagesWorkspace {
     peer.socket.send(
       JSON.stringify({
         type: "hello",
-        protocol: SYNC_PROTOCOL,
+        protocol: eventsOnly ? "nteract-pages-events-v1" : SYNC_PROTOCOL,
         flow_control: "durable-received",
         page_id: pageId,
         actor_prefix: await actorPrefix(principal),
@@ -311,6 +358,7 @@ export class PagesWorkspace {
           peer.socket.send("pong");
           return;
         }
+        requireValue(!peer.eventsOnly, "invalid_request", "Event subscriptions accept ping only");
         if (typeof data === "string" && peer.pageId) {
           requireValue(data.length <= 8192, "invalid_presence", "Presence frame too large");
           const message = JSON.parse(data);
@@ -357,6 +405,7 @@ export class PagesWorkspace {
     });
     for (const recipient of this.peers) {
       if (
+        recipient.eventsOnly ||
         recipient === peer ||
         recipient.pageId !== peer.pageId ||
         recipient.principal !== peer.principal
@@ -399,6 +448,12 @@ export class PagesWorkspace {
       const received = receiveAdmitted(doc, state, message, await actorPrefix(principal));
       try {
         if (received.changed) {
+          for (const change of A.getChangesMetaSince(received.doc, A.getHeads(doc)))
+            requireValue(
+              !Object.hasOwn(saved.authors ?? {}, change.actor),
+              "forbidden_actor",
+              "Agent actors can only write through their authorized operations",
+            );
           const before = await snapshot(doc, saved.sequence);
           const after = await snapshot(received.doc, saved.sequence + 1);
           const hashes = new Map(before.blocks.map((b) => [b.id, b.hash]));
@@ -447,6 +502,7 @@ export class PagesWorkspace {
     state: A.SyncState;
     message: Uint8Array | null;
     heads: string[];
+    authors: Record<string, AgentAuthor>;
     sequence: number;
   }> {
     const saved = await this.state.storage.get<Saved>(pageId);
@@ -454,7 +510,13 @@ export class PagesWorkspace {
     const doc = A.load<Page>(new Uint8Array(saved.bytes));
     try {
       const [next, message] = A.generateSyncMessage(doc, state);
-      return { state: next, message, heads: A.getHeads(doc), sequence: saved.sequence };
+      return {
+        state: next,
+        message,
+        heads: A.getHeads(doc),
+        sequence: saved.sequence,
+        authors: saved.authors ?? {},
+      };
     } finally {
       A.free(doc);
     }
@@ -470,10 +532,27 @@ export class PagesWorkspace {
           this.closePeer(peer, 4001, "Sign in again");
           continue;
         }
+        if (peer.eventsOnly && peer.pageId) {
+          const saved = await this.state.storage.get<Saved>(peer.pageId);
+          if (saved && (saved.sequence !== peer.lastSequence || !peer.sentInitialEvent)) {
+            const value = await this.call(peer.principal, {
+              operation: "read_page_changes",
+              arguments: {
+                page_id: peer.pageId,
+                since_sequence: peer.lastSequence,
+              },
+            });
+            peer.socket.send(JSON.stringify({ type: "page_changed", page_id: peer.pageId, value }));
+            peer.lastSequence = saved.sequence;
+            peer.sentInitialEvent = true;
+          }
+          continue;
+        }
         peer.socket.send(JSON.stringify({ type: "catalog", pages: catalog?.pages ?? [] }));
         if (!peer.pageId) continue;
         const result = await this.generateSync(peer.pageId, peer.state);
         peer.state = result.state;
+        peer.socket.send(JSON.stringify({ type: "authors", authors: result.authors }));
         if (result.message) peer.socket.send(result.message);
         // The heads describe storage read after its successful commit. A
         // protocol response alone is not a durable acknowledgement.
@@ -501,7 +580,19 @@ export class PagesWorkspace {
         requireValue(principal, "unauthorized", "Missing admitted identity");
         if (request.headers.get("Upgrade")?.toLowerCase() === "websocket")
           return await this.connect(request, principal);
-        const result = await this.call(principal, await readBody(request));
+        if (new URL(request.url).pathname === "/recheck") {
+          await this.broadcast();
+          return json({ ok: true });
+        }
+        const body = await readBody(request);
+        let grant: AgentGrant | null = null;
+        if (request.headers.has("Authorization")) {
+          grant = this.env ? await readAgentGrant(this.env, request) : null;
+          if (!grant || grant.principal !== principal)
+            throw new PageError("unauthorized", "Connection expired or revoked", 401);
+          authorizeAgentOperation(grant, body);
+        }
+        const result = await this.call(principal, body, grant ?? undefined);
         await this.broadcast();
         return json(result);
       } catch (error) {
@@ -526,7 +617,15 @@ export class PagesWorkspace {
     return task;
   }
 
-  async call(principal: string, body: Record<string, unknown>): Promise<unknown> {
+  async call(
+    principal: string,
+    body: Record<string, unknown>,
+    grant?: AgentGrant,
+  ): Promise<unknown> {
+    if (grant) {
+      requireValue(grant.principal === principal, "unauthorized", "Connection identity mismatch");
+      authorizeAgentOperation(grant, body);
+    }
     const operation = text(body.operation, "operation", 64);
     const input = object(body.arguments ?? {});
     requireValue(
@@ -677,6 +776,7 @@ export class PagesWorkspace {
           title_hash: full.title_hash,
           block_order: full.blocks.map((b) => b.id),
           comments_changed: changes.some((c) => c.comments_changed),
+          authors: saved.authors ?? {},
         };
       }
       requireValue(
@@ -693,7 +793,9 @@ export class PagesWorkspace {
         "idempotency_key must contain 8–128 characters",
       );
       const receiptKey = `edit_${await hash(key)}`,
-        digest = await hash(canonical({ operation, input }));
+        digest = await hash(
+          canonical(grant ? { operation, input, driver_id: grant.id } : { operation, input }),
+        );
       const previous = saved.receipts[receiptKey];
       if (previous) {
         if (previous.digest !== digest)
@@ -724,9 +826,14 @@ export class PagesWorkspace {
           "Use patch_page for literal patches with partial receipts",
         );
       const prefix = await actorPrefix(principal);
+      const actor = grant ? await agentActorId(prefix, grant.id) : newActor(prefix);
+      const attribution = grant
+        ? { display_name: grant.display_name, driver: grant.driver, driver_id: grant.id }
+        : undefined;
+      const operationId = `op_${(await hash(`${principal}:${grant?.id ?? "browser"}:${key}`)).slice(0, 32)}`;
       const edited = comment
         ? (() => {
-            let next = A.clone(doc, { actor: newActor(prefix) });
+            let next = A.clone(doc, { actor });
             try {
               next = A.change(next, comment.apply);
               validatePage(next, id);
@@ -737,12 +844,7 @@ export class PagesWorkspace {
               throw error;
             }
           })()
-        : await edit(
-            doc,
-            input.operations as unknown[],
-            operation === "patch_page",
-            newActor(await actorPrefix(principal)),
-          );
+        : await edit(doc, input.operations as unknown[], operation === "patch_page", actor);
       try {
         if (!comment && edited.receipts.every((receipt) => receipt.status === "rejected")) {
           return {
@@ -755,6 +857,8 @@ export class PagesWorkspace {
         const after = await snapshot(edited.doc, sequence);
         const result = {
           commit_status: "committed",
+          operation_id: operationId,
+          ...(attribution ? { attribution } : {}),
           new_sequence: sequence,
           through_sequence: sequence,
           operation_results: edited.receipts,
@@ -773,6 +877,8 @@ export class PagesWorkspace {
         const event: Change = {
           sequence,
           actor: principal,
+          operation_id: operationId,
+          ...(attribution ? { attribution } : {}),
           changed_block_ids: after.blocks
             .filter((b) => before.get(b.id) !== b.hash)
             .map((b) => b.id),
@@ -796,6 +902,7 @@ export class PagesWorkspace {
             sequence,
             receipts,
             events: [...saved.events, event].slice(-128),
+            authors: attribution ? { ...saved.authors, [actor]: attribution } : saved.authors,
           } satisfies Saved,
         };
         checkStorageBudget(values);

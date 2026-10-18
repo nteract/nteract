@@ -787,6 +787,14 @@ jobs:
           pnpm --dir apps/operator test
           pnpm --dir apps/operator build
 
+      - name: Verify Pages and agent clients
+        run: |
+          pnpm --dir apps/pages typecheck
+          pnpm --dir apps/pages test
+          pnpm --dir packages/pages-client build
+          pnpm --dir packages/pages-client test
+          pnpm --dir packages/pages-mcp build
+
       - name: Run JS tests
         run: vp test run
 
