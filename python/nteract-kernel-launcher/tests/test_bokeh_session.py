@@ -479,9 +479,10 @@ def test_python_changes_in_one_loop_iteration_share_a_revision():
     assert len(event.server_patch.content["events"]) == 2
 
 
+@pytest.mark.parametrize("transaction", [False, True], ids=["loop", "transaction"])
 @pytest.mark.parametrize("nested", [False, True], ids=["root", "layout-child"])
 @pytest.mark.parametrize("binary", [False, True], ids=["lists", "buffers"])
-def test_batched_new_models_replay_streams_once(nested, binary):
+def test_new_models_replay_streams_once(nested, binary, transaction):
     pytest.importorskip("bokeh")
 
     from bokeh.core.serialization import Buffer, Serialized
@@ -506,22 +507,61 @@ def test_batched_new_models_replay_streams_once(nested, binary):
         try:
             replica = Document.from_json(cast(DocJson, session.snapshot().content))
             source = ColumnDataSource(data={"x": values([1, 2]), "y": values([1, 2])})
-            if nested:
-                plot = figure()
-                plot.line("x", "y", source=source)
-                root.children = [plot]
+
+            def add_and_stream():
+                if nested:
+                    plot = figure()
+                    plot.line("x", "y", source=source)
+                    root.children = [plot]
+                else:
+                    document.add_root(source)
+                source.stream({"x": values([3]), "y": values([3])})
+
+            if transaction:
+                root.on_change("name", lambda attr, old, new: add_and_stream())
+                client_patch = {
+                    "events": [
+                        {
+                            "kind": "ModelChanged",
+                            "model": {"id": root.id},
+                            "attr": "name",
+                            "new": "add source",
+                        }
+                    ]
+                }
+                result = session.apply_patch(
+                    base_revision=0, transaction_id="add-and-stream", patch=client_patch
+                )
+                assert (result.base_revision, result.revision) == (0, 1)
+                assert result.transaction_id == "add-and-stream"
+                replica.apply_json_patch(cast(PatchJson, client_patch))
             else:
-                document.add_root(source)
-            source.stream({"x": values([3]), "y": values([3])})
+                add_and_stream()
             await asyncio.sleep(0)
             await asyncio.sleep(0)
 
             [event] = session.pop_server_events()
             assert (event.base_revision, event.revision) == (0, 1)
             patch = event.server_patch
+            if transaction:
+                assert event.transaction_id == result.transaction_id
+                assert patch is result.derived
+                assert event.client_patch is not None
+                assert event.client_patch.content == client_patch
+            else:
+                assert event.client_patch is None
             assert patch is not None
             assert len(patch.content["events"]) == 2
             assert bool(patch.buffers) == binary
+            if binary:
+                # Equal payloads keep distinct Bokeh IDs across both events.
+                assert len({buffer.id for buffer in patch.buffers}) == 4
+                assert [buffer.data for buffer in patch.buffers] == [
+                    values([1, 2]).tobytes(),
+                    values([1, 2]).tobytes(),
+                    values([3]).tobytes(),
+                    values([3]).tobytes(),
+                ]
             replica.apply_json_patch(
                 Serialized(
                     content=cast(PatchJson, patch.content),
@@ -536,6 +576,83 @@ def test_batched_new_models_replay_streams_once(nested, binary):
             session.close()
 
     asyncio.run(change_and_replay())
+
+
+@pytest.mark.parametrize("failure", ["callback", "serialization"])
+def test_failed_transaction_discards_partial_patches_and_recovers(failure):
+    pytest.importorskip("bokeh")
+    from bokeh.document import Document
+    from bokeh.document.json import DocJson, PatchJson
+    from bokeh.models import ColumnDataSource, Range1d
+
+    document = Document()
+    root = Range1d(start=0, end=1)
+    document.add_root(root)
+    source = ColumnDataSource(data={"x": [1, 2]})
+
+    def fail_serialization(events):
+        if failure == "serialization" and events[0].kind == "ColumnsStreamed":
+            raise ValueError("cannot serialize stream")
+
+    session = BokehDocumentSession(
+        document,
+        document.roots,
+        producer_name="test",
+        producer_version="0",
+        event_transform=fail_serialization,
+    )
+
+    def add_stream_and_fail(attr, old, new):
+        document.add_root(source)
+        source.stream({"x": [3]})
+        raise ValueError("callback failed after stream")
+
+    root.on_change("start", add_stream_and_fail)
+    try:
+        session.snapshot()
+        with pytest.raises(BokehPatchApplyError) as error:
+            session.apply_patch(
+                base_revision=0,
+                transaction_id="failed-stream",
+                patch={
+                    "events": [
+                        {
+                            "kind": "ModelChanged",
+                            "model": {"id": root.id},
+                            "attr": "start",
+                            "new": 1,
+                        }
+                    ]
+                },
+            )
+        assert error.value.revision == 1
+        [failed_event] = session.pop_server_events()
+        assert (failed_event.base_revision, failed_event.revision) == (0, 1)
+        assert failed_event.transaction_id == "failed-stream"
+        assert failed_event.client_patch is failed_event.server_patch is None
+        assert failed_event.checkpoint is error.value.checkpoint
+        replica = Document.from_json(cast(DocJson, error.value.checkpoint.content))
+        replayed = replica.get_model_by_id(source.id)
+        assert replayed is not None
+        assert list(replayed.data["x"]) == [1, 2, 3]
+
+        # A later successful transaction is acknowledged without stale derived events.
+        result = session.apply_patch(base_revision=1, transaction_id="next", patch={"events": []})
+        assert (result.base_revision, result.revision) == (1, 2)
+        assert result.derived is None
+        [next_event] = session.pop_server_events()
+        assert next_event.transaction_id == "next"
+        assert next_event.server_patch is next_event.checkpoint is None
+
+        # Callback state was cleared and checkpoint model references remain usable.
+        source.name = "recovered"
+        [event] = session.pop_server_events()
+        assert (event.base_revision, event.revision) == (2, 3)
+        assert event.server_patch is not None
+        replica.apply_json_patch(cast(PatchJson, event.server_patch.content))
+        assert replayed.name == "recovered"
+    finally:
+        session.close()
 
 
 def test_checkpoint_includes_changes_still_waiting_for_the_loop():
