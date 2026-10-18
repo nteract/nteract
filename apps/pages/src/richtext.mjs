@@ -71,6 +71,10 @@ nodes.raw = {
 };
 export const adapter = new SchemaAdapter({ nodes, marks });
 export const schema = adapter.schema;
+// The CommonMark parser must never enable linkify: the registry fallback
+// currently includes advisory-affected linkification code (see README).
+defaultMarkdownParser.tokenizer.disable("linkify");
+defaultMarkdownParser.tokenizer.set({ linkify: false });
 const parser = new MarkdownParser(
   schema,
   defaultMarkdownParser.tokenizer,
@@ -184,7 +188,7 @@ export function validateRich(block) {
 function safeUrl(value) {
   return (
     typeof value === "string" &&
-    !/[\u0000-\u0020\u007f]/.test(value) &&
+    ![...value].some((c) => c.charCodeAt(0) <= 32 || c.charCodeAt(0) === 127) &&
     !/^[a-z][a-z0-9+.-]*:/i.test(value.replace(/^(https?|mailto|tel):/i, ""))
   );
 }

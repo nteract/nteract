@@ -36,7 +36,13 @@ export function bindRichEditor(replica, id) {
       for (const listener of listeners) listener(event);
     },
   });
-  const result = init(handle, textPath(id), { schemaAdapter: adapter });
+  let result;
+  try {
+    result = init(handle, textPath(id), { schemaAdapter: adapter });
+  } catch (error) {
+    stop();
+    throw error;
+  }
   const originalView = result.plugin.spec.view;
   const plugin = new Plugin({
     ...result.plugin.spec,

@@ -10,6 +10,7 @@ There are no kernels or executable cells. Code fences are document content.
 
 See the [design memo](../../docs/memos/celld-pages.md) for the proposed editor,
 operation transports, attribution, comments, and incremental persistence work.
+Live block/selection comments now share the Page CRDT and WebSocket stream.
 Space-level sharing is an intended feature, following nteract notebook-room
 permissions, with Pages inheriting access from their space. Private account
 workspaces are the current prototype behavior; sharing is not yet enabled.
@@ -38,7 +39,8 @@ origin must be loopback before its routes can run.
 `pnpm --dir apps/pages test` checks document and sync invariants; `typecheck`
 checks the browser and Worker. With the dev server running, `pnpm --dir
 apps/pages smoke` exercises real OIDC sessions and binary WebSocket peers,
-including concurrent edits, tool pushes, reconnect, and session revocation.
+including concurrent edits, comments/replies/resolution across HTTP and sync,
+reconnect, and session revocation.
 
 `PAGES_PORT` changes the port. State survives process restarts in
 `dist/.celld/dev`. The build preserves that directory. Do not delete `dist` to
@@ -62,7 +64,8 @@ Client-supplied identity headers are discarded.
 
 Inside a workspace, every Page stores:
 
-- An Automerge document containing a title, block map, and ordered block IDs.
+- An Automerge document containing a title, block map, ordered block IDs, and
+  comment threads keyed by stable IDs.
   Block Markdown is Automerge text; updates use `updateText`, not wholesale
   replacement of block objects. Instruction blocks are an explicit kind.
 - A server sequence and the last 128 change receipts, separate from the CRDT.
@@ -155,6 +158,9 @@ ChatGPT Pages. Existing tools need a small transport adapter.
 | `read_page` | `page_id`, `view: editing/full`, `search` literals or observed `block_ids`, optional `include_content: false`. Always includes instruction blocks in selected content and reports missing IDs. |
 | `edit_page` | `page_id`, required `base_sequence`, `idempotency_key`, and `operations`. Atomic structural batch. |
 | `patch_page` | Same envelope; only `patch_block_markdown`. Partial results, one receipt per operation. |
+| `list_page_comments` | `page_id`, optional `state: open/resolved`, `block_id`, and `limit` (1–500, default 100). Returns `sequence`, projected `threads`, and `truncated`. |
+| `manage_page_comment` | `page_id`, required `base_sequence` and `idempotency_key`; actions `add`, `reply`, `resolve`, `reopen`, `edit`, `delete_message`. |
+| `reply_page_comment` | Same guards, `thread_id`, and `body`; shorthand for `reply`. |
 | `read_page_changes` | `page_id`, `since_sequence`. Changed blocks, deletion IDs, complete current block order, title, and authenticated actor records; `resync_required` outside retained history. |
 
 Edits support `set_title`, `insert_markdown` with observed `between_blocks`
@@ -191,8 +197,49 @@ the same key, or reread. A reused key with different content is rejected.
 After receipt eviction an old base sequence prevents silent replay.
 An entirely rejected patch batch neither writes a receipt nor advances history.
 
-Not implemented: multi-user sharing, nested/multiple Spaces, comments,
-attachments, native artifacts, scratch streams, excerpts, in-block/Yjs anchors,
+### Comments
+
+Add a thread with `action: add`, `block_id`, and `body`. Optional exact
+`selected_text` plus 1-based `occurrence` anchors a passage within that block.
+Replies/resolution use `thread_id`; edits and deletion also use `message_id`.
+Each mutation returns the projected `thread`, IDs, `sequence`, and the existing
+commit receipt. Retry uncertain writes with the same key and exact arguments.
+Unlike the observed Spaces connector, these writes require an observed sequence
+and idempotency key. This is an intentionally advertised subset of its contract.
+
+The browser exposes new threads, replies, resolve/reopen, and a resolved filter.
+Select Markdown source to comment on a passage; rendered-text and cross-block
+selection compose flows await the editor work. Edit/delete-message are API-only
+for now. Deleted messages project an empty body and retain a tombstone; their
+prior text remains in Automerge history. Reactions and thread deletion are absent.
+
+Thread/message authors and resolvers derive from admitted Automerge object IDs,
+never editable author fields. Only the author account may edit/delete a message.
+Timestamps are client-supplied display metadata, not a trusted audit clock.
+Concurrent replies merge by ID; body edits preserve text identity; deletion hides
+concurrent body edits. Resolve/reopen uses an attributed replacement register.
+
+Selection targets contain opaque Automerge cursors and their source text object
+IDs, not Yjs positions. The head identifies the last selected character; context
+projects exclusive UTF-16 end offsets. Appending after a selection does not expand
+it. Deleting its final character or replacing its text object detaches the thread
+conservatively, retaining the discussion without attaching it to unrelated text.
+Deleted blocks appear under Comments on removed content. The projection bounds
+quoted text to 4,000 UTF-16 code units. Pages allow 500 threads, 500 messages per
+thread, and 16,000 bytes per message, within the existing document/storage budgets.
+
+Legacy Pages initialize one shared comments map under the workspace queue, before
+replicas connect. This advances the server sequence once; clients holding an old
+sequence must reread. Content identities/history and idempotency receipts survive. A bounded 4 KiB
+migration allowance keeps near-limit legacy Pages readable; ordinary writes
+continue to enforce the original budget.
+Protocol `nteract-pages-automerge-v2` prevents old clients from treating comments
+as unsupported document fields; refresh already-open tabs after upgrading.
+Comments use the same durability receipts and IndexedDB recovery as text edits.
+They remain private to the account until space membership is implemented.
+
+Not implemented: multi-user sharing, nested/multiple Spaces,
+attachments, native artifacts, scratch streams, excerpts, in-block content-edit/Yjs anchors,
 semantic reconciliation, task dispatch, or execution. No wording in a Page or
 instruction block grants runtime authority. Read the capability endpoint before
 adapting a tool workflow that expects these features.
@@ -265,7 +312,7 @@ The initial deployment on 2026-10-17 ran application revision
 to each account. A fresh persistent session secret was generated on the host.
 No local development state or private reference document was uploaded.
 
-The CRDT rollout on the same date runs application revision
+The CRDT rollout on the same date used application revision
 `44740c901804931503fe4f376ad26836073b1295`, celld version
 `da40b87bf4fa8fac`. It preserves the original OIDC configuration, session secret,
 and S3 prefix. The optional, memory-only editor workbench is available at
@@ -280,6 +327,15 @@ unbounded client send cadence under bucket durability; both have regression
 tests. Public viewer, WASM, and workbench hashes match the release manifest.
 The workbench converged its two in-browser replicas and fit a narrow viewport;
 this does not qualify native mobile keyboard/IME behavior or live comments.
+
+The comments rollout uses application revision
+`07e24ccac6890afbb9c646f2fc2ad3365b0d2673`, celld version
+`c6ce59dd23facddf`, adopted on 2026-10-17. It preserves the same auth settings,
+secret, and S3 prefix. Public viewer, Automerge WASM, and editor-workbench hashes
+match the release manifest. Live two-tab checks verified thread creation,
+replies, resolution/reopening, durable Saved state, and reload persistence.
+Existing Pages retain their content while acquiring the comments map. Refresh
+old tabs for protocol v2. This rollout does not enable shared-space access.
 
 | Component | Deployment |
 | --- | --- |
@@ -368,4 +424,19 @@ Paragraphs within a Page block support range editing, formatting and undo;
 selection across Page blocks is deferred. Real-device IME and accessibility
 qualification remain outstanding. The Markdown parser dependency is pinned to
 14.2.0 because newer registry metadata requested an unavailable linkify-it
-version during installation; audit this pin before promoting the spike.
+version during installation, including when using its published tarball URL.
+The dependency audit flags markdown-it GHSA-253c-mchw-3w2r and linkify-it
+GHSA-v245-v573-v5vm. Both affect linkification, which this CommonMark parser
+explicitly disables. Replace the fallback with patched dependencies before
+promoting this spike. The repository-wide audit also has pre-existing findings.
+
+Passage comments use the authoritative text object: rich blocks anchor to
+`richText`, source blocks to `markdown`. Comments on the source before conversion
+remain available but detach, rather than quietly quoting stale provenance.
+
+Run `PAGES_ORIGIN=http://localhost:9893 node apps/pages/scripts/editor-smoke.mjs`
+from the repository root against a running local service. It creates generated
+fixtures and verifies two-browser editing, presence, passage comments, undo,
+offline convergence, reload, and a narrow viewport. It does not qualify iOS IME.
+Comment tests cover ownership at raw ingress, concurrent messages/statuses,
+selection detachment, migration, idempotency, failure rollback, and restart.

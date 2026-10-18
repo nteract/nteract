@@ -88,3 +88,18 @@ export function richPresence(replica, id) {
     },
   });
 }
+
+// Keep the same Automerge indices used for presence and comment cursors.
+export function richCommentSelection(replica, id, state) {
+  const doc = replica.doc;
+  if (!doc?.blocks[id] || state.selection.empty) return null;
+  const range = pmRangeToAmRange(adapter, A.spans(doc, textPath(id)), state.selection);
+  if (!range) return null;
+  const source = doc.blocks[id].richText;
+  const text = source.slice(range.start, range.end);
+  if (!text || !text.replaceAll("\ufffc", "").trim()) return null;
+  let occurrence = 0,
+    index = -1;
+  while ((index = source.indexOf(text, index + 1)) >= 0 && index <= range.start) occurrence++;
+  return { text, occurrence };
+}

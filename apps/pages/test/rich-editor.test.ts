@@ -203,3 +203,35 @@ test("supported and opaque imports are validated without discarding source", asy
     assert.equal(blockMarkdown(p.replica.doc!.blocks[id]), source);
   }
 });
+
+test("rich passage comments track peer edits and detach when the passage is deleted", async (t) => {
+  const { room, pageId, id } = await fixture();
+  const a = await peer(pageId),
+    b = await peer(pageId);
+  t.after(() => {
+    a.replica.dispose();
+    b.replica.dispose();
+  });
+  await sync(room, a);
+  await sync(room, b);
+  a.replica.comment({
+    action: "add",
+    block_id: id,
+    body: "Keep this passage",
+    selected_text: "fox",
+  });
+  await sync(room, a);
+  await sync(room, b);
+  const { projectComments } = await import("../src/comments.ts");
+  assert.equal(projectComments(b.replica.doc!)[0].selectionContext?.text, "fox");
+  b.replica.change((d) => A.splice(d, textPath(id), 1, 0, "Hello "));
+  await sync(room, b);
+  await sync(room, a);
+  assert.equal(projectComments(a.replica.doc!)[0].selectionContext?.text, "fox");
+  a.replica.change((d) =>
+    A.splice(d, textPath(id), d.blocks[id].richText!.indexOf("fox"), 3, "otter"),
+  );
+  await sync(room, a);
+  await sync(room, b);
+  assert.equal(projectComments(b.replica.doc!)[0].detached, true);
+});

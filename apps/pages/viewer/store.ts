@@ -1,5 +1,6 @@
 import { PageReplica, type SyncStatus } from "./replica.ts";
 import type { Snapshot } from "../src/document.ts";
+import type { ProjectedThread } from "../src/comments.ts";
 export interface Entry {
   page_id: string;
   title: string;
@@ -14,6 +15,7 @@ interface State {
   page: Snapshot | null;
   error: string | null;
   syncStatus: SyncStatus;
+  comments: ProjectedThread[];
 }
 export class ToolError extends Error {
   constructor(
@@ -36,6 +38,7 @@ export class PagesStore {
     page: null,
     error: null,
     syncStatus: "connecting",
+    comments: [],
   };
   private listeners = new Set<() => void>();
   private epoch = 0;
@@ -82,7 +85,14 @@ export class PagesStore {
         this.epoch++;
         this.creationKey = null;
         this.requestedPageId = null;
-        this.publish({ accountKey: null, ready: true, signedIn: false, pages: [], page: null });
+        this.publish({
+          accountKey: null,
+          ready: true,
+          signedIn: false,
+          pages: [],
+          comments: [],
+          page: null,
+        });
         return;
       }
       if (this.account && this.account !== session.account_key) {
@@ -94,7 +104,7 @@ export class PagesStore {
         this.account = session.account_key;
         this.requestedPageId = null;
         history.replaceState(null, "", "/");
-        this.publish({ accountKey: session.account_key, page: null, pages: [] });
+        this.publish({ accountKey: session.account_key, page: null, pages: [], comments: [] });
         await this.refresh();
         return;
       }
@@ -132,7 +142,7 @@ export class PagesStore {
     if (epoch !== this.epoch || selection !== this.selection) return;
     this.replica?.dispose();
     this.replica = null;
-    this.publish({ page: content, syncStatus: "connecting" });
+    this.publish({ page: content, comments: [], syncStatus: "connecting" });
     this.startReplica(id);
     history.replaceState(null, "", `/?page=${encodeURIComponent(id)}`);
   }
@@ -149,6 +159,7 @@ export class PagesStore {
             ...(update.page && this.state.signedIn ? { page: update.page } : {}),
             syncStatus: update.status,
             error: update.error,
+            comments: this.state.signedIn ? update.comments : [],
           });
         },
         (pages) => {
@@ -166,7 +177,13 @@ export class PagesStore {
           const { session } = await response.json();
           if (epoch !== this.epoch || this.replica !== replica) return false;
           if (!session || session.account_key !== account) {
-            this.publish({ signedIn: false, page: null, pages: [], syncStatus: "signed_out" });
+            this.publish({
+              signedIn: false,
+              page: null,
+              pages: [],
+              comments: [],
+              syncStatus: "signed_out",
+            });
             return false;
           }
           this.publish({ signedIn: true });
@@ -210,7 +227,14 @@ export class PagesStore {
     this.account = null;
     this.creationKey = null;
     this.requestedPageId = null;
-    this.publish({ accountKey: null, signedIn: false, page: null, pages: [], error: null });
+    this.publish({
+      accountKey: null,
+      signedIn: false,
+      page: null,
+      pages: [],
+      comments: [],
+      error: null,
+    });
     history.replaceState(null, "", "/");
   }
 }

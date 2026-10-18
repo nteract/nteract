@@ -5,9 +5,10 @@ import { keymap } from "prosemirror-keymap";
 import { baseKeymap, toggleMark, setBlockType } from "prosemirror-commands";
 import { wrapInList, splitListItem, sinkListItem, liftListItem } from "prosemirror-schema-list";
 import { history, undo, redo } from "prosemirror-history";
+import type { CommentSelection } from "./Comments";
 import type { PageReplica } from "./replica.ts";
 import { bindRichEditor } from "./rich-binding.mjs";
-import { richPresence, publishRichSelection } from "./rich-presence.mjs";
+import { richPresence, publishRichSelection, richCommentSelection } from "./rich-presence.mjs";
 import { schema } from "../src/richtext.mjs";
 import "prosemirror-view/style/prosemirror.css";
 
@@ -16,16 +17,20 @@ export function RichEditor({
   id,
   editable,
   onError,
+  onSelection,
 }: {
   replica: PageReplica;
   id: string;
   editable: boolean;
   onError: (message: string) => void;
+  onSelection?: (selection: CommentSelection | null) => void;
 }) {
   const host = useRef<HTMLDivElement>(null),
     editor = useRef<EditorView | null>(null);
   const writable = useRef(editable),
-    report = useRef(onError);
+    report = useRef(onError),
+    selected = useRef(onSelection);
+  selected.current = onSelection;
   writable.current = editable;
   report.current = onError;
   const [generation, reset] = useState(0);
@@ -61,7 +66,10 @@ export function RichEditor({
       dispatchTransaction(tr) {
         try {
           view.updateState(view.state.apply(tr));
-          if (tr.docChanged || tr.selectionSet) publishRichSelection(replica, id, view);
+          if (tr.docChanged || tr.selectionSet) {
+            publishRichSelection(replica, id, view);
+            selected.current?.(richCommentSelection(replica, id, view.state));
+          }
         } catch (error) {
           report.current(error instanceof Error ? error.message : String(error));
           // A rejected mutation must not leave the binding's internal echo guard
