@@ -382,6 +382,37 @@ comment pushes, raw CRDT replies, resolution, and reconnect against real celld;
 unit tests cover concurrent operations, ownership, migration, and failure/restart.
 Shared-space authorization remains required before multi-account collaboration.
 
+## Shared infrastructure research
+
+The [authenticated Automerge research and spike](https://github.com/nteract/nteract/pull/4463)
+starts from main independently of this Pages implementation. It evaluates
+experimental Repo 3/Subduction as reusable loading, synchronization, persistence,
+and presence infrastructure with nteract's OIDC and Anaconda API-key boundary.
+The initial experiment forwards existing Subduction authorization hooks through
+the Repo adapter; it does not replace Pages' deployed protocol or storage.
+
+Keep document access separate from its application schema. A host-controlled
+none/reader/writer grant should govern data access and mutations, while typed
+editors and agent operations can preserve unknown content. Pages currently
+rejects unknown root/block fields and block kinds during sync; its bounded
+metadata remains extensible. Relaxing those checks needs a separate old/new
+client fixture that preserves unsupported blocks, comment ownership, rich-text
+provenance, and export behavior. A type field cannot grant permissions or select
+a less restrictive authority policy.
+
+RuntimeStateDoc, CommsDoc, and other managed notebook state retain their specific
+writer and field-level admission rules. A generic writer role must not imply
+kernel authority. Signed transport records do not by themselves authenticate
+every inner Automerge actor, and session-key leases do not establish permanent
+authorship for historical replication. Those boundaries remain explicit research
+questions rather than reasons to weaken the current host checks.
+
+Treat the spike's credential fixtures and native WASM tests separately from
+browser login, editor behavior, celld lifecycle, and S3 durability. Any adoption
+must remove duplicated machinery and retain Pages' acknowledged-head and
+operation-receipt contract. Owning WASM packaging does not require an Automerge
+engine fork or changing its document format.
+
 ## Persistence closer to the primitives
 
 The prototype loads binary Automerge on each request, projects/hashes all blocks,
