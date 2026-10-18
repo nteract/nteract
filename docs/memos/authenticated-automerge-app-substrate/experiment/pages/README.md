@@ -201,9 +201,17 @@ SQLite Durable Objects limit a stored key and value to 2 MB. Subduction encodes
 native records as hex inside its storage frame, so the shared browser/host limit
 is 900 KiB per record, with a 1,900,000-byte guard on the stored frame plus key.
 Aggregate document history remains bounded at 16 MiB. API operations validate
-derived records and retry intents before persisting them, so an oversized edit
-returns 413 without creating an unrecoverable intent. These limits also apply
-on celld to keep both deployments compatible.
+derived records and retry intents before persisting them, so an oversized
+individual record or intent returns 413 before that intent is recorded. These
+limits also apply on celld to keep both deployments compatible.
+
+Aggregate capacity admission is not atomic with concurrent native writes. A
+bounded probe confirmed that a native edit can consume the remaining history
+capacity after an API candidate passes validation but before its recorded intent
+is applied. The backend then rejects the API write while its intent remains
+pending. Pending-intent recovery at this limit is not qualified. This predates
+the Cloudflare adapter; it needs a coordinated admission/recovery design before
+using the prototype for large histories near its 16 MiB cap.
 
 ## Cloudflare preview deployment
 
