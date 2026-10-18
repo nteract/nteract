@@ -137,9 +137,10 @@ def _combine_patches(patches: Sequence[BokehSerialization]) -> BokehSerializatio
 
 
 def _defined_model_ids(patch: dict[str, Any]) -> set[str]:
-    """Models the client already knows, including nested Bokeh definitions."""
+    """Models defined by replayable client events, including nested definitions."""
     model_ids: set[str] = set()
-    pending: list[Any] = [patch]
+    replayable = _replayable_client_patch(patch, ())
+    pending: list[Any] = [replayable.content] if replayable is not None else []
     while pending:
         value = pending.pop()
         if isinstance(value, dict):

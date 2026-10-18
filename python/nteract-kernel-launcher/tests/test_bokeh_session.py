@@ -653,6 +653,66 @@ def test_callback_references_client_created_models_without_redefining_them(neste
         session.close()
 
 
+@pytest.mark.parametrize("binary", [False, True], ids=["lists", "buffers"])
+def test_message_callback_defines_models_for_peers_without_replaying_the_message(binary):
+    pytest.importorskip("bokeh")
+    from bokeh.core.serialization import Buffer, Serialized, Serializer
+    from bokeh.core.types import ID
+    from bokeh.document import Document
+    from bokeh.document.json import DocJson, PatchJson
+    from bokeh.models import ColumnDataSource
+    from nteract_kernel_launcher._bokeh_session import _serialize_bokeh_value
+
+    np = pytest.importorskip("numpy")
+    document = Document()
+    session = BokehDocumentSession(
+        document, document.roots, producer_name="test", producer_version="0"
+    )
+    try:
+        replica = Document.from_json(cast(DocJson, session.snapshot().content))
+        source = ColumnDataSource(data={"x": np.array([1, 2]) if binary else [1, 2]})
+        document.callbacks.on_message("attach-source", document.add_root)
+        serializer = Serializer(deferred=True)
+        client = _serialize_bokeh_value(
+            Serialized(
+                content={
+                    "events": [
+                        {
+                            "kind": "MessageSent",
+                            "msg_type": "attach-source",
+                            "msg_data": serializer.encode(source),
+                        }
+                    ]
+                },
+                buffers=serializer.buffers,
+            )
+        )
+        result = session.apply_patch(
+            base_revision=0,
+            transaction_id="message-source",
+            patch=client.content,
+            buffers=client.buffers,
+        )
+        [event] = session.pop_server_events()
+        assert event.client_patch is None
+        assert event.server_patch is result.derived
+        assert event.server_patch is not None
+        assert (event.base_revision, event.revision) == (0, 1)
+        replica.apply_json_patch(
+            Serialized(
+                content=cast(PatchJson, event.server_patch.content),
+                buffers=[
+                    Buffer(ID(buffer.id), buffer.data) for buffer in event.server_patch.buffers
+                ],
+            )
+        )
+        replayed = replica.get_model_by_id(source.id)
+        assert replayed is not None
+        assert list(replayed.data["x"]) == [1, 2]
+    finally:
+        session.close()
+
+
 @pytest.mark.parametrize("failure", ["callback", "serialization"])
 def test_failed_transaction_discards_partial_patches_and_recovers(failure):
     pytest.importorskip("bokeh")
