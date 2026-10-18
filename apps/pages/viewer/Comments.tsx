@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PageReplica } from "./replica.ts";
 import type { ProjectedThread } from "../src/comments.ts";
+import { commentsForSelection } from "./rich-comments.mjs";
 export interface CommentSelection {
   text: string;
   occurrence: number;
@@ -45,6 +46,7 @@ export function Comments({
   editable,
   name,
   onCommented,
+  onReveal,
 }: {
   replica: PageReplica;
   threads: ProjectedThread[];
@@ -53,10 +55,22 @@ export function Comments({
   editable: boolean;
   name: string;
   onCommented?: () => void;
+  onReveal?: (threadId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(!blockId),
     [showResolved, setShowResolved] = useState(false),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [focusRequest, setFocusRequest] = useState<{ id: string; request: number } | null>(null);
+  const threadElements = useRef(new Map<string, HTMLElement>());
+  const selectedThreads: ProjectedThread[] = blockId
+    ? commentsForSelection(replica.doc, blockId, selection, threads)
+    : [];
+  useEffect(() => {
+    if (!focusRequest) return;
+    const element = threadElements.current.get(focusRequest.id);
+    element?.focus({ preventScroll: true });
+    element?.scrollIntoView({ block: "center", inline: "nearest" });
+  }, [focusRequest]);
   const actor = replica.commentAuthorId();
   const authorName = (id: string, fallback: string) => (id === actor ? name : fallback);
   function change(input: Record<string, unknown>) {
@@ -88,6 +102,21 @@ export function Comments({
       ) : (
         <h2>Comments on removed content</h2>
       )}
+      {selectedThreads.length > 0 && (
+        <button
+          className="comments-on-selection"
+          onClick={() => {
+            setExpanded(true);
+            setFocusRequest((prior) => ({
+              id: selectedThreads[0].id,
+              request: (prior?.request ?? 0) + 1,
+            }));
+          }}
+        >
+          View {selectedThreads.length} comment{selectedThreads.length === 1 ? "" : "s"} on
+          selection
+        </button>
+      )}
       {expanded && (
         <div className="comment-discussion">
           {threads.some((t) => t.state === "resolved") && (
@@ -104,7 +133,16 @@ export function Comments({
           {threads
             .filter((t) => showResolved || t.state === "open")
             .map((t) => (
-              <section className="comment-thread" key={t.id} aria-label="Comment thread">
+              <section
+                className={`comment-thread${selectedThreads.some((thread) => thread.id === t.id) ? " comment-thread-selected" : ""}`}
+                key={t.id}
+                aria-label="Comment thread"
+                tabIndex={-1}
+                ref={(element) => {
+                  if (element) threadElements.current.set(t.id, element);
+                  else threadElements.current.delete(t.id);
+                }}
+              >
                 <div className="comment-thread-heading">
                   <span>
                     {t.state === "resolved" ? "Resolved" : ""}
@@ -124,10 +162,17 @@ export function Comments({
                   )}
                 </div>
                 {t.selectionContext?.status === "attached" && (
-                  <blockquote>
-                    {t.selectionContext.text}
-                    {t.selectionContext.truncated ? "…" : ""}
-                  </blockquote>
+                  <>
+                    <blockquote>
+                      {t.selectionContext.text}
+                      {t.selectionContext.truncated ? "…" : ""}
+                    </blockquote>
+                    {onReveal && (
+                      <button className="comment-show-passage" onClick={() => onReveal(t.id)}>
+                        Show passage
+                      </button>
+                    )}
+                  </>
                 )}
                 {t.messages.map((m) => (
                   <div className="comment-message" key={m.id}>

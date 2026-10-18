@@ -40,6 +40,7 @@ function App() {
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [activeBlock, setActiveBlock] = useState<string | null>(null);
   const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null);
+  const [commentTarget, setCommentTarget] = useState<{ id: string; request: number } | null>(null);
   const [selection, setSelection] = useState<{ blockId: string; range: CommentSelection } | null>(
     null,
   );
@@ -58,6 +59,7 @@ function App() {
     setEditing(undefined);
     setActiveBlock(null);
     setSelection(null);
+    setCommentTarget(null);
   }, [state.page?.page_id]);
   useEffect(() => {
     setSelection(null);
@@ -255,6 +257,8 @@ function App() {
                         replica={replica}
                         id={b.id}
                         editable={editable}
+                        threads={state.comments}
+                        commentTarget={commentTarget}
                         toolbarHost={focusedBlock === b.id ? toolbarHost : null}
                         onActivate={() => setActiveBlock(b.id)}
                         onSelection={(range) =>
@@ -283,6 +287,15 @@ function App() {
                       editable={editable}
                       selection={selection?.blockId === b.id ? selection.range : null}
                       onCommented={() => setSelection(null)}
+                      onReveal={
+                        isRich(b)
+                          ? (id) =>
+                              setCommentTarget((prior) => ({
+                                id,
+                                request: (prior?.request ?? 0) + 1,
+                              }))
+                          : undefined
+                      }
                       threads={state.comments.filter((t) =>
                         t.target.kind === "block"
                           ? t.target.blockId === b.id
