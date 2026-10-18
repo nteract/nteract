@@ -63,7 +63,7 @@ enum Commands {
         #[arg(long)]
         socket: Option<PathBuf>,
 
-        /// Cache directory for environments (default: ~/.cache/runt/envs)
+        /// Environment cache (default: channel's nteract cache, reusing legacy caches)
         #[arg(long)]
         cache_dir: Option<PathBuf>,
 

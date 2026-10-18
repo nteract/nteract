@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 /// Re-exported from `runt_workspace`.
 pub use runt_workspace::default_socket_path;
 
-/// Default cache directory for environments (`<daemon_base_dir>/envs`).
+/// Default managed environment cache (with in-place legacy cache reuse).
 ///
 /// Re-exported from `runtimed_client` (originally defined there because
 /// `runtimed-client` owns daemon-path conventions shared with the CLI and

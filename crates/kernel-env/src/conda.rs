@@ -49,7 +49,7 @@ pub struct CondaEnvironment {
 /// Channel-aware; see [`super::uv::default_cache_dir_uv`] for the
 /// nightly/stable/dev namespacing rationale.
 pub fn default_cache_dir_conda() -> PathBuf {
-    runt_workspace::daemon_base_dir().join("conda-envs")
+    runt_workspace::managed_cache_dir("conda-envs")
 }
 
 /// Base package set every Conda kernel env is warmed with.

@@ -38,20 +38,21 @@ pub struct UvEnvironment {
 
 /// Get the default cache directory for UV environments.
 ///
-/// Channel-aware via [`runt_workspace::daemon_base_dir`]:
-/// - stable: `$CACHE/runt/envs/`
-/// - nightly: `$CACHE/runt-nightly/envs/`
+/// Channel-aware via [`runt_workspace::managed_cache_dir`]:
+/// - stable: `$CACHE/nteract/envs/`
+/// - nightly: `$CACHE/nteract-nightly/envs/`
 /// - dev worktree: `$CACHE/runt-nightly/worktrees/{hash}/envs/` (source
 ///   builds default to the nightly channel unless `RUNT_BUILD_CHANNEL=stable`)
 ///
 /// where `$CACHE` is `~/Library/Caches` on macOS, `~/.cache` on Linux, and
 /// `%LOCALAPPDATA%` on Windows.
+/// Existing caches under `runt` / `runt-nightly` are reused in place.
 ///
 /// Aligning this with the daemon's own cache_dir is what keeps nightly
 /// out of the stable cache (and prevents the "not within cache dir"
 /// eviction guard from firing on legitimate envs). See #2244.
 pub fn default_cache_dir_uv() -> PathBuf {
-    runt_workspace::daemon_base_dir().join("envs")
+    runt_workspace::managed_cache_dir("envs")
 }
 
 /// Check if uv is available (either on PATH or bootstrappable via rattler).
@@ -1250,21 +1251,14 @@ mod tests {
         assert!(packages.iter().any(|pkg| pkg == "uv"));
     }
 
-    /// Lock in the channel-namespaced cache path shape. Tests build with
-    /// the default channel (nightly for source builds), so the helper
-    /// should resolve under `runt-nightly/envs`. The terminal segment
-    /// pinning is the part that matters most — the rest is
-    /// `runt_workspace::daemon_base_dir`'s responsibility.
+    /// Lock in the shared channel-aware cache path.
+    /// Path selection and legacy reuse are tested in runt-workspace.
     #[test]
     fn default_cache_dir_uv_is_under_envs() {
         let path = default_cache_dir_uv();
         let s = path.to_string_lossy();
         assert!(s.ends_with("envs"), "got {s:?}");
-        // Should be nested under the channel namespace, not just "runt".
-        assert!(
-            s.contains("runt-nightly") || s.contains("runt"),
-            "got {s:?}"
-        );
+        assert_eq!(path, runt_workspace::managed_cache_dir("envs"));
     }
 
     #[test]

@@ -262,6 +262,9 @@ Manage with `nteract daemon start/stop/status/logs`. Cross-platform install/unin
 
 **Daemon won't start (lock held):** Check the selected endpoint and `lsof ~/.cache/<namespace>/daemon.lock`. A lock file can outlive its owner; the OS releases the advisory lock when the process exits. Do not delete the file to bypass contention: replacing its inode can allow two owners of the same runtime state. Filesystem failures are reported separately from contention.
 
-**Pool not replenishing:** Verify `uv --version` works and check `~/.cache/<namespace>/envs/`.
+**Pool not replenishing:** Verify `uv --version` works and inspect the environment
+cache reported by `nteract daemon status --json`. New production caches use
+`nteract` / `nteract-nightly`; existing legacy caches are reused in place, and
+dev-worktree paths retain their legacy layout.
 
 **Python bindings "Failed to parse output":** Usually connecting to wrong daemon (missing blob access). Set `RUNTIMED_SOCKET_PATH` to the correct daemon's socket.

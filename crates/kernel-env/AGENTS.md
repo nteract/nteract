@@ -86,10 +86,22 @@ Every notebook's env is isolated per notebook via `env_id` — no cross-notebook
 
 | Runtime | Hash function | Cache dir |
 |---------|---------------|-----------|
-| UV | `kernel_env::uv::compute_unified_env_hash` | `~/.cache/runt/envs/{hash}/` |
-| Conda | `kernel_env::conda::compute_unified_env_hash` | `~/.cache/runt/conda-envs/{hash}/` |
+| UV | `kernel_env::uv::compute_unified_env_hash` | `~/.cache/nteract/envs/{hash}/` |
+| Conda | `kernel_env::conda::compute_unified_env_hash` | `~/.cache/nteract/conda-envs/{hash}/` |
 
-Cache paths are channel-aware: stable → `runt/`, nightly → `runt-nightly/`, dev worktree → `runt/worktrees/{hash}/`.
+Managed cache paths use `runt_workspace::managed_cache_dir`: stable → `nteract/`,
+nightly → `nteract-nightly/`. Dev worktrees retain the legacy channel's
+`runt[-nightly]/worktrees/{hash}/` layout so cache and state cleanup stay together.
+An existing cache directory under `runt/` or `runt-nightly/` is reused in place,
+even if the new path also exists. Each process keeps its first selection for
+each cache; filesystem changes do not redirect live environments. Do not move
+environments: they can contain absolute paths. This compatibility fallback does
+not copy, merge or delete
+caches. Daemon state, socket/lock and shared file-claim paths are unchanged;
+those roots contain persistent data and coordination, not disposable caches.
+Rattler's shared package download cache is unchanged. Downgrading to a release
+without the new paths can create a legacy cache; upgraded clients then reuse
+that legacy location. No automatic consolidation of both trees is performed.
 
 Cache hit check: verify `{hash}/bin/python` (Unix) or `{hash}/Scripts/python.exe` (Windows).
 
