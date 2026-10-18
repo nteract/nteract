@@ -9,7 +9,8 @@ export function selectionContext(doc, target) {
   try {
     const a = target.anchor,
       b = target.head;
-    if (!doc.order.includes(a.blockId) || a.blockId !== b.blockId) return { status: "detached" };
+    if (!Object.hasOwn(doc.blocks, a.blockId) || a.blockId !== b.blockId)
+      return { status: "detached" };
     const block = doc.blocks[a.blockId],
       path = ["blocks", a.blockId, field(block)];
     if ([a, b].some((p) => A.getObjectId(block, field(block)) !== p.textObjectId))
@@ -59,7 +60,7 @@ export function applyComment(doc, input, identity) {
   if (action === "add") {
     const id = input.block_id,
       block = doc.blocks[id];
-    if (!doc.order.includes(id) || !block) throw Error("Comment block not found");
+    if (!Object.hasOwn(doc.blocks, id) || !block) throw Error("Comment block not found");
     let target = { kind: "block", blockId: id };
     if (input.selected_text) {
       let start = -1;

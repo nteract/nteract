@@ -11,11 +11,12 @@
   },
   "dependencies": {
     "@automerge/automerge": "3.5.0",
-    "@automerge/prosemirror": "0.2.0",
     "@automerge/automerge-repo": "3.0.0-experimental.1",
     "@automerge/automerge-repo-subduction": "3.0.0-experimental.1",
+    "@automerge/prosemirror": "0.2.0",
     "@automerge/subduction": "0.23.0",
     "@modelcontextprotocol/sdk": "1.29.0",
+    "fractional-indexing": "4.0.0",
     "prosemirror-commands": "1.7.1",
     "prosemirror-history": "1.4.1",
     "prosemirror-keymap": "1.2.3",

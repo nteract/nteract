@@ -1,7 +1,7 @@
 import { celldCborPlugin } from "./celld-cbor.mjs";
 import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
 import { build } from "esbuild";
-import { copyFile, mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,8 @@ const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 const dist = path.join(app, "dist");
 const expectedFingerprint = sourceFingerprint(app).sha256;
+// A failed in-place build must not leave an older receipt beside mixed outputs.
+await rm(path.join(dist, "build-receipt.json"), { force: true });
 await mkdir(path.join(dist, "public"), { recursive: true });
 for (const [module, name] of [
   ["@automerge/automerge/automerge.wasm", "automerge"],

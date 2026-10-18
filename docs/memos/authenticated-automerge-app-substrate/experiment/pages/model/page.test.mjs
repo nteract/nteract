@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { createPageData, initializePage, projectPage, applyPageOperation } from "./page.mjs";
+import {
+  createPageData,
+  initializePage,
+  projectPage,
+  applyPageOperation,
+  orderedBlockIds,
+} from "./page.mjs";
 import { applyComment, projectComments } from "./comments.mjs";
 import { richDoc, schema } from "./richtext.mjs";
 function page(markdown = "Hello 🌊 people") {
@@ -11,7 +17,7 @@ function page(markdown = "Hello 🌊 people") {
 const identity = { principal: "account:one", displayName: "Kyle Kelley", driver: "Browser" };
 test("targeted Markdown edits preserve unknown document fields and rich text identity", () => {
   let doc = page();
-  const id = doc.order[0];
+  const id = orderedBlockIds(doc)[0];
   doc = A.change(doc, (d) => {
     d.future = { kept: true };
     d.blocks[id].extension = { kept: true };
@@ -38,7 +44,7 @@ test("targeted Markdown edits preserve unknown document fields and rich text ide
 });
 test("ambiguous literal patch rejects atomically with no partially applied sibling", () => {
   const doc = page("one one");
-  const id = doc.order[0];
+  const id = orderedBlockIds(doc)[0];
   assert.throws(
     () =>
       A.change(doc, (d) =>
@@ -63,7 +69,7 @@ test("ambiguous literal patch rejects atomically with no partially applied sibli
 });
 test("anchored Unicode comments follow concurrent text and detach after the selected text is removed", () => {
   let doc = page("Before 🌊 passage after");
-  const id = doc.order[0];
+  const id = orderedBlockIds(doc)[0];
   doc = A.change(doc, (d) =>
     applyComment(
       d,
@@ -102,5 +108,5 @@ test("unsafe link and image attributes are inert even in an open document schema
   const image = schema.nodes.image.create({ src: "javascript:alert(1)" });
   assert.equal(schema.nodes.image.spec.toDOM(image)[0], "span");
   const doc = page("**Bold** and `code`");
-  richDoc(doc.blocks[doc.order[0]]).check();
+  richDoc(doc.blocks[orderedBlockIds(doc)[0]]).check();
 });

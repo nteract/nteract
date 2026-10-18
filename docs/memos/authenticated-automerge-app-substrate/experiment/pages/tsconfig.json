@@ -6,9 +6,18 @@
     "jsx": "react-jsx",
     "allowJs": true,
     "paths": {
-      "@cloud/*": ["../../../../../apps/notebook-cloud/src/*"],
-      "@nteract/local-oidc": ["../../../../../packages/local-oidc/src/index.ts"],
-      "runtimed": ["../../../../../packages/runtimed/src/scope-capabilities.ts"]
+      "@cloud/*": [
+        "../../../../../apps/notebook-cloud/src/*"
+      ],
+      "@nteract/local-oidc": [
+        "../../../../../packages/local-oidc/src/index.ts"
+      ],
+      "runtimed": [
+        "../../../../../packages/runtimed/src/scope-capabilities.ts"
+      ],
+      "jose": [
+        "../node_modules/jose/dist/webapi/index.js"
+      ]
     }
   }
 }

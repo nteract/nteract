@@ -1,8 +1,11 @@
 import * as A from "@automerge/automerge/slim";
 import { RICH_FORMAT, setRichMarkdown, projectedBlock, blockMarkdown } from "./richtext.mjs";
 import { applyComment, projectComments } from "./comments.mjs";
-const block = (id = crypto.randomUUID()) => ({
+import { orderedBlockIds, positionForInsertion } from "./order.mjs";
+export { orderedBlockIds } from "./order.mjs";
+const block = (id = crypto.randomUUID(), position = positionForInsertion()) => ({
   id,
+  position,
   kind: "markdown",
   format: RICH_FORMAT,
   markdown: "",
@@ -14,19 +17,18 @@ export function createPageData({ pageId, title = "Untitled" }) {
   return {
     page_id: pageId,
     title: String(title).slice(0, 1024),
-    order: [first.id],
     blocks: { [first.id]: first },
     comments: {},
   };
 }
 export function initializePage(doc, markdown = "") {
-  setRichMarkdown(doc, doc.order[0], String(markdown));
+  setRichMarkdown(doc, orderedBlockIds(doc)[0], String(markdown));
 }
 export function projectPage(doc) {
   return {
     page_id: doc.page_id,
     title: doc.title,
-    blocks: doc.order.map((id) => projectedBlock(doc.blocks[id])),
+    blocks: orderedBlockIds(doc).map((id) => projectedBlock(doc.blocks[id])),
     comments: projectComments(doc),
   };
 }
@@ -37,15 +39,17 @@ function applyEdit(doc, op) {
     return;
   }
   if (op.op === "insert_markdown") {
-    const value = block();
+    const value = block(crypto.randomUUID(), positionForInsertion(doc, op.after_block_id));
     doc.blocks[value.id] = value;
-    const index = op.after_block_id ? doc.order.indexOf(op.after_block_id) + 1 : doc.order.length;
-    if (op.after_block_id && index === 0) throw Error("Block anchor not found");
-    doc.order.splice(index, 0, value.id);
     setRichMarkdown(doc, value.id, String(op.markdown ?? ""));
     return;
   }
-  if (!doc.order.includes(id) || !Object.hasOwn(doc.blocks, id)) throw Error("Block not found");
+  if (!Object.hasOwn(doc.blocks, id)) throw Error("Block not found");
+  if (op.op === "move_block") {
+    if (op.after_block_id !== id)
+      doc.blocks[id].position = positionForInsertion(doc, op.after_block_id, id);
+    return;
+  }
   if (op.op === "replace_block_markdown") setRichMarkdown(doc, id, String(op.markdown ?? ""));
   else if (op.op === "patch_block_markdown") {
     let source = blockMarkdown(doc.blocks[id]);
@@ -63,7 +67,6 @@ function applyEdit(doc, op) {
     }
     setRichMarkdown(doc, id, source);
   } else if (op.op === "delete_block") {
-    doc.order.splice(doc.order.indexOf(id), 1);
     delete doc.blocks[id];
   } else throw Error("Unsupported edit operation");
 }

@@ -200,10 +200,12 @@ test("mutation receipt replay preserves change IDs and rejects stale heads or ke
 
 test("pending incremental intent recovers after failure without repeating a semantic edit", async () => {
   const f = mutationFixture();
+  let flushes = 0;
   const broken = {
     ...f.context,
     flush: async () => {
-      throw new Error("storage failed");
+      if (++flushes > 1) throw new Error("storage failed");
+      await f.context.flush();
     },
   };
   await assert.rejects(documentMutation(broken), /storage failed/);

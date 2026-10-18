@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
@@ -73,4 +75,66 @@ test("celld CBOR workaround fails closed on an unexpected upstream allocation ch
     loader({ path: path.join(app, "package.json") }),
     /allocation check changed/,
   );
+});
+
+test("failed rebuild removes the previous receipt before replacing any artifacts", () => {
+  const fixture = mkdtempSync(path.join(tmpdir(), "pages-build-failure-"));
+  const write = (relative, contents) => {
+    const file = path.join(fixture, relative);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, contents);
+  };
+  try {
+    // Execute the actual build entry point against a failing bundler. This
+    // models an old source-A receipt followed by a partial source-B build.
+    write("scripts/build.mjs", readFileSync(new URL("./build.mjs", import.meta.url), "utf8"));
+    write("scripts/celld-cbor.mjs", "export const celldCborPlugin = () => ({});");
+    write(
+      "scripts/source-fingerprint.mjs",
+      "export const sourceFingerprint = () => ({sha256:'source-B'}); export const writeBuildReceipt = () => {throw new Error('failed build must not certify outputs');};",
+    );
+    write(
+      "node_modules/esbuild/package.json",
+      JSON.stringify({ name: "esbuild", type: "module", exports: "./index.js" }),
+    );
+    write(
+      "node_modules/esbuild/index.js",
+      "import {writeFileSync} from 'node:fs'; export async function build(options) { writeFileSync(options.outfile,'partial source-B bundle'); throw new Error('injected bundler failure'); }",
+    );
+    for (const [name, exported, binary] of [
+      ["automerge", "automerge.wasm", "automerge.wasm"],
+      ["subduction", "wasm", "subduction.wasm"],
+    ]) {
+      write(
+        `node_modules/@automerge/${name}/package.json`,
+        JSON.stringify({
+          name: `@automerge/${name}`,
+          exports: { [`./${exported}`]: `./${binary}` },
+        }),
+      );
+      write(`node_modules/@automerge/${name}/${binary}`, "source-B wasm");
+    }
+    write("dist/build-receipt.json", JSON.stringify({ fingerprint: { sha256: "source-A" } }));
+    write("dist/index.js", "source-A bundle");
+    let failure;
+    try {
+      execFileSync(process.execPath, [path.join(fixture, "scripts/build.mjs")], { stdio: "pipe" });
+    } catch (error) {
+      failure = error;
+    }
+    assert.ok(failure);
+    assert.match(failure.stderr.toString(), /injected bundler failure/);
+    assert.equal(
+      readFileSync(path.join(fixture, "dist/index.js"), "utf8"),
+      "partial source-B bundle",
+    );
+    assert.equal(existsSync(path.join(fixture, "dist/build-receipt.json")), false);
+    // Returning the checkout to source A cannot make this directory deployable:
+    // prepare requires a receipt, and the failing build removed it.
+    assert.throws(() => readFileSync(path.join(fixture, "dist/build-receipt.json")), {
+      code: "ENOENT",
+    });
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });

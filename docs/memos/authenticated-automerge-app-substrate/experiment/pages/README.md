@@ -52,6 +52,16 @@ server OIDC sessions. Page ownership, signing-key bindings, credential leases,
 and deletion are host state outside the CRDT. The document contains the title,
 ordered rich-text blocks, comments, and any additional application fields.
 
+Block membership lives in a map keyed by stable block ID. Each block has an
+atomic Automerge `RawString` fractional `position`; views sort by position, then
+by block ID using case-sensitive comparison. This follows NotebookDoc’s model,
+using the maintained JavaScript `fractional-indexing` generator rather than its
+hex encoding. A move updates a position without recreating the block or its
+rich-text object, so comments and selections retain their anchors. Concurrent
+inserts may share a position; IDs break ties deterministically. Inserting inside
+a tied group opens a gap by advancing only the ties to its right. There is no
+separate ordering list or global renumbering.
+
 The byte-store adapter delegates record persistence to `ctx.storage`. It does
 not manage an independent SQLite connection, upload Automerge snapshots on each
 edit, or implement object-store manifests. celld owns replication and recovery.
@@ -78,6 +88,14 @@ The native handshake proves possession of the peer signing key. Before adding
 that connection to the backend, the host binds its verified peer ID to the
 credential-authenticated account and driver. Native storage and ephemeral
 policies enforce access; UI read-only state is not the security boundary.
+
+The browser renews its OIDC session while the app is open and when returning to
+the tab. Native connections have bounded credential leases: API-key connections
+reconnect after 60 seconds, and browser connections at the expiry observed on
+upgrade. Reauthentication checks during that lease can revoke access early;
+they do not extend the socket lifetime. Reconnect obtains current credentials
+and resumes the same native document. This keeps lease handling explicit, at the
+cost of periodic reconnects for programmatic native clients.
 
 Active requestor admission is separate from durable authorship admission. A live
 writer may relay history signed by a previously admitted writer for this Page,
@@ -111,7 +129,9 @@ API mutations require the exact `base_heads` from `read_page` and an
 `idempotency_key`. Read again after a stale-head rejection. Retry an uncertain
 request with the identical key and payload. The host records a bounded write
 intent with encoded incremental changes, so replay applies the same CRDT change
-IDs rather than repeating the semantic operation. Retry receipts are retained
+IDs rather than repeating the semantic operation. It first flushes the captured
+causal base, including newly received native edits, so a durable intent cannot
+outlive the history needed to replay it. Retry receipts are retained
 for the document lifetime. At 1,000 receipts the prototype refuses further API
 mutations instead of silently forgetting retry keys. Browser edits do not consume
 this API limit.
@@ -127,6 +147,10 @@ this API limit.
   authenticated identity, and capability projection.
 - `GET /api/sync?page=<id>` upgrades to the native Subduction binary protocol.
 - `POST /api/saved?page=<id>` accepts `{heads}` and returns a durable frontier.
+
+`edit_page` supports `insert_markdown` and `move_block` with `after_block_id`:
+use a stable block ID to insert after it, `null` to put the block first, or omit
+the field to append. Position keys are an internal storage detail.
 
 The Markdown tool interface resembles Pages operations, but this is not an
 implementation of the full ChatGPT Spaces API. Structural validation applies to
@@ -146,6 +170,10 @@ Per-block WYSIWYG editing is carried over. Enter creates paragraphs and list
 items within a block. Cross-block selection and full mobile/IME qualification
 remain separate editor work. Incoming editor notifications are deferred during
 composition; native receive itself is not paused.
+
+Unexpected HTTP failures and failed native admission emit structured diagnostic
+categories with the request boundary, status, and error type. Provider error
+messages, credentials, request bodies, and document content are excluded.
 
 The maintained application boundary, persistence requests/bytes, memory, cold
 restore latency, and durable-receipt latency should be compared with `apps/pages`
@@ -171,6 +199,11 @@ with fleet storage at
 `s3://nteract-celld-lab-621741996708/standalone/pages-next` in `us-east-1`.
 `m.runtimed.run` uses its existing service and prefix. These scripts do not move
 or reuse its data or session secret.
+
+Publication restarts the shared `cloudflared` service after validating the narrow
+route change. Expect existing tunnel connections, including `m.runtimed.run`
+WebSockets, to disconnect briefly and reconnect. Their application services and
+storage prefixes remain intact.
 
 `node scripts/deploy.mjs plan` is read-only. After inspecting the current lab1
 runtime, ports, prefix, tunnel and firewall ownership, use `prepare`,

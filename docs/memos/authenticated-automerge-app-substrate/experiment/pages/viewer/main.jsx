@@ -2,8 +2,10 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import * as A from "@automerge/automerge";
 import { PageSession, request, tool } from "./session.mjs";
+import { maintainBrowserSession } from "./browser-session.mjs";
 import { RichEditor } from "./RichEditor.jsx";
 import { applyPageOperation } from "../model/page.mjs";
+import { orderedBlockIds } from "../model/order.mjs";
 import "./style.css";
 
 function App() {
@@ -11,13 +13,15 @@ function App() {
     [pages, setPages] = useState([]),
     [session, setSession] = useState(null),
     [, paint] = useState(0),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [authError, setAuthError] = useState("");
   const [toolbar, setToolbar] = useState(null),
     [active, setActive] = useState(null),
     [selection, setSelection] = useState(null),
     [commentsOpen, setCommentsOpen] = useState(false),
     [target, setTarget] = useState(null);
   const current = useRef(null),
+    auth = useRef(null),
     generation = useRef(0);
   const refresh = async () => {
     const result = await tool("list_pages");
@@ -32,7 +36,7 @@ function App() {
     current.current = null;
     await old?.close();
     try {
-      const next = await PageSession.open(id);
+      const next = await PageSession.open(id, { refreshSession: () => auth.current.refresh() });
       if (revision !== generation.current) {
         await next.close();
         return;
@@ -41,7 +45,7 @@ function App() {
       setSession(next);
       next.subscribe(() => paint((n) => n + 1));
       history.replaceState(null, "", `?page=${encodeURIComponent(id)}`);
-      setActive(next.doc.order[0]);
+      setActive(orderedBlockIds(next.doc)[0] ?? null);
       setSelection(null);
     } catch (e) {
       if (revision === generation.current) setError(e.message);
@@ -49,19 +53,42 @@ function App() {
   }
   useEffect(() => {
     let alive = true;
-    request("/api/auth/session")
-      .then(async (result) => {
+    const maintenance = maintainBrowserSession({
+      request: () => request("/api/auth/session"),
+      onSession: (result) => {
         if (!alive) return;
-        setAccount(result.identity);
-        if (result.identity) {
-          const list = await refresh();
-          const id = new URL(location.href).searchParams.get("page");
-          if (alive && id && list.some((p) => p.page_id === id)) await open(id);
+        setAuthError("");
+        const live = current.current;
+        if (!live) setAccount(result.identity);
+        else {
+          const resume = live.authRequired;
+          if (live.acceptAuthentication(result)) {
+            setAccount(result.identity);
+            if (resume) void live.retryConnection();
+          }
         }
+      },
+      onError: (error) => {
+        if (!alive) return;
+        setAuthError(error.message);
+        setAccount((value) => (value === undefined ? null : value));
+      },
+    });
+    auth.current = maintenance;
+    maintenance
+      .refresh()
+      .then(async (result) => {
+        if (!alive || !result?.identity) return;
+        const list = await refresh();
+        const id = new URL(location.href).searchParams.get("page");
+        if (alive && id && list.some((p) => p.page_id === id)) await open(id);
       })
-      .catch((e) => setError(e.message));
+      .catch((error) => {
+        if (alive) setError(error.message);
+      });
     return () => {
       alive = false;
+      maintenance.stop();
       generation.current++;
       void current.current?.close();
     };
@@ -128,6 +155,11 @@ function App() {
           {error}
         </p>
       )}
+      {authError && (
+        <p role="alert" className="error">
+          {authError}
+        </p>
+      )}
       {account === undefined ? (
         <main>Connecting…</main>
       ) : !account ? (
@@ -170,6 +202,15 @@ function App() {
                     {session.canWrite && <button onClick={remove}>Delete</button>}
                   </div>
                 </div>
+                {session.authRequired && (
+                  <p className="error" role="alert">
+                    {session.authProblem}{" "}
+                    <a href="/api/auth/login" target="_blank" rel="noopener noreferrer">
+                      Sign in
+                    </a>{" "}
+                    <button onClick={() => session.retryConnection()}>Retry connection</button>
+                  </p>
+                )}
                 {session.problem && (
                   <p className="error" role="alert">
                     {session.problem}
