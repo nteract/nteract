@@ -84,9 +84,11 @@ function peer(cookie, id, doc) {
       const m = JSON.parse(raw.toString());
       if (m.type === "hello") {
         p.doc ??= A.init({ actor: m.actor_prefix + crypto.randomUUID().replaceAll("-", "") });
+        p.hello = m;
         p.ready = true;
         p.send();
       } else if (m.type === "durable") p.heads = m.heads;
+      else if (m.type === "presence") p.presence = m;
       else if (m.type === "rejected") p.error = Error(JSON.stringify(m));
     } catch (e) {
       p.error = e;
@@ -123,6 +125,22 @@ try {
   const a = peer(cookie, id),
     b = peer(secondCookie, id);
   await until(() => a.saved() && b.saved(), "initial sync");
+  const session = await (
+    await fetch(`${origin}/api/auth/session`, { headers: { Cookie: cookie } })
+  ).json();
+  assert.ok(session.session.display_name);
+  assert.equal(a.hello.display_name, session.session.display_name);
+  const position = { block_id: block, start: "s", end: "e", backward: false, heads: [] };
+  a.socket.send(
+    JSON.stringify({
+      type: "presence",
+      display_name: "Forged",
+      value: { ...position, display_name: "Forged" },
+    }),
+  );
+  await until(() => !!b.presence, "authenticated presence");
+  assert.equal(b.presence.display_name, session.session.display_name);
+  assert.deepEqual(b.presence.value, position);
   a.doc = A.change(a.doc, (d) => A.splice(d, ["blocks", block, "markdown"], 0, 0, "left "));
   b.doc = A.change(b.doc, (d) =>
     A.splice(d, ["blocks", block, "markdown"], d.blocks[block].markdown.length, 0, " right"),
@@ -217,7 +235,7 @@ try {
   b.send();
   await until(() => restored.closed && b.saved(), "session revocation");
   console.log(
-    "PASS: real celld OIDC + binary CRDT convergence, Unicode, HTTP push, reconnect, comments, and socket revocation",
+    "PASS: real celld OIDC + binary CRDT convergence, Unicode, HTTP push, reconnect, comments, authenticated presence names, and socket revocation",
   );
 } finally {
   for (const p of peers) {

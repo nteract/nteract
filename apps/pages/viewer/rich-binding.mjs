@@ -2,6 +2,7 @@ import * as A from "@automerge/automerge/slim";
 import { init } from "@automerge/prosemirror";
 import { Plugin } from "prosemirror-state";
 import { adapter, richDoc, textPath } from "../src/richtext.mjs";
+import { attributionKey } from "./rich-attribution.mjs";
 
 // The real replica owns persistence and network sync. This facade only exposes
 // the DocHandle-shaped patch stream expected by the editor binding.
@@ -9,6 +10,7 @@ export function bindRichEditor(replica, id) {
   let before = replica.doc,
     heads = A.getHeads(before);
   const listeners = new Set();
+  let incomingActors = [];
   const handle = {
     doc: () => replica.doc,
     change: (fn) => replica.change(fn),
@@ -31,9 +33,17 @@ export function bindRichEditor(replica, id) {
         patches: A.diff(doc, heads, nextHeads),
         patchInfo: { before, after: doc, source: "change" },
       };
+      const actors = [
+        ...new Set(A.getChangesMetaSince(doc, heads).map((change) => change.actor)),
+      ].filter((actor) => actor !== A.getActorId(doc));
       heads = nextHeads;
       before = doc;
-      for (const listener of listeners) listener(event);
+      incomingActors = actors;
+      try {
+        for (const listener of listeners) listener(event);
+      } finally {
+        incomingActors = [];
+      }
     },
   });
   let result;
@@ -66,7 +76,7 @@ export function bindRichEditor(replica, id) {
             tr.replace(start, endA, target.slice(start, endB));
             if (!tr.doc.eq(target)) throw Error("Remote rich projection diverged");
           }
-          view.dispatch(tr.setMeta("addToHistory", false));
+          view.dispatch(tr.setMeta("addToHistory", false).setMeta(attributionKey, incomingActors));
         },
       });
     },

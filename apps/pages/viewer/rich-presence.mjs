@@ -28,7 +28,7 @@ export function richPresence(replica, id) {
         const path = textPath(id),
           spans = A.spans(doc, path),
           decorations = [];
-        for (const [session, { value, at }] of replica.peers) {
+        for (const [session, { value, at, displayName }] of replica.peers) {
           if (value.block_id !== id || Date.now() - at > 30000 || !A.hasHeads(doc, value.heads))
             continue;
           try {
@@ -59,11 +59,11 @@ export function richPresence(replica, id) {
                   caret.className = "peer-caret";
                   caret.contentEditable = "false";
                   const label = document.createElement("span");
-                  label.textContent = "Device " + session.slice(0, 4);
+                  label.textContent = displayName || "Device " + session.slice(0, 4);
                   caret.append(label);
                   return caret;
                 },
-                { key: session, side: 1 },
+                { key: `${session}:${displayName || ""}`, side: 1 },
               ),
             );
           } catch {

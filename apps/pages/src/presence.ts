@@ -1,4 +1,10 @@
 import { object, requireValue } from "./errors.ts";
+
+// Only use this for names received from the authenticated server session or
+// server frames. Client presence positions never supply identity.
+export function presenceDisplayName(value: unknown): string | null {
+  return typeof value === "string" ? value.trim().slice(0, 160) || null : null;
+}
 export interface Presence {
   block_id: string;
   start: string;

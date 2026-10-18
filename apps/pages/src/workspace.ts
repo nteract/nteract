@@ -23,13 +23,14 @@ import { readServerAppSession } from "../../notebook-cloud/src/oidc-session-stor
 import type { ServerOidcEnvironment } from "../../notebook-cloud/src/server-oidc.ts";
 import type { CloudflareWebSocket } from "../../notebook-cloud/src/cloudflare-types.ts";
 
-import { presence } from "./presence.ts";
+import { presence, presenceDisplayName } from "./presence.ts";
 
 interface SyncPeer {
   sessionId: string;
   lastPresenceAt: number;
   socket: CloudflareWebSocket;
   principal: string;
+  displayName: string | null;
   pageId: string | null;
   state: A.SyncState;
   request: Request;
@@ -216,10 +217,13 @@ export class PagesWorkspace {
       peer.request,
       Math.floor(Date.now() / 1000),
     );
-    return (
-      !!session &&
-      JSON.stringify([this.env.NOTEBOOK_CLOUD_OIDC_ISSUER, session.principal]) === peer.principal
-    );
+    if (
+      !session ||
+      JSON.stringify([this.env.NOTEBOOK_CLOUD_OIDC_ISSUER, session.principal]) !== peer.principal
+    )
+      return false;
+    peer.displayName = presenceDisplayName(session.displayName);
+    return true;
   }
 
   private closePeer(peer: SyncPeer, code: number, reason: string) {
@@ -251,6 +255,7 @@ export class PagesWorkspace {
       lastPresenceAt: 0,
       socket: pair[1],
       principal,
+      displayName: null,
       pageId,
       state: A.initSyncState(),
       request,
@@ -272,6 +277,7 @@ export class PagesWorkspace {
         page_id: pageId,
         actor_prefix: await actorPrefix(principal),
         session_id: peer.sessionId,
+        display_name: peer.displayName,
       }),
     );
     await this.broadcast();
@@ -343,7 +349,12 @@ export class PagesWorkspace {
   }
 
   private async broadcastPresence(peer: SyncPeer, value: ReturnType<typeof presence>) {
-    const payload = JSON.stringify({ type: "presence", session_id: peer.sessionId, value });
+    const payload = JSON.stringify({
+      type: "presence",
+      session_id: peer.sessionId,
+      display_name: peer.displayName,
+      value,
+    });
     for (const recipient of this.peers) {
       if (
         recipient === peer ||

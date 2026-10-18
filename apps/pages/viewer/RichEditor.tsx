@@ -9,6 +9,7 @@ import { history, undo, redo } from "prosemirror-history";
 import type { CommentSelection } from "./Comments";
 import type { PageReplica } from "./replica.ts";
 import { bindRichEditor } from "./rich-binding.mjs";
+import { richAttribution } from "./rich-attribution.mjs";
 import { richPresence, publishRichSelection, richCommentSelection } from "./rich-presence.mjs";
 import { schema } from "../src/richtext.mjs";
 import "prosemirror-view/style/prosemirror.css";
@@ -53,6 +54,7 @@ export function RichEditor({
         plugins: [
           binding.plugin,
           history(),
+          richAttribution(replica),
           richPresence(replica, id),
           keymap({
             "Mod-b": toggleMark(schema.marks.strong),

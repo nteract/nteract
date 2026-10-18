@@ -235,3 +235,57 @@ test("rich passage comments track peer edits and detach when the passage is dele
   await sync(room, b);
   assert.equal(projectComments(b.replica.doc!)[0].detached, true);
 });
+
+test("remote illumination follows edits, excludes self echoes, and expires outside undo", async (t) => {
+  const { richAttribution, attributionKey } = await import("../viewer/rich-attribution.mjs");
+  const { room, pageId, id } = await fixture("Original text"),
+    a = await peer(pageId),
+    b = await peer(pageId);
+  await sync(room, a);
+  await sync(room, b);
+  let time = 1000;
+  const binding = bindRichEditor(b.replica, id);
+  const view = {
+    state: EditorState.create({
+      schema: binding.schema,
+      doc: binding.pmDoc,
+      plugins: [binding.plugin, history(), richAttribution(b.replica, () => time)],
+    }),
+    dispatch(tr: Transaction) {
+      view.state = view.state.apply(tr);
+    },
+  };
+  const projection = binding.plugin.spec.view!(view as EditorView);
+  t.after(() => {
+    projection.destroy?.();
+    binding.destroy();
+    a.replica.dispose();
+    b.replica.dispose();
+  });
+  const marks = () => attributionKey.getState(view.state).find();
+  assert.equal(marks().length, 0, "hydration has no illumination");
+  view.dispatch(view.state.tr.insertText("Local ", 1));
+  await sync(room, b);
+  assert.equal(marks().length, 0, "local typing and its echo stay quiet");
+  await sync(room, a);
+  a.replica.change((d) => A.splice(d, textPath(id), d.blocks[id].richText!.length, 0, " remote"));
+  await sync(room, a);
+  await sync(room, b);
+  const mark = marks()[0];
+  assert.ok(mark);
+  assert.deepEqual(mark.spec.actors, [A.getActorId(a.replica.doc!)]);
+  assert.equal(view.state.doc.textBetween(mark.from, mark.to), " remote");
+  view.dispatch(view.state.tr.insertText("Here ", 1));
+  assert.equal(marks()[0].from, mark.from + 5, "local typing maps the remote range");
+  time += 2001;
+  view.dispatch(view.state.tr.setMeta("addToHistory", false));
+  assert.equal(marks().length, 0);
+  undo(view.state, view.dispatch);
+  assert.match(view.state.doc.textContent, / remote$/, "undo preserves remote text");
+  await sync(room, b);
+  await sync(room, a);
+  a.replica.change((d) => A.splice(d, textPath(id), d.blocks[id].richText!.length - 7, 7, ""));
+  await sync(room, a);
+  await sync(room, b);
+  assert.equal(marks().length, 0, "deletion has no invented inserted range");
+});

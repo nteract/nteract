@@ -236,6 +236,23 @@ never the other way around. This authenticates the account, not an independently
 verified device, agent, or person behind a suffix. Existing historical actors
 remain unknown or batch-level evidence; do not invent historical authorship.
 
+Presence labels now use the display name from the authenticated OIDC session.
+The server attaches it to presence frames; client-supplied names are discarded.
+The device suffix is a fallback when the provider supplies no name. A receiving
+editor briefly underlines inserted text from remote Automerge changes, maps the
+range through subsequent edits, and removes it after two seconds. Initial load
+and self echoes stay quiet. Marks use received batch actors, not persistent
+per-character authorship; deletions do not manufacture an inserted-text range.
+Current private-account peers share one color and account name.
+
+Keep the authenticated principal separate from the driver: Kyle Kelley can edit
+through mobile, a browser, or ChatGPT acting on his behalf. A future API should
+bind the driver to its admitted credential/session and associate it with change
+actors; arbitrary browser metadata must not claim verified agent identity.
+Driver context describes how edits were made and grants no extra permissions.
+Until that binding exists, browser edits made by an assistant under Kyle's
+session correctly show Kyle's name. Unknown historical actors remain unknown.
+
 Reuse nteract's separation between text-patch events and temporary editor
 decorations: see [text-attribution.ts](../../src/components/editor/text-attribution.ts)
 and [runtimed-wasm](../../crates/runtimed-wasm/src/lib.rs). Its current helper

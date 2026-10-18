@@ -324,3 +324,31 @@ test("browser coalesces typing until its own durable receipt, not another peer's
   })) as { content: Snapshot };
   assert.equal(saved.content.blocks[0].markdown, "typing 39");
 });
+
+test("presence uses the server name and drops client-supplied identity", async (t) => {
+  const { PageReplica } = await import("../viewer/replica.ts");
+  const { presence, presenceDisplayName } = await import("../src/presence.ts");
+  const replica = new PageReplica(
+    principal,
+    null,
+    () => {},
+    () => {},
+    async () => true,
+  );
+  t.after(() => replica.dispose());
+  const value = { block_id: crypto.randomUUID(), start: "s", end: "e", backward: false, heads: [] };
+  assert.deepEqual(presence({ ...value, display_name: "Forged", driver: "ChatGPT" }), value);
+  const session_id = crypto.randomUUID();
+  await replica["control"]({ type: "presence", session_id, display_name: "Kyle Kelley", value });
+  assert.equal(replica.peers.get(session_id)?.displayName, "Kyle Kelley");
+  await replica["control"]({ type: "presence", session_id, value });
+  assert.equal(
+    replica.peers.get(session_id)?.displayName,
+    null,
+    "old server has a device fallback",
+  );
+  assert.equal(presenceDisplayName(" "), null);
+  assert.equal(presenceDisplayName("x".repeat(500))?.length, 160);
+  await replica["control"]({ type: "presence", session_id, value: null });
+  assert.equal(replica.peers.size, 0);
+});

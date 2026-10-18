@@ -10,7 +10,7 @@ import {
   type ProjectedThread,
 } from "../src/comments.ts";
 
-import { presence, type Presence } from "../src/presence.ts";
+import { presence, presenceDisplayName, type Presence } from "../src/presence.ts";
 
 export type SyncStatus = "connecting" | "syncing" | "saved" | "offline" | "signed_out" | "rejected";
 export interface ReplicaUpdate {
@@ -95,7 +95,14 @@ export class PageReplica {
     this.scope = JSON.stringify([account, pageId]);
   }
 
-  readonly peers = new Map<string, { value: Presence; at: number }>();
+  readonly peers = new Map<string, { value: Presence; at: number; displayName: string | null }>();
+  private accountActorPrefix: string | null = null;
+  private accountDisplayName: string | null = null;
+  actorDisplayName(actor: string): string {
+    return this.accountActorPrefix && actor.startsWith(this.accountActorPrefix)
+      ? this.accountDisplayName || "Another session"
+      : "Unknown author";
+  }
   private presenceObservers = new Set<() => void>();
   private localPresence: Presence | null = null;
   private presenceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -247,6 +254,8 @@ export class PageReplica {
         !/^[a-f0-9]{32}$/.test(message.actor_prefix)
       )
         throw Error("Unsupported sync handshake");
+      this.accountActorPrefix = message.actor_prefix;
+      this.accountDisplayName = presenceDisplayName(message.display_name);
       if (this.pageId && !this.doc) {
         this.doc = A.init<Page>({ actor: newActor(message.actor_prefix) });
         try {
@@ -274,7 +283,12 @@ export class PageReplica {
       if (typeof message.session_id !== "string" || !/^[a-f0-9-]{36}$/.test(message.session_id))
         throw Error("Invalid presence session");
       const value = presence(message.value);
-      if (value) this.peers.set(message.session_id, { value, at: Date.now() });
+      if (value)
+        this.peers.set(message.session_id, {
+          value,
+          at: Date.now(),
+          displayName: presenceDisplayName(message.display_name),
+        });
       else this.peers.delete(message.session_id);
       this.paintPresence();
     } else if (message.type === "catalog") {
