@@ -789,9 +789,9 @@ jobs:
 
       - name: Verify Pages and agent clients
         run: |
+          pnpm --dir packages/pages-client build
           pnpm --dir apps/pages typecheck
           pnpm --dir apps/pages test
-          pnpm --dir packages/pages-client build
           pnpm --dir packages/pages-client test
           pnpm --dir packages/pages-mcp build
 

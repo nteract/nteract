@@ -258,12 +258,43 @@ context grants no extra permissions. Unknown historical actors remain unknown.
 
 ### Scoped agent access
 
-The first integration is a TypeScript client plus a local stdio MCP adapter,
-not a native Node binding or hosted MCP authorization server. Browser clients
+The integration provides a TypeScript client, an optional local stdio MCP
+adapter, and a hosted stateless Streamable HTTP endpoint. It does not need a
+native Node binding or implement an MCP OAuth authorization server. Browser clients
 retain full Automerge replicas; agents express guarded semantic operations
 and subscribe to durable changes. Both use the same document mutation layer.
 
-A CLI generates an opaque 256-bit credential and opens an approval request
+Hosted MCP and the native API accept Anaconda API keys through the existing
+notebook-cloud whoami validator. The server chooses viewer/editor scope checks;
+caller-supplied scope, account and display-name headers are not authority.
+`cloud:read` permits reading and `cloud:write` permits creation, edits and
+comments. Keys address the existing issuer-plus-namespaced-subject workspace.
+API-key `passport.user_id` and OIDC `sub` must denote the same subject to reach
+the same workspace; different subjects are not silently linked by email.
+The namespace must match browser configuration. Production key-to-browser
+identity equivalence needs a live credential check, beyond generated fixtures.
+
+The hosted endpoint creates a fresh SDK server/transport for each request,
+validates Origin when present, bounds request bytes, rejects GET/DELETE, and
+returns JSON responses without assigning MCP session IDs. It shares tool
+schemas with the JavaScript client and stdio adapter. The pinned SDK 1.29
+implements the established stateless HTTP transport; this is not a claim of
+support for every newer protocol revision. See the
+[SDK transport guidance](https://ts.sdk.modelcontextprotocol.io/server).
+Hosted resources are readable but do not advertise subscriptions. Native plugin
+clients use the existing authenticated WebSocket events; no content polling is
+introduced. A future MCP subscription adapter should follow the current
+protocol rather than adding process-local sessions to remember accounts.
+
+An API key is account-wide within this private Pages service. Its driver label
+is client-declared, credential-bound attribution, not vendor attestation. Key
+validation inherits the existing 60-second cache; revoked keys are rejected on
+revalidation, including incoming/outgoing event frames and client heartbeats.
+Keys are not persisted by Pages. Browser sign-out and Page-grant revocation do
+not revoke provider keys. Future sharing must intersect this authenticated
+identity and provider scope with space membership.
+
+For optional narrower delegation, a CLI generates an opaque 256-bit credential and opens an approval request
 containing only its SHA-256 hash. The signed-in user approves one existing Page,
 read/edit/comment permissions, a client-supplied driver name, and an expiry
 (default one hour, maximum eight). D1 stores the hash and grant, bound to the

@@ -26,7 +26,9 @@
     "prosemirror-state": "1.4.3",
     "prosemirror-view": "1.42.6",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "@nteract/pages-client": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",

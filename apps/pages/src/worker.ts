@@ -1,4 +1,6 @@
-import { readAgentGrant, authorizeAgentOperation, manageAgentAccess } from "./agent-access.ts";
+import { readAgentAccess } from "./agent-auth.ts";
+import { handleMcp } from "./mcp.ts";
+import { authorizeAgentOperation, manageAgentAccess } from "./agent-access.ts";
 import {
   beginServerOidcLogin,
   completeServerOidcLogin,
@@ -85,9 +87,13 @@ export default {
           headers: response.headers,
         });
       }
+      if (url.pathname === "/mcp") {
+        if (request.headers.has("Origin")) assertSameOrigin(request, env);
+        return await handleMcp(request, env);
+      }
       if (url.pathname === "/api/agent") {
         requireValue(request.method === "GET", "method_not_allowed", "Use GET");
-        const grant = await readAgentGrant(env, request);
+        const grant = await readAgentAccess(env, request);
         if (!grant)
           throw new PageError("unauthorized", "Connection is missing, expired or revoked", 401);
         return json({ connection: grant });
@@ -129,7 +135,7 @@ export default {
           "Use a WebSocket upgrade",
         );
         if (request.headers.has("Origin")) assertSameOrigin(request, env);
-        const grant = await readAgentGrant(env, request);
+        const grant = await readAgentAccess(env, request);
         if (!grant)
           throw new PageError("unauthorized", "Connection is missing, expired or revoked", 401);
         authorizeAgentOperation(grant, {
@@ -143,6 +149,7 @@ export default {
               Upgrade: "websocket",
               "x-pages-principal": grant.principal,
               Authorization: request.headers.get("Authorization")!,
+              "X-Pages-Driver": request.headers.get("X-Pages-Driver") ?? "API client",
             },
           }),
         );
@@ -171,10 +178,11 @@ export default {
       if (url.pathname === "/api/tools") {
         requireValue(request.method === "POST", "method_not_allowed", "Use POST");
         let principal: string;
-        const grant = await readAgentGrant(env, request);
+        const grant = await readAgentAccess(env, request);
         if (grant) {
           if (request.headers.has("Origin")) assertSameOrigin(request, env);
           const body = await readBody(request);
+          if (request.headers.has("Origin")) assertSameOrigin(request, env);
           authorizeAgentOperation(grant, body);
           const stub = env.PAGES_WORKSPACES.get(env.PAGES_WORKSPACES.idFromName(grant.principal));
           return stub.fetch(
@@ -184,6 +192,7 @@ export default {
                 "Content-Type": "application/json",
                 "x-pages-principal": grant.principal,
                 Authorization: request.headers.get("Authorization")!,
+                "X-Pages-Driver": request.headers.get("X-Pages-Driver") ?? "API client",
               },
               body: JSON.stringify(body),
             }),

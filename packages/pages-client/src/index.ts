@@ -21,9 +21,9 @@ export interface Connection {
   id: string;
   driver: string;
   display_name: string;
-  page_id: string;
+  page_id: string | null;
   permissions: Permission[];
-  expires_at: number;
+  expires_at: number | null;
 }
 export interface EditRequest {
   page_id: string;
@@ -75,7 +75,7 @@ export class PagesClient {
   readonly origin: string;
   constructor(
     origin: string,
-    private readonly options: { token?: string; fetch?: typeof fetch } = {},
+    private readonly options: { token?: string; driver?: string; fetch?: typeof fetch } = {},
   ) {
     this.origin = pagesOrigin(origin);
   }
@@ -89,6 +89,7 @@ export class PagesClient {
         redirect: "error",
         headers: {
           ...(this.options.token ? { Authorization: `Bearer ${this.options.token}` } : {}),
+          ...(this.options.driver ? { "X-Pages-Driver": this.options.driver } : {}),
           ...(body === undefined ? {} : { "Content-Type": "application/json" }),
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -125,6 +126,16 @@ export class PagesClient {
   }
   call<T = unknown>(operation: string, args: Record<string, unknown>) {
     return this.request<T>("/api/tools", { operation, arguments: args });
+  }
+  listPages() {
+    return this.call<{ pages: { page_id: string; title: string }[] }>("list_pages", {});
+  }
+  createPage(title: string, markdown: string, idempotencyKey: string) {
+    return this.call<PageRead & { page_id: string }>("create_page", {
+      title,
+      block_units: [{ markdown, format: "automerge-rich-text-v1" }],
+      idempotency_key: idempotencyKey,
+    });
   }
   readPage(
     pageId: string,

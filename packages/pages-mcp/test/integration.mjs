@@ -1,3 +1,4 @@
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 // Generated fixtures against local celld only; no production data or credentials.
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -68,6 +69,7 @@ const transport = new StdioClientTransport({
   env: { ...process.env, PAGES_CONNECTION_FILE: file },
   stderr: "pipe",
 });
+const hosted = new Client({ name: "pages-hosted-smoke", version: "1" });
 const mcp = new Client({ name: "pages-smoke", version: "1" });
 const events = [],
   errors = [];
@@ -87,6 +89,20 @@ const value = (result) => {
 };
 try {
   await mcp.connect(transport);
+  await hosted.connect(
+    new StreamableHTTPClientTransport(new URL(origin + "/mcp"), {
+      requestInit: { headers: { Authorization: `Bearer ${pending.config.token}` } },
+    }),
+  );
+  assert.ok(
+    !(await hosted.listTools()).tools.some((t) => t.name === "list_pages"),
+    "scoped credentials cannot discover the account",
+  );
+  const remoteRead = await hosted.callTool({
+    name: "read_page",
+    arguments: { page_id: made.page_id },
+  });
+  assert.equal(value(remoteRead).content.page_id, made.page_id);
   const listed = await mcp.listTools();
   assert.ok(listed.tools.some((t) => t.name === "patch_page"));
   const resource = (await mcp.listResources()).resources[0];
@@ -139,7 +155,7 @@ try {
   });
   assert.equal(wrong.isError, true);
   const comment = value(
-    await mcp.callTool({
+    await hosted.callTool({
       name: "manage_page_comment",
       arguments: {
         page_id: made.page_id,
@@ -159,11 +175,15 @@ try {
     (await mcp.callTool({ name: "read_page", arguments: { page_id: made.page_id } })).isError,
     true,
   );
+  await assert.rejects(
+    hosted.callTool({ name: "read_page", arguments: { page_id: made.page_id } }),
+  );
   console.log(
-    "PASS: local OIDC approval → scoped SDK → real stdio MCP edits/comments → live event/resource notifications → revocation; no read-notification loop",
+    "PASS: local OIDC approval → scoped SDK → real stdio + hosted MCP edits/comments → live event/resource notifications → revocation; no read-notification loop",
   );
 } finally {
   watch.close();
   await mcp.close();
+  await hosted.close();
   await rm(directory, { recursive: true, force: true });
 }

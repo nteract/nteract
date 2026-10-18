@@ -121,6 +121,8 @@ test("agent approval binds account, Page, permissions and expiry; raw tokens and
   assert.equal((await f.tool("read_page", { page_id: f.created.page_id })).status, 200);
   for (const [op, args] of [
     ["list_pages", {}],
+    ["list_pages", { page_id: f.created.page_id }],
+    ["create_page", { page_id: f.created.page_id }],
     ["read_page", { page_id: "page_" + "b".repeat(32) }],
     ["patch_page", { page_id: f.created.page_id }],
     ["manage_page_comment", { page_id: f.created.page_id }],
@@ -220,11 +222,26 @@ test("agent edits persist operation attribution, retry once, and prevent raw rep
   attacker = A.change(attacker, (d) =>
     A.updateText(d, ["blocks", d.order[0], "markdown"], "forged agent edit"),
   );
-  const [, message] = A.generateSyncMessage(attacker, client);
+  const [nextClient, message] = A.generateSyncMessage(attacker, client);
+  client = nextClient;
   assert.ok(message);
   const before = structuredClone(f.storage.values);
   await assert.rejects(
-    f.room.receiveSync(principal, f.created.page_id, server, message!),
+    (async () => {
+      server = await f.room.receiveSync(principal, f.created.page_id, server, message!);
+      // The sync protocol can defer the novel change to a later
+      // round. Drive the protocol until it actually attempts the forged write.
+      for (let i = 0; i < 10; i++) {
+        const out = await f.room.generateSync(f.created.page_id, server);
+        server = out.state;
+        if (out.message) [attacker, client] = A.receiveSyncMessage(attacker, client, out.message);
+        const [next, pending] = A.generateSyncMessage(attacker, client);
+        client = next;
+        if (pending)
+          server = await f.room.receiveSync(principal, f.created.page_id, server, pending);
+      }
+      throw Error("Forged write was never rejected");
+    })(),
     /agent actors|Agent actors/,
   );
   assert.deepEqual(f.storage.values, before);

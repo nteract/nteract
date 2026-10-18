@@ -1,3 +1,4 @@
+import { operationPermission } from "@nteract/pages-client/tools";
 import { hash } from "./document.ts";
 import { json, object, readBody, requireValue, text, PageError } from "./errors.ts";
 import type { ServerSessionEnvironment } from "../../notebook-cloud/src/oidc-session-store.ts";
@@ -5,13 +6,17 @@ import { readServerAppSession } from "../../notebook-cloud/src/oidc-session-stor
 import type { D1Database } from "../../notebook-cloud/src/cloudflare-types.ts";
 
 export type AgentPermission = "read" | "edit" | "comment";
-export interface AgentGrant {
+export interface AgentAccess {
   id: string;
   principal: string;
   display_name: string;
   driver: string;
-  page_id: string;
+  page_id: string | null;
   permissions: AgentPermission[];
+  expires_at: number | null;
+}
+export interface AgentGrant extends AgentAccess {
+  page_id: string;
   expires_at: number;
 }
 interface GrantRow {
@@ -61,20 +66,21 @@ export async function readAgentGrant(
     .first<GrantRow>();
   return row ? (JSON.parse(row.grant_json) as AgentGrant) : null;
 }
-export function authorizeAgentOperation(grant: AgentGrant, body: Record<string, unknown>) {
+export function authorizeAgentOperation(grant: AgentAccess, body: Record<string, unknown>) {
   const args = object(body.arguments ?? {});
-  if (args.page_id !== grant.page_id)
+  const accountOperation = ["list_spaces", "get_space", "list_pages", "create_page"].includes(
+    String(body.operation),
+  );
+  if (accountOperation && grant.page_id !== null)
+    throw new PageError("forbidden", "Connection cannot access account operations", 403);
+  if (
+    !accountOperation &&
+    (typeof args.page_id !== "string" || !/^page_[a-f0-9]{32}$/.test(args.page_id))
+  )
+    throw new PageError("invalid_request", "Provide an explicit Page ID");
+  if (grant.page_id !== null && args.page_id !== grant.page_id)
     throw new PageError("forbidden", "Connection is limited to its approved Page", 403);
-  const permission: Record<string, AgentPermission> = {
-    read_page: "read",
-    read_page_changes: "read",
-    list_page_comments: "read",
-    edit_page: "edit",
-    patch_page: "edit",
-    manage_page_comment: "comment",
-    reply_page_comment: "comment",
-  };
-  const needed = permission[String(body.operation)];
+  const needed = operationPermission(String(body.operation));
   if (!needed || !grant.permissions.includes(needed))
     throw new PageError("forbidden", "Operation is outside this connection's permissions", 403);
 }

@@ -1,9 +1,5 @@
-import {
-  readAgentGrant,
-  authorizeAgentOperation,
-  agentActorId,
-  type AgentGrant,
-} from "./agent-access.ts";
+import { readAgentAccess } from "./agent-auth.ts";
+import { authorizeAgentOperation, agentActorId, type AgentAccess } from "./agent-access.ts";
 import * as A from "@automerge/automerge/slim";
 import {
   canonical,
@@ -141,6 +137,12 @@ export const CAPABILITIES = {
     retained_receipts: 128,
   },
   sync: { protocol: SYNC_PROTOCOL, transport: "websocket", endpoint: "/api/sync" },
+  mcp: {
+    endpoint: "/mcp",
+    transport: "streamable-http",
+    stateless: true,
+    resource_subscriptions: false,
+  },
   agent_access: {
     approval_endpoint: "/api/agent-connections",
     scope: "single_page",
@@ -241,11 +243,11 @@ export class PagesWorkspace {
   private async authorized(peer: SyncPeer): Promise<boolean> {
     if (!this.env) return false;
     if (peer.eventsOnly) {
-      const grant = await readAgentGrant(this.env, peer.request);
+      const grant = await readAgentAccess(this.env, peer.request);
       return (
         !!grant &&
         grant.principal === peer.principal &&
-        grant.page_id === peer.pageId &&
+        (grant.page_id === null || grant.page_id === peer.pageId) &&
         grant.permissions.includes("read")
       );
     }
@@ -585,9 +587,9 @@ export class PagesWorkspace {
           return json({ ok: true });
         }
         const body = await readBody(request);
-        let grant: AgentGrant | null = null;
+        let grant: AgentAccess | null = null;
         if (request.headers.has("Authorization")) {
-          grant = this.env ? await readAgentGrant(this.env, request) : null;
+          grant = this.env ? await readAgentAccess(this.env, request) : null;
           if (!grant || grant.principal !== principal)
             throw new PageError("unauthorized", "Connection expired or revoked", 401);
           authorizeAgentOperation(grant, body);
@@ -620,7 +622,7 @@ export class PagesWorkspace {
   async call(
     principal: string,
     body: Record<string, unknown>,
-    grant?: AgentGrant,
+    grant?: AgentAccess,
   ): Promise<unknown> {
     if (grant) {
       requireValue(grant.principal === principal, "unauthorized", "Connection identity mismatch");
@@ -661,7 +663,7 @@ export class PagesWorkspace {
         "idempotency_key must contain 8–128 characters",
       );
       const id = `page_${(await hash(`${principal}\n${key}`)).slice(0, 32)}`;
-      const digest = await hash(canonical(input));
+      const digest = await hash(canonical(grant ? { input, driver_id: grant.id } : input));
       const existing = await this.state.storage.get<Saved>(id);
       if (existing) {
         const first = existing.receipts.create;
@@ -674,22 +676,39 @@ export class PagesWorkspace {
         return first.result;
       }
       requireValue(catalog.pages.length < 1000, "page_limit_exceeded", "Workspace has 1000 Pages");
+      const creationActor = grant
+        ? await agentActorId(await actorPrefix(principal), grant.id)
+        : newActor(await actorPrefix(principal));
+      const attribution = grant
+        ? { display_name: grant.display_name, driver: grant.driver, driver_id: grant.id }
+        : undefined;
+      const operationId = `op_${(await hash(`${principal}:${grant?.id ?? "browser"}:${key}`)).slice(0, 32)}`;
       const doc = createPage(
         id,
         input.title ?? "Untitled",
         input.block_units ?? (input.markdown === undefined ? [] : [input.markdown]),
-        newActor(await actorPrefix(principal)),
+        creationActor,
       );
       try {
         const content = await snapshot(doc, 1);
-        const result = { page_id: id, space_id: spaceId, content, commit_status: "committed" };
+        const result = {
+          page_id: id,
+          space_id: spaceId,
+          content,
+          commit_status: "committed",
+          operation_id: operationId,
+          ...(attribution ? { attribution } : {}),
+        };
         const saved: Saved = {
           bytes: A.save(doc),
+          ...(attribution ? { authors: { [creationActor]: attribution } } : {}),
           sequence: 1,
           events: [
             {
               sequence: 1,
               actor: principal,
+              operation_id: operationId,
+              ...(attribution ? { attribution } : {}),
               changed_block_ids: doc.order,
               deleted_block_ids: [],
               title_changed: true,

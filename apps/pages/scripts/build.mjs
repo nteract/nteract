@@ -8,6 +8,11 @@ import { fileURLToPath } from "node:url";
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const root = path.resolve(app, "../..");
 const require = createRequire(import.meta.url);
+const clientBuild = spawnSync("pnpm", ["--dir", "packages/pages-client", "build"], {
+  cwd: root,
+  stdio: "inherit",
+});
+if (clientBuild.status !== 0) process.exit(clientBuild.status ?? 1);
 const result = spawnSync(
   "cargo",
   ["build", "-p", "nteract-markdown-wasm", "--target", "wasm32-unknown-unknown", "--release"],

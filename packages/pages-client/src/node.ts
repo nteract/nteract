@@ -6,6 +6,7 @@ export interface ConnectionFile {
   origin: string;
   token: string;
   page_id: string;
+  driver?: string;
 }
 export function prepareConnection(
   origin: string,
@@ -60,7 +61,10 @@ export function watchPage(
     url.searchParams.set("page", config.page_id);
     url.searchParams.set("since", String(since));
     socket = new WebSocket(url, {
-      headers: { Authorization: `Bearer ${config.token}` },
+      headers: {
+        Authorization: `Bearer ${config.token}`,
+        ...(config.driver ? { "X-Pages-Driver": config.driver } : {}),
+      },
       maxPayload: 2 * 1024 * 1024,
     });
     socket.on("open", () => {
@@ -115,6 +119,6 @@ export function watchPage(
       clearInterval(heartbeat);
       socket?.close();
     },
-    client: new PagesClient(origin, { token: config.token }),
+    client: new PagesClient(origin, { token: config.token, driver: config.driver }),
   };
 }

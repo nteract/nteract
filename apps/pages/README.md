@@ -47,7 +47,39 @@ reconnect, and session revocation.
 rebuild if you want to retain local Pages. The dev session secret is generated
 in ignored `dist/.dev.vars`, retained on restart, and never sent to the browser.
 
-## Connect an agent
+## Hosted MCP and native API clients
+
+The service exposes Streamable HTTP MCP at `https://m.runtimed.run/mcp`.
+Configure a remote MCP client with an Anaconda API key in the
+`Authorization: Bearer <key>` header and an optional `X-Pages-Driver: Kilo`
+(or other client name) header. Use the harness's secret configuration rather
+than committing credentials. Clients must support bearer headers; this endpoint
+does not implement an interactive MCP OAuth authorization server.
+
+The shared nteract validator checks the key against Anaconda `whoami`.
+`cloud:read` permits reads; `cloud:write` also permits creation, edits and
+comments. Access is limited to the authenticated account's private workspace.
+The driver is client-declared attribution, never authority. API keys are revoked
+at Anaconda, with the existing validator caching successful checks for up to
+60 seconds. Browser sign-out and Pages connection revocation do not revoke keys.
+
+Set `NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL` to the provider's trusted
+HTTPS whoami endpoint (`https://anaconda.com/api/auth/sessions/whoami` for the
+production deployment). API-key and OIDC principal namespaces must match.
+Both use `[OIDC issuer, namespaced verified subject]` for workspace identity;
+when `passport.user_id` equals OIDC `sub`, the browser and key reach the same
+Pages. Different verified subjects remain separate, even if display names or
+emails match. No automatic account merge or migration is performed.
+
+Hosted MCP is stateless with the repository's SDK 1.29 transport. Every request
+authenticates independently and every Page operation names its target. It
+provides Page discovery/creation, guarded edits, comments, and readable
+resources. It does not advertise hosted resource subscriptions; `/api/events`
+remains the live WebSocket path for native plugins, while browser CRDT sync
+continues on `/api/sync`. See [the client package](../../packages/pages-client/README.md)
+for direct JavaScript use with the same key and operations.
+
+## Optional Page-scoped connections
 
 Build the TypeScript SDK and stdio MCP adapter from the repository root:
 
@@ -65,8 +97,8 @@ Then configure the harness to run `node /absolute/repo/packages/pages-mcp/dist/c
 with `PAGES_CONNECTION_FILE=/absolute/private/connection.json` in its environment.
 See [the MCP package](../../packages/pages-mcp/README.md) for a configuration example.
 
-This first adapter runs locally over stdio. It is not a remotely hosted MCP OAuth
-endpoint. No browser cookie or Anaconda token is copied into the harness.
+This optional adapter runs locally over stdio. The same scoped credential can
+also authenticate to `/mcp`, where it exposes only its approved Page operations. No browser cookie or Anaconda token is copied into the harness.
 Connections can be revoked at `/?connections=1`; sign-out does not revoke them.
 The client-supplied driver name is a label approved by the account holder, not
 proof of a particular model or vendor. The service binds it to the admitted
@@ -86,10 +118,11 @@ using generated local fixtures. It does not access production accounts.
 The service reuses nteract's server OIDC and session implementation directly
 from `apps/notebook-cloud/src`. It does not fork the auth protocol or copy
 tokens into browser storage. Server-login deployments (the default) accept only
-their own session cookie with same-origin checks or a scoped Pages agent
-credential, and reject raw provider tokens.
-This prevents a token issued through a shared OAuth client on another endpoint
-from directly accessing Pages. Agent credentials are approved for one Page,
+their own session cookie with same-origin checks, a scoped Pages agent
+credential, or a configured Anaconda API key. Raw provider OIDC tokens remain
+rejected.
+This prevents an OIDC token issued through a shared OAuth client on another
+endpoint from directly accessing Pages. API keys have an explicit whoami validation path. Agent credentials are approved for one Page,
 read/edit/comment permissions, and an expiry of at most eight hours.
 Dedicated bearer-only installations must explicitly set
 `PAGES_ALLOW_PROVIDER_BEARER=true`, omit `NOTEBOOK_CLOUD_OIDC_FLOW=server`,

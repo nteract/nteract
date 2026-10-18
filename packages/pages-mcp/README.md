@@ -1,5 +1,27 @@
 # Pages MCP
 
+The [Pages service](../../apps/pages/README.md) hosts MCP at
+`https://m.runtimed.run/mcp`. Connect using Streamable HTTP and configure:
+
+- `Authorization: Bearer <Anaconda API key>`
+- `X-Pages-Driver: Kilo` (optional attribution label)
+
+Use your harness's secret configuration for the key. There is no shared server
+API key and no browser cookie to copy. Each request validates the caller's key
+through Anaconda; `cloud:read` allows reading and `cloud:write` adds creation,
+edits and comments in that account's private workspace. Hosted MCP lists Pages
+and creates rich Pages in addition to the tools below. Page IDs stay explicit.
+
+The hosted transport uses SDK 1.29's stateless Streamable HTTP implementation
+and advertises tools plus readable resources. Long-lived resource subscriptions
+are not advertised on this transport; use the native client's WebSocket events
+for live plugin updates. No interactive OAuth authorization server is provided.
+A harness must support a supplied bearer header. Different provider subjects
+are not linked by matching names or email; production identity equivalence must
+be checked with the user's key.
+
+## Optional local stdio adapter
+
 Private stdio MCP adapter over the [Pages TypeScript client](../pages-client/README.md).
 It exposes the same guarded operations as the browser's service, with explicit
 Page IDs, idempotency keys, Markdown projections, and comment operations.
@@ -50,8 +72,8 @@ Automerge document and binds operation attribution to the credential.
 
 This is a local stdio server, not a hosted MCP endpoint or an OAuth authorization
 server. It cannot create/discover Pages, obtain broader account access, execute
-cells, or send raw CRDT changes. Hosted authorization and space permissions are
-separate work.
+cells, or send raw CRDT changes. This local scoped adapter remains optional alongside hosted MCP. Space
+permissions remain separate work.
 
 For local end-to-end verification, build/start `apps/pages`, then run:
 
