@@ -39,9 +39,9 @@ production qualification. Roadmap statements in the call are not release facts.
   separating fetch from put, and the requesting peer from the verified signing
   author. Its [WASM policy interface](https://github.com/inkandswitch/subduction/blob/239c5fc125619d345be4015d186b91ac587306ad/subduction_wasm/src/policy.rs)
   and [ephemeral policies](https://github.com/inkandswitch/subduction/blob/239c5fc125619d345be4015d186b91ac587306ad/subduction_wasm/src/policy/ephemeral.rs)
-  expose authorization hooks. Wiring a compatible implementation through Repo
-  remains work to prove; newer Rust source does not establish the APIs of an
-  older published WASM package.
+  expose authorization hooks. Newer Rust source alone does not establish the
+  APIs of an older published WASM package; the spike below separately verifies
+  policy forwarding with published Subduction 0.23.0.
 - [Patchwork's integration](https://github.com/inkandswitch/patchwork-system/blob/bd12be7c10d6145cab0888f025c09b2f291612a7/core/patchwork/src/repo.ts)
   is another useful reference, but its dependency line is Repo
   `2.6.0-subduction.48` with `@automerge/automerge-subduction` 0.16.1, not
@@ -57,7 +57,10 @@ reuse, not a reason to skip our admission, recovery, and compatibility checks.
 OIDC sessions and API keys should pass through the same account and resource
 authorization model. Credential verification establishes a principal and
 provider capability bounds. The host's grant determines document access.
-Neither a document URL, an email/display name, a client-supplied driver label,
+The spike deliberately uses issuer/endpoint-qualified namespace defaults rather
+than production's OIDC/API-key fallback mapping. Existing ACL principal strings
+need explicit compatibility mapping before adoption. Neither a document URL, an
+email/display name, a client-supplied driver label,
 nor a valid signing key alone grants access. This follows the existing
 [identity](../adr/identity-and-trust.md),
 [credential transport](../adr/hosted-credential-transport.md), and
@@ -113,21 +116,36 @@ production room paths already use that implementation.
 
 ## Bounded spike and evidence
 
+The initial [runnable spike](../../experiments/authenticated-automerge/README.md)
+now passes a clean pinned build and 19 tests on Node 24.22. Published Subduction
+0.23.0 already has the policy interfaces: the tested Repo adapter patch forwards
+`policy` and `ephemeralPolicy` without changing WASM or the wire protocol. This
+qualifies the integration seam, not a production service.
+
 Use disposable documents and pinned packages. First exercise the policy boundary
-with deterministic credential fixtures; then integrate browser OIDC and Node
-API-key verification. Fixture tests must not be reported as live provider
+with deterministic credential fixtures; then qualify browser OIDC login and live
+Node API-key admission. Fixture tests must not be reported as live provider
 qualification. Keep the Pages deployment and storage namespace untouched.
 
-| Evidence | Status at proposal |
+| Evidence | Initial spike result |
 | --- | --- |
-| None/reader/writer enforcement, cross-account denial, forged account/driver claims | Planned; not yet run |
-| Real OIDC and API-key paths, key binding, expiry/revocation on live connections | Planned; not yet run |
-| Reader presence, signed origin versus relay identity, revoked subscriptions | Planned; not yet run |
-| Unknown-field preservation and managed-runtime rejection | Planned; not yet run |
-| Failed storage, retry, duplicate delivery, partial batches, restart recovery | Planned; not yet run |
+| None/reader/writer enforcement, cross-account denial, forged account/driver claims | Passed through real native policy and verified-identity fixtures |
+| OIDC/API-key verification, key binding, expiry/revocation | Production verifiers with generated credentials passed; key revocation tested on connected peers; browser login and live provider untested |
+| Relayed record authorship | Native requestor and original author differ; expired-author history rejected despite current relay authority |
+| Reader presence, signed origin, revoked subscriptions | Passed with native pubsub and positive controls; multi-hop presence identity remains untested |
+| Unknown-field preservation and managed-runtime rejection | Unknown content and tolerant reader fixtures passed; runtime role gate passed, actual runtime semantic validation untested |
+| Storage failure, retry, restart recovery | Sustained failure, fresh-process reopen, and same-edit flush retry passed; partial batches and remote receipts remain untested |
 | Matching custom WASM/glue, browser/Node and editor interoperability | Planned; not yet run |
 | Cold-load time/memory, reconnect bytes, writes and bytes per editing burst | Planned; not yet run |
 | Existing machinery removed versus adapter code added | Planned; not yet run |
+
+The test also exposes two unresolved contracts. Rejected optimistic edits remain
+local, and later retries may persist them: failed flush is not rollback. A
+three-peer test confirms the policy preserves the original signing author and
+denies its relayed history after that author's lease expires, even when the relay
+remains an authorized writer. Durable author provenance must be separate from
+current-session admission before adopting this for general historical replication. Provider API-key revocation is additionally
+bounded by the existing 60-second validator cache plus the admission lease.
 
 An acceptance receipt must identify the document and accepted causal frontier,
 with a documented recovery guarantee. Do not infer one from a peer-head event or

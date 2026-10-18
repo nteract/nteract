@@ -154,16 +154,17 @@ authority for protected invariants. Migration must account for offline peers,
 old writers, concurrent migration attempts, and retries. Never silently clamp a
 newer schema version or discard unknown data merely to mount an older editor.
 
-| Fixture | Status at proposal |
+| Fixture | Initial spike result |
 | --- | --- |
-| Old/new clients edit known fields while unknown fields and blocks round-trip | Planned; not yet run |
-| Malformed known fields and unsupported versions yield recoverable diagnostics | Planned; not yet run |
+| Old/new clients edit known fields while unknown fields and blocks survive | Passed through real Repo/Subduction; editor/export round trips remain untested |
+| Malformed known fields and unsupported content yield diagnostics | Passed in the small typed-reader fixture; no actual editor qualification |
 | Concurrent initialization/migration and retry preserve usable content | Planned; not yet run |
-| None/reader/writer grants remain independent of client-supplied type metadata | Planned; not yet run |
-| Valid-looking unauthorized runtime changes fail before durable storage/fanout | Planned; not yet run |
-| Comments preserve authorship and anchors through edits; revoked peers lose presence access | Planned; not yet run |
+| None/reader/writer grants remain independent of payload | Host-owned registration and native access checks passed; clients cannot change the registered profile |
+| Unauthorized runtime writes | Ordinary writer rejected by native role gate; actual RuntimeStateDoc field validation remains untested |
+| Comments and revoked presence | Live presence revocation passed; comment authorship and anchor integration remain untested |
 
-The spike should demonstrate these properties with small representative documents
+The [spike](../../experiments/authenticated-automerge/README.md) tests small
+representative documents. Complete the remaining fixtures
 before changing Pages or notebook admission. Results should distinguish fixture
 proof, real editor behavior, and deployment behavior. A later ADR can record a
 chosen profile and compatibility promise once those boundaries are demonstrated.
