@@ -16,6 +16,7 @@ import type {
 import { authenticateDevRequest } from "../src/identity.ts";
 import { FrameType, encodeTypedFrame, type FrameTypeValue } from "../src/protocol.ts";
 import { RoomMaterializer } from "../src/room-materializer.ts";
+import type { CheckpointObjects } from "../src/room-checkpoint-storage.ts";
 import {
   createEmptyRoomHost,
   loadRoomHostSnapshot,
@@ -967,6 +968,7 @@ describe("RoomMaterializer", () => {
     const editor = NotebookHandle.create_bootstrap(editorIdentity.actorLabel);
     const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
     await syncMaterializerWithClient(materializer, editorPeer, editor);
+    await materializer.checkpoint();
     editor.add_cell(0, "cell-1", "markdown");
     editor.update_source("cell-1", "Durable room checkpoint\n");
     const message = editor.flush_local_changes();
@@ -1042,6 +1044,10 @@ describe("RoomMaterializer", () => {
     const editor = NotebookHandle.create_bootstrap(editorIdentity.actorLabel);
     editor.init_comments_sync_target("comments:demo");
     await syncCommentsMaterializerWithClient(materializer, editorPeer, editor);
+    await materializer.checkpoint();
+    const beforeComment = await state.storage.get<{ documents: CheckpointObjects }>(
+      "room-host:checkpoint",
+    );
     editor.create_comment_thread(
       "thread-recovery",
       "message-recovery",
@@ -1055,6 +1061,11 @@ describe("RoomMaterializer", () => {
       true,
     );
     await materializer.checkpoint();
+    assert.deepEqual(
+      (await state.storage.get<{ documents: CheckpointObjects }>("room-host:checkpoint"))?.documents
+        .notebook,
+      beforeComment?.documents.notebook,
+    );
 
     const reloaded = new RoomMaterializer("demo", state, checkpointEnv(state));
     const viewerIdentity = authenticateDevRequest(
@@ -2171,6 +2182,7 @@ describe("RoomMaterializer", () => {
       runtimePeer,
     );
     assert.equal(initialStateAccepted.changed, true);
+    await materializer.checkpoint();
 
     const ownerIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner"),
@@ -2188,18 +2200,21 @@ describe("RoomMaterializer", () => {
     assert.equal(accepted.changed, true);
     assert.equal(accepted.runtime_state_changed, false);
 
+    await materializer.checkpoint();
+    const reloaded = new RoomMaterializer("demo", state, checkpointEnv(state));
+
     const viewerIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=carol&operator=desktop:c&scope=viewer"),
     );
     const viewer = NotebookHandle.create_bootstrap(viewerIdentity.actorLabel);
     viewer.set_blob_port(1234);
     await syncMaterializerRuntimeStateWithClient(
-      materializer,
+      reloaded,
       { id: "peer-viewer", identity: viewerIdentity },
       viewer,
     );
     await syncMaterializerCommsDocWithClient(
-      materializer,
+      reloaded,
       { id: "peer-viewer", identity: viewerIdentity },
       viewer,
     );
@@ -3350,6 +3365,205 @@ class FakeR2Object implements R2ObjectBody {
 }
 
 describe("RoomMaterializer stale-activation replacement checks (#4295)", () => {
+  it("recognizes its own queued write across checkpoint recovery", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
+    await materializer.checkpoint();
+    let entered!: () => void;
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const get = state.storage.get.bind(state.storage);
+    let intercept = true;
+    state.storage.get = async <T>(key: string) => {
+      const value = await get<T>(key);
+      if (key === "room-host:checkpoint" && intercept) {
+        intercept = false;
+        entered();
+        await held;
+      }
+      return value;
+    };
+    const queued = materializer.checkpoint();
+    await waiting;
+    await materializer.compareSetCloudPackageManifest(null, {
+      version: 1,
+      pyodide: "0.28.3",
+      requirements: ["six"],
+      wheels: [],
+    });
+    await materializer.checkpoint();
+    const host = await (
+      materializer as unknown as { loadHost(): ReturnType<typeof createEmptyRoomHost> }
+    ).loadHost();
+    host.sync_peer = () => {
+      throw new Error("PatchLogMismatch");
+    };
+    await materializer.syncPeer({
+      id: "after-recovery",
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=bob&operator=browser:b&scope=viewer"),
+      ),
+    });
+    release();
+    await queued;
+    assert.equal((await state.storage.list()).size, 1);
+  });
+
+  it("serializes all documents after recovery while retaining committed references", async () => {
+    const state = fakeState();
+    const env = checkpointEnv(state);
+    const materializer = new RoomMaterializer("demo", state, env);
+    await materializer.checkpoint();
+    const original = await state.storage.get<{ documents: CheckpointObjects }>(
+      "room-host:checkpoint",
+    );
+    const host = await checkpointHost(materializer);
+    host.sync_peer = () => {
+      throw new Error("PatchLogMismatch");
+    };
+    await materializer.syncPeer({
+      id: "after-recovery",
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=bob&operator=browser:b&scope=viewer"),
+      ),
+    });
+    const recovered = await checkpointHost(materializer);
+    const saves: string[] = [];
+    for (const method of [
+      "save_notebook",
+      "save_runtime_state_doc",
+      "save_comms_doc",
+      "save_comments_doc",
+    ] as const) {
+      const save = recovered[method].bind(recovered);
+      recovered[method] = () => {
+        saves.push(method);
+        return save();
+      };
+    }
+    await materializer.checkpoint();
+    assert.equal(saves.length, 4);
+    const current = await state.storage.get<{ documents: CheckpointObjects }>(
+      "room-host:checkpoint",
+    );
+    assert.deepEqual(current?.documents, original?.documents);
+    const restored = await checkpointHost(new RoomMaterializer("demo", state, env));
+    assert.deepEqual(restored.get_heads_hex(), recovered.get_heads_hex());
+  });
+
+  it("skips unchanged serialization and writes, then persists only changed documents", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
+    await materializer.checkpoint();
+    const original = await state.storage.list();
+    const bucket = checkpointEnv(state).NOTEBOOK_SNAPSHOTS as FakeR2Bucket;
+    const originalObjects = bucket.objects.size;
+    let uploads = 0;
+    const upload = bucket.put.bind(bucket);
+    bucket.put = async (...args) => {
+      uploads++;
+      return upload(...args);
+    };
+    const host = await (
+      materializer as unknown as { loadHost(): ReturnType<typeof createEmptyRoomHost> }
+    ).loadHost();
+    const puts: string[] = [];
+    const put = state.storage.put.bind(state.storage);
+    state.storage.put = async <T>(key: string, value: T) => {
+      puts.push(key);
+      await put(key, value);
+    };
+    host.save_notebook = () => {
+      throw new Error("unchanged notebook serialized");
+    };
+    host.save_comms_doc = () => {
+      throw new Error("unchanged comms serialized");
+    };
+    host.save_comments_doc = () => {
+      throw new Error("unchanged comments serialized");
+    };
+    const saveRuntime = host.save_runtime_state_doc.bind(host);
+    host.save_runtime_state_doc = () => {
+      throw new Error("unchanged runtime serialized");
+    };
+    await Promise.all([materializer.checkpoint(), materializer.checkpoint()]);
+    assert.deepEqual(puts, []);
+    assert.equal(uploads, 0);
+    assert.deepEqual(await state.storage.list(), original);
+
+    host.save_runtime_state_doc = saveRuntime;
+    host.set_workstation_attachment_json(
+      JSON.stringify({
+        workstation_id: "probe",
+        display_name: "Probe",
+        provider: "local",
+        default_environment_label: "probe",
+        environment_policy: "local",
+        status: "ready",
+        updated_at: "2026-10-17T00:00:00Z",
+      }),
+    );
+    await materializer.checkpoint();
+    assert.deepEqual(puts, ["room-host:checkpoint"]);
+    assert.equal(uploads, 1, "only the changed runtime body is uploaded");
+    assert.equal(bucket.objects.size, originalObjects + 1);
+    const current = await state.storage.get<{ documents: CheckpointObjects }>(
+      "room-host:checkpoint",
+    );
+    const prior = original.get("room-host:checkpoint") as { documents: CheckpointObjects };
+    for (const kind of ["notebook", "comms", "comments"] as const)
+      assert.deepEqual(current?.documents[kind], prior.documents[kind]);
+    assert.notDeepEqual(current?.documents.runtime_state, prior.documents.runtime_state);
+    const restored = new RoomMaterializer("demo", state, checkpointEnv(state));
+    const restoredHost = await checkpointHost(restored);
+    assert.deepEqual(
+      restoredHost.get_runtime_state_heads_hex(),
+      host.get_runtime_state_heads_hex(),
+    );
+    const saves: string[] = [];
+    for (const method of [
+      "save_notebook",
+      "save_runtime_state_doc",
+      "save_comms_doc",
+      "save_comments_doc",
+    ] as const) {
+      const save = restoredHost[method].bind(restoredHost);
+      restoredHost[method] = () => {
+        saves.push(method);
+        return save();
+      };
+    }
+    await restored.checkpoint();
+    assert.equal(saves.length, 4, "fresh activation serializes all documents");
+    assert.equal(puts.length, 2);
+    assert.equal(uploads, 1, "fresh activation still reuses committed object hashes");
+  });
+
+  it("retries the full first checkpoint after a partial or uncertain failure", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
+    const put = state.storage.put.bind(state.storage);
+    state.storage.put = async <T>(key: string, value: T) => {
+      await put(key, value);
+      if (key === "room-host:checkpoint") throw new Error("ack lost");
+    };
+    await assert.rejects(materializer.checkpoint(), /ack lost/);
+    const puts: string[] = [];
+    state.storage.put = async <T>(key: string, value: T) => {
+      puts.push(key);
+      await put(key, value);
+    };
+    await materializer.checkpoint();
+    assert.equal(puts.length, 1);
+    await materializer.checkpoint();
+    assert.equal(puts.length, 1);
+  });
+
   it("allows this materializer's concurrent queued checkpoints", async () => {
     const state = fakeState();
     const materializer = new RoomMaterializer("demo", state, checkpointEnv(state));
@@ -3511,6 +3725,8 @@ describe("RoomMaterializer object checkpoint commits", () => {
       const original = await state.storage.get("room-host:checkpoint");
       const originalHost = await checkpointHost(materializer);
       const priorHeads = Array.from(originalHost.get_runtime_state_heads_hex());
+      const putObject = env.NOTEBOOK_SNAPSHOTS!.put.bind(env.NOTEBOOK_SNAPSHOTS!);
+      const putManifest = state.storage.put.bind(state.storage);
       // Mutate only fixture state; no interpreter or code execution is involved.
       await materializer.setWorkstationAttachment({
         workstation_id: "fixture",
@@ -3537,6 +3753,15 @@ describe("RoomMaterializer object checkpoint commits", () => {
       const reloaded = await checkpointHost(new RoomMaterializer("demo", state, env));
       assert.deepEqual(Array.from(reloaded.get_runtime_state_heads_hex()), priorHeads);
       assert.equal(reloaded.get_workstation_attachment_json(), "null");
+      env.NOTEBOOK_SNAPSHOTS!.put = putObject;
+      state.storage.put = putManifest;
+      await materializer.checkpoint();
+      const retried = await checkpointHost(new RoomMaterializer("demo", state, env));
+      assert.deepEqual(
+        retried.get_runtime_state_heads_hex(),
+        originalHost.get_runtime_state_heads_hex(),
+      );
+      assert.notEqual(retried.get_workstation_attachment_json(), "null");
     });
 
   it("selects a generation only after every body write completes, and rechecks replacement", async () => {
