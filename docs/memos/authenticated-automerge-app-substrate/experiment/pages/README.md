@@ -1,4 +1,4 @@
-# Native Pages on celld
+# Native Pages on Durable Objects
 
 A second, isolated Pages prototype using experimental Automerge Repo 3 and
 Subduction. It keeps the rich editor, passage comments, cursors, and incoming
@@ -64,7 +64,8 @@ separate ordering list or global renumbering.
 
 The byte-store adapter delegates record persistence to `ctx.storage`. It does
 not manage an independent SQLite connection, upload Automerge snapshots on each
-edit, or implement object-store manifests. celld owns replication and recovery.
+edit, or implement object-store manifests. On celld, the runtime owns replication and recovery. Cloudflare provides the
+same persistence boundary through SQLite Durable Objects.
 A fleet backed by R2 uses the same application boundary. Direct R2 bindings are
 available for independent blobs or exports; duplicating the live records there
 would add another persistence authority.
@@ -191,6 +192,50 @@ checks the expected source declaration and fails the build if that dependency
 changes. It does not replace global Buffer or modify installed dependencies.
 The regression test covers Unicode, binary data, and growth beyond the initial
 8 KiB encoding buffer. The browser keeps upstream's normal packaging.
+
+On current workerd, accepted WebSockets default to Blob delivery. The byte
+transport explicitly requests ArrayBuffer delivery before installing listeners;
+otherwise the native handshake cannot decode incoming frames.
+
+SQLite Durable Objects limit a stored key and value to 2 MB. Subduction encodes
+native records as hex inside its storage frame, so the shared browser/host limit
+is 900 KiB per record, with a 1,900,000-byte guard on the stored frame plus key.
+Aggregate document history remains bounded at 16 MiB. API operations validate
+derived records and retry intents before persisting them, so an oversized edit
+returns 413 without creating an unrecoverable intent. These limits also apply
+on celld to keep both deployments compatible.
+
+## Cloudflare preview deployment
+
+The Cloudflare target is `preview.runt.run`, Worker `nteract-pages-next`, with a
+separate D1 database named `nteract-pages-next-auth` and new Page/Catalog SQLite
+Durable Object namespaces. It reuses the previous preview's **Anaconda staging**
+OIDC client and API-key verifier. Staging credentials are required; a production
+Anaconda API key is not interchangeable. The session secret is newly generated.
+No dev authentication flag is included.
+
+After committing and rebuilding, prepare a new directory from the explicit
+artifact allowlist:
+
+```sh
+node pages/scripts/cloudflare-stage.mjs /tmp/pages-cloudflare-release D1_DATABASE_UUID
+node_modules/.bin/wrangler deploy --config /tmp/pages-cloudflare-release/wrangler.json --dry-run
+node_modules/.bin/wrangler deploy --config /tmp/pages-cloudflare-release/wrangler.json
+node_modules/.bin/wrangler secret put NOTEBOOK_CLOUD_APP_SESSION_SECRET --config /tmp/pages-cloudflare-release/wrangler.json
+```
+
+The staging helper requires a clean source tree and matching build receipt.
+It separates Worker WASM modules from browser assets and excludes local secrets
+and databases. It does not attach the domain. Verify the new workers.dev endpoint
+first, then update the existing Workers custom domain to service
+`nteract-pages-next`. Rollback changes that service back to
+`nteract-notebook-cloud`; the old Worker, D1 and R2 resources remain available.
+The existing `m.runtimed.run` service is independent.
+
+This deployment does not need an R2 binding for native records: SQLite Durable
+Objects already provide durable storage. Independent large blobs or exports can
+use R2 later. Live provider login, API-key editing and recovery require separate
+verification from local workerd fixtures.
 
 ## Isolated lab deployment
 

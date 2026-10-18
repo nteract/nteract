@@ -4,6 +4,7 @@ import { Repo } from "@automerge/automerge-repo";
 import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
 import { applyComment } from "../model/comments.mjs";
 import { projectPage } from "../model/page.mjs";
+import { BACKEND_LIMITS } from "../model/limits.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 16));
 export async function request(url, options = {}) {
@@ -168,6 +169,7 @@ export class PageSession {
       signer: this.signer,
       storage: this.storage,
       syncTimeoutMilliseconds: 1000,
+      ...BACKEND_LIMITS,
     });
     this.repo = new Repo({ backend: this.backend });
     await this.connect(false);

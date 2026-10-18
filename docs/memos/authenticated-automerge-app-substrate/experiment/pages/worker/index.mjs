@@ -15,6 +15,7 @@ import {
 } from "@cloud/server-oidc.ts";
 import { handleLocalOidcRequest } from "@cloud/dev-oidc.ts";
 import { createPageData, initializePage, projectPage, applyPageOperation } from "../model/page.mjs";
+import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
 import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
 import {
@@ -248,6 +249,16 @@ export class Catalog {
         const response = await this.env.PAGES.getByName(pageId).fetch(
           forwarded(request, "/internal/create", { ...args, page_id: pageId }),
         );
+        if (
+          response.status === 413 &&
+          response.headers.get("x-pages-create-rejected") === "before-intent"
+        ) {
+          // Only this explicit pre-intent rejection proves there is no Page
+          // creation to recover. Ambiguous failures retain their reservation.
+          await this.ctx.storage.delete(`page/${pageId}`);
+          await this.ctx.storage.delete(key);
+          await this.ctx.storage.sync();
+        }
         if (!response.ok) return response;
         intent.receipt = await response.json();
         await this.ctx.storage.put(`page/${pageId}`, {
@@ -324,8 +335,7 @@ export class Page {
           storage: new DurableByteStore(ctx.storage),
           policy: policy.native(),
           ephemeralPolicy: policy.ephemeral(),
-          maxRecordBytes: 4 * 1024 * 1024,
-          maxSnapshotBytes: 16 * 1024 * 1024,
+          ...BACKEND_LIMITS,
         });
         const repo = new Repo({ backend });
         Object.assign(this, { signer, serverKey, serverSenderId, policy, backend, repo });
@@ -446,21 +456,30 @@ export class Page {
           if (intent.metadata.owner !== identity.principal)
             throw new HttpError(403, "Document access denied");
         } else {
-          const doc = A.change(
-            A.from(createPageData({ pageId: args.page_id, title: args.title })),
-            (draft) => initializePage(draft, args.markdown ?? ""),
-          );
-          const documentId = interpretAsDocumentId(generateAutomergeUrl());
-          const metadata = {
-            pageId: args.page_id,
-            owner: identity.principal,
-            ownerName: identity.displayName,
-            documentId,
-            tree: logicalId(documentIdToBinary(documentId)),
-            deleted: false,
-            createdReceipt: { page_id: args.page_id, title: doc.title, heads: A.getHeads(doc) },
-          };
-          intent = { metadata, bytes: A.save(doc) };
+          try {
+            const doc = A.change(
+              A.from(createPageData({ pageId: args.page_id, title: args.title })),
+              (draft) => initializePage(draft, args.markdown ?? ""),
+            );
+            assertDocumentLimits(doc);
+            const documentId = interpretAsDocumentId(generateAutomergeUrl());
+            const metadata = {
+              pageId: args.page_id,
+              owner: identity.principal,
+              ownerName: identity.displayName,
+              documentId,
+              tree: logicalId(documentIdToBinary(documentId)),
+              deleted: false,
+              createdReceipt: { page_id: args.page_id, title: doc.title, heads: A.getHeads(doc) },
+            };
+            intent = { metadata, bytes: A.save(doc) };
+            assertIntentSize("host/creation", [intent.bytes], { metadata });
+          } catch (error) {
+            if (error.status !== 413) throw error;
+            const response = json({ error: error.message }, 413);
+            response.headers.set("x-pages-create-rejected", "before-intent");
+            return response;
+          }
           await this.ctx.storage.put("host/creation", intent);
         }
         await this.initializeRepo();
