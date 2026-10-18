@@ -136,7 +136,7 @@ try {
   });
   await b.goto(origin + "/?page=" + legacy.page_id);
   await expect(b.getByRole("status")).toHaveText("Saved · Live");
-  await b.getByRole("button", { name: "Edit", exact: true }).click();
+  await b.getByRole("button", { name: "Edit this page", exact: true }).click();
   await expect(eb).toHaveText("Existing Markdown");
   await expect(eb.locator("strong")).toHaveText("Markdown");
   await edge(eb, true);

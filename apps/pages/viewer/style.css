@@ -429,16 +429,30 @@ textarea {
 .rich-editor {
   position: relative;
 }
+.document-toolbar:not(:empty) {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 10px 0;
+  margin-bottom: 16px;
+  background: #fcfbf8;
+  border-bottom: 1px solid #e5e6df;
+}
+.page-edit-action {
+  margin-bottom: 20px;
+}
+.page-edit-action button {
+  border: 1px solid #d3d7ca;
+}
+.page-edit-action p {
+  font-size: 13px;
+  color: #747c6d;
+}
 .rich-toolbar {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin-bottom: 8px;
-  opacity: 0.5;
-}
-.rich-editor:focus-within .rich-toolbar,
-.rich-editor:hover .rich-toolbar {
-  opacity: 1;
+  margin: 0;
 }
 .rich-toolbar button {
   font-size: 12px;

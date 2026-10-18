@@ -37,6 +37,8 @@ function App() {
   const [editing, setEditing] = useState<string | null | undefined>(undefined),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  const [activeBlock, setActiveBlock] = useState<string | null>(null);
+  const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null);
   const [selection, setSelection] = useState<{ blockId: string; range: CommentSelection } | null>(
     null,
   );
@@ -53,6 +55,7 @@ function App() {
   }, []);
   useEffect(() => {
     setEditing(undefined);
+    setActiveBlock(null);
     setSelection(null);
   }, [state.page?.page_id]);
   useEffect(() => {
@@ -69,31 +72,42 @@ function App() {
       setBusy(false);
     }
   }
-  async function editBlock(id: string) {
+  async function editPage() {
     const replica = store.replica;
     if (!replica?.pageId) return;
-    if (replica.doc?.blocks[id]?.kind === "agent_instructions") {
-      setEditing(id);
-      return;
+    if (!replica.isSaved()) throw Error("Wait for current edits to save, then try again");
+    // Existing Pages opt in once, in guarded batches. Do not migrate a different
+    // account/Page if navigation or sign-out happens while a request is pending.
+    for (;;) {
+      const { content } = await store.tool<{ content: Snapshot }>("read_page", {
+        page_id: replica.pageId,
+      });
+      if (store.replica !== replica) return;
+      const blocks = content.blocks
+        .filter((b) => b.kind === "markdown" && !isRich(b))
+        .slice(0, 100);
+      if (!blocks.length) return;
+      await store.tool("edit_page", {
+        page_id: replica.pageId,
+        base_sequence: content.through_sequence,
+        idempotency_key: crypto.randomUUID(),
+        operations: blocks.map((b) => ({
+          op: "enable_rich_text",
+          block_id: b.id,
+          expected_hash: b.hash,
+        })),
+      });
+      if (store.replica !== replica) return;
     }
-    if (!replica.isSaved())
-      throw Error("Wait for current edits to save before converting this block");
-    const { content } = await store.tool<{ content: Snapshot }>("read_page", {
-      page_id: replica.pageId,
-    });
-    const block = content.blocks.find((b) => b.id === id);
-    if (!block) throw Error("Block was removed");
-    await store.tool("edit_page", {
-      page_id: replica.pageId,
-      base_sequence: content.through_sequence,
-      idempotency_key: crypto.randomUUID(),
-      operations: [{ op: "enable_rich_text", block_id: id, expected_hash: block.hash }],
-    });
   }
   const page = state.page,
     replica = store.replica;
   const editable =
     !!replica?.doc?.page_id && !["signed_out", "rejected"].includes(state.syncStatus);
+  const legacyBlocks = page?.blocks.filter((b) => b.kind === "markdown" && !isRich(b)) ?? [];
+  const focusedBlock =
+    page?.blocks.find((b) => b.id === activeBlock && isRich(b))?.id ??
+    page?.blocks.find(isRich)?.id;
   return (
     <div className="shell">
       <aside>
@@ -195,22 +209,32 @@ function App() {
               {editing === null && replica && (
                 <LiveEditor replica={replica} id={null} onError={setError} />
               )}
+              {legacyBlocks.length > 0 && (
+                <div className="page-edit-action">
+                  <button disabled={!editable || busy} onClick={() => void run(editPage)}>
+                    {busy ? "Opening editor…" : "Edit this page"}
+                  </button>
+                  {state.comments.some(
+                    (t) =>
+                      t.target.kind === "selection" &&
+                      legacyBlocks.map((b) => b.id).includes(t.target.anchor.blockId),
+                  ) && (
+                    <p>
+                      Existing comments stay available. Comments on selected text will lose their
+                      old highlight.
+                    </p>
+                  )}
+                </div>
+              )}
+              <div className="document-toolbar" ref={setToolbarHost} />
               {page.blocks.map((b) => (
                 <section
                   className={`block ${b.kind === "agent_instructions" ? "instructions" : ""}`}
                   key={b.id}
                 >
-                  {!isRich(b) && (
+                  {b.kind === "agent_instructions" && (
                     <div className="block-tools">
-                      {b.kind === "agent_instructions" && <span>Agent instructions</span>}
-                      <button
-                        disabled={!editable}
-                        onClick={() =>
-                          editing === b.id ? setEditing(undefined) : void run(() => editBlock(b.id))
-                        }
-                      >
-                        {editing === b.id ? "Done" : "Edit"}
-                      </button>
+                      <span>Agent instructions</span>
                     </div>
                   )}
                   {isRich(b) && replica?.doc?.blocks?.[b.id] ? (
@@ -218,10 +242,12 @@ function App() {
                       replica={replica}
                       id={b.id}
                       editable={editable}
+                      toolbarHost={focusedBlock === b.id ? toolbarHost : null}
+                      onActivate={() => setActiveBlock(b.id)}
                       onSelection={(range) => setSelection(range ? { blockId: b.id, range } : null)}
                       onError={setError}
                     />
-                  ) : editing === b.id && replica ? (
+                  ) : b.kind === "agent_instructions" && editable && replica ? (
                     <LiveEditor
                       replica={replica}
                       id={b.id}
@@ -278,7 +304,7 @@ function App() {
                   disabled={!editable}
                   onClick={() =>
                     void run(() => {
-                      if (replica) setEditing(replica.add("markdown"));
+                      if (replica) setActiveBlock(replica.add("markdown"));
                     })
                   }
                 >
@@ -288,7 +314,7 @@ function App() {
                   disabled={!editable}
                   onClick={() =>
                     void run(() => {
-                      if (replica) setEditing(replica.add("agent_instructions"));
+                      replica?.add("agent_instructions");
                     })
                   }
                 >

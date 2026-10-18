@@ -404,6 +404,12 @@ and `/api/sync` transport. New browser prose blocks use the versioned
 the guarded `enable_rich_text` operation; instruction blocks keep their source
 editor. Stable block IDs and metadata are retained.
 
+New Pages open directly in the editor: click the prose and type. One document
+toolbar applies to the focused block. There is no per-block Edit/Done mode.
+Older source Pages offer one Edit this page action, converting their prose in
+guarded batches. Instructions remain directly editable source. The action warns
+when existing selected-passage comments will lose their original highlight.
+
 Rich content lives in `richText` (Automerge marks and block markers). The old
 `markdown` field is immutable import provenance. HTTP snapshots export the rich
 field as Markdown; semantic Markdown tool edits update the rich field too.

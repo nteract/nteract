@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { EditorState, type Command } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { keymap } from "prosemirror-keymap";
@@ -18,18 +19,24 @@ export function RichEditor({
   editable,
   onError,
   onSelection,
+  toolbarHost,
+  onActivate,
 }: {
   replica: PageReplica;
   id: string;
   editable: boolean;
   onError: (message: string) => void;
   onSelection?: (selection: CommentSelection | null) => void;
+  toolbarHost: HTMLElement | null;
+  onActivate: () => void;
 }) {
   const host = useRef<HTMLDivElement>(null),
     editor = useRef<EditorView | null>(null);
   const writable = useRef(editable),
     report = useRef(onError),
-    selected = useRef(onSelection);
+    selected = useRef(onSelection),
+    activate = useRef(onActivate);
+  activate.current = onActivate;
   selected.current = onSelection;
   writable.current = editable;
   report.current = onError;
@@ -81,6 +88,7 @@ export function RichEditor({
       },
       handleDOMEvents: {
         focus: () => {
+          activate.current();
           queueMicrotask(() => {
             if (alive) publishRichSelection(replica, id, view);
           });
@@ -131,24 +139,28 @@ export function RichEditor({
   ];
   return (
     <div className="rich-editor">
-      <div className="rich-toolbar" role="toolbar" aria-label="Text formatting">
-        {commands.map(([label, command]) => (
-          <button
-            key={label}
-            disabled={!editable}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => {
-              const view = editor.current;
-              if (view) {
-                command(view.state, view.dispatch, view);
-                view.focus();
-              }
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      {toolbarHost &&
+        createPortal(
+          <div className="rich-toolbar" role="toolbar" aria-label="Text formatting">
+            {commands.map(([label, command]) => (
+              <button
+                key={label}
+                disabled={!editable}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  const view = editor.current;
+                  if (view) {
+                    command(view.state, view.dispatch, view);
+                    view.focus();
+                  }
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>,
+          toolbarHost,
+        )}
       <div ref={host} />
     </div>
   );
