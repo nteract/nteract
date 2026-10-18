@@ -8,6 +8,7 @@ import {
   notebookExecutionStore,
 } from "@/components/notebook/state/execution-store";
 import { getCellOutputsSnapshot } from "@/components/notebook/state/output-store";
+import { getCellById } from "@/components/notebook/state/cell-store";
 import { createWidgetStore } from "@/components/widgets/widget-store";
 import { useCloudViewerSession, type CloudViewerConfig } from "../cloud-viewer-session";
 import { connectCloudSyncRuntime, type CloudSyncRuntime } from "../live-sync";
@@ -43,6 +44,149 @@ const config: CloudViewerConfig = {
   runtimedWasmModulePath: "/runtime.js",
   runtimedWasmPath: "/runtime.wasm",
 };
+
+function liveFixture(readCells: () => RenderCell[]) {
+  const idle = new Subject<never>();
+  const cellChanges$ = new Subject<CellChangeset | null>();
+  const runtime = {
+    actorLabel: "anonymous:test/browser:test",
+    peerId: "test",
+    peerLabel: "Test",
+    connectionScope: "viewer",
+    handle: {
+      cell_count: () => readCells().length,
+      notebook_doc_caught_up: () => false,
+      get_cells_json: () => JSON.stringify(readCells()),
+      get_metadata_snapshot_json: () => "{}",
+      get_metadata_fingerprint: () => "metadata",
+      get_metadata_snapshot: () => ({}),
+      get_runtime_state: () => ({}),
+      get_comms_state: () => ({}),
+      get_execution_by_id: () => ({
+        execution_count: 1,
+        status: "done",
+        success: true,
+        output_ids: ["output"],
+      }),
+      project_execution_view_changeset: () => undefined,
+      free: vi.fn(),
+    },
+    engine: {
+      broadcasts$: idle,
+      presence$: idle,
+      cellChanges$,
+      runtimeState$: idle,
+      executionViewChanges$: idle,
+      outputIdChanges$: idle,
+      commChanges$: idle,
+      commBroadcasts$: idle,
+      poolState$: idle,
+      notebookSyncApplied$: idle,
+      notebookDocChanged$: idle,
+      notebookDocFlushDelivered$: idle,
+      reProjectComms: vi.fn(),
+      stop: vi.fn(),
+    },
+    transport: { roomReady$: idle, disconnect: vi.fn() },
+  } as unknown as CloudSyncRuntime;
+  return { runtime, cellChanges$ };
+}
+
+function liveOptions(blobResolver = createBlobResolver({ url: ({ blob }) => `/blob/${blob}` })) {
+  return {
+    config,
+    authRenewalKind: "idle" as const,
+    authState: {
+      mode: "anonymous" as const,
+      token: null,
+      user: null,
+      oidcClaims: null,
+      requestedScope: null,
+      problem: null,
+    },
+    blobResolver,
+    loadingPolicy: cloudViewerLoadingPolicy(config),
+    preloadSiftWasm: () => {},
+    widgetStore: createWidgetStore(),
+  };
+}
+
+it("does not reuse handle-local output stamps after replacing the live runtime", async () => {
+  const cell = (text: string): RenderCell => ({
+    id: "cell",
+    cell_type: "code",
+    source: "print(value)",
+    execution_id: "execution",
+    outputs: [
+      {
+        output_id: "output",
+        output_type: "stream",
+        name: "stdout",
+        text,
+        _runt_output_cache_key: "output:output:0:1",
+      },
+    ],
+  });
+  const first = liveFixture(() => [cell("first chunk")]);
+  const second = liveFixture(() => [cell("complete output")]);
+  vi.mocked(connectCloudSyncRuntime)
+    .mockResolvedValueOnce(first.runtime)
+    .mockResolvedValueOnce(second.runtime);
+  const options = liveOptions();
+  const { result } = renderHook(() => useCloudViewerSession(options));
+  await waitFor(() =>
+    expect(getCellOutputsSnapshot("cell")[0]).toMatchObject({ text: "first chunk" }),
+  );
+  act(() => result.current.retryLiveConnection());
+  await waitFor(() => expect(connectCloudSyncRuntime).toHaveBeenCalledTimes(2));
+  await waitFor(() =>
+    expect(getCellOutputsSnapshot("cell")[0]).toMatchObject({ text: "complete output" }),
+  );
+});
+
+it("projects later serialized cell changes while a fallback output blob is pending", async () => {
+  let cells: RenderCell[] = [
+    { id: "cell", cell_type: "code", source: "initial", execution_id: "execution", outputs: [] },
+  ];
+  const { runtime, cellChanges$ } = liveFixture(() => cells);
+  vi.mocked(connectCloudSyncRuntime).mockResolvedValue(runtime);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fetchBlob = vi.fn(async () => {
+    await gate;
+    return new Response("resolved");
+  });
+  const options = liveOptions(
+    createBlobResolver({ url: ({ blob }) => `/blob/${blob}`, fetchImpl: fetchBlob }),
+  );
+  const { result } = renderHook(() => useCloudViewerSession(options));
+  await waitFor(() => expect(result.current.status.kind).toBe("ready"));
+  act(() => {
+    cells = [
+      {
+        ...cells[0],
+        outputs: [
+          { output_id: "output", output_type: "stream", name: "stdout", text: { blob: "pending" } },
+        ],
+      },
+    ];
+    cellChanges$.next(null);
+  });
+  await waitFor(() => expect(fetchBlob).toHaveBeenCalledOnce());
+  try {
+    act(() => {
+      cells = [{ ...cells[0], source: "collaborator edit" }];
+      cellChanges$.next(null);
+    });
+    await waitFor(() => expect(getCellById("cell")?.source).toBe("collaborator edit"));
+  } finally {
+    await act(async () => {
+      release();
+    });
+  }
+});
 
 it.each(["execute", "clear", "update"] as const)(
   "keeps a newer %s pointer when an unrelated table finishes loading",

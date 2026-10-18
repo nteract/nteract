@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { BlobResolver } from "runtimed";
 import {
   OUTPUT_RESOLUTION_CACHE_MAX_ENTRIES,
+  cacheOutputResolution,
   createOutputResolutionCache,
   resolveCell,
   resolveCellSync,
@@ -10,6 +11,23 @@ import {
 } from "../viewer/render-resolution.ts";
 
 describe("cloud viewer render resolution", () => {
+  it("retains only the latest successful live resolution per output ID", () => {
+    const cache = createOutputResolutionCache();
+    const other = stampedStreamOutput("output:other:0:1", "other");
+    other.output_id = "other";
+    cacheOutputResolution(cache, other, other);
+    for (let revision = 1; revision <= 30; revision++) {
+      const output = stampedStreamOutput(
+        `output:stream:0:${revision}`,
+        "x".repeat(revision * 1024),
+      );
+      cacheOutputResolution(cache, output, output);
+    }
+    assert.equal(cache.size, 2);
+    assert.ok(cache.has("output:stream:0:30"));
+    assert.equal(cache.get("output:other:0:1"), other);
+  });
+
   it("preserves widget views so RuntimeStateDoc models can hydrate them", async () => {
     const outputs = await resolveOutputs(
       [

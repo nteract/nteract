@@ -186,6 +186,51 @@ describe("runtime store projection", () => {
     ]);
   });
 
+  it.each(["resolve", "reject"] as const)(
+    "retires a host projection without stale writes or further fetches after a blob %s",
+    async (settlement) => {
+      let active = true;
+      let resolveBlob!: (response: Response) => void;
+      let rejectBlob!: (error: Error) => void;
+      const blobResponse = new Promise<Response>((resolve, reject) => {
+        resolveBlob = resolve;
+        rejectBlob = reject;
+      });
+      const fetchBlob = vi.fn(() => blobResponse);
+      const warn = vi.fn();
+      const projection = applyOutputChangeset(
+        ["first", "later"].map((id) => [
+          id,
+          { output_id: id, output_type: "stream", name: "stdout", text: { blob: id } },
+        ]),
+        [],
+        {
+          blobResolver: { url: ({ blob }) => `https://example.test/${blob}`, fetch: fetchBlob },
+          shouldContinue: () => active,
+          retryDelaysMs: [0],
+          logger: { warn },
+        },
+      );
+      expect(fetchBlob).toHaveBeenCalledOnce();
+      active = false;
+      if (settlement === "resolve") resolveBlob(new Response("retired payload"));
+      else rejectBlob(new Error("retired request failed"));
+      await projection;
+      expect(fetchBlob).toHaveBeenCalledOnce();
+      expect(getOutputById("first")).toBeUndefined();
+      expect(getOutputById("later")).toBeUndefined();
+      expect(getOutputProjectionFailures()).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+    },
+  );
+
+  it("ignores a retired host's output removals", async () => {
+    const output = { output_id: "current", output_type: "stream", name: "stdout", text: "kept" };
+    await applyOutputChangeset([["current", output]], []);
+    await applyOutputChangeset([], ["current"], { shouldContinue: () => false });
+    expect(getOutputById("current")).toEqual(output);
+  });
+
   it("reset invalidates suspended output projection writes", async () => {
     let releaseFirstAttempt: (() => void) | undefined;
     const firstAttemptStarted = new Promise<void>((resolve) => {

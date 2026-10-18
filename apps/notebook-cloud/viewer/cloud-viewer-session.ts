@@ -688,6 +688,9 @@ export function useCloudViewerSession({
 
     let disposed = false;
     let subscriptions: Array<{ unsubscribe: () => void }> = [];
+    // This effect creates one live handle. Its output stamps are handle-local,
+    // so neither a replacement handle nor instant paint may reuse this cache.
+    const liveOutputResolutionCache = createOutputResolutionCache();
     let materializeSequence = 0;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let pendingTransport: CloudWebSocketTransport | null = null;
@@ -1032,6 +1035,7 @@ export function useCloudViewerSession({
     const materializeLiveCells = async (liveRuntime: CloudSyncRuntime): Promise<void> => {
       const sequence = ++materializeSequence;
       const isCurrent = () => !disposed && sequence === materializeSequence;
+      const runtimeIsCurrent = () => !disposed && liveRuntimeRef.current === liveRuntime;
       const previousNotebookLanguage = notebookLanguageRef.current;
       const rawCellCount = liveRuntime.handle.cell_count();
       if (rawCellCount === 0 && !mayShowEmptyLiveNotebook(liveRuntime)) {
@@ -1048,7 +1052,7 @@ export function useCloudViewerSession({
           blobResolver,
           index,
           snapshot.notebookLanguage,
-          outputResolutionCache,
+          liveOutputResolutionCache,
         ),
       );
       // Cells and pointers are projected only in this synchronous turn. Blob
@@ -1097,28 +1101,27 @@ export function useCloudViewerSession({
           outputCells.set(raw.output_id, syncCells[index]);
         }
       }
-      const outputResolution = applyOutputChangeset(outputs, [], {
+      // Output fetches must not occupy the serialized cell-change queue. The
+      // shared applier owns output generations and stops work for retired runtimes.
+      void applyOutputChangeset(outputs, [], {
         blobResolver,
+        shouldContinue: runtimeIsCurrent,
         logger: { warn: (message, ...details) => console.warn(message, ...details) },
         onOutputApplied: (outputId) => {
-          if (!isCurrent()) return;
+          if (!runtimeIsCurrent()) return;
           const output = getOutputById(outputId);
           const cell = outputCells.get(outputId);
           if (output)
-            cacheOutputResolution(outputResolutionCache, rawOutputs.get(outputId), output);
+            cacheOutputResolution(liveOutputResolutionCache, rawOutputs.get(outputId), output);
           if (output && cell) preloadSiftWasm([{ ...cell, outputs: [output] }]);
         },
+      }).catch((error: unknown) => {
+        console.warn("[notebook-cloud] output store projection failed", error);
       });
-      const widgetResolution = projectCloudWidgetComms(
-        widgetStore,
-        snapshot.widgetComms,
-        projectedWidgetCommIdsRef,
-        {
-          isAllowedBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
-          shouldContinue: isCurrent,
-        },
-      );
-      await Promise.all([outputResolution, widgetResolution]);
+      await projectCloudWidgetComms(widgetStore, snapshot.widgetComms, projectedWidgetCommIdsRef, {
+        isAllowedBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
+        shouldContinue: isCurrent,
+      });
       if (!isCurrent()) return;
       const currentCellCount = materializedCellCount();
       setStatus(
@@ -1535,12 +1538,17 @@ export function useCloudViewerSession({
             const rawOutputs = new Map(changed);
             void applyOutputChangeset(changed, removed_ids, {
               blobResolver,
+              shouldContinue: () => !disposed && liveRuntimeRef.current === liveRuntime,
               logger: { warn: (message, ...details) => console.warn(message, ...details) },
               onOutputApplied: (outputId) => {
                 if (disposed || liveRuntimeRef.current !== liveRuntime) return;
                 const output = getOutputById(outputId);
                 if (output)
-                  cacheOutputResolution(outputResolutionCache, rawOutputs.get(outputId), output);
+                  cacheOutputResolution(
+                    liveOutputResolutionCache,
+                    rawOutputs.get(outputId),
+                    output,
+                  );
               },
             }).catch((error: unknown) => {
               console.warn("[notebook-cloud] output store projection failed", error);

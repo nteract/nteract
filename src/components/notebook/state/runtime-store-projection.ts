@@ -32,6 +32,8 @@ export interface ApplyOutputChangesetOptions {
   blobResolver?: BlobResolverInput | null;
   refreshBlobResolver?: () => Promise<BlobResolverInput | null>;
   retryDelaysMs?: readonly number[];
+  /** Stop writes, retries, and further fetches when the host retires this projection. */
+  shouldContinue?: () => boolean;
   logger?: {
     debug?: ProjectionLogFn;
     warn?: ProjectionLogFn;
@@ -167,6 +169,7 @@ export async function applyOutputChangeset(
   removedIds: string[],
   options: ApplyOutputChangesetOptions = {},
 ): Promise<void> {
+  if (options.shouldContinue?.() === false) return;
   if (removedIds.length > 0) {
     deleteOutputs(removedIds);
     for (const outputId of removedIds) {
@@ -182,6 +185,7 @@ export async function applyOutputChangeset(
     generations.set(outputId, stampOutputGeneration(outputId));
   }
   const writeIsCurrent = (outputId: string) =>
+    options.shouldContinue?.() !== false &&
     outputGenerationIsCurrent(outputId, generations.get(outputId) ?? -1, epoch);
 
   let blobResolver = options.blobResolver ?? null;
@@ -230,6 +234,10 @@ export async function applyOutputChangeset(
         resolvedOk = true;
         break;
       } catch (err) {
+        if (!writeIsCurrent(outputId)) {
+          resolvedOk = true;
+          break;
+        }
         if (attempt < retryDelays.length) {
           options.logger?.debug?.(
             `[outputs-store] resolve attempt ${attempt + 1} failed for ${outputId}; retrying`,
