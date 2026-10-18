@@ -163,8 +163,9 @@ import {
   type WorkerRoute,
 } from "./worker-routing.ts";
 import {
-  immutableR2ObjectHeadResponse,
-  immutableR2ObjectResponse,
+  protectedR2ObjectHeadResponse,
+  protectedR2ObjectResponse,
+  withProtectedObjectCachePolicy,
   json,
   withBrowserSecurityHeaders,
   withCors,
@@ -3829,7 +3830,7 @@ async function routeSnapshot(
       return json({ error: "snapshot not found" }, 404);
     }
 
-    return immutableR2ObjectResponse(object);
+    return protectedR2ObjectResponse(object);
   }
 
   if (request.method !== "PUT") {
@@ -4009,7 +4010,7 @@ async function routeCommsSnapshot(
       return json({ error: "comms snapshot not found" }, 404);
     }
 
-    return immutableR2ObjectResponse(object);
+    return protectedR2ObjectResponse(object);
   }
 
   if (request.method !== "PUT") {
@@ -4103,7 +4104,7 @@ async function routeRuntimeSnapshot(
       return json({ error: "runtime snapshot not found" }, 404);
     }
 
-    return immutableR2ObjectResponse(object);
+    return protectedR2ObjectResponse(object);
   }
 
   if (request.method !== "PUT") {
@@ -5428,7 +5429,7 @@ async function routeBlob(
       return json({ error: "blob not found" }, 404);
     }
 
-    return immutableR2ObjectHeadResponse(object);
+    return protectedR2ObjectHeadResponse(object);
   }
 
   if (request.method === "GET") {
@@ -5451,7 +5452,9 @@ async function routeBlob(
         counter: "blob_read_cache_hits",
         counter_delta: 1,
       });
-      const cachedResponse = withCors(new Response(cached.body, cached));
+      const cachedResponse = withProtectedObjectCachePolicy(
+        withCors(new Response(cached.body, cached)),
+      );
       cachedResponse.headers.set("X-Notebook-Cloud-Blob-Cache", "hit");
       return cachedResponse;
     }
@@ -5468,7 +5471,7 @@ async function routeBlob(
       return json({ error: "blob not found" }, 404);
     }
 
-    const response = immutableR2ObjectResponse(object, { includeContentLength: true });
+    const response = protectedR2ObjectResponse(object, { includeContentLength: true });
     if (cache) {
       response.headers.set("X-Notebook-Cloud-Blob-Cache", "miss");
       // The cache write needs its own copy of the streaming body. workerd tees
@@ -5477,6 +5480,9 @@ async function routeBlob(
       // so a failed clone must not fail the blob read.
       const cacheCopy = cloneResponseForCache(response);
       if (cacheCopy) {
+        // This copy is only for the internal cache, behind authorization above.
+        // Never forward its public cache policy to the caller.
+        cacheCopy.headers.set("Cache-Control", "public, max-age=31536000, immutable");
         ctx.waitUntil(
           cache.put(cacheKey, cacheCopy).catch((error) => {
             cloudLog("warn", "blob.read.cache_put_failed", {

@@ -2,8 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { R2HTTPMetadata, R2ObjectBody } from "../src/cloudflare-types.ts";
 import {
-  immutableR2ObjectHeadResponse,
-  immutableR2ObjectResponse,
+  protectedR2ObjectHeadResponse,
+  protectedR2ObjectResponse,
   json,
   withBrowserSecurityHeaders,
 } from "../src/http-responses.ts";
@@ -31,15 +31,15 @@ describe("notebook cloud HTTP responses", () => {
     assert.equal(response.headers.get("Content-Security-Policy"), "frame-ancestors 'none'");
   });
 
-  it("serves immutable R2 object bodies without leaking route-specific choices", async () => {
+  it("keeps protected R2 object bodies out of downstream caches", async () => {
     const object = fakeR2Object(new Uint8Array([1, 2, 3]), {
       contentType: "application/vnd.apache.arrow.stream",
     });
 
-    const response = immutableR2ObjectResponse(object);
+    const response = protectedR2ObjectResponse(object);
 
     assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
-    assert.equal(response.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
+    assert.equal(response.headers.get("Cache-Control"), "private, no-store");
     assert.equal(response.headers.get("Content-Type"), "application/vnd.apache.arrow.stream");
     assert.equal(response.headers.get("ETag"), '"fake-etag"');
     assert.equal(response.headers.has("Content-Length"), false);
@@ -49,11 +49,12 @@ describe("notebook cloud HTTP responses", () => {
   it("can include Content-Length for blob GET and HEAD responses", async () => {
     const object = fakeR2Object(new Uint8Array([4, 5, 6, 7]));
 
-    const getResponse = immutableR2ObjectResponse(object, { includeContentLength: true });
-    const headResponse = immutableR2ObjectHeadResponse(object);
+    const getResponse = protectedR2ObjectResponse(object, { includeContentLength: true });
+    const headResponse = protectedR2ObjectHeadResponse(object);
 
     assert.equal(getResponse.headers.get("Content-Length"), "4");
     assert.equal(headResponse.headers.get("Content-Length"), "4");
+    assert.equal(headResponse.headers.get("Cache-Control"), "private, no-store");
     assert.equal(await headResponse.text(), "");
   });
 });
