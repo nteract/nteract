@@ -10,7 +10,10 @@ export async function request(url, options = {}) {
   const response = await fetch(url, options),
     body = await response.json();
   if (!response.ok)
-    throw Error(body.error?.message ?? body.error ?? `Request failed (${response.status})`);
+    throw Object.assign(
+      Error(body.error?.message ?? body.error ?? `Request failed (${response.status})`),
+      { status: response.status },
+    );
   return body;
 }
 export function tool(operation, args = {}) {
@@ -55,8 +58,10 @@ export class PageSession {
   status = "Connecting";
   problem = "";
   savedHeads = [];
-  static async open(pageId) {
-    const session = new PageSession(pageId);
+  authRequired = false;
+  authProblem = "";
+  static async open(pageId, options) {
+    const session = new PageSession(pageId, options);
     try {
       await session.start();
       return session;
@@ -65,8 +70,9 @@ export class PageSession {
       throw e;
     }
   }
-  constructor(pageId) {
+  constructor(pageId, { refreshSession = () => request("/api/auth/session") } = {}) {
     this.pageId = pageId;
+    this.refreshSession = refreshSession;
   }
   get doc() {
     return this.handle?.doc();
@@ -75,17 +81,73 @@ export class PageSession {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
   }
+  notify(listeners, value) {
+    for (const fn of listeners) {
+      try {
+        fn(value);
+      } catch (error) {
+        // A stale editor or subscriber must not interrupt sync or durability.
+        this.problem = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
   emit() {
-    for (const fn of this.listeners) fn();
+    this.notify(this.listeners);
+  }
+  receiveChange(event) {
+    this.resolveToolHints();
+    const change = { ...event, remote: this.localDepth === 0 };
+    if (this.composing && change.remote) this.deferredBefore ??= event.patchInfo.before;
+    else this.notify(this.observers, change);
+    if (change.remote) this.queueSaved();
+    this.emit();
   }
   snapshot() {
     return this.doc ? projectPage(this.doc) : null;
   }
+  requireSignIn(message = "Sign in again to sync this Page. Keep it open while you sign in.") {
+    this.authRequired = true;
+    this.receiptRevision = (this.receiptRevision ?? 0) + 1;
+    this.authProblem = message;
+    this.status = "Sign in to sync";
+    clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+    this.emit();
+  }
+  acceptAuthentication(result) {
+    if (!this.alive) return false;
+    if (!result?.identity) {
+      this.requireSignIn();
+      return false;
+    }
+    if (this.identity && result.identity.principal !== this.identity.principal) {
+      this.requireSignIn(
+        "Sign in with this Page's original account to resume syncing. Keep this Page open.",
+      );
+      return false;
+    }
+    if (this.authRequired) this.status = "Reconnecting";
+    this.authRequired = false;
+    this.authProblem = "";
+    this.identity = result.identity;
+    this.canWrite = result.canWrite;
+    this.emit();
+    return true;
+  }
+  async refreshAuthentication() {
+    try {
+      const result = await this.refreshSession();
+      if (!this.alive) return;
+      if (!this.acceptAuthentication(result))
+        throw Object.assign(Error(this.authProblem), { status: 401 });
+    } catch (error) {
+      if (this.alive && (error.status === 401 || error.status === 403) && !this.authRequired)
+        this.requireSignIn();
+      throw error;
+    }
+  }
   async start() {
-    this.connection = await request(`/api/connect?page=${encodeURIComponent(this.pageId)}`);
-    this.identity = this.connection.identity;
-    this.profiles = this.connection.peerProfiles ?? {};
-    this.canWrite = this.connection.canWrite;
+    await this.refreshAuthentication();
     const scope = hex(
       new Uint8Array(
         await crypto.subtle.digest(
@@ -108,18 +170,11 @@ export class PageSession {
       syncTimeoutMilliseconds: 1000,
     });
     this.repo = new Repo({ backend: this.backend });
-    await this.connect();
+    await this.connect(false);
     this.handle = await this.repo.find(this.connection.documentId, {
       signal: AbortSignal.timeout(15000),
     });
-    this.handle.on("change", (event) => {
-      this.resolveToolHints();
-      const change = { ...event, remote: this.localDepth === 0 };
-      if (this.composing && change.remote) this.deferredBefore ??= event.patchInfo.before;
-      else for (const fn of this.observers) fn(change);
-      if (change.remote) this.queueSaved();
-      this.emit();
-    });
+    this.handle.on("change", (event) => this.receiveChange(event));
     this.handle.on("ephemeral-message", (event) => this.ephemeral(event));
     this.status = "Connected";
     if (!this.local.reloadRecovery)
@@ -130,18 +185,35 @@ export class PageSession {
     }, 10000);
     this.queueSaved();
   }
-  async connect() {
+  connect(refresh = true) {
+    if (!this.alive) return Promise.resolve();
+    if (!this.connecting)
+      this.connecting = this.openConnection(refresh).finally(() => {
+        this.connecting = undefined;
+      });
+    return this.connecting;
+  }
+  async openConnection(refresh) {
+    if (refresh) await this.refreshAuthentication();
     if (!this.alive) return;
-    this.connection = await request(`/api/connect?page=${encodeURIComponent(this.pageId)}`);
+    try {
+      const connection = await request(`/api/connect?page=${encodeURIComponent(this.pageId)}`);
+      if (!this.alive) return;
+      if (!this.acceptAuthentication(connection))
+        throw Object.assign(Error(this.authProblem), { status: 401 });
+      this.connection = connection;
+    } catch (error) {
+      if (this.alive && (error.status === 401 || error.status === 403) && !this.authRequired)
+        this.requireSignIn();
+      throw error;
+    }
     this.profiles = { ...this.profiles, ...this.connection.peerProfiles };
-    this.identity = this.connection.identity;
-    this.canWrite = this.connection.canWrite;
     const expected = new N.PeerId(bytes(this.connection.serverPeerId));
     const address = new URL(`/api/sync?page=${encodeURIComponent(this.pageId)}`, location.href);
     address.protocol = location.protocol === "https:" ? "wss:" : "ws:";
     try {
       const socket = await N.SubductionWebSocket.tryConnect(address, this.signer, expected, () => {
-        if (!this.alive) return;
+        if (!this.alive || this.authRequired) return;
         this.status = "Reconnecting";
         this.emit();
         this.scheduleReconnect();
@@ -165,19 +237,30 @@ export class PageSession {
     }
   }
   scheduleReconnect() {
-    if (!this.alive || this.retryTimer) return;
+    if (!this.alive || this.authRequired || this.retryTimer) return;
     const delay = Math.min(10000, 500 * 2 ** (this.retryAttempts ?? 0));
     this.retryAttempts = (this.retryAttempts ?? 0) + 1;
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined;
-      this.connect().catch((error) => {
-        if (!this.alive) return;
+      void this.retryConnection();
+    }, delay);
+  }
+  async retryConnection() {
+    clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+    try {
+      await this.connect();
+    } catch (error) {
+      if (!this.alive) return;
+      if (error.status === 401 || error.status === 403)
+        this.requireSignIn(this.authProblem || undefined);
+      else {
         this.problem = error.message;
         this.status = "Offline";
         this.emit();
         this.scheduleReconnect();
-      });
-    }, delay);
+      }
+    }
   }
   observeChange(fn) {
     this.observers.add(fn);
@@ -198,7 +281,8 @@ export class PageSession {
           patches: A.diff(after, A.getHeads(before), A.getHeads(after)),
           patchInfo: { before, after, source: "change" },
         };
-        for (const fn of this.observers) fn(event);
+        this.notify(this.observers, event);
+        this.emit();
       }
     };
   }
@@ -274,7 +358,7 @@ export class PageSession {
         displayName: [profile.displayName, profile.driver].filter(Boolean).join(" · "),
       });
     } else if (value === null) this.peers.delete(senderId);
-    for (const fn of this.presenceObservers) fn();
+    this.notify(this.presenceObservers);
   }
   resolveToolHints() {
     this.toolHints = this.toolHints.filter((message) => {
@@ -297,21 +381,40 @@ export class PageSession {
   queueSaved() {
     this.receiptRevision = (this.receiptRevision ?? 0) + 1;
     clearTimeout(this.savedTimer);
-    this.status = "Saving";
+    this.status = this.authRequired ? "Sign in to sync" : "Saving";
     this.emit();
     this.savedTimer = setTimeout(() => void this.saveReceipt(), 300);
+  }
+  async requestWithRenewal(url, options) {
+    try {
+      return await request(url, options);
+    } catch (error) {
+      if (error.status !== 401) throw error;
+      await this.refreshAuthentication();
+      if (!this.alive) throw Error("Page closed");
+      try {
+        return await request(url, options);
+      } catch (retryError) {
+        if (retryError.status === 401) this.requireSignIn();
+        throw retryError;
+      }
+    }
   }
   async saveReceipt() {
     if (!this.alive || !this.handle) return;
     const revision = this.receiptRevision;
     try {
       await this.repo.flush();
+      if (!this.alive || this.authRequired) return;
       const heads = A.getHeads(this.doc);
-      const result = await request(`/api/saved?page=${encodeURIComponent(this.pageId)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ heads }),
-      });
+      const result = await this.requestWithRenewal(
+        `/api/saved?page=${encodeURIComponent(this.pageId)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ heads }),
+        },
+      );
       if (!this.alive || revision !== this.receiptRevision) return;
       this.savedHeads = result.durableHeads;
       this.status = A.getHeads(this.doc).every((h) => this.savedHeads.includes(h))
@@ -320,8 +423,10 @@ export class PageSession {
       this.emit();
     } catch (error) {
       if (this.alive && revision === this.receiptRevision) {
-        this.problem = error.message;
-        this.status = "Unsaved";
+        if (!this.authRequired) {
+          this.problem = error.message;
+          this.status = "Unsaved";
+        }
         this.emit();
       }
     }

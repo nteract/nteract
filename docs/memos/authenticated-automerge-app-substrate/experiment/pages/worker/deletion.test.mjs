@@ -97,7 +97,7 @@ test("delete rejects stale or missing heads before tombstoning or disconnecting"
   assert.equal(await f.storage.get("host/document"), undefined);
 });
 
-test("same delete retries a persisted tombstone without needing the deleted document", async (t) => {
+test("delete retries a persisted tombstone without needing the deleted document", async (t) => {
   const f = await fixture(t);
   const args = f.args();
   f.page.repo.delete = async () => {
@@ -131,7 +131,7 @@ test("same delete retries a persisted tombstone without needing the deleted docu
         f.request("/internal/delete", { ...args, idempotency_key: "different-delete" }),
       )
     ).status,
-    404,
+    200,
   );
 });
 

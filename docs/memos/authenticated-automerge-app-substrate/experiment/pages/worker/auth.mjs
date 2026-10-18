@@ -83,8 +83,32 @@ export function requireWrite(identity) {
   if (!identity.canWrite) throw new HttpError(403, "This credential is read-only");
 }
 
-export function errorResponse(error) {
+// Structured categories only: provider exceptions can contain credentials or bodies.
+export function logFailure(error, stage) {
   const status = error.status ?? (error.name === "AuthError" ? 401 : 500);
+  const name = [
+    "Error",
+    "HttpError",
+    "AuthError",
+    "PermissionDenied",
+    "AggregateError",
+    "RuntimeError",
+  ].includes(error.name)
+    ? error.name
+    : "Error";
+  console.error("[pages-native]", {
+    service: "nteract-pages-native",
+    event: "request.failed",
+    stage,
+    status,
+    errorType: name,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+export function errorResponse(error, stage = "request") {
+  const status = error.status ?? (error.name === "AuthError" ? 401 : 500);
+  if (status >= 500) logFailure(error, stage);
   return Response.json(
     { error: status < 500 ? error.message : "Pages request failed" },
     { status, headers: { "cache-control": "no-store" } },

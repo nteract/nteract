@@ -60,12 +60,22 @@ export const tools = [
           type: "object",
           properties: {
             op: {
-              enum: ["set_title", "replace_block_markdown", "insert_markdown", "delete_block"],
+              enum: [
+                "set_title",
+                "replace_block_markdown",
+                "insert_markdown",
+                "move_block",
+                "delete_block",
+              ],
             },
             block_id: string,
             title: string,
             markdown: string,
-            after_block_id: string,
+            after_block_id: {
+              type: ["string", "null"],
+              description:
+                "For insert or move: put after this block ID; null puts it first; omitted appends.",
+            },
           },
           required: ["op"],
         },

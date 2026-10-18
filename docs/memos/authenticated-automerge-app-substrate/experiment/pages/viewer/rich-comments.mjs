@@ -3,21 +3,20 @@ import { Plugin } from "prosemirror-state";
 import { Decoration, DecorationSet } from "prosemirror-view";
 import { amSpliceIdxToPmIdx } from "@automerge/prosemirror/dist/traversal.js";
 import { selectionContext } from "../model/comments.mjs";
+import { orderedBlockIds } from "../model/order.mjs";
 import { adapter, isRich, textPath } from "../model/richtext.mjs";
 
 // Resolve the saved Automerge anchors against today's text. Never search for the
 // quoted preview: repeated or deleted passages must not attach to another copy.
 export function commentRanges(doc, id, threads) {
-  if (!doc?.order.includes(id) || !isRich(doc.blocks[id])) return [];
+  const order = orderedBlockIds(doc),
+    index = order.indexOf(id);
+  if (index < 0 || !isRich(doc.blocks[id])) return [];
   const spans = A.spans(doc, textPath(id));
   return threads.flatMap((thread) => {
     const context = selectionContext(doc, thread.target);
     if (context?.status !== "attached") return [];
-    const index = doc.order.indexOf(id);
-    if (
-      index < doc.order.indexOf(context.start.blockId) ||
-      index > doc.order.indexOf(context.end.blockId)
-    )
+    if (index < order.indexOf(context.start.blockId) || index > order.indexOf(context.end.blockId))
       return [];
     const start = context.start.blockId === id ? context.start.offsetUtf16 : 0;
     const end =
@@ -31,7 +30,9 @@ export function commentRanges(doc, id, threads) {
 }
 
 export function commentsForSelection(doc, id, selection, threads) {
-  if (!selection || !doc?.blocks[id]) return [];
+  const order = orderedBlockIds(doc),
+    index = order.indexOf(id);
+  if (!selection || index < 0) return [];
   const source = doc.blocks[id].richText ?? doc.blocks[id].markdown;
   let start = -1;
   for (let i = 0; i < selection.occurrence; i++) {
@@ -43,10 +44,9 @@ export function commentsForSelection(doc, id, selection, threads) {
     if (thread.state !== "open") return false;
     const context = selectionContext(doc, thread.target);
     if (context?.status !== "attached") return false;
-    const index = doc.order.indexOf(id);
     return (
-      index >= doc.order.indexOf(context.start.blockId) &&
-      index <= doc.order.indexOf(context.end.blockId) &&
+      index >= order.indexOf(context.start.blockId) &&
+      index <= order.indexOf(context.end.blockId) &&
       (context.start.blockId !== id || context.start.offsetUtf16 < end) &&
       (context.end.blockId !== id || context.end.offsetUtf16 > start)
     );

@@ -126,6 +126,46 @@ const mcp = await fetch(`${origin}/mcp`, {
 const mcpResult = await mcp.json();
 assert.ok(mcpResult.result?.contents, JSON.stringify(mcpResult));
 assert.match(mcpResult.result.contents[0].text, /passage comment/);
+const beforeInsert = JSON.parse(mcpResult.result.contents[0].text);
+await tool(cookie, "edit_page", {
+  page_id: page.page_id,
+  base_heads: beforeInsert.heads,
+  idempotency_key: crypto.randomUUID(),
+  operations: [{ op: "insert_markdown", after_block_id: null, markdown: "A second block." }],
+});
+const beforeMove = await tool(cookie, "read_page", { page_id: page.page_id });
+assert.equal(beforeMove.blocks[0].markdown, "A second block.");
+const moveResponse = await fetch(origin + "/mcp", {
+  method: "POST",
+  headers: {
+    Origin: origin,
+    Cookie: cookie,
+    "Content-Type": "application/json",
+    Accept: "application/json, text/event-stream",
+  },
+  body: JSON.stringify({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/call",
+    params: {
+      name: "edit_page",
+      arguments: {
+        page_id: page.page_id,
+        base_heads: beforeMove.heads,
+        idempotency_key: crypto.randomUUID(),
+        operations: [{ op: "move_block", block_id: current.blocks[0].id, after_block_id: null }],
+      },
+    },
+  }),
+});
+const movedResult = await moveResponse.json();
+assert.equal(movedResult.result?.isError, undefined, JSON.stringify(movedResult));
+const moved = await tool(cookie, "read_page", { page_id: page.page_id });
+assert.equal(moved.blocks[0].id, current.blocks[0].id);
+assert.equal(moved.blocks[0].markdown, "The **otter** crossed the garden.");
+assert.equal(moved.blocks[1].markdown, "A second block.");
+assert.equal(moved.comments[0].selectionContext.status, "attached");
+
 console.log(
   JSON.stringify({
     idempotentCreate: true,
@@ -133,6 +173,7 @@ console.log(
     staleEditRejected: true,
     anchoredComment: true,
     mcpRead: true,
+    mcpBlockMovePreservesComment: true,
   }),
 );
 const disposable = await tool(cookie, "create_page", {

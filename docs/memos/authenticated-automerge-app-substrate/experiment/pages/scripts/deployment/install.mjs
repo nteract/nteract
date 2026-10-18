@@ -156,12 +156,8 @@ const uid = Number(run("id", ["-u", expected.service])),
   gid = Number(run("id", ["-g", expected.service]));
 chownSync(state, uid, gid);
 const release = `${base}/releases/${manifest.source_sha}`;
-if (existsSync(release))
-  throw new Error("This release already exists; inspect deployment receipt before retrying");
-mkdirSync(release, { recursive: true, mode: 0o750 });
-cpSync(stage + "/release", release, { recursive: true });
 const configPath = release + "/wrangler.json",
-  config = JSON.parse(readFileSync(configPath));
+  config = JSON.parse(readFileSync(stage + "/release/wrangler.json"));
 if (config.main !== "index.js" || config.no_bundle !== true || config.build || config.containers)
   throw new Error("Unexpected build configuration");
 config.vars = {
@@ -178,7 +174,63 @@ config.vars = {
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE: "runtimed-pages-next-anaconda",
   NOTEBOOK_CLOUD_APP_SESSION_SECRET: readFileSync(configDir + "/session-secret", "utf8").trim(),
 };
-writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", { mode: 0o640 });
+const configured = JSON.stringify(config, null, 2) + "\n";
+const releaseFiles = Object.fromEntries(
+  Object.entries(manifest.files)
+    .filter(([file]) => file.startsWith("release/"))
+    .map(([file, digest]) => [file.slice(8), digest]),
+);
+if (existsSync(release) && !lstatSync(release).isDirectory())
+  throw new Error("Existing release is not a directory");
+mkdirSync(release, { recursive: true, mode: 0o750 });
+// Retry only the same verified bytes. A partial copy may have missing files,
+// but never replace an unexpected file or a modified existing artifact.
+for (const file of stagedFiles(release)) {
+  const digest = hash(readFileSync(path.join(release, file)));
+  if (
+    !Object.hasOwn(releaseFiles, file) ||
+    (digest !== releaseFiles[file] && !(file === "wrangler.json" && digest === hash(configured)))
+  )
+    throw new Error("Existing release differs from prepared artifacts: " + file);
+}
+const audit = configDir + "/rollout-" + manifest.source_sha;
+if (existsSync(audit) && !lstatSync(audit).isDirectory())
+  throw new Error("Existing rollout audit is not a directory");
+mkdirSync(audit, { recursive: true, mode: 0o700 });
+for (const name of [
+  "manifest.json",
+  "previous-deployment.json",
+  "deployment.json",
+  "provenance.json",
+])
+  if (existsSync(audit + "/" + name) && !lstatSync(audit + "/" + name).isFile())
+    throw new Error("Special files are forbidden in the rollout audit");
+if (existsSync(audit + "/manifest.json")) {
+  if (
+    JSON.stringify(JSON.parse(readFileSync(audit + "/manifest.json"))) !== JSON.stringify(manifest)
+  )
+    throw new Error("Existing rollout manifest differs from prepared deployment");
+} else {
+  // Record absence too, so a retry after deploy cannot mistake its own receipt
+  // for the previous deployment. Keep this first snapshot across all retries.
+  if (!existsSync(audit + "/previous-deployment.json"))
+    writeFileSync(
+      audit + "/previous-deployment.json",
+      existsSync(configDir + "/deployment.json")
+        ? readFileSync(configDir + "/deployment.json")
+        : "null\n",
+      { mode: 0o600 },
+    );
+  writeFileSync(audit + "/manifest.json", JSON.stringify(manifest, null, 2), { mode: 0o600 });
+}
+for (const file of Object.keys(releaseFiles)) {
+  const destination = path.join(release, file);
+  if (!existsSync(destination)) {
+    mkdirSync(path.dirname(destination), { recursive: true, mode: 0o750 });
+    cpSync(path.join(stage, "release", file), destination);
+  }
+}
+writeFileSync(configPath, configured, { mode: 0o640 });
 function permissions(directory) {
   chownSync(directory, 0, gid);
   chmodSync(directory, 0o750);
@@ -197,11 +249,6 @@ chmodSync(base + "/celld.next", 0o755);
 renameSync(base + "/celld.next", base + "/celld");
 cpSync(stage + "/firewall.mjs", base + "/firewall.mjs");
 chmodSync(base + "/firewall.mjs", 0o644);
-const audit = configDir + "/rollout-" + manifest.source_sha;
-mkdirSync(audit, { mode: 0o700 });
-writeFileSync(audit + "/manifest.json", JSON.stringify(manifest, null, 2), { mode: 0o600 });
-if (existsSync(configDir + "/deployment.json"))
-  cpSync(configDir + "/deployment.json", audit + "/previous-deployment.json");
 const receipt = run("runuser", [
   "-u",
   expected.service,

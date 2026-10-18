@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
-import { authenticate, requireSameOrigin, readJson } from "./auth.mjs";
+import { authenticate, requireSameOrigin, readJson, errorResponse, logFailure } from "./auth.mjs";
 
 test("API keys use production scope checks and ignore claimed account/operator headers", async (t) => {
   const fixture = await createAuthFixture();
@@ -87,4 +87,28 @@ test("JSON API bounds body memory and rejects malformed input", async () => {
     ),
     /too large/,
   );
+});
+
+test("server diagnostics identify the boundary without exposing provider errors or credentials", async (t) => {
+  const logs = [];
+  t.mock.method(console, "error", (...args) => logs.push(args));
+  const failure = Object.assign(new Error("provider body contains secret-token"), {
+    name: "AuthError",
+    status: 503,
+  });
+  const response = errorResponse(failure, "gateway");
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "Pages request failed" });
+  assert.equal(logs[0][1].stage, "gateway");
+  assert.equal(logs[0][1].errorType, "AuthError");
+  assert.equal(logs[0][1].status, 503);
+  assert.equal(JSON.stringify(logs).includes("secret-token"), false);
+  errorResponse(Object.assign(new Error("Sign in"), { status: 401 }), "page");
+  assert.equal(logs.length, 1, "ordinary denied HTTP requests are not server failures");
+  logFailure(
+    Object.assign(new Error("token"), { name: "sensitive-token-name", status: 403 }),
+    "native-admission",
+  );
+  assert.equal(logs[1][1].errorType, "Error");
+  assert.equal(JSON.stringify(logs).includes("token"), false);
 });

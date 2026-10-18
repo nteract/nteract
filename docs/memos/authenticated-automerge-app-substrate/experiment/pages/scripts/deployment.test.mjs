@@ -7,6 +7,10 @@ import { sourceFingerprint } from "./source-fingerprint.mjs";
 import { insertRoutes, routes } from "./deployment/publish.mjs";
 import { configureDns } from "./deployment/dns.mjs";
 import { pagesFirewall } from "./deployment/firewall.mjs";
+import * as fs from "node:fs";
+import { createHash } from "node:crypto";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 
 test("fingerprint follows imported auth source and ignores output/unrelated churn", () => {
   const root = mkdtempSync(path.join(tmpdir(), "pages-inputs-"));
@@ -208,3 +212,172 @@ test("release staging copies only built artifacts, never development credentials
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+function installFixture(t, { failure, previous = true } = {}) {
+  const root = mkdtempSync(path.join(tmpdir(), "pages-install-retry-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const stage = "/tmp/nteract-pages-next-stage-test1234";
+  const local = (file) => path.join(root, file);
+  const write = (file, value) => {
+    mkdirSync(path.dirname(local(file)), { recursive: true });
+    writeFileSync(local(file), value);
+  };
+  const digest = (value) => createHash("sha256").update(value).digest("hex");
+  const source = fs.readFileSync(new URL("./deployment/install.mjs", import.meta.url), "utf8");
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      esModuleInterop: true,
+    },
+  }).outputText;
+  const deployment = {
+    host: "lab1",
+    hostname: "pages-next.runtimed.run",
+    service: "nteract-pages-next",
+    bucket: "nteract-celld-lab-621741996708",
+    prefix: "standalone/pages-next",
+    region: "us-east-1",
+    listen: "127.0.0.1:9472",
+    internalListen: "127.0.0.1:19472",
+    runtime: "/usr/local/bin/celld",
+    requiredVersion: "celld 0.6.1",
+  };
+  const files = {
+    "release/wrangler.json": JSON.stringify({ main: "index.js", no_bundle: true }),
+    "release/index.js": "export default {};",
+    "release/public/app.js": "console.log('fixture');",
+    "install.mjs": "fixture installer",
+    "firewall.mjs": "fixture firewall",
+    "publish.mjs": "fixture publisher",
+  };
+  for (const [file, value] of Object.entries(files)) write(stage + "/" + file, value);
+  const manifest = {
+    source_sha: "a".repeat(40),
+    source_tree: "b".repeat(40),
+    deployment,
+    runtime: { sha256: digest("qualified runtime") },
+    files: Object.fromEntries(Object.entries(files).map(([file, value]) => [file, digest(value)])),
+  };
+  write(stage + "/manifest.json", JSON.stringify(manifest));
+  write(deployment.runtime, "qualified runtime");
+  write("/etc/nteract-pages-next/ownership.json", JSON.stringify({ prefix: deployment.prefix }));
+  write("/etc/nteract-pages-next/session-secret", "fixture-only-session-secret");
+  if (previous)
+    write("/etc/nteract-pages-next/deployment.json", JSON.stringify({ id: "previous" }));
+  mkdirSync(local("/var/lib/nteract-pages-next"), { recursive: true });
+  mkdirSync(local("/etc/systemd/system"), { recursive: true });
+  const calls = [];
+  let pendingFailure = failure;
+  const filesystem = {};
+  for (const name of [
+    "existsSync",
+    "lstatSync",
+    "mkdirSync",
+    "readFileSync",
+    "readdirSync",
+    "writeFileSync",
+  ])
+    filesystem[name] = (file, ...args) => fs[name](local(file), ...args);
+  filesystem.chmodSync = filesystem.chownSync = () => {};
+  filesystem.renameSync = (from, to) => fs.renameSync(local(from), local(to));
+  filesystem.cpSync = (from, to, ...args) => {
+    if (pendingFailure === "copy" && to.endsWith("/public/app.js")) {
+      pendingFailure = undefined;
+      throw Error("injected copy failure");
+    }
+    return fs.cpSync(local(from), local(to), ...args);
+  };
+  const childProcess = {
+    execFileSync(command, args) {
+      calls.push({ command, args });
+      if (
+        (pendingFailure === "deploy" && command === "runuser") ||
+        (pendingFailure === "restart" && command === "systemctl" && args[0] === "restart")
+      ) {
+        pendingFailure = undefined;
+        throw Object.assign(Error("injected command failure"), { status: 1 });
+      }
+      if (command === deployment.runtime) return deployment.requiredVersion;
+      if (command === "id") return "998";
+      if (command === "runuser") return JSON.stringify({ id: "current" });
+      if (command === "systemd-analyze" || command === "systemctl") return "";
+      throw Error("Unexpected command: " + command);
+    },
+  };
+  const modules = {
+    "node:child_process": childProcess,
+    "node:crypto": { createHash },
+    "node:fs": filesystem,
+    "node:path": path,
+  };
+  const execute = () =>
+    runInNewContext(compiled, {
+      exports: {},
+      require: (name) => {
+        if (!Object.hasOwn(modules, name)) throw Error("Unexpected import: " + name);
+        return modules[name];
+      },
+      process: { argv: ["node", "install.mjs", stage, "--apply"], getuid: () => 0 },
+      console: { log() {} },
+    });
+  return {
+    execute,
+    calls,
+    write,
+    local,
+    manifest,
+    release: "/opt/nteract-pages-next/releases/" + manifest.source_sha,
+    audit: "/etc/nteract-pages-next/rollout-" + manifest.source_sha,
+    read: (file) => fs.readFileSync(local(file), "utf8"),
+  };
+}
+
+for (const failure of ["deploy", "restart"])
+  for (const previous of [true, false])
+    test(`installation retries ${failure} failure with previous deployment ${previous}`, (t) => {
+      const fixture = installFixture(t, { failure, previous });
+      assert.throws(fixture.execute, /failed \(status 1\)/);
+      const before = fixture.read(fixture.audit + "/previous-deployment.json");
+      assert.deepEqual(JSON.parse(before), previous ? { id: "previous" } : null);
+      fixture.execute();
+      assert.equal(fixture.read(fixture.audit + "/previous-deployment.json"), before);
+      assert.deepEqual(JSON.parse(fixture.read(fixture.audit + "/deployment.json")), {
+        id: "current",
+      });
+      assert.equal(fixture.calls.filter(({ command }) => command === "runuser").length, 2);
+    });
+
+test("installation fills only missing verified artifacts after a partial copy", (t) => {
+  const fixture = installFixture(t, { failure: "copy" });
+  assert.throws(fixture.execute, /injected copy failure/);
+  assert.equal(fs.existsSync(fixture.local(fixture.release + "/public/app.js")), false);
+  fixture.execute();
+  assert.equal(fixture.read(fixture.release + "/public/app.js"), "console.log('fixture');");
+  assert.equal(fixture.calls.filter(({ command }) => command === "runuser").length, 1);
+});
+
+for (const tampering of ["artifact", "extra-file", "symlink", "audit-manifest"])
+  test(`installation retry rejects changed ${tampering}`, (t) => {
+    const fixture = installFixture(t, { failure: "deploy" });
+    assert.throws(fixture.execute, /failed \(status 1\)/);
+    if (tampering === "artifact") fixture.write(fixture.release + "/index.js", "modified");
+    if (tampering === "extra-file") fixture.write(fixture.release + "/unexpected.js", "extra");
+    if (tampering === "symlink") {
+      rmSync(fixture.local(fixture.release + "/index.js"));
+      fs.symlinkSync(
+        fixture.local(fixture.release + "/public/app.js"),
+        fixture.local(fixture.release + "/index.js"),
+      );
+    }
+    if (tampering === "audit-manifest")
+      fixture.write(
+        fixture.audit + "/manifest.json",
+        JSON.stringify({ ...fixture.manifest, source_tree: "c".repeat(40) }),
+      );
+    assert.throws(
+      fixture.execute,
+      /Existing release differs|Special files|rollout manifest differs/,
+    );
+    assert.equal(fixture.calls.filter(({ command }) => command === "runuser").length, 1);
+  });

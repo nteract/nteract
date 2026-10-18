@@ -18,6 +18,9 @@ export function bindRichEditor(replica, id) {
       stops.set(
         fn,
         replica.observeChange((change) => {
+          // React unmounts after the shared change reaches its subscribers.
+          // The pinned binding cannot project a text path that was just deleted.
+          if (!change.patchInfo.after.blocks?.[id]) return;
           incomingActors = change.remote
             ? [
                 ...new Set(
@@ -51,7 +54,9 @@ export function bindRichEditor(replica, id) {
           return view.state;
         },
         dispatch(tr) {
-          const target = richDoc(replica.doc.blocks[id]);
+          const block = replica.doc?.blocks?.[id];
+          if (!block) return;
+          const target = richDoc(block);
           const start = tr.doc.content.findDiffStart(target.content);
           if (start !== null) {
             let { a: endA, b: endB } = tr.doc.content.findDiffEnd(target.content);

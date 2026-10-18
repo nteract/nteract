@@ -24,6 +24,7 @@ import {
   requireWrite,
   HttpError,
   errorResponse,
+  logFailure,
   json,
   readJson,
 } from "./auth.mjs";
@@ -56,6 +57,15 @@ const validPageId = (id) =>
   typeof id === "string" &&
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id);
 const publicIdentity = ({ principal, displayName, driver }) => ({ principal, displayName, driver });
+
+function validateCreateInput(args) {
+  if (!args || typeof args !== "object" || Array.isArray(args))
+    throw new HttpError(400, "Invalid create arguments");
+  if (args.title !== undefined && (typeof args.title !== "string" || args.title.length > 500))
+    throw new HttpError(400, "Invalid title");
+  if (args.markdown !== undefined && typeof args.markdown !== "string")
+    throw new HttpError(400, "Invalid markdown");
+}
 
 function forwarded(request, path, body) {
   const url = new URL(request.url);
@@ -139,7 +149,7 @@ export default {
           try {
             return await invoke(request, env, operation, args);
           } catch (error) {
-            return errorResponse(error);
+            return errorResponse(error, "mcp-operation");
           }
         });
       }
@@ -157,7 +167,7 @@ export default {
         return json({ error: "Not found" }, 404);
       return env.ASSETS.fetch(request);
     } catch (error) {
-      return errorResponse(error);
+      return errorResponse(error, "gateway");
     }
   },
 };
@@ -199,10 +209,16 @@ export class Catalog {
       requireWrite(identity);
       if (!["create_page", "delete_page"].includes(body.operation))
         throw new HttpError(400, "Unknown catalog operation");
+      // Reject deterministic input errors before reserving an intent or page.
+      if (body.operation === "create_page") validateCreateInput(args);
       const key = mutationKey(args);
       const digest = await fingerprint(body.operation, args, identity);
       let intent = await existingIntent(this.ctx.storage, key, digest);
-      if (intent && !intent.pending) return json(intent.receipt);
+      if (intent && !intent.pending) {
+        // A previous attempt may have stored its receipt before sync failed.
+        await this.ctx.storage.sync();
+        return json(intent.receipt);
+      }
       if (!intent) {
         await reserveCapacity(this.ctx.storage);
         if (body.operation === "delete_page" && !validPageId(args.page_id))
@@ -244,7 +260,8 @@ export class Catalog {
         const response = await this.env.PAGES.getByName(pageId).fetch(
           forwarded(request, "/internal/delete", { ...args, page_id: pageId }),
         );
-        if (!response.ok) return response;
+        // A missing Page is already absent; clean up this account's stale index.
+        if (!response.ok && response.status !== 404) return response;
         await this.ctx.storage.delete(`page/${pageId}`);
         intent.receipt = { page_id: pageId, deleted: true };
       }
@@ -253,7 +270,7 @@ export class Catalog {
       await this.ctx.storage.sync();
       return json(intent.receipt);
     } catch (error) {
-      return errorResponse(error);
+      return errorResponse(error, "catalog");
     }
   }
 }
@@ -266,36 +283,75 @@ export class Page {
     this.tail = Promise.resolve();
     this.ready = ctx.blockConcurrencyWhile(async () => {
       this.metadata = await ctx.storage.get("host/document");
-      this.signer = N.MemorySigner.fromBytes(await persistentSeed(ctx.storage));
-      this.serverKey = hex(this.signer.verifyingKey());
-      const peer = this.signer.peerId();
-      try {
-        this.serverSenderId = peer.toString();
-      } finally {
-        peer.free();
-      }
-      this.policy = new DocumentPolicy({
-        storage: ctx.storage,
-        metadata: () => this.metadata,
-        serverKey: this.serverKey,
-      });
-      await this.policy.load();
-      this.backend = new SubductionBackend({
-        signer: this.signer,
-        storage: new DurableByteStore(ctx.storage),
-        policy: this.policy.native(),
-        ephemeralPolicy: this.policy.ephemeral(),
-        maxRecordBytes: 4 * 1024 * 1024,
-        maxSnapshotBytes: 16 * 1024 * 1024,
-      });
-      this.repo = new Repo({ backend: this.backend });
       const creation = await ctx.storage.get("host/creation");
-      if (creation) await this.finishCreation(creation);
+      // Looking up an unknown page must not create a persisted signer or repo.
+      if (!this.metadata && !creation) return;
+      await this.initializeRepo();
+      // A completed deletion wins over an earlier interrupted creation.
+      if (creation && !this.metadata?.deleted) await this.finishCreation(creation);
       if (!this.handle && this.metadata?.documentId && !this.metadata.deleted) {
         this.handle = await this.repo.find(this.metadata.documentId);
         await recoverDocumentMutations(ctx.storage, this.handle, () => this.flush());
       }
     });
+  }
+
+  initializeRepo() {
+    if (this.repo) return Promise.resolve();
+    if (this.initializing) return this.initializing;
+    // Keep partial native resources private until the complete host is ready.
+    const attempt = (async () => {
+      const ctx = this.ctx;
+      let signer, backend;
+      try {
+        signer = N.MemorySigner.fromBytes(await persistentSeed(ctx.storage));
+        const serverKey = hex(signer.verifyingKey());
+        const peer = signer.peerId();
+        let serverSenderId;
+        try {
+          serverSenderId = peer.toString();
+        } finally {
+          peer.free();
+        }
+        const policy = new DocumentPolicy({
+          storage: ctx.storage,
+          metadata: () => this.metadata,
+          serverKey,
+        });
+        await policy.load();
+        backend = new SubductionBackend({
+          signer,
+          storage: new DurableByteStore(ctx.storage),
+          policy: policy.native(),
+          ephemeralPolicy: policy.ephemeral(),
+          maxRecordBytes: 4 * 1024 * 1024,
+          maxSnapshotBytes: 16 * 1024 * 1024,
+        });
+        const repo = new Repo({ backend });
+        Object.assign(this, { signer, serverKey, serverSenderId, policy, backend, repo });
+      } catch (error) {
+        const failures = [error];
+        // The backend borrows its signer until close finishes, even on failure.
+        try {
+          await backend?.close();
+        } catch (cleanup) {
+          failures.push(cleanup);
+        }
+        try {
+          signer?.free();
+        } catch (cleanup) {
+          failures.push(cleanup);
+        }
+        if (failures.length > 1) throw new AggregateError(failures, "Page initialization failed");
+        throw error;
+      }
+    })();
+    this.initializing = attempt;
+    const clear = () => {
+      if (this.initializing === attempt) this.initializing = undefined;
+    };
+    void attempt.then(clear, clear);
+    return attempt;
   }
 
   async finishCreation(intent) {
@@ -367,6 +423,11 @@ export class Page {
         requireWrite(identity);
         if (this.metadata) {
           this.policy.account(identity);
+          // Metadata can be installed before creation persistence succeeds.
+          // Replaying the recorded import preserves its exact history.
+          const creation = await this.ctx.storage.get("host/creation");
+          if (creation) await this.finishCreation(creation);
+          else await this.flush();
           return json(
             this.metadata.createdReceipt ?? {
               page_id: this.metadata.pageId,
@@ -378,28 +439,33 @@ export class Page {
         const args = await readJson(request);
         if (!validPageId(args.page_id) || (this.ctx.id.name && args.page_id !== this.ctx.id.name))
           throw new HttpError(400, "Invalid page_id");
-        if (args.title !== undefined && (typeof args.title !== "string" || args.title.length > 500))
-          throw new HttpError(400, "Invalid title");
-        if (args.markdown !== undefined && typeof args.markdown !== "string")
-          throw new HttpError(400, "Invalid markdown");
-        const doc = A.change(
-          A.from(createPageData({ pageId: args.page_id, title: args.title })),
-          (draft) => initializePage(draft, args.markdown ?? ""),
-        );
-        const documentId = interpretAsDocumentId(generateAutomergeUrl());
-        const metadata = {
-          pageId: args.page_id,
-          owner: identity.principal,
-          ownerName: identity.displayName,
-          documentId,
-          tree: logicalId(documentIdToBinary(documentId)),
-          deleted: false,
-          createdReceipt: { page_id: args.page_id, title: doc.title, heads: A.getHeads(doc) },
-        };
-        const intent = { metadata, bytes: A.save(doc) };
-        await this.ctx.storage.put("host/creation", intent);
+        validateCreateInput(args);
+        let intent = await this.ctx.storage.get("host/creation");
+        if (intent) {
+          // Catalog handles argument replay; this DO independently pins ownership.
+          if (intent.metadata.owner !== identity.principal)
+            throw new HttpError(403, "Document access denied");
+        } else {
+          const doc = A.change(
+            A.from(createPageData({ pageId: args.page_id, title: args.title })),
+            (draft) => initializePage(draft, args.markdown ?? ""),
+          );
+          const documentId = interpretAsDocumentId(generateAutomergeUrl());
+          const metadata = {
+            pageId: args.page_id,
+            owner: identity.principal,
+            ownerName: identity.displayName,
+            documentId,
+            tree: logicalId(documentIdToBinary(documentId)),
+            deleted: false,
+            createdReceipt: { page_id: args.page_id, title: doc.title, heads: A.getHeads(doc) },
+          };
+          intent = { metadata, bytes: A.save(doc) };
+          await this.ctx.storage.put("host/creation", intent);
+        }
+        await this.initializeRepo();
         await this.finishCreation(intent);
-        return json(metadata.createdReceipt, 201);
+        return json(intent.metadata.createdReceipt, 201);
       }
       if (!this.metadata) throw new HttpError(404, "Page not found");
       if (url.pathname === "/internal/delete") {
@@ -411,8 +477,8 @@ export class Page {
         const key = mutationKey(args);
         const digest = await fingerprint("delete_page", args, identity);
         if (this.metadata.deleted) {
-          if (this.metadata.deletion?.key !== key) throw new HttpError(404, "Page not found");
-          if (this.metadata.deletion.fingerprint !== digest)
+          // A new retry key still completes the original deletion barriers.
+          if (this.metadata.deletion?.key === key && this.metadata.deletion.fingerprint !== digest)
             throw new HttpError(409, "idempotency_key was used for a different request");
         } else {
           requireHeads(this.handle.doc(), args.base_heads);
@@ -505,7 +571,7 @@ export class Page {
       }
       throw new HttpError(404, "Not found");
     } catch (error) {
-      return errorResponse(error);
+      return errorResponse(error, "page");
     }
   }
 
@@ -599,7 +665,8 @@ export class Page {
         } finally {
           transport.free();
         }
-      })().catch(() => {
+      })().catch((error) => {
+        logFailure(error, "native-admission");
         void wire.disconnect();
       }),
     );

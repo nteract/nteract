@@ -78,6 +78,10 @@ export async function documentMutation({
       changes: A.getChanges(before, after),
       receipt: { page_id: before.page_id, heads: A.getHeads(after), result: result ?? null },
     };
+    // The immutable edit may depend on freshly received WebSocket changes.
+    // Persist that captured base before its replayable intent can survive a crash.
+    // Concurrent changes may advance the handle; they cannot remove this base.
+    await flush();
     await storage.put(key, entry);
   }
   if (entry.pending) {
@@ -87,6 +91,9 @@ export async function documentMutation({
     await flush();
     entry = { fingerprint: digest, pending: false, receipt: entry.receipt };
     await storage.put(key, entry);
+    await storage.sync();
+  } else {
+    // A prior attempt may have written the receipt before its barrier failed.
     await storage.sync();
   }
   return entry.receipt;
