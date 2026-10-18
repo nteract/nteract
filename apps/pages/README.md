@@ -437,13 +437,18 @@ The ProseMirror binding is pinned to 0.2.0, including its internal position-map
 helpers. A scoped remote-join repair is retained from the isolated fixture.
 Paragraphs within a Page block support range editing, formatting and undo;
 selection across Page blocks is deferred. Real-device IME and accessibility
-qualification remain outstanding. The Markdown parser dependency is pinned to
-14.2.0 because newer registry metadata requested an unavailable linkify-it
-version during installation, including when using its published tarball URL.
-The dependency audit flags markdown-it GHSA-253c-mchw-3w2r and linkify-it
-GHSA-v245-v573-v5vm. Both affect linkification, which this CommonMark parser
-explicitly disables. Replace the fallback with patched dependencies before
-promoting this spike. The repository-wide audit also has pre-existing findings.
+qualification remain outstanding. The schema adapter currently normalizes
+numbered lists to start at 1; a different imported starting number survives in
+the original source until an edit requires Markdown re-export.
+
+The lockfile uses markdown-it 14.3.3 and
+linkify-it 5.0.2 through ProseMirror's supported dependency ranges, without the
+temporary parser override. These versions include the fixes for
+[GHSA-253c-mchw-3w2r](https://github.com/markdown-it/markdown-it/security/advisories/GHSA-253c-mchw-3w2r)
+and [GHSA-v245-v573-v5vm](https://github.com/markdown-it/linkify-it/security/advisories/GHSA-v245-v573-v5vm).
+Linkification remains disabled: bare URLs and email addresses stay prose;
+explicit Markdown links retain their marks. The repository-wide audit has
+separate findings outside this Pages dependency chain.
 
 Passage comments use the authoritative text object: rich blocks anchor to
 `richText`, source blocks to `markdown`. Comments on the source before conversion
