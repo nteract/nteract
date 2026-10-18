@@ -10,6 +10,7 @@ import {
   NTERACT_BOKEH_SESSION_STATE,
   type NteractBokehResolvedPatchEvent,
   type NteractBokehSessionSnapshot,
+  type NteractBokehSessionStatus,
 } from "@/components/isolated/rpc-methods";
 import { BokehSessionController, type BokehRuntime } from "../bokeh-session-controller";
 
@@ -125,11 +126,11 @@ function harness(initial = snapshot()) {
     view,
     documents,
     range: () => documents[0].get_model_by_id("range-1") as Range1d,
-    announce: (headRevision: number) =>
+    announce: (headRevision: number, status: NteractBokehSessionStatus = "connected") =>
       notify(NTERACT_BOKEH_SESSION_STATE, {
         sessionId: "session-1",
         outputId: "output-1",
-        status: "connected",
+        status,
         headRevision,
       }),
     canonical: (event: NteractBokehResolvedPatchEvent) =>
@@ -232,6 +233,60 @@ describe("Bokeh session recovery with real documents", () => {
     expect(h.mount).toHaveBeenCalledTimes(1);
   });
 
+  it("repairs edits made while a failed snapshot fetch is being retried", async () => {
+    const h = await start(snapshot({ start: 0 }));
+    h.open.mockRejectedValueOnce(new Error("snapshot unavailable"));
+    h.announce(1);
+    await vi.advanceTimersByTimeAsync(150);
+    expect(h.onStatus).toHaveBeenLastCalledWith("error", "snapshot unavailable");
+    const range = h.range();
+    range.start = 10;
+    const recovered = snapshot({ start: 0 });
+    recovered.headRevision = 1;
+    recovered.patchTail = [patch("end", 2)];
+    h.setSnapshot(recovered);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(h.range()).toBe(range);
+    expect([range.start, range.end]).toEqual([0, 2]);
+    expect(h.apply).not.toHaveBeenCalled();
+    expect(h.onStatus).toHaveBeenLastCalledWith("connected", undefined);
+    expect(h.mount).toHaveBeenCalledTimes(1);
+  });
+
+  it("repairs discarded edits when reconnecting at the same revision", async () => {
+    const h = await start(snapshot({ start: 0 }));
+    const range = h.range();
+    range.start = 10;
+    h.announce(0, "disconnected");
+    h.announce(0);
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(h.open).toHaveBeenCalledTimes(2);
+    expect(h.range()).toBe(range);
+    expect(range.start).toBe(0);
+    expect(h.apply).not.toHaveBeenCalled();
+    expect(h.onStatus).toHaveBeenLastCalledWith("connected", undefined);
+    expect(h.mount).toHaveBeenCalledTimes(1);
+  });
+
+  it("repairs optimistic edits when patch serialization fails", async () => {
+    const h = await start(snapshot({ start: 0 }));
+    const range = h.range();
+    vi.spyOn(h.documents[0], "create_json_patch").mockImplementationOnce(() => {
+      throw new Error("patch unavailable");
+    });
+    range.start = 10;
+    await vi.advanceTimersByTimeAsync(51);
+
+    expect(h.open).toHaveBeenCalledTimes(2);
+    expect(h.range()).toBe(range);
+    expect(range.start).toBe(0);
+    expect(h.apply).not.toHaveBeenCalled();
+    expect(h.onStatus).toHaveBeenLastCalledWith("connected", undefined);
+    expect(h.mount).toHaveBeenCalledTimes(1);
+  });
+
   it("restores buffered column data without replacing its model", async () => {
     const initial = snapshot();
     initial.checkpoint.document.roots = [
@@ -240,6 +295,9 @@ describe("Bokeh session recovery with real documents", () => {
         name: "ColumnDataSource",
         id: "range-1",
         attributes: {
+          // Python checkpoints serialize model-valued defaults explicitly.
+          selected: { type: "object", name: "Selection", id: "selection-1" },
+          selection_policy: { type: "object", name: "UnionRenderers", id: "policy-1" },
           data: {
             type: "map",
             entries: [
@@ -261,6 +319,8 @@ describe("Bokeh session recovery with real documents", () => {
     initial.checkpoint.buffers = [{ id: "values", data: new Float64Array([1, 2]).buffer }];
     const h = await start(initial);
     const source = h.documents[0].get_model_by_id("range-1") as ColumnDataSource;
+    const selected = source.selected;
+    const policy = source.selection_policy;
     h.apply.mockImplementationOnce(async ({ transactionId }) => ({
       status: "stale",
       sessionId: "session-1",
@@ -270,6 +330,8 @@ describe("Bokeh session recovery with real documents", () => {
     source.data = { value: new Float64Array([10, 20]) };
     await vi.advanceTimersByTimeAsync(51);
     expect(h.documents[0].get_model_by_id("range-1")).toBe(source);
+    expect(source.selected).toBe(selected);
+    expect(source.selection_policy).toBe(policy);
     expect(Array.from(source.data.value)).toEqual([1, 2]);
     expect(h.apply).toHaveBeenCalledTimes(1);
     expect(h.mount).toHaveBeenCalledTimes(1);

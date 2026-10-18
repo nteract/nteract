@@ -316,7 +316,10 @@ export class BokehSessionController {
         }
         this.setStatus(params.status);
         this.announcedHeadRevision = params.headRevision;
-        if (params.status === "connected" && params.headRevision > this.revision) {
+        if (
+          params.status === "connected" &&
+          (params.headRevision > this.revision || this.localChangesRejected)
+        ) {
           this.scheduleResync();
         }
       },
@@ -338,8 +341,13 @@ export class BokehSessionController {
   }
 
   private readonly onDocumentChange = (event: BokehDocumentEvent) => {
-    if (this.disposed || this.applyingRemote || this.status !== "connected") return;
+    if (this.disposed || this.applyingRemote) return;
     if (!shouldSyncEvent(event)) return;
+    if (this.status !== "connected") {
+      // Widgets can still change while disconnected or awaiting a retry.
+      this.localChangesRejected = true;
+      return;
+    }
     this.localEvents.push(event);
     this.scheduleLocalPatch();
   };
@@ -386,6 +394,7 @@ export class BokehSessionController {
     try {
       patch = this.document.create_json_patch(events);
     } catch (error) {
+      this.localChangesRejected = true;
       this.setStatus("error", error instanceof Error ? error.message : String(error));
       this.scheduleResync(0);
       return;
