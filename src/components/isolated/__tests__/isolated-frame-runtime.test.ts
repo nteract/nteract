@@ -205,6 +205,56 @@ describe("IsolatedFrameRuntime", () => {
     expect(transport.notify).toHaveBeenCalledWith(MCP_UI_HOST_CONTEXT_CHANGED, context);
   });
 
+  it("replays the latest context before readiness callbacks, initial content and queued renders", () => {
+    const initial = { mimeType: "text/plain", data: "initial" };
+    const queued = { mimeType: "text/plain", data: "queued" };
+    const callback = { mimeType: "text/plain", data: "callback" };
+    const { callbacks, frameWindow, runtime } = createRuntime(initial);
+    runtime.notifyHostContext({ nteract: { rendererAssetsBaseUrl: "https://old.example/" } });
+    const context = { nteract: { rendererAssetsBaseUrl: "https://assets.example/" } };
+    runtime.notifyHostContext(context);
+    runtime.render(queued);
+    callbacks.onRendererReady.mockImplementation(() => runtime.render(callback));
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
+    const transport = MockJsonRpcTransport.instances[0];
+    transport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
+    expect(transport.notify.mock.calls).toEqual([
+      [MCP_UI_HOST_CONTEXT_CHANGED, context],
+      [NTERACT_RENDER_OUTPUT, callback],
+      [NTERACT_RENDER_OUTPUT, initial],
+      [NTERACT_RENDER_OUTPUT, queued],
+    ]);
+  });
+
+  it("replays context on legacy readiness, RPC upgrade and reload without a new host update", () => {
+    const initial = { mimeType: "text/plain", data: "initial" };
+    const { frameWindow, runtime } = createRuntime(initial);
+    const context = { nteract: { rendererAssetsBaseUrl: "https://assets.example/" } };
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
+    runtime.notifyHostContext(context);
+    vi.mocked(frameWindow.postMessage).mockClear();
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "renderer_ready" }));
+    expect(vi.mocked(frameWindow.postMessage).mock.calls).toEqual([
+      [{ type: "host_context", payload: context }, "*"],
+      [{ type: "render", payload: initial }, "*"],
+    ]);
+    const transport = MockJsonRpcTransport.instances[0];
+    transport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
+    expect(transport.notify.mock.calls).toEqual([
+      [MCP_UI_HOST_CONTEXT_CHANGED, context],
+      [NTERACT_RENDER_OUTPUT, initial],
+    ]);
+    runtime.notifyHostContext(context);
+    expect(transport.notify).toHaveBeenCalledTimes(2);
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
+    const reloadedTransport = MockJsonRpcTransport.instances[1];
+    reloadedTransport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
+    expect(reloadedTransport.notify.mock.calls).toEqual([
+      [MCP_UI_HOST_CONTEXT_CHANGED, context],
+      [NTERACT_RENDER_OUTPUT, initial],
+    ]);
+  });
+
   it("sends theme over JSON-RPC once the bootstrap transport is available", () => {
     const { frameWindow, runtime } = createRuntime();
 

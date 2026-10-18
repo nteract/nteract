@@ -21,6 +21,55 @@ vi.mock("@nteract/sift", () => ({
 }));
 
 describe("Sift renderer plugin", () => {
+  it.each([
+    "data:application/vnd.apache.arrow.stream;base64,/////w==",
+    "blob:null/6b85da0f-e0ac-4a82-87a5-a7f0379e62ea",
+  ])("retries opaque table configuration when context arrives late: %s", async (tableUrl) => {
+    vi.resetModules();
+    const { install: installFresh } = await import("../sift-renderer");
+    let hostContext: RendererHostContext | undefined;
+    let Renderer!: ComponentType<RendererProps>;
+    const listeners = new Set<Parameters<RendererInstallContext["subscribeHostContext"]>[0]>();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    siftMocks.setWasmUrl.mockClear();
+    try {
+      installFresh({
+        register: (_mimeTypes, component) => {
+          Renderer = component;
+        },
+        registerPattern: vi.fn(),
+        getHostContext: () => hostContext,
+        subscribeHostContext: (listener) => {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+      });
+      render(<Renderer data={tableUrl} mimeType="application/vnd.apache.arrow.stream" />);
+      expect(warn).toHaveBeenCalledWith(
+        "[sift-renderer] configureWasm failed, using defaults:",
+        expect.any(TypeError),
+      );
+      expect(siftMocks.setWasmUrl).not.toHaveBeenCalled();
+      hostContext = {
+        nteract: {
+          rendererAssetsBaseUrl: "https://outputs.example/renderer-assets/",
+          siftWasmAssetName: "sift_wasm.0123456789abcdef.wasm",
+        },
+      };
+      warn.mockClear();
+      for (const listener of listeners) listener(hostContext);
+      expect(siftMocks.setWasmUrl).toHaveBeenCalledWith(
+        "https://outputs.example/renderer-assets/sift_wasm.0123456789abcdef.wasm",
+        "https://outputs.example/renderer-assets/sift_wasm.wasm?v=dev",
+      );
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("reconfigures WASM when a renderer asset base arrives after first render", () => {
     let hostContext: RendererHostContext | undefined;
     const hostContextListeners = new Set<
