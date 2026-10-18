@@ -114,6 +114,57 @@ and document the exact guarantee of each hosted adapter separately. The existing
 `automerge-store` contract is a useful reference; its presence is not proof that
 production room paths already use that implementation.
 
+## Preserve editor change streams
+
+Change illumination is an adoption requirement. Incoming agent edits often arrive
+as a large tool operation; readers need to see which text changed and who drove
+it while continuing to type. RxJS can remain the observation layer with either
+engine. The contract underneath it needs qualification before replacing our
+Rust/WASM observer.
+
+Today, runtimed WASM derives ordered text patches and structural changes from one
+Automerge diff. The RxJS sync engine emits attribution events before coalescing
+materialization work. The editor applies the text first, then decorates inserted
+ranges and maps those ranges through later edits. Preserve that ordering and the
+separation between precise text events and coalesced cell invalidations. Current
+attribution attaches the incoming batch's actor set to each patch; it does not
+establish individual authorship for each range in a mixed-author batch.
+
+Pinned Repo 3 supplies patches and before/after documents, but
+[Document.applyMutation](https://github.com/automerge/automerge-repo/blob/afec0444191a5a662e065f24193bef58ab07122a/packages/automerge-repo/src/Document.ts#L87-L115)
+labels both local and incoming events with source "change". Its change payload
+has no per-patch actor or authenticated principal. A disposable two-peer probe
+confirmed narrow UTF-16 patches from updateText, identical local/remote source
+labels, and an aggregate event for multiple actors. A batch with no net visible
+change advanced heads without a change event. Thus visible patches alone are
+neither an operation log nor authenticated attribution.
+
+Bulk text APIs must preserve the existing collaborative text object. Use
+[splice or updateText](https://automerge.org/docs/reference/documents/text/), as
+our existing splice_source/update_source paths do. In the probe, assigning a new
+string recreated the whole text, whereas updateText preserved narrow edits. A
+snapshot diff cannot recover discarded CRDT identity or prove authorship; large
+text diffs also need concurrent-edit testing rather than an assumption that they
+preserve user intent.
+
+The next editor fixture must demonstrate:
+
+- An agent changes a paragraph while a human types elsewhere: only affected
+  surviving text is illuminated, with stable selection and undo behavior.
+- Ordered patches use explicit UTF-16 coordinates, including emoji, combining
+  text, insertion/deletion pairs, and range remapping through subsequent edits.
+- Local echoes, initial load, live remote edits, and reconnect catch-up follow
+  deliberate display rules. Observation preserves causal frontiers even when no
+  visible patch exists; coalescing must not silently erase required edit events.
+- Account and driver labels come from trusted provenance. Mixed-author batches
+  expose ambiguity instead of attributing every patch to the sending connection.
+
+Keep the existing Rust/WASM and RxJS/editor path as the baseline. Full Repo
+adoption would need an explicit event adapter; reuse of only the lower backend
+would need record import/export compatibility with our WASM, including history
+fragments. Neither path is qualified yet. Avoid maintaining a second materialized
+document solely to reconstruct observations we already have.
+
 ## Bounded spike and evidence
 
 The initial [runnable spike](../../experiments/authenticated-automerge/README.md)
@@ -135,6 +186,7 @@ qualification. Keep the Pages deployment and storage namespace untouched.
 | Reader presence, signed origin, revoked subscriptions | Passed with native pubsub and positive controls; multi-hop presence identity remains untested |
 | Unknown-field preservation and managed-runtime rejection | Unknown content and tolerant reader fixtures passed; runtime role gate passed, actual runtime semantic validation untested |
 | Storage failure, retry, restart recovery | Sustained failure, fresh-process reopen, and same-edit flush retry passed; partial batches and remote receipts remain untested |
+| Attributed text streams and editor illumination | Disposable patch probe passed; event-origin and provenance gaps identified; end-to-end editor parity untested |
 | Matching custom WASM/glue, browser/Node and editor interoperability | Planned; not yet run |
 | Cold-load time/memory, reconnect bytes, writes and bytes per editing burst | Planned; not yet run |
 | Existing machinery removed versus adapter code added | Planned; not yet run |
