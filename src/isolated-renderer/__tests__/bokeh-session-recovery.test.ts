@@ -12,7 +12,11 @@ import {
   type NteractBokehSessionSnapshot,
   type NteractBokehSessionStatus,
 } from "@/components/isolated/rpc-methods";
-import { BokehSessionController, type BokehRuntime } from "../bokeh-session-controller";
+import {
+  BokehSessionController,
+  type BokehRuntime,
+  deferExistingModelUpdates,
+} from "../bokeh-session-controller";
 
 // Exercise the same bundled BokehJS modules used by the renderer. Only view
 // mounting is stubbed: jsdom cannot lay out a Bokeh view or draw on a canvas.
@@ -64,6 +68,43 @@ function patch(attr: string, value: number): NteractBokehResolvedPatchEvent {
     revision: 1,
     serverPatch: {
       patch: { events: [{ kind: "ModelChanged", model: { id: "range-1" }, attr, new: value }] },
+      buffers: [],
+    },
+  };
+}
+
+function columnSnapshot(values = [1, 2]): NteractBokehSessionSnapshot {
+  const initial = snapshot();
+  initial.checkpoint.document.roots = [
+    {
+      type: "object",
+      name: "ColumnDataSource",
+      id: "range-1",
+      attributes: {
+        selected: { type: "object", name: "Selection", id: "selection-1" },
+        selection_policy: { type: "object", name: "UnionRenderers", id: "policy-1" },
+        data: { type: "map", entries: [["value", values]] },
+      },
+    },
+  ];
+  return initial;
+}
+
+function streamPatch(values: number[]): NteractBokehResolvedPatchEvent {
+  return {
+    ...patch("end", 0),
+    serverPatch: {
+      patch: {
+        events: [
+          {
+            kind: "ColumnsStreamed",
+            model: { id: "range-1" },
+            attr: "data",
+            data: { type: "map", entries: [["value", values]] },
+            rollover: null,
+          },
+        ],
+      },
       buffers: [],
     },
   };
@@ -394,10 +435,145 @@ describe("Bokeh session recovery with real documents", () => {
     expect(h.documents[0].get_model_by_id("range-1")).toBe(source);
     expect(source.selected).toBe(selected);
     expect(source.selection_policy).toBe(policy);
-    expect(Array.from(source.data.value)).toEqual([1, 2]);
+    expect(Array.from(source.get_column("value") ?? [])).toEqual([1, 2]);
     expect(h.apply).toHaveBeenCalledTimes(1);
     expect(h.mount).toHaveBeenCalledTimes(1);
     expect(h.onStatus).toHaveBeenLastCalledWith("connected", undefined);
+  });
+
+  it.each(["notification", "snapshot tail"])(
+    "restores a checkpoint after a partially applied %s stream",
+    async (delivery) => {
+      const initial = columnSnapshot();
+      const h = await start(initial);
+      const source = h.documents[0].get_model_by_id("range-1") as ColumnDataSource;
+      const onStream = vi.fn().mockImplementationOnce(() => {
+        // Bokeh mutates the column before notifying this signal's listeners.
+        throw new Error("stream listener failed");
+      });
+      source.streaming.connect(onStream);
+      const recovered = columnSnapshot();
+      recovered.headRevision = 1;
+      recovered.patchTail = [streamPatch([3])];
+      h.setSnapshot(recovered);
+
+      if (delivery === "notification") {
+        h.canonical(streamPatch([3]));
+        await vi.advanceTimersByTimeAsync(1);
+      } else {
+        h.announce(1);
+        await vi.advanceTimersByTimeAsync(150);
+        expect(Array.from(source.get_column("value") ?? [])).toEqual([1, 2, 3]);
+        expect(h.onStatus).toHaveBeenLastCalledWith("error", "stream listener failed");
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
+
+      expect(h.onStatus).toHaveBeenCalledWith("error", "stream listener failed");
+      expect(h.documents[0].get_model_by_id("range-1")).toBe(source);
+      expect(Array.from(source.get_column("value") ?? [])).toEqual([1, 2, 3]);
+      expect(h.onStatus).toHaveBeenLastCalledWith("connected", undefined);
+      expect(h.apply).not.toHaveBeenCalled();
+      expect(h.mount).toHaveBeenCalledTimes(1);
+      expect(h.view.clear).not.toHaveBeenCalled();
+      expect(onStream).toHaveBeenCalledTimes(2);
+      h.canonical({ ...streamPatch([4]), baseRevision: 1, revision: 2 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(Array.from(source.get_column("value") ?? [])).toEqual([1, 2, 3, 4]);
+    },
+  );
+
+  it("restores a checkpoint after checkpoint reconciliation partially mutates a model", async () => {
+    const h = await start(columnSnapshot());
+    const source = h.documents[0].get_model_by_id("range-1") as ColumnDataSource;
+    source.properties.data.change.connect(
+      vi.fn().mockImplementationOnce(() => {
+        throw new Error("checkpoint listener failed");
+      }),
+    );
+    const checkpoint = columnSnapshot([1, 2, 3]).checkpoint;
+    checkpoint.revision = 1;
+    const recovered = columnSnapshot();
+    recovered.headRevision = 1;
+    recovered.patchTail = [streamPatch([3])];
+    h.setSnapshot(recovered);
+    h.canonical({ ...streamPatch([3]), serverPatch: undefined, checkpoint });
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(h.onStatus).toHaveBeenCalledWith("error", "checkpoint listener failed");
+    expect(h.documents[0].get_model_by_id("range-1")).toBe(source);
+    expect(Array.from(source.get_column("value") ?? [])).toEqual([1, 2, 3]);
+    expect(h.onStatus).toHaveBeenLastCalledWith("connected", undefined);
+    expect(h.apply).not.toHaveBeenCalled();
+    expect(h.mount).toHaveBeenCalledTimes(1);
+    expect(h.view.clear).not.toHaveBeenCalled();
+  });
+
+  it("keeps finalized root references when a later document listener fails", async () => {
+    const h = await start();
+    const original = h.range();
+    const doc = h.documents[0];
+    let fail = true;
+    doc.on_change((event) => {
+      if (event.kind === "RootAdded" && fail) {
+        fail = false;
+        throw new Error("root listener failed");
+      }
+    });
+    const event: NteractBokehResolvedPatchEvent = {
+      ...patch("end", 0),
+      serverPatch: {
+        patch: {
+          events: [{ kind: "RootAdded", model: { type: "object", name: "Range1d", id: "added" } }],
+        },
+        buffers: [],
+      },
+    };
+    const recovered = snapshot();
+    recovered.headRevision = 1;
+    recovered.patchTail = [event];
+    h.setSnapshot(recovered);
+    h.canonical(event);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(h.onStatus).toHaveBeenCalledWith("error", "root listener failed");
+    expect(h.onStatus).toHaveBeenLastCalledWith("connected", undefined);
+    expect(h.range()).toBe(original);
+    const added = doc.get_model_by_id("added");
+    expect(added).not.toBeNull();
+    expect(doc.all_roots.filter((root) => root.id === "added")).toEqual([added]);
+    expect(h.open).toHaveBeenCalledTimes(2);
+    expect(h.apply).not.toHaveBeenCalled();
+    expect(h.mount).toHaveBeenCalledTimes(1);
+    expect(h.view.clear).not.toHaveBeenCalled();
+  });
+
+  it("discards incomplete model references when decoding itself fails", async () => {
+    const h = await start();
+    const doc = h.documents[0];
+    const rootPatch = (
+      start: number | { id: string },
+    ): Parameters<BokehDocument["apply_json_patch"]>[0] => ({
+      events: [
+        {
+          kind: "RootAdded",
+          model: { type: "object", name: "Range1d", id: "added", attributes: { start } },
+        },
+      ],
+    });
+    expect(() =>
+      deferExistingModelUpdates(realRuntime as BokehRuntime, () =>
+        doc.apply_json_patch(rootPatch({ id: "missing" })),
+      ),
+    ).toThrow("reference missing isn't known");
+    expect(doc.get_model_by_id("added")).toBeNull();
+    expect(doc.all_roots.some((root) => root.id === "added")).toBe(false);
+
+    deferExistingModelUpdates(realRuntime as BokehRuntime, () =>
+      doc.apply_json_patch(rootPatch(2)),
+    );
+    const added = doc.get_model_by_id("added") as Range1d;
+    expect(added.start).toBe(2);
+    expect(doc.all_roots.filter((root) => root.id === "added")).toEqual([added]);
   });
 
   it("catches up a clean document without replacing it", async () => {

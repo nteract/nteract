@@ -191,7 +191,7 @@ class BokehDocumentSession:
         self._active_setter: str | None = None
         self._transaction_events: list[Any] = []
         self._queued_server_events: list[BokehServerEvent] = []
-        self._pending_events: list[Any] = []
+        self._pending_patches: list[BokehSerialization] = []
         self._flush_scheduled = False
         self._closed = False
         self._loop = _current_io_loop()
@@ -323,7 +323,7 @@ class BokehDocumentSession:
             self._event_sink = None
             self._queued_server_events = []
             self._transaction_events = []
-            self._pending_events = []
+            self._pending_patches = []
             cleanup = self._cleanup
 
         if self._loop is not None:
@@ -432,7 +432,13 @@ class BokehDocumentSession:
                 self._transaction_events.append(event)
                 return
 
-            self._pending_events.append(event)
+            # Freeze model definitions and buffers now. Waiting until the loop
+            # flush can capture a later stream in a newly introduced model and
+            # then replay that stream again in the same batch.
+            patch = self._serialize_events_unlocked([event])
+            if patch is None:
+                return
+            self._pending_patches.append(patch)
             if self._loop is None:
                 self._flush_pending_unlocked()
             elif not self._flush_scheduled:
@@ -448,13 +454,14 @@ class BokehDocumentSession:
 
     def _flush_pending_unlocked(self) -> None:
         self._flush_scheduled = False
-        events = self._pending_events
-        self._pending_events = []
-        if self._closed or not events:
+        patches = self._pending_patches
+        self._pending_patches = []
+        if self._closed or not patches:
             return
-        patch = self._serialize_events_unlocked(events)
-        if patch is None:
-            return
+        patch = BokehSerialization(
+            content={"events": [event for patch in patches for event in patch.content["events"]]},
+            buffers=tuple(buffer for patch in patches for buffer in patch.buffers),
+        )
         self._revision += 1
         self._deliver_event_unlocked(
             BokehServerEvent(

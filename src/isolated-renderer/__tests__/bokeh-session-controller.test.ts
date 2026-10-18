@@ -658,11 +658,18 @@ describe("deferExistingModelUpdates", () => {
       Deserializer: FakeDeserializer as unknown as BokehRuntime["Deserializer"],
     } as BokehRuntime;
 
+    const decode = deserializer._decode.bind(deserializer);
+    vi.spyOn(deserializer, "_decode").mockImplementation((value) => {
+      if (value === "missing") throw new Error("reference missing isn't known");
+      return decode(value);
+    });
+
     expect(() =>
-      deferExistingModelUpdates(runtime, () => {
-        deserializer.decode([{ type: "object", name: "Div", id: "div", attributes: {} }]);
-        throw new Error("reference missing isn't known");
-      }),
+      deferExistingModelUpdates(runtime, () =>
+        deserializer.decode([
+          { type: "object", name: "Div", id: "div", attributes: { child: "missing" } },
+        ]),
+      ),
     ).toThrow("isn't known");
 
     expect(deserializer.references.has("div")).toBe(false);

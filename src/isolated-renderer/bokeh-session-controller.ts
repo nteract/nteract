@@ -191,6 +191,9 @@ export function deferExistingModelUpdates<T>(
     const outermost = !this._decoding;
     const decoded = decode.call(this, value, buffers);
     if (outermost) {
+      // Decode has finalized these models. A later listener failure must not
+      // erase their references: checkpoint recovery may need to remove them.
+      created.length = 0;
       for (const [model, attributes] of deferred.splice(0)) model.setv(attributes, { sync: false });
     }
     return decoded;
@@ -280,7 +283,7 @@ export class BokehSessionController {
   private inFlightTransaction: string | null = null;
   private inFlightBaseRevision = 0;
   private inFlightNeedsReplay = false;
-  private localChangesRejected = false;
+  private checkpointRequired = false;
   private canonicalEvents = new Map<number, NteractBokehResolvedPatchEvent>();
   private drainingCanonicalEvents = false;
   private syncPromise: Promise<void> | null = null;
@@ -321,7 +324,7 @@ export class BokehSessionController {
         this.announcedHeadRevision = params.headRevision;
         if (
           params.status === "connected" &&
-          (params.headRevision > this.revision || this.localChangesRejected)
+          (params.headRevision > this.revision || this.checkpointRequired)
         ) {
           this.scheduleResync();
         }
@@ -348,7 +351,7 @@ export class BokehSessionController {
     if (!shouldSyncEvent(event)) return;
     if (this.status !== "connected") {
       // Widgets can still change while disconnected or awaiting a retry.
-      this.localChangesRejected = true;
+      this.checkpointRequired = true;
       return;
     }
     this.localEvents.push(event);
@@ -361,7 +364,7 @@ export class BokehSessionController {
     if (status !== "connected") {
       // Dropping the queue does not undo its optimistic changes in Bokeh.
       // A later patch tail cannot restore attributes it never mentions.
-      if (this.localEvents.length > 0) this.localChangesRejected = true;
+      if (this.localEvents.length > 0) this.checkpointRequired = true;
       this.localEvents = [];
       if (this.localTimer !== null) window.clearTimeout(this.localTimer);
       this.localTimer = null;
@@ -397,7 +400,7 @@ export class BokehSessionController {
     try {
       patch = this.document.create_json_patch(events);
     } catch (error) {
-      this.localChangesRejected = true;
+      this.checkpointRequired = true;
       this.setStatus("error", error instanceof Error ? error.message : String(error));
       this.scheduleResync(0);
       return;
@@ -422,12 +425,12 @@ export class BokehSessionController {
         throw new Error("Bokeh patch request returned an invalid reply");
       }
       if (rawReply.status !== "accepted") {
-        this.localChangesRejected = true;
+        this.checkpointRequired = true;
         this.finishTransaction(transactionId);
         this.scheduleResync(0);
       }
     } catch (error) {
-      this.localChangesRejected = true;
+      this.checkpointRequired = true;
       this.finishTransaction(transactionId);
       this.setStatus("error", error instanceof Error ? error.message : String(error));
       this.scheduleResync();
@@ -448,7 +451,7 @@ export class BokehSessionController {
     this.transactionTimer = window.setTimeout(() => {
       const transactionId = this.inFlightTransaction;
       if (transactionId) {
-        this.localChangesRejected = true;
+        this.checkpointRequired = true;
         this.finishTransaction(transactionId);
       }
       this.scheduleResync(0);
@@ -524,10 +527,10 @@ export class BokehSessionController {
   /**
    * Whether the mounted document can reach the snapshot head by applying just
    * the patch tail. Otherwise the checkpoint is reconciled first, which also
-   * overwrites local values the kernel rejected.
+   * overwrites rejected local values and repairs partially applied mutations.
    */
   private canCatchUp(snapshot: NteractBokehSessionSnapshot): boolean {
-    if (!this.document || this.localChangesRejected) return false;
+    if (!this.document || this.checkpointRequired) return false;
     if (snapshot.checkpoint.revision > this.revision || snapshot.headRevision < this.revision) {
       return false;
     }
@@ -546,7 +549,7 @@ export class BokehSessionController {
     // Reconciliation replaced optimistic values, including a pending request's.
     // Its eventual acknowledgement must apply the accepted client patch again.
     if (this.inFlightTransaction) this.inFlightNeedsReplay = true;
-    this.localChangesRejected = false;
+    this.checkpointRequired = false;
   }
 
   /**
@@ -582,6 +585,11 @@ export class BokehSessionController {
       );
       this.reapplyPendingLocalChanges();
       this.revision = checkpoint.revision;
+    } catch (error) {
+      // Bokeh can mutate models before a decoder or change listener throws.
+      // Restore a checkpoint before replaying any more canonical patches.
+      this.checkpointRequired = true;
+      throw error;
     } finally {
       this.applyingRemote = false;
     }
@@ -671,6 +679,11 @@ export class BokehSessionController {
         if (event.serverPatch) this.applyPatchPayload(event.serverPatch);
         this.reapplyPendingLocalChanges();
         this.revision = event.revision;
+      } catch (error) {
+        // A failed patch may already have streamed data or changed models.
+        // Retrying its tail against that partial state would apply it twice.
+        this.checkpointRequired = true;
+        throw error;
       } finally {
         this.applyingRemote = false;
       }
@@ -704,7 +717,7 @@ export class BokehSessionController {
 
   private cancelSatisfiedResync(): void {
     if (
-      this.localChangesRejected ||
+      this.checkpointRequired ||
       this.revision < this.announcedHeadRevision ||
       this.resyncTimer === null
     ) {
