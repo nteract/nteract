@@ -5699,6 +5699,9 @@ fn normalize_builtin_tool_cache(tools: &[serde_json::Value]) -> Vec<serde_json::
                     *uri = serde_json::json!("ui://nteract/output.html");
                 }
             }
+            // Generated metadata has a canonical key order even when runtime
+            // consumers enable serde_json's preserve_order feature.
+            tool.sort_all_objects();
             tool
         })
         .collect()
@@ -5762,6 +5765,7 @@ fn update_manifest_tools(manifest_json: &str, tools: &[serde_json::Value]) -> St
         .collect();
 
     manifest["tools"] = serde_json::Value::Array(tool_entries);
+    manifest.sort_all_objects();
 
     let mut buf = serde_json::to_string_pretty(&manifest).expect("format manifest");
     buf.push('\n');
@@ -6486,6 +6490,37 @@ checksum = "old"
         // First-byte match but full sequence differs.
         assert!(!bytes_contain(b"abcabd", b"abce"));
         assert!(bytes_contain(b"abcabd", b"abd"));
+    }
+
+    #[test]
+    fn built_in_tool_cache_canonicalizes_object_keys_without_reordering_arrays() {
+        let tools: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"name":"z","inputSchema":{"required":["z","a"],"properties":{"z":{"type":"string"},"a":{"type":"number"}}},"description":"Second"},{"name":"a","description":"First"}]"#,
+        )
+        .unwrap();
+
+        let cached = normalize_builtin_tool_cache(&tools);
+        assert_eq!(
+            serde_json::to_string(&cached).unwrap(),
+            r#"[{"description":"Second","inputSchema":{"properties":{"a":{"type":"number"},"z":{"type":"string"}},"required":["z","a"]},"name":"z"},{"description":"First","name":"a"}]"#,
+        );
+    }
+
+    #[test]
+    fn manifest_tool_update_keeps_canonical_object_keys_and_tool_order() {
+        let manifest = r#"{"description":"Fixture","name":"fixture","tools":[{"description":"Second","name":"z"},{"description":"First","name":"a"}]}"#;
+        let tools: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"name":"z","description":"Second"},{"name":"a","description":"First"}]"#,
+        )
+        .unwrap();
+        let expected = format!(
+            "{}\n",
+            serde_json::to_string_pretty(
+                &serde_json::from_str::<serde_json::Value>(manifest).unwrap()
+            )
+            .unwrap()
+        );
+        assert_eq!(update_manifest_tools(manifest, &tools), expected);
     }
 
     #[test]
