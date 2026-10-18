@@ -59,12 +59,18 @@ interface BokehRuntime {
   addDocumentStandalone(document: BokehDocument, element: HTMLElement): Promise<BokehViewManager>;
 }
 
-interface BokehDeserializer {
-  references: Map<
+interface BokehModel {
+  type: string;
+  properties: Record<
     string,
-    { type: string; setv(attrs: unknown, options: { sync: boolean }): void }
-  > &
-    Map<string, unknown>;
+    { syncable: boolean; readonly: boolean; is_unset: boolean; get_value(): unknown }
+  >;
+  initialize_props(attrs: unknown): void;
+  setv(attrs: unknown, options: { sync: boolean }): void;
+}
+
+interface BokehDeserializer {
+  references: Map<string, BokehModel> & Map<string, unknown>;
   _decoding: boolean;
   _decode(value: unknown): unknown;
   _decode_object_ref(obj: { id: string; name: string; attributes?: unknown }): unknown;
@@ -130,6 +136,21 @@ function isPatchReply(value: unknown): value is NteractBokehApplyPatchResult {
   );
 }
 
+// Snapshot definitions omit default-valued properties. Bokeh's existing-model
+// decoder only sets explicit attributes, so complete them with the same property
+// initialization used for a new model. Passing an id defers finalization and
+// signal setup; the temporary model never joins a document or mounts a view.
+function checkpointModelAttributes(model: BokehModel, id: string, attrs: unknown): unknown {
+  const Model = model.constructor as new (attrs: { id: string }) => BokehModel;
+  const defaults = new Model({ id });
+  defaults.initialize_props(attrs);
+  return Object.fromEntries(
+    Object.entries(defaults.properties)
+      .filter(([, prop]) => prop.syncable && !(prop.readonly && prop.is_unset))
+      .map(([name, prop]) => [name, prop.get_value()]),
+  );
+}
+
 /**
  * Run `apply` with BokehJS updating existing models only after a patch's new
  * models are finalized. Decoding a definition of a model the document already
@@ -138,7 +159,11 @@ function isPatchReply(value: unknown): value is NteractBokehApplyPatchResult {
  * output would disappear. The updates still happen before the patch's events
  * are applied, in decoding order, as Bokeh intends.
  */
-export function deferExistingModelUpdates<T>(runtime: BokehRuntime, apply: () => T): T {
+export function deferExistingModelUpdates<T>(
+  runtime: BokehRuntime,
+  apply: () => T,
+  checkpoint = false,
+): T {
   const proto = runtime.Deserializer?.prototype;
   if (!proto?._decode_object_ref || !proto.decode) return apply();
   const decodeObjectRef = proto._decode_object_ref;
@@ -153,7 +178,11 @@ export function deferExistingModelUpdates<T>(runtime: BokehRuntime, apply: () =>
       return decodeObjectRef.call(this, obj);
     }
     if (existing.type !== obj.name) return decodeObjectRef.call(this, obj);
-    deferred.push([existing, this._decode(obj.attributes ?? {})]);
+    const attributes = this._decode(obj.attributes ?? {});
+    deferred.push([
+      existing,
+      checkpoint ? checkpointModelAttributes(existing, obj.id, attributes) : attributes,
+    ]);
     return existing;
   };
   proto.decode = function (this: BokehDeserializer, value, buffers) {
@@ -319,6 +348,9 @@ export class BokehSessionController {
     this.status = status;
     this.options.onStatus(status, error);
     if (status !== "connected") {
+      // Dropping the queue does not undo its optimistic changes in Bokeh.
+      // A later patch tail cannot restore attributes it never mentions.
+      if (this.localEvents.length > 0) this.localChangesRejected = true;
       this.localEvents = [];
       if (this.localTimer !== null) window.clearTimeout(this.localTimer);
       this.localTimer = null;
@@ -492,12 +524,12 @@ export class BokehSessionController {
   }
 
   private async installCheckpoint(checkpoint: NteractBokehResolvedCheckpoint): Promise<void> {
-    this.localChangesRejected = false;
     if (this.document) {
       this.reconcileCheckpoint(this.document, checkpoint);
     } else {
       await this.mountDocument(checkpoint);
     }
+    this.localChangesRejected = false;
   }
 
   /**
@@ -526,8 +558,10 @@ export class BokehSessionController {
     }
     this.applyingRemote = true;
     try {
-      deferExistingModelUpdates(this.options.runtime, () =>
-        document.apply_json_patch({ events }, bufferMap(checkpoint.buffers)),
+      deferExistingModelUpdates(
+        this.options.runtime,
+        () => document.apply_json_patch({ events }, bufferMap(checkpoint.buffers)),
+        true,
       );
       this.reapplyPendingLocalChanges();
       this.revision = checkpoint.revision;

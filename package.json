@@ -88,6 +88,7 @@
     "vega-lite": "^6.4.2"
   },
   "devDependencies": {
+    "@bokeh/bokehjs": "3.9.1",
     "@mcpjam/inspector": "^2.1.0",
     "@tailwindcss/vite": "^4.1.8",
     "@testing-library/jest-dom": "^6.9.1",
