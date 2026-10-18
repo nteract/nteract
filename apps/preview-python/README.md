@@ -24,6 +24,13 @@ it never replaces an existing default. The cloud room attaches a private compute
 session as an Automerge runtime peer. This remains experimental and requires a
 qualified celld deployment.
 
+For the colocated managed runner, the room owns the active execution queue. The
+adapter consumes only those admitted IDs and publishes progress and results;
+retained historical records do not become runnable work on reconnect. Native
+workstation peers retain their existing queue protocol. The managed adapter and
+room-host WASM must ship together in one matching cloud bundle. This does not
+repair historical queue corruption or retry executions with uncertain outcomes.
+
 ## Build
 
 Run `pnpm --filter @nteract/preview-python build`. Runtime assets are pinned to

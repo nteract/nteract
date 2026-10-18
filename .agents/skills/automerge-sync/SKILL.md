@@ -11,18 +11,18 @@ description: >
 
 # Automerge Sync & Document Model
 
-## Dependency baseline (2026-09-04)
+## Dependency baseline (2026-10-09)
 
-Production Rust and `runtimed-wasm` use crates.io Automerge exactly `0.11.0`
-(`Cargo.toml:57`, `Cargo.lock:627`). Commit `ae6aef0f` adopted it on 2026-08-26.
-The frontend uses these Rust WASM bindings, not `@automerge/automerge`.
+Production Rust and `runtimed-wasm` use crates.io Automerge exactly `0.12.0`
+(`Cargo.toml`, `Cargo.lock`). The frontend uses these Rust WASM bindings, not
+`@automerge/automerge`. Existing actor-label attribution and presence are
+preserved; upstream Authors are not enabled in production.
 
-The only remaining Automerge git dependency is `automerge-legacy`, a dev-dependency of
-`automerge-store` pinned to `nteract/automerge` revision
-`3fb6af5cc3af23b79f27cebfa339c8c98987e7b7` (Rust `0.10.0`). It is a test peer
-for snapshot and encoded-sync compatibility, not a production patch override.
-See `crates/automerge-store/Cargo.toml:17` and
-`crates/automerge-store/tests/version_compat.rs:282`.
+`automerge-store` retains crates.io `0.11.0` as `automerge-previous` and the
+legacy `nteract/automerge` revision `3fb6af5cc3af23b79f27cebfa339c8c98987e7b7`
+(Rust `0.10.0`) as `automerge-legacy`. Both are dev-only peers for snapshot and
+encoded-sync compatibility, not production patch overrides. See
+`crates/automerge-store/Cargo.toml` and its `tests/{version_compat,author_compat}.rs`.
 
 ## Document Model Essentials
 
@@ -283,7 +283,7 @@ If reconnect latency becomes a problem, preserving `shared_heads` (automerge-rep
 ### Historical desktop patches
 
 The fork addressed historical MissingOps and patch-log failures. Production
-has since moved to crates.io `0.11.0`. The local upstream source contains the
+uses the crates.io pin in the dependency baseline above. The local upstream source contains the
 `fork_at` dependency-walk deduplication, no-op actor cleanup, stale-orphan sync
 correction, and historical-view patch finalization. This is not an exhaustive
 accounting of the 21 patches recorded in the earlier `b3502d42` rebase.

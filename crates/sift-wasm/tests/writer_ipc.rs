@@ -13,7 +13,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::writer::StreamWriter;
 use bytes::Bytes;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use sift_wasm::write_parquet_ipc;
+use sift_wasm::{write_parquet_ipc, write_parquet_ipc_row_groups};
 
 fn sample_ipc() -> (Vec<u8>, Arc<Schema>) {
     let schema = Arc::new(Schema::new(vec![
@@ -100,4 +100,20 @@ fn empty_ipc_stream_produces_valid_parquet() {
     let batches: Vec<RecordBatch> = reader.collect::<Result<_, _>>().expect("read batches");
     let total: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(total, 0);
+}
+
+#[test]
+fn row_group_cap_splits_the_file() {
+    let (ipc, _schema) = sample_ipc();
+    let default = write_parquet_ipc(&ipc).expect("default");
+    let capped = write_parquet_ipc_row_groups(&ipc, Some(2)).expect("capped");
+    let groups = |bytes: Vec<u8>| {
+        ParquetRecordBatchReaderBuilder::try_new(Bytes::from(bytes))
+            .expect("reader")
+            .metadata()
+            .num_row_groups()
+    };
+    assert_eq!(groups(default), 1);
+    assert_eq!(groups(capped), 2);
+    // `Some(0)` is rejected, but the JsError it builds cannot exist natively.
 }

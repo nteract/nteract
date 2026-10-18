@@ -32,6 +32,8 @@ export interface ApplyOutputChangesetOptions {
   blobResolver?: BlobResolverInput | null;
   refreshBlobResolver?: () => Promise<BlobResolverInput | null>;
   retryDelaysMs?: readonly number[];
+  /** Stop writes, retries, and further fetches when the host retires this projection. */
+  shouldContinue?: () => boolean;
   logger?: {
     debug?: ProjectionLogFn;
     warn?: ProjectionLogFn;
@@ -167,6 +169,7 @@ export async function applyOutputChangeset(
   removedIds: string[],
   options: ApplyOutputChangesetOptions = {},
 ): Promise<void> {
+  if (options.shouldContinue?.() === false) return;
   if (removedIds.length > 0) {
     deleteOutputs(removedIds);
     for (const outputId of removedIds) {
@@ -182,6 +185,7 @@ export async function applyOutputChangeset(
     generations.set(outputId, stampOutputGeneration(outputId));
   }
   const writeIsCurrent = (outputId: string) =>
+    options.shouldContinue?.() !== false &&
     outputGenerationIsCurrent(outputId, generations.get(outputId) ?? -1, epoch);
 
   let blobResolver = options.blobResolver ?? null;
@@ -190,6 +194,9 @@ export async function applyOutputChangeset(
   }
 
   const retryDelays = options.retryDelaysMs ?? OUTPUT_RETRY_DELAYS_MS;
+  const pending: Array<[string, OutputManifest]> = [];
+  // Publish available outputs before awaiting any blob. A slow rich display
+  // must not hide inline stdout or other already-resolved outputs in this batch.
   for (const [outputId, raw] of changed) {
     if (!writeIsCurrent(outputId)) continue;
     const sync = resolveOutputProjectionSync(raw, blobResolver);
@@ -206,7 +213,13 @@ export async function applyOutputChangeset(
       recordOutputProjectionFailure(outputId);
       continue;
     }
-    if (!isOutputManifest(raw)) continue;
+    if (isOutputManifest(raw)) pending.push([outputId, raw]);
+  }
+  // Keep blob resolution serial, preserving the existing request bound and
+  // per-output generation checks while inline outputs are already visible.
+  if (blobResolver === null) return;
+  for (const [outputId, raw] of pending) {
+    if (!writeIsCurrent(outputId)) continue;
     let resolvedOk = false;
     for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
       try {
@@ -221,6 +234,10 @@ export async function applyOutputChangeset(
         resolvedOk = true;
         break;
       } catch (err) {
+        if (!writeIsCurrent(outputId)) {
+          resolvedOk = true;
+          break;
+        }
         if (attempt < retryDelays.length) {
           options.logger?.debug?.(
             `[outputs-store] resolve attempt ${attempt + 1} failed for ${outputId}; retrying`,

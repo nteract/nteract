@@ -43,6 +43,7 @@ jobs:
       python_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.python == 'true' }}
       node_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.node == 'true' }}
       windows_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.windows == 'true' }}
+      windows_restart_changed: ${{ steps.filter.outputs.windows_restart == 'true' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -179,6 +180,9 @@ jobs:
               - "pnpm-lock.yaml"
               - "Cargo.toml"
               - "Cargo.lock"
+            windows_restart:
+              - "crates/runtimed/tests/integration.rs"
+              - "crates/runtimed/tests/support/windows_restart.rs"
             windows:
               - ".github/workflows/build.yml"
               - "crates/notebook/nsis/**"
@@ -410,6 +414,42 @@ jobs:
 
       - name: Run notebook unit and integration tests
         run: cargo test -p notebook --locked
+
+  # The non-PR Windows matrix runs the full workspace. Exercise daemon restart
+  # fixtures natively before merging changes to them, including draft PRs.
+  windows-daemon-restart-tests:
+    name: Windows daemon restart tests
+    needs: [changes]
+    if: |
+      github.event_name == 'pull_request' && needs.changes.outputs.source_changed == 'true' && (
+        needs.changes.outputs.ci_changed == 'true' ||
+        needs.changes.outputs.windows_restart_changed == 'true' ||
+        contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+        contains(github.event.pull_request.labels.*.name, 'ci:windows')
+      )
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Install rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-daemon-restart-tests
+
+      - uses: ./.github/actions/build-runtime-artifacts
+        with:
+          include-mcp-widget: true
+
+      - name: Run saved-file import restart regression
+        run: cargo test -p runtimed --test integration --locked test_notebook_sync_uuid_imports_saved_file_without_recovery_journal -- --exact
+
+      - name: Run daemon integration suite
+        run: cargo test -p runtimed --test integration --locked
 
   windows-arm64:
     name: Windows ARM64 (compile)
@@ -644,6 +684,20 @@ jobs:
           pnpm --dir apps/notebook-cloud build:viewer
           NOTEBOOK_CLOUD_CELLD_PYTHON=1 node apps/notebook-cloud/scripts/celld-local.mjs export "$RUNNER_TEMP/main-preview-export"
           node .github/preview/pack.mjs "$RUNNER_TEMP/main-preview-export" "$GITHUB_SHA" "$RUNNER_TEMP/preview.bundle.gz"
+
+      # The optional post-release editor workflow packages this viewer build.
+      # Exercise packaging and smoke here so breaks surface on the PR before
+      # a release triggers that independent workflow.
+      - name: Package and smoke the embeddable editor assets
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        run: |
+          node scripts/ci/package-notebook-cloud-assets.mjs \
+            --out="$RUNNER_TEMP/notebook-cloud-assets" \
+            --version="0.0.0-ci.${GITHUB_RUN_ID}" \
+            --channel=nightly \
+            --source-sha="$GITHUB_SHA" \
+            --built-at="$(git show -s --format=%cI HEAD)"
+          bash scripts/ci/notebook-cloud-assets-smoke.sh "$RUNNER_TEMP/notebook-cloud-assets/notebook-cloud-assets-nightly.tar.gz"
 
       - name: Upload main cloud deployment bundle
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "runtimed": [
+        "../../../../packages/runtimed/src/scope-capabilities.ts"
+      ]
+    }
+  }
+}

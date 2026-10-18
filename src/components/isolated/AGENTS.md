@@ -1,8 +1,16 @@
 # Isolated output frame — security model and renderers
 
-Untrusted cell outputs render inside a sandboxed iframe. Tauri loads the iframe from the `nteract-frame` custom URI scheme so the iframe receives its own CSP. The sandbox attribute list, without `allow-same-origin`, is the load-bearing isolation against parent DOM, storage, and Tauri IPC access. The plain browser dev host uses `srcDoc` with the same sandbox-induced opaque origin behavior.
+Outputs that require isolation render inside a sandboxed iframe. Tauri loads the iframe from the `nteract-frame` custom URI scheme so the iframe receives its own CSP. Omitting `allow-same-origin` prevents direct same-origin DOM and storage access to the parent and other frames. Host adapters must keep privileged native bridges out of output frames. The plain browser dev host uses `srcDoc` with the same sandbox-induced opaque origin behavior. See [output frame security](../../../docs/adr/output-frame-security.md) for the current implementation and its limits.
 
 Scope: `src/components/isolated/**`, `src/isolated-renderer/**`.
+
+Structured Markdown projections can render in the host when
+`canRenderMarkdownProjectionInHost` admits them; raw HTML still requires the
+sandbox. This includes Mermaid diagrams in cells, outputs, and comments. Their
+generated SVG must pass through `mermaid-renderer.ts`'s DOMPurify and CSS admission
+policy before insertion, with links and images disabled. Do not substitute raw
+SVG insertion or treat the source as trusted. Browser coverage for this host
+boundary lives alongside the sandboxed renderer tests in `apps/renderer-test`.
 
 ## Security model
 
@@ -14,13 +22,13 @@ Keep the sandbox to exactly these flags:
 allow-scripts allow-downloads allow-forms allow-pointer-lock
 ```
 
-Fullscreen (sift maximize, maps, 3D) comes from the iframe `allow="fullscreen *"` Permissions Policy attribute, not a sandbox token. `allow-same-origin` stays off — adding it would give cell output access to `window.__TAURI__`, all Tauri APIs, parent DOM, localStorage, and cookies. A CI test in `src/components/isolated/__tests__/isolated-frame.test.ts` asserts the list stays clean; it's the single most important security invariant in this tree. `allow-popups` and `allow-modals` were removed to shrink the phishing surface — leave them out.
+Fullscreen (sift maximize, maps, 3D) comes from the iframe `allow="fullscreen *"` Permissions Policy attribute, not a sandbox token. `allow-same-origin` stays off: adding it restores the document URL's origin, or the inherited parent origin for `srcDoc`, rather than always giving the frame the parent's origin. A CI test in `src/components/isolated/__tests__/isolated-frame.test.ts` asserts the sandbox list. Leave `allow-popups` and `allow-modals` out.
 
 ### Custom URI scheme + sandbox-induced opaque origin
 
 In Tauri, mount the frame at `nteract-frame://localhost/`. On Windows, Tauri/wry rewrites this to `http://nteract-frame.localhost/` while still routing through the same scheme handler. Do not string-compare iframe URLs across platforms; parse the URL and account for the platform-specific origin shape.
 
-All `nteract-frame://` iframes share one scheme origin. The custom scheme exists so the iframe gets its own CSP; it is not the isolation boundary. The sandbox attribute creates the opaque origin (shown as `"null"`) and is the only inter-iframe isolation. Render-time tests enforce that `allow-same-origin` stays absent.
+Frames loaded from the same `nteract-frame://localhost/` URL share a URL origin. The custom scheme permits a separate CSP; the sandbox creates each frame's opaque effective origin (serialized as `"null"`). Multiple output items can share a frame and are not isolated from each other. Render-time tests enforce that `allow-same-origin` stays absent.
 
 ### Content Security Policy
 
@@ -40,17 +48,17 @@ frame-src   'none';
 child-src   'none';
 ```
 
-`http://127.0.0.1:*` in `script-src`/`style-src` is deliberate: anywidget ESM (`_esm`) and CSS (`_css`) are served from the daemon's blob-store HTTP server on a dynamic localhost port. Without that entry the browser rejects `import()` of blob-served JS with a MIME-type violation. It's safe because the sandbox still lacks `allow-same-origin`, and the blob server is read-only and content-addressed. `https:` covers CDN-hosted widget assets (anywidget ESM from unpkg/jsdelivr).
+`http://127.0.0.1:*` in `script-src`/`style-src` permits anywidget ESM (`_esm`) and CSS (`_css`) from the daemon's blob HTTP server on a dynamic port. `https:` permits CDN-hosted widget assets. These entries allow asset loading; they do not establish confidentiality of the unauthenticated blob service. `connect-src *` and broad resource policies permit network activity subject to browser and destination policy. The sandbox allows forms and downloads; an opaque origin does not ensure credential-free requests in every browser.
 
 Canonical file: `src/components/isolated/frame.html`. Rust embeds that file with `include_str!()` for the Tauri scheme response; TypeScript imports the same file as raw text for `generateFrameHtml()` / browser `srcDoc`.
 
 The scheme handler is registered in both packaged and Tauri dev shells. Plain browser-only `pnpm dev` still uses `srcDoc`, but `cargo xtask notebook` / Tauri dev can load `nteract-frame://localhost/`.
 
-Future hosted/web production should not treat `srcDoc` as the equivalent security boundary. A remote deployment with real auth and attribution should serve output documents from a separate output origin that does not share cookie scope, localStorage, or ambient credentials with the authenticated app origin. Keep those output iframes sandboxed without `allow-same-origin`; give the output origin its own permissive CSP; use explicit `postMessage` with origin/session validation; scope output URLs by signed, short-lived capability/session tokens; and keep attribution/audit data server-side instead of exposing identifiers to output JavaScript.
+The Draft [hosted output origin ADR](../../../docs/adr/hosted-output-origin-isolation.md) describes separate-origin, credential-segregation, and scoped-capability requirements for hosted deployments. These are not general enforcement in the current local HTTP service. A separate output origin complements the sandbox. `srcDoc` inherits the parent's policy context; its effective origin remains opaque under the current sandbox.
 
 ### Source validation
 
-The iframe's message handler rejects anything whose `event.source !== window.parent`. Keep that check in place — it prevents other windows/iframes from spoofing messages.
+The iframe's message handler rejects anything whose `event.source !== window.parent`. Keep that check: it binds messages to the immediate parent WindowProxy, not an authenticated app, vendor, or user. Any page creating its own frame is that frame's parent. The shell has no origin allowlist, authenticated token, or channel nonce. Parent receive paths bind to the expected iframe window and check protocol shape. Comm bridges delegate widget state and supported actions; data sent to output code is exposed to it.
 
 ## Architecture
 
@@ -65,11 +73,14 @@ The iframe's message handler rejects anything whose `event.source !== window.par
 │           ISOLATED IFRAME (nteract-frame://)                 │
 │  WidgetBridgeClient ↔ WidgetStore ↔ WidgetView/AnyWidget    │
 │                                                              │
-│  window.__TAURI__         → undefined                        │
 │  window.parent.document   → cross-origin error               │
 │  localStorage             → cross-origin error               │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+The shell supplies no native or kernel control endpoint. Native bridge exposure
+depends on each host's script injection and IPC policy, not just the iframe
+sandbox. Check it on every supported platform.
 
 The core renderer bundle is built inline by `apps/notebook/vite-plugin-isolated-renderer.ts` and supplied through `IsolatedRendererProvider` (read via `useIsolatedRenderer()`). No HTTP fetch, no separate build step.
 

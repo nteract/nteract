@@ -42,9 +42,14 @@ Every source ends as a `TableData` the engine reads by `(row, col)`:
 1. **Binary files**: `loadTableFile(bytes)` → `load_parquet_bounded` /
    `load_ipc_bounded` in WASM → `createWasmTableData`. Limits are checked from
    footer metadata and after each decoded batch.
-2. **CSV/TSV**: `@nteract/sift-csv` (`crates/sift-csv-wasm`) converts text to Arrow IPC
+2. **Parquet by byte range**: `loadTableFile(byteSource)` or the `byte-source`
+   React source → `openParquetFile` (`parquet-file.ts`) → `parquet_open` from
+   the footer, then `parquet_append_row_group` per row group over host-fetched
+   ranges (`crates/sift-wasm/src/parquet_file.rs`). The `url` source's Parquet
+   branch uses the same loader over the buffered response.
+3. **CSV/TSV**: `@nteract/sift-csv` (`crates/sift-csv-wasm`) converts text to Arrow IPC
    bytes, which take path 1. Sift itself has no CSV parser.
-3. **Hosted URLs and Arrow manifests**: the `url` and `manifest` sources in
+4. **Hosted URLs and Arrow manifests**: the `url` and `manifest` sources in
    `react.tsx`, used by the notebook renderer.
 
 Column types come from the Arrow schema with data-driven refinement; summaries

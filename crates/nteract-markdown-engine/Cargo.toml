@@ -3,6 +3,7 @@ name = "nteract-markdown-engine"
 version = "0.4.6"
 edition = "2021"
 publish = false
+license = "BSD-3-Clause"
 
 [dependencies]
 markdown = "1"

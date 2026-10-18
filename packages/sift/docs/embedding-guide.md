@@ -111,6 +111,67 @@ paging or sampled preview.
 Lists, structs, and maps display as text. Known image structures have dedicated
 rendering.
 
+## Parquet by byte range
+
+For Parquet files you would rather not read into memory, give Sift a
+`ByteSource` instead of bytes. Sift reads the footer, then fetches each row
+group's column chunks as it decodes them; the whole file is never buffered in
+JS or WASM memory.
+
+```ts
+import type { ByteSource } from '@nteract/sift'
+
+const source: ByteSource = {
+  byteLength: stat.size,
+  // Resolve with exactly `length` bytes. The signal aborts when Sift no
+  // longer needs them (unmount, source change).
+  read: (offset, length, signal) => files.readRange(path, offset, length, { signal }),
+}
+```
+
+Back `read` with whatever the host already trusts: a file handle behind an
+IPC bridge, or a URL that honors HTTP `Range`. Return a transferable
+`Uint8Array`; avoid base64.
+
+Two ways to use it:
+
+```tsx
+// Complete or error, like loadTableFile(bytes). Resolves after every row group.
+// This path passes no AbortSignal to `read`.
+const data = await loadTableFile(source)
+
+// Progressive: the table mounts after the first row group and the rest stream
+// in behind the streaming indicator. Memoize `source`; a new identity reloads
+// and aborts the previous source's reads.
+<SiftTable source={{ kind: 'byte-source', source }} onLoadError={report} />
+```
+
+The footer must carry the `PAR1` magic; anything else is rejected after a
+single read of the file tail. `maxRows`, `maxColumns`, and `maxDecodedBytes`
+apply as for bytes, from the footer and cumulatively as row groups append.
+`maxBytes` does not: the file length is not the cap, retained memory is. A file
+whose decoded rows exceed `maxDecodedBytes` still fails; raise the limit for
+hosts with memory to spare. Rows become resident as their row group loads and
+stay resident, so sort, filter, and summaries cover every loaded row.
+
+What `maxDecodedBytes` bounds is retained Arrow memory, checked after each
+decoded batch. Two guards keep transient memory near it: a footer longer than
+the limit is rejected before it is read, and a row group whose compressed or
+footer-declared size exceeds the remaining budget is rejected before it is
+fetched. One row group's compressed bytes still pass through JS and WASM
+memory while it decodes. Files with column chunks past 4 GiB are rejected at
+open; the WASM reader cannot address them.
+
+If a row group fails after the table has mounted (a read error, the decoded
+limit), the rows already loaded stay on screen, the streaming indicator
+settles, Sift shows the error, and `onLoadError` fires.
+
+Only Parquet can be read this way. A `ByteSource` with `format: 'arrow-ipc'` is
+read whole and goes through the bytes path with its `maxBytes` check.
+
+`onLoadError` fires for `loader`, `url`, `byte-source`, and manifest sources
+when a load fails, with the same `Error` Sift renders in its error state.
+
 ## Lifecycle and host controls
 
 A `TableData` instance returned by `loadTableFile` owns one WASM store. The React
@@ -131,7 +192,9 @@ responsibilities. Parquet can use a view-only mode.
 
 For already hosted data, `<SiftTable url="/data.arrow" />` and
 `<SiftTable url="/data.parquet" />` remain available. The URL/manifest paths have
-different loading behavior and do not inherit `loadTableFile` admission limits.
+different loading behavior and do not inherit `loadTableFile` admission limits:
+a Parquet URL streams row groups through the same loader as `byte-source`, with
+the limits set to their maxima. A schema-only Parquet URL mounts an empty table.
 A sampled Arrow manifest must include its `summary.sampled` and included/total
 row metadata; its sorting, filtering, and summaries cover only the supplied rows.
 

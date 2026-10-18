@@ -130,6 +130,7 @@ pub enum NodeKind {
     List,
     ListItem,
     CodeBlock,
+    MermaidBlock,
     MathBlock,
     ThematicBreak,
     Html,
@@ -1066,7 +1067,15 @@ fn project_node(node: &mdast::Node, context: &mut ProjectionContext<'_>) -> Proj
             attrs.spread = Some(item.spread);
         }
         mdast::Node::Code(code) => {
-            kind = NodeKind::CodeBlock;
+            kind = if code
+                .lang
+                .as_deref()
+                .is_some_and(|lang| lang.eq_ignore_ascii_case("mermaid"))
+            {
+                NodeKind::MermaidBlock
+            } else {
+                NodeKind::CodeBlock
+            };
             text = code.value.clone();
             copy_text = code.value.clone();
             attrs.lang = code.lang.clone();
@@ -1337,6 +1346,7 @@ fn node_kind_label(kind: NodeKind) -> &'static str {
         NodeKind::List => "list",
         NodeKind::ListItem => "list-item",
         NodeKind::CodeBlock => "code-block",
+        NodeKind::MermaidBlock => "mermaid-block",
         NodeKind::MathBlock => "math-block",
         NodeKind::ThematicBreak => "thematic-break",
         NodeKind::Html => "html",
@@ -1526,6 +1536,11 @@ fn estimate_node(node: &ProjectedNode, width: usize) -> BlockMeasurement {
             "code line count",
         ),
         NodeKind::MathBlock => measured(64, MeasurementConfidence::Low, "display math placeholder"),
+        NodeKind::MermaidBlock => measured(
+            240,
+            MeasurementConfidence::Low,
+            "diagram layout placeholder",
+        ),
         NodeKind::Table => measured(
             node.children.len().max(2) * 34 + 16,
             MeasurementConfidence::Low,
@@ -1846,6 +1861,23 @@ mod tests {
             plan.blocks[0].fallback.copy_text,
             "const plan = wasm.project(source);"
         );
+    }
+
+    #[test]
+    fn projects_mermaid_as_source_backed_diagrams_with_provisional_height() {
+        for fence in ["```mermaid", "~~~MERMAID live"] {
+            let source = format!("{fence}\nflowchart LR\nA --> B");
+            let plan = project_markdown(&source).unwrap();
+            let block = &plan.blocks[0];
+            assert_eq!(block.kind, NodeKind::MermaidBlock);
+            assert_eq!(block.fallback.text, "flowchart LR\nA --> B");
+            assert_eq!(block.fallback.copy_text, block.fallback.text);
+            assert_eq!(block.measurement.confidence, MeasurementConfidence::Low);
+            assert_eq!(block.span.start, 0);
+            assert_eq!(block.span.end, source.len());
+        }
+        let ordinary = project_markdown("```mermaid-example\nA --> B\n```").unwrap();
+        assert_eq!(ordinary.blocks[0].kind, NodeKind::CodeBlock);
     }
 
     #[test]

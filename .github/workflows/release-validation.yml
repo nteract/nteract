@@ -11,6 +11,8 @@ on:
       - .github/workflows/release-validation.yml
       - .github/workflows/pr-binary-generation.yml
       - .github/workflows/publish-npm.yml
+      - .github/workflows/build-wasm-npm.yml
+      - packages/runtimed-wasm/**
       - .cargo/config.toml
       - .dockerignore
       - images/runtime-peer/**
@@ -19,6 +21,7 @@ on:
       - scripts/ci/filter-unpublished-release-tags.sh
       - scripts/ci/check-release-tag.sh
       - scripts/ci/npm-release*
+      - scripts/ci/npm-wasm-*
       - scripts/ci/smoke-windows-node-addon.cjs
       - scripts/ci/smoke-windows-wheel.py
       - scripts/ci/smoke-linux-arm64-wheel.py
@@ -26,6 +29,12 @@ on:
       - scripts/ci/install-linuxdeploy.sh
       - scripts/ci/install-tauri-cli.sh
       - scripts/ci/fedora-appimage-smoke.sh
+      - scripts/ci/*notebook-cloud-assets*
+      - scripts/ci/editor-assets-release*
+      - scripts/ci/release-wasm-manifest.mjs
+      - .github/workflows/build-editor-assets.yml
+      - .github/workflows/publish-editor-assets.yml
+      - crates/notebook-protocol/src/connection/handshake.rs
       - scripts/ci/runtime-peer-image-smoke.sh
       - scripts/ci/runtime-peer-image-debug.sh
       - scripts/ci/runtime-peer-binding-exit-gdb.sh
@@ -33,6 +42,8 @@ on:
       - scripts/tests/audit-linux-node.test.mjs
       - scripts/tests/audit-windows-crt-imports.test.mjs
       - scripts/tests/release-workflow.test.mjs
+      - scripts/tests/notebook-cloud-assets.test.mjs
+      - scripts/tests/editor-assets-release.test.mjs
       - scripts/tests/runtime-peer-image-debug.test.mjs
       - scripts/tests/stage-notebook-sidecars.test.mjs
       - scripts/tests/npm-*.mjs
@@ -64,7 +75,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
-      - run: node --test scripts/tests/audit-linux-node.test.mjs scripts/tests/audit-windows-crt-imports.test.mjs scripts/tests/release-workflow.test.mjs scripts/tests/runtime-peer-image-debug.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
+      - run: node --test scripts/tests/audit-linux-node.test.mjs scripts/tests/audit-windows-crt-imports.test.mjs scripts/tests/release-workflow.test.mjs scripts/tests/notebook-cloud-assets.test.mjs scripts/tests/editor-assets-release.test.mjs scripts/tests/runtime-peer-image-debug.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
       - run: python3 -m unittest scripts/tests/test_release_tag.py -v
 
   runtime-peer-image:

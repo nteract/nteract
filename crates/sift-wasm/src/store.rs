@@ -27,7 +27,7 @@ use wasm_bindgen::prelude::*;
 const MAX_INLINE_BINARY_BYTES: usize = 512;
 
 /// A loaded dataset stored in WASM memory.
-struct DataStore {
+pub(crate) struct DataStore {
     schema: Option<Arc<arrow::datatypes::Schema>>,
     batches: Vec<RecordBatch>,
     /// Prefix sum of batch row counts for O(log n) row→batch lookup
@@ -256,7 +256,7 @@ fn sniff_image_column(store: &DataStore, col: usize) -> ImageColumnSniff {
 ///
 /// Type alone cannot answer this: `List<Utf8>` is how several HuggingFace
 /// datasets carry images, and it is also how they carry ordinary text.
-fn refine_image_columns(store: &mut DataStore) {
+pub(crate) fn refine_image_columns(store: &mut DataStore) {
     if store.image_columns_refined {
         return;
     }
@@ -435,7 +435,16 @@ fn cell_is_null(column: &dyn Array, row: usize) -> bool {
 static STORES: Mutex<Option<HashMap<u32, DataStore>>> = Mutex::new(None);
 static NEXT_HANDLE: Mutex<u32> = Mutex::new(1);
 
-fn with_stores<F, R>(f: F) -> R
+/// Allocate the next handle. Shared by every registry in this crate so a
+/// store handle and a Parquet file handle can never collide.
+pub(crate) fn next_handle() -> u32 {
+    let mut h = NEXT_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
+    let id = *h;
+    *h += 1;
+    id
+}
+
+pub(crate) fn with_stores<F, R>(f: F) -> R
 where
     F: FnOnce(&mut HashMap<u32, DataStore>) -> R,
 {
@@ -477,7 +486,7 @@ fn schema_metadata(
     (num_cols, col_names, col_types, col_timezones)
 }
 
-fn empty_streaming_store() -> DataStore {
+pub(crate) fn empty_streaming_store() -> DataStore {
     DataStore {
         schema: None,
         batches: Vec::new(),
@@ -493,7 +502,7 @@ fn empty_streaming_store() -> DataStore {
     }
 }
 
-fn set_store_schema(store: &mut DataStore, schema: Arc<arrow::datatypes::Schema>) {
+pub(crate) fn set_store_schema(store: &mut DataStore, schema: Arc<arrow::datatypes::Schema>) {
     let (num_cols, col_names, col_types, col_timezones) = schema_metadata(&schema);
     store.schema = Some(schema);
     store.num_cols = num_cols;
@@ -502,7 +511,7 @@ fn set_store_schema(store: &mut DataStore, schema: Arc<arrow::datatypes::Schema>
     store.col_timezones = col_timezones;
 }
 
-fn append_batches_to_store(
+pub(crate) fn append_batches_to_store(
     store: &mut DataStore,
     schema: Arc<arrow::datatypes::Schema>,
     batches: Vec<RecordBatch>,
@@ -553,12 +562,7 @@ fn store_batches(
     store.streaming_complete = true;
     refine_image_columns(&mut store);
 
-    let handle = {
-        let mut h = NEXT_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
-        let id = *h;
-        *h += 1;
-        id
-    };
+    let handle = next_handle();
 
     with_stores(|stores| {
         stores.insert(handle, store);
@@ -604,13 +608,13 @@ pub fn load_parquet(parquet_bytes: &[u8]) -> Result<u32, JsValue> {
 }
 
 #[derive(Clone, Copy)]
-struct FileLimits {
-    rows: u32,
-    columns: u32,
-    decoded_bytes: u32,
+pub(crate) struct FileLimits {
+    pub(crate) rows: u32,
+    pub(crate) columns: u32,
+    pub(crate) decoded_bytes: u32,
 }
 
-fn check_file_limit(value: u64, limit: u32, label: &str) -> Result<(), String> {
+pub(crate) fn check_file_limit(value: u64, limit: u32, label: &str) -> Result<(), String> {
     if value > u64::from(limit) {
         return Err(format!(
             "Table file exceeds {label} limit ({value} > {limit})"
@@ -619,10 +623,10 @@ fn check_file_limit(value: u64, limit: u32, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Default)]
-struct FileMemory {
+#[derive(Clone, Default)]
+pub(crate) struct FileMemory {
     allocations: HashMap<usize, usize>,
-    bytes: u64,
+    pub(crate) bytes: u64,
 }
 
 impl FileMemory {
@@ -673,18 +677,34 @@ fn collect_file_batches(
     reader: impl Iterator<Item = Result<RecordBatch, arrow::error::ArrowError>>,
     limits: FileLimits,
 ) -> Result<Vec<RecordBatch>, String> {
-    let mut rows = 0u64;
-    let mut memory = FileMemory::default();
+    let mut usage = FileUsage::default();
+    collect_file_batches_into(reader, limits, &mut usage)
+}
+
+/// Rows and retained memory accumulated across every batch admitted so far.
+/// Ranged Parquet loads decode one row group per call, so the running totals
+/// live outside the collector and the limits hold across the whole file.
+#[derive(Clone, Default)]
+pub(crate) struct FileUsage {
+    pub(crate) rows: u64,
+    pub(crate) memory: FileMemory,
+}
+
+pub(crate) fn collect_file_batches_into(
+    reader: impl Iterator<Item = Result<RecordBatch, arrow::error::ArrowError>>,
+    limits: FileLimits,
+    usage: &mut FileUsage,
+) -> Result<Vec<RecordBatch>, String> {
     let mut batches = Vec::new();
     for batch in reader {
         let batch = batch.map_err(|e| e.to_string())?;
-        rows = rows.saturating_add(batch.num_rows() as u64);
+        usage.rows = usage.rows.saturating_add(batch.num_rows() as u64);
         for column in batch.columns() {
-            memory.add_array(&column.to_data());
+            usage.memory.add_array(&column.to_data());
         }
-        check_file_limit(rows, limits.rows, "row")?;
+        check_file_limit(usage.rows, limits.rows, "row")?;
         check_file_limit(batch.num_columns() as u64, limits.columns, "column")?;
-        check_file_limit(memory.bytes, limits.decoded_bytes, "decoded bytes")?;
+        check_file_limit(usage.memory.bytes, limits.decoded_bytes, "decoded bytes")?;
         batches.push(batch);
     }
     Ok(batches)
@@ -697,13 +717,13 @@ fn collect_file_batches(
 /// case is a dictionary-encoded string column read as plain Utf8: arrow-rs
 /// copies the dictionary entry into every row, so a batch costs
 /// `rows x largest entry`. 256 rows caps that overshoot at 256x one entry.
-const PARQUET_BATCH_ROWS: u64 = 256;
+pub(crate) const PARQUET_BATCH_ROWS: u64 = 256;
 
 /// Footer-only lower bound for top-level fixed-width Arrow arrays. Physical
 /// Parquet widths can exceed the decoded width (Int8 uses INT32, timestamps
 /// can use INT96). Nested leaves can describe empty/null lists rather than
 /// retained values, so they contribute nothing to this conservative floor.
-fn minimum_parquet_bytes(
+pub(crate) fn minimum_parquet_bytes(
     schema: &arrow::datatypes::Schema,
     metadata: &parquet::file::metadata::ParquetMetaData,
 ) -> Result<u64, String> {
@@ -723,15 +743,14 @@ fn minimum_parquet_bytes(
     Ok(bytes)
 }
 
-fn bounded_parquet_batches(
-    parquet_bytes: &[u8],
+/// Footer-only admission: row count, top-level and leaf column counts, and the
+/// fixed-width memory floor. Returns the footer row count. Retained Arrow
+/// memory is the real guard and is checked after every decoded batch.
+pub(crate) fn admit_parquet_footer(
+    schema: &arrow::datatypes::Schema,
+    metadata: &parquet::file::metadata::ParquetMetaData,
     limits: FileLimits,
-) -> Result<(Arc<arrow::datatypes::Schema>, Vec<RecordBatch>), String> {
-    let builder =
-        ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::copy_from_slice(parquet_bytes))
-            .map_err(|e| e.to_string())?;
-    let schema = builder.schema().clone();
-    let metadata = builder.metadata();
+) -> Result<u64, String> {
     let rows = u64::try_from(metadata.file_metadata().num_rows())
         .map_err(|_| "Invalid negative Parquet row count")?;
     check_file_limit(rows, limits.rows, "row")?;
@@ -742,13 +761,23 @@ fn bounded_parquet_batches(
         limits.columns,
         "leaf column",
     )?;
-    // Admission runs on footer metadata alone; retained Arrow memory is the
-    // real guard and is checked after every decoded batch below.
     check_file_limit(
-        minimum_parquet_bytes(&schema, metadata)?,
+        minimum_parquet_bytes(schema, metadata)?,
         limits.decoded_bytes,
         "minimum decoded bytes",
     )?;
+    Ok(rows)
+}
+
+fn bounded_parquet_batches(
+    parquet_bytes: &[u8],
+    limits: FileLimits,
+) -> Result<(Arc<arrow::datatypes::Schema>, Vec<RecordBatch>), String> {
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::copy_from_slice(parquet_bytes))
+            .map_err(|e| e.to_string())?;
+    let schema = builder.schema().clone();
+    let rows = admit_parquet_footer(&schema, builder.metadata(), limits)?;
     let reader = builder
         .with_batch_size(PARQUET_BATCH_ROWS as usize)
         .build()
@@ -892,12 +921,7 @@ pub fn load_ipc_bounded(
 /// when the manifest is complete.
 #[wasm_bindgen]
 pub fn create_arrow_stream_store() -> u32 {
-    let handle = {
-        let mut h = NEXT_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
-        let id = *h;
-        *h += 1;
-        id
-    };
+    let handle = next_handle();
 
     with_stores(|stores| {
         stores.insert(handle, empty_streaming_store());

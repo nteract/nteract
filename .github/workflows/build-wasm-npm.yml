@@ -1,0 +1,109 @@
+name: Build WASM npm package
+run-name: WASM npm for release ${{ github.event.workflow_run.id || inputs.release_run_id }}/${{ github.event.workflow_run.run_attempt || inputs.release_run_attempt }}
+
+on:
+  workflow_run:
+    workflows: ["Stable Release", "Nightly Release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      release_run_id:
+        description: Successful release run ID (completed candidates are reused)
+        required: true
+        type: string
+      release_run_attempt:
+        description: Successful release attempt
+        required: true
+        default: "1"
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: wasm-npm-build-${{ github.event.workflow_run.id || inputs.release_run_id }}-${{ github.event.workflow_run.run_attempt || inputs.release_run_attempt }}
+  queue: max
+  cancel-in-progress: false
+jobs:
+  resolve:
+    name: Resolve WASM npm candidate
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      present: ${{ steps.plan.outputs.present }}
+      reuse: ${{ steps.plan.outputs.reuse }}
+      plan_name: ${{ steps.plan.outputs.plan_name }}
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+      wasm_artifact_id: ${{ steps.plan.outputs.wasm_artifact_id }}
+      release_run_id: ${{ steps.plan.outputs.release_run_id }}
+      candidate_name: ${{ steps.plan.outputs.candidate_name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Reuse completed package or resolve retained release WASM
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ inputs.release_run_attempt }}
+        run: node scripts/ci/npm-wasm-release-cli.mjs prepare "$RUNNER_TEMP/npm-wasm-plan.json"
+      - uses: actions/upload-artifact@v7
+        if: steps.plan.outputs.present == 'true' && steps.plan.outputs.reuse != 'true'
+        with:
+          name: ${{ steps.plan.outputs.plan_name }}
+          path: ${{ runner.temp }}/npm-wasm-plan.json
+          retention-days: 90
+          if-no-files-found: error
+
+  pack-wasm:
+    name: Pack WASM npm package
+    needs: [resolve]
+    if: needs.resolve.outputs.present == 'true' && needs.resolve.outputs.reuse != 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          path: release-source
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.resolve.outputs.plan_name }}
+          path: ${{ runner.temp }}
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.resolve.outputs.wasm_artifact_id }}
+          run-id: ${{ needs.resolve.outputs.release_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/release-wasm
+          merge-multiple: true
+      - uses: dsherret/rust-toolchain-file@v1
+      - uses: ./.github/actions/install-cargo-about
+      - name: Generate notices from the release source dependency graph
+        working-directory: release-source
+        run: node packages/sift/scripts/third-party-notices.mjs "$RUNNER_TEMP/THIRD_PARTY_NOTICES.md" runtimed-wasm
+      - name: Assemble unchanged release bindings and pack once
+        run: node scripts/ci/npm-wasm-package.mjs "$RUNNER_TEMP/npm-wasm-plan.json" release-source "$RUNNER_TEMP/release-wasm" "$RUNNER_TEMP/THIRD_PARTY_NOTICES.md" "$RUNNER_TEMP/npm-wasm-stage" "$RUNNER_TEMP/npm-wasm-packed"
+      - name: Install isolated type checker
+        run: npm install --prefix "$RUNNER_TEMP/wasm-typecheck" --ignore-scripts --no-audit --no-fund typescript@5.8.3
+      - name: Test final packed consumer without daemon or kernel
+        env:
+          TSC_PATH: ${{ runner.temp }}/wasm-typecheck/node_modules/typescript/bin/tsc
+        run: node packages/runtimed-wasm/test-package.mjs "$RUNNER_TEMP/npm-wasm-packed/runtimed-wasm.tgz"
+      - name: Seal the tested immutable tarball
+        run: node scripts/ci/npm-wasm-release-cli.mjs seal "$RUNNER_TEMP/npm-wasm-plan.json" "$RUNNER_TEMP/npm-wasm-packed"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.resolve.outputs.candidate_name }}
+          path: ${{ runner.temp }}/npm-wasm-packed/
+          retention-days: 90
+          if-no-files-found: error

@@ -2,6 +2,26 @@ import { describe, expect, it } from "vite-plus/test";
 import { resolveSiftWasmUrl, resolveSiftWasmUrls } from "../sift-assets";
 
 describe("Sift renderer assets", () => {
+  it("prefers inline WASM over the host base and hashed asset name", () => {
+    expect(
+      resolveSiftWasmUrls({
+        tableUrl: "blob:null/table",
+        rendererAssetsBaseUrl: "invalid base",
+        siftWasmAssetName: "sift_wasm.0123456789abcdef.wasm",
+        rendererAssetUrls: { "sift_wasm.wasm": "data:application/wasm;base64,AGFzbQ==" },
+      }),
+    ).toEqual({ url: "data:application/wasm;base64,AGFzbQ==", fallbackUrl: null });
+  });
+
+  it("still rejects an invalid asset base for an opaque table URL", () => {
+    expect(() =>
+      resolveSiftWasmUrls({
+        tableUrl: "data:application/vnd.apache.arrow.stream;base64,/////w==",
+        rendererAssetsBaseUrl: "invalid base",
+      }),
+    ).toThrow(TypeError);
+  });
+
   it.each([
     "data:application/vnd.apache.arrow.stream;base64,/////w==",
     "blob:null/6b85da0f-e0ac-4a82-87a5-a7f0379e62ea",

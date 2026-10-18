@@ -79,6 +79,7 @@ export function releasePlan(baseVersion, identity, linuxArm64Enabled, windowsArm
  * and NPM_*_ENABLED gate in publish-npm.yml.
  */
 export const standalonePackages = {
+  wasm: "@runtimed/wasm",
   sift: "@nteract/sift",
   "sift-csv": "@nteract/sift-csv",
 };

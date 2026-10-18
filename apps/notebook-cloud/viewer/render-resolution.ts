@@ -46,6 +46,29 @@ export function createOutputResolutionCache(): OutputResolutionCache {
   return new Map();
 }
 
+/** Reuse a successful shared-store resolution on later full materializations. */
+export function cacheOutputResolution(
+  cache: OutputResolutionCache,
+  raw: unknown,
+  resolved: JupyterOutput,
+): void {
+  const key = outputResolutionCacheKey(raw);
+  if (!key) return;
+  // Live stamps advance with every stream chunk. Earlier resolved revisions
+  // cannot be requested again within this handle, and retaining their growing
+  // text would multiply memory use. Scan the bounded cache without a side index.
+  for (const [previousKey, previous] of cache) {
+    if (
+      previousKey !== key &&
+      !isPromiseLike(previous) &&
+      previous.output_id === resolved.output_id
+    ) {
+      cache.delete(previousKey);
+    }
+  }
+  setOutputResolutionCacheEntry(cache, key, resolved);
+}
+
 export async function resolveCell(
   cell: RenderCell,
   blobResolver: BlobResolver,

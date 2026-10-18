@@ -1,0 +1,545 @@
+{
+  "version": "2026-10-17T21:12:46.954128Z  WARN celld::memory: the allocator will not run a background thread, so freed pages return only when a thread allocates again error=`name` or `mib` specifies an unknown/invalid value.\ncelld 0.5.1",
+  "platform": "darwin 25.6.0 arm64",
+  "cpu": "Apple M3 Max",
+  "node": "v22.23.1",
+  "fixtureSha256": "f1550ec0601315c10d55a44f2ce044cb387ff4b60e0317f6e881cb54b8489fc1",
+  "settings": {
+    "durability": "bucket",
+    "backend": "local dev bucket",
+    "tokioThreads": 2,
+    "ltxTruncatePages": 128,
+    "ltxRetentionSeconds": null,
+    "idleSeconds": 15
+  },
+  "nativeSerialization": {
+    "fullMs": 110.11500000000017,
+    "changedMs": 31.899000000000015,
+    "deltaMs": 1.7709999999999995
+  },
+  "runs": [
+    {
+      "repeat": 0,
+      "mode": "full",
+      "payloadBytes": 2219166,
+      "compactions": 0,
+      "latencyMs": {
+        "edit": {
+          "median": 11.749374999999873,
+          "p95": 16.124875000000088
+        },
+        "output": {
+          "median": 11.419540999999754,
+          "p95": 13.73812500000031
+        },
+        "widget-comment": {
+          "median": 11.89554199999975,
+          "p95": 22.48191599999973
+        },
+        "unchanged": {
+          "median": 11.796375000000353,
+          "p95": 13.472749999999905
+        }
+      },
+      "peakRssKiB": 149888,
+      "cpuSeconds": 0.5699999999999998,
+      "warmRestoreMs": 3.6242920000004233,
+      "coldStartAndRestoreMs": 818.4844580000026,
+      "firstRestoreMs": 220.67512499999793,
+      "idleCpuSeconds": 0.1100000000000001,
+      "initial": {
+        "rssKiB": 135744,
+        "cpuSeconds": 0.74
+      },
+      "before": {
+        "sqliteBytes": 4734976,
+        "walBytes": 123632,
+        "localLtxBytes": 17145,
+        "bucketLtxBytes": 17145,
+        "bucketLtxObjects": 1,
+        "bucketWriteSequence": 18
+      },
+      "after": {
+        "sqliteBytes": 6230016,
+        "walBytes": 234872,
+        "localLtxBytes": 1238993,
+        "bucketLtxBytes": 1238993,
+        "bucketLtxObjects": 174,
+        "bucketWriteSequence": 191
+      },
+      "idleAfter": {
+        "sqliteBytes": 6230016,
+        "walBytes": 234872,
+        "localLtxBytes": 1238993,
+        "bucketLtxBytes": 1238993,
+        "bucketLtxObjects": 174,
+        "bucketWriteSequence": 200
+      }
+    },
+    {
+      "repeat": 0,
+      "mode": "changed",
+      "payloadBytes": 635216,
+      "compactions": 0,
+      "latencyMs": {
+        "edit": {
+          "median": 10.974167000000307,
+          "p95": 15.724999999998545
+        },
+        "output": {
+          "median": 11.075833000002604,
+          "p95": 13.77058400000169
+        },
+        "widget-comment": {
+          "median": 11.470291999998153,
+          "p95": 20.036291000000347
+        },
+        "unchanged": {
+          "median": 2.1687500000007276,
+          "p95": 2.547041999998328
+        }
+      },
+      "peakRssKiB": 146512,
+      "cpuSeconds": 0.4199999999999998,
+      "warmRestoreMs": 4.719417000000249,
+      "coldStartAndRestoreMs": 794.1551250000048,
+      "firstRestoreMs": 206.09625000000233,
+      "idleCpuSeconds": 0.10000000000000009,
+      "initial": {
+        "rssKiB": 133008,
+        "cpuSeconds": 0.7100000000000001
+      },
+      "before": {
+        "sqliteBytes": 4734976,
+        "walBytes": 123632,
+        "localLtxBytes": 17145,
+        "bucketLtxBytes": 17145,
+        "bucketLtxObjects": 1,
+        "bucketWriteSequence": 18
+      },
+      "after": {
+        "sqliteBytes": 6017024,
+        "walBytes": 28872,
+        "localLtxBytes": 1100193,
+        "bucketLtxBytes": 1100193,
+        "bucketLtxObjects": 124,
+        "bucketWriteSequence": 141
+      },
+      "idleAfter": {
+        "sqliteBytes": 6017024,
+        "walBytes": 28872,
+        "localLtxBytes": 1100193,
+        "bucketLtxBytes": 1100193,
+        "bucketLtxObjects": 124,
+        "bucketWriteSequence": 150
+      }
+    },
+    {
+      "repeat": 0,
+      "mode": "incremental",
+      "payloadBytes": 52287,
+      "compactions": 2,
+      "latencyMs": {
+        "edit": {
+          "median": 11.442291999999725,
+          "p95": 13.95037500000035
+        },
+        "output": {
+          "median": 11.26758300000074,
+          "p95": 13.963500000005297
+        },
+        "widget-comment": {
+          "median": 12.056124999995518,
+          "p95": 19.548582999996142
+        },
+        "unchanged": {
+          "median": 2.3200830000059796,
+          "p95": 3.0309160000033444
+        }
+      },
+      "peakRssKiB": 138400,
+      "cpuSeconds": 0.43999999999999984,
+      "warmRestoreMs": 6.457833000000392,
+      "coldStartAndRestoreMs": 805.8004999999976,
+      "firstRestoreMs": 209.32145799999853,
+      "idleCpuSeconds": 0.14000000000000012,
+      "qualification": "rollback, lost response retry, concurrent duplicate, sequence gap, compaction rollback, cross-document rollback, process kill during transaction",
+      "initial": {
+        "rssKiB": 123984,
+        "cpuSeconds": 0.7100000000000001
+      },
+      "before": {
+        "sqliteBytes": 4734976,
+        "walBytes": 123632,
+        "localLtxBytes": 17145,
+        "bucketLtxBytes": 17145,
+        "bucketLtxObjects": 1,
+        "bucketWriteSequence": 18
+      },
+      "after": {
+        "sqliteBytes": 5599232,
+        "walBytes": 214272,
+        "localLtxBytes": 660214,
+        "bucketLtxBytes": 660214,
+        "bucketLtxObjects": 124,
+        "bucketWriteSequence": 141
+      },
+      "idleAfter": {
+        "sqliteBytes": 5599232,
+        "walBytes": 214272,
+        "localLtxBytes": 660214,
+        "bucketLtxBytes": 660214,
+        "bucketLtxObjects": 124,
+        "bucketWriteSequence": 150
+      }
+    },
+    {
+      "repeat": 1,
+      "mode": "full",
+      "payloadBytes": 2219166,
+      "compactions": 0,
+      "latencyMs": {
+        "edit": {
+          "median": 11.9809580000001,
+          "p95": 23.181832999995095
+        },
+        "output": {
+          "median": 11.32170899999619,
+          "p95": 12.994624999992084
+        },
+        "widget-comment": {
+          "median": 11.508332999990671,
+          "p95": 18.89916699999594
+        },
+        "unchanged": {
+          "median": 10.57158299999719,
+          "p95": 12.687917000002926
+        }
+      },
+      "peakRssKiB": 147616,
+      "cpuSeconds": 0.5799999999999998,
+      "warmRestoreMs": 4.172207999989041,
+      "coldStartAndRestoreMs": 810.1936660000065,
+      "firstRestoreMs": 219.317584000004,
+      "idleCpuSeconds": 0.09000000000000008,
+      "initial": {
+        "rssKiB": 134064,
+        "cpuSeconds": 0.75
+      },
+      "before": {
+        "sqliteBytes": 4734976,
+        "walBytes": 123632,
+        "localLtxBytes": 17145,
+        "bucketLtxBytes": 17145,
+        "bucketLtxObjects": 1,
+        "bucketWriteSequence": 18
+      },
+      "after": {
+        "sqliteBytes": 6230016,
+        "walBytes": 234872,
+        "localLtxBytes": 1238993,
+        "bucketLtxBytes": 1238993,
+        "bucketLtxObjects": 174,
+        "bucketWriteSequence": 191
+      },
+      "idleAfter": {
+        "sqliteBytes": 6230016,
+        "walBytes": 234872,
+        "localLtxBytes": 1238993,
+        "bucketLtxBytes": 1238993,
+        "bucketLtxObjects": 174,
+        "bucketWriteSequence": 200
+      }
+    },
+    {
+      "repeat": 1,
+      "mode": "changed",
+      "payloadBytes": 635216,
+      "compactions": 0,
+      "latencyMs": {
+        "edit": {
+          "median": 11.70554200001061,
+          "p95": 13.810207999995328
+        },
+        "output": {
+          "median": 11.59945899999002,
+          "p95": 13.954916000002413
+        },
+        "widget-comment": {
+          "median": 11.574708999993163,
+          "p95": 26.037458999999217
+        },
+        "unchanged": {
+          "median": 2.1983750000072177,
+          "p95": 2.669500000003609
+        }
+      },
+      "peakRssKiB": 147040,
+      "cpuSeconds": 0.45999999999999985,
+      "warmRestoreMs": 4.614790999999968,
+      "coldStartAndRestoreMs": 797.9600419999915,
+      "firstRestoreMs": 209.57254200000898,
+      "idleCpuSeconds": 0.10000000000000009,
+      "initial": {
+        "rssKiB": 133616,
+        "cpuSeconds": 0.7100000000000001
+      },
+      "before": {
+        "sqliteBytes": 4734976,
+        "walBytes": 123632,
+        "localLtxBytes": 17145,
+        "bucketLtxBytes": 17145,
+        "bucketLtxObjects": 1,
+        "bucketWriteSequence": 18
+      },
+      "after": {
+        "sqliteBytes": 6017024,
+        "walBytes": 28872,
+        "localLtxBytes": 1100193,
+        "bucketLtxBytes": 1100193,
+        "bucketLtxObjects": 124,
+        "bucketWriteSequence": 141
+      },
+      "idleAfter": {
+        "sqliteBytes": 6017024,
+        "walBytes": 28872,
+        "localLtxBytes": 1100193,
+        "bucketLtxBytes": 1100193,
+        "bucketLtxObjects": 124,
+        "bucketWriteSequence": 150
+      }
+    },
+    {
+      "repeat": 1,
+      "mode": "incremental",
+      "payloadBytes": 52287,
+      "compactions": 2,
+      "latencyMs": {
+        "edit": {
+          "median": 10.762082999994163,
+          "p95": 12.653082999997423
+        },
+        "output": {
+          "median": 10.831125000011525,
+          "p95": 13.28758299999754
+        },
+        "widget-comment": {
+          "median": 11.765750000005937,
+          "p95": 18.52087500000198
+        },
+        "unchanged": {
+          "median": 2.1958750000048894,
+          "p95": 2.8248750000057044
+        }
+      },
+      "peakRssKiB": 149968,
+      "cpuSeconds": 0.4099999999999998,
+      "warmRestoreMs": 7.159417000017129,
+      "coldStartAndRestoreMs": 794.1836670000048,
+      "firstRestoreMs": 209.34720799999195,
+      "idleCpuSeconds": 0.1100000000000001,
+      "initial": {
+        "rssKiB": 135328,
+        "cpuSeconds": 0.7100000000000001
+      },
+      "before": {
+        "sqliteBytes": 4734976,
+        "walBytes": 123632,
+        "localLtxBytes": 17145,
+        "bucketLtxBytes": 17145,
+        "bucketLtxObjects": 1,
+        "bucketWriteSequence": 18
+      },
+      "after": {
+        "sqliteBytes": 5599232,
+        "walBytes": 214272,
+        "localLtxBytes": 660211,
+        "bucketLtxBytes": 660211,
+        "bucketLtxObjects": 124,
+        "bucketWriteSequence": 141
+      },
+      "idleAfter": {
+        "sqliteBytes": 5599232,
+        "walBytes": 214272,
+        "localLtxBytes": 660211,
+        "bucketLtxBytes": 660211,
+        "bucketLtxObjects": 124,
+        "bucketWriteSequence": 150
+      }
+    },
+    {
+      "repeat": 2,
+      "mode": "full",
+      "payloadBytes": 2219166,
+      "compactions": 0,
+      "latencyMs": {
+        "edit": {
+          "median": 11.827791999996407,
+          "p95": 14.609541999991052
+        },
+        "output": {
+          "median": 12.005417000007583,
+          "p95": 14.473792000004323
+        },
+        "widget-comment": {
+          "median": 12.726542000018526,
+          "p95": 21.56129100001999
+        },
+        "unchanged": {
+          "median": 11.57912499998929,
+          "p95": 13.601291999977548
+        }
+      },
+      "peakRssKiB": 148976,
+      "cpuSeconds": 0.58,
+      "warmRestoreMs": 3.0529590000223834,
+      "coldStartAndRestoreMs": 839.0790419999976,
+      "firstRestoreMs": 221.12337499999558,
+      "idleCpuSeconds": 0.08999999999999986,
+      "initial": {
+        "rssKiB": 135328,
+        "cpuSeconds": 0.7100000000000001
+      },
+      "before": {
+        "sqliteBytes": 4734976,
+        "walBytes": 123632,
+        "localLtxBytes": 17145,
+        "bucketLtxBytes": 17145,
+        "bucketLtxObjects": 1,
+        "bucketWriteSequence": 18
+      },
+      "after": {
+        "sqliteBytes": 6230016,
+        "walBytes": 234872,
+        "localLtxBytes": 1238993,
+        "bucketLtxBytes": 1238993,
+        "bucketLtxObjects": 174,
+        "bucketWriteSequence": 191
+      },
+      "idleAfter": {
+        "sqliteBytes": 6230016,
+        "walBytes": 234872,
+        "localLtxBytes": 1238993,
+        "bucketLtxBytes": 1238993,
+        "bucketLtxObjects": 174,
+        "bucketWriteSequence": 200
+      }
+    },
+    {
+      "repeat": 2,
+      "mode": "changed",
+      "payloadBytes": 635216,
+      "compactions": 0,
+      "latencyMs": {
+        "edit": {
+          "median": 11.73704199999338,
+          "p95": 14.793541000020923
+        },
+        "output": {
+          "median": 11.556582999997772,
+          "p95": 14.166750000003958
+        },
+        "widget-comment": {
+          "median": 12.611999999993714,
+          "p95": 25.855792000016663
+        },
+        "unchanged": {
+          "median": 2.124500000005355,
+          "p95": 2.6662500000093132
+        }
+      },
+      "peakRssKiB": 146592,
+      "cpuSeconds": 0.4299999999999998,
+      "warmRestoreMs": 4.154500000004191,
+      "coldStartAndRestoreMs": 788.0160000000033,
+      "firstRestoreMs": 209.45300000000861,
+      "idleCpuSeconds": 0.1200000000000001,
+      "initial": {
+        "rssKiB": 132832,
+        "cpuSeconds": 0.7200000000000001
+      },
+      "before": {
+        "sqliteBytes": 4734976,
+        "walBytes": 123632,
+        "localLtxBytes": 17145,
+        "bucketLtxBytes": 17145,
+        "bucketLtxObjects": 1,
+        "bucketWriteSequence": 18
+      },
+      "after": {
+        "sqliteBytes": 6017024,
+        "walBytes": 28872,
+        "localLtxBytes": 1100193,
+        "bucketLtxBytes": 1100193,
+        "bucketLtxObjects": 124,
+        "bucketWriteSequence": 141
+      },
+      "idleAfter": {
+        "sqliteBytes": 6017024,
+        "walBytes": 28872,
+        "localLtxBytes": 1100193,
+        "bucketLtxBytes": 1100193,
+        "bucketLtxObjects": 124,
+        "bucketWriteSequence": 150
+      }
+    },
+    {
+      "repeat": 2,
+      "mode": "incremental",
+      "payloadBytes": 52287,
+      "compactions": 2,
+      "latencyMs": {
+        "edit": {
+          "median": 11.972875000006752,
+          "p95": 14.484040999988792
+        },
+        "output": {
+          "median": 12.526875000010477,
+          "p95": 14.602917000011075
+        },
+        "widget-comment": {
+          "median": 11.273416999989422,
+          "p95": 26.238916000002064
+        },
+        "unchanged": {
+          "median": 2.1716249999881256,
+          "p95": 2.820333000010578
+        }
+      },
+      "peakRssKiB": 147456,
+      "cpuSeconds": 0.47999999999999987,
+      "warmRestoreMs": 7.404291999991983,
+      "coldStartAndRestoreMs": 793.9209580000024,
+      "firstRestoreMs": 209.6061660000123,
+      "idleCpuSeconds": 0.09000000000000008,
+      "initial": {
+        "rssKiB": 133056,
+        "cpuSeconds": 0.7000000000000001
+      },
+      "before": {
+        "sqliteBytes": 4734976,
+        "walBytes": 123632,
+        "localLtxBytes": 17145,
+        "bucketLtxBytes": 17145,
+        "bucketLtxObjects": 1,
+        "bucketWriteSequence": 18
+      },
+      "after": {
+        "sqliteBytes": 5599232,
+        "walBytes": 214272,
+        "localLtxBytes": 660209,
+        "bucketLtxBytes": 660209,
+        "bucketLtxObjects": 124,
+        "bucketWriteSequence": 141
+      },
+      "idleAfter": {
+        "sqliteBytes": 5599232,
+        "walBytes": 214272,
+        "localLtxBytes": 660209,
+        "bucketLtxBytes": 660209,
+        "bucketLtxObjects": 124,
+        "bucketWriteSequence": 148
+      }
+    }
+  ]
+}

@@ -62,6 +62,37 @@ the minute schedule is recovery, not the normal update cadence. See the
 [controller operations guide](https://github.com/nteract/preview-infra/blob/main/docs/operations.md)
 for its installation and ownership rules.
 
+## Room checkpoint format and rollout
+
+Room checkpoint v7 uses the existing `NOTEBOOK_SNAPSHOTS` binding for immutable
+bodies under `n/<encoded-notebook-id>/room-checkpoints/<sha256>.am`. The small
+`room-host:checkpoint` KV manifest selects all four documents only after their
+objects are durable. The binding must provide successful-write durability and
+immediate direct reads; [R2's consistency contract](https://developers.cloudflare.com/r2/reference/consistency/)
+supports this ordering. Qualify the deployed celld adapter separately. Observed
+manifest replacement checks still depend on native activation fencing, not CAS.
+
+The reader accepts v2–v6 KV checkpoints and v7 object checkpoints. Once a room
+writes v7, **do not roll that room back to a pre-v7 reader**: older code treats
+v7 as absent, can load an older publication or an empty room, and can overwrite
+the manifest. Retaining legacy body keys does not make that rollback safe.
+Use a v7-capable rollback build; any downgrade requires a separate recovery plan
+that preserves the selected generation. Future unknown versions fail closed.
+
+Checkpointing is triggered by changed sync/output frames, including typing and
+streaming output. Unchanged bodies are reused, but each changed document adds
+another full immutable body; 100 changes to a 10 MB runtime document can retain
+about 1 GB. Failed uploads or manifest commits can leave orphan objects. This
+repository provides no collector or lifecycle policy for the checkpoint prefix.
+Define retention before broad rollout; a simple age-based expiry can delete a
+still-selected body and make the room unloadable. No automatic deletion occurs.
+
+Serialization, hashing and bucket I/O run within the room operation queue to
+preserve checkpoint and terminal-result ordering. The existing checkpoint
+`duration_ms` log includes that cost; qualify latency under typing/output load.
+Startup fetches and hashes all four full documents. This format removes the KV
+row-size boundary but does not bound history growth, memory, or I/O costs.
+
 ## Deploying the Cloudflare prototype
 
 `preview.runt.run` is the hosted prototype: this Worker plus its Durable Object

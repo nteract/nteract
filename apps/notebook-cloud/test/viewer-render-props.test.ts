@@ -365,6 +365,15 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /activePanelId=\{renderedActiveRailPanel\}/);
   assert.match(
     sourceText,
+    /const handleTogglePackagesRail = useCallback\(\(\) => \{[\s\S]*toggleNotebookRailPanel\("packages"\)/,
+  );
+  assert.match(sourceText, /onTogglePackages=\{handleTogglePackagesRail\}/);
+  assert.match(
+    sourceText,
+    /environmentPanelOpen=\{!railCollapsed && activeRailPanel === "packages"\}/,
+  );
+  assert.match(
+    sourceText,
     /workstationsPanel=\{[\s\S]*shouldShowCloudWorkstationsPanel \? \([\s\S]*<NotebookWorkstationsPanel/,
   );
   assert.match(
@@ -557,8 +566,10 @@ test("cloud viewer presents live-room failures as one host notice", () => {
   assert.match(sourceText, /const signedOutNotebookSignInRequired =/);
   assert.match(
     sourceText,
-    /Boolean\(authConfig\.localDev \|\| authConfig\.oidc\)[\s\S]*authState\.mode === "anonymous"[\s\S]*!isPublicViewer[\s\S]*!notebookHasReadableSnapshot[\s\S]*isTransportReconnectError\(connectionError\)/,
+    /const signedOutNotebookStageGated =\s*signedOutNotebookSignInRequired && !notebookHasReadableSnapshot/,
   );
+  assert.match(sourceText, /cloudNotebookSignInRequired\(\{/);
+  assert.match(sourceText, /signInRequiredOwnedByStage: signedOutNotebookStageGated/);
   assert.match(sourceText, /signInRequired: signedOutNotebookSignInRequired/);
   assert.match(sourceText, /signInRequired=\{signedOutNotebookSignInRequired\}/);
   assert.match(noticesText, /const connectionNotice = connectionError/);

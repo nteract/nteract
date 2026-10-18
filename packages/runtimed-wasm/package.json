@@ -1,0 +1,26 @@
+{
+  "name": "@runtimed/wasm",
+  "version": "0.7.6",
+  "private": true,
+  "description": "WebAssembly notebook document and room bindings for runtimed",
+  "type": "module",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nteract/nteract.git",
+    "directory": "packages/runtimed-wasm"
+  },
+  "main": "./lib/runtimed_wasm.js",
+  "types": "./lib/runtimed_wasm.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/runtimed_wasm.d.ts",
+      "import": "./lib/runtimed_wasm.js"
+    },
+    "./runtimed_wasm_bg.wasm": "./lib/runtimed_wasm_bg.wasm",
+    "./build-info.json": "./lib/build-info.json",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib", "LICENSE", "README.md"],
+  "publishConfig": { "access": "public" }
+}

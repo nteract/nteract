@@ -37,6 +37,71 @@ env:
   NPM_TRUSTED_PUBLISHING_MIN_VERSION: 11.5.1
 
 jobs:
+  resolve-wasm:
+    name: Resolve retained WASM npm candidate
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      present: ${{ steps.candidate.outputs.present }}
+      artifact_name: ${{ steps.candidate.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Verify successful producer, receipt, and exact tarball
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ inputs.release_run_attempt }}
+        run: |
+          node scripts/ci/npm-wasm-release-cli.mjs resolve-publish "$RUNNER_TEMP/npm-wasm-candidate"
+          echo "artifact_name=npm-wasm-publish-input-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Retain trusted publisher helpers beside verified data
+        if: steps.candidate.outputs.present == 'true'
+        run: |
+          cp scripts/ci/npm-wasm-release*.mjs "$RUNNER_TEMP/npm-wasm-candidate/"
+          cp scripts/ci/npm-release.mjs scripts/ci/editor-assets-release.mjs "$RUNNER_TEMP/npm-wasm-candidate/"
+      - uses: actions/upload-artifact@v7
+        if: steps.candidate.outputs.present == 'true'
+        with:
+          name: ${{ steps.candidate.outputs.artifact_name }}
+          path: ${{ runner.temp }}/npm-wasm-candidate/
+          retention-days: 7
+          if-no-files-found: error
+
+  publish-wasm:
+    name: Publish WASM npm package
+    needs: [resolve-wasm]
+    if: needs.resolve-wasm.outputs.present == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.resolve-wasm.outputs.artifact_name }}
+          path: ${{ runner.temp }}/npm-wasm-candidate
+      - name: Publish exact retained tarball
+        if: vars.NPM_WASM_ENABLED == 'true'
+        env:
+          NPM_WASM_ENABLED: ${{ vars.NPM_WASM_ENABLED }}
+        run: node "$RUNNER_TEMP/npm-wasm-candidate/npm-wasm-release-cli.mjs" publish "$RUNNER_TEMP/npm-wasm-candidate"
+      - name: Report WASM bootstrap prerequisite
+        if: vars.NPM_WASM_ENABLED != 'true'
+        run: echo '@runtimed/wasm publication is disabled until placeholder bootstrap and publish-npm.yml trusted publishing are verified, then NPM_WASM_ENABLED is set to true. The retained producer tarball is ready to inspect.' >> "$GITHUB_STEP_SUMMARY"
+
   resolve-release:
     name: Resolve successful upstream release
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'

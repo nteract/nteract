@@ -72,9 +72,11 @@ const baseProps = {
   onRunAllCells: vi.fn(),
   onRestartAndRunAll: vi.fn(),
   onAddCell: vi.fn(),
+  onTogglePackages: vi.fn(),
   capabilities: {
     canEditStructure: true,
     canExecute: true,
+    canViewPackages: true,
     canManageSharing: false,
     canRequestEdit: false,
     auth: {
@@ -86,14 +88,17 @@ const baseProps = {
 };
 
 describe("NotebookToolbar", () => {
-  it("retains the passive environment indicator and execution controls", () => {
+  it("retains the environment indicator and execution controls", () => {
     render(<NotebookToolbar {...baseProps} runtime="python" envSource="conda:env_yml" />);
 
     const indicator = screen.getByTestId("runtime-environment-indicator");
     expect(indicator).toHaveTextContent("Python");
     expect(indicator).toHaveAttribute("data-env-manager", "conda");
-    expect(indicator.tagName).toBe("SPAN");
-    expect(indicator.tabIndex).toBe(-1);
+    expect(indicator.tagName).toBe("BUTTON");
+    expect(indicator).toHaveAttribute("aria-expanded", "false");
+    expect(indicator).toHaveAccessibleName(
+      "Python runtime · conda environment - open packages panel",
+    );
     expect(screen.getByTestId("kernel-status")).toBeInTheDocument();
     expect(screen.getByTestId("restart-kernel-button")).toBeEnabled();
     expect(screen.getByTestId("run-all-button")).toBeEnabled();

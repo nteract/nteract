@@ -345,6 +345,7 @@ pub enum FrameEvent {
 #[wasm_bindgen]
 pub struct RuntimeStatePeerHandle {
     state_doc: RuntimeStateDoc,
+    room_owned_queue: bool,
     state_sync_state: sync::State,
     comms_doc: CommsDoc,
     comms_sync_state: sync::State,
@@ -365,6 +366,7 @@ impl RuntimeStatePeerHandle {
         state_doc.set_actor(actor_label);
         Ok(RuntimeStatePeerHandle {
             state_doc,
+            room_owned_queue: false,
             state_sync_state: sync::State::new(),
             comms_doc: CommsDoc::try_new_with_actor(actor_label)
                 .map_err(|e| JsError::new(&format!("create runtime peer comms doc: {e}")))?,
@@ -382,11 +384,18 @@ impl RuntimeStatePeerHandle {
         state_doc.set_actor(actor_label);
         Ok(RuntimeStatePeerHandle {
             state_doc,
+            room_owned_queue: false,
             state_sync_state: sync::State::new(),
             comms_doc: CommsDoc::try_new_with_actor(actor_label)
                 .map_err(|e| JsError::new(&format!("create runtime peer comms doc: {e}")))?,
             comms_sync_state: sync::State::new(),
         })
+    }
+
+    /// Select colocated room scheduling without changing any document state.
+    /// The host must receive progress through its managed-runtime ingress.
+    pub fn use_room_owned_queue(&mut self) {
+        self.room_owned_queue = true;
     }
 
     pub fn set_actor(&mut self, actor_label: &str) {
@@ -487,7 +496,11 @@ impl RuntimeStatePeerHandle {
     }
 
     pub fn get_runtime_state(&self) -> JsValue {
-        serialize_to_js(&self.state_doc.read_state()).unwrap_or(JsValue::UNDEFINED)
+        let mut state = self.state_doc.read_state();
+        if self.room_owned_queue {
+            state.queue = self.state_doc.read_explicit_queue();
+        }
+        serialize_to_js(&state).unwrap_or(JsValue::UNDEFINED)
     }
 
     pub fn set_kernel_running(
@@ -563,10 +576,20 @@ impl RuntimeStatePeerHandle {
     /// statuses. Status and queue changes must be flushed together.
     pub fn refresh_execution_queue(&mut self) -> Result<(), JsError> {
         let state = self.state_doc.read_state();
+        let queue = self.state_doc.read_explicit_queue();
+        let active: std::collections::HashSet<&str> = queue
+            .executing
+            .iter()
+            .chain(&queue.queued)
+            .map(|entry| entry.execution_id.as_str())
+            .collect();
         let mut pending: Vec<_> = state
             .executions
             .iter()
-            .filter(|(_, execution)| matches!(execution.status.as_str(), "queued" | "running"))
+            .filter(|(id, execution)| {
+                (!self.room_owned_queue || active.contains(id.as_str()))
+                    && matches!(execution.status.as_str(), "queued" | "running")
+            })
             .collect();
         pending.sort_by(|(id_a, a), (id_b, b)| a.seq.cmp(&b.seq).then(id_a.cmp(id_b)));
         let running: Vec<_> = pending
@@ -588,9 +611,11 @@ impl RuntimeStatePeerHandle {
                 execution_id: (*id).clone(),
             })
             .collect();
-        self.state_doc
-            .set_queue(executing.as_ref(), &queued)
-            .map_err(|e| JsError::new(&format!("refresh execution queue failed: {e}")))?;
+        if !self.room_owned_queue {
+            self.state_doc
+                .set_queue(executing.as_ref(), &queued)
+                .map_err(|e| JsError::new(&format!("refresh execution queue failed: {e}")))?;
+        }
         self.state_doc
             .set_lifecycle(&RuntimeLifecycle::Running(if executing.is_some() {
                 KernelActivity::Busy
@@ -855,6 +880,23 @@ impl RoomHostHandle {
             .map_err(room_host_js_error)?;
         serialize_to_js(&result)
             .map_err(|error| JsError::new(&format!("serialize room result: {error}")))
+    }
+
+    /// Trusted managed-room progress; session fencing and queue ownership are
+    /// checked by the engine before any peer changes reach the live document.
+    pub fn receive_managed_runtime_state_sync(
+        &mut self,
+        peer_id: &str,
+        principal: &str,
+        session_id: &str,
+        payload: &[u8],
+    ) -> Result<JsValue, JsError> {
+        let result = self
+            .engine
+            .receive_managed_runtime_state_sync(peer_id, principal, session_id, payload)
+            .map_err(room_host_js_error)?;
+        serialize_to_js(&result)
+            .map_err(|error| JsError::new(&format!("serialize managed runtime result: {error}")))
     }
 
     /// Apply a peer frame and return document/sync effects. Execution requests

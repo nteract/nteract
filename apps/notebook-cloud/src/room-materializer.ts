@@ -6,13 +6,20 @@ import { getNotebookCatalog } from "./storage.ts";
 import type { AuthenticatedConnection } from "./identity.ts";
 import { cloudLog, durationMs, errorMessage } from "./observability.ts";
 
+import {
+  storeCheckpointObjects,
+  loadCheckpointObjects,
+  RoomCheckpointLoadError,
+  type CheckpointObjects,
+} from "./room-checkpoint-storage.ts";
+
 const ROOM_HOST_ACTOR_PRINCIPAL = "system:notebook-cloud-room";
 const CHECKPOINT_NOTEBOOK_KEY = "room-host:notebook-doc";
 const CHECKPOINT_RUNTIME_STATE_KEY = "room-host:runtime-state-doc";
 const CHECKPOINT_COMMS_DOC_KEY = "room-host:comms-doc";
 const CHECKPOINT_COMMENTS_DOC_KEY = "room-host:comments-doc";
 const CHECKPOINT_META_KEY = "room-host:checkpoint";
-const CHECKPOINT_VERSION = 6;
+const CHECKPOINT_VERSION = 7;
 
 interface RoomHostOutboundFrame {
   peer_id: string;
@@ -40,6 +47,7 @@ export interface ManagedPythonReconnectFailure {
 
 interface RoomCheckpointMetadata {
   version: number;
+  documents?: CheckpointObjects;
   notebook_heads: string[];
   runtime_state_heads: string[];
   comms_doc_heads: string[];
@@ -60,7 +68,10 @@ interface RoomPeer {
 export class RoomMaterializer {
   private hostReady: Promise<RoomHostHandle> | undefined;
   private operationQueue: Promise<void> = Promise.resolve();
+  // null: no write/clear yet; undefined: cleared here; string: written here.
+  // Recovery must retain this token so already-queued saves recognize our writes.
   private lastCheckpointMetadata: string | undefined | null = null;
+  private checkpointSnapshotsReusable = false;
   private readonly notebookChangeWaiters = new Set<() => void>();
   private loadedPublishedRevisionId: string | null = null;
   private loadedPublishedNotebookHeads: string[] | null = null;
@@ -297,6 +308,26 @@ export class RoomMaterializer {
     });
   }
 
+  /** Colocated managed progress has one queue owner and an atomic session fence. */
+  async receiveManagedRuntimeFrame(
+    peer: RoomPeer,
+    sessionId: string,
+    frame: TypedFrame,
+  ): Promise<RoomHostFrameResult> {
+    if (peer.identity.scope !== "runtime_peer" || frame.type !== FrameType.RUNTIME_STATE_SYNC)
+      throw new Error("Managed runtime only accepts runtime-state progress");
+    return this.withHost((host) =>
+      normalizeResult(
+        host.receive_managed_runtime_state_sync(
+          peer.id,
+          peer.identity.principal,
+          sessionId,
+          frame.payload,
+        ),
+      ),
+    );
+  }
+
   async receiveFrame(
     peer: RoomPeer,
     frame: TypedFrame,
@@ -365,10 +396,11 @@ export class RoomMaterializer {
   }
 
   async checkpoint(): Promise<void> {
-    const expected = JSON.stringify(await this.state.storage.get(CHECKPOINT_META_KEY));
+    const expected = JSON.stringify(await this.loadCheckpointMetadata());
     const startedAt = Date.now();
     await this.withHost(async (host) => {
-      const current = JSON.stringify(await this.state.storage.get(CHECKPOINT_META_KEY));
+      const previous = await this.loadCheckpointMetadata();
+      const current = JSON.stringify(previous);
       // Detect observed replacement while queued or hydrating. This is not an
       // atomic effect fence; stale storage handles must be revoked by the host.
       if (
@@ -376,12 +408,6 @@ export class RoomMaterializer {
         (this.lastCheckpointMetadata === null || current !== this.lastCheckpointMetadata)
       )
         throw new Error("Room checkpoint was replaced before persistence");
-      const [notebookBytes, runtimeStateBytes, commsDocBytes, commentsDocBytes] = [
-        toStoredArrayBuffer(host.save_notebook()),
-        toStoredArrayBuffer(host.save_runtime_state_doc()),
-        toStoredArrayBuffer(host.save_comms_doc()),
-        toStoredArrayBuffer(host.save_comments_doc()),
-      ];
       const metadata: RoomCheckpointMetadata = {
         version: CHECKPOINT_VERSION,
         notebook_heads: Array.from(host.get_heads_hex()),
@@ -395,21 +421,68 @@ export class RoomMaterializer {
         published_comms_doc_heads: this.loadedPublishedCommsDocHeads,
         published_comments_doc_heads: this.loadedPublishedCommentsDocHeads,
       };
-      await Promise.all([
-        this.state.storage.put(CHECKPOINT_NOTEBOOK_KEY, notebookBytes),
-        this.state.storage.put(CHECKPOINT_RUNTIME_STATE_KEY, runtimeStateBytes),
-        this.state.storage.put(CHECKPOINT_COMMS_DOC_KEY, commsDocBytes),
-        this.state.storage.put(CHECKPOINT_COMMENTS_DOC_KEY, commentsDocBytes),
-        this.state.storage.put(CHECKPOINT_META_KEY, metadata),
-      ]);
+      // Only reuse snapshots this activation successfully wrote, and only
+      // while their metadata is still current. Hydration, legacy import,
+      // replacement, and recovery all take a complete first checkpoint.
+      const reusable: RoomCheckpointMetadata | undefined =
+        this.checkpointSnapshotsReusable && current && current === this.lastCheckpointMetadata
+          ? JSON.parse(current)
+          : undefined;
+      const notebookBytes =
+        !reusable || headsChanged(metadata.notebook_heads, reusable.notebook_heads)
+          ? toStoredArrayBuffer(host.save_notebook())
+          : undefined;
+      const runtimeStateBytes =
+        !reusable || headsChanged(metadata.runtime_state_heads, reusable.runtime_state_heads)
+          ? toStoredArrayBuffer(host.save_runtime_state_doc())
+          : undefined;
+      const commsDocBytes =
+        !reusable || headsChanged(metadata.comms_doc_heads, reusable.comms_doc_heads)
+          ? toStoredArrayBuffer(host.save_comms_doc())
+          : undefined;
+      const commentsDocBytes =
+        !reusable || headsChanged(metadata.comments_doc_heads, reusable.comments_doc_heads)
+          ? toStoredArrayBuffer(host.save_comments_doc())
+          : undefined;
+      metadata.documents = reusable?.documents;
+      if (
+        reusable &&
+        JSON.stringify({ ...metadata, saved_at: reusable.saved_at }) === JSON.stringify(reusable)
+      )
+        return;
+
+      metadata.documents = await storeCheckpointObjects(
+        this.env.NOTEBOOK_SNAPSHOTS,
+        this.notebookId,
+        {
+          notebook: notebookBytes,
+          runtime_state: runtimeStateBytes,
+          comms: commsDocBytes,
+          comments: commentsDocBytes,
+        },
+        previous?.version === CHECKPOINT_VERSION ? previous.documents : undefined,
+      );
+      // Object I/O may outlive this activation. Preserve an observed replacement;
+      // native storage-handle revocation still supplies the atomic effect fence.
+      if (JSON.stringify(await this.state.storage.get(CHECKPOINT_META_KEY)) !== current)
+        throw new Error("Room checkpoint was replaced before manifest commit");
+      try {
+        await this.state.storage.put(CHECKPOINT_META_KEY, metadata);
+      } catch (cause) {
+        throw new Error(`Room checkpoint manifest commit failed: ${errorMessage(cause)}`, {
+          cause,
+        });
+      }
+      // Failed uploads or manifest commits must leave the saved frontier retryable.
       this.lastCheckpointMetadata = JSON.stringify(metadata);
+      this.checkpointSnapshotsReusable = true;
       cloudLog("debug", "room.materializer.checkpoint.saved", {
         notebook_id: this.notebookId,
         duration_ms: durationMs(startedAt),
-        notebook_byte_length: notebookBytes.byteLength,
-        runtime_state_byte_length: runtimeStateBytes.byteLength,
-        comms_doc_byte_length: commsDocBytes.byteLength,
-        comments_doc_byte_length: commentsDocBytes.byteLength,
+        notebook_byte_length: notebookBytes?.byteLength ?? 0,
+        runtime_state_byte_length: runtimeStateBytes?.byteLength ?? 0,
+        comms_doc_byte_length: commsDocBytes?.byteLength ?? 0,
+        comments_doc_byte_length: commentsDocBytes?.byteLength ?? 0,
         notebook_head_count: metadata.notebook_heads.length,
         runtime_state_head_count: metadata.runtime_state_heads.length,
         comms_doc_head_count: metadata.comms_doc_heads.length,
@@ -632,6 +705,7 @@ export class RoomMaterializer {
         counter: "materializer_checkpoint_load_failures",
         counter_delta: 1,
       });
+      if (error instanceof RoomCheckpointLoadError) throw error;
       return { checkpoint: null, error };
     }
   }
@@ -655,10 +729,11 @@ export class RoomMaterializer {
     cause: unknown,
   ): Promise<boolean> {
     const startedAt = Date.now();
-    const checkpointMetadata = await this.state.storage
-      .get(CHECKPOINT_META_KEY)
-      .then((value) => JSON.stringify(value))
-      .catch(() => null);
+    const checkpointMetadata = JSON.stringify(await this.loadCheckpointMetadata());
+    // Host-error recovery preserves the exact committed object generation. Normal
+    // hydration separately applies the published-revision selection policy.
+    if (checkpointMetadata && JSON.parse(checkpointMetadata)?.version === CHECKPOINT_VERSION)
+      return this.recoverHostFromCheckpointNow(operation, cause, startedAt);
     const published = await this.loadLatestPublishedSnapshotPairForCheckpoint();
     if (!published) {
       return this.recoverHostFromCheckpointNow(operation, cause, startedAt);
@@ -672,9 +747,7 @@ export class RoomMaterializer {
         published.commentsDocBytes,
       );
       this.markLoadedPublishedSnapshot(published.revisionId, host);
-      await (
-        checkpointMetadata === null ? Promise.resolve() : this.clearCheckpoint(checkpointMetadata)
-      ).catch((clearError: unknown) => {
+      await this.clearCheckpoint(checkpointMetadata).catch((clearError: unknown) => {
         cloudLog("warn", "room.materializer.checkpoint_clear_failed", {
           notebook_id: this.notebookId,
           operation,
@@ -792,6 +865,22 @@ export class RoomMaterializer {
     this.lastCheckpointMetadata = undefined;
   }
 
+  private async loadCheckpointMetadata(): Promise<Partial<RoomCheckpointMetadata> | undefined> {
+    let metadata: Partial<RoomCheckpointMetadata> | undefined;
+    try {
+      metadata = await this.state.storage.get<Partial<RoomCheckpointMetadata>>(CHECKPOINT_META_KEY);
+    } catch (cause) {
+      // Unknown is not absent: a failed read may hide unpublished committed work.
+      throw new RoomCheckpointLoadError(
+        `Room checkpoint manifest could not be read: ${errorMessage(cause)}`,
+        { cause },
+      );
+    }
+    if (typeof metadata?.version === "number" && metadata.version > CHECKPOINT_VERSION)
+      throw new RoomCheckpointLoadError(`Unsupported room checkpoint version ${metadata.version}`);
+    return metadata;
+  }
+
   private async loadCheckpoint(): Promise<{
     notebookBytes: Uint8Array;
     runtimeStateBytes: Uint8Array;
@@ -799,30 +888,33 @@ export class RoomMaterializer {
     commentsDocBytes?: Uint8Array;
     metadata: RoomCheckpointMetadata;
   } | null> {
-    const [notebookBytes, runtimeStateBytes, commsDocBytes, commentsDocBytes] = await Promise.all([
-      this.state.storage.get<ArrayBuffer>(CHECKPOINT_NOTEBOOK_KEY),
-      this.state.storage.get<ArrayBuffer>(CHECKPOINT_RUNTIME_STATE_KEY),
-      this.state.storage.get<ArrayBuffer>(CHECKPOINT_COMMS_DOC_KEY),
-      this.state.storage.get<ArrayBuffer>(CHECKPOINT_COMMENTS_DOC_KEY),
-    ]);
-    const metadata =
-      await this.state.storage.get<Partial<RoomCheckpointMetadata>>(CHECKPOINT_META_KEY);
-    if (
-      !notebookBytes ||
-      !runtimeStateBytes ||
-      (metadata?.version !== 2 &&
-        metadata?.version !== 3 &&
-        metadata?.version !== 4 &&
-        metadata?.version !== 5 &&
-        metadata?.version !== CHECKPOINT_VERSION)
-    ) {
-      return null;
-    }
-    if (metadata.version >= 5 && !commsDocBytes) {
-      return null;
-    }
-    if (metadata.version === CHECKPOINT_VERSION && !commentsDocBytes) {
-      return null;
+    const metadata = await this.loadCheckpointMetadata();
+    if (!metadata) return null;
+    let notebookBytes: ArrayBuffer | undefined;
+    let runtimeStateBytes: ArrayBuffer | undefined;
+    let commsDocBytes: ArrayBuffer | undefined;
+    let commentsDocBytes: ArrayBuffer | undefined;
+    if (metadata?.version === CHECKPOINT_VERSION) {
+      const bodies = await loadCheckpointObjects(
+        this.env.NOTEBOOK_SNAPSHOTS,
+        this.notebookId,
+        metadata.documents,
+      );
+      notebookBytes = bodies.notebook;
+      runtimeStateBytes = bodies.runtime_state;
+      commsDocBytes = bodies.comms;
+      commentsDocBytes = bodies.comments;
+    } else {
+      if (![2, 3, 4, 5, 6].includes(metadata?.version ?? 0)) return null;
+      [notebookBytes, runtimeStateBytes, commsDocBytes, commentsDocBytes] = await Promise.all([
+        this.state.storage.get<ArrayBuffer>(CHECKPOINT_NOTEBOOK_KEY),
+        this.state.storage.get<ArrayBuffer>(CHECKPOINT_RUNTIME_STATE_KEY),
+        this.state.storage.get<ArrayBuffer>(CHECKPOINT_COMMS_DOC_KEY),
+        this.state.storage.get<ArrayBuffer>(CHECKPOINT_COMMENTS_DOC_KEY),
+      ]);
+      if (!notebookBytes || !runtimeStateBytes) return null;
+      if ((metadata.version ?? 0) >= 5 && !commsDocBytes) return null;
+      if ((metadata.version ?? 0) >= 6 && !commentsDocBytes) return null;
     }
     return {
       notebookBytes: new Uint8Array(notebookBytes),
@@ -831,6 +923,7 @@ export class RoomMaterializer {
       commentsDocBytes: commentsDocBytes ? new Uint8Array(commentsDocBytes) : undefined,
       metadata: {
         version: typeof metadata.version === "number" ? metadata.version : CHECKPOINT_VERSION,
+        ...(metadata.documents ? { documents: metadata.documents } : {}),
         notebook_heads: Array.isArray(metadata.notebook_heads) ? metadata.notebook_heads : [],
         runtime_state_heads: Array.isArray(metadata.runtime_state_heads)
           ? metadata.runtime_state_heads
@@ -882,6 +975,7 @@ export class RoomMaterializer {
   }
 
   private markLoadedCheckpoint(metadata: RoomCheckpointMetadata): void {
+    this.checkpointSnapshotsReusable = false;
     this.loadedPublishedRevisionId = metadata.published_revision_id;
     this.loadedPublishedNotebookHeads = metadata.published_notebook_heads;
     this.loadedPublishedRuntimeStateHeads = metadata.published_runtime_state_heads;
@@ -890,6 +984,7 @@ export class RoomMaterializer {
   }
 
   private markLoadedPublishedSnapshot(revisionId: string, host: RoomHostHandle): void {
+    this.checkpointSnapshotsReusable = false;
     this.loadedPublishedRevisionId = revisionId;
     this.loadedPublishedNotebookHeads = Array.from(host.get_heads_hex());
     this.loadedPublishedRuntimeStateHeads = Array.from(host.get_runtime_state_heads_hex());
@@ -1146,7 +1241,8 @@ function legacyCheckpointIsNewerThanPublished(
   metadata: RoomCheckpointMetadata,
   latestPublishedCreatedAt: string,
 ): boolean {
-  if (metadata.version >= CHECKPOINT_VERSION || metadata.published_revision_id) {
+  // Version 6 ended timestamp-only precedence; keep that independent of storage format.
+  if (metadata.version >= 6 || metadata.published_revision_id) {
     return false;
   }
   const checkpointSavedAt = Date.parse(metadata.saved_at);
