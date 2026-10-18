@@ -198,6 +198,37 @@ describe("Bokeh session recovery with real documents", () => {
     vi.useRealTimers();
   });
 
+  it("loads model definitions introduced by a later checkpoint without remounting", async () => {
+    const h = await start(snapshot({ start: 0 }));
+    const range = h.range();
+    // Python DataModel serialization supplies a definition separately from its
+    // root. The model need not exist when the output first mounts.
+    const updated = snapshot({ start: 2 });
+    updated.headRevision = updated.checkpoint.revision = 1;
+    updated.checkpoint.document.defs = [
+      {
+        type: "model",
+        name: "LateRecoveryModel",
+        properties: [{ name: "answer", kind: "Any", default: 7 }],
+      },
+    ];
+    (updated.checkpoint.document.roots as unknown[]).push({
+      type: "object",
+      name: "LateRecoveryModel",
+      id: "late-model",
+    });
+    h.setSnapshot(updated);
+    h.announce(1);
+    await vi.advanceTimersByTimeAsync(151);
+
+    expect(h.documents[0].get_model_by_id("late-model")?.properties.answer.get_value()).toBe(7);
+    expect(h.range()).toBe(range);
+    expect(range.start).toBe(2);
+    expect(h.onStatus).toHaveBeenLastCalledWith("connected", undefined);
+    expect(h.mount).toHaveBeenCalledTimes(1);
+    expect(h.view.clear).not.toHaveBeenCalled();
+  });
+
   it.each([{}, { start: 0 }])(
     "restores rejected optimistic values from checkpoint attributes %j without remounting",
     async (attributes) => {

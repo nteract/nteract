@@ -30,6 +30,7 @@ interface BokehDocumentEvent {
 }
 
 interface BokehDocument {
+  resolver: unknown;
   all_roots: Array<{ id?: string }>;
   on_change(callback: (event: BokehDocumentEvent) => void): void;
   remove_on_change(callback: (event: BokehDocumentEvent) => void): void;
@@ -55,7 +56,7 @@ interface BokehRuntime {
     ): BokehDocument;
   };
   Buffer: new (buffer: ArrayBuffer) => BokehBufferValue;
-  Deserializer?: { prototype: BokehDeserializer };
+  Deserializer?: { new (resolver: unknown): BokehDeserializer; prototype: BokehDeserializer };
   addDocumentStandalone(document: BokehDocument, element: HTMLElement): Promise<BokehViewManager>;
 }
 
@@ -578,6 +579,15 @@ export class BokehSessionController {
     }
     this.applyingRemote = true;
     try {
+      if (checkpoint.document.defs != null) {
+        const Deserializer = this.options.runtime.Deserializer;
+        if (!Deserializer) throw new Error("Bokeh model definition decoder is unavailable");
+        // Match Document.from_json: register classes before decoding their roots.
+        new Deserializer(document.resolver).decode(
+          checkpoint.document.defs,
+          bufferMap(checkpoint.buffers),
+        );
+      }
       deferExistingModelUpdates(
         this.options.runtime,
         () => document.apply_json_patch({ events }, bufferMap(checkpoint.buffers)),
