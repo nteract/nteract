@@ -451,6 +451,108 @@ def test_patch_against_older_revision_is_rebased_onto_python_changes():
     assert event.client_patch is not None
 
 
+def _coalescing_session(pn):
+    slider = pn.widgets.FloatSlider(start=0, end=10, value=1)
+    text = pn.widgets.TextInput(value="a")
+    _ip, data, _metadata = _format_panel(pn.Row(slider, text))
+    session = session_registry.require(data[BOKEH_SESSION_MIME]["session_id"])
+    delivered: list[Any] = []
+    session.set_event_sink(delivered.append)
+    return slider, text, session, delivered
+
+
+def test_python_changes_in_one_loop_iteration_share_a_revision():
+    pn = _load_panel()
+
+    async def change_both():
+        slider, text, _session, delivered = _coalescing_session(pn)
+        slider.value = 2
+        text.value = "b"
+        assert delivered == []
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return delivered
+
+    [event] = asyncio.run(change_both())
+    assert (event.base_revision, event.revision) == (0, 1)
+    assert event.server_patch is not None
+    assert len(event.server_patch.content["events"]) == 2
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["root", "layout-child"])
+@pytest.mark.parametrize("binary", [False, True], ids=["lists", "buffers"])
+def test_batched_new_models_replay_streams_once(nested, binary):
+    pytest.importorskip("bokeh")
+
+    from bokeh.core.serialization import Buffer, Serialized
+    from bokeh.core.types import ID
+    from bokeh.document import Document
+    from bokeh.document.json import DocJson, PatchJson
+    from bokeh.models import ColumnDataSource, Div, Row
+    from bokeh.plotting import figure
+
+    np = pytest.importorskip("numpy")
+
+    def values(items):
+        return np.array(items, dtype=np.float64) if binary else items
+
+    async def change_and_replay():
+        document = Document()
+        root = Row(children=[]) if nested else Div(text="existing root")
+        document.add_root(root)
+        session = BokehDocumentSession(
+            document, document.roots, producer_name="test", producer_version="0"
+        )
+        try:
+            replica = Document.from_json(cast(DocJson, session.snapshot().content))
+            source = ColumnDataSource(data={"x": values([1, 2]), "y": values([1, 2])})
+            if nested:
+                plot = figure()
+                plot.line("x", "y", source=source)
+                root.children = [plot]
+            else:
+                document.add_root(source)
+            source.stream({"x": values([3]), "y": values([3])})
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+            [event] = session.pop_server_events()
+            assert (event.base_revision, event.revision) == (0, 1)
+            patch = event.server_patch
+            assert patch is not None
+            assert len(patch.content["events"]) == 2
+            assert bool(patch.buffers) == binary
+            replica.apply_json_patch(
+                Serialized(
+                    content=cast(PatchJson, patch.content),
+                    buffers=[Buffer(ID(buffer.id), buffer.data) for buffer in patch.buffers],
+                )
+            )
+            replayed = replica.get_model_by_id(source.id)
+            assert replayed is not None
+            assert list(replayed.data["x"]) == list(source.data["x"]) == [1, 2, 3]
+            assert list(replayed.data["y"]) == list(source.data["y"]) == [1, 2, 3]
+        finally:
+            session.close()
+
+    asyncio.run(change_and_replay())
+
+
+def test_checkpoint_includes_changes_still_waiting_for_the_loop():
+    pn = _load_panel()
+
+    async def checkpoint_before_flush():
+        slider, _text, session, delivered = _coalescing_session(pn)
+        slider.value = 4
+        revision, snapshot = session.checkpoint()
+        return revision, snapshot, delivered
+
+    revision, snapshot, delivered = asyncio.run(checkpoint_before_flush())
+    assert revision == 1
+    assert [event.revision for event in delivered] == [1]
+    assert '"value":4' in str(snapshot.content).replace(" ", "").replace("'", '"')
+
+
 def test_python_change_queues_ordered_server_event():
     pn = _load_panel()
 
