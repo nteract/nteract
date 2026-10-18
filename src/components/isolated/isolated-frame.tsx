@@ -22,7 +22,11 @@ import {
   ISOLATED_FRAME_SANDBOX_ATTRS,
   type IsolatedFrameDocument,
 } from "./frame-config";
-import type { NteractEmbedContainerDimensions, NteractEmbedHostContextPatch } from "./host-context";
+import type {
+  NteractEmbedContainerDimensions,
+  NteractEmbedHostContext,
+  NteractEmbedHostContextPatch,
+} from "./host-context";
 import { createNteractEmbedHostContext, mergeNteractEmbedHostContext } from "./host-context";
 import { IsolatedFrameRuntime } from "./isolated-frame-runtime";
 import { useIsolatedRenderer } from "./isolated-renderer-context";
@@ -429,6 +433,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       [id, name],
     );
     const logFrameDiagnosticRef = useRef(logFrameDiagnostic);
+    const resolvedHostContextRef = useRef<NteractEmbedHostContext | undefined>(undefined);
 
     // Sync refs during render so effects always see the latest callbacks.
     onReadyRef.current = onReady;
@@ -474,6 +479,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       runtimeRef.current = new IsolatedFrameRuntime({
         getFrameWindow: () => iframeRef.current?.contentWindow,
         getInitialContent: () => initialContentRef.current,
+        getHostContext: () => resolvedHostContextRef.current,
         // Seed the runtime before passive effects so an early iframe bootstrap
         // message can report the current bundle state.
         rendererBundle: { rendererCode, rendererCss },
@@ -616,6 +622,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         ),
       [colorTheme, containerDimensions, darkMode, hostContext, imperativeHostContext],
     );
+    resolvedHostContextRef.current = resolvedHostContext;
 
     // Send theme and host context as soon as iframe bootstrap is ready. The
     // bootstrap document already handles theme over JSON-RPC; host context moves
