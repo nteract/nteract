@@ -190,6 +190,9 @@ export async function applyOutputChangeset(
   }
 
   const retryDelays = options.retryDelaysMs ?? OUTPUT_RETRY_DELAYS_MS;
+  const pending: Array<[string, OutputManifest]> = [];
+  // Publish available outputs before awaiting any blob. A slow rich display
+  // must not hide inline stdout or other already-resolved outputs in this batch.
   for (const [outputId, raw] of changed) {
     if (!writeIsCurrent(outputId)) continue;
     const sync = resolveOutputProjectionSync(raw, blobResolver);
@@ -206,7 +209,13 @@ export async function applyOutputChangeset(
       recordOutputProjectionFailure(outputId);
       continue;
     }
-    if (!isOutputManifest(raw)) continue;
+    if (isOutputManifest(raw)) pending.push([outputId, raw]);
+  }
+  // Keep blob resolution serial, preserving the existing request bound and
+  // per-output generation checks while inline outputs are already visible.
+  if (blobResolver === null) return;
+  for (const [outputId, raw] of pending) {
+    if (!writeIsCurrent(outputId)) continue;
     let resolvedOk = false;
     for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
       try {

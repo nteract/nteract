@@ -101,9 +101,9 @@ export class NotebookViewStoreProjector {
       if (executionId && projectorOwnsExecution) {
         nextOwnedExecutionIds.add(executionId);
       }
-      if (executionId && !existingExecution) {
-        // Snapshot/live cell materialization can seed a display placeholder,
-        // but it must never downgrade a real RuntimeStateDoc execution snapshot.
+      if (executionId && projectorOwnsExecution) {
+        // Progressive materialization must refresh its display placeholder as
+        // async outputs resolve, without downgrading a RuntimeStateDoc snapshot.
         setExecution(executionId, {
           execution_count: cell.executionCount,
           status: "done",

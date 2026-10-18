@@ -5,7 +5,7 @@ import {
   getNotebookQueueProjection,
   isExecutionRuntimeOwned,
 } from "@/components/notebook/state/execution-store";
-import { getOutputById } from "@/components/notebook/state/output-store";
+import { getCellOutputsSnapshot, getOutputById } from "@/components/notebook/state/output-store";
 import {
   applyExecutionViewChangeset,
   applyOutputChangeset,
@@ -118,6 +118,72 @@ describe("runtime store projection", () => {
     expect(getOutputProjectionFailures()).toEqual([]);
     expect(failureEvents).toEqual([1, 0]);
     unsubscribe();
+  });
+
+  it("projects inline stdout while an earlier table blob is still loading", async () => {
+    applyExecutionViewChangeset({
+      cell_pointer_changes: [["cell", "exec"]],
+      execution_upserts: [
+        [
+          "exec",
+          {
+            execution_count: 1,
+            status: "done",
+            success: true,
+            output_ids: ["table", "print"],
+          },
+        ],
+      ],
+    });
+    let releaseTable!: (response: Response) => void;
+    const tableResponse = new Promise<Response>((resolve) => {
+      releaseTable = resolve;
+    });
+    const blobResolver = {
+      url: (ref: { blob: string }) => `https://example.test/blob/${ref.blob}`,
+      fetch: vi.fn(() => tableResponse),
+    };
+    const projection = applyOutputChangeset(
+      [
+        [
+          "table",
+          {
+            output_id: "table",
+            output_type: "display_data",
+            metadata: {},
+            data: { "text/html": { blob: "table-html", size: 2048 } },
+          },
+        ],
+        [
+          "print",
+          {
+            output_id: "print",
+            output_type: "stream",
+            name: "stdout",
+            text: { inline: "dataframe 20 rows\n" },
+          },
+        ],
+      ],
+      [],
+      { blobResolver },
+    );
+    try {
+      expect(getOutputById("print")).toMatchObject({ text: "dataframe 20 rows\n" });
+      expect(getOutputById("table")).toBeUndefined();
+      expect(getCellOutputsSnapshot("cell").map((output) => output.output_type)).toEqual([
+        "stream",
+      ]);
+    } finally {
+      releaseTable(new Response("<table><tr><td>361</td></tr></table>"));
+      await projection;
+    }
+    expect(getOutputById("table")).toMatchObject({
+      data: { "text/html": "<table><tr><td>361</td></tr></table>" },
+    });
+    expect(getCellOutputsSnapshot("cell").map((output) => output.output_type)).toEqual([
+      "display_data",
+      "stream",
+    ]);
   });
 
   it("reset invalidates suspended output projection writes", async () => {
