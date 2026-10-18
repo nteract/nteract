@@ -43,6 +43,7 @@ async function fixture(t) {
   const storage = new Storage();
   const calls = [];
   let responseStatus = 200;
+  let responseHeaders = {};
   const catalog = new Catalog(
     { id: { name: `user:anaconda-fixture:${auth.subject}` }, storage },
     {
@@ -53,7 +54,7 @@ async function fixture(t) {
             calls.push({ id, args: await request.json() });
             return Response.json(
               { page_id: id, title: "Created", heads: ["a".repeat(64)] },
-              { status: responseStatus },
+              { status: responseStatus, headers: responseHeaders },
             );
           },
         }),
@@ -73,6 +74,10 @@ async function fixture(t) {
     },
     recover: () => {
       responseStatus = 200;
+    },
+    rejectSize: (beforeIntent = true) => {
+      responseStatus = 413;
+      responseHeaders = beforeIntent ? { "x-pages-create-rejected": "before-intent" } : {};
     },
   };
 }
@@ -127,4 +132,24 @@ test("Page ingress independently rejects the same invalid create fields", async 
     assert.equal(f.storage.values.size, 0);
     assert.equal(page.metadata, undefined);
   }
+});
+
+test("a marked pre-intent size rejection frees the catalog reservation and retry key", async (t) => {
+  const f = await fixture(t);
+  f.rejectSize();
+  const args = { title: "Too large", idempotency_key: "oversized-create" };
+  assert.equal((await f.create(args)).status, 413);
+  assert.equal(f.storage.values.size, 0);
+  f.recover();
+  assert.equal((await f.create({ ...args, title: "Smaller" })).status, 200);
+});
+
+test("an unmarked size failure retains the pending create for safe retry", async (t) => {
+  const f = await fixture(t);
+  f.rejectSize(false);
+  const args = { title: "Uncertain", idempotency_key: "uncertain-size" };
+  assert.equal((await f.create(args)).status, 413);
+  const intent = await f.storage.get("host/operation/uncertain-size");
+  assert.equal(intent.pending, true);
+  assert.equal((await f.storage.get(`page/${intent.pageId}`)).pending, true);
 });

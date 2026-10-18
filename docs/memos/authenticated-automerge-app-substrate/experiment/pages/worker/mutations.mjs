@@ -1,4 +1,5 @@
 import * as A from "@automerge/automerge";
+import { assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 
 function reject(status, message) {
   const error = new Error(message);
@@ -72,12 +73,18 @@ export async function documentMutation({
     const after = A.change(A.clone(before), (doc) => {
       result = apply(doc);
     });
+    assertDocumentLimits(after);
     entry = {
       fingerprint: digest,
       pending: true,
       changes: A.getChanges(before, after),
       receipt: { page_id: before.page_id, heads: A.getHeads(after), result: result ?? null },
     };
+    assertIntentSize(key, entry.changes, {
+      fingerprint: entry.fingerprint,
+      pending: entry.pending,
+      receipt: entry.receipt,
+    });
     // The immutable edit may depend on freshly received WebSocket changes.
     // Persist that captured base before its replayable intent can survive a crash.
     // Concurrent changes may advance the handle; they cannot remove this base.

@@ -1,5 +1,6 @@
-// The application stores incremental Subduction records; celld owns SQLite,
-// replication, snapshots, ownership epochs, and object-store recovery.
+import { assertStoredSize } from "../model/limits.mjs";
+
+// Store incremental Subduction records through the host's native DO storage.
 export class DurableByteStore {
   constructor(storage) {
     this.storage = storage;
@@ -9,6 +10,7 @@ export class DurableByteStore {
     return value === undefined ? undefined : new Uint8Array(value);
   }
   async save(key, value) {
+    assertStoredSize(`repo/${key}`, value.byteLength);
     await this.storage.put(`repo/${key}`, new Uint8Array(value));
   }
   async remove(key) {

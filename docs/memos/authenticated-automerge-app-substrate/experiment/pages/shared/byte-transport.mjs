@@ -8,6 +8,9 @@ export class WebSocketByteTransport {
 
   constructor(socket, { maxQueuedBytes = 8 * 1024 * 1024, maxFrameBytes = 4 * 1024 * 1024 } = {}) {
     this.socket = socket;
+    // Newer workerd follows the WebSocket Blob default. Native Subduction
+    // expects byte frames; request ArrayBuffer delivery before receiving any.
+    socket.binaryType = "arraybuffer";
     socket.addEventListener("message", ({ data }) => {
       if (this.#closed) return;
       if (!(data instanceof ArrayBuffer) && !ArrayBuffer.isView(data)) {
