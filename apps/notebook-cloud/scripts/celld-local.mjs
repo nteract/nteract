@@ -318,6 +318,9 @@ async function exportProjects(outDir) {
       entryPoints: [shimPath],
       outfile: path.join(stageDir, "index.js"),
       bundle: true,
+      // Exported workers execute directly; compact whitespace without renaming
+      // identifiers or changing syntax to leave room in the preview bundle.
+      minifyWhitespace: true,
       format: "esm",
       platform: "browser",
       target: "es2022",

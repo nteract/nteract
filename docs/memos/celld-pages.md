@@ -63,11 +63,11 @@ The current visual design and private realtime prototype are a starting
 point. Realtime editing and comments are required product capabilities, not
 optional additions after the document experience is considered complete.
 
-The WYSIWYG editor investigation remains a separate spike starting from main,
-with this service as its intended integration target. Editor selection should
-not block work on shared-space identity, admitted authorship, comment operations,
-and collaboration contracts. Those contracts must also leave room for the
-spike's eventual editor transactions and source/selection mapping.
+The service now integrates ProseMirror with admitted Automerge rich-text sync,
+named presence, remote change illumination, anchored comments, and hosted MCP.
+The original editor workbench remains an isolated regression fixture in
+`experiments/pages-editor`. Shared-space permissions and selections spanning
+Page blocks are still incomplete.
 
 The end-to-end acceptance scenario is two different authenticated people opening
 the same shared space and Page in separate browsers:
@@ -100,9 +100,9 @@ capability from safely reconnecting an interrupted live editing session.
 
 Integrate and verify the complete flow locally before updating the live service:
 shared space, two editors, one viewer, concurrent typing, threaded comments,
-revocation, reconnect, and restart. WYSIWYG interaction and cross-block selection
-join that same fixture when the editor spike selects an approach. The deployed
-prototype does not meet this completion bar yet.
+revocation, reconnect, and restart. WYSIWYG interaction is qualified within a
+Page block; cross-block selection and multi-account sharing still need to join
+that fixture. The deployed prototype does not meet this completion bar yet.
 
 ## Space identity and sharing
 
@@ -449,21 +449,21 @@ recovery. Verify no acknowledged operation or attribution is lost. Compare R2
 and S3 only under explicit equivalent durability settings; local dev persistence
 does not qualify either remote backend.
 
-## Suggested slices
+## Remaining work
 
-1. Independently deploy and qualify the current browsing/editing prototype.
-2. Introduce stable space identities, inherited Page permissions, and sharing
-   with a migration from the initial private workspaces.
-3. Establish actor/session identity, scoped API credentials, and durable receipts.
-4. Measure and implement incremental persistence with recovery qualification.
-5. Extend the implemented CRDT editing and reconnect flow with presence and
-   change illumination, then qualify it across shared-space permissions.
-6. Extend the implemented live comments with shared-space permissions, richer
-   editor anchors, and the remaining API/UI operations.
-7. Integrate the separate WYSIWYG spike, including cross-block selection and
-   undo, into the complete shared editing and commenting fixture.
-8. Add WebMCP/remote MCP adapters over the established operation contract.
+1. Introduce stable space identities, inherited Page permissions, and sharing
+   with a migration from the initial private workspaces. Qualify browser sync,
+   presence, comments, agent operations, and revocation across accounts.
+2. Qualify cross-block selections, native mobile keyboard/IME, and accessibility
+   while preserving remote selections and peer-preserving undo.
+3. Implement and qualify incremental persistence on actual celld/S3/R2. The
+   [storage measurements](../measurements/pages-automerge-storage.md) compare
+   generated data and recovery models; they do not change production storage or
+   establish remote bucket costs.
+4. Extend the current hosted MCP and TypeScript client as native plugin needs
+   emerge. WebMCP and newer MCP subscription support remain optional follow-ups.
 
-Editor exploration can proceed independently. None of these slices requires
-changing notebook-cloud's release cadence or making the first UI expose every
-API capability.
+The current implementation already includes independently deployed realtime
+editing, scoped and Anaconda API-key access, durable operation receipts, named
+presence, change illumination, and passage comments. These follow-ups do not
+require changing notebook-cloud's release cadence.

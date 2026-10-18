@@ -61,6 +61,7 @@ jobs:
               - ".github/actions/**"
               - ".github/actionlint.yaml"
               - "apps/**"
+              - "experiments/pages-editor/**"
               - "bin/**"
               - "crates/**"
               - "python/**"
@@ -794,6 +795,13 @@ jobs:
           pnpm --dir apps/pages test
           pnpm --dir packages/pages-client test
           pnpm --dir packages/pages-mcp build
+
+      - name: Verify Pages editor workbench
+        working-directory: experiments/pages-editor
+        run: |
+          npm ci --ignore-scripts
+          npm test
+          npm run build
 
       - name: Run JS tests
         run: vp test run

@@ -195,7 +195,7 @@ function ProjectedMarkdownBlock({
     );
   }
 
-  if (block.kind === "code") {
+  if (block.kind === "code" || block.kind === "mermaid") {
     return (
       <div
         data-source-active={activeBlockId === block.blockId ? "true" : undefined}
@@ -205,7 +205,7 @@ function ProjectedMarkdownBlock({
           code={block.text}
           colorTheme={colorTheme}
           isDark={isDark}
-          language={block.codeLanguage}
+          language={block.kind === "mermaid" ? "mermaid" : block.codeLanguage}
           preClassName="max-w-full"
           copyResetMs={1800}
           copyErrorMessage="Failed to copy projected markdown code block:"

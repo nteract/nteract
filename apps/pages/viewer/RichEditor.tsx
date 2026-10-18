@@ -8,6 +8,8 @@ import { wrapInList, splitListItem, sinkListItem, liftListItem } from "prosemirr
 import { history, undo, redo } from "prosemirror-history";
 import type { CommentSelection } from "./Comments";
 import type { PageReplica } from "./replica.ts";
+import type { ProjectedThread } from "../src/comments.ts";
+import { richComments, revealCommentPassage } from "./rich-comments.mjs";
 import { bindRichEditor } from "./rich-binding.mjs";
 import { richAttribution } from "./rich-attribution.mjs";
 import { richPresence, publishRichSelection, richCommentSelection } from "./rich-presence.mjs";
@@ -22,6 +24,8 @@ export function RichEditor({
   onSelection,
   toolbarHost,
   onActivate,
+  threads,
+  commentTarget,
 }: {
   replica: PageReplica;
   id: string;
@@ -30,6 +34,8 @@ export function RichEditor({
   onSelection?: (selection: CommentSelection | null) => void;
   toolbarHost: HTMLElement | null;
   onActivate: () => void;
+  threads: ProjectedThread[];
+  commentTarget: { id: string; request: number } | null;
 }) {
   const host = useRef<HTMLDivElement>(null),
     editor = useRef<EditorView | null>(null);
@@ -37,6 +43,10 @@ export function RichEditor({
     report = useRef(onError),
     selected = useRef(onSelection),
     activate = useRef(onActivate);
+  const comments = useRef(threads),
+    activeComment = useRef(commentTarget?.id);
+  comments.current = threads;
+  activeComment.current = commentTarget?.id;
   activate.current = onActivate;
   selected.current = onSelection;
   writable.current = editable;
@@ -56,6 +66,12 @@ export function RichEditor({
           history(),
           richAttribution(replica),
           richPresence(replica, id),
+          richComments(
+            replica,
+            id,
+            () => comments.current,
+            () => activeComment.current,
+          ),
           keymap({
             "Mod-b": toggleMark(schema.marks.strong),
             "Mod-i": toggleMark(schema.marks.em),
@@ -92,7 +108,10 @@ export function RichEditor({
         focus: () => {
           activate.current();
           queueMicrotask(() => {
-            if (alive) publishRichSelection(replica, id, view);
+            if (alive) {
+              publishRichSelection(replica, id, view);
+              selected.current?.(richCommentSelection(replica, id, view.state));
+            }
           });
           return false;
         },
@@ -129,6 +148,19 @@ export function RichEditor({
   useEffect(() => {
     editor.current?.setProps({ editable: () => editable });
   }, [editable]);
+  useEffect(() => {
+    const view = editor.current;
+    if (view && !view.composing) view.dispatch(view.state.tr.setMeta("addToHistory", false));
+  }, [threads, commentTarget]);
+  useEffect(() => {
+    const thread = comments.current.find((item) => item.id === commentTarget?.id);
+    if (
+      editor.current &&
+      thread?.target.kind === "selection" &&
+      thread.target.anchor.blockId === id
+    )
+      revealCommentPassage(editor.current);
+  }, [commentTarget]);
   const commands: [string, Command][] = [
     ["Bold", toggleMark(schema.marks.strong)],
     ["Italic", toggleMark(schema.marks.em)],

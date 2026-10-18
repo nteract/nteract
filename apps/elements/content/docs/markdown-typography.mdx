@@ -4,6 +4,7 @@ description: Visual fixtures for notebook markdown cells and markdown-rich docum
 ---
 
 import { MarkdownTypographyExample } from "@/components/markdown-typography-example";
+import { MermaidExample } from "@/components/mermaid-example";
 
 Markdown should read like an interactive research document: links need visible
 affordance before hover, tables need density without spreadsheet noise, and the
@@ -12,6 +13,19 @@ logs. Heading anchors, figure captions, and native disclosure blocks should
 feel available without turning the page into application chrome.
 
 <MarkdownTypographyExample />
+
+## Mermaid diagrams
+
+Top-level fenced `mermaid` blocks render with Pele. Edit the source below to check live
+updates and error recovery, or use **Show source** to inspect and copy the code.
+Diagrams follow the notebook palette and preserve the source's layout direction.
+Unsupported or incomplete syntax stays available as code. Diagram links and
+external images are disabled.
+
+Fences nested inside lists or blockquotes are not yet supported by the projected
+cell renderer.
+
+<MermaidExample />
 
 ## What is real here
 

@@ -1,0 +1,25 @@
+{
+  "name": "nteract-pages-editor-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node serve.mjs",
+    "test": "node --test test/*.test.mjs",
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@automerge/automerge": "3.4.1",
+    "@automerge/prosemirror": "0.2.0",
+    "prosemirror-commands": "1.7.1",
+    "prosemirror-history": "1.4.1",
+    "prosemirror-keymap": "1.2.3",
+    "prosemirror-markdown": "1.13.2",
+    "prosemirror-model": "1.25.12",
+    "prosemirror-schema-list": "1.5.1",
+    "prosemirror-state": "1.4.3",
+    "prosemirror-view": "1.42.6"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

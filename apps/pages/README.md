@@ -319,8 +319,8 @@ adapting a tool workflow that expects these features.
 
 ### Optional editor workbench
 
-The separate [editor spike PR](https://github.com/nteract/nteract/pull/4453)
-provides a generated-content research fixture. Build its pinned source with
+The retained `experiments/pages-editor` directory provides a generated-content
+research fixture. Build it from this checkout with
 `npm ci && npm test && npm run build` in `experiments/pages-editor`, then set
 `PAGES_EDITOR_WORKBENCH_DIST` to that build's absolute `dist` path when running
 the Pages build. The three static files are mounted at
@@ -331,8 +331,8 @@ without the variable removes this optional generated directory.
 This preview uses two replicas in one browser, resets on reload, and has no
 account-Page transport or persistence. It does not migrate existing documents
 or claim production presence. Record both source revisions in deployment
-receipts. A real document integration still needs an explicit Markdown adapter
-or coordinated rich-text schema migration.
+receipts. The live Pages editor separately uses the rich-text integration
+described below.
 
 The build writes a self-contained celld project to `dist`: Worker JavaScript,
 Automerge WASM, Markdown WASM, viewer assets, and `wrangler.json`. Deploy that
@@ -467,9 +467,9 @@ The tests cover concurrent text merging, stale guards, atomic rollback, partial
 patches, Unicode, stable identity, idempotency, storage failure, HTTP call
 serialization, change cursors, workspace separation, and CSRF boundaries.
 
-## Realtime WYSIWYG spike
+## Realtime WYSIWYG editing
 
-The stacked editor branch mounts ProseMirror on the same browser PageReplica
+The Pages editor mounts ProseMirror on the same browser PageReplica
 and `/api/sync` transport. New browser prose blocks use the versioned
 `automerge-rich-text-v1` representation. Existing Markdown blocks convert through
 the guarded `enable_rich_text` operation; instruction blocks keep their source
@@ -487,6 +487,10 @@ separate sections that tools can target and move. Comments sit alongside their
 block on wide screens, with an expandable entry above the text on narrow screens.
 Selected-passage comments keep their quoted context. Exact inline positioning
 and selection spanning multiple Page blocks remain follow-up work.
+Attached passages are underlined. Show passage scrolls to the saved CRDT anchor
+without changing the editing selection or opening the keyboard; selecting a
+commented passage offers navigation to its open threads. Deleted targets remain
+detached rather than matching another occurrence of the same words.
 Agent-instruction blocks remain supported by the API and existing content stays
 editable, but the writing UI does not offer a separate insertion button for them.
 
@@ -508,13 +512,18 @@ The ProseMirror binding is pinned to 0.2.0, including its internal position-map
 helpers. A scoped remote-join repair is retained from the isolated fixture.
 Paragraphs within a Page block support range editing, formatting and undo;
 selection across Page blocks is deferred. Real-device IME and accessibility
-qualification remain outstanding. The Markdown parser dependency is pinned to
-14.2.0 because newer registry metadata requested an unavailable linkify-it
-version during installation, including when using its published tarball URL.
-The dependency audit flags markdown-it GHSA-253c-mchw-3w2r and linkify-it
-GHSA-v245-v573-v5vm. Both affect linkification, which this CommonMark parser
-explicitly disables. Replace the fallback with patched dependencies before
-promoting this spike. The repository-wide audit also has pre-existing findings.
+qualification remain outstanding. The schema adapter currently normalizes
+numbered lists to start at 1; a different imported starting number survives in
+the original source until an edit requires Markdown re-export.
+
+The lockfile uses markdown-it 14.3.3 and
+linkify-it 5.0.2 through ProseMirror's supported dependency ranges, without the
+temporary parser override. These versions include the fixes for
+[GHSA-253c-mchw-3w2r](https://github.com/markdown-it/markdown-it/security/advisories/GHSA-253c-mchw-3w2r)
+and [GHSA-v245-v573-v5vm](https://github.com/markdown-it/linkify-it/security/advisories/GHSA-v245-v573-v5vm).
+Linkification remains disabled: bare URLs and email addresses stay prose;
+explicit Markdown links retain their marks. The repository-wide audit has
+separate findings outside this Pages dependency chain.
 
 Passage comments use the authoritative text object: rich blocks anchor to
 `richText`, source blocks to `markdown`. Comments on the source before conversion

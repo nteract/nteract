@@ -35,6 +35,80 @@ test.describe("Renderer plugin fixtures", () => {
     await waitForDefaultFixtures(page);
   });
 
+  test("host Mermaid SVG admission blocks active markup and resource requests", async ({
+    page,
+  }) => {
+    const requests: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("example.invalid")) requests.push(request.url());
+    });
+    await page.goto("/?scenario=mermaid-host");
+    await expect(page.locator("svg.pele")).toBeVisible();
+    const admission = page.getByTestId("svg-admission");
+    await expect(admission.locator("rect")).toBeAttached();
+    await expect(page.getByRole("heading", { name: "Host SVG admission" })).toBeVisible();
+    await expect(
+      admission.locator("script,style,foreignObject,iframe,a,image,use,animate,[onload],[href]"),
+    ).toHaveCount(0);
+    await expect(admission.locator("path")).not.toHaveAttribute("marker-end");
+    await expect(admission.locator("path")).not.toHaveAttribute("fill");
+    await expect(admission.locator("rect")).toHaveCSS("position", "static");
+    await expect(admission.locator("rect")).toHaveCSS("fill", "rgb(18, 52, 86)");
+    await expect(page.locator("svg.pele a, svg.pele image")).toHaveCount(0);
+    expect(await page.evaluate(() => Reflect.get(window, "mermaidProbe"))).toBeUndefined();
+    expect(requests).toEqual([]);
+  });
+
+  test("Mermaid survives the sandboxed plugin path, source toggles, and invalid edits", async ({
+    page,
+  }) => {
+    const index = fixtures.findIndex((fixture) => fixture.label === "Mermaid (Markdown plugin)");
+    await page.goto("/");
+    const iframe = page.getByTestId(`fixture-frame-${index}`).locator("iframe");
+    const frame = iframe.contentFrame();
+    await expect(frame.locator("svg.pele")).toBeVisible({ timeout: 30_000 });
+    await expect(frame.getByRole("img", { name: "Notebook execution" })).toBeVisible();
+    expect(await iframe.getAttribute("sandbox")).not.toContain("allow-same-origin");
+    await frame.getByRole("button", { name: "Show source" }).click();
+    await expect(frame.locator("svg.pele")).toHaveCount(0);
+    await expect(frame.locator("pre")).toContainText("A[Edit source] --> B[Display output]");
+    await frame.getByRole("button", { name: "Show diagram" }).click();
+    await expect(frame.locator("svg.pele")).toBeVisible();
+
+    const replaceSource = async (source: string) => {
+      await iframe.evaluate(
+        (element, { source, index }) => {
+          (element as HTMLIFrameElement).contentWindow?.postMessage(
+            {
+              type: "render",
+              payload: {
+                mimeType: "text/markdown",
+                data: `\`\`\`mermaid\n${source}\n\`\`\``,
+                outputId: `fixture-${index}-0`,
+                replace: true,
+              },
+            },
+            "*",
+          );
+        },
+        { source, index },
+      );
+    };
+    await replaceSource("flowchart LR\nA -->");
+    await expect(frame.getByRole("status")).toContainText("Diagram unavailable:");
+    await expect(frame.locator("pre")).toContainText("A -->");
+    await replaceSource("sequenceDiagram\nAlice->>Bob: Hello café λ\nBob-->>Alice: Ready");
+    await expect(frame.locator("svg.pele")).toContainText("Hello café λ");
+    await expect(frame.getByText("Diagram unavailable:")).toHaveCount(0);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(frame.locator("svg.pele")).toBeVisible();
+    await expect
+      .poll(async () =>
+        frame.locator("body").evaluate((body) => body.scrollWidth <= body.clientWidth),
+      )
+      .toBe(true);
+  });
+
   test("iframes have non-zero height", async ({ page }) => {
     await waitForDefaultFixtures(page);
 

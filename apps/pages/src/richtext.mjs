@@ -71,8 +71,8 @@ nodes.raw = {
 };
 export const adapter = new SchemaAdapter({ nodes, marks });
 export const schema = adapter.schema;
-// The CommonMark parser must never enable linkify: the registry fallback
-// currently includes advisory-affected linkification code (see README).
+// Keep bare URLs and email addresses as prose. Only explicit Markdown links
+// become link marks; dependency upgrades must preserve this import behavior.
 defaultMarkdownParser.tokenizer.disable("linkify");
 defaultMarkdownParser.tokenizer.set({ linkify: false });
 const parser = new MarkdownParser(

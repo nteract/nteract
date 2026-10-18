@@ -608,6 +608,34 @@ textarea {
   padding: 14px 0;
   border-bottom: 1px solid #e4e5dd;
 }
+.comment-passage {
+  text-decoration: underline;
+  text-decoration-color: #a6b58e;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+  scroll-margin-block: 100px;
+}
+.comment-passage-active {
+  background: #e8edda;
+  text-decoration-color: #617742;
+}
+.comment-thread-selected {
+  border-left: 2px solid #83976a;
+  padding-left: 12px;
+}
+.comment-thread:focus {
+  outline: 2px solid #83976a;
+  outline-offset: 4px;
+}
+.comments-on-selection,
+.comment-show-passage {
+  color: #53683c;
+  min-height: 44px;
+}
+.comments-on-selection {
+  display: block;
+  clear: both;
+}
 .comment-thread-heading,
 .comment-byline {
   display: flex;

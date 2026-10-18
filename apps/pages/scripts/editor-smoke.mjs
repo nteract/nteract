@@ -74,6 +74,11 @@ try {
   await b.getByRole("button", { name: "1 open comment" }).click();
   await expect(b.locator(".comment-thread blockquote")).toHaveText("o");
   await expect(b.locator(".comment-message")).toContainText("A realtime passage comment");
+  await expect(eb.locator(".comment-passage")).toHaveText("o");
+  const reveal = b.getByRole("button", { name: "Show passage", exact: true });
+  await reveal.click();
+  await expect(reveal).toBeFocused();
+  await expect(eb.locator(".comment-passage-active")).toHaveText("o");
   // Formatting and peer-preserving undo run through real browser transactions.
   await eb.click();
   await edge(eb, true);
@@ -148,6 +153,7 @@ try {
         "two sessions",
         "presence caret and selection",
         "passage comment",
+        "anchored passage navigation without stealing focus",
         "formatting",
         "undo",
         "offline concurrent merge",

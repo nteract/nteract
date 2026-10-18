@@ -1,0 +1,771 @@
+{
+  "environment": {
+    "node": "v22.23.1",
+    "automerge": "3.4.1",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M3 Max"
+  },
+  "config": {
+    "blockCount": 96,
+    "commits": 160,
+    "repetitions": 3,
+    "maxChunks": 64,
+    "maxTailBytes": 65536
+  },
+  "checks": "Exact heads, materialized content and change hashes; pre/post checkpoint, redundant chunks, restart before compaction; 128 event/receipt windows",
+  "memory": {
+    "wholeProbePeakRssKiB": 675552,
+    "caveat": "Whole-process high water includes generated fixtures, Node, WASM and verification; not per-document or per-policy memory."
+  },
+  "caveat": "Application encoding and Node V8 metadata only. No disk/S3/R2/SQLite/LTX traffic, request costs, durability latency, or runtime crash qualification. Checkpoint bounds replay tail, not CRDT history. Random IDs, actors, timestamps and timings vary.",
+  "results": [
+    {
+      "workload": "typing",
+      "initialSnapshotBytes": 40435,
+      "runs": [
+        {
+          "repetition": 0,
+          "policy": "snapshot",
+          "persistedAutomergeBytes": 6555558,
+          "metadataAndCatalogV8Bytes": 25905340,
+          "finalRetainedAutomergeBytes": 40835,
+          "finalSnapshotBytes": 40835,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 0,
+          "peakTailBytes": 0,
+          "finalTailChunks": 0,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 1,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 334.676,
+            "wallMedianMs": 2.097,
+            "cpuMs": 334.746
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 433.618,
+            "wallMedianMs": 73.001,
+            "cpuMs": 320.092
+          }
+        },
+        {
+          "repetition": 0,
+          "policy": "incremental",
+          "persistedAutomergeBytes": 66380,
+          "metadataAndCatalogV8Bytes": 25905340,
+          "finalRetainedAutomergeBytes": 66380,
+          "finalSnapshotBytes": 40835,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 160,
+          "peakTailBytes": 25945,
+          "finalTailChunks": 160,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 1,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 11.146,
+            "wallMedianMs": 0.068,
+            "cpuMs": 10.345
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 481.79,
+            "wallMedianMs": 96.278,
+            "cpuMs": 517.192
+          }
+        },
+        {
+          "repetition": 0,
+          "policy": "checkpoint",
+          "persistedAutomergeBytes": 147872,
+          "metadataAndCatalogV8Bytes": 25905340,
+          "finalRetainedAutomergeBytes": 46006,
+          "finalSnapshotBytes": 40835,
+          "finalHistoryChanges": 162,
+          "compactions": 2,
+          "peakTailChunks": 64,
+          "peakTailBytes": 10364,
+          "finalTailChunks": 32,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 1,
+          "encoding": {
+            "calls": 162,
+            "wallTotalMs": 14.762,
+            "wallMedianMs": 0.064,
+            "cpuMs": 14.461
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 498.598,
+            "wallMedianMs": 67.812,
+            "cpuMs": 364.097
+          }
+        },
+        {
+          "repetition": 1,
+          "policy": "incremental",
+          "persistedAutomergeBytes": 66380,
+          "metadataAndCatalogV8Bytes": 25905340,
+          "finalRetainedAutomergeBytes": 66380,
+          "finalSnapshotBytes": 40835,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 160,
+          "peakTailBytes": 25945,
+          "finalTailChunks": 160,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 1,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 10.734,
+            "wallMedianMs": 0.069,
+            "cpuMs": 10.034
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 477.86,
+            "wallMedianMs": 95.444,
+            "cpuMs": 486.27
+          }
+        },
+        {
+          "repetition": 1,
+          "policy": "checkpoint",
+          "persistedAutomergeBytes": 147872,
+          "metadataAndCatalogV8Bytes": 25905340,
+          "finalRetainedAutomergeBytes": 46006,
+          "finalSnapshotBytes": 40835,
+          "finalHistoryChanges": 162,
+          "compactions": 2,
+          "peakTailChunks": 64,
+          "peakTailBytes": 10364,
+          "finalTailChunks": 32,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 1,
+          "encoding": {
+            "calls": 162,
+            "wallTotalMs": 14.089,
+            "wallMedianMs": 0.063,
+            "cpuMs": 14.593
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 332.767,
+            "wallMedianMs": 66.659,
+            "cpuMs": 340.903
+          }
+        },
+        {
+          "repetition": 1,
+          "policy": "snapshot",
+          "persistedAutomergeBytes": 6555558,
+          "metadataAndCatalogV8Bytes": 25905340,
+          "finalRetainedAutomergeBytes": 40835,
+          "finalSnapshotBytes": 40835,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 0,
+          "peakTailBytes": 0,
+          "finalTailChunks": 0,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 1,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 326.995,
+            "wallMedianMs": 2.037,
+            "cpuMs": 328.038
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 288.947,
+            "wallMedianMs": 57.262,
+            "cpuMs": 288.922
+          }
+        },
+        {
+          "repetition": 2,
+          "policy": "checkpoint",
+          "persistedAutomergeBytes": 147872,
+          "metadataAndCatalogV8Bytes": 25905340,
+          "finalRetainedAutomergeBytes": 46006,
+          "finalSnapshotBytes": 40835,
+          "finalHistoryChanges": 162,
+          "compactions": 2,
+          "peakTailChunks": 64,
+          "peakTailBytes": 10364,
+          "finalTailChunks": 32,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 1,
+          "encoding": {
+            "calls": 162,
+            "wallTotalMs": 12.932,
+            "wallMedianMs": 0.052,
+            "cpuMs": 12.29
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 332.601,
+            "wallMedianMs": 66.42,
+            "cpuMs": 333.497
+          }
+        },
+        {
+          "repetition": 2,
+          "policy": "snapshot",
+          "persistedAutomergeBytes": 6555558,
+          "metadataAndCatalogV8Bytes": 25905340,
+          "finalRetainedAutomergeBytes": 40835,
+          "finalSnapshotBytes": 40835,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 0,
+          "peakTailBytes": 0,
+          "finalTailChunks": 0,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 1,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 327.458,
+            "wallMedianMs": 2.02,
+            "cpuMs": 325.815
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 310.394,
+            "wallMedianMs": 62.054,
+            "cpuMs": 309.671
+          }
+        },
+        {
+          "repetition": 2,
+          "policy": "incremental",
+          "persistedAutomergeBytes": 66380,
+          "metadataAndCatalogV8Bytes": 25905340,
+          "finalRetainedAutomergeBytes": 66380,
+          "finalSnapshotBytes": 40835,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 160,
+          "peakTailBytes": 25945,
+          "finalTailChunks": 160,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 1,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 9.444,
+            "wallMedianMs": 0.056,
+            "cpuMs": 8.683
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 640.806,
+            "wallMedianMs": 112.048,
+            "cpuMs": 531.644
+          }
+        }
+      ]
+    },
+    {
+      "workload": "semantic",
+      "initialSnapshotBytes": 40478,
+      "runs": [
+        {
+          "repetition": 0,
+          "policy": "snapshot",
+          "persistedAutomergeBytes": 7047778,
+          "metadataAndCatalogV8Bytes": 31560020,
+          "finalRetainedAutomergeBytes": 47061,
+          "finalSnapshotBytes": 47061,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 0,
+          "peakTailBytes": 0,
+          "finalTailChunks": 0,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 340.001,
+            "wallMedianMs": 2.126,
+            "cpuMs": 340.722
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 304.042,
+            "wallMedianMs": 60.514,
+            "cpuMs": 303.913
+          }
+        },
+        {
+          "repetition": 0,
+          "policy": "incremental",
+          "persistedAutomergeBytes": 78663,
+          "metadataAndCatalogV8Bytes": 31560020,
+          "finalRetainedAutomergeBytes": 78663,
+          "finalSnapshotBytes": 47061,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 160,
+          "peakTailBytes": 38185,
+          "finalTailChunks": 160,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 10.981,
+            "wallMedianMs": 0.068,
+            "cpuMs": 10.465
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 565.645,
+            "wallMedianMs": 114.423,
+            "cpuMs": 581.374
+          }
+        },
+        {
+          "repetition": 0,
+          "policy": "checkpoint",
+          "persistedAutomergeBytes": 167481,
+          "metadataAndCatalogV8Bytes": 31560020,
+          "finalRetainedAutomergeBytes": 53492,
+          "finalSnapshotBytes": 47061,
+          "finalHistoryChanges": 162,
+          "compactions": 2,
+          "peakTailChunks": 64,
+          "peakTailBytes": 15400,
+          "finalTailChunks": 32,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 162,
+            "wallTotalMs": 15.056,
+            "wallMedianMs": 0.068,
+            "cpuMs": 14.901
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 363.443,
+            "wallMedianMs": 71.808,
+            "cpuMs": 372.821
+          }
+        },
+        {
+          "repetition": 1,
+          "policy": "incremental",
+          "persistedAutomergeBytes": 78663,
+          "metadataAndCatalogV8Bytes": 31560020,
+          "finalRetainedAutomergeBytes": 78663,
+          "finalSnapshotBytes": 47061,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 160,
+          "peakTailBytes": 38185,
+          "finalTailChunks": 160,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 8.31,
+            "wallMedianMs": 0.05,
+            "cpuMs": 7.851
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 559.608,
+            "wallMedianMs": 111.811,
+            "cpuMs": 562.156
+          }
+        },
+        {
+          "repetition": 1,
+          "policy": "checkpoint",
+          "persistedAutomergeBytes": 167481,
+          "metadataAndCatalogV8Bytes": 31560020,
+          "finalRetainedAutomergeBytes": 53492,
+          "finalSnapshotBytes": 47061,
+          "finalHistoryChanges": 162,
+          "compactions": 2,
+          "peakTailChunks": 64,
+          "peakTailBytes": 15400,
+          "finalTailChunks": 32,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 162,
+            "wallTotalMs": 14.025,
+            "wallMedianMs": 0.06,
+            "cpuMs": 13.539
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 356.956,
+            "wallMedianMs": 71.255,
+            "cpuMs": 357.693
+          }
+        },
+        {
+          "repetition": 1,
+          "policy": "snapshot",
+          "persistedAutomergeBytes": 7047778,
+          "metadataAndCatalogV8Bytes": 31560020,
+          "finalRetainedAutomergeBytes": 47061,
+          "finalSnapshotBytes": 47061,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 0,
+          "peakTailBytes": 0,
+          "finalTailChunks": 0,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 327.02,
+            "wallMedianMs": 2.03,
+            "cpuMs": 326.978
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 303.397,
+            "wallMedianMs": 60.414,
+            "cpuMs": 303.473
+          }
+        },
+        {
+          "repetition": 2,
+          "policy": "checkpoint",
+          "persistedAutomergeBytes": 167481,
+          "metadataAndCatalogV8Bytes": 31560020,
+          "finalRetainedAutomergeBytes": 53492,
+          "finalSnapshotBytes": 47061,
+          "finalHistoryChanges": 162,
+          "compactions": 2,
+          "peakTailChunks": 64,
+          "peakTailBytes": 15400,
+          "finalTailChunks": 32,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 162,
+            "wallTotalMs": 12.096,
+            "wallMedianMs": 0.048,
+            "cpuMs": 11.692
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 352.484,
+            "wallMedianMs": 70.695,
+            "cpuMs": 356.997
+          }
+        },
+        {
+          "repetition": 2,
+          "policy": "snapshot",
+          "persistedAutomergeBytes": 7047778,
+          "metadataAndCatalogV8Bytes": 31560020,
+          "finalRetainedAutomergeBytes": 47061,
+          "finalSnapshotBytes": 47061,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 0,
+          "peakTailBytes": 0,
+          "finalTailChunks": 0,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 319.506,
+            "wallMedianMs": 1.986,
+            "cpuMs": 319.076
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 296.835,
+            "wallMedianMs": 59.051,
+            "cpuMs": 296.91
+          }
+        },
+        {
+          "repetition": 2,
+          "policy": "incremental",
+          "persistedAutomergeBytes": 78663,
+          "metadataAndCatalogV8Bytes": 31560020,
+          "finalRetainedAutomergeBytes": 78663,
+          "finalSnapshotBytes": 47061,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 160,
+          "peakTailBytes": 38185,
+          "finalTailChunks": 160,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 7.723,
+            "wallMedianMs": 0.043,
+            "cpuMs": 7.344
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 558.769,
+            "wallMedianMs": 111.591,
+            "cpuMs": 562.787
+          }
+        }
+      ]
+    },
+    {
+      "workload": "comments",
+      "initialSnapshotBytes": 40432,
+      "runs": [
+        {
+          "repetition": 0,
+          "policy": "snapshot",
+          "persistedAutomergeBytes": 8368364,
+          "metadataAndCatalogV8Bytes": 49882242,
+          "finalRetainedAutomergeBytes": 62614,
+          "finalSnapshotBytes": 62614,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 0,
+          "peakTailBytes": 0,
+          "finalTailChunks": 0,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 373.071,
+            "wallMedianMs": 2.331,
+            "cpuMs": 372.523
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 341.317,
+            "wallMedianMs": 67.663,
+            "cpuMs": 341.45
+          }
+        },
+        {
+          "repetition": 0,
+          "policy": "incremental",
+          "persistedAutomergeBytes": 127736,
+          "metadataAndCatalogV8Bytes": 49882242,
+          "finalRetainedAutomergeBytes": 127736,
+          "finalSnapshotBytes": 62614,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 160,
+          "peakTailBytes": 87304,
+          "finalTailChunks": 160,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 16.061,
+            "wallMedianMs": 0.073,
+            "cpuMs": 15.645
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 666.917,
+            "wallMedianMs": 133.16,
+            "cpuMs": 687.093
+          }
+        },
+        {
+          "repetition": 0,
+          "policy": "checkpoint",
+          "persistedAutomergeBytes": 235839,
+          "metadataAndCatalogV8Bytes": 49882242,
+          "finalRetainedAutomergeBytes": 75665,
+          "finalSnapshotBytes": 62614,
+          "finalHistoryChanges": 162,
+          "compactions": 2,
+          "peakTailChunks": 64,
+          "peakTailBytes": 34926,
+          "finalTailChunks": 32,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 162,
+            "wallTotalMs": 24.26,
+            "wallMedianMs": 0.097,
+            "cpuMs": 23.705
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 418.048,
+            "wallMedianMs": 83.406,
+            "cpuMs": 422.038
+          }
+        },
+        {
+          "repetition": 1,
+          "policy": "incremental",
+          "persistedAutomergeBytes": 127736,
+          "metadataAndCatalogV8Bytes": 49882242,
+          "finalRetainedAutomergeBytes": 127736,
+          "finalSnapshotBytes": 62614,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 160,
+          "peakTailBytes": 87304,
+          "finalTailChunks": 160,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 15.447,
+            "wallMedianMs": 0.068,
+            "cpuMs": 15.136
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 695.7,
+            "wallMedianMs": 137.938,
+            "cpuMs": 703.843
+          }
+        },
+        {
+          "repetition": 1,
+          "policy": "checkpoint",
+          "persistedAutomergeBytes": 235839,
+          "metadataAndCatalogV8Bytes": 49882242,
+          "finalRetainedAutomergeBytes": 75665,
+          "finalSnapshotBytes": 62614,
+          "finalHistoryChanges": 162,
+          "compactions": 2,
+          "peakTailChunks": 64,
+          "peakTailBytes": 34926,
+          "finalTailChunks": 32,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 162,
+            "wallTotalMs": 20.889,
+            "wallMedianMs": 0.072,
+            "cpuMs": 20.541
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 427.746,
+            "wallMedianMs": 86.058,
+            "cpuMs": 428.587
+          }
+        },
+        {
+          "repetition": 1,
+          "policy": "snapshot",
+          "persistedAutomergeBytes": 8368364,
+          "metadataAndCatalogV8Bytes": 49882242,
+          "finalRetainedAutomergeBytes": 62614,
+          "finalSnapshotBytes": 62614,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 0,
+          "peakTailBytes": 0,
+          "finalTailChunks": 0,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 376.337,
+            "wallMedianMs": 2.31,
+            "cpuMs": 377
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 340.76,
+            "wallMedianMs": 68.279,
+            "cpuMs": 340.727
+          }
+        },
+        {
+          "repetition": 2,
+          "policy": "checkpoint",
+          "persistedAutomergeBytes": 235839,
+          "metadataAndCatalogV8Bytes": 49882242,
+          "finalRetainedAutomergeBytes": 75665,
+          "finalSnapshotBytes": 62614,
+          "finalHistoryChanges": 162,
+          "compactions": 2,
+          "peakTailChunks": 64,
+          "peakTailBytes": 34926,
+          "finalTailChunks": 32,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 162,
+            "wallTotalMs": 20.162,
+            "wallMedianMs": 0.07,
+            "cpuMs": 19.824
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 435.53,
+            "wallMedianMs": 87.212,
+            "cpuMs": 437.485
+          }
+        },
+        {
+          "repetition": 2,
+          "policy": "snapshot",
+          "persistedAutomergeBytes": 8368364,
+          "metadataAndCatalogV8Bytes": 49882242,
+          "finalRetainedAutomergeBytes": 62614,
+          "finalSnapshotBytes": 62614,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 0,
+          "peakTailBytes": 0,
+          "finalTailChunks": 0,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 373.284,
+            "wallMedianMs": 2.313,
+            "cpuMs": 373.722
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 341.753,
+            "wallMedianMs": 68,
+            "cpuMs": 341.962
+          }
+        },
+        {
+          "repetition": 2,
+          "policy": "incremental",
+          "persistedAutomergeBytes": 127736,
+          "metadataAndCatalogV8Bytes": 49882242,
+          "finalRetainedAutomergeBytes": 127736,
+          "finalSnapshotBytes": 62614,
+          "finalHistoryChanges": 162,
+          "compactions": 0,
+          "peakTailChunks": 160,
+          "peakTailBytes": 87304,
+          "finalTailChunks": 160,
+          "retainedEvents": 128,
+          "retainedReceiptsIncludingCreation": 129,
+          "encoding": {
+            "calls": 160,
+            "wallTotalMs": 18.587,
+            "wallMedianMs": 0.091,
+            "cpuMs": 18.305
+          },
+          "recovery": {
+            "calls": 5,
+            "wallTotalMs": 683.707,
+            "wallMedianMs": 138.027,
+            "cpuMs": 690.796
+          }
+        }
+      ]
+    }
+  ]
+}
