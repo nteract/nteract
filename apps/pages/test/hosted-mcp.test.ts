@@ -161,7 +161,33 @@ test("hosted MCP and native API use verified key identity, scopes and attributio
   );
   assert.ok(!(await readonly.listTools()).tools.some((t) => t.name === "patch_page"));
   assert.equal((await readonly.callTool({ name: "patch_page", arguments: patch })).isError, true);
+  const deletion = {
+    page_id: created.page_id,
+    base_sequence: created.content.through_sequence,
+    idempotency_key: crypto.randomUUID(),
+  };
+  assert.ok(!(await readonly.listTools()).tools.some((t) => t.name === "delete_page"));
+  assert.equal(
+    (await readonly.callTool({ name: "delete_page", arguments: deletion })).isError,
+    true,
+  );
   const other = new PagesClient(origin, { token: tokens.other, fetch: localFetch });
+  await assert.rejects(
+    other.deletePage(deletion.page_id, deletion.base_sequence, deletion.idempotency_key),
+    (e) => (e as { status: number }).status === 404,
+  );
+  const deleted = result(await mcp.callTool({ name: "delete_page", arguments: deletion }));
+  assert.equal(deleted.deleted, true);
+  assert.equal(deleted.attribution.driver, "Kilo");
+  assert.deepEqual(
+    result(await mcp.callTool({ name: "delete_page", arguments: deletion })),
+    deleted,
+  );
+  assert.equal((await mcp.listResources()).resources.length, 1);
+  await assert.rejects(
+    api.readPage(created.page_id),
+    (e) => (e as { status: number }).status === 404,
+  );
   await assert.rejects(
     other.readPage(existing.page_id),
     (e) => (e as { status: number }).status === 404,

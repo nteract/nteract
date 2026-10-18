@@ -64,3 +64,51 @@ test("connection approval contains only a token hash; local credentials are priv
   ])
     assert.throws(() => pagesOrigin(origin));
 });
+
+test("event subscriptions stop after Page deletion or a deleted-page handshake", async () => {
+  const { WebSocketServer } = await import("ws");
+  const { createServer } = await import("node:http");
+  const { watchPage } = await import("../dist/node.js");
+  for (const handshake of [false, true]) {
+    let attempts = 0;
+    const server = createServer();
+    const ws = new WebSocketServer({ noServer: true });
+    server.on("upgrade", (req, socket, head) => {
+      attempts++;
+      if (handshake) socket.end("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+      else ws.handleUpgrade(req, socket, head, (peer) => peer.close(4004, "Page deleted"));
+    });
+    await new Promise((r) => server.listen(0, "127.0.0.1", r));
+    const errors = [];
+    let observed;
+    const ended = new Promise((r) => {
+      observed = r;
+    });
+    const watch = watchPage(
+      {
+        origin: `http://127.0.0.1:${server.address().port}`,
+        page_id: "page_" + "a".repeat(32),
+        token: "generated-test",
+      },
+      () => {},
+      {
+        onError: (e) => {
+          errors.push(e);
+          observed();
+        },
+      },
+    );
+    try {
+      await ended;
+      await new Promise((r) => setTimeout(r, 650));
+      assert.equal(attempts, 1);
+      assert.equal(errors.length, 1);
+      assert.equal(errors[0].status, 404);
+    } finally {
+      watch.close();
+      for (const peer of ws.clients) peer.terminate();
+      await new Promise((r) => ws.close(r));
+      await new Promise((r) => server.close(r));
+    }
+  }
+});

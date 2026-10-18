@@ -130,6 +130,13 @@ export class PagesClient {
   listPages() {
     return this.call<{ pages: { page_id: string; title: string }[] }>("list_pages", {});
   }
+  deletePage(pageId: string, baseSequence: number, idempotencyKey: string) {
+    return this.call<MutationReceipt & { page_id: string; deleted: true }>("delete_page", {
+      page_id: pageId,
+      base_sequence: baseSequence,
+      idempotency_key: idempotencyKey,
+    });
+  }
   createPage(title: string, markdown: string, idempotencyKey: string) {
     return this.call<PageRead & { page_id: string }>("create_page", {
       title,

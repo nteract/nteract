@@ -221,6 +221,15 @@ function App() {
                 >
                   {editing === null ? "Done" : "Rename"}
                 </button>
+                <button
+                  disabled={busy || state.syncStatus !== "saved"}
+                  onClick={() => {
+                    if (confirm(`Delete “${page.title || "Untitled"}” and its comments?`))
+                      void run(() => store.deletePage());
+                  }}
+                >
+                  Delete page
+                </button>
               </div>
               {editing === null && replica && (
                 <LiveEditor replica={replica} id={null} onError={setError} />

@@ -64,6 +64,17 @@ const operation = {
 };
 export const pageTools = [
   {
+    name: "delete_page",
+    description:
+      "Delete a Page and its comments. Read first and use its current through_sequence. Reuse the exact request key and payload if the result is uncertain. Deleted Pages cannot be restored through this API.",
+    annotations: { destructiveHint: true, idempotentHint: true },
+    inputSchema: {
+      type: "object" as const,
+      properties: guards,
+      required: ["page_id", "base_sequence", "idempotency_key"],
+    },
+  },
+  {
     name: "read_page",
     description:
       "Read a live Page as Markdown blocks with stable IDs, hashes, and through_sequence. Read before editing; use the observed guards.",
@@ -180,7 +191,7 @@ export const pageTools = [
 
 export function operationPermission(name: string): "read" | "edit" | "comment" | null {
   if (["manage_page_comment", "reply_page_comment"].includes(name)) return "comment";
-  if (["create_page", "patch_page", "edit_page"].includes(name)) return "edit";
+  if (["create_page", "delete_page", "patch_page", "edit_page"].includes(name)) return "edit";
   if (
     [
       "list_spaces",

@@ -317,6 +317,20 @@ adapting a tool workflow that expects these features.
 
 ## Deployment
 
+### Deleting Pages
+
+The title row's Delete page action asks for confirmation and requires saved
+changes. Agents can call `delete_page` with `page_id`, the latest
+`base_sequence`, and an `idempotency_key`; it requires edit permission. The
+TypeScript client exposes `deletePage(pageId, sequence, key)`.
+
+Deletion atomically removes the catalog entry and replaces the document,
+comments, and old receipts with a small deletion receipt. Exact retries return
+that receipt. Reads and sync reject deleted IDs; reusing the original creation
+key cannot restore a deleted Page. Open browsers leave the deleted document,
+and event subscriptions terminate. There is no restore API. This removes active
+application content, not storage-provider backups or copies held by clients.
+
 ### Optional editor workbench
 
 The retained `experiments/pages-editor` directory provides a generated-content

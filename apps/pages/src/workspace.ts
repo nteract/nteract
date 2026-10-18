@@ -61,6 +61,7 @@ interface Change {
   attribution?: AgentAuthor;
 }
 interface Saved {
+  deleted?: true;
   authors?: Record<string, AgentAuthor>;
   bytes: Uint8Array;
   sequence: number;
@@ -106,6 +107,7 @@ export const CAPABILITIES = {
     "get_space",
     "list_pages",
     "create_page",
+    "delete_page",
     "read_page",
     "edit_page",
     "patch_page",
@@ -181,7 +183,7 @@ export class PagesWorkspace {
   /** Upgrade once under the workspace queue, before any replica can create threads. */
   private async ensureComments(id: string, principal: string) {
     const saved = await this.state.storage.get<Saved>(id);
-    if (!saved) throw new PageError("not_found", "Page not found", 404);
+    if (!saved || saved.deleted) throw new PageError("not_found", "Page not found", 404);
     let doc = A.load<Page>(new Uint8Array(saved.bytes), {
       actor: newActor(await actorPrefix(principal)),
     });
@@ -444,7 +446,7 @@ export class PagesWorkspace {
     const catalog = await this.state.storage.get<Catalog>("catalog");
     requireValue(catalog?.principal === principal, "unauthorized", "Workspace identity mismatch");
     const saved = await this.state.storage.get<Saved>(pageId);
-    requireValue(saved, "not_found", "Page not found");
+    requireValue(saved && !saved.deleted, "not_found", "Page not found");
     const doc = A.load<Page>(new Uint8Array(saved.bytes));
     try {
       const received = receiveAdmitted(doc, state, message, await actorPrefix(principal));
@@ -508,7 +510,7 @@ export class PagesWorkspace {
     sequence: number;
   }> {
     const saved = await this.state.storage.get<Saved>(pageId);
-    requireValue(saved, "not_found", "Page not found");
+    requireValue(saved && !saved.deleted, "not_found", "Page not found");
     const doc = A.load<Page>(new Uint8Array(saved.bytes));
     try {
       const [next, message] = A.generateSyncMessage(doc, state);
@@ -532,6 +534,12 @@ export class PagesWorkspace {
         // keep reading just because another peer is the one making edits.
         if (!(await this.authorized(peer))) {
           this.closePeer(peer, 4001, "Sign in again");
+          continue;
+        }
+        if (peer.pageId && !catalog?.pages.some((p) => p.page_id === peer.pageId)) {
+          if (!peer.eventsOnly)
+            peer.socket.send(JSON.stringify({ type: "catalog", pages: catalog?.pages ?? [] }));
+          this.closePeer(peer, 4004, "Page deleted");
           continue;
         }
         if (peer.eventsOnly && peer.pageId) {
@@ -666,6 +674,8 @@ export class PagesWorkspace {
       const digest = await hash(canonical(grant ? { input, driver_id: grant.id } : input));
       const existing = await this.state.storage.get<Saved>(id);
       if (existing) {
+        if (existing.deleted)
+          throw new PageError("page_deleted", "Creation key belongs to a deleted Page", 410);
         const first = existing.receipts.create;
         if (!first || first.digest !== digest)
           throw new PageError(
@@ -732,6 +742,64 @@ export class PagesWorkspace {
 
     const id = text(input.page_id, "page_id", 100);
     requireValue(/^page_[a-f0-9]{32}$/.test(id), "invalid_request", "Invalid Page ID");
+    if (operation === "delete_page") {
+      const saved = await this.state.storage.get<Saved>(id);
+      if (!saved) throw new PageError("not_found", "Page not found", 404);
+      const key = text(input.idempotency_key, "idempotency_key", 128);
+      requireValue(
+        key.length >= 8,
+        "invalid_request",
+        "idempotency_key must contain 8–128 characters",
+      );
+      const receiptKey = `delete_${await hash(key)}`;
+      const digest = await hash(
+        canonical(grant ? { operation, input, driver_id: grant.id } : { operation, input }),
+      );
+      const previous = saved.receipts[receiptKey];
+      if (previous) {
+        if (previous.digest !== digest)
+          throw new PageError(
+            "idempotency_conflict",
+            "Request key was already used for another deletion",
+            409,
+          );
+        return previous.result;
+      }
+      if (saved.deleted) throw new PageError("not_found", "Page not found", 404);
+      if (input.base_sequence !== saved.sequence)
+        throw new PageError("edit_conflict", "Page changed; reread before deleting", 409);
+      const result = {
+        page_id: id,
+        deleted: true,
+        through_sequence: saved.sequence + 1,
+        commit_status: "committed",
+        operation_id: `op_${(await hash(`${principal}:${grant?.id ?? "browser"}:${key}`)).slice(0, 32)}`,
+        ...(grant
+          ? {
+              attribution: {
+                display_name: grant.display_name,
+                driver: grant.driver,
+                driver_id: grant.id,
+              },
+            }
+          : {}),
+      };
+      // Replace content and old receipts atomically with the catalog update.
+      // A small tombstone prevents stale replicas and creation retries resurrecting it.
+      const values = {
+        catalog: { ...catalog, pages: catalog.pages.filter((p) => p.page_id !== id) },
+        [id]: {
+          deleted: true,
+          bytes: new Uint8Array(),
+          sequence: result.through_sequence,
+          events: [],
+          receipts: { [receiptKey]: { digest, result } },
+        } satisfies Saved,
+      };
+      checkStorageBudget(values);
+      await this.state.storage.put(values);
+      return result;
+    }
     await this.ensureComments(id, principal);
     const saved = await this.state.storage.get<Saved>(id);
     if (!saved) throw new PageError("not_found", "Page not found", 404);

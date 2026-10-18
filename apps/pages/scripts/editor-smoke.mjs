@@ -145,6 +145,20 @@ try {
   await edge(eb, true);
   await b.keyboard.type(" converted");
   await expect(b.getByRole("status")).toHaveText("Saved");
+  await b.goto(origin + "/?page=" + result.page_id);
+  await expect(eb).toHaveText(finalText);
+  await expect(a.getByRole("status")).toHaveText("Saved");
+  a.once("dialog", (dialog) => dialog.accept());
+  await a.getByRole("button", { name: "Delete page", exact: true }).click();
+  for (const p of [a, b]) {
+    await expect.poll(() => p.url()).not.toContain(result.page_id);
+    await expect(p.getByRole("button", { name: title, exact: true })).toHaveCount(0);
+  }
+  const deletedRead = await b.request.post(origin + "/api/tools", {
+    data: { operation: "read_page", arguments: { page_id: result.page_id } },
+    headers: { Origin: origin },
+  });
+  assert.equal(deletedRead.status(), 404);
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
@@ -161,6 +175,7 @@ try {
         "durable reload",
         "390px layout",
         "existing source conversion",
+        "deletion clears both open tabs and denies reads",
       ],
       finalText,
     }),

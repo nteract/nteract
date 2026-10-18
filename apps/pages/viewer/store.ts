@@ -43,9 +43,12 @@ export class PagesStore {
   private listeners = new Set<() => void>();
   private epoch = 0;
   private selection = 0;
+  private catalogVersion = 0;
   private account: string | null = null;
   private creationKey: string | null = null;
   private requestedPageId: string | null = null;
+  private deletion: { page_id: string; base_sequence: number; idempotency_key: string } | null =
+    null;
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
     return () => {
@@ -115,16 +118,29 @@ export class PagesStore {
         signedIn: true,
         name: session.display_name ?? "Your workspace",
       });
+      const selection = this.selection,
+        catalogVersion = this.catalogVersion;
       const { pages } = await this.tool<{ pages: Entry[] }>("list_pages");
-      if (epoch !== this.epoch) return;
+      if (
+        epoch !== this.epoch ||
+        selection !== this.selection ||
+        catalogVersion !== this.catalogVersion
+      )
+        return;
+      this.catalogVersion++;
       this.publish({ pages, error: null });
+      if (this.state.page && !pages.some((p) => p.page_id === this.state.page!.page_id))
+        this.clearPage();
       const id =
         this.requestedPageId ??
         this.state.page?.page_id ??
         new URLSearchParams(location.search).get("page") ??
         pages[0]?.page_id;
-      if (id) await this.open(id);
-      else if (!this.replica) this.startReplica(null);
+      if (id && pages.some((p) => p.page_id === id)) await this.open(id);
+      else if (id) {
+        this.clearPage();
+        this.startReplica(null);
+      } else if (!this.replica) this.startReplica(null);
     } catch (error) {
       if (epoch === this.epoch)
         this.publish({
@@ -132,6 +148,14 @@ export class PagesStore {
           error: String(error instanceof Error ? error.message : error),
         });
     }
+  }
+  private clearPage() {
+    this.selection++;
+    this.requestedPageId = null;
+    this.replica?.dispose();
+    this.replica = null;
+    history.replaceState(null, "", "/");
+    this.publish({ page: null, comments: [], error: null });
   }
   async open(id: string) {
     this.requestedPageId = id;
@@ -164,7 +188,13 @@ export class PagesStore {
         },
         (pages) => {
           if (epoch === this.epoch && this.replica === replica) {
+            this.catalogVersion++;
             this.publish({ pages });
+            if (id && !pages.some((p) => p.page_id === id)) {
+              this.clearPage();
+              this.startReplica(null);
+              return;
+            }
             if (!id && !this.requestedPageId && pages[0])
               void this.open(pages[0].page_id).catch((error) =>
                 this.publish({ error: String(error) }),
@@ -207,6 +237,32 @@ export class PagesStore {
     await this.open(page_id);
     if (!this.options.realtime) await this.refresh();
   }
+  async deletePage() {
+    const page = this.state.page,
+      epoch = this.epoch;
+    if (!page) return;
+    if (this.deletion?.page_id !== page.page_id)
+      this.deletion = {
+        page_id: page.page_id,
+        base_sequence: page.through_sequence,
+        idempotency_key: crypto.randomUUID(),
+      };
+    try {
+      await this.tool("delete_page", this.deletion);
+    } catch (error) {
+      if (
+        epoch === this.epoch &&
+        error instanceof ToolError &&
+        error.commitStatus === "not_committed"
+      )
+        this.deletion = null;
+      throw error;
+    }
+    if (epoch !== this.epoch) return;
+    this.deletion = null;
+    if (this.state.page?.page_id === page.page_id) this.clearPage();
+    await this.refresh();
+  }
   async reopenSaved() {
     const replica = this.replica,
       epoch = this.epoch;
@@ -226,6 +282,7 @@ export class PagesStore {
     this.selection++;
     this.account = null;
     this.creationKey = null;
+    this.deletion = null;
     this.requestedPageId = null;
     this.publish({
       accountKey: null,

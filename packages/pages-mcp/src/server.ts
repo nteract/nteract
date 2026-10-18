@@ -10,7 +10,7 @@ import {
 import { PagesClient, PagesError } from "@nteract/pages-client";
 import { watchPage, type ConnectionFile } from "@nteract/pages-client/node";
 
-import { pageTools as tools } from "@nteract/pages-client/tools";
+import { pageTools as tools, operationPermission } from "@nteract/pages-client/tools";
 
 export async function createPagesServer(config: ConnectionFile) {
   const client = new PagesClient(config.origin, { token: config.token });
@@ -23,13 +23,8 @@ export async function createPagesServer(config: ConnectionFile) {
     { capabilities: { tools: {}, resources: { subscribe: true } } },
   );
   const permitted = tools.filter((tool) => {
-    const permission =
-      tool.name.includes("comment") && tool.name !== "list_page_comments"
-        ? "comment"
-        : ["patch_page", "edit_page"].includes(tool.name)
-          ? "edit"
-          : "read";
-    return connection.permissions.includes(permission);
+    const permission = operationPermission(tool.name);
+    return permission !== null && connection.permissions.includes(permission);
   });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: permitted }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -102,8 +97,11 @@ export async function createPagesServer(config: ConnectionFile) {
             .catch(() => {});
         },
         {
-          onError: () => {
-            /* Reads/tools retain the authoritative auth/error outcome. */
+          onError: (error) => {
+            if (error instanceof PagesError && error.status === 404)
+              void server
+                .notification({ method: "notifications/resources/updated", params: { uri } })
+                .catch(() => {});
           },
         },
       );

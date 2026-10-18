@@ -1,7 +1,13 @@
 import WebSocket from "ws";
 import { randomBytes, createHash } from "node:crypto";
 import { readFile, writeFile, stat } from "node:fs/promises";
-import { PagesClient, pagesOrigin, type PageChanges, type Permission } from "./index.js";
+import {
+  PagesClient,
+  PagesError,
+  pagesOrigin,
+  type PageChanges,
+  type Permission,
+} from "./index.js";
 export interface ConnectionFile {
   origin: string;
   token: string;
@@ -96,14 +102,24 @@ export function watchPage(
     });
     socket.on("unexpected-response", (_request, response) => {
       // Revoked/expired credentials must not enter a reconnect loop.
-      if (response.statusCode === 401 || response.statusCode === 403) stopped = true;
+      if ([401, 403, 404, 410].includes(response.statusCode ?? 0)) stopped = true;
       response.resume();
       socket?.terminate();
-      options.onError?.(Error(`Event connection rejected (${response.statusCode})`));
+      options.onError?.(
+        [404, 410].includes(response.statusCode ?? 0)
+          ? new PagesError("Page deleted or unavailable", "not_found", 404, "not_committed")
+          : Error(`Event connection rejected (${response.statusCode})`),
+      );
     });
-    socket.on("error", (error) => options.onError?.(error));
+    socket.on("error", (error) => {
+      if (!stopped) options.onError?.(error);
+    });
     socket.on("close", (code) => {
       clearInterval(heartbeat);
+      if (code === 4004) {
+        stopped = true;
+        options.onError?.(new PagesError("Page deleted", "not_found", 404, "not_committed"));
+      }
       if (code === 4001) {
         stopped = true;
         options.onError?.(Error("Connection expired or revoked"));

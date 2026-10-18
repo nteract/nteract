@@ -113,3 +113,38 @@ test("returning to the current Page cancels an in-flight navigation", async (t) 
   assert.equal(store.getSnapshot().page?.page_id, "a");
   assert.equal(disposed, false);
 });
+
+test("a delayed catalog cannot dispose a newly selected Page absent from that snapshot", async (t) => {
+  const previous = new Map(
+    ["location", "history"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
+  );
+  Object.defineProperty(globalThis, "location", { configurable: true, value: { search: "" } });
+  Object.defineProperty(globalThis, "history", {
+    configurable: true,
+    value: { replaceState() {} },
+  });
+  t.after(() => {
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  });
+  let resolveCatalog!: (response: Response) => void;
+  t.mock.method(globalThis, "fetch", async (url: string, options?: RequestInit) => {
+    if (url === "/api/auth/session") return Response.json({ session: { account_key: "account" } });
+    const { operation, arguments: args } = JSON.parse(String(options?.body));
+    if (operation === "list_pages")
+      return new Promise<Response>((r) => {
+        resolveCatalog = r;
+      });
+    return Response.json({ content: { page_id: args.page_id } });
+  });
+  const store = new PagesStore({ realtime: false });
+  await store.open("a");
+  const refresh = store.refresh();
+  while (!resolveCatalog) await new Promise(setImmediate);
+  await store.open("c");
+  resolveCatalog(Response.json({ pages: [{ page_id: "a" }] }));
+  await refresh;
+  assert.equal(store.getSnapshot().page?.page_id, "c");
+});

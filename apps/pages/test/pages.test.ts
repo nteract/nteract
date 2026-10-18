@@ -468,3 +468,77 @@ test("WebSocket ingress requires same-origin endpoint session and cannot route s
     assert.equal(routed, false);
   }
 });
+
+test("Page deletion is guarded, retryable, atomic, and cannot be resurrected", async () => {
+  const { workspace, storage, page_id, content } = await fixture();
+  const args = {
+    page_id,
+    base_sequence: content.through_sequence,
+    idempotency_key: "delete-page-test",
+  };
+  await assert.rejects(
+    call(workspace, "delete_page", { ...args, base_sequence: 0 }),
+    /Page changed/,
+  );
+  storage.fail = true;
+  await assert.rejects(call(workspace, "delete_page", args), /disk unavailable/);
+  storage.fail = false;
+  assert.equal(((await call(workspace, "list_pages")) as { pages: unknown[] }).pages.length, 1);
+  const receipt = await call(workspace, "delete_page", args);
+  assert.deepEqual(await call(workspace, "delete_page", args), receipt);
+  assert.equal(((await call(workspace, "list_pages")) as { pages: unknown[] }).pages.length, 0);
+  const tombstone = storage.values.get(page_id) as { bytes: Uint8Array; receipts: object };
+  assert.equal(tombstone.bytes.length, 0);
+  assert.equal(Object.keys(tombstone.receipts).length, 1);
+  assert.ok(!JSON.stringify(tombstone).includes("Ask before publishing"));
+  const restarted = new PagesWorkspace({ storage });
+  assert.deepEqual(await call(restarted, "delete_page", args), receipt);
+  for (const operation of ["read_page", "edit_page", "read_page_changes", "list_page_comments"])
+    await assert.rejects(call(restarted, operation, { page_id }), /Page not found/);
+  await assert.rejects(restarted.generateSync(page_id, A.initSyncState()), /Page not found/);
+  await assert.rejects(
+    restarted.receiveSync(principal, page_id, A.initSyncState(), new Uint8Array()),
+    /Page not found/,
+  );
+  await assert.rejects(
+    call(restarted, "create_page", { idempotency_key: "creation-1" }),
+    /deleted Page/,
+  );
+  await assert.rejects(
+    call(restarted, "delete_page", { ...args, base_sequence: 99 }),
+    /already used/,
+  );
+  await assert.rejects(
+    restarted.call("another-account", { operation: "delete_page", arguments: args }),
+    /identity mismatch/,
+  );
+});
+
+test("deleting a Page closes scoped event peers without leaking the workspace catalog", async (t) => {
+  const { workspace, page_id, content } = await fixture();
+  await call(workspace, "create_page", {
+    title: "Private unrelated title",
+    idempotency_key: "private-other-page",
+  });
+  const sent: string[] = [],
+    closed: number[] = [];
+  const internals = workspace as unknown as {
+    peers: Set<unknown>;
+    authorized(): Promise<boolean>;
+    broadcast(): Promise<void>;
+  };
+  t.mock.method(internals, "authorized", async () => true);
+  internals.peers.add({
+    pageId: page_id,
+    eventsOnly: true,
+    socket: { send: (s: string) => sent.push(s), close: (n: number) => closed.push(n) },
+  });
+  await call(workspace, "delete_page", {
+    page_id,
+    base_sequence: content.through_sequence,
+    idempotency_key: "delete-events-page",
+  });
+  await internals.broadcast();
+  assert.deepEqual(sent, []);
+  assert.deepEqual(closed, [4004]);
+});
