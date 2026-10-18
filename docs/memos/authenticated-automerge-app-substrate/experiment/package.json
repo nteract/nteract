@@ -1,0 +1,23 @@
+{
+  "name": "authenticated-automerge-spike",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "upstream/packages/*"
+  ],
+  "dependencies": {
+    "@automerge/automerge": "3.5.0",
+    "@automerge/subduction": "0.23.0",
+    "@types/node": "22.20.0",
+    "typescript": "6.0.3"
+  },
+  "scripts": {
+    "build": "tsc -p upstream/packages/automerge-repo && tsc -p upstream/packages/automerge-repo-subduction",
+    "test": "tsx --tsconfig tsconfig.test.json --test *.test.mjs",
+    "setup": "node setup.mjs"
+  },
+  "devDependencies": {
+    "@types/debug": "4.1.12",
+    "tsx": "4.21.0"
+  }
+}
