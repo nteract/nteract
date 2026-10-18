@@ -209,8 +209,9 @@ Aggregate capacity admission is not atomic with concurrent native writes. A
 bounded probe confirmed that a native edit can consume the remaining history
 capacity after an API candidate passes validation but before its recorded intent
 is applied. The backend then rejects the API write while its intent remains
-pending. Pending-intent recovery at this limit is not qualified. This predates
-the Cloudflare adapter; it needs a coordinated admission/recovery design before
+pending. Restart restores the accepted native edit, but replaying the pending
+API intent fails again and blocks Page initialization. This predates the
+Cloudflare adapter; it needs a coordinated admission/recovery design before
 using the prototype for large histories near its 16 MiB cap.
 
 ## Cloudflare preview deployment
