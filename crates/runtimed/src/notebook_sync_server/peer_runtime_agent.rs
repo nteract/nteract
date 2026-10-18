@@ -1118,6 +1118,15 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_agent_ready_waits_for_initial_state_acknowledgement() {
+        assert_runtime_agent_initial_state_acknowledgement(false).await;
+    }
+
+    #[tokio::test]
+    async fn runtime_agent_ready_recovers_from_bloom_false_positive() {
+        assert_runtime_agent_initial_state_acknowledgement(true).await;
+    }
+
+    async fn assert_runtime_agent_initial_state_acknowledgement(force_bloom_false_positive: bool) {
         use notebook_protocol::connection::recv_typed_frame;
         use runtime_doc::{KernelActivity, RuntimeLifecycle, RuntimeStateDoc};
 
@@ -1198,7 +1207,24 @@ mod tests {
         agent
             .set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
             .unwrap();
+        let running_heads = agent.get_heads();
+        if force_bloom_false_positive {
+            // Model a Bloom false positive: the coordinator's summary claims
+            // to contain the new Running change even though it has not seen it.
+            let hashes: Vec<_> = agent
+                .doc_mut()
+                .get_changes(&[])
+                .into_iter()
+                .map(|change| change.hash())
+                .collect();
+            for have in peer.their_have.as_mut().unwrap() {
+                have.bloom = automerge::sync::BloomFilter::from_hashes(hashes.iter());
+            }
+        }
         let update = agent.generate_sync_message(&mut peer).unwrap();
+        if force_bloom_false_positive {
+            assert!(update.changes.is_empty());
+        }
         send_typed_frame(
             &mut writer,
             NotebookFrameType::RuntimeStateSync,
@@ -1206,6 +1232,7 @@ mod tests {
         )
         .await
         .unwrap();
+        let mut requested_running_change = false;
         loop {
             let frame = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -1216,12 +1243,23 @@ mod tests {
             .unwrap()
             .unwrap();
             if frame.frame_type == NotebookFrameType::RuntimeStateSync {
+                let message = automerge::sync::Message::decode(&frame.payload).unwrap();
+                requested_running_change |=
+                    message.need.iter().any(|hash| running_heads.contains(hash));
                 agent
-                    .receive_sync_message_with_changes(
-                        &mut peer,
-                        automerge::sync::Message::decode(&frame.payload).unwrap(),
-                    )
+                    .receive_sync_message_with_changes(&mut peer, message)
                     .unwrap();
+                // Keep participating like the real runtime agent: a Bloom
+                // false positive can require a reply to an explicit `need`.
+                if let Some(reply) = agent.generate_sync_message(&mut peer) {
+                    send_typed_frame(
+                        &mut writer,
+                        NotebookFrameType::RuntimeStateSync,
+                        &reply.encode(),
+                    )
+                    .await
+                    .unwrap();
+                }
                 if room
                     .state
                     .read(|sd| sd.read_state().kernel.lifecycle)
@@ -1231,6 +1269,9 @@ mod tests {
                     break;
                 }
             }
+        }
+        if force_bloom_false_positive {
+            assert!(requested_running_change);
         }
         assert_eq!(
             agent.read_state().kernel.lifecycle,
