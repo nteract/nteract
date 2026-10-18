@@ -185,6 +185,7 @@ jobs:
               - "crates/runtimed/tests/support/windows_restart.rs"
             windows:
               - ".github/workflows/build.yml"
+              - "crates/runt-workspace/**"
               - "crates/notebook/nsis/**"
               - "crates/notebook/src/**"
               - "crates/notebook/tests/**"
@@ -411,6 +412,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-notebook-tests
+
+      - name: Test managed cache paths with temporary fixtures
+        run: |
+          cargo test -p runt-workspace --lib --locked cache_paths::tests:: -- --nocapture
 
       - name: Run notebook unit and integration tests
         run: cargo test -p notebook --locked

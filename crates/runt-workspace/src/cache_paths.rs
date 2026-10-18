@@ -237,6 +237,88 @@ mod tests {
         assert!(!temp.path().join("nteract").exists());
     }
 
+    #[cfg(windows)]
+    fn assert_junction_entry(path: &Path) {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        let metadata = fs::symlink_metadata(path).expect("junction entry must remain inspectable");
+        assert_ne!(metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT, 0);
+    }
+
+    #[cfg(windows)]
+    fn create_junction(link: &Path, target: &Path) {
+        // Junctions do not need symbolic-link privileges or Developer Mode.
+        // Pass fixture paths through the child environment, not shell source.
+        let output = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ErrorActionPreference = 'Stop'; New-Item -ItemType Junction \
+                 -Path $env:NTERACT_TEST_JUNCTION -Target $env:NTERACT_TEST_TARGET | Out-Null",
+            ])
+            .env("NTERACT_TEST_JUNCTION", link)
+            .env("NTERACT_TEST_TARGET", target)
+            .output()
+            .expect("PowerShell must be available to create the junction fixture");
+        assert!(
+            output.status.success(),
+            "junction fixture creation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_junction_entry(link);
+        assert_eq!(
+            fs::canonicalize(link).unwrap(),
+            fs::canonicalize(target).unwrap()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_junction_is_reused_without_changing_either_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("junction target");
+        let legacy = temp.path().join("runt/envs");
+        let preferred = temp.path().join("nteract/envs");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::create_dir_all(&preferred).unwrap();
+        fs::write(target.join("existing"), b"legacy target").unwrap();
+        fs::write(preferred.join("existing"), b"preferred").unwrap();
+        create_junction(&legacy, &target);
+
+        assert_eq!(
+            CachePaths::default().resolve(temp.path(), BuildChannel::Stable, None, "envs"),
+            legacy
+        );
+        assert_junction_entry(&legacy);
+        assert_eq!(fs::read(target.join("existing")).unwrap(), b"legacy target");
+        assert_eq!(fs::read(legacy.join("existing")).unwrap(), b"legacy target");
+        assert_eq!(fs::read(preferred.join("existing")).unwrap(), b"preferred");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dangling_legacy_junction_is_not_bypassed() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("removed target");
+        let legacy = temp.path().join("runt-nightly/envs");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        create_junction(&legacy, &target);
+        fs::remove_dir(&target).unwrap();
+        assert!(fs::metadata(&legacy).is_err());
+        assert_junction_entry(&legacy);
+
+        assert_eq!(
+            CachePaths::default().resolve(temp.path(), BuildChannel::Nightly, None, "envs"),
+            legacy
+        );
+        assert_junction_entry(&legacy);
+        assert!(!temp.path().join("nteract-nightly").exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn broken_legacy_symlink_is_not_bypassed() {
