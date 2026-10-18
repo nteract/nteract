@@ -32,7 +32,7 @@ function Composer({ label, onSubmit }: { label: string; onSubmit: (body: string)
       />
       {error && <p role="alert">{error}</p>}
       <button type="submit" disabled={!body.trim()}>
-        {label === "Reply" ? "Reply" : "Post comment"}
+        {label === "Reply" ? "Reply" : "Post"}
       </button>
     </form>
   );
@@ -75,12 +75,15 @@ export function Comments({
           className="comments-toggle"
           onClick={() => setExpanded(!expanded)}
           aria-expanded={expanded}
+          aria-label={
+            selection
+              ? "Comment on selection"
+              : open
+                ? `${open} open comment${open === 1 ? "" : "s"}`
+                : "Comments"
+          }
         >
-          {open
-            ? `${open} open comment${open === 1 ? "" : "s"}`
-            : threads.length
-              ? "Comments"
-              : "Comment"}
+          {open ? `Comments · ${open}` : selection ? "Comment on selection" : "Comment"}
         </button>
       ) : (
         <h2>Comments on removed content</h2>
@@ -104,8 +107,8 @@ export function Comments({
               <section className="comment-thread" key={t.id} aria-label="Comment thread">
                 <div className="comment-thread-heading">
                   <span>
-                    {t.state === "resolved" ? "Resolved" : "Open"}
-                    {t.detached ? " · Passage removed" : ""}
+                    {t.state === "resolved" ? "Resolved" : ""}
+                    {t.detached ? `${t.state === "resolved" ? " · " : ""}Passage removed` : ""}
                   </span>
                   {editable && (
                     <button
@@ -148,7 +151,7 @@ export function Comments({
             <div className="new-comment">
               {selection && <blockquote>{selection.text.replaceAll("\ufffc", "\n")}</blockquote>}
               <Composer
-                label={selection ? "Comment on selected passage" : "Comment on this block"}
+                label={selection ? "Comment on selection" : "Add a comment"}
                 onSubmit={(body) => {
                   replica.comment({
                     action: "add",

@@ -410,6 +410,15 @@ Older source Pages offer one Edit this page action, converting their prose in
 guarded batches. Instructions remain directly editable source. The action warns
 when existing selected-passage comments will lose their original highlight.
 
+Enter creates a paragraph (or list item) inside the current rich-text block;
+it does not create another addressable Page block. The Block action is for
+separate sections that tools can target and move. Comments sit alongside their
+block on wide screens, with an expandable entry above the text on narrow screens.
+Selected-passage comments keep their quoted context. Exact inline positioning
+and selection spanning multiple Page blocks remain follow-up work.
+Agent-instruction blocks remain supported by the API and existing content stays
+editable, but the writing UI does not offer a separate insertion button for them.
+
 Rich content lives in `richText` (Automerge marks and block markers). The old
 `markdown` field is immutable import provenance. HTTP snapshots export the rich
 field as Markdown; semantic Markdown tool edits update the rich field too.

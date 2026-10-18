@@ -75,6 +75,15 @@ aside {
   color: #71766c;
   letter-spacing: 0;
 }
+.workspace-navigation {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+.navigation-toggle {
+  display: none;
+}
 .eyebrow {
   font-size: 10px;
   font-weight: 650;
@@ -162,7 +171,7 @@ header > span:first-child {
   flex-wrap: wrap;
 }
 article {
-  max-width: 860px;
+  max-width: 1160px;
   margin: 0 auto;
   padding: 64px 56px 36px;
 }
@@ -188,6 +197,13 @@ h1 {
   position: relative;
   padding: 10px 0 24px;
   overflow-wrap: anywhere;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  gap: 28px;
+  align-items: start;
+}
+.block-content {
+  min-width: 0;
 }
 .block-tools {
   display: flex;
@@ -275,16 +291,7 @@ h1 {
   font-size: 13px;
   color: #7a8771;
 }
-.page-bottom {
-  border-top: 1px solid #e5e6dc;
-  margin-top: 70px;
-  padding-top: 20px;
-  font-size: 10px;
-  color: #a1a796;
-  display: flex;
-  justify-content: space-between;
-  gap: 20px;
-}
+
 .editor {
   padding: 24px 0;
 }
@@ -360,6 +367,27 @@ textarea {
   padding: 70px;
   color: #89917f;
 }
+@media (max-width: 1100px) {
+  .block {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .block-content,
+  .block > .comments {
+    width: 100%;
+  }
+  .block > .comments {
+    order: -1;
+    margin-top: 0;
+  }
+  .comments-toggle {
+    float: right;
+  }
+  .comment-discussion {
+    clear: both;
+  }
+}
 @media (max-width: 760px) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
@@ -372,10 +400,25 @@ textarea {
     border-bottom: 1px solid #dedfd5;
   }
   .brand {
-    margin-bottom: 20px;
+    margin-bottom: 0;
   }
-  aside .eyebrow {
+  .workspace-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .navigation-toggle {
+    display: block;
+  }
+  .workspace-navigation {
     display: none;
+    padding-top: 16px;
+  }
+  .navigation-open .workspace-navigation {
+    display: flex;
+  }
+  button {
+    min-height: 44px;
   }
   footer {
     flex-direction: row;
@@ -395,14 +438,14 @@ textarea {
     max-width: 180px;
   }
   header {
-    padding: 0 24px;
-    height: 60px;
+    padding: 0 20px;
+    height: 44px;
   }
   article {
-    padding: 38px 24px;
+    padding: 24px 20px;
   }
   h1 {
-    font-size: 35px;
+    font-size: 32px;
   }
   .welcome {
     margin-top: 60px;
@@ -410,9 +453,6 @@ textarea {
   }
   .welcome h1 {
     font-size: 39px;
-  }
-  .page-bottom span {
-    display: none;
   }
 }
 
@@ -500,10 +540,16 @@ textarea {
 }
 @media (max-width: 600px) {
   .rich-toolbar {
-    opacity: 1;
+    flex-wrap: nowrap;
+    overflow-x: auto;
   }
   .rich-toolbar button {
-    min-height: 36px;
+    flex-shrink: 0;
+    min-height: 44px;
+  }
+  .document-toolbar:not(:empty) {
+    padding: 4px 0;
+    margin-bottom: 8px;
   }
 }
 .peer-selection {
@@ -611,4 +657,10 @@ textarea {
 }
 .new-comment {
   padding-top: 8px;
+}
+
+@media (max-width: 760px) {
+  .comment-composer textarea {
+    font-size: 16px;
+  }
 }

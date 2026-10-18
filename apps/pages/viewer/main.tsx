@@ -27,7 +27,7 @@ function Markdown({ source }: { source: string }) {
 const statusLabel = {
   connecting: "Connecting…",
   syncing: "Saving…",
-  saved: "Saved · Live",
+  saved: "Saved",
   offline: "Offline · Changes retained",
   signed_out: "Sign in to sync",
   rejected: "Changes need attention",
@@ -37,6 +37,7 @@ function App() {
   const [editing, setEditing] = useState<string | null | undefined>(undefined),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  const [navigationOpen, setNavigationOpen] = useState(false);
   const [activeBlock, setActiveBlock] = useState<string | null>(null);
   const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null);
   const [selection, setSelection] = useState<{ blockId: string; range: CommentSelection } | null>(
@@ -110,17 +111,33 @@ function App() {
     page?.blocks.find(isRich)?.id;
   return (
     <div className="shell">
-      <aside>
-        <a className="brand" href="/">
-          nteract<span>pages</span>
-        </a>
-        <p className="eyebrow">PERSONAL WORKSPACE</p>
+      <aside className={navigationOpen ? "navigation-open" : ""}>
+        <div className="workspace-heading">
+          <a className="brand" href="/">
+            nteract<span>pages</span>
+          </a>
+          {state.signedIn && (
+            <button
+              className="navigation-toggle"
+              aria-expanded={navigationOpen}
+              aria-controls="workspace-navigation"
+              onClick={() => setNavigationOpen(!navigationOpen)}
+            >
+              Pages
+            </button>
+          )}
+        </div>
         {state.signedIn && (
-          <>
+          <div id="workspace-navigation" className="workspace-navigation">
             <button
               className="new-page"
               disabled={busy}
-              onClick={() => void run(() => store.create())}
+              onClick={() =>
+                void run(async () => {
+                  await store.create();
+                  setNavigationOpen(false);
+                })
+              }
             >
               ＋ New page
             </button>
@@ -129,7 +146,12 @@ function App() {
                 <button
                   key={p.page_id}
                   className={p.page_id === page?.page_id ? "selected" : ""}
-                  onClick={() => void run(() => store.open(p.page_id))}
+                  onClick={() =>
+                    void run(async () => {
+                      await store.open(p.page_id);
+                      setNavigationOpen(false);
+                    })
+                  }
                 >
                   {p.title || "Untitled"}
                 </button>
@@ -141,7 +163,7 @@ function App() {
                 Sign out
               </button>
             </footer>
-          </>
+          </div>
         )}
       </aside>
       <main>
@@ -151,20 +173,11 @@ function App() {
           </div>
         )}
         {!state.ready ? (
-          <p className="empty">Opening your workspace…</p>
+          <p className="empty">Loading…</p>
         ) : !state.signedIn ? (
           <section className="welcome">
-            <p className="eyebrow">A SHARED PLACE FOR YOUR THINKING</p>
-            <h1>
-              Thoughts, with room
-              <br />
-              to become something.
-            </h1>
-            <p>
-              Write together. Keep your documents with you.
-              <br />
-              Edit the same pages live across your devices.
-            </p>
+            <h1>A place to think together.</h1>
+            <p>Write, edit, and discuss your documents.</p>
             <a
               className="primary"
               href={`/api/auth/login?return_to=${encodeURIComponent(location.pathname + location.search)}`}
@@ -196,7 +209,6 @@ function App() {
               </span>
             </header>
             <article>
-              <p className="eyebrow">PAGE</p>
               <div className="page-title">
                 <h1>{page.title || "Untitled"}</h1>
                 <button
@@ -232,31 +244,37 @@ function App() {
                   className={`block ${b.kind === "agent_instructions" ? "instructions" : ""}`}
                   key={b.id}
                 >
-                  {b.kind === "agent_instructions" && (
-                    <div className="block-tools">
-                      <span>Agent instructions</span>
-                    </div>
-                  )}
-                  {isRich(b) && replica?.doc?.blocks?.[b.id] ? (
-                    <RichEditor
-                      replica={replica}
-                      id={b.id}
-                      editable={editable}
-                      toolbarHost={focusedBlock === b.id ? toolbarHost : null}
-                      onActivate={() => setActiveBlock(b.id)}
-                      onSelection={(range) => setSelection(range ? { blockId: b.id, range } : null)}
-                      onError={setError}
-                    />
-                  ) : b.kind === "agent_instructions" && editable && replica ? (
-                    <LiveEditor
-                      replica={replica}
-                      id={b.id}
-                      onError={setError}
-                      onSelection={(range) => setSelection(range ? { blockId: b.id, range } : null)}
-                    />
-                  ) : (
-                    <Markdown source={b.markdown} />
-                  )}
+                  <div className="block-content">
+                    {b.kind === "agent_instructions" && (
+                      <div className="block-tools">
+                        <span>Agent instructions</span>
+                      </div>
+                    )}
+                    {isRich(b) && replica?.doc?.blocks?.[b.id] ? (
+                      <RichEditor
+                        replica={replica}
+                        id={b.id}
+                        editable={editable}
+                        toolbarHost={focusedBlock === b.id ? toolbarHost : null}
+                        onActivate={() => setActiveBlock(b.id)}
+                        onSelection={(range) =>
+                          setSelection(range ? { blockId: b.id, range } : null)
+                        }
+                        onError={setError}
+                      />
+                    ) : b.kind === "agent_instructions" && editable && replica ? (
+                      <LiveEditor
+                        replica={replica}
+                        id={b.id}
+                        onError={setError}
+                        onSelection={(range) =>
+                          setSelection(range ? { blockId: b.id, range } : null)
+                        }
+                      />
+                    ) : (
+                      <Markdown source={b.markdown} />
+                    )}
+                  </div>
                   {replica && (
                     <Comments
                       replica={replica}
@@ -308,17 +326,7 @@ function App() {
                     })
                   }
                 >
-                  ＋ Add a block
-                </button>
-                <button
-                  disabled={!editable}
-                  onClick={() =>
-                    void run(() => {
-                      replica?.add("agent_instructions");
-                    })
-                  }
-                >
-                  Add instructions
+                  ＋ Block
                 </button>
               </div>
               {replica && replica.hasRecovery() && (
@@ -330,9 +338,6 @@ function App() {
                 </button>
               )}
               <LegacyDraft account={state.accountKey} />
-              <div className="page-bottom">
-                Your words, kept together.<span>Live across your devices</span>
-              </div>
             </article>
           </>
         )}

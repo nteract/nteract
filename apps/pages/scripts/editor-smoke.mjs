@@ -55,7 +55,7 @@ try {
   for (const p of pages) {
     await p.goto(origin + "/?page=" + result.page_id);
     await expect(p.locator(".ProseMirror")).toHaveText("The fox crossed the garden.");
-    await expect(p.getByRole("status")).toHaveText("Saved · Live");
+    await expect(p.getByRole("status")).toHaveText("Saved");
   }
   const ea = a.locator(".ProseMirror"),
     eb = b.locator(".ProseMirror");
@@ -67,11 +67,9 @@ try {
   await a.keyboard.press("Shift+ArrowLeft");
   await a.keyboard.press("Shift+ArrowLeft");
   await expect(b.locator(".peer-selection")).toHaveCount(1);
-  await a.getByRole("button", { name: "Comment", exact: true }).click();
-  await a
-    .getByRole("textbox", { name: "Comment on selected passage" })
-    .fill("A realtime passage comment");
-  await a.getByRole("button", { name: "Post comment", exact: true }).click();
+  await a.getByRole("button", { name: "Comment on selection", exact: true }).click();
+  await a.getByRole("textbox", { name: "Comment on selection" }).fill("A realtime passage comment");
+  await a.getByRole("button", { name: "Post", exact: true }).click();
   await expect(b.getByRole("button", { name: "1 open comment" })).toBeVisible();
   await b.getByRole("button", { name: "1 open comment" }).click();
   await expect(b.locator(".comment-thread blockquote")).toHaveText("o");
@@ -96,8 +94,8 @@ try {
   await expect.poll(() => text(ea), { timeout: 20000 }).toContain("Right");
   await expect.poll(() => text(eb), { timeout: 20000 }).toContain("Left");
   assert.equal(await text(ea), await text(eb));
-  await expect(a.getByRole("status")).toHaveText("Saved · Live");
-  await expect(b.getByRole("status")).toHaveText("Saved · Live");
+  await expect(a.getByRole("status")).toHaveText("Saved");
+  await expect(b.getByRole("status")).toHaveText("Saved");
   await edge(ea, true);
   await a.keyboard.press("Enter");
   await a.keyboard.type("Another paragraph");
@@ -106,7 +104,7 @@ try {
   await a.keyboard.press("Backspace");
   await expect(eb.locator("p")).toHaveCount(1);
   await expect.poll(() => text(eb)).toBe(await text(ea));
-  await expect(a.getByRole("status")).toHaveText("Saved · Live");
+  await expect(a.getByRole("status")).toHaveText("Saved");
   const finalText = await text(ea);
   await a.reload();
   await expect(ea).toHaveText(finalText);
@@ -135,13 +133,13 @@ try {
     return response.json();
   });
   await b.goto(origin + "/?page=" + legacy.page_id);
-  await expect(b.getByRole("status")).toHaveText("Saved · Live");
+  await expect(b.getByRole("status")).toHaveText("Saved");
   await b.getByRole("button", { name: "Edit this page", exact: true }).click();
   await expect(eb).toHaveText("Existing Markdown");
   await expect(eb.locator("strong")).toHaveText("Markdown");
   await edge(eb, true);
   await b.keyboard.type(" converted");
-  await expect(b.getByRole("status")).toHaveText("Saved · Live");
+  await expect(b.getByRole("status")).toHaveText("Saved");
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
