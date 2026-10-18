@@ -20,6 +20,12 @@ peers (`crates/automerge-store/tests/{version_compat,author_compat}.rs`). They d
 not establish compatibility for every deployed document or old nteract's
 admission/projection behavior with new opaque actors.
 
+The [authenticated application infrastructure research](authenticated-automerge-app-substrate.md)
+evaluates experimental Repo 3 and Subduction policy hooks before another
+repository extraction or engine fork. This research does not change the
+production dependency baseline. Owning matching WASM packaging and bindings is
+separate from maintaining a downstream Automerge engine fork.
+
 ## Historical fork baseline (2026-07-13)
 
 The July record described `nteract/automerge:main` as a tested mirror of
