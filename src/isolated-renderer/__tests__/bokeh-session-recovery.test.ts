@@ -287,6 +287,68 @@ describe("Bokeh session recovery with real documents", () => {
     expect(h.mount).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps required checkpoint recovery scheduled when a canonical patch catches up", async () => {
+    const h = await start(snapshot({ start: 0 }));
+    const range = h.range();
+    range.start = 10;
+    h.announce(0, "disconnected");
+    h.announce(0);
+    h.canonical(patch("end", 2));
+    await vi.advanceTimersByTimeAsync(0);
+    expect([range.start, range.end]).toEqual([10, 2]);
+    const recovered = snapshot({ start: 0 });
+    recovered.headRevision = 1;
+    recovered.patchTail = [patch("end", 2)];
+    h.setSnapshot(recovered);
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(h.open).toHaveBeenCalledTimes(2);
+    expect([range.start, range.end]).toEqual([0, 2]);
+    expect(h.apply).not.toHaveBeenCalled();
+    expect(h.onStatus).toHaveBeenLastCalledWith("connected", undefined);
+    expect(h.mount).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays an accepted in-flight edit after checkpoint recovery replaced its value", async () => {
+    const h = await start(snapshot({ start: 0 }));
+    let accept!: (value: Awaited<ReturnType<typeof h.apply>>) => void;
+    h.apply.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          accept = resolve;
+        }),
+    );
+    const range = h.range();
+    range.start = 10;
+    await vi.advanceTimersByTimeAsync(50);
+    const request = h.apply.mock.calls[0][0];
+    range.end = 20;
+    h.announce(0, "disconnected");
+    h.announce(0);
+    await vi.advanceTimersByTimeAsync(150);
+    expect([range.start, range.end]).toEqual([0, 1]);
+    accept({
+      status: "accepted",
+      sessionId: "session-1",
+      transactionId: request.transactionId,
+      revision: 1,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    h.canonical({
+      ...patch("start", 10),
+      transactionId: request.transactionId,
+      clientPatch: patch("start", 10).serverPatch,
+      serverPatch: undefined,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(h.range()).toBe(range);
+    expect([range.start, range.end]).toEqual([10, 1]);
+    expect(h.apply).toHaveBeenCalledTimes(1);
+    expect(h.onStatus).toHaveBeenLastCalledWith("connected", undefined);
+    expect(h.mount).toHaveBeenCalledTimes(1);
+  });
+
   it("restores buffered column data without replacing its model", async () => {
     const initial = snapshot();
     initial.checkpoint.document.roots = [

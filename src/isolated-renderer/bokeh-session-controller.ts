@@ -140,6 +140,8 @@ function isPatchReply(value: unknown): value is NteractBokehApplyPatchResult {
 // decoder only sets explicit attributes, so complete them with the same property
 // initialization used for a new model. Passing an id defers finalization and
 // signal setup; the temporary model never joins a document or mounts a view.
+// Python checkpoints include model-valued defaults as explicit references, so
+// their existing child identities are retained rather than synthesized here.
 function checkpointModelAttributes(model: BokehModel, id: string, attrs: unknown): unknown {
   const Model = model.constructor as new (attrs: { id: string }) => BokehModel;
   const defaults = new Model({ id });
@@ -277,6 +279,7 @@ export class BokehSessionController {
   private transactionTimer: number | null = null;
   private inFlightTransaction: string | null = null;
   private inFlightBaseRevision = 0;
+  private inFlightNeedsReplay = false;
   private localChangesRejected = false;
   private canonicalEvents = new Map<number, NteractBokehResolvedPatchEvent>();
   private drainingCanonicalEvents = false;
@@ -404,6 +407,7 @@ export class BokehSessionController {
     const buffers = extractBokehPatchBuffers(patch, this.options.runtime.Buffer, transactionId);
     this.inFlightTransaction = transactionId;
     this.inFlightBaseRevision = this.revision;
+    this.inFlightNeedsReplay = false;
     this.armTransactionTimeout();
     try {
       const rawReply = await this.options.requestHost(NTERACT_BOKEH_APPLY_PATCH, {
@@ -433,6 +437,7 @@ export class BokehSessionController {
   private finishTransaction(transactionId: string): void {
     if (this.inFlightTransaction !== transactionId) return;
     this.inFlightTransaction = null;
+    this.inFlightNeedsReplay = false;
     if (this.transactionTimer !== null) window.clearTimeout(this.transactionTimer);
     this.transactionTimer = null;
     this.scheduleLocalPatch();
@@ -538,6 +543,9 @@ export class BokehSessionController {
     } else {
       await this.mountDocument(checkpoint);
     }
+    // Reconciliation replaced optimistic values, including a pending request's.
+    // Its eventual acknowledgement must apply the accepted client patch again.
+    if (this.inFlightTransaction) this.inFlightNeedsReplay = true;
     this.localChangesRejected = false;
   }
 
@@ -651,10 +659,13 @@ export class BokehSessionController {
       // The kernel applies a patch made against an older revision on top of
       // the events in between, which may have overwritten the optimistic
       // values here, so they have to be applied again in kernel order.
-      const rebased = ownTransaction && event.baseRevision !== this.inFlightBaseRevision;
+      const replayClientPatch =
+        !ownTransaction ||
+        this.inFlightNeedsReplay ||
+        event.baseRevision !== this.inFlightBaseRevision;
       this.applyingRemote = true;
       try {
-        if ((!ownTransaction || rebased) && event.clientPatch) {
+        if (replayClientPatch && event.clientPatch) {
           this.applyPatchPayload(event.clientPatch);
         }
         if (event.serverPatch) this.applyPatchPayload(event.serverPatch);
@@ -692,7 +703,13 @@ export class BokehSessionController {
   }
 
   private cancelSatisfiedResync(): void {
-    if (this.revision < this.announcedHeadRevision || this.resyncTimer === null) return;
+    if (
+      this.localChangesRejected ||
+      this.revision < this.announcedHeadRevision ||
+      this.resyncTimer === null
+    ) {
+      return;
+    }
     window.clearTimeout(this.resyncTimer);
     this.resyncTimer = null;
   }
