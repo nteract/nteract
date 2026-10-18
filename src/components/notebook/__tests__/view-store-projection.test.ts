@@ -14,7 +14,11 @@ import {
   setExecution,
   setNotebookQueueProjection,
 } from "@/components/notebook/state/execution-store";
-import { getOutputById, resetNotebookOutputs } from "@/components/notebook/state/output-store";
+import {
+  getCellOutputsSnapshot,
+  getOutputById,
+  resetNotebookOutputs,
+} from "@/components/notebook/state/output-store";
 import { createNotebookViewStoreProjector } from "@/components/notebook/state/view-store-projection";
 import { setMarkdownProjectionProjector } from "@/lib/markdown-projection";
 
@@ -102,6 +106,44 @@ describe("NotebookViewStoreProjector", () => {
       output_ids: ["out-code-stdout"],
     });
     expect(getOutputById("out-code-stdout")).toBeDefined();
+  });
+
+  it.each([null, "exec-snapshot"])(
+    "adds resolved outputs to the display placeholder for execution %s",
+    (executionId) => {
+      const projector = createNotebookViewStoreProjector();
+      const cell = {
+        ...codeCellWithIdentifiedOutput("code", "out-stdout", "after table\n"),
+        executionId,
+      };
+      const table: JupyterOutput = {
+        output_id: "out-table",
+        output_type: "display_data",
+        data: { "text/html": "<table><tr><td>1</td></tr></table>" },
+        metadata: {},
+      };
+
+      // The synchronous pass can resolve stdout while the table blob loads.
+      projector.projectCells([cell]);
+      expect(getCellOutputsSnapshot("code")).toEqual(cell.outputs);
+
+      projector.projectCells([{ ...cell, outputs: [table, ...cell.outputs] }]);
+
+      expect(getCellOutputsSnapshot("code")).toEqual([table, ...cell.outputs]);
+    },
+  );
+
+  it("fills an empty real-id display placeholder after async output resolution", () => {
+    const projector = createNotebookViewStoreProjector();
+    const cell = {
+      ...codeCellWithIdentifiedOutput("code", "out-stdout", "resolved\n"),
+      executionId: "exec-snapshot",
+    };
+
+    projector.projectCells([{ ...cell, outputs: [] }]);
+    projector.projectCells([cell]);
+
+    expect(getCellOutputsSnapshot("code")).toEqual(cell.outputs);
   });
 
   it("projects missing output IDs as visible invariant errors", () => {

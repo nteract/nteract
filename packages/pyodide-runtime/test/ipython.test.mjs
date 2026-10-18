@@ -115,6 +115,44 @@ test(
       const empty = await run("pa.table({'empty': pa.array([], type=pa.int64())})");
       assert.ok(empty.outputs.at(-1).data["application/vnd.apache.arrow.stream"]);
     });
+    await t.test(
+      "20-row display plus print retains the final batch in live mode and reruns",
+      async () => {
+        const source =
+          "import pandas as pd\nfrom IPython.display import display\ndf = pd.DataFrame({'sample': list(range(20)), 'value': [n * n for n in range(20)]})\ndisplay(df)\nprint('QA4454 dataframe 20 rows')";
+        for (const live of [false, true, true]) {
+          const executionId = `attempt-${++sequence}`;
+          const events = [];
+          const pending = evaluate(
+            source,
+            executionId,
+            "dataframe-cell",
+            live ? (line) => events.push(JSON.parse(line)) : undefined,
+          );
+          try {
+            const result = validateExecutionResult(JSON.parse(await pending), executionId, {
+              cellId: "dataframe-cell",
+              sourceHash: "sha256:" + createHash("sha256").update(source).digest("hex"),
+            });
+            assert.equal(result.success, true);
+            assert.deepEqual(
+              result.outputs.map((output) => output.output_type),
+              ["display_data", "stream"],
+            );
+            assert.match(result.outputs[0].data["text/html"], /361/);
+            assert.match(result.outputs[0].data["text/plain"], /361/);
+            assert.equal(streams(result), "QA4454 dataframe 20 rows\n");
+            if (live)
+              assert.deepEqual(events, [
+                { type: "boundary" },
+                { type: "stream", name: "stdout", text: "QA4454 dataframe 20 rows\n" },
+              ]);
+          } finally {
+            pending.destroy();
+          }
+        }
+      },
+    );
     await t.test("Arrow limits count IPC bytes even when batches share a dictionary", async () => {
       await run(`dictionary = pa.array([f'{i:06d}' for i in range(2000)])
 encoded = pa.DictionaryArray.from_arrays(pa.array([0, 1, 2, 3], type=pa.int8()), dictionary)

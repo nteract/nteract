@@ -26,14 +26,9 @@ export async function materializeCloudNotebookView(
   handle: NotebookHandle,
   options: MaterializeCloudNotebookViewOptions,
 ): Promise<CloudNotebookViewMaterialization> {
-  const rawCells = JSON.parse(handle.get_cells_json()) as RenderCell[];
-  const metadata = parseJsonOrNull(handle.get_metadata_snapshot_json?.());
-  const notebookLanguage =
-    languageFromNotebookMetadata(metadata) ?? options.defaultNotebookLanguage;
-  const widgetComms = snapshotWidgetCommsFromRuntimeAndCommsState(
-    handle.get_runtime_state(),
-    handle.get_comms_state?.(),
-    options.blobResolver,
+  const { rawCells, metadata, notebookLanguage, widgetComms } = readCloudNotebookView(
+    handle,
+    options,
   );
   const cells = await resolveCellsProgressively(
     rawCells,
@@ -43,13 +38,24 @@ export async function materializeCloudNotebookView(
     options.callbacks,
   );
 
-  return {
-    cells,
-    widgetComms,
-    notebookLanguage,
-    metadata,
-    rawCellCount: rawCells.length,
-  };
+  return { cells, widgetComms, notebookLanguage, metadata, rawCellCount: rawCells.length };
+}
+
+/** Capture authoritative documents synchronously before host-owned blob work. */
+export function readCloudNotebookView(
+  handle: NotebookHandle,
+  options: Pick<MaterializeCloudNotebookViewOptions, "blobResolver" | "defaultNotebookLanguage">,
+) {
+  const rawCells = JSON.parse(handle.get_cells_json()) as RenderCell[];
+  const metadata = parseJsonOrNull(handle.get_metadata_snapshot_json?.());
+  const notebookLanguage =
+    languageFromNotebookMetadata(metadata) ?? options.defaultNotebookLanguage;
+  const widgetComms = snapshotWidgetCommsFromRuntimeAndCommsState(
+    handle.get_runtime_state(),
+    handle.get_comms_state?.(),
+    options.blobResolver,
+  );
+  return { rawCells, widgetComms, notebookLanguage, metadata };
 }
 
 export function cloudNotebookLanguageFromHandle(
