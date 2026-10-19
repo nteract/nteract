@@ -65,7 +65,7 @@ try {
   for (const p of pages) {
     p.on("pageerror", (error) => errors.push(error.message));
     await p.goto(origin + "/api/auth/login");
-    await expect(p.getByRole("button", { name: "Sign out" })).toBeVisible();
+    await expect(p.getByRole("button", { name: "Pages", exact: true })).toBeVisible();
   }
   const [a, b] = pages;
   const result = await call(a, "create_page", {
@@ -194,15 +194,150 @@ try {
   await expect(eb.locator("p")).toHaveCount(1);
   await expect.poll(() => text(eb)).toBe(await text(ea));
   await expect(b.locator(".thread .quote")).toHaveText("o");
+  // Commands read the actual selection, including stored marks before typing.
+  const bold = a.getByRole("button", { name: "Bold", exact: true });
+  await edge(ea, true);
+  await expect(bold).toHaveAttribute("aria-pressed", "false");
+  await a.keyboard.press("ControlOrMeta+b");
+  await expect(bold).toHaveAttribute("aria-pressed", "true");
+  await a.keyboard.type(" Bold words");
+  await expect(ea.locator("strong").last()).toHaveText(" Bold words");
+  await a.keyboard.press("ControlOrMeta+b");
+  await expect(bold).toHaveAttribute("aria-pressed", "false");
+  await a.keyboard.type(" plain");
+  await edge(ea.locator("strong").last(), true);
+  await expect(bold).toHaveAttribute("aria-pressed", "true");
+  await a.keyboard.press("Shift+ArrowLeft");
+  await a.keyboard.press("Shift+ArrowLeft");
+  const selected = await a.evaluate(() => getSelection().toString());
+  await a.getByRole("button", { name: "Italic", exact: true }).click();
+  assert.equal(
+    await a.evaluate(() => getSelection().toString()),
+    selected,
+    "toolbar preserves selection",
+  );
+  await expect(ea).toBeFocused();
+  await expect(a.getByRole("button", { name: "Italic", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await a.keyboard.press("Alt+F10");
+  await expect(a.locator(".rich-toolbar :focus")).toHaveCount(1);
+  // Alt-F10 starts at the style select; arrows leave its native option navigation.
+  await a.keyboard.press("ArrowRight");
+  await expect(bold).toBeFocused();
+  await a.keyboard.press("End");
+  await expect(a.getByRole("button", { name: "Numbered list", exact: true })).toBeFocused();
+  await a.keyboard.press("Escape");
+  await expect(ea).toBeFocused();
+  await edge(ea, true);
+  await expect(bold).toHaveAttribute("aria-pressed", "false");
+  await a.getByRole("combobox", { name: "Text style" }).focus();
+  await a.getByRole("combobox", { name: "Text style" }).selectOption("heading2");
+  await expect(a.getByRole("combobox", { name: "Text style" })).toBeFocused();
+  await expect(ea.locator("h2")).toHaveCount(1);
+  await a.getByRole("combobox", { name: "Text style" }).selectOption("paragraph");
+  await a.getByRole("button", { name: "Bulleted list", exact: true }).click();
+  await expect(ea.locator("ul")).toHaveCount(1);
+  await expect(a.getByRole("button", { name: "Bulleted list", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await a.getByRole("button", { name: "Numbered list", exact: true }).click();
+  await expect(ea.locator("ol")).toHaveCount(1);
+  await expect(ea.locator("ul")).toHaveCount(0);
+  await a.getByRole("button", { name: "Numbered list", exact: true }).click();
+  await expect(ea.locator("ol")).toHaveCount(0);
+  await expect.poll(() => text(eb)).toBe(await text(ea));
+  const commentsToggle = a.getByRole("button", { name: "Comments", exact: true });
+  if ((await commentsToggle.getAttribute("aria-expanded")) !== "true") await commentsToggle.click();
   await a.screenshot({ path: output + "/desktop.png", fullPage: true });
   await a.setViewportSize({ width: 390, height: 844 });
-  await a.getByRole("button", { name: /^Comments/ }).click();
+  await expect(commentsToggle).toHaveAttribute("aria-expanded", "true");
+  await expect(a.getByRole("dialog", { name: "Comments", exact: true })).toBeVisible();
+  await expect(a.locator(".comments")).toHaveJSProperty("open", true);
+  await a.screenshot({ path: output + "/mobile-comments.png", fullPage: true });
+  await a.keyboard.press("Escape");
+  await expect(commentsToggle).toHaveAttribute("aria-expanded", "false");
+  await expect(commentsToggle).toBeFocused();
   await a.screenshot({ path: output + "/mobile.png", fullPage: true });
   assert.equal(
     await a.evaluate(() => document.documentElement.scrollWidth > innerWidth),
     false,
     "mobile horizontal overflow",
   );
+  // A selection in block A must not become a comment target for block B.
+  await a.setViewportSize({ width: 1280, height: 900 });
+  await edge(ea);
+  await a.keyboard.press("Shift+ArrowRight");
+  await a.getByRole("button", { name: "Block", exact: true }).click();
+  const second = a.locator(".ProseMirror").nth(1);
+  await expect(second).toBeFocused();
+  await a.keyboard.type("A second block");
+  await a.getByRole("button", { name: "Comment on this block" }).nth(1).click();
+  await expect(a.getByRole("textbox", { name: "Comment on block", exact: true })).toBeVisible();
+  await expect(a.locator(".composer-context")).toHaveCount(0);
+  await a
+    .getByRole("textbox", { name: "Comment on block", exact: true })
+    .fill("Unsent block draft");
+  await a.getByRole("button", { name: "Comment on this block" }).first().click();
+  await expect(a.getByRole("textbox", { name: "Comment on block", exact: true })).toHaveValue(
+    "Unsent block draft",
+  );
+  await a.getByLabel("Account", { exact: true }).click();
+  await expect(a.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
+  await a.keyboard.press("Escape");
+  await expect(a.getByRole("button", { name: "Sign out", exact: true })).toBeHidden();
+  await expect(a.getByLabel("Account", { exact: true })).toBeFocused();
+  await a.getByLabel("Document actions", { exact: true }).click();
+  await expect(a.getByRole("button", { name: "Delete", exact: true })).toBeVisible();
+  await a.getByRole("textbox", { name: "Page title" }).click();
+  await expect(a.getByRole("button", { name: "Delete", exact: true })).toBeHidden();
+  await expect(a.getByRole("status")).toHaveText("Saved", { timeout: 20000 });
+  current = await call(a, "read_page", { page_id: result.page_id });
+  await call(a, "patch_page", {
+    page_id: result.page_id,
+    base_heads: current.heads,
+    idempotency_key: crypto.randomUUID(),
+    operations: [
+      {
+        op: "patch_block_markdown",
+        block_id: current.blocks[0].id,
+        replacements: [{ old: current.blocks[0].markdown, new: "" }],
+      },
+    ],
+  });
+  await expect(a.locator(".thread").getByText("Passage removed", { exact: true })).toBeVisible();
+  await expect(
+    a.locator(".thread").getByRole("button", { name: "Show block", exact: true }),
+  ).toBeVisible();
+  await a.locator(".thread").getByRole("button", { name: "Show block", exact: true }).click();
+  await a.getByRole("button", { name: "Pages", exact: true }).click();
+  await expect(a.getByRole("textbox", { name: "Search Pages" })).toBeFocused();
+  const failCreate = (route) =>
+    route.request().postDataJSON()?.operation === "create_page"
+      ? route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "Please try creating this page again" }),
+        })
+      : route.continue();
+  await a.route("**/api/tools", failCreate);
+  await a.getByRole("button", { name: "New Page", exact: true }).click();
+  await expect(a.getByRole("dialog", { name: "Pages", exact: true }).getByRole("alert")).toHaveText(
+    "Please try creating this page again",
+  );
+  await a.unroute("**/api/tools", failCreate);
+  await a.getByRole("button", { name: "New Page", exact: true }).click();
+  await expect(a.locator(".ProseMirror")).toHaveCount(1);
+  await expect(a.locator(".ProseMirror")).toBeFocused();
+  await expect(a.getByRole("button", { name: "Comments", exact: true })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+  await a.getByRole("button", { name: "Comments", exact: true }).click();
+  await expect(a.getByRole("textbox", { name: "Comment on block", exact: true })).toHaveValue("");
+  await b.getByLabel("Account", { exact: true }).click();
   await b.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(b.getByRole("link", { name: "Sign In" })).toBeVisible();
   const denied = await b.request.post(origin + "/api/tools", {
@@ -223,7 +358,11 @@ try {
         "peer-preserving undo",
         "pending IndexedDB reload and concurrent merge",
         "paragraph split/join",
-        "desktop and 390px layout",
+        "selection-driven toolbar and keyboard access",
+        "text style and list commands",
+        "desktop and 390px layout with modal comments",
+        "comment target isolation, draft retargeting and detached block navigation",
+        "dialog error feedback, menu dismissal and new-page focus",
         "sign out revokes HTTP access",
       ],
       screenshots: output,

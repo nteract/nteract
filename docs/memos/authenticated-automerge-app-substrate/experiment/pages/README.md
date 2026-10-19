@@ -167,8 +167,21 @@ cross-host ownership transfer need separate tests. The native transport limits
 frames and queued bytes, and the prototype bounds pages, signing-key bindings,
 and live peers. These are explicit experiment limits, not plan-based assumptions.
 
-Per-block WYSIWYG editing is carried over. Enter creates paragraphs and list
-items within a block. Cross-block selection and full mobile/IME qualification
+The document canvas keeps navigation and account actions outside the writing
+area. A searchable Pages dialog replaces the horizontal page list. Lucide
+formatting controls derive their pressed state and availability from the current
+ProseMirror selection and stored marks, including keyboard shortcuts before the
+next character is typed. Alt-F10 enters the toolbar, Left/Right moves among its
+controls, and Escape returns to the editor. The style select keeps native
+Up/Down navigation.
+
+Comments use a desktop rail and a modal sheet at widths up to 900px. Drafts
+capture the block's object identity and Automerge text cursors; submission
+resolves that passage again and rejects deleted/replaced anchors. A duplicate
+phrase inserted earlier in the document cannot retarget the draft. Reply text
+survives responsive panel changes, and changing pages clears local drafts.
+
+Enter creates paragraphs and list items within a block. Cross-block selection and full mobile/IME qualification
 remain separate editor work. Incoming editor notifications are deferred during
 composition; native receive itself is not paused.
 
