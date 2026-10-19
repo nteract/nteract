@@ -3857,6 +3857,12 @@ fn default_dev_vite_port() -> Option<u16> {
     runt_workspace::default_vite_port()
 }
 
+fn python_lint_command(module: &str) -> Command {
+    let mut command = Command::new("uv");
+    command.args(["run", "--no-sync", "python", "-I", "-m", module]);
+    command
+}
+
 /// Run linting and formatting checks across all languages.
 ///
 /// In check mode (default): exits non-zero if any issues are found.
@@ -3903,6 +3909,8 @@ fn cmd_lint(fix: bool) {
     // Lint the existing Python environment. Dependency setup belongs to `uv sync`
     // or `cargo xtask dev`, never a formatting/type-check pass. Pass --no-sync
     // explicitly so inherited UV_NO_SYNC=false cannot turn installation back on.
+    // Load modules with isolated Python so missing tools cannot fall through to
+    // unrelated global executables or PYTHONPATH entries.
     if Path::new("pyproject.toml").exists() {
         if Command::new("uv")
             .arg("--version")
@@ -3914,22 +3922,22 @@ fn cmd_lint(fix: bool) {
 
             // ruff check
             let check_args = if fix {
-                vec!["run", "--no-sync", "ruff", "check", "--fix", "."]
+                vec!["check", "--fix", "."]
             } else {
-                vec!["run", "--no-sync", "ruff", "check", "."]
+                vec!["check", "."]
             };
-            let check_status = Command::new("uv").args(&check_args).status();
+            let check_status = python_lint_command("ruff").args(&check_args).status();
             if !check_status.map(|s| s.success()).unwrap_or(false) {
                 python_failed = true;
             }
 
             // ruff format
             let format_args = if fix {
-                vec!["run", "--no-sync", "ruff", "format", "."]
+                vec!["format", "."]
             } else {
-                vec!["run", "--no-sync", "ruff", "format", "--check", "."]
+                vec!["format", "--check", "."]
             };
-            let format_status = Command::new("uv").args(&format_args).status();
+            let format_status = python_lint_command("ruff").args(&format_args).status();
             if !format_status.map(|s| s.success()).unwrap_or(false) {
                 python_failed = true;
             }
@@ -3937,12 +3945,10 @@ fn cmd_lint(fix: bool) {
 
             // ty type-check. ty is a dev-dep at the workspace root; the
             // python-package workflow already gates PRs on it, so we run
-            // the same command here to give local `cargo xtask lint` the
-            // same coverage. `ty check` is read-only — the --fix flag has
-            // no effect on it.
+            // the same check here. The --fix flag has no effect on it.
             println!("=== Python (ty) ===");
-            let ty_status = Command::new("uv")
-                .args(["run", "--no-sync", "ty", "check", "python/"])
+            let ty_status = python_lint_command("ty")
+                .args(["check", "python/"])
                 .status();
             if !ty_status.map(|s| s.success()).unwrap_or(false) {
                 python_failed = true;

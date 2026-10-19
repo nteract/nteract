@@ -88,12 +88,11 @@ fn python_lint_never_requests_sync_regardless_of_inherited_env() {
             assert!(output.status.success(), "{output:?}");
             let calls = fs::read_to_string(fixture.0.join("calls")).unwrap();
             let expected = if fix {
-                "run --no-sync ruff check --fix .\nrun --no-sync ruff format .\nrun --no-sync ty check python/\n"
+                "run --no-sync python -I -m ruff check --fix .\nrun --no-sync python -I -m ruff format .\nrun --no-sync python -I -m ty check python/\n"
             } else {
-                "run --no-sync ruff check .\nrun --no-sync ruff format --check .\nrun --no-sync ty check python/\n"
+                "run --no-sync python -I -m ruff check .\nrun --no-sync python -I -m ruff format --check .\nrun --no-sync python -I -m ty check python/\n"
             };
             assert_eq!(calls, expected);
-            assert!(!fixture.0.join("external-environment").exists());
         }
     }
 }

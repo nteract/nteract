@@ -155,9 +155,10 @@ cargo xtask lint --fix
 
 This runs Rust formatting, source control-byte checks, JS/TS checks (`vp check`),
 and Python lint/format (`ruff`) and type checks (`ty`). Python checks use
-`uv run --no-sync`: lint does not install dependencies or repoint editable
-packages to another worktree. Prepare this checkout with `uv sync` first if
-needed; check `UV_PROJECT_ENVIRONMENT` before syncing so it selects the intended
+`uv run --no-sync python -I -m`: tools come from the selected Python
+environment, without falling back to global executables. Lint does not install
+dependencies or repoint editable packages to another worktree. Prepare this
+checkout with `uv sync` first if needed; check `UV_PROJECT_ENVIRONMENT` before syncing so it selects the intended
 environment. Missing `uv`, lint tools, or type-check dependencies fail the check.
 `--fix` applies available formatting and lint fixes. To check without fixing:
 
