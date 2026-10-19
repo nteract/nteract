@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { registerMarkdownHeadingNavigator } from "@/components/cell/markdown-heading-navigation";
 import type { DocumentAnchor } from "../document-anchors";
 import { documentAnchorForFragment, navigateDocumentAnchor } from "../fragment-navigation";
 
@@ -71,6 +72,32 @@ describe("navigateDocumentAnchor", () => {
     await vi.waitFor(() => {
       expect(cell.scrollIntoView).toHaveBeenCalledWith({ block: "start", behavior: "smooth" });
     });
+  });
+
+  it("scrolls the cell, not the hidden heading, when the target cell is in edit mode", async () => {
+    const cell = document.createElement("div");
+    cell.id = "notebook-cell-intro";
+    cell.scrollIntoView = vi.fn();
+    const preview = document.createElement("div");
+    preview.className = "hidden";
+    const heading = document.createElement("h2");
+    heading.id = "notebook-cell-intro-heading-load-the-data";
+    heading.scrollIntoView = vi.fn();
+    preview.append(heading);
+    cell.append(preview);
+    document.body.append(cell);
+
+    // Mirrors MarkdownCell's navigator, which declines while editing.
+    const unregister = registerMarkdownHeadingNavigator("intro", async () => false);
+    try {
+      expect(navigateDocumentAnchor(headingAnchor)).toBe(true);
+      await vi.waitFor(() => {
+        expect(cell.scrollIntoView).toHaveBeenCalledWith({ block: "start", behavior: "smooth" });
+      });
+      expect(heading.scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      unregister();
+    }
   });
 
   it("returns false when nothing is rendered for the anchor", () => {

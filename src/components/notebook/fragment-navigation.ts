@@ -23,22 +23,25 @@ export function documentAnchorForFragment(
   );
 }
 
-/** Scroll to a document anchor, falling back to its cell when the anchor itself
- * is not in this document (headings rendered inside an isolated frame). */
+/** Scroll to a document anchor, falling back to its cell when the heading
+ * navigator can't place a heading (rendered inside an isolated frame, or hidden
+ * while its cell is in edit mode). */
 export function navigateDocumentAnchor(
   anchor: DocumentAnchor,
   options: { behavior?: ScrollBehavior } = {},
 ): boolean {
-  const target =
-    document.getElementById(anchor.domId) ?? document.getElementById(anchor.cellAnchorId);
+  const cell = document.getElementById(anchor.cellAnchorId);
+  const target = document.getElementById(anchor.domId) ?? cell;
   if (!target) return false;
 
   const behavior = options.behavior ?? "smooth";
   if (anchor.kind === "markdown_heading" && anchor.markdownHeadingAnchorId) {
     void navigateMarkdownHeading(anchor.cellId, anchor.markdownHeadingAnchorId, { behavior }).then(
       (handled) => {
+        // An editing cell keeps its preview mounted but hidden, so the heading
+        // element can exist without a visible box; scroll the cell instead.
         if (!handled) {
-          scrollElementIntoView(target, { block: "start", behavior });
+          scrollElementIntoView(cell ?? target, { block: "start", behavior });
         }
       },
     );
