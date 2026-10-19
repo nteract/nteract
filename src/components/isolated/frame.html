@@ -1046,8 +1046,11 @@
             var link = target && target.closest ? target.closest("a") : null;
             if (link && link.href) {
               e.preventDefault();
+              // link.href resolves "#x" against the frame's own URL; the host
+              // needs the bare fragment to find the notebook anchor.
+              var rawHref = link.getAttribute("href") || "";
               sendRpc("nteract/linkClick", {
-                url: link.href,
+                url: rawHref.charAt(0) === "#" ? rawHref : link.href,
                 newTab: e.metaKey || e.ctrlKey,
               });
             }

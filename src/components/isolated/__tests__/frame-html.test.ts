@@ -99,6 +99,11 @@ describe("generateFrameHtml", () => {
     expect(source).toContain("{ capture: true }");
   });
 
+  it("forwards in-notebook fragment links unresolved", () => {
+    expect(source).toContain("var rawHref = link.getAttribute('href') || ''");
+    expect(source).toContain("url: rawHref.charAt(0) === '#' ? rawHref : link.href");
+  });
+
   it("keeps the iframe bootstrap script parseable", () => {
     const scripts = Array.from(html.matchAll(/<script>([\s\S]*?)<\/script>/g), (match) => match[1]);
 
