@@ -166,7 +166,7 @@ function App() {
         <main className="welcome">
           <h1>A place to write together.</h1>
           <a className="primary" href="/api/auth/login">
-            Sign in with Anaconda
+            Sign In
           </a>
         </main>
       ) : (

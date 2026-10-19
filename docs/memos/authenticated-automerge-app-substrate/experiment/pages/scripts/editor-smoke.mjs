@@ -204,7 +204,7 @@ try {
     "mobile horizontal overflow",
   );
   await b.getByRole("button", { name: "Sign out", exact: true }).click();
-  await expect(b.getByRole("link", { name: "Sign in with Anaconda" })).toBeVisible();
+  await expect(b.getByRole("link", { name: "Sign In" })).toBeVisible();
   const denied = await b.request.post(origin + "/api/tools", {
     data: { operation: "read_page", arguments: { page_id: result.page_id } },
     headers: { Origin: origin },
