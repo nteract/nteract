@@ -3900,31 +3900,38 @@ fn cmd_lint(fix: bool) {
     }
     println!();
 
-    // Python with ruff (if uv is available and pyproject.toml exists at root)
+    // Lint the existing Python environment. Dependency setup belongs to `uv sync`
+    // or `cargo xtask dev`, never a formatting/type-check pass. Pass --no-sync
+    // explicitly so inherited UV_NO_SYNC=false cannot turn installation back on.
     if Path::new("pyproject.toml").exists() {
-        if Command::new("uv").arg("--version").output().is_ok() {
+        if Command::new("uv")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+        {
+            let mut python_failed = false;
             println!("=== Python (ruff) ===");
 
             // ruff check
             let check_args = if fix {
-                vec!["run", "ruff", "check", "--fix", "."]
+                vec!["run", "--no-sync", "ruff", "check", "--fix", "."]
             } else {
-                vec!["run", "ruff", "check", "."]
+                vec!["run", "--no-sync", "ruff", "check", "."]
             };
             let check_status = Command::new("uv").args(&check_args).status();
             if !check_status.map(|s| s.success()).unwrap_or(false) {
-                failed = true;
+                python_failed = true;
             }
 
             // ruff format
             let format_args = if fix {
-                vec!["run", "ruff", "format", "."]
+                vec!["run", "--no-sync", "ruff", "format", "."]
             } else {
-                vec!["run", "ruff", "format", "--check", "."]
+                vec!["run", "--no-sync", "ruff", "format", "--check", "."]
             };
             let format_status = Command::new("uv").args(&format_args).status();
             if !format_status.map(|s| s.success()).unwrap_or(false) {
-                failed = true;
+                python_failed = true;
             }
             println!();
 
@@ -3935,16 +3942,22 @@ fn cmd_lint(fix: bool) {
             // no effect on it.
             println!("=== Python (ty) ===");
             let ty_status = Command::new("uv")
-                .args(["run", "ty", "check", "python/"])
+                .args(["run", "--no-sync", "ty", "check", "python/"])
                 .status();
             if !ty_status.map(|s| s.success()).unwrap_or(false) {
-                failed = true;
+                python_failed = true;
             }
             println!();
+            if python_failed {
+                failed = true;
+                eprintln!(
+                    "Python lint uses the existing environment without syncing dependencies."
+                );
+                eprintln!("If tools or dependencies are missing, check UV_PROJECT_ENVIRONMENT, then run `uv sync` in this checkout.");
+            }
         } else {
-            println!("=== Python (ruff + ty) ===");
-            println!("Skipping: uv not found in PATH");
-            println!();
+            failed = true;
+            eprintln!("Python lint requires uv. Install uv and prepare this checkout with `uv sync` before retrying.");
         }
     }
 
