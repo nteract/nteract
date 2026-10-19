@@ -4,7 +4,7 @@
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -22,6 +22,7 @@ impl Fixture {
         fs::create_dir(&path).unwrap();
         let fixture = Self(path);
         fixture.script("cargo", "[ \"$1\" = fmt ]");
+        fixture.script("git", "[ \"$*\" = 'ls-files -z' ]");
         let package: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../package.json"),
@@ -48,10 +49,18 @@ impl Fixture {
     }
 
     fn lint(&self, fix: bool, no_sync: Option<&str>) -> Output {
+        self.lint_from(
+            fix,
+            no_sync,
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
+        )
+    }
+
+    fn lint_from(&self, fix: bool, no_sync: Option<&str>, directory: &Path) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
         command
             .arg("lint")
-            .current_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .current_dir(directory)
             .env("PATH", format!("{}:/usr/bin:/bin", self.0.display()))
             .env("LINT_CALLS", self.0.join("calls"))
             .env(
@@ -112,5 +121,20 @@ fn unavailable_uv_fails_instead_of_skipping_python_lint() {
     fixture.script("uv", "exit 127");
     let output = fixture.lint(false, None);
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("uv"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Python lint requires uv"));
+}
+
+#[test]
+fn python_lint_runs_from_a_workspace_member() {
+    let fixture = Fixture::new();
+    fixture.script(
+        "uv",
+        "[ \"$1\" = --version ] && exit 0\nprintf '%s\\n' \"$*\" >> \"$LINT_CALLS\"\n[ \"$1\" = run ] && [ \"$2\" = --no-sync ]",
+    );
+    let output = fixture.lint_from(false, None, Path::new(env!("CARGO_MANIFEST_DIR")));
+    assert!(output.status.success(), "{output:?}");
+    let calls = fs::read_to_string(fixture.0.join("calls")).unwrap();
+    assert_eq!(calls.lines().count(), 3);
+    assert!(calls.contains("-m ruff check ."));
+    assert!(calls.contains("-m ty check python/"));
 }

@@ -3868,6 +3868,7 @@ fn python_lint_command(module: &str) -> Command {
 /// In check mode (default): exits non-zero if any issues are found.
 /// In fix mode (--fix): auto-fixes issues where possible.
 fn cmd_lint(fix: bool) {
+    ensure_workspace_root_cwd();
     let mode = if fix { "fix" } else { "check" };
     println!("Running lint ({mode} mode)...");
     println!();
@@ -3943,9 +3944,8 @@ fn cmd_lint(fix: bool) {
             }
             println!();
 
-            // ty type-check. ty is a dev-dep at the workspace root; the
-            // python-package workflow already gates PRs on it, so we run
-            // the same check here. The --fix flag has no effect on it.
+            // ty is a workspace dev dependency. The --fix flag has no effect
+            // on this type check.
             println!("=== Python (ty) ===");
             let ty_status = python_lint_command("ty")
                 .args(["check", "python/"])
