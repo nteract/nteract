@@ -263,7 +263,9 @@ storage prefixes remain intact.
 runtime, ports, prefix, tunnel and firewall ownership, use `prepare`,
 `upload LOCAL_STAGE`, `install REMOTE_STAGE --apply`, then
 `publish REMOTE_STAGE --apply`. The installer requires the qualified celld 0.6.1
-binary and a clean committed source tree whose fingerprint matches the bundle.
+binary at `/usr/local/bin/celld-v0.6.1` and a clean committed source tree whose
+fingerprint matches the bundle. Install that version beside the shared runtime;
+the deployment never upgrades `/usr/local/bin/celld` used by other services.
 It creates the session secret on the host. Only the explicit release-file
 allowlist is staged; local dev credentials and databases are excluded.
 
