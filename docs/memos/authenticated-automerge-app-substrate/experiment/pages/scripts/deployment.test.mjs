@@ -240,7 +240,7 @@ function installFixture(t, { failure, previous = true } = {}) {
     region: "us-east-1",
     listen: "127.0.0.1:9472",
     internalListen: "127.0.0.1:19472",
-    runtime: "/usr/local/bin/celld",
+    runtime: "/usr/local/bin/celld-v0.6.1",
     requiredVersion: "celld 0.6.1",
   };
   const files = {
