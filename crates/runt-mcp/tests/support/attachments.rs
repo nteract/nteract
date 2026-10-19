@@ -552,7 +552,7 @@ impl Fixture {
                 if let Some(status) = self.child.0.try_wait().unwrap() {
                     assert!(
                         status.success(),
-                        "daemon failed: {}",
+                        "daemon failed: {status}; shutdown reply: {shutdown_reply:?}; daemon log: {}",
                         std::fs::read_to_string(self.root.path().join("daemon.log")).unwrap()
                     );
                     break;
