@@ -17,6 +17,7 @@
     "@automerge/subduction": "0.23.0",
     "@modelcontextprotocol/sdk": "1.29.0",
     "fractional-indexing": "4.0.0",
+    "lucide-react": "1.17.0",
     "prosemirror-commands": "1.7.1",
     "prosemirror-history": "1.4.1",
     "prosemirror-keymap": "1.2.3",
