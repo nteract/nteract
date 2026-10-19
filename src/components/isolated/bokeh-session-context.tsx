@@ -2,15 +2,21 @@ import { createContext, useContext, type ReactNode } from "react";
 import type {
   ApplyBokehSessionPatchOptions,
   BlobRef,
-  BokehSessionPatchBroadcast,
+  BokehSessionDataTail,
+  BokehSessionEvents,
   BokehSessionPatchReply,
   BokehSessionState,
 } from "runtimed";
+import type { BokehSessionDocStore } from "./bokeh-session-doc-store";
 
 export interface BokehSessionTransport {
+  /** Host replicas of the session documents, shared by every output frame. */
+  docs: BokehSessionDocStore;
   fetchBlob(ref: BlobRef): Promise<Response>;
+  /** One-off events (`MessageSent`, `ColumnsStreamed`, `ColumnsPatched`). */
   applyPatch(options: ApplyBokehSessionPatchOptions): Promise<BokehSessionPatchReply>;
-  subscribePatches(listener: (broadcast: BokehSessionPatchBroadcast) => void): () => void;
+  getData(sessionId: string, sourceIds?: string[]): Promise<BokehSessionDataTail>;
+  subscribeEvents(listener: (events: BokehSessionEvents) => void): () => void;
 }
 
 export interface BokehSessionRuntime {

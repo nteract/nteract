@@ -98,6 +98,9 @@ pub struct DocHandle {
 
     /// Advertised by this connection's daemon during bootstrap.
     notebook_sync_receipt: bool,
+
+    /// The daemon routes frame `0x0b`; never send it otherwise.
+    bokeh_session_doc_sync: bool,
 }
 
 /// Serialized notebook snapshot set suitable for hosted publish flows.
@@ -152,12 +155,103 @@ impl DocHandle {
             status_rx,
             notebook_id,
             notebook_sync_receipt: false,
+            bokeh_session_doc_sync: false,
         }
     }
 
     pub(crate) fn with_notebook_sync_receipt_capability(mut self, supported: bool) -> Self {
         self.notebook_sync_receipt = supported;
         self
+    }
+
+    /// Enable Bokeh session document sync; set from the daemon's
+    /// `ProtocolCapabilities::bokeh_session_doc_sync`.
+    pub fn with_bokeh_session_doc_sync_capability(mut self, supported: bool) -> Self {
+        self.bokeh_session_doc_sync = supported;
+        self
+    }
+
+    pub fn supports_bokeh_session_docs(&self) -> bool {
+        self.bokeh_session_doc_sync
+    }
+
+    // =====================================================================
+    // Bokeh session documents
+    // =====================================================================
+
+    /// Replica changes and daemon refusals for subscribed Bokeh sessions.
+    pub fn subscribe_bokeh_sessions(
+        &self,
+    ) -> Result<tokio::sync::broadcast::Receiver<crate::bokeh::BokehSessionEvent>, SyncError> {
+        let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        Ok(state.bokeh_tx.subscribe())
+    }
+
+    /// The session's document, once its replica has synced. Opens the
+    /// replica (subscribing to daemon pushes) for `epoch` if needed and waits
+    /// up to `timeout`. `None` when the daemon does not sync session
+    /// documents or the document did not arrive in time.
+    pub async fn await_bokeh_session(
+        &self,
+        session_id: &str,
+        epoch: u64,
+        timeout: Duration,
+    ) -> Result<Option<runtime_doc::BokehSessionSnapshot>, SyncError> {
+        if !self.bokeh_session_doc_sync {
+            return Ok(None);
+        }
+        let events = self.subscribe_bokeh_sessions()?;
+        if crate::bokeh::open(&self.doc, session_id, epoch)? {
+            let _ = self.changed_tx.send(());
+        }
+        crate::bokeh::await_snapshot(&self.doc, events, session_id, timeout).await
+    }
+
+    /// Write property values to a synced session as one change and follow
+    /// it for up to `wait`: the daemon's acknowledgement or refusal, kernel
+    /// corrections of the written values, and other values callbacks set.
+    ///
+    /// Writes are limited to existing models' non-reference properties of a
+    /// connected session at the current epoch; the daemon additionally
+    /// checks this connection's scope and actor.
+    pub async fn write_bokeh_session_props(
+        &self,
+        session_id: &str,
+        status: runtime_doc::BokehSessionStatus,
+        props: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+        wait: Duration,
+    ) -> Result<crate::bokeh::BokehWriteReport, crate::bokeh::BokehWriteError> {
+        if !self.bokeh_session_doc_sync {
+            return Err(crate::bokeh::BokehWriteError::Unsupported);
+        }
+        let events = self.subscribe_bokeh_sessions()?;
+        let (changed, heads) = crate::bokeh::write(&self.doc, session_id, status, props)?;
+        if !changed {
+            return Ok(crate::bokeh::BokehWriteReport {
+                acknowledged: true,
+                values: props
+                    .iter()
+                    .map(|(model, values)| {
+                        let values = values
+                            .iter()
+                            .map(|(prop, value)| {
+                                (
+                                    prop.clone(),
+                                    crate::bokeh::BokehWrittenValue {
+                                        value: Some(value.clone()),
+                                        corrected: false,
+                                    },
+                                )
+                            })
+                            .collect();
+                        (model.clone(), values)
+                    })
+                    .collect(),
+                ..Default::default()
+            });
+        }
+        let _ = self.changed_tx.send(());
+        Ok(crate::bokeh::observe_write(&self.doc, events, session_id, props, &heads, wait).await?)
     }
 
     /// The notebook ID this handle is connected to.

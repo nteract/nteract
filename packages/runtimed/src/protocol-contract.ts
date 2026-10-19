@@ -25,6 +25,7 @@ export const NOTEBOOK_REQUEST_TYPES = [
   "run_all_cells_guarded",
   "send_comm",
   "apply_bokeh_session_patch",
+  "get_bokeh_session_data",
   "get_history",
   "complete",
   "save_notebook",
@@ -69,6 +70,7 @@ export const NOTEBOOK_RESPONSE_RESULTS = [
   "history_result",
   "completion_result",
   "bokeh_session_patch",
+  "bokeh_session_data",
   "sync_environment_complete",
   "sync_environment_failed",
   "doc_bytes",
@@ -88,11 +90,13 @@ export const NOTEBOOK_RESPONSE_RESULTS_EXHAUSTIVE: MissingUnionMember<
 
 export type SessionControlMessage =
   | ({ type: "sync_status" } & SessionStatus)
-  | { type: "hosted_bridge_status"; status: HostedBridgeStatus };
+  | { type: "hosted_bridge_status"; status: HostedBridgeStatus }
+  | { type: "bokeh_session_resync"; session_id: string; epoch: number; reason: string };
 
 export const SESSION_CONTROL_TYPES = [
   "sync_status",
   "hosted_bridge_status",
+  "bokeh_session_resync",
 ] as const satisfies readonly SessionControlMessage["type"][];
 
 export const NOTEBOOK_DOC_PHASES = [

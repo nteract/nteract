@@ -13,6 +13,7 @@ import type { NotebookRequestOptions, NotebookTransport } from "./transport";
 import { putBlob } from "./blob-upload";
 import type {
   BokehSessionBufferRef,
+  BokehSessionDataTail,
   BokehSessionPatchReply,
   CommBufferRef,
   CommRequestMessage,
@@ -61,10 +62,10 @@ export interface BokehPatchBuffer {
   data: Uint8Array;
 }
 
+/** One-off events only: `MessageSent`, `ColumnsStreamed`, `ColumnsPatched`. */
 export interface ApplyBokehSessionPatchOptions {
   sessionId: string;
   transactionId: string;
-  baseRevision: number;
   patch: Record<string, unknown>;
   buffers?: BokehPatchBuffer[];
 }
@@ -561,14 +562,17 @@ export class NotebookClient {
     }
   }
 
-  /** Apply one typed mutation to a kernel-owned Bokeh document session. */
+  /**
+   * Send one-off Bokeh events to the kernel. The reply arrives after the
+   * callback ran; property changes go through the session document instead.
+   */
   async applyBokehSessionPatch(
     options: ApplyBokehSessionPatchOptions,
   ): Promise<BokehSessionPatchReply> {
     this.log.debug(
-      "[notebook-client] Applying Bokeh session patch:",
+      "[notebook-client] Sending Bokeh session events:",
       options.sessionId,
-      options.baseRevision,
+      options.transactionId,
     );
     try {
       const encoded = await Promise.all(
@@ -602,7 +606,6 @@ export class NotebookClient {
         request: {
           session_id: options.sessionId,
           transaction_id: options.transactionId,
-          base_revision: options.baseRevision,
           patch: options.patch,
           buffers: encoded.flatMap((buffer) => (buffer.inline ? [buffer.inline] : [])),
           buffer_refs: encoded.flatMap((buffer) => (buffer.ref ? [buffer.ref] : [])),
@@ -624,6 +627,30 @@ export class NotebookClient {
     } catch (e) {
       this.log.error("[notebook-client] Bokeh session patch failed:", e);
       throw e;
+    }
+  }
+
+  /**
+   * Column data events retained since each source's last fold, for a peer
+   * that missed broadcasts. Sources listed in `fold_requested` come back
+   * without events; their fold arrives through the session document.
+   */
+  async getBokehSessionData(
+    sessionId: string,
+    sourceIds?: string[],
+  ): Promise<BokehSessionDataTail> {
+    const response = await this.sendRequest({
+      type: "get_bokeh_session_data",
+      session_id: sessionId,
+      source_ids: sourceIds ?? null,
+    });
+    switch (response.result) {
+      case "bokeh_session_data":
+        return response.data;
+      case "error":
+        throw new Error(response.error);
+      default:
+        throw new Error(`Unexpected get_bokeh_session_data response: ${JSON.stringify(response)}`);
     }
   }
 }

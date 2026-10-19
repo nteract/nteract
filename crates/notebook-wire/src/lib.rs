@@ -4,6 +4,8 @@
 //! It is the common layer for crates that need to agree on frame bytes,
 //! frame-size caps, and connection-local session status shapes.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use serde::{Deserialize, Serialize};
 
 pub mod frame_types {
@@ -41,6 +43,10 @@ pub mod frame_types {
 
     /// CommentsDoc sync message (binary Automerge sync).
     pub const COMMENTS_DOC_SYNC: u8 = 0x0a;
+
+    /// Bokeh session document sync, multiplexed by session
+    /// (`u32 header_len | JSON BokehSessionFrameHeader | Automerge sync bytes`).
+    pub const BOKEH_SESSION_DOC_SYNC: u8 = 0x0b;
 }
 
 const KIB: usize = 1024;
@@ -120,6 +126,12 @@ pub fn typed_frame_size_limits(frame_type: NotebookFrameType) -> FrameSizeLimits
             cap: 64 * MIB,
             warn: 16 * MIB,
         },
+        // Session documents measured 7 to 21 KB with every property value
+        // over 1 KB (256 B for arrays) in the blob store.
+        NotebookFrameType::BokehSessionDocSync => FrameSizeLimits {
+            cap: 16 * MIB,
+            warn: MIB,
+        },
         NotebookFrameType::PoolStateSync => FrameSizeLimits {
             cap: MIB,
             warn: 256 * KIB,
@@ -173,6 +185,8 @@ pub enum NotebookFrameType {
     CommsDocSync = frame_types::COMMS_DOC_SYNC,
     /// CommentsDoc sync message (binary Automerge sync).
     CommentsDocSync = frame_types::COMMENTS_DOC_SYNC,
+    /// Bokeh session document sync (`BokehSessionFrameHeader` + Automerge sync).
+    BokehSessionDocSync = frame_types::BOKEH_SESSION_DOC_SYNC,
 }
 
 impl TryFrom<u8> for NotebookFrameType {
@@ -191,11 +205,86 @@ impl TryFrom<u8> for NotebookFrameType {
             frame_types::PUT_BLOB => Ok(Self::PutBlob),
             frame_types::COMMS_DOC_SYNC => Ok(Self::CommsDocSync),
             frame_types::COMMENTS_DOC_SYNC => Ok(Self::CommentsDocSync),
+            frame_types::BOKEH_SESSION_DOC_SYNC => Ok(Self::BokehSessionDocSync),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("unknown notebook frame type: 0x{:02x}", value),
             )),
         }
+    }
+}
+
+/// Header of a `BokehSessionDocSync` frame payload.
+///
+/// The payload is `u32 header_len_be | JSON header | Automerge sync bytes`,
+/// the sub-framing `PutBlob` uses. Each session document has its own sync
+/// state per peer and epoch, so receivers route on both fields and drop frames
+/// for an epoch that is not current.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BokehSessionFrameHeader {
+    pub session_id: String,
+    pub epoch: u64,
+}
+
+/// Upper bound on the JSON header; a session id and an integer fit easily.
+pub const MAX_BOKEH_SESSION_FRAME_HEADER_LEN: usize = 4 * KIB;
+
+/// A malformed `BokehSessionDocSync` payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BokehSessionFrameError {
+    Truncated,
+    HeaderTooLarge(usize),
+    InvalidHeader(String),
+}
+
+impl std::fmt::Display for BokehSessionFrameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Truncated => write!(f, "truncated Bokeh session frame"),
+            Self::HeaderTooLarge(len) => {
+                write!(f, "Bokeh session frame header too large: {len} bytes")
+            }
+            Self::InvalidHeader(err) => write!(f, "invalid Bokeh session frame header: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for BokehSessionFrameError {}
+
+impl BokehSessionFrameHeader {
+    pub fn new(session_id: impl Into<String>, epoch: u64) -> Self {
+        Self {
+            session_id: session_id.into(),
+            epoch,
+        }
+    }
+
+    pub fn encode_frame(&self, sync_message: &[u8]) -> Vec<u8> {
+        // Serializing a String and a u64 cannot fail.
+        let header = serde_json::to_vec(self).unwrap_or_default();
+        let mut frame = Vec::with_capacity(4 + header.len() + sync_message.len());
+        frame.extend_from_slice(&(header.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&header);
+        frame.extend_from_slice(sync_message);
+        frame
+    }
+
+    /// Split a payload into its header and the Automerge sync bytes.
+    pub fn try_parse(payload: &[u8]) -> Result<(Self, &[u8]), BokehSessionFrameError> {
+        let Some(len_bytes) = payload.get(..4) else {
+            return Err(BokehSessionFrameError::Truncated);
+        };
+        let header_len =
+            u32::from_be_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]) as usize;
+        if header_len > MAX_BOKEH_SESSION_FRAME_HEADER_LEN {
+            return Err(BokehSessionFrameError::HeaderTooLarge(header_len));
+        }
+        let Some(header_bytes) = payload.get(4..4 + header_len) else {
+            return Err(BokehSessionFrameError::Truncated);
+        };
+        let header = serde_json::from_slice(header_bytes)
+            .map_err(|err| BokehSessionFrameError::InvalidHeader(err.to_string()))?;
+        Ok((header, &payload[4 + header_len..]))
     }
 }
 
@@ -211,7 +300,19 @@ pub struct TypedNotebookFrame {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionControlMessage {
     SyncStatus(SessionSyncStatusWire),
-    HostedBridgeStatus { status: HostedBridgeStatusWire },
+    HostedBridgeStatus {
+        status: HostedBridgeStatusWire,
+    },
+    /// The daemon refused this peer's `BokehSessionDocSync` changes and reset
+    /// its sync state for the session. The rejected changes stay in the
+    /// peer's replica, so the peer must drop it and sync a fresh one for
+    /// `epoch`, then rewrite unsent values only if the session still accepts
+    /// writes.
+    BokehSessionResync {
+        session_id: String,
+        epoch: u64,
+        reason: String,
+    },
 }
 
 /// Daemon-to-hosted-room bridge health for a notebook room.
@@ -261,4 +362,62 @@ pub enum InitialLoadPhaseWire {
     Streaming,
     Ready,
     Failed { reason: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bokeh_session_frame_round_trips() {
+        let header = BokehSessionFrameHeader::new("session-1", 3);
+        let frame = header.encode_frame(b"\x42sync bytes");
+        let (parsed, body) = BokehSessionFrameHeader::try_parse(&frame).unwrap();
+        assert_eq!(parsed, header);
+        assert_eq!(body, b"\x42sync bytes");
+    }
+
+    #[test]
+    fn bokeh_session_frame_allows_empty_sync_body() {
+        let frame = BokehSessionFrameHeader::new("s", 0).encode_frame(&[]);
+        let (_, body) = BokehSessionFrameHeader::try_parse(&frame).unwrap();
+        assert!(body.is_empty());
+    }
+
+    #[test]
+    fn bokeh_session_frame_rejects_malformed_payloads() {
+        assert_eq!(
+            BokehSessionFrameHeader::try_parse(&[0, 0]),
+            Err(BokehSessionFrameError::Truncated)
+        );
+        // Declared header longer than the payload.
+        assert_eq!(
+            BokehSessionFrameHeader::try_parse(&[0, 0, 0, 9, b'{']),
+            Err(BokehSessionFrameError::Truncated)
+        );
+        let huge = (MAX_BOKEH_SESSION_FRAME_HEADER_LEN as u32 + 1).to_be_bytes();
+        assert_eq!(
+            BokehSessionFrameHeader::try_parse(&huge),
+            Err(BokehSessionFrameError::HeaderTooLarge(
+                MAX_BOKEH_SESSION_FRAME_HEADER_LEN + 1
+            ))
+        );
+        let mut bad = 2u32.to_be_bytes().to_vec();
+        bad.extend_from_slice(b"{}");
+        assert!(matches!(
+            BokehSessionFrameHeader::try_parse(&bad),
+            Err(BokehSessionFrameError::InvalidHeader(_))
+        ));
+    }
+
+    #[test]
+    fn bokeh_session_frame_type_has_its_own_limits() {
+        assert_eq!(
+            NotebookFrameType::try_from(frame_types::BOKEH_SESSION_DOC_SYNC).unwrap(),
+            NotebookFrameType::BokehSessionDocSync
+        );
+        let limits = frame_size_limits(frame_types::BOKEH_SESSION_DOC_SYNC);
+        assert_eq!(limits.cap, 16 * MIB);
+        assert_eq!(limits.warn, MIB);
+    }
 }

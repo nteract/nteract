@@ -20,37 +20,11 @@ pub enum BokehSessionStatus {
     Error,
 }
 
-/// Content-addressed artifact referenced by a Bokeh session replay record.
+/// Topology, lifecycle and current document identity of one Bokeh session.
 ///
-/// The bytes live in the daemon blob store. RuntimeStateDoc carries only the
-/// immutable address and enough metadata for a client to fetch it safely.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BokehSessionContentRef {
-    pub blob: String,
-    pub size: u64,
-    pub media_type: String,
-}
-
-/// Full-document checkpoint for a Bokeh session.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BokehSessionCheckpoint {
-    pub revision: u64,
-    pub content_ref: BokehSessionContentRef,
-}
-
-/// One canonical patch transaction after the current checkpoint.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BokehSessionPatchRef {
-    pub base_revision: u64,
-    pub revision: u64,
-    pub content_ref: BokehSessionContentRef,
-}
-
-/// Durable topology and replay coordinates for one Bokeh document session.
-///
-/// The kernel owns the live Bokeh `Document`. This record associates it with
-/// notebook output topology and points to the blob-backed checkpoint and
-/// bounded patch tail needed by remounting or late-joining clients.
+/// The kernel owns the live Bokeh `Document`; its state lives in the
+/// session's `BokehSessionDoc` (frame `0x0b`). This record binds the session
+/// to its notebook output and names the current epoch's document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BokehSessionState {
     pub output_id: String,
@@ -58,16 +32,23 @@ pub struct BokehSessionState {
     pub execution_id: String,
     pub kernel_id: String,
     pub status: BokehSessionStatus,
-    pub head_revision: u64,
     pub producer_name: String,
     pub producer_version: String,
     pub bokeh_version: String,
+    /// Roots at display time; later root changes live in the document's meta.
     #[serde(default)]
     pub root_ids: Vec<String>,
+    /// Current document epoch; peers sync only this epoch's document.
     #[serde(default)]
-    pub checkpoint: Option<BokehSessionCheckpoint>,
+    pub epoch: u64,
+    /// Heads (hex) of the epoch's freshly built document. The build is
+    /// deterministic, so these identify the document.
     #[serde(default)]
-    pub patch_tail: Vec<BokehSessionPatchRef>,
+    pub doc_heads: Vec<String>,
+    /// Heads (hex) of the previous epoch's document when it was replaced. A
+    /// peer that had applied exactly these switches without reconciling.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previous_heads: Vec<String>,
 }
 
 /// Project file the daemon picked for a notebook, identified by location

@@ -152,6 +152,11 @@ JSON-RPC widget methods:
 - Parent → iframe: `nteract/bridgeReady`, `nteract/commOpen`, `nteract/commMsg`, `nteract/commClose`, `nteract/widgetSnapshot`
 - Iframe → parent: `nteract/widgetReady`, `nteract/widgetCommMsg`, `nteract/widgetCommClose`
 
+JSON-RPC Bokeh session methods (`docs/adr/bokeh-session-documents.md`), each checked against the frame's own output bindings:
+
+- Iframe → parent requests: `nteract/bokehSessionOpen`, `nteract/bokehSetProps` (property values only), `nteract/bokehApplyPatch` (`MessageSent`, `ColumnsStreamed`, `ColumnsPatched` only), `nteract/bokehSessionData` (column blobs plus the retained tail)
+- Parent → iframe notifications: `nteract/bokehSessionState`, `nteract/bokehSessionDoc` (full or delta update from the session document), `nteract/bokehSessionEvents` (data events and Python messages)
+
 ### Widget sync flow
 
 ```

@@ -307,7 +307,8 @@ fn decode_sync_status(
     .expect("valid session control frame")
     {
         notebook_protocol::protocol::SessionControlMessage::SyncStatus(status) => Some(status),
-        notebook_protocol::protocol::SessionControlMessage::HostedBridgeStatus { .. } => None,
+        notebook_protocol::protocol::SessionControlMessage::HostedBridgeStatus { .. }
+        | notebook_protocol::protocol::SessionControlMessage::BokehSessionResync { .. } => None,
     }
 }
 
@@ -2690,6 +2691,7 @@ fn test_room_with_path_and_store(
         trusted_packages,
         state,
         comms,
+        bokeh_sessions: Arc::default(),
         comments,
         comments_store,
         runtime_agent_handle: Arc::new(Mutex::new(None)),
@@ -14838,4 +14840,56 @@ async fn assert_arrow_recovery(manifest_size: usize, conflict: Option<&str>) {
             .unwrap()
             .payload_matches(&expected));
     }
+}
+
+#[tokio::test]
+async fn saved_bokeh_output_carries_the_hub_state_without_session_doc() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = Arc::new(BlobStore::new(tmp.path().join("blobs")));
+    let room = NotebookRoom::new_fresh(Uuid::new_v4(), None, tmp.path(), blob_store, true);
+    let store = crate::bokeh_session::store::tests::store_with_session();
+    store.with_doc("session-1", |doc| {
+        doc.set_prop("p2", "value", "0.8").unwrap();
+        doc.commit();
+    });
+    let mut agent_states = crate::bokeh_session::store::BokehSyncStates::new();
+    let mut hub_states = crate::bokeh_session::store::BokehSyncStates::new();
+    let mut inbound = Vec::new();
+    for frame in store.generate_frames(&mut agent_states) {
+        inbound.extend(
+            room.bokeh_sessions
+                .receive_runtime_frame(&mut hub_states, &frame),
+        );
+    }
+    while let Some(reply) = inbound.pop() {
+        if let Some(back) = store.receive_frame(&reply, &mut agent_states).unwrap() {
+            inbound.extend(
+                room.bokeh_sessions
+                    .receive_runtime_frame(&mut hub_states, &back),
+            );
+        }
+    }
+
+    let output = serde_json::json!({
+        "output_type": "display_data",
+        "data": {runtime_doc::BOKEH_SESSION_MIME: {
+            "session_id": "session-1", "document": {"roots": []},
+            "session_doc": {"models": {}}, "buffers": [{"id": "stale"}],
+        }},
+        "metadata": {},
+    });
+    let saved = super::persist::with_current_bokeh_state(&room, output).await;
+    let payload = &saved["data"][runtime_doc::BOKEH_SESSION_MIME];
+    assert!(payload.get("session_doc").is_none());
+    assert_eq!(payload["buffers"], serde_json::json!([]));
+    let slider = &payload["document"]["roots"][0]["attributes"]["children"][0];
+    assert_eq!(slider["attributes"]["value"], serde_json::json!(0.8));
+
+    let unknown = serde_json::json!({"output_type": "display_data", "data": {
+        runtime_doc::BOKEH_SESSION_MIME: {"session_id": "other", "document": {}},
+    }});
+    assert_eq!(
+        super::persist::with_current_bokeh_state(&room, unknown.clone()).await,
+        unknown
+    );
 }

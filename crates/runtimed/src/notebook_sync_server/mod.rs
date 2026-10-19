@@ -69,6 +69,7 @@ mod nbformat_convert;
 #[allow(dead_code)]
 pub(crate) mod notebook_application_state;
 mod path_index;
+mod peer_bokeh_sync;
 mod peer_comments_sync;
 mod peer_comms_sync;
 mod peer_connection;

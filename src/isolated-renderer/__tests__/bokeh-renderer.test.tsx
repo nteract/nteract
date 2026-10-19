@@ -101,13 +101,11 @@ function setupNativeBokehSession() {
     },
   };
   const requestHost = vi.fn(async () => ({
-    schemaVersion: 1,
     sessionId: "session-1",
     outputId: "output-1",
     status: "connected",
-    headRevision: 0,
-    checkpoint: { revision: 0, document: { roots: [{ id: "root-1" }] }, buffers: [] },
-    patchTail: [],
+    epoch: 0,
+    live: true,
   }));
   const notifications = new Map<string, (params: unknown) => void>();
   const subscribeHostNotification = vi.fn((method: string, listener: (params: unknown) => void) => {
@@ -125,7 +123,6 @@ function nativeSessionPayload() {
   return {
     schema_version: 1,
     session_id: "session-1",
-    revision: 0,
     producer: { name: "panel", version: "1.9.3" },
     bokeh_version: "3.9.1",
     document: { roots: [{ id: "root-1" }] },
@@ -308,7 +305,7 @@ describe("Bokeh renderer plugin", () => {
     });
   });
 
-  it("mounts a native document session from the host snapshot", async () => {
+  it("mounts a native document session from its payload", async () => {
     const { NativeRenderer, requestHost, notifications } = setupNativeBokehSession();
     const { container } = render(
       <NativeRenderer
@@ -331,7 +328,7 @@ describe("Bokeh renderer plugin", () => {
         sessionId: "session-1",
         outputId: "output-1",
         status: "disconnected",
-        headRevision: 0,
+        epoch: 0,
       });
     });
     expect(container).toHaveTextContent("Disconnected");

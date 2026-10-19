@@ -7,7 +7,12 @@
 
 // Core
 export { SyncEngine } from "./sync-engine";
-export type { PresenceHeartbeatOptions, SyncEngineOptions, SyncEngineLogger } from "./sync-engine";
+export type {
+  BokehSessionResync,
+  PresenceHeartbeatOptions,
+  SyncEngineOptions,
+  SyncEngineLogger,
+} from "./sync-engine";
 
 // Transport
 export type {
@@ -197,9 +202,6 @@ export {
 
 // Runtime state
 export {
-  type BokehSessionCheckpoint,
-  type BokehSessionContentRef,
-  type BokehSessionPatchRef,
   type BokehSessionState,
   type BokehSessionStatus,
   type CommDocEntry,
@@ -238,13 +240,9 @@ export { type PoolState, type RuntimePoolState, DEFAULT_POOL_STATE } from "./poo
 
 // Broadcast types
 export {
-  type BokehSessionBufferRef,
-  type BokehSessionCheckpointPayload,
-  type BokehSessionPatchBroadcast,
-  type BokehSessionPatchEvent,
-  type BokehSessionPatchPayload,
+  type BokehSessionEventsBroadcast,
   type CommBroadcast,
-  isBokehSessionPatchBroadcast,
+  isBokehSessionEventsBroadcast,
   isCommBroadcast,
   type KnownBroadcast,
 } from "./broadcast-types";
@@ -575,6 +573,9 @@ export {
   type SaveNotebookOutcome,
 } from "./notebook-client";
 export type {
+  BokehSessionBufferRef,
+  BokehSessionDataTail,
+  BokehSessionEvents,
   BokehSessionPatchReply,
   BlobDurability,
   BlobUploadErrorKind,

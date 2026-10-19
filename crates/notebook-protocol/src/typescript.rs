@@ -22,6 +22,7 @@ pub const NOTEBOOK_REQUEST_TYPES: &[&str] = &[
     "run_all_cells_guarded",
     "send_comm",
     "apply_bokeh_session_patch",
+    "get_bokeh_session_data",
     "get_history",
     "complete",
     "save_notebook",
@@ -59,6 +60,7 @@ pub const NOTEBOOK_RESPONSE_RESULTS: &[&str] = &[
     "history_result",
     "completion_result",
     "bokeh_session_patch",
+    "bokeh_session_data",
     "sync_environment_complete",
     "sync_environment_failed",
     "doc_bytes",
@@ -69,7 +71,11 @@ pub const NOTEBOOK_RESPONSE_RESULTS: &[&str] = &[
     "blob_upload_error",
 ];
 
-pub const SESSION_CONTROL_TYPES: &[&str] = &["sync_status", "hosted_bridge_status"];
+pub const SESSION_CONTROL_TYPES: &[&str] = &[
+    "sync_status",
+    "hosted_bridge_status",
+    "bokeh_session_resync",
+];
 pub const NOTEBOOK_DOC_PHASES: &[&str] = &["pending", "syncing", "interactive"];
 pub const RUNTIME_STATE_PHASES: &[&str] = &["pending", "syncing", "ready"];
 pub const INITIAL_LOAD_PHASES: &[&str] = &["not_needed", "streaming", "ready", "failed"];
@@ -83,6 +89,10 @@ const FRAME_TYPES: &[(&str, u8)] = &[
     ("RUNTIME_STATE_SYNC", frame_types::RUNTIME_STATE_SYNC),
     ("COMMS_DOC_SYNC", frame_types::COMMS_DOC_SYNC),
     ("COMMENTS_DOC_SYNC", frame_types::COMMENTS_DOC_SYNC),
+    (
+        "BOKEH_SESSION_DOC_SYNC",
+        frame_types::BOKEH_SESSION_DOC_SYNC,
+    ),
     ("POOL_STATE_SYNC", frame_types::POOL_STATE_SYNC),
     ("SESSION_CONTROL", frame_types::SESSION_CONTROL),
     ("PUT_BLOB", frame_types::PUT_BLOB),
@@ -242,25 +252,35 @@ export interface BokehSessionBufferRef {{
   media_type: string;
 }}
 
+/** One-off events only: MessageSent, ColumnsStreamed, ColumnsPatched. */
 export interface BokehSessionPatchRequest {{
   session_id: string;
   transaction_id: string;
-  base_revision: number;
   patch: Record<string, unknown>;
   buffers?: Array<{{ id: string; data: number[] }}>;
   buffer_refs?: BokehSessionBufferRef[];
 }}
 
 export type BokehSessionPatchReply =
-  | {{ status: "accepted"; session_id: string; transaction_id: string; revision: number }}
-  | {{ status: "stale"; session_id: string; transaction_id: string; revision: number }}
-  | {{
-      status: "error";
-      session_id: string;
-      transaction_id: string;
-      revision?: number | null;
-      error: string;
-    }};
+  | {{ status: "accepted"; session_id: string; transaction_id: string }}
+  | {{ status: "error"; session_id: string; transaction_id: string; error: string }};
+
+/** Data events and Python messages; also the `bokeh_session_events` broadcast payload. */
+export interface BokehSessionEvents {{
+  session_id: string;
+  epoch: number;
+  transaction_id: string;
+  data_events?: Array<Record<string, unknown>>;
+  messages?: Array<Record<string, unknown>>;
+  buffers?: BokehSessionBufferRef[];
+}}
+
+export interface BokehSessionDataTail {{
+  session_id: string;
+  epoch: number;
+  events: BokehSessionEvents[];
+  fold_requested?: string[];
+}}
 
 export interface BlobUploadPart {{
   part_number: number;
@@ -292,6 +312,7 @@ export type NotebookRequest =
     }}
   | {{ type: "send_comm"; message: CommRequestMessage }}
   | {{ type: "apply_bokeh_session_patch"; request: BokehSessionPatchRequest }}
+  | {{ type: "get_bokeh_session_data"; session_id: string; source_ids?: string[] | null }}
   | {{
       type: "get_history";
       /** Glob-style pattern to match. null for no filter. */
@@ -411,6 +432,7 @@ export type NotebookResponse =
       cursor_end: number;
     }}
   | {{ result: "bokeh_session_patch"; reply: BokehSessionPatchReply }}
+  | {{ result: "bokeh_session_data"; data: BokehSessionDataTail }}
   | {{ result: "sync_environment_complete"; synced_packages: string[] }}
   | {{ result: "sync_environment_failed"; error: string; needs_restart: boolean }}
   | {{ result: "doc_bytes"; bytes: number[] }}
@@ -623,7 +645,8 @@ export const NOTEBOOK_RESPONSE_RESULTS_EXHAUSTIVE: MissingUnionMember<
 
 export type SessionControlMessage =
   | ({{ type: "sync_status" }} & SessionStatus)
-  | {{ type: "hosted_bridge_status"; status: HostedBridgeStatus }};
+  | {{ type: "hosted_bridge_status"; status: HostedBridgeStatus }}
+  | {{ type: "bokeh_session_resync"; session_id: string; epoch: number; reason: string }};
 
 export const SESSION_CONTROL_TYPES = [
 {}

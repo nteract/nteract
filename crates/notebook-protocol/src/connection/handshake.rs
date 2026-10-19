@@ -205,6 +205,10 @@ pub struct ProtocolCapabilities {
     /// Missing on older daemons; clients must not send the new request then.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub notebook_sync_receipt: bool,
+    /// Accepts `BokehSessionDocSync` (0x0b) frames. Missing on older daemons;
+    /// clients must not send the frame then.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bokeh_session_doc_sync: bool,
     /// Authenticated actor label that the client should use for Automerge
     /// changes on this connection, formatted as `<principal>/<operator>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -237,6 +241,7 @@ impl ProtocolCapabilities {
                 ephemeral_supported: true,
             }),
             notebook_sync_receipt: true,
+            bokeh_session_doc_sync: true,
             actor_label: None,
             connection_scope: None,
             comments_doc_id: None,

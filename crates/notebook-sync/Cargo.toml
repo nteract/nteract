@@ -16,6 +16,7 @@ notebook-doc = { path = "../notebook-doc" }
 runtime-doc = { path = "../runtime-doc" }
 comments-doc = { path = "../comments-doc" }
 notebook-protocol = { path = "../notebook-protocol" }
+notebook-wire = { path = "../notebook-wire" }
 tokio = { workspace = true, features = ["full"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

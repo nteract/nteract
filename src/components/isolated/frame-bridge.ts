@@ -1,6 +1,10 @@
 import type { NteractEmbedHostContextPatch } from "./host-context";
 import type { WidgetViewStateHint } from "@/components/widgets/widget-state";
-import type { NteractBokehSessionPatchParams, NteractBokehSessionStateParams } from "./rpc-methods";
+import type {
+  NteractBokehSessionDocParams,
+  NteractBokehSessionEventsParams,
+  NteractBokehSessionStateParams,
+} from "./rpc-methods";
 
 export interface EvalMessage {
   type: "eval";
@@ -217,13 +221,19 @@ export interface BridgeReadyMessage {
   type: "bridge_ready";
 }
 
-/** Deliver one canonical Bokeh document transaction to a mounted view. */
-export interface BokehSessionPatchMessage {
-  type: "bokeh_session_patch";
-  payload: NteractBokehSessionPatchParams;
+/** Deliver one step of a Bokeh session document to a mounted view. */
+export interface BokehSessionDocMessage {
+  type: "bokeh_session_doc";
+  payload: NteractBokehSessionDocParams;
 }
 
-/** Project durable Bokeh session connection/revision state into a mounted view. */
+/** Deliver one-off Bokeh data events and Python messages to a mounted view. */
+export interface BokehSessionEventsMessage {
+  type: "bokeh_session_events";
+  payload: NteractBokehSessionEventsParams;
+}
+
+/** Project Bokeh session status and epoch from RuntimeStateDoc into a mounted view. */
 export interface BokehSessionStateMessage {
   type: "bokeh_session_state";
   payload: NteractBokehSessionStateParams;
@@ -296,7 +306,8 @@ export type ParentToIframeMessage =
   | CommCloseMessage
   | WidgetSnapshotMessage
   | BridgeReadyMessage
-  | BokehSessionPatchMessage
+  | BokehSessionDocMessage
+  | BokehSessionEventsMessage
   | BokehSessionStateMessage
   | SearchMessage
   | SearchNavigateMessage

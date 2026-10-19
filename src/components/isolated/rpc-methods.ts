@@ -22,8 +22,6 @@ export const NTERACT_EVAL = "nteract/eval" as const;
 export const NTERACT_INSTALL_RENDERER = "nteract/installRenderer" as const;
 export const NTERACT_SEARCH = "nteract/search" as const;
 export const NTERACT_MEASURE_ELEMENT = "nteract/measureElement" as const;
-export const NTERACT_BOKEH_SESSION_OPEN = "nteract/bokehSessionOpen" as const;
-export const NTERACT_BOKEH_APPLY_PATCH = "nteract/bokehApplyPatch" as const;
 
 // Host → Iframe (Notifications — fire-and-forget)
 export const NTERACT_RENDER_OUTPUT = "nteract/renderOutput" as const;
@@ -36,8 +34,9 @@ export const NTERACT_COMM_CLOSE = "nteract/commClose" as const;
 export const NTERACT_WIDGET_SNAPSHOT = "nteract/widgetSnapshot" as const;
 export const NTERACT_BRIDGE_READY = "nteract/bridgeReady" as const;
 export const NTERACT_WIDGET_STATE = "nteract/widgetState" as const;
-export const NTERACT_BOKEH_SESSION_PATCH = "nteract/bokehSessionPatch" as const;
 export const NTERACT_BOKEH_SESSION_STATE = "nteract/bokehSessionState" as const;
+export const NTERACT_BOKEH_SESSION_DOC = "nteract/bokehSessionDoc" as const;
+export const NTERACT_BOKEH_SESSION_EVENTS = "nteract/bokehSessionEvents" as const;
 
 // Host → Iframe (Notifications) — additional
 export const NTERACT_THEME = "nteract/theme" as const;
@@ -62,6 +61,20 @@ export const NTERACT_SEARCH_RESULTS = "nteract/searchResults" as const;
 export const NTERACT_MOUSE_DOWN = "nteract/mouseDown" as const;
 export const NTERACT_MOUSE_UP = "nteract/mouseUp" as const;
 export const NTERACT_WHEEL_BOUNDARY = "nteract/wheelBoundary" as const;
+
+// Iframe → Host (Requests) — Bokeh document sessions. The host only serves
+// sessions bound to an output of the requesting frame.
+export const NTERACT_BOKEH_SESSION_OPEN = "nteract/bokehSessionOpen" as const;
+export const NTERACT_BOKEH_SET_PROPS = "nteract/bokehSetProps" as const;
+export const NTERACT_BOKEH_APPLY_PATCH = "nteract/bokehApplyPatch" as const;
+export const NTERACT_BOKEH_SESSION_DATA = "nteract/bokehSessionData" as const;
+export const NTERACT_BOKEH_SESSION_METHODS = [
+  NTERACT_BOKEH_SESSION_OPEN,
+  NTERACT_BOKEH_SET_PROPS,
+  NTERACT_BOKEH_APPLY_PATCH,
+  NTERACT_BOKEH_SESSION_DATA,
+] as const;
+export type NteractBokehSessionMethod = (typeof NTERACT_BOKEH_SESSION_METHODS)[number];
 
 // MCP Apps-compatible methods used by embedders. Notebook rendering commands
 // remain in the nteract/* namespace.
@@ -115,65 +128,157 @@ export interface NteractBokehResolvedBuffer {
   data: ArrayBuffer;
 }
 
-export interface NteractBokehResolvedPatchPayload {
-  patch: Record<string, unknown>;
-  buffers: NteractBokehResolvedBuffer[];
-}
-
-export interface NteractBokehResolvedCheckpoint {
-  revision: number;
-  document: Record<string, unknown>;
-  buffers: NteractBokehResolvedBuffer[];
-}
-
-export interface NteractBokehResolvedPatchEvent {
-  sessionId: string;
-  transactionId: string;
-  baseRevision: number;
-  revision: number;
-  clientPatch?: NteractBokehResolvedPatchPayload;
-  serverPatch?: NteractBokehResolvedPatchPayload;
-  checkpoint?: NteractBokehResolvedCheckpoint;
-}
-
 export interface NteractBokehSessionOpenParams {
   sessionId: string;
   outputId: string;
 }
 
-export interface NteractBokehSessionSnapshot {
-  schemaVersion: 1;
+export interface NteractBokehSessionOpenResult {
   sessionId: string;
   outputId: string;
   status: NteractBokehSessionStatus;
-  headRevision: number;
-  checkpoint: NteractBokehResolvedCheckpoint;
-  patchTail: NteractBokehResolvedPatchEvent[];
+  epoch: number | null;
+  /**
+   * Whether the host follows the session document for this frame. When
+   * false the frame renders the payload's `document` read-only.
+   */
+  live: boolean;
 }
 
+/** Property values of the session document, decoded from their JSON text. */
+export interface NteractBokehModelState {
+  type: string;
+  refProps: string[];
+  props: Record<string, unknown>;
+}
+
+export interface NteractBokehDocMeta {
+  rootIds: string[];
+  title: string | null;
+  bokehVersion: string;
+  /** DocJson keys besides roots, title and version (`defs`, `config`). */
+  docExtras: Record<string, unknown> | null;
+}
+
+/** Version of one `columns/{source}/{col}` entry; the frame loads data on demand. */
+export interface NteractBokehColumnVersion {
+  version: number;
+  size: number;
+}
+
+/**
+ * One step of the session document as the frame applies it. A `full` update
+ * carries the whole state (first sync, new epoch, resync); a `delta` carries
+ * what one sync step changed on the frame's current epoch.
+ */
+export interface NteractBokehDocUpdate {
+  sessionId: string;
+  epoch: number;
+  kind: "full" | "delta";
+  /**
+   * Full only: the frame already shows this state (it applied the previous
+   * document up to the replacement point), so it can switch epochs without
+   * touching BokehJS.
+   */
+  canSwitch: boolean;
+  /** Always set on `full`; on `delta` only when the meta changed. */
+  meta: NteractBokehDocMeta | null;
+  /** `full`: every model. `delta`: added models. */
+  models: Record<string, NteractBokehModelState>;
+  /** `delta`: changed properties of models that existed before. */
+  props: Record<string, Record<string, unknown>>;
+  removed: string[];
+  /** `full`: every column. `delta`: changed columns, `null` when removed. */
+  columns: Record<string, Record<string, NteractBokehColumnVersion | null>>;
+}
+
+export interface NteractBokehSetPropsParams {
+  sessionId: string;
+  outputId: string;
+  /** `{model_id: {prop: bokeh_encoded_json}}`; non-reference properties only. */
+  props: Record<string, Record<string, string>>;
+}
+
+export interface NteractBokehSetPropsResult {
+  status: "written" | "unchanged" | "read_only" | "rejected";
+  error?: string;
+}
+
+/** One-off events only: `MessageSent`, `ColumnsStreamed`, `ColumnsPatched`. */
 export interface NteractBokehApplyPatchParams {
   sessionId: string;
   outputId: string;
   transactionId: string;
-  baseRevision: number;
   patch: Record<string, unknown>;
   buffers: NteractBokehResolvedBuffer[];
 }
 
 export type NteractBokehApplyPatchResult =
+  | { status: "accepted"; sessionId: string; transactionId: string }
+  | { status: "error"; sessionId: string; transactionId: string; error: string };
+
+/** A column's Bokeh encoding (buffers inlined as base64) at a data version. */
+export interface NteractBokehColumnData {
+  version: number;
+  data: unknown;
+}
+
+export type NteractBokehDataEvent =
   | {
-      status: "accepted" | "stale";
-      sessionId: string;
-      transactionId: string;
-      revision: number;
+      kind: "ColumnsStreamed";
+      source_id: string;
+      base_version: number;
+      new_version: number;
+      data: unknown;
+      rollover?: number | null;
     }
   | {
-      status: "error";
-      sessionId: string;
-      transactionId: string;
-      revision?: number | null;
-      error: string;
+      kind: "ColumnsPatched";
+      source_id: string;
+      base_version: number;
+      new_version: number;
+      patches: unknown;
+    }
+  | {
+      kind: "ColumnDataChanged";
+      source_id: string;
+      base_version: number;
+      new_version: number;
+      columns: Record<string, NteractBokehColumnData>;
+      columns_removed: string[];
     };
+
+export interface NteractBokehMessage {
+  msg_type: string;
+  msg_data?: unknown;
+}
+
+/** A `bokeh_session_events` broadcast with buffers and column blobs loaded. */
+export interface NteractBokehResolvedEvents {
+  sessionId: string;
+  epoch: number;
+  transactionId: string;
+  dataEvents: NteractBokehDataEvent[];
+  messages: NteractBokehMessage[];
+  buffers: NteractBokehResolvedBuffer[];
+}
+
+export interface NteractBokehSessionDataParams {
+  sessionId: string;
+  outputId: string;
+  /** Columns to load per source; `null` loads every column of the source. */
+  sources: Record<string, string[] | null>;
+  /** Also fetch the data events retained since each source's last fold. */
+  tail: boolean;
+}
+
+export interface NteractBokehSessionDataResult {
+  epoch: number;
+  columns: Record<string, Record<string, NteractBokehColumnData>>;
+  events: NteractBokehResolvedEvents[];
+  /** Sources whose tail was too long; their fold arrives as a document change. */
+  foldRequested: string[];
+}
 
 // ── Host → Iframe: Notification Params ──────────────────────────────
 
@@ -230,16 +335,21 @@ export interface NteractWidgetStateParams {
   buffers?: string[];
 }
 
-export interface NteractBokehSessionPatchParams {
-  outputId: string;
-  event: NteractBokehResolvedPatchEvent;
-}
-
 export interface NteractBokehSessionStateParams {
   sessionId: string;
   outputId: string;
   status: NteractBokehSessionStatus;
-  headRevision: number;
+  epoch: number | null;
+}
+
+export interface NteractBokehSessionDocParams {
+  outputId: string;
+  update: NteractBokehDocUpdate;
+}
+
+export interface NteractBokehSessionEventsParams {
+  outputId: string;
+  events: NteractBokehResolvedEvents;
 }
 
 // ── Iframe → Host: Notification Params ──────────────────────────────

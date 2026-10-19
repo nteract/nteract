@@ -106,13 +106,16 @@ After the handshake, frames carry a leading type byte:
 | `0x08` | PutBlob | Framed binary blob upload (`PutBlobHeader` + bytes) |
 | `0x09` | CommsDocSync | Binary (per-notebook `CommsDoc` Automerge sync) |
 | `0x0a` | CommentsDocSync | Binary (per-notebook `CommentsDoc` Automerge sync) |
+| `0x0b` | BokehSessionDocSync | `u32 header_len \| JSON BokehSessionFrameHeader {session_id, epoch} \| Automerge sync` (one `BokehSessionDoc` per session and epoch) |
 
 | Sender | Valid types |
 |--------|-------------|
-| Frontend / Tauri relay | `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09`, `0x0a` |
-| Daemon notebook peer | `0x00`, `0x02`, `0x03`, `0x04`, `0x05`, `0x06`, `0x07`, `0x09`, `0x0a` |
-| Runtime agent peer | `0x00`, `0x01` (RuntimeAgentRequest/Envelope), `0x02` (RuntimeAgentResponse/Envelope), `0x05`, `0x09` |
+| Frontend / Tauri relay | `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09`, `0x0a`, `0x0b` |
+| Daemon notebook peer | `0x00`, `0x02`, `0x03`, `0x04`, `0x05`, `0x06`, `0x07`, `0x09`, `0x0a`, `0x0b` |
+| Runtime agent peer | `0x00`, `0x01` (RuntimeAgentRequest/Envelope), `0x02` (RuntimeAgentResponse/Envelope), `0x05`, `0x09`, `0x0b` |
 | Cloud viewer bridge | `0x00`, `0x04`, `0x05`, `0x09`, `0x0a` |
+
+`0x0b` is routed by the daemon and advertised through `ProtocolCapabilities::bokeh_session_doc_sync` (`docs/adr/bokeh-session-documents.md`). A peer subscribes to a session by sending a frame for it; the daemon then pushes updates, including a fresh sync for a new epoch. When the daemon refuses a peer's changes it resets that peer's sync state and sends the `bokeh_session_resync` session-control message (`{session_id, epoch, reason}`): drop the replica and sync a new one for `epoch`. Clients must not send `0x0b` unless the capability is set. The cloud room host refuses client `0x0b` until it filters session documents.
 
 `NotebookRequest` / `NotebookResponse` payloads travel in flattened `NotebookRequestEnvelope` / `NotebookResponseEnvelope`. Concurrent requests carry an `id`; clients route responses by id because broadcasts, state sync, and out-of-order responses interleave freely.
 
@@ -257,7 +260,7 @@ Kernel produces output
 | `daemon:ready` event | Relay → Frontend | `DaemonReadyPayload` | Connection established, ready to bootstrap |
 | `daemon:disconnected` event | Relay → Frontend | — | Connection lost |
 
-Outgoing frames use `sendFrame(frameType, payload)` where `payload` is `Uint8Array` via `tauri::ipc::Request`. Relay accepts frontend-originated `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09`, `0x0a`; `0x02`, `0x03`, `0x07` are daemon-originated.
+Outgoing frames use `sendFrame(frameType, payload)` where `payload` is `Uint8Array` via `tauri::ipc::Request`. Relay accepts frontend-originated `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09`, `0x0a`, `0x0b`; `0x02`, `0x03`, `0x07` are daemon-originated.
 
 ### In-memory frame bus
 

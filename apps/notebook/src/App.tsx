@@ -11,17 +11,23 @@ import {
   splitNotebookActorPrincipalOperator,
   type ActorDisplayPeer,
   type ApplyBokehSessionPatchOptions,
-  type BokehSessionPatchBroadcast,
+  type BokehSessionEvents,
   type CommentAnchor,
   type CommentThreadSnapshot,
   type CommentsProjection,
   type ExecuteCellOptions,
+  FrameType,
   type NotebookResponse,
   type NotebookOutlineItem,
   putBlob,
   type SessionStatus,
 } from "runtimed";
-import { BokehSessionRuntimeProvider, IsolationTest } from "@/components/isolated";
+import {
+  BokehSessionDocStore,
+  BokehSessionRuntimeProvider,
+  type BokehSessionDocReplica,
+  IsolationTest,
+} from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import {
   applyWidgetCommBroadcastToStore,
@@ -119,6 +125,7 @@ import { startAttributionDispatch } from "./lib/attribution-registry";
 import { registerInsertCellCommand } from "./lib/insert-cell-command";
 import { getBlobResolver, useBlobPort, useBlobResolver } from "./lib/blob-port";
 import { useRuntimeState } from "./lib/runtime-state";
+import { bokeh_session_frame_header, BokehSessionDocHandle } from "./lib/runtimed-wasm";
 import {
   outputCommentAnchorMatchesLiveState,
   useDemoteDetachedOutputCommentThreads,
@@ -612,21 +619,60 @@ function AppContent() {
   );
 
   const bokehBlobResolver = useBlobResolver();
-  const bokehPatchSource = getEngine()?.bokehSessionPatchBroadcasts$ ?? null;
-  const bokehSessionTransport = useMemo(() => {
+  const bokehEngine = getEngine();
+  const bokehDocStore = useMemo(() => {
     if (!bokehBlobResolver) return null;
+    return new BokehSessionDocStore({
+      createReplica: (sessionId, epoch) =>
+        new BokehSessionDocHandle(
+          sessionId,
+          epoch,
+          getHandle()?.get_actor_id() ?? "",
+        ) as unknown as BokehSessionDocReplica,
+      readFrameHeader: (frame) =>
+        bokeh_session_frame_header(frame) as { session_id: string; epoch: number },
+      sendFrame: (payload) => host.transport.sendFrame(FrameType.BOKEH_SESSION_DOC_SYNC, payload),
+      fetchBlob: (ref) => bokehBlobResolver.fetch(ref),
+      logger,
+    });
+  }, [bokehBlobResolver, getHandle, host]);
+  useEffect(() => {
+    if (!bokehDocStore || !bokehEngine) return;
+    const frames = bokehEngine.bokehSessionFrames$.subscribe((frame) =>
+      bokehDocStore.receiveFrame(frame),
+    );
+    const resyncs = bokehEngine.bokehSessionResyncs$.subscribe((resync) =>
+      bokehDocStore.handleResync(resync),
+    );
+    const resets = bokehEngine.bokehSessionsReset$.subscribe(() => bokehDocStore.resubscribeAll());
+    return () => {
+      frames.unsubscribe();
+      resyncs.unsubscribe();
+      resets.unsubscribe();
+    };
+  }, [bokehDocStore, bokehEngine]);
+  useEffect(() => () => bokehDocStore?.dispose(), [bokehDocStore]);
+  useEffect(() => {
+    bokehDocStore?.updateSessions(runtimeState.bokeh_sessions);
+  }, [bokehDocStore, runtimeState.bokeh_sessions]);
+  const bokehSessionTransport = useMemo(() => {
+    if (!bokehBlobResolver || !bokehDocStore) return null;
+    const events$ = bokehEngine?.bokehSessionEventsBroadcasts$ ?? null;
     return {
+      docs: bokehDocStore,
       fetchBlob: (ref: { blob: string; size?: number; media_type?: string }) =>
         bokehBlobResolver.fetch(ref),
       applyPatch: (options: ApplyBokehSessionPatchOptions) =>
         notebookClient.applyBokehSessionPatch(options),
-      subscribePatches: (listener: (broadcast: BokehSessionPatchBroadcast) => void) => {
-        if (!bokehPatchSource) return () => {};
-        const subscription = bokehPatchSource.subscribe(listener);
+      getData: (sessionId: string, sourceIds?: string[]) =>
+        notebookClient.getBokehSessionData(sessionId, sourceIds),
+      subscribeEvents: (listener: (events: BokehSessionEvents) => void) => {
+        if (!events$) return () => {};
+        const subscription = events$.subscribe((broadcast) => listener(broadcast.events));
         return () => subscription.unsubscribe();
       },
     };
-  }, [bokehBlobResolver, bokehPatchSource, notebookClient]);
+  }, [bokehBlobResolver, bokehDocStore, bokehEngine, notebookClient]);
   const bokehSessionRuntime = useMemo(
     () => ({
       sessions: runtimeState.bokeh_sessions,

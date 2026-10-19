@@ -143,6 +143,7 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::RunAllCellsGuarded { .. } => "RunAllCellsGuarded",
         NotebookRequest::SendComm { .. } => "SendComm",
         NotebookRequest::ApplyBokehSessionPatch { .. } => "ApplyBokehSessionPatch",
+        NotebookRequest::GetBokehSessionData { .. } => "GetBokehSessionData",
         NotebookRequest::GetHistory { .. } => "GetHistory",
         NotebookRequest::Complete { .. } => "Complete",
         NotebookRequest::SaveNotebook { .. } => "SaveNotebook",
@@ -451,7 +452,8 @@ pub(crate) async fn handle_notebook_request(
             | NotebookRequest::SaveNotebook { .. }
             | NotebookRequest::GetHistory { .. }
             | NotebookRequest::ReconcileNotebookSource { .. }
-            | NotebookRequest::ApplyBokehSessionPatch { .. } => {
+            | NotebookRequest::ApplyBokehSessionPatch { .. }
+            | NotebookRequest::GetBokehSessionData { .. } => {
                 return NotebookResponse::Error {
                     error: format!(
                         "{} is not supported on a daemon-bridged hosted notebook yet; \
@@ -539,6 +541,11 @@ pub(crate) async fn handle_notebook_request(
         NotebookRequest::ApplyBokehSessionPatch { request } => {
             apply_bokeh_session_patch::handle(room, *request).await
         }
+
+        NotebookRequest::GetBokehSessionData {
+            session_id,
+            source_ids,
+        } => apply_bokeh_session_patch::handle_get_data(room, session_id, source_ids).await,
 
         NotebookRequest::GetHistory { pattern, n, unique } => {
             get_history::handle(room, pattern, n, unique).await

@@ -147,6 +147,8 @@ const CLIENT_WRITABLE_FRAME_TYPES = {
   [FrameType.RUNTIME_STATE_SYNC]: true,
   [FrameType.COMMS_DOC_SYNC]: true,
   [FrameType.COMMENTS_DOC_SYNC]: true,
+  // Refused until the room host materializes and filters session documents.
+  [FrameType.BOKEH_SESSION_DOC_SYNC]: false,
   [FrameType.POOL_STATE_SYNC]: true,
   [FrameType.SESSION_CONTROL]: false,
   [FrameType.PUT_BLOB]: true,

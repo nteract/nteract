@@ -1,58 +1,63 @@
-//! Typed Bokeh document-session transport and persistence helpers.
+//! Kernel-owned Bokeh document sessions.
 //!
-//! Panel is only a producer of the initial document. This module models the
-//! generic Bokeh checkpoint/patch protocol between the launcher, runtime, and
-//! isolated browser view without exposing arbitrary Jupyter messages.
+//! Each session's state lives in a `BokehSessionDoc`. The runtime agent owns
+//! the authoritative replica ([`store::BokehSessionStore`]): it builds the
+//! document from the display payload, applies the launcher's
+//! `nteract_bokeh_delta` messages under the kernel actor ([`ingest`]), and
+//! forwards property changes won by other actors to the kernel. The room keeps
+//! a hub replica per session ([`hub::BokehSessionHub`]) and routes frame
+//! `0x0b` between the runtime agent and peers. Data events and Python messages
+//! are one-off and travel as `NotebookBroadcast::BokehSessionEvents`. See
+//! `docs/adr/bokeh-session-documents.md`.
+
+pub(crate) mod hub;
+pub(crate) mod ingest;
+pub(crate) mod materialize;
+pub(crate) mod store;
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use bytes::Bytes;
-use notebook_protocol::protocol::{
-    BokehSessionBuffer, BokehSessionBufferRef, BokehSessionCheckpointPayload,
-    BokehSessionPatchEvent, BokehSessionPatchPayload, BokehSessionPatchReply,
-    BokehSessionPatchRequest, NotebookBroadcast,
-};
-use runtime_doc::{
-    BokehSessionCheckpoint, BokehSessionContentRef, BokehSessionPatchRef, BokehSessionState,
-    BokehSessionStatus, RuntimeStateHandle,
-};
+use notebook_protocol::protocol::{BokehSessionPatchReply, BokehSessionPatchRequest};
+use runtime_doc::{BokehSessionDoc, BokehSessionState, BokehSessionStatus, RuntimeStateHandle};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::blob_store::BlobStore;
 use crate::output_blob_publisher::OutputBlobPublisher;
 use crate::output_commit_context::OutputCommitContext;
+use crate::output_redaction::OutputRedactor;
 use crate::output_store::{self, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 
 pub(crate) use runtime_doc::BOKEH_SESSION_MIME;
 pub(crate) const BOKEH_PATCH_REQUEST: &str = "nteract_bokeh_patch_request";
 pub(crate) const BOKEH_PATCH_REPLY: &str = "nteract_bokeh_patch_reply";
-pub(crate) const BOKEH_CHECKPOINT_REQUEST: &str = "nteract_bokeh_checkpoint_request";
-pub(crate) const BOKEH_CHECKPOINT_REPLY: &str = "nteract_bokeh_checkpoint_reply";
+pub(crate) const BOKEH_FOLD_REQUEST: &str = "nteract_bokeh_fold_request";
+pub(crate) const BOKEH_FOLD_REPLY: &str = "nteract_bokeh_fold_reply";
 pub(crate) const BOKEH_CLOSE_REQUEST: &str = "nteract_bokeh_close_request";
 pub(crate) const BOKEH_CLOSE_REPLY: &str = "nteract_bokeh_close_reply";
-pub(crate) const BOKEH_EVENT: &str = "nteract_bokeh_event";
-pub(crate) const BOKEH_CHECKPOINT_MEDIA_TYPE: &str =
-    "application/vnd.nteract.bokeh-checkpoint.v1+json";
-pub(crate) const BOKEH_PATCH_MEDIA_TYPE: &str = "application/vnd.nteract.bokeh-patch.v1+json";
-pub(crate) const BOKEH_PATCH_CHECKPOINT_THRESHOLD: usize = 32;
-pub(crate) const BOKEH_PATCH_TAIL_HARD_LIMIT: usize = 128;
+pub(crate) const BOKEH_DELTA: &str = "nteract_bokeh_delta";
+const BOKEH_WIRE_SCHEMA_VERSION: u64 = 1;
+
+/// A property or `doc_extras` value moved out of the session document.
+pub(crate) const BOKEH_PROP_MEDIA_TYPE: &str = "application/vnd.nteract.bokeh-prop.v1+json";
+/// One Bokeh-encoded column with its buffers inlined as base64, so the blob
+/// is self-contained and a GC root needs no walk.
+pub(crate) const BOKEH_COLUMN_MEDIA_TYPE: &str = "application/vnd.nteract.bokeh-column.v1+json";
+pub(crate) const BOKEH_BUFFER_MEDIA_TYPE: &str = "application/octet-stream";
 
 #[derive(Debug)]
 pub(crate) struct RawBokehKernelMessage {
     pub(crate) msg_type: String,
     pub(crate) content: Value,
+    #[allow(dead_code)]
     pub(crate) buffers: Vec<Vec<u8>>,
 }
 
-#[derive(Debug, Clone)]
-pub struct BokehKernelSerialization {
-    pub content: Value,
-    pub buffers: Vec<BokehSessionBuffer>,
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BokehKernelPatchResponse {
     pub reply: BokehSessionPatchReply,
     pub stdout: String,
@@ -60,252 +65,220 @@ pub struct BokehKernelPatchResponse {
     pub error_output: Option<Value>,
 }
 
-#[derive(Debug, Clone)]
-pub struct BokehKernelCheckpoint {
-    pub session_id: String,
-    pub revision: u64,
-    pub document: BokehKernelSerialization,
-}
-
-pub type BokehCheckpointFuture =
-    Pin<Box<dyn Future<Output = anyhow::Result<BokehKernelCheckpoint>> + Send + 'static>>;
-
 pub type BokehCloseFuture = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'static>>;
 
-#[derive(Debug)]
+/// One shell request for the kernel's Bokeh requester task.
+pub(crate) struct BokehKernelCommand {
+    pub(crate) msg_type: &'static str,
+    pub(crate) content: Value,
+    pub(crate) buffers: Vec<Bytes>,
+    pub(crate) reply: oneshot::Sender<anyhow::Result<RawBokehKernelMessage>>,
+}
+
+/// Handle to a kernel's serial Bokeh shell requester.
+///
+/// Requests are enqueued synchronously when a method is called and the
+/// requester sends them in that order, so callers can keep ordering
+/// guarantees without awaiting the kernel. The returned futures only wait
+/// for the reply.
+#[derive(Clone)]
+pub struct BokehKernelRequester {
+    tx: mpsc::UnboundedSender<BokehKernelCommand>,
+    redactor: Arc<OutputRedactor>,
+}
+
+impl BokehKernelRequester {
+    pub(crate) fn new(
+        tx: mpsc::UnboundedSender<BokehKernelCommand>,
+        redactor: Arc<OutputRedactor>,
+    ) -> Self {
+        Self { tx, redactor }
+    }
+
+    fn enqueue(
+        &self,
+        msg_type: &'static str,
+        content: Value,
+        buffers: Vec<Bytes>,
+    ) -> oneshot::Receiver<anyhow::Result<RawBokehKernelMessage>> {
+        let (reply, response) = oneshot::channel();
+        let command = BokehKernelCommand {
+            msg_type,
+            content,
+            buffers,
+            reply,
+        };
+        if let Err(error) = self.tx.send(command) {
+            let _ = error
+                .0
+                .reply
+                .send(Err(anyhow::anyhow!("Bokeh kernel requester stopped")));
+        }
+        response
+    }
+
+    pub fn patch(
+        &self,
+        request: &BokehSessionPatchRequest,
+    ) -> impl Future<Output = anyhow::Result<BokehKernelPatchResponse>> + Send + 'static {
+        let (content, buffers) = patch_request_wire(request);
+        let response = self.enqueue(BOKEH_PATCH_REQUEST, content, buffers);
+        let redactor = self.redactor.clone();
+        async move {
+            let raw = response
+                .await
+                .map_err(|_| anyhow::anyhow!("Bokeh kernel requester dropped its reply"))??;
+            let mut response = parse_patch_reply(raw)?;
+            response.stdout = redactor.redact_text(&response.stdout).into_owned();
+            response.stderr = redactor.redact_text(&response.stderr).into_owned();
+            if let Some(error) = response.error_output.take() {
+                response.error_output = Some(redactor.redact_output_value(&error));
+            }
+            Ok(response)
+        }
+    }
+
+    /// Ask the kernel to fold sources; the folds arrive as a delta.
+    pub fn fold(
+        &self,
+        session_id: &str,
+        source_ids: Vec<String>,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send + 'static {
+        let content = json!({
+            "schema_version": BOKEH_WIRE_SCHEMA_VERSION,
+            "session_id": session_id,
+            "transaction_id": uuid::Uuid::new_v4().to_string(),
+            "source_ids": source_ids,
+        });
+        let response = self.enqueue(BOKEH_FOLD_REQUEST, content, Vec::new());
+        async move {
+            let raw = response
+                .await
+                .map_err(|_| anyhow::anyhow!("Bokeh kernel requester dropped its reply"))??;
+            anyhow::ensure!(
+                raw.msg_type == BOKEH_FOLD_REPLY,
+                "expected {BOKEH_FOLD_REPLY}, got {}",
+                raw.msg_type
+            );
+            anyhow::ensure!(
+                raw.content.get("status").and_then(Value::as_str) == Some("ok"),
+                "Bokeh fold failed: {}",
+                kernel_error_text(raw.content.get("error"))
+            );
+            Ok(())
+        }
+    }
+}
+
+/// A session whose display output is being committed.
 pub(crate) struct PreparedInitialBokehSession {
     pub(crate) session_id: String,
     pub(crate) state: BokehSessionState,
+    pub(crate) doc: BokehSessionDoc,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum BokehEventIngest {
-    Applied { checkpoint_needed: bool },
-    Duplicate,
-    ResyncNeeded { session_id: String },
-}
-
-pub(crate) async fn ingest_kernel_event(
-    content: &Value,
-    raw_buffers: &[Vec<u8>],
-    kernel_id: &str,
-    state: &RuntimeStateHandle,
-    blob_store: &BlobStore,
-    blob_publisher: &OutputBlobPublisher,
-    broadcast_tx: &tokio::sync::broadcast::Sender<NotebookBroadcast>,
-) -> anyhow::Result<BokehEventIngest> {
+/// Build a session's epoch-0 document from the display payload's
+/// `session_doc` and the RuntimeStateDoc record that names it.
+pub(crate) async fn prepare_initial_session(
+    execution_id: &str,
+    nbformat_value: &Value,
+    manifest: &OutputManifest,
+    context: &OutputCommitContext,
+) -> anyhow::Result<Option<PreparedInitialBokehSession>> {
+    let Some(payload) = nbformat_value
+        .get("data")
+        .and_then(|data| data.get(BOKEH_SESSION_MIME))
+    else {
+        return Ok(None);
+    };
     anyhow::ensure!(
-        content.get("schema_version").and_then(Value::as_u64) == Some(1),
-        "unsupported Bokeh event schema"
+        payload.get("schema_version").and_then(Value::as_u64) == Some(BOKEH_WIRE_SCHEMA_VERSION),
+        "unsupported Bokeh session schema"
     );
-    let session_id = required_str(content, "session_id")?.to_string();
-    let transaction_id = required_str(content, "transaction_id")?.to_string();
-    let base_revision = required_u64(content, "base_revision")?;
-    let revision = required_u64(content, "revision")?;
-    anyhow::ensure!(
-        revision == base_revision + 1,
-        "Bokeh event revision must advance exactly once"
-    );
+    let session_id = required_str(payload, "session_id")?.to_string();
+    let producer = payload
+        .get("producer")
+        .ok_or_else(|| anyhow::anyhow!("Bokeh session is missing producer"))?;
+    let root_ids = payload
+        .get("root_ids")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("Bokeh session is missing root_ids"))?
+        .iter()
+        .map(|root| {
+            root.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| anyhow::anyhow!("Bokeh root id must be a string"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    anyhow::ensure!(!root_ids.is_empty(), "Bokeh session has no roots");
+    let session_doc = payload
+        .get("session_doc")
+        .ok_or_else(|| anyhow::anyhow!("Bokeh session is missing session_doc"))?;
 
-    let client_serialization = content
-        .get("client_patch")
-        .filter(|value| !value.is_null())
-        .map(|value| parse_serialization(value, "patch", raw_buffers))
-        .transpose()?;
-    let server_serialization = content
-        .get("server_patch")
-        .filter(|value| !value.is_null())
-        .map(|value| parse_serialization(value, "patch", raw_buffers))
-        .transpose()?;
-    let checkpoint_serialization = content
-        .get("checkpoint")
-        .filter(|value| !value.is_null())
-        .map(|value| parse_serialization(value, "document", raw_buffers))
-        .transpose()?;
-
-    // Reject known stale/gapped events before publishing content-addressed
-    // artifacts. The transactional checks below remain authoritative in case
-    // state advances between this read and the RuntimeStateDoc write.
-    let projected_session = state
-        .read(|state_doc| state_doc.get_bokeh_session(&session_id))?
-        .ok_or_else(|| anyhow::anyhow!("unknown Bokeh session {session_id}"))?;
-    anyhow::ensure!(
-        projected_session.kernel_id == kernel_id
-            && projected_session.status == BokehSessionStatus::Connected,
-        "Bokeh session {session_id} is not connected to kernel {kernel_id}"
-    );
-    if revision <= projected_session.head_revision {
-        return Ok(BokehEventIngest::Duplicate);
-    }
-    if checkpoint_serialization.is_none()
-        && (base_revision != projected_session.head_revision
-            || projected_session.patch_tail.len() >= BOKEH_PATCH_TAIL_HARD_LIMIT)
-    {
-        return Ok(BokehEventIngest::ResyncNeeded { session_id });
-    }
-
-    let (checkpoint, checkpoint_ref) = store_event_checkpoint(
-        checkpoint_serialization,
+    let buffers =
+        ingest::stored_buffers(payload.get("session_doc_buffers"), &context.blob_store).await?;
+    let snapshot = ingest::snapshot_from_session_doc(
         &session_id,
-        revision,
-        blob_store,
-        blob_publisher,
+        session_doc,
+        &buffers,
+        &ingest::BlobSink::new(&context.blob_store, &context.blob_publisher),
     )
     .await?;
-    let event = BokehSessionPatchEvent {
-        session_id: session_id.clone(),
-        transaction_id,
-        base_revision,
-        revision,
-        client_patch: store_patch_payload(client_serialization, blob_store, blob_publisher).await?,
-        server_patch: store_patch_payload(server_serialization, blob_store, blob_publisher).await?,
-        checkpoint,
-    };
-    let patch_artifact = if checkpoint_ref.is_none() {
-        let event_bytes = serde_json::to_vec(&event)?;
-        let event_hash = blob_store.put(&event_bytes, BOKEH_PATCH_MEDIA_TYPE).await?;
-        blob_publisher
-            .publish_artifact(
-                event_hash.clone(),
-                event_bytes.len() as u64,
-                BOKEH_PATCH_MEDIA_TYPE.to_string(),
-                blob_store,
-            )
-            .await?;
-        Some((event_hash, event_bytes.len() as u64))
-    } else {
-        None
-    };
+    let mut doc = BokehSessionDoc::build(&snapshot, &context.kernel_actor_id)
+        .map_err(|error| anyhow::anyhow!("build Bokeh session document: {error}"))?;
 
-    let update = state.with_doc(|state_doc| {
-        let Some(mut session) = state_doc.get_bokeh_session(&session_id) else {
-            return Err(runtime_doc::RuntimeStateError::InvalidBokehSession(
-                format!("unknown Bokeh session {session_id}"),
-            ));
-        };
-        if session.kernel_id != kernel_id || session.status != BokehSessionStatus::Connected {
-            return Err(runtime_doc::RuntimeStateError::InvalidBokehSession(
-                format!("Bokeh session {session_id} is not connected to kernel {kernel_id}"),
-            ));
-        }
-        if revision <= session.head_revision {
-            return Ok(BokehEventIngest::Duplicate);
-        }
-        if base_revision != session.head_revision && checkpoint_ref.is_none() {
-            return Ok(BokehEventIngest::ResyncNeeded {
-                session_id: session_id.clone(),
-            });
-        }
+    let cell_id = context
+        .state
+        .read(|state_doc| {
+            state_doc
+                .get_execution(execution_id)
+                .and_then(|execution| execution.cell_id)
+        })
+        .ok()
+        .flatten()
+        .ok_or_else(|| anyhow::anyhow!("Bokeh output execution is missing cell association"))?;
 
-        session.head_revision = revision;
-        if let Some(checkpoint_ref) = checkpoint_ref {
-            session.checkpoint = Some(checkpoint_ref);
-            session.patch_tail.clear();
-        } else {
-            if session.patch_tail.len() >= BOKEH_PATCH_TAIL_HARD_LIMIT {
-                // Another event may have filled the tail after the pre-flight
-                // read. The artifact published above remains unreferenced and
-                // the blob GC reclaims it after the normal orphan grace period.
-                return Ok(BokehEventIngest::ResyncNeeded {
-                    session_id: session_id.clone(),
-                });
-            }
-            let (event_hash, event_size) = patch_artifact.clone().ok_or_else(|| {
-                runtime_doc::RuntimeStateError::InvalidBokehSession(
-                    "Bokeh patch artifact missing".to_string(),
-                )
-            })?;
-            session.patch_tail.push(BokehSessionPatchRef {
-                base_revision,
-                revision,
-                content_ref: BokehSessionContentRef {
-                    blob: event_hash,
-                    size: event_size,
-                    media_type: BOKEH_PATCH_MEDIA_TYPE.to_string(),
-                },
-            });
-        }
-        let checkpoint_needed = session.patch_tail.len() >= BOKEH_PATCH_CHECKPOINT_THRESHOLD;
-        state_doc.put_bokeh_session(&session_id, &session)?;
-        Ok(BokehEventIngest::Applied { checkpoint_needed })
-    })?;
-
-    if matches!(update, BokehEventIngest::Applied { .. }) {
-        let _ = broadcast_tx.send(NotebookBroadcast::BokehSessionPatch {
-            patch: Box::new(event),
-        });
-    }
-    Ok(update)
+    Ok(Some(PreparedInitialBokehSession {
+        state: BokehSessionState {
+            output_id: manifest.output_id().to_string(),
+            cell_id,
+            execution_id: execution_id.to_string(),
+            kernel_id: context.kernel_id.clone(),
+            status: BokehSessionStatus::Connected,
+            producer_name: required_str(producer, "name")?.to_string(),
+            producer_version: optional_str(producer, "version").to_string(),
+            bokeh_version: required_str(payload, "bokeh_version")?.to_string(),
+            root_ids,
+            epoch: snapshot.epoch,
+            doc_heads: hex_heads(&doc.get_heads()),
+            previous_heads: Vec::new(),
+        },
+        session_id,
+        doc,
+    }))
 }
 
-pub(crate) async fn persist_checkpoint(
-    checkpoint: &BokehKernelCheckpoint,
-    expected_kernel_id: &str,
-    allow_head_advance: bool,
-    state: &RuntimeStateHandle,
-    blob_store: &BlobStore,
-    blob_publisher: &OutputBlobPublisher,
-) -> anyhow::Result<()> {
-    let buffers = store_buffers(&checkpoint.document.buffers, blob_store, blob_publisher).await?;
-    let payload = json!({
-        "schema_version": 1,
-        "session_id": checkpoint.session_id,
-        "revision": checkpoint.revision,
-        "document": checkpoint.document.content,
-        "buffers": buffers,
-    });
-    let bytes = serde_json::to_vec(&payload)?;
-    let hash = blob_store.put(&bytes, BOKEH_CHECKPOINT_MEDIA_TYPE).await?;
-    blob_publisher
-        .publish_artifact(
-            hash.clone(),
-            bytes.len() as u64,
-            BOKEH_CHECKPOINT_MEDIA_TYPE.to_string(),
-            blob_store,
-        )
-        .await?;
+/// The session document holds `session_doc` once ingested, so the stored
+/// output keeps only `document` (the render fallback a save refreshes).
+pub(crate) fn strip_ingested_session_doc(nbformat_value: &Value) -> Option<Value> {
+    let payload = nbformat_value.get("data")?.get(BOKEH_SESSION_MIME)?;
+    if payload.get("session_doc").is_none() && payload.get("session_doc_buffers").is_none() {
+        return None;
+    }
+    let mut stripped = nbformat_value.clone();
+    if let Some(payload) = stripped
+        .get_mut("data")
+        .and_then(|data| data.get_mut(BOKEH_SESSION_MIME))
+        .and_then(Value::as_object_mut)
+    {
+        payload.remove("session_doc");
+        payload.remove("session_doc_buffers");
+    }
+    Some(stripped)
+}
 
-    state.with_doc(|state_doc| {
-        let Some(mut session) = state_doc.get_bokeh_session(&checkpoint.session_id) else {
-            return Err(runtime_doc::RuntimeStateError::InvalidBokehSession(
-                format!("unknown Bokeh session {}", checkpoint.session_id),
-            ));
-        };
-        if session.kernel_id != expected_kernel_id
-            || session.status != BokehSessionStatus::Connected
-        {
-            return Err(runtime_doc::RuntimeStateError::InvalidBokehSession(
-                format!(
-                    "Bokeh session {} is not connected to kernel {}",
-                    checkpoint.session_id, expected_kernel_id
-                ),
-            ));
-        }
-        if checkpoint.revision > session.head_revision && !allow_head_advance {
-            return Err(runtime_doc::RuntimeStateError::InvalidBokehSession(
-                format!(
-                    "checkpoint revision {} is ahead of projected revision {}",
-                    checkpoint.revision, session.head_revision
-                ),
-            ));
-        }
-        if allow_head_advance {
-            session.head_revision = session.head_revision.max(checkpoint.revision);
-        }
-        session.checkpoint = Some(BokehSessionCheckpoint {
-            revision: checkpoint.revision,
-            content_ref: BokehSessionContentRef {
-                blob: hash,
-                size: bytes.len() as u64,
-                media_type: BOKEH_CHECKPOINT_MEDIA_TYPE.to_string(),
-            },
-        });
-        session
-            .patch_tail
-            .retain(|patch| patch.revision > checkpoint.revision);
-        state_doc.put_bokeh_session(&checkpoint.session_id, &session)
-    })?;
-    Ok(())
+pub(crate) fn hex_heads(heads: &[automerge::ChangeHash]) -> Vec<String> {
+    heads.iter().map(|head| head.to_string()).collect()
 }
 
 pub(crate) async fn append_callback_outputs(
@@ -362,235 +335,6 @@ pub(crate) async fn append_callback_outputs(
     Ok(())
 }
 
-async fn store_patch_payload(
-    serialization: Option<BokehKernelSerialization>,
-    blob_store: &BlobStore,
-    blob_publisher: &OutputBlobPublisher,
-) -> anyhow::Result<Option<BokehSessionPatchPayload>> {
-    let Some(serialization) = serialization else {
-        return Ok(None);
-    };
-    Ok(Some(BokehSessionPatchPayload {
-        patch: serialization.content,
-        buffers: store_buffers(&serialization.buffers, blob_store, blob_publisher).await?,
-    }))
-}
-
-async fn store_event_checkpoint(
-    serialization: Option<BokehKernelSerialization>,
-    session_id: &str,
-    revision: u64,
-    blob_store: &BlobStore,
-    blob_publisher: &OutputBlobPublisher,
-) -> anyhow::Result<(
-    Option<BokehSessionCheckpointPayload>,
-    Option<BokehSessionCheckpoint>,
-)> {
-    let Some(serialization) = serialization else {
-        return Ok((None, None));
-    };
-    let buffers = store_buffers(&serialization.buffers, blob_store, blob_publisher).await?;
-    let payload = BokehSessionCheckpointPayload {
-        session_id: session_id.to_string(),
-        revision,
-        document: serialization.content,
-        buffers,
-    };
-    let artifact = json!({
-        "schema_version": 1,
-        "session_id": session_id,
-        "revision": revision,
-        "document": payload.document,
-        "buffers": payload.buffers,
-    });
-    let bytes = serde_json::to_vec(&artifact)?;
-    let hash = blob_store.put(&bytes, BOKEH_CHECKPOINT_MEDIA_TYPE).await?;
-    blob_publisher
-        .publish_artifact(
-            hash.clone(),
-            bytes.len() as u64,
-            BOKEH_CHECKPOINT_MEDIA_TYPE.to_string(),
-            blob_store,
-        )
-        .await?;
-    Ok((
-        Some(payload),
-        Some(BokehSessionCheckpoint {
-            revision,
-            content_ref: BokehSessionContentRef {
-                blob: hash,
-                size: bytes.len() as u64,
-                media_type: BOKEH_CHECKPOINT_MEDIA_TYPE.to_string(),
-            },
-        }),
-    ))
-}
-
-async fn store_buffers(
-    buffers: &[BokehSessionBuffer],
-    blob_store: &BlobStore,
-    blob_publisher: &OutputBlobPublisher,
-) -> anyhow::Result<Vec<BokehSessionBufferRef>> {
-    let mut refs = Vec::with_capacity(buffers.len());
-    for buffer in buffers {
-        let hash = blob_store
-            .put(&buffer.data, "application/octet-stream")
-            .await?;
-        blob_publisher
-            .publish_artifact(
-                hash.clone(),
-                buffer.data.len() as u64,
-                "application/octet-stream".to_string(),
-                blob_store,
-            )
-            .await?;
-        refs.push(BokehSessionBufferRef {
-            id: buffer.id.clone(),
-            blob: hash,
-            size: buffer.data.len() as u64,
-            media_type: "application/octet-stream".to_string(),
-        });
-    }
-    Ok(refs)
-}
-
-pub(crate) async fn prepare_initial_session(
-    execution_id: &str,
-    nbformat_value: &Value,
-    manifest: &OutputManifest,
-    context: &OutputCommitContext,
-) -> anyhow::Result<Option<PreparedInitialBokehSession>> {
-    let Some(payload) = nbformat_value
-        .get("data")
-        .and_then(|data| data.get(BOKEH_SESSION_MIME))
-    else {
-        return Ok(None);
-    };
-    anyhow::ensure!(
-        payload.get("schema_version").and_then(Value::as_u64) == Some(1),
-        "unsupported Bokeh session schema"
-    );
-    let session_id = required_str(payload, "session_id")?.to_string();
-    let revision = payload
-        .get("revision")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| anyhow::anyhow!("Bokeh session is missing revision"))?;
-    let producer = payload
-        .get("producer")
-        .ok_or_else(|| anyhow::anyhow!("Bokeh session is missing producer"))?;
-    let root_ids = payload
-        .get("root_ids")
-        .and_then(Value::as_array)
-        .ok_or_else(|| anyhow::anyhow!("Bokeh session is missing root_ids"))?
-        .iter()
-        .map(|root| {
-            root.as_str()
-                .map(str::to_string)
-                .ok_or_else(|| anyhow::anyhow!("Bokeh root id must be a string"))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    anyhow::ensure!(!root_ids.is_empty(), "Bokeh session has no roots");
-    anyhow::ensure!(
-        payload.get("document").is_some(),
-        "Bokeh session is missing document"
-    );
-
-    let mut checkpoint_payload = payload.clone();
-    normalize_initial_buffer_refs(&mut checkpoint_payload, context).await?;
-    let checkpoint_bytes = serde_json::to_vec(&checkpoint_payload)?;
-    let checkpoint_hash = context
-        .blob_store
-        .put(&checkpoint_bytes, BOKEH_CHECKPOINT_MEDIA_TYPE)
-        .await?;
-    context
-        .blob_publisher
-        .publish_artifact(
-            checkpoint_hash.clone(),
-            checkpoint_bytes.len() as u64,
-            BOKEH_CHECKPOINT_MEDIA_TYPE.to_string(),
-            &context.blob_store,
-        )
-        .await?;
-
-    let cell_id = context
-        .state
-        .read(|state_doc| {
-            state_doc
-                .get_execution(execution_id)
-                .and_then(|execution| execution.cell_id)
-        })
-        .ok()
-        .flatten();
-    let cell_id = cell_id
-        .ok_or_else(|| anyhow::anyhow!("Bokeh output execution is missing cell association"))?;
-
-    Ok(Some(PreparedInitialBokehSession {
-        session_id,
-        state: BokehSessionState {
-            output_id: manifest.output_id().to_string(),
-            cell_id,
-            execution_id: execution_id.to_string(),
-            kernel_id: context.kernel_id.clone(),
-            status: BokehSessionStatus::Connected,
-            head_revision: revision,
-            producer_name: required_str(producer, "name")?.to_string(),
-            producer_version: optional_str(producer, "version").to_string(),
-            bokeh_version: required_str(payload, "bokeh_version")?.to_string(),
-            root_ids,
-            checkpoint: Some(BokehSessionCheckpoint {
-                revision,
-                content_ref: BokehSessionContentRef {
-                    blob: checkpoint_hash,
-                    size: checkpoint_bytes.len() as u64,
-                    media_type: BOKEH_CHECKPOINT_MEDIA_TYPE.to_string(),
-                },
-            }),
-            patch_tail: Vec::new(),
-        },
-    }))
-}
-
-async fn normalize_initial_buffer_refs(
-    payload: &mut Value,
-    context: &OutputCommitContext,
-) -> anyhow::Result<()> {
-    let descriptors = payload
-        .get_mut("buffers")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| anyhow::anyhow!("Bokeh session buffers must be an array"))?;
-    for descriptor in descriptors {
-        let hash = required_str(descriptor, "hash")?.to_string();
-        let size = descriptor
-            .get("size")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| anyhow::anyhow!("Bokeh buffer is missing size"))?;
-        anyhow::ensure!(
-            context.blob_store.exists(&hash),
-            "Bokeh buffer {hash} is missing from blob storage"
-        );
-        context
-            .blob_publisher
-            .publish_artifact(
-                hash.clone(),
-                size,
-                "application/octet-stream".to_string(),
-                &context.blob_store,
-            )
-            .await?;
-        let object = descriptor
-            .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("Bokeh buffer descriptor must be an object"))?;
-        object.insert("blob".to_string(), Value::String(hash));
-        object.insert(
-            "media_type".to_string(),
-            Value::String("application/octet-stream".to_string()),
-        );
-        object.remove("buffer_index");
-        object.remove("hash");
-    }
-    Ok(())
-}
-
 pub(crate) fn patch_request_wire(request: &BokehSessionPatchRequest) -> (Value, Vec<Bytes>) {
     let descriptors = request
         .buffers
@@ -612,23 +356,14 @@ pub(crate) fn patch_request_wire(request: &BokehSessionPatchRequest) -> (Value, 
         .collect();
     (
         json!({
-            "schema_version": 1,
+            "schema_version": BOKEH_WIRE_SCHEMA_VERSION,
             "session_id": request.session_id,
             "transaction_id": request.transaction_id,
-            "base_revision": request.base_revision,
             "patch": request.patch,
             "buffers": descriptors,
         }),
         buffers,
     )
-}
-
-pub(crate) fn checkpoint_request_wire(session_id: &str, transaction_id: &str) -> Value {
-    json!({
-        "schema_version": 1,
-        "session_id": session_id,
-        "transaction_id": transaction_id,
-    })
 }
 
 pub(crate) fn parse_patch_reply(
@@ -643,121 +378,25 @@ pub(crate) fn parse_patch_reply(
     let transaction_id = required_str(&message.content, "transaction_id")?.to_string();
     let stdout = optional_str(&message.content, "stdout").to_string();
     let stderr = optional_str(&message.content, "stderr").to_string();
-
-    let status = required_str(&message.content, "status")?;
-    let revision = message.content.get("revision").and_then(Value::as_u64);
     let error_output = message.content.get("error").map(kernel_error_output);
-    let reply = match status {
+    let reply = match required_str(&message.content, "status")? {
         "ok" => BokehSessionPatchReply::Accepted {
             session_id,
             transaction_id,
-            revision: revision
-                .ok_or_else(|| anyhow::anyhow!("Bokeh patch reply is missing revision"))?,
-        },
-        "stale" => BokehSessionPatchReply::Stale {
-            session_id,
-            transaction_id,
-            revision: revision
-                .ok_or_else(|| anyhow::anyhow!("stale Bokeh reply is missing revision"))?,
         },
         "error" => BokehSessionPatchReply::Error {
             session_id,
             transaction_id,
-            revision,
             error: kernel_error_text(message.content.get("error")),
         },
         other => anyhow::bail!("unknown Bokeh patch reply status {other:?}"),
     };
-
     Ok(BokehKernelPatchResponse {
         reply,
         stdout,
         stderr,
         error_output,
     })
-}
-
-pub(crate) fn parse_checkpoint_reply(
-    message: RawBokehKernelMessage,
-) -> anyhow::Result<BokehKernelCheckpoint> {
-    anyhow::ensure!(
-        message.msg_type == BOKEH_CHECKPOINT_REPLY,
-        "expected {BOKEH_CHECKPOINT_REPLY}, got {}",
-        message.msg_type
-    );
-    let status = required_str(&message.content, "status")?;
-    if status != "ok" {
-        anyhow::bail!(
-            "Bokeh checkpoint failed: {}",
-            kernel_error_text(message.content.get("error"))
-        );
-    }
-    Ok(BokehKernelCheckpoint {
-        session_id: required_str(&message.content, "session_id")?.to_string(),
-        revision: message
-            .content
-            .get("revision")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| anyhow::anyhow!("Bokeh checkpoint reply is missing revision"))?,
-        document: parse_serialization(
-            message
-                .content
-                .get("checkpoint")
-                .ok_or_else(|| anyhow::anyhow!("Bokeh checkpoint reply is missing checkpoint"))?,
-            "document",
-            &message.buffers,
-        )?,
-    })
-}
-
-fn parse_serialization(
-    value: &Value,
-    content_key: &str,
-    raw_buffers: &[Vec<u8>],
-) -> anyhow::Result<BokehKernelSerialization> {
-    let content = value
-        .get(content_key)
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("Bokeh serialization is missing {content_key}"))?;
-    let descriptors = value
-        .get("buffers")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let mut buffers = Vec::with_capacity(descriptors.len());
-    for descriptor in descriptors {
-        let id = required_str(&descriptor, "id")?.to_string();
-        let index = descriptor
-            .get("buffer_index")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| anyhow::anyhow!("Bokeh buffer {id} is missing buffer_index"))?
-            as usize;
-        let data = raw_buffers
-            .get(index)
-            .ok_or_else(|| anyhow::anyhow!("Bokeh buffer index {index} is out of range"))?
-            .clone();
-        validate_buffer_descriptor(&descriptor, &data)?;
-        buffers.push(BokehSessionBuffer { id, data });
-    }
-    Ok(BokehKernelSerialization { content, buffers })
-}
-
-fn validate_buffer_descriptor(descriptor: &Value, data: &[u8]) -> anyhow::Result<()> {
-    if let Some(size) = descriptor.get("size").and_then(Value::as_u64) {
-        anyhow::ensure!(
-            size == data.len() as u64,
-            "Bokeh buffer size mismatch: expected {size}, got {}",
-            data.len()
-        );
-    }
-    if let Some(expected_hash) = descriptor.get("hash").and_then(Value::as_str) {
-        let actual_hash = hex_sha256(data);
-        anyhow::ensure!(
-            expected_hash == actual_hash,
-            "Bokeh buffer hash mismatch: expected {expected_hash}, got {actual_hash}"
-        );
-    }
-    Ok(())
 }
 
 fn kernel_error_output(error: &Value) -> Value {
@@ -785,518 +424,84 @@ fn kernel_error_text(error: Option<&Value>) -> String {
     }
 }
 
-fn required_str<'a>(value: &'a Value, key: &str) -> anyhow::Result<&'a str> {
+pub(crate) fn required_str<'a>(value: &'a Value, key: &str) -> anyhow::Result<&'a str> {
     value
         .get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("Bokeh message is missing string {key}"))
 }
 
-fn required_u64(value: &Value, key: &str) -> anyhow::Result<u64> {
-    value
-        .get(key)
-        .and_then(Value::as_u64)
-        .ok_or_else(|| anyhow::anyhow!("Bokeh message is missing integer {key}"))
-}
-
 fn optional_str<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
-fn hex_sha256(data: &[u8]) -> String {
+pub(crate) fn hex_sha256(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn runtime_state(head_revision: u64) -> RuntimeStateHandle {
-        let mut doc = runtime_doc::RuntimeStateDoc::try_new_with_actor("test-runtime")
-            .expect("runtime state");
-        doc.create_execution_with_source_provenance(
-            "exec-1",
-            "panel_output",
-            0,
-            None,
-            Some("cell-1"),
-        )
-        .expect("execution");
-        doc.put_bokeh_session(
-            "session-1",
-            &BokehSessionState {
-                output_id: "output-1".to_string(),
-                cell_id: "cell-1".to_string(),
-                execution_id: "exec-1".to_string(),
-                kernel_id: "kernel-1".to_string(),
-                status: BokehSessionStatus::Connected,
-                head_revision,
-                producer_name: "panel".to_string(),
-                producer_version: "1.9.3".to_string(),
-                bokeh_version: "3.9.1".to_string(),
-                root_ids: vec!["p1001".to_string()],
-                checkpoint: Some(BokehSessionCheckpoint {
-                    revision: 0,
-                    content_ref: BokehSessionContentRef {
-                        blob: "checkpoint-0".to_string(),
-                        size: 10,
-                        media_type: BOKEH_CHECKPOINT_MEDIA_TYPE.to_string(),
-                    },
-                }),
-                patch_tail: Vec::new(),
-            },
-        )
-        .expect("session");
-        let (changed_tx, _changed_rx) = tokio::sync::broadcast::channel(8);
-        RuntimeStateHandle::new(doc, changed_tx)
-    }
-
-    #[tokio::test]
-    async fn retired_session_rejects_late_events_and_checkpoints() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let blobs = BlobStore::new(dir.path().to_path_buf());
-        let state = runtime_state(0);
-        let closed = state
-            .with_doc(|doc| {
-                let mut session = doc.get_bokeh_session("session-1").unwrap();
-                session.status = BokehSessionStatus::Closed;
-                doc.put_bokeh_session("session-1", &session)?;
-                Ok(session)
-            })
-            .unwrap();
-        let (broadcast, mut receiver) = tokio::sync::broadcast::channel(8);
-        assert!(ingest_kernel_event(
-            &patch_event(0, 1),
-            &[],
-            "kernel-1",
-            &state,
-            &blobs,
-            &OutputBlobPublisher::none(),
-            &broadcast
-        )
-        .await
-        .is_err());
-        let checkpoint = BokehKernelCheckpoint {
-            session_id: "session-1".into(),
-            revision: 2,
-            document: BokehKernelSerialization {
-                content: json!({"roots": []}),
-                buffers: vec![],
-            },
-        };
-        assert!(persist_checkpoint(
-            &checkpoint,
-            "kernel-1",
-            true,
-            &state,
-            &blobs,
-            &OutputBlobPublisher::none()
-        )
-        .await
-        .is_err());
-        assert_eq!(
-            state
-                .read(|doc| doc.get_bokeh_session("session-1"))
-                .unwrap(),
-            Some(closed)
-        );
-        assert!(receiver.try_recv().is_err());
-    }
-
-    fn patch_event(base_revision: u64, revision: u64) -> Value {
-        json!({
-            "schema_version": 1,
-            "session_id": "session-1",
-            "transaction_id": format!("tx-{revision}"),
-            "base_revision": base_revision,
-            "revision": revision,
-            "client_patch": {
-                "patch": {"events": []},
-                "buffers": [],
-            },
-            "server_patch": null,
-            "checkpoint": null,
-        })
-    }
+    use notebook_protocol::protocol::BokehSessionBuffer;
 
     #[test]
-    fn patch_request_keeps_bokeh_buffer_identity() {
+    fn patch_request_wire_keeps_buffer_identity_and_drops_revisions() {
         let request = BokehSessionPatchRequest {
             session_id: "session-1".to_string(),
             transaction_id: "tx-1".to_string(),
-            base_revision: 4,
-            patch: json!({"events": []}),
+            patch: json!({"events": [{"kind": "MessageSent", "msg_type": "bokeh_event"}]}),
             buffers: vec![BokehSessionBuffer {
                 id: "buffer-1".to_string(),
-                data: b"payload".to_vec(),
+                data: vec![1, 2, 3],
             }],
             buffer_refs: Vec::new(),
         };
-
         let (content, buffers) = patch_request_wire(&request);
         assert_eq!(content["buffers"][0]["id"], "buffer-1");
         assert_eq!(content["buffers"][0]["buffer_index"], 0);
-        assert_eq!(buffers, vec![Bytes::from_static(b"payload")]);
+        assert_eq!(content["buffers"][0]["hash"], hex_sha256(&[1, 2, 3]));
+        assert!(content.get("base_revision").is_none());
+        assert_eq!(buffers[0].as_ref(), &[1, 2, 3]);
     }
 
     #[test]
-    fn parses_stale_patch_reply() {
+    fn patch_reply_maps_status_and_callback_output() {
         let response = parse_patch_reply(RawBokehKernelMessage {
             msg_type: BOKEH_PATCH_REPLY.to_string(),
             content: json!({
-                "status": "stale",
-                "session_id": "session-1",
-                "transaction_id": "tx-1",
-                "revision": 8,
-                "stdout": "",
-                "stderr": "",
+                "status": "error", "session_id": "session-1", "transaction_id": "tx-1",
+                "stdout": "out", "stderr": "",
+                "error": {"ename": "ValueError", "evalue": "bad", "traceback": ["tb"]},
             }),
             buffers: Vec::new(),
         })
         .unwrap();
-
         assert_eq!(
             response.reply,
-            BokehSessionPatchReply::Stale {
+            BokehSessionPatchReply::Error {
                 session_id: "session-1".to_string(),
                 transaction_id: "tx-1".to_string(),
-                revision: 8,
+                error: "ValueError: bad".to_string(),
             }
         );
+        assert_eq!(response.stdout, "out");
+        assert_eq!(response.error_output.unwrap()["ename"], "ValueError");
     }
 
-    #[tokio::test]
-    async fn canonical_patch_appends_blob_backed_tail_and_broadcasts() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let blob_store = BlobStore::new(dir.path().join("blobs"));
-        let publisher = OutputBlobPublisher::none();
-        let state = runtime_state(0);
-        let (broadcast_tx, mut broadcast_rx) = tokio::sync::broadcast::channel(4);
-
-        let result = ingest_kernel_event(
-            &patch_event(0, 1),
-            &[],
-            "kernel-1",
-            &state,
-            &blob_store,
-            &publisher,
-            &broadcast_tx,
-        )
-        .await
-        .expect("ingest patch");
-
-        assert_eq!(
-            result,
-            BokehEventIngest::Applied {
-                checkpoint_needed: false,
-            }
-        );
-        let session = state
-            .read(|doc| doc.get_bokeh_session("session-1"))
-            .expect("read state")
-            .expect("session");
-        assert_eq!(session.head_revision, 1);
-        assert_eq!(session.patch_tail.len(), 1);
-        assert_eq!(session.patch_tail[0].base_revision, 0);
-        assert_eq!(session.patch_tail[0].revision, 1);
-        assert!(blob_store.exists(&session.patch_tail[0].content_ref.blob));
-
-        match broadcast_rx.recv().await.expect("broadcast") {
-            NotebookBroadcast::BokehSessionPatch { patch } => {
-                assert_eq!(patch.session_id, "session-1");
-                assert_eq!(patch.revision, 1);
-            }
-            NotebookBroadcast::Comm { .. } => panic!("expected Bokeh patch broadcast"),
-        }
-    }
-
-    #[tokio::test]
-    async fn canonical_noop_event_advances_revision_and_broadcasts() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let blob_store = BlobStore::new(dir.path().join("blobs"));
-        let publisher = OutputBlobPublisher::none();
-        let state = runtime_state(0);
-        let (broadcast_tx, mut broadcast_rx) = tokio::sync::broadcast::channel(4);
-        let event = json!({
-            "schema_version": 1,
-            "session_id": "session-1",
-            "transaction_id": "tx-button-click",
-            "base_revision": 0,
-            "revision": 1,
-            "client_patch": null,
-            "server_patch": null,
-            "checkpoint": null,
+    #[test]
+    fn stored_output_drops_ingested_session_doc_but_keeps_document() {
+        let output = json!({
+            "output_type": "display_data",
+            "data": {BOKEH_SESSION_MIME: {
+                "session_id": "s", "document": {"roots": []},
+                "session_doc": {"models": {}}, "session_doc_buffers": [],
+            }},
         });
-
-        let result = ingest_kernel_event(
-            &event,
-            &[],
-            "kernel-1",
-            &state,
-            &blob_store,
-            &publisher,
-            &broadcast_tx,
-        )
-        .await
-        .expect("ingest no-op revision");
-
-        assert_eq!(
-            result,
-            BokehEventIngest::Applied {
-                checkpoint_needed: false,
-            }
-        );
-        let session = state
-            .read(|doc| doc.get_bokeh_session("session-1"))
-            .expect("read state")
-            .expect("session");
-        assert_eq!(session.head_revision, 1);
-        assert_eq!(session.patch_tail.len(), 1);
-        match broadcast_rx.recv().await.expect("broadcast") {
-            NotebookBroadcast::BokehSessionPatch { patch } => {
-                assert_eq!(patch.transaction_id, "tx-button-click");
-                assert_eq!(patch.revision, 1);
-                assert!(patch.client_patch.is_none());
-                assert!(patch.server_patch.is_none());
-                assert!(patch.checkpoint.is_none());
-            }
-            NotebookBroadcast::Comm { .. } => panic!("expected Bokeh patch broadcast"),
-        }
-    }
-
-    #[tokio::test]
-    async fn revision_gap_requests_resync_without_advancing_state() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let blob_store = BlobStore::new(dir.path().join("blobs"));
-        let publisher = OutputBlobPublisher::none();
-        let state = runtime_state(0);
-        let (broadcast_tx, mut broadcast_rx) = tokio::sync::broadcast::channel(4);
-
-        let result = ingest_kernel_event(
-            &patch_event(2, 3),
-            &[],
-            "kernel-1",
-            &state,
-            &blob_store,
-            &publisher,
-            &broadcast_tx,
-        )
-        .await
-        .expect("ingest gap");
-
-        assert_eq!(
-            result,
-            BokehEventIngest::ResyncNeeded {
-                session_id: "session-1".to_string(),
-            }
-        );
-        let session = state
-            .read(|doc| doc.get_bokeh_session("session-1"))
-            .expect("read state")
-            .expect("session");
-        assert_eq!(session.head_revision, 0);
-        assert!(session.patch_tail.is_empty());
-        assert!(!blob_store.root().exists());
-        assert!(matches!(
-            broadcast_rx.try_recv(),
-            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-        ));
-    }
-
-    #[tokio::test]
-    async fn canonical_checkpoint_replaces_patch_tail() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let blob_store = BlobStore::new(dir.path().join("blobs"));
-        let publisher = OutputBlobPublisher::none();
-        let state = runtime_state(0);
-        let (broadcast_tx, _broadcast_rx) = tokio::sync::broadcast::channel(4);
-        ingest_kernel_event(
-            &patch_event(0, 1),
-            &[],
-            "kernel-1",
-            &state,
-            &blob_store,
-            &publisher,
-            &broadcast_tx,
-        )
-        .await
-        .expect("initial patch");
-        let checkpoint_event = json!({
-            "schema_version": 1,
-            "session_id": "session-1",
-            "transaction_id": "tx-error",
-            "base_revision": 1,
-            "revision": 2,
-            "client_patch": null,
-            "server_patch": null,
-            "checkpoint": {
-                "document": {"version": "3.9.1", "roots": []},
-                "buffers": [],
-            },
-        });
-
-        let result = ingest_kernel_event(
-            &checkpoint_event,
-            &[],
-            "kernel-1",
-            &state,
-            &blob_store,
-            &publisher,
-            &broadcast_tx,
-        )
-        .await
-        .expect("checkpoint event");
-
-        assert_eq!(
-            result,
-            BokehEventIngest::Applied {
-                checkpoint_needed: false,
-            }
-        );
-        let session = state
-            .read(|doc| doc.get_bokeh_session("session-1"))
-            .expect("read state")
-            .expect("session");
-        assert_eq!(session.head_revision, 2);
-        assert_eq!(session.checkpoint.expect("checkpoint").revision, 2);
-        assert!(session.patch_tail.is_empty());
-    }
-
-    #[tokio::test]
-    async fn canonical_checkpoint_repairs_a_revision_gap() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let blob_store = BlobStore::new(dir.path().join("blobs"));
-        let publisher = OutputBlobPublisher::none();
-        let state = runtime_state(0);
-        let (broadcast_tx, _broadcast_rx) = tokio::sync::broadcast::channel(4);
-        let checkpoint_event = json!({
-            "schema_version": 1,
-            "session_id": "session-1",
-            "transaction_id": "tx-gap-checkpoint",
-            "base_revision": 4,
-            "revision": 5,
-            "client_patch": null,
-            "server_patch": null,
-            "checkpoint": {
-                "document": {"version": "3.9.1", "roots": []},
-                "buffers": [],
-            },
-        });
-
-        let result = ingest_kernel_event(
-            &checkpoint_event,
-            &[],
-            "kernel-1",
-            &state,
-            &blob_store,
-            &publisher,
-            &broadcast_tx,
-        )
-        .await
-        .expect("repair from checkpoint");
-
-        assert_eq!(
-            result,
-            BokehEventIngest::Applied {
-                checkpoint_needed: false,
-            }
-        );
-        let session = state
-            .read(|doc| doc.get_bokeh_session("session-1"))
-            .expect("read state")
-            .expect("session");
-        assert_eq!(session.head_revision, 5);
-        assert_eq!(session.checkpoint.expect("checkpoint").revision, 5);
-    }
-
-    #[tokio::test]
-    async fn forced_checkpoint_can_advance_only_the_owning_kernel_session() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let blob_store = BlobStore::new(dir.path().join("blobs"));
-        let publisher = OutputBlobPublisher::none();
-        let state = runtime_state(0);
-        let checkpoint = BokehKernelCheckpoint {
-            session_id: "session-1".to_string(),
-            revision: 3,
-            document: BokehKernelSerialization {
-                content: json!({"version": "3.9.1", "roots": []}),
-                buffers: Vec::new(),
-            },
-        };
-
-        persist_checkpoint(
-            &checkpoint,
-            "kernel-1",
-            false,
-            &state,
-            &blob_store,
-            &publisher,
-        )
-        .await
-        .expect_err("routine compaction cannot skip revisions");
-        persist_checkpoint(
-            &checkpoint,
-            "wrong-kernel",
-            true,
-            &state,
-            &blob_store,
-            &publisher,
-        )
-        .await
-        .expect_err("foreign kernel cannot replace checkpoint");
-        persist_checkpoint(
-            &checkpoint,
-            "kernel-1",
-            true,
-            &state,
-            &blob_store,
-            &publisher,
-        )
-        .await
-        .expect("forced checkpoint");
-
-        let session = state
-            .read(|doc| doc.get_bokeh_session("session-1"))
-            .expect("read state")
-            .expect("session");
-        assert_eq!(session.head_revision, 3);
-        assert_eq!(session.checkpoint.expect("checkpoint").revision, 3);
-    }
-
-    #[tokio::test]
-    async fn callback_outputs_append_after_owning_execution_completed() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let blob_store = BlobStore::new(dir.path().join("blobs"));
-        let publisher = OutputBlobPublisher::none();
-        let state = runtime_state(0);
-        state
-            .with_doc(|doc| {
-                doc.set_execution_running("exec-1")?;
-                doc.set_execution_done("exec-1", true)
-            })
-            .expect("finish execution");
-        let response = BokehKernelPatchResponse {
-            reply: BokehSessionPatchReply::Accepted {
-                session_id: "session-1".to_string(),
-                transaction_id: "tx-output".to_string(),
-                revision: 1,
-            },
-            stdout: "callback stdout\n".to_string(),
-            stderr: "callback stderr\n".to_string(),
-            error_output: None,
-        };
-
-        append_callback_outputs("session-1", &response, &state, &blob_store, &publisher)
-            .await
-            .expect("append callback outputs");
-
-        let outputs = state
-            .read(|doc| doc.get_outputs("exec-1"))
-            .expect("read outputs");
-        assert_eq!(outputs.len(), 2);
-        assert_eq!(outputs[0]["name"], "stdout");
-        assert_eq!(outputs[0]["text"]["inline"], "callback stdout\n");
-        assert_eq!(outputs[1]["name"], "stderr");
-        assert_eq!(outputs[1]["text"]["inline"], "callback stderr\n");
+        let stripped = strip_ingested_session_doc(&output).unwrap();
+        let payload = &stripped["data"][BOKEH_SESSION_MIME];
+        assert!(payload.get("session_doc").is_none());
+        assert!(payload.get("session_doc_buffers").is_none());
+        assert_eq!(payload["document"], json!({"roots": []}));
+        assert!(strip_ingested_session_doc(&stripped).is_none());
     }
 }

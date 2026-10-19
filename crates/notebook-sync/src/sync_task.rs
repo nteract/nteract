@@ -453,6 +453,13 @@ impl SyncReactor {
         }
         // Also send CommentsDoc changes
         send_comments_sync_message(&self.io.doc, writer).await?;
+        let bokeh_frames = {
+            let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
+            state.bokeh.outbound()
+        };
+        for payload in bokeh_frames {
+            send_bokeh_frame(writer, &payload, &self.io.notebook_id).await;
+        }
         self.resolve_confirm_waiters();
         Ok(())
     }
@@ -968,11 +975,47 @@ impl SyncReactor {
                             status,
                         );
                     }
+                    SessionControlMessage::BokehSessionResync {
+                        session_id,
+                        epoch,
+                        reason,
+                    } => {
+                        let opening = {
+                            let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
+                            let actor = notebook_doc::actor_label_from_id(state.doc.get_actor());
+                            match state.bokeh.resync(&session_id, epoch, &reason, &actor) {
+                                Some((event, opening)) => {
+                                    let _ = state.bokeh_tx.send(event);
+                                    opening
+                                }
+                                None => None,
+                            }
+                        };
+                        if let Some(payload) = opening {
+                            send_bokeh_frame(writer, &payload, &self.io.notebook_id).await;
+                        }
+                    }
                     SessionControlMessage::HostedBridgeStatus { .. } => {
                         // Python/Rust notebook clients do not render desktop
                         // bridge health. Keep the additive control message
-                        // forward-compatible without changing readiness.
+                        // forward-compatible.
                     }
+                }
+                Ok(())
+            }
+
+            NotebookFrameType::BokehSessionDocSync => {
+                let reply = {
+                    let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
+                    let actor = notebook_doc::actor_label_from_id(state.doc.get_actor());
+                    let (event, reply) = state.bokeh.receive(&frame.payload, &actor);
+                    if let Some(event) = event {
+                        let _ = state.bokeh_tx.send(event);
+                    }
+                    reply
+                };
+                if let Some(payload) = reply {
+                    send_bokeh_frame(writer, &payload, &self.io.notebook_id).await;
                 }
                 Ok(())
             }
@@ -1260,6 +1303,17 @@ async fn send_state_sync_message<W: FrameSink>(
     }
 
     Ok(())
+}
+
+/// Warn-only, like the other document acks: a dead socket ends the loop on
+/// its next read.
+async fn send_bokeh_frame<W: FrameSink>(writer: &mut W, payload: &[u8], notebook_id: &str) {
+    if let Err(e) = writer
+        .send_frame(NotebookFrameType::BokehSessionDocSync, payload)
+        .await
+    {
+        warn!("[notebook-sync] Failed to send Bokeh session sync for {notebook_id}: {e}");
+    }
 }
 
 async fn send_comms_sync_message<W: FrameSink>(

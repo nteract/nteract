@@ -1,8 +1,20 @@
 """Kernel-owned Bokeh document sessions.
 
-The launcher keeps Bokeh's document and patch model intact. Producer adapters
-such as Panel create a document and roots; this module owns serialization,
-revision ordering, and the process-local lifetime of the live callback graph.
+Producer adapters such as Panel create a document and roots; this module owns
+the process-local lifetime of the live callback graph and turns Bokeh document
+events into normalized deltas for the runtime agent's session document (see
+``docs/adr/bokeh-session-documents.md``):
+
+- ``models_added``: ``{id: {type, ref_props, props}}`` for models that joined
+  the document since the last delta.
+- ``props_changed``: ``{id: {attr: value}}`` with current Python values.
+- ``models_removed``: ids that left the document.
+- ``data_events``: versioned ``ColumnDataSource.data`` changes and folds.
+- ``messages``: Python-originated ``MessageSent`` one-off events.
+
+Property values are Bokeh-encoded JSON with arrays inlined, so each value is
+self-contained. Column payloads keep Bokeh's out-of-band buffers, referenced
+by id from ``{"type": "bytes", "data": {"id": ...}}``.
 """
 
 from __future__ import annotations
@@ -11,16 +23,28 @@ import hashlib
 import json
 import logging
 import threading
+import time
 import uuid
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 log = logging.getLogger("nteract_kernel_launcher")
 
 BOKEH_SESSION_MIME = "application/vnd.nteract.bokeh-session.v1+json"
 BOKEH_SESSION_SCHEMA_VERSION = 1
+
+# A scheduled loop flush that has waited this long means the loop is blocked
+# (a running cell), so changes are published from the calling thread instead.
+INLINE_FLUSH_DELAY = 0.05
+
+# Phase 0: folding when event bytes reach twice the last fold keeps the kernel
+# hop at most ~1.5 events per tick for any table size.
+FOLD_BYTE_RATIO = 2
+FOLD_QUIET_SECONDS = 2.0
+
+_ref_props_cache: dict[type, list[str]] = {}
 
 
 @dataclass(frozen=True)
@@ -55,22 +79,56 @@ class BokehSerialization:
 
 
 @dataclass(frozen=True)
-class BokehPatchResult:
-    transaction_id: str
-    base_revision: int
-    revision: int
-    derived: BokehSerialization | None
+class BokehCheckpoint:
+    """The display-time state: Bokeh DocJson plus the normalized session state."""
+
+    document: BokehSerialization
+    session_doc: BokehSerialization
 
 
 @dataclass(frozen=True)
-class BokehServerEvent:
+class BokehDelta:
+    """One flush of kernel-side changes for the runtime agent."""
+
     session_id: str
     transaction_id: str
-    base_revision: int
-    revision: int
-    client_patch: BokehSerialization | None
-    server_patch: BokehSerialization | None
-    checkpoint: BokehSerialization | None = None
+    models_added: dict[str, dict[str, Any]] = field(default_factory=dict)
+    props_changed: dict[str, dict[str, Any]] = field(default_factory=dict)
+    models_removed: list[str] = field(default_factory=list)
+    data_events: list[dict[str, Any]] = field(default_factory=list)
+    messages: list[dict[str, Any]] = field(default_factory=list)
+    meta: dict[str, Any] | None = None
+    buffers: tuple[BokehBuffer, ...] = ()
+
+    def is_empty(self) -> bool:
+        return not (
+            self.models_added
+            or self.props_changed
+            or self.models_removed
+            or self.data_events
+            or self.messages
+            or self.meta
+        )
+
+    def content(self) -> dict[str, Any]:
+        content: dict[str, Any] = {
+            "session_id": self.session_id,
+            "transaction_id": self.transaction_id,
+            "models_added": self.models_added,
+            "props_changed": self.props_changed,
+            "models_removed": self.models_removed,
+            "data_events": self.data_events,
+            "messages": self.messages,
+        }
+        if self.meta is not None:
+            content["meta"] = self.meta
+        return content
+
+
+@dataclass(frozen=True)
+class BokehPatchResult:
+    transaction_id: str
+    delta: BokehDelta | None
 
 
 class BokehSessionError(RuntimeError):
@@ -81,33 +139,46 @@ class BokehSessionClosedError(BokehSessionError):
     pass
 
 
-class StaleBokehRevisionError(BokehSessionError):
-    def __init__(self, expected: int, actual: int) -> None:
-        self.expected = expected
-        self.actual = actual
-        super().__init__(f"stale Bokeh revision: expected {expected}, current revision is {actual}")
-
-
 class BokehPatchApplyError(BokehSessionError):
     """Patch application failed after the document may have partially changed.
 
-    Bokeh document mutation is not transactional. The revision is advanced and
-    a checkpoint is attached so the runtime can replace speculative browser
-    state instead of pretending the failed patch was rolled back.
+    Bokeh document mutation is not transactional, so the delta published for
+    the transaction carries the current value of every touched property.
     """
 
-    def __init__(
-        self,
-        message: str,
-        *,
-        transaction_id: str,
-        revision: int,
-        checkpoint: BokehSerialization,
-    ) -> None:
+    def __init__(self, message: str, *, transaction_id: str) -> None:
         self.transaction_id = transaction_id
-        self.revision = revision
-        self.checkpoint = checkpoint
         super().__init__(message)
+
+
+@dataclass
+class _SourceState:
+    version: int = 0
+    column_sizes: dict[str, int] = field(default_factory=dict)
+    bytes_since_fold: int = 0
+    last_event_at: float = 0.0
+
+    @property
+    def fold_size(self) -> int:
+        return sum(self.column_sizes.values())
+
+
+class _Encoded:
+    """Data-event payloads and the buffers they reference."""
+
+    def __init__(self) -> None:
+        self.buffers: list[BokehBuffer] = []
+
+    def encode(self, value: Any, references: Iterable[Any] = ()) -> tuple[Any, int]:
+        """Bokeh-encode with out-of-band buffers; returns JSON and its byte size."""
+        from bokeh.core.json_encoder import serialize_json
+        from bokeh.core.serialization import Serializer
+
+        serializer = Serializer(references=set(references), deferred=True)
+        text = serialize_json(serializer.encode(value))
+        buffers = [BokehBuffer(str(buffer.id), bytes(buffer.data)) for buffer in serializer.buffers]
+        self.buffers.extend(buffers)
+        return json.loads(text), len(text) + sum(len(buffer.data) for buffer in buffers)
 
 
 def _serialize_bokeh_value(value: Any) -> BokehSerialization:
@@ -126,32 +197,6 @@ def _serialize_bokeh_value(value: Any) -> BokehSerialization:
     return BokehSerialization(content=encoded, buffers=buffers)
 
 
-def _combine_patches(patches: Sequence[BokehSerialization]) -> BokehSerialization | None:
-    """Batch frozen events without changing their order or buffer IDs."""
-    if not patches:
-        return None
-    return BokehSerialization(
-        content={"events": [event for patch in patches for event in patch.content["events"]]},
-        buffers=tuple(buffer for patch in patches for buffer in patch.buffers),
-    )
-
-
-def _defined_model_ids(patch: dict[str, Any]) -> set[str]:
-    """Models defined by replayable client events, including nested definitions."""
-    model_ids: set[str] = set()
-    replayable = _replayable_client_patch(patch, ())
-    pending: list[Any] = [replayable.content] if replayable is not None else []
-    while pending:
-        value = pending.pop()
-        if isinstance(value, dict):
-            if value.get("type") == "object" and isinstance(value.get("id"), str):
-                model_ids.add(value["id"])
-            pending.extend(value.values())
-        elif isinstance(value, list):
-            pending.extend(value)
-    return model_ids
-
-
 def _current_io_loop() -> Any:
     """The kernel's IOLoop, which runs Bokeh session callbacks."""
     import asyncio
@@ -165,32 +210,54 @@ def _current_io_loop() -> Any:
     return IOLoop.current()
 
 
-def _replayable_client_patch(
-    patch: dict[str, Any], buffers: Sequence[BokehBuffer]
-) -> BokehSerialization | None:
-    """Keep client document mutations while excluding ephemeral messages.
+def ref_props(model_class: type) -> list[str]:
+    """Properties whose descriptor can hold model references; peers never write them."""
+    cached = _ref_props_cache.get(model_class)
+    if cached is None:
+        cached = sorted(
+            name for name in model_class.properties() if model_class.lookup(name).property.has_ref
+        )
+        _ref_props_cache[model_class] = cached
+    return cached
 
-    Bokeh sends user and lifecycle events as ``MessageSent`` patch events so
-    the Python document can run callbacks. Replaying those ephemeral events can
-    run callbacks again and must not enter the durable replay log. Model, root,
-    title, and column-data mutations remain replayable.
-    """
+
+def _same_json(a: Any, b: Any) -> bool:
+    """JSON equality where ``1 == 1.0`` but ``true != 1``."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return type(a) is type(b) and a == b
+    if isinstance(a, int | float) and isinstance(b, int | float):
+        return a == b
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same_json(a[key], b[key]) for key in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_same_json(x, y) for x, y in zip(a, b, strict=True))
+    return type(a) is type(b) and a == b
+
+
+def _requested_props(patch: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """The ``(model, attr) -> value`` pairs a foreign patch asks for."""
+    requested: dict[str, dict[str, Any]] = {}
     events = patch.get("events")
     if not isinstance(events, list):
-        return BokehSerialization(content=patch, buffers=tuple(buffers))
-    replayable = [
-        event
-        for event in events
-        if not (isinstance(event, dict) and event.get("kind") == "MessageSent")
-    ]
-    if not replayable:
-        return None
-    content = patch if len(replayable) == len(events) else {**patch, "events": replayable}
-    return BokehSerialization(content=content, buffers=tuple(buffers))
+        return requested
+    for event in events:
+        if not isinstance(event, dict) or event.get("kind") != "ModelChanged":
+            continue
+        model = event.get("model")
+        attr = event.get("attr")
+        if isinstance(model, dict) and isinstance(model.get("id"), str) and isinstance(attr, str):
+            requested.setdefault(model["id"], {})[attr] = event.get("new")
+    return requested
+
+
+def _is_column_source(model: Any) -> bool:
+    from bokeh.models import ColumnDataSource
+
+    return isinstance(model, ColumnDataSource)
 
 
 class BokehDocumentSession:
-    """A live Bokeh document with one serialized revision authority."""
+    """A live Bokeh document that publishes normalized deltas."""
 
     def __init__(
         self,
@@ -200,85 +267,98 @@ class BokehDocumentSession:
         producer_name: str,
         producer_version: str,
         session_id: str | None = None,
-        event_transform: Callable[[list[Any]], None] | None = None,
         cleanup: Callable[[], None] | None = None,
-        event_sink: Callable[[BokehServerEvent], None] | None = None,
+        event_sink: Callable[[BokehDelta], None] | None = None,
+        announced: bool = True,
     ) -> None:
+        import bokeh
+
         self.session_id = session_id or str(uuid.uuid4())
         self.document = document
         self.roots = tuple(roots)
         self.producer_name = producer_name
         self.producer_version = producer_version
-        self._event_transform = event_transform
+        self.bokeh_version = bokeh.__version__
         self._cleanup = cleanup
         self._event_sink = event_sink
         self._lock = threading.RLock()
-        self._revision = 0
+        self._announced = announced
         self._active_setter: str | None = None
-        self._transaction_patches: list[BokehSerialization] = []
-        self._transaction_client_models: set[str] = set()
-        self._queued_server_events: list[BokehServerEvent] = []
-        self._pending_patches: list[BokehSerialization] = []
+        self._transaction_events: list[Any] = []
+        self._queued_deltas: list[BokehDelta] = []
+        self._pending_events: list[Any] = []
         self._flush_scheduled = False
+        self._flush_scheduled_at = 0.0
+        self._quiet_fold_scheduled = False
         self._closed = False
         self._loop = _current_io_loop()
         self._session_callbacks: dict[Any, Callable[[], None]] = {}
+        self._known_models: set[str] = set(self._current_models())
+        self._sources: dict[str, _SourceState] = {}
         self.document.on_change_dispatch_to(self)
-
-    @property
-    def revision(self) -> int:
-        with self._lock:
-            return self._revision
 
     @property
     def root_ids(self) -> list[str]:
         return [str(root.id) for root in self.roots]
 
-    def set_event_sink(self, sink: Callable[[BokehServerEvent], None] | None) -> None:
+    @property
+    def announced(self) -> bool:
+        with self._lock:
+            return self._announced
+
+    def set_event_sink(self, sink: Callable[[BokehDelta], None] | None) -> None:
         with self._lock:
             self._event_sink = sink
 
-    def snapshot(self) -> BokehSerialization:
-        return self.checkpoint()[1]
+    def mark_announced(self) -> None:
+        """The session's display message is on the wire; deltas may follow it."""
+        with self._lock:
+            if self._announced or self._closed:
+                return
+            self._announced = True
+            self._flush_pending_unlocked()
 
-    def checkpoint(self) -> tuple[int, BokehSerialization]:
-        """The current revision and a document snapshot taken at it."""
+    def snapshot(self) -> BokehSerialization:
+        return self.checkpoint().document
+
+    def checkpoint(self) -> BokehCheckpoint:
+        """DocJson and the normalized session state at the same instant.
+
+        Before the announcement this becomes the baseline that later deltas
+        diff against, so changes still pending are covered by the snapshot.
+        """
         with self._lock:
             self._ensure_open()
-            self._flush_pending_unlocked()
-            return self._revision, self._snapshot_unlocked()
-
-    def _snapshot_unlocked(self) -> BokehSerialization:
-        return _serialize_bokeh_value(self.document.to_json())
+            if self._announced:
+                self._flush_pending_unlocked()
+            else:
+                self._pending_events = []
+            document = _serialize_bokeh_value(self.document.to_json())
+            session_doc = self._session_snapshot_unlocked(document.content)
+            return BokehCheckpoint(document=document, session_doc=session_doc)
 
     def apply_patch(
         self,
         *,
-        base_revision: int,
         patch: dict[str, Any],
         buffers: Sequence[BokehBuffer] = (),
         transaction_id: str | None = None,
     ) -> BokehPatchResult:
-        """Apply one browser patch and collect callback-derived document events."""
+        """Apply one foreign patch and publish its derived changes and corrections."""
         from bokeh.core.serialization import Buffer, Serialized
         from bokeh.core.types import ID
 
         transaction_id = transaction_id or str(uuid.uuid4())
+        requested = _requested_props(patch)
         with self._lock:
             self._ensure_open()
+            # A peer can only patch a session it has seen announced.
+            self._announced = True
             self._flush_pending_unlocked()
-            if base_revision > self._revision:
-                raise StaleBokehRevisionError(base_revision, self._revision)
-            # Like a Bokeh server, apply a patch made against an older revision
-            # on top of the current document (last writer wins). Rejecting it
-            # forces a full resync whenever browser layout updates race Python
-            # updates, e.g. a periodic callback animating a plot.
-            base_revision = self._revision
 
             setter = f"nteract:{self.session_id}:{transaction_id}"
-            self._transaction_client_models = _defined_model_ids(patch)
             self._active_setter = setter
-            self._transaction_patches = []
+            self._transaction_events = []
             serialized_patch: Any = patch
             if buffers:
                 serialized_patch = Serialized(
@@ -289,61 +369,66 @@ class BokehDocumentSession:
             try:
                 self.document.apply_json_patch(serialized_patch, setter=setter)
             except Exception as exc:
-                self._active_setter = None
-                self._transaction_client_models = set()
-                self._transaction_patches = []
-                base_revision = self._revision
-                self._revision += 1
-                checkpoint = self._snapshot_unlocked()
-                self._deliver_event_unlocked(
-                    BokehServerEvent(
-                        session_id=self.session_id,
-                        transaction_id=transaction_id,
-                        base_revision=base_revision,
-                        revision=self._revision,
-                        client_patch=None,
-                        server_patch=None,
-                        checkpoint=checkpoint,
-                    )
+                events = self._end_transaction_unlocked()
+                delta = self._build_delta_unlocked(
+                    events,
+                    transaction_id,
+                    echo_setter=setter,
+                    requested=requested,
+                    force_requested=True,
                 )
-                raise BokehPatchApplyError(
-                    str(exc),
-                    transaction_id=transaction_id,
-                    revision=self._revision,
-                    checkpoint=checkpoint,
-                ) from exc
+                if delta is not None:
+                    self._deliver_unlocked(delta)
+                raise BokehPatchApplyError(str(exc), transaction_id=transaction_id) from exc
 
-            derived_patches = self._transaction_patches
-            self._active_setter = None
-            self._transaction_client_models = set()
-            self._transaction_patches = []
-            self._revision += 1
-            derived = _combine_patches(derived_patches)
-            result = BokehPatchResult(
-                transaction_id=transaction_id,
-                base_revision=base_revision,
-                revision=self._revision,
-                derived=derived,
+            events = self._end_transaction_unlocked()
+            delta = self._build_delta_unlocked(
+                events, transaction_id, echo_setter=setter, requested=requested
             )
-            self._deliver_event_unlocked(
-                BokehServerEvent(
-                    session_id=self.session_id,
-                    transaction_id=transaction_id,
-                    base_revision=base_revision,
-                    revision=self._revision,
-                    client_patch=_replayable_client_patch(patch, buffers),
-                    server_patch=derived,
-                    checkpoint=None,
-                )
-            )
-            return result
+            if delta is not None:
+                self._deliver_unlocked(delta)
+            return BokehPatchResult(transaction_id=transaction_id, delta=delta)
 
-    def pop_server_events(self) -> list[BokehServerEvent]:
+    def correct(self, patch: Mapping[str, Any], transaction_id: str) -> BokehDelta | None:
+        """Publish the current value of every property a failed patch touched."""
+        with self._lock:
+            self._ensure_open()
+            self._announced = True
+            self._flush_pending_unlocked()
+            delta = self._build_delta_unlocked(
+                [], transaction_id, requested=_requested_props(patch), force_requested=True
+            )
+            if delta is not None:
+                self._deliver_unlocked(delta)
+            return delta
+
+    def fold(
+        self, source_ids: Iterable[str] | None = None, *, transaction_id: str | None = None
+    ) -> list[str]:
+        """Fold sources into full columns on request.
+
+        Without ids, folds every source with data events since its last fold.
+        Returns the folded ids; none while the document holds events.
+        """
+        with self._lock:
+            self._ensure_open()
+            self._announced = True
+            self._flush_pending_unlocked()
+            if self._pending_events or self._held():
+                return []
+            if source_ids is None:
+                ids = [sid for sid, state in self._sources.items() if state.bytes_since_fold]
+            else:
+                ids = list(source_ids)
+            return self._fold_unlocked(ids, transaction_id or str(uuid.uuid4()))
+
+    def pop_deltas(self) -> list[BokehDelta]:
+        """Flush, then return deltas that could not be handed to a sink."""
         with self._lock:
             self._flush_pending_unlocked()
-            events = self._queued_server_events
-            self._queued_server_events = []
-            return events
+            deltas = self._queued_deltas
+            self._queued_deltas = []
+            return deltas
 
     def close(self) -> None:
         with self._lock:
@@ -351,10 +436,9 @@ class BokehDocumentSession:
                 return
             self._closed = True
             self._event_sink = None
-            self._queued_server_events = []
-            self._transaction_client_models = set()
-            self._transaction_patches = []
-            self._pending_patches = []
+            self._queued_deltas = []
+            self._transaction_events = []
+            self._pending_events = []
             cleanup = self._cleanup
 
         if self._loop is not None:
@@ -366,6 +450,34 @@ class BokehDocumentSession:
                 cleanup()
             except Exception:  # noqa: BLE001
                 log.exception("Bokeh session cleanup failed for %s", self.session_id)
+
+    # ── Bokeh receivers ──────────────────────────────────────────────────
+
+    def _document_patched(self, event: Any) -> None:
+        """Bokeh callback receiver used by ``on_change_dispatch_to``."""
+        with self._lock:
+            if self._closed:
+                return
+            if self._active_setter is not None:
+                self._transaction_events.append(event)
+                return
+            self._pending_events.append(event)
+            if not self._announced:
+                return
+            if self._loop is None:
+                self._flush_pending_unlocked()
+                return
+            now = time.monotonic()
+            if not self._flush_scheduled:
+                # One delta per loop iteration while the loop is free.
+                self._flush_scheduled = True
+                self._flush_scheduled_at = now
+                self._loop.add_callback(self._flush_pending)
+            elif now - self._flush_scheduled_at >= INLINE_FLUSH_DELAY:
+                # The queued flush is still waiting, so the loop is blocked.
+                # It stays queued and picks up whatever comes after this.
+                self._flush_pending_unlocked()
+                self._flush_scheduled_at = now
 
     def _session_callback_added(self, event: Any) -> None:
         """Bokeh receiver for ``doc.add_next_tick_callback`` and friends.
@@ -425,97 +537,398 @@ class BokehDocumentSession:
         for cancel in callbacks.values():
             cancel()
 
+    # ── Flushing ─────────────────────────────────────────────────────────
+
     def _ensure_open(self) -> None:
         if self._closed:
             raise BokehSessionClosedError(f"Bokeh session {self.session_id} is closed")
 
-    def _serialize_events_unlocked(self, events: Iterable[Any]) -> BokehSerialization | None:
-        from bokeh.core.serialization import Serialized, Serializer
-        from bokeh.document.events import DocumentPatchedEvent
-
-        patch_events = [event for event in events if isinstance(event, DocumentPatchedEvent)]
-        if not patch_events:
-            return None
-        if self._event_transform is not None:
-            self._event_transform(patch_events)
-
-        references = self.document.models.synced_references
-        # Bokeh marks client-created models synced only after apply_json_patch
-        # returns. Callbacks run before then, but must already reference these
-        # models by ID; redefining them can replay streamed data twice in JS.
-        for model_id in self._transaction_client_models:
-            model = self.document.get_model_by_id(model_id)
-            if model is not None:
-                references.add(model)
-        serializer = Serializer(references=references, deferred=True)
-        serialized = _serialize_bokeh_value(
-            Serialized(
-                content={"events": serializer.encode(patch_events)},
-                buffers=serializer.buffers,
-            )
-        )
-        self.document.models.flush_synced(lambda model: not serializer.has_ref(model))
-        return serialized
-
-    def _document_patched(self, event: Any) -> None:
-        """Bokeh callback receiver used by ``on_change_dispatch_to``."""
-        with self._lock:
-            if self._closed or (
-                self._active_setter is not None and event.setter == self._active_setter
-            ):
-                return
-            # Freeze model definitions and buffers before the next mutation.
-            # Both callbacks in a browser transaction and changes in one loop
-            # iteration may introduce a model and then stream into it.
-            patch = self._serialize_events_unlocked([event])
-            if patch is None:
-                return
-            if self._active_setter is not None:
-                self._transaction_patches.append(patch)
-                return
-            self._pending_patches.append(patch)
-            if self._loop is None:
-                self._flush_pending_unlocked()
-            elif not self._flush_scheduled:
-                # One revision per IOLoop iteration instead of one per change:
-                # every revision costs the runtime a durable write, and a
-                # periodic callback updating a plot changes many properties.
-                self._flush_scheduled = True
-                self._loop.add_callback(self._flush_pending)
+    def _end_transaction_unlocked(self) -> list[Any]:
+        events = self._transaction_events
+        self._active_setter = None
+        self._transaction_events = []
+        return events
 
     def _flush_pending(self) -> None:
         with self._lock:
+            self._flush_scheduled = False
             self._flush_pending_unlocked()
 
-    def _flush_pending_unlocked(self) -> None:
-        self._flush_scheduled = False
-        patches = self._pending_patches
-        self._pending_patches = []
-        if self._closed or not patches:
+    def _flush_pending_unlocked(self, transaction_id: str | None = None) -> None:
+        if self._closed or not self._announced or not self._pending_events or self._held():
             return
-        patch = _combine_patches(patches)
-        self._revision += 1
-        self._deliver_event_unlocked(
-            BokehServerEvent(
-                session_id=self.session_id,
-                transaction_id=str(uuid.uuid4()),
-                base_revision=self._revision - 1,
-                revision=self._revision,
-                client_patch=None,
-                server_patch=patch,
-                checkpoint=None,
-            )
-        )
+        events = self._pending_events
+        self._pending_events = []
+        delta = self._build_delta_unlocked(events, transaction_id or str(uuid.uuid4()))
+        if delta is not None:
+            self._deliver_unlocked(delta)
 
-    def _deliver_event_unlocked(self, event: BokehServerEvent) -> None:
+    def _held(self) -> bool:
+        """Whether Bokeh is holding events for changes the graph already has.
+
+        Flushing or folding then would publish models without the references
+        to them, or fold data that a held stream later adds again. Unhold
+        dispatches the events, which schedules the next flush.
+        """
+        return getattr(self.document.callbacks, "hold_value", None) is not None
+
+    def _deliver_unlocked(self, delta: BokehDelta) -> None:
         if self._event_sink is None:
-            self._queued_server_events.append(event)
+            self._queued_deltas.append(delta)
             return
         try:
-            self._event_sink(event)
+            self._event_sink(delta)
         except Exception:  # noqa: BLE001
             log.exception("Bokeh session event sink failed for %s", self.session_id)
-            self._queued_server_events.append(event)
+            self._queued_deltas.append(delta)
+
+    def _current_models(self) -> dict[str, Any]:
+        models = self.document.models
+        if getattr(models, "_freeze_count", 0):
+            # Frozen mid-update: the manager has not recomputed reachability yet.
+            current: dict[str, Any] = {}
+            for root in self.document.roots:
+                for model in root.references():
+                    current[str(model.id)] = model
+            return current
+        return {str(model.id): model for model in models}
+
+    def _meta(self) -> dict[str, Any]:
+        return {
+            "root_ids": [str(root.id) for root in self.document.roots],
+            "title": self.document.title,
+        }
+
+    def _model_state(self, model: Any, serializer: Any) -> dict[str, Any]:
+        from bokeh.core.json_encoder import serialize_json
+
+        is_source = _is_column_source(model)
+        props = {
+            name: json.loads(serialize_json(serializer.encode(value)))
+            for name, value in model.properties_with_values(include_defaults=False).items()
+            if not (is_source and name == "data")
+        }
+        return {
+            "type": model.__qualified_model__,
+            "ref_props": ref_props(type(model)),
+            "props": props,
+        }
+
+    def _session_snapshot_unlocked(self, doc_json: Mapping[str, Any]) -> BokehSerialization:
+        from bokeh.core.serialization import Serializer
+
+        current = self._current_models()
+        serializer = Serializer(references=set(current.values()), deferred=False)
+        models = {mid: self._model_state(model, serializer) for mid, model in current.items()}
+        encoded = _Encoded()
+        data_events = []
+        baseline = not self._announced
+        if baseline:
+            self._known_models = set(current)
+            self._sources = {}
+        for mid, model in current.items():
+            if _is_column_source(model):
+                state = self._sources.setdefault(mid, _SourceState())
+                data_events.append(self._fold_event(mid, model, state, encoded, reset=baseline))
+        extras = {k: v for k, v in doc_json.items() if k not in ("roots", "title", "version")}
+        meta = {
+            "session_id": self.session_id,
+            "producer_name": self.producer_name,
+            "producer_version": self.producer_version,
+            "bokeh_version": self.bokeh_version,
+            **self._meta(),
+        }
+        if extras:
+            meta["doc_extras"] = extras
+        content = {"meta": meta, "models": models, "data_events": data_events}
+        return BokehSerialization(content=content, buffers=tuple(encoded.buffers))
+
+    def _fold_event(
+        self,
+        source_id: str,
+        source: Any,
+        state: _SourceState,
+        encoded: _Encoded,
+        *,
+        reset: bool = True,
+    ) -> dict[str, Any]:
+        """Full columns at the current version, by default a new fold baseline."""
+        columns = {}
+        sizes = {}
+        for name, value in source.data.items():
+            columns[name], sizes[name] = encoded.encode(value)
+        if reset:
+            state.column_sizes = sizes
+            state.bytes_since_fold = 0
+        return {
+            "kind": "ColumnsFolded",
+            "source_id": source_id,
+            "version": state.version,
+            "columns": columns,
+        }
+
+    def _fold_unlocked(self, source_ids: Sequence[str], transaction_id: str) -> list[str]:
+        current = self._current_models()
+        folded = [sid for sid in source_ids if _is_column_source(current.get(sid))]
+        if not folded:
+            return []
+        encoded = _Encoded()
+        events = [
+            self._fold_event(
+                sid, current[sid], self._sources.setdefault(sid, _SourceState()), encoded
+            )
+            for sid in folded
+        ]
+        self._deliver_unlocked(
+            BokehDelta(
+                session_id=self.session_id,
+                transaction_id=transaction_id,
+                data_events=events,
+                buffers=tuple(encoded.buffers),
+            )
+        )
+        return folded
+
+    def _quiet_fold(self) -> None:
+        with self._lock:
+            self._quiet_fold_scheduled = False
+            if self._closed or not self._announced:
+                return
+            self._flush_pending_unlocked()
+            if self._pending_events or self._held():
+                self._schedule_quiet_fold_unlocked()
+                return
+            now = time.monotonic()
+            due = [
+                sid
+                for sid, state in self._sources.items()
+                if state.bytes_since_fold and now - state.last_event_at >= FOLD_QUIET_SECONDS
+            ]
+            self._fold_unlocked(due, str(uuid.uuid4()))
+            if any(state.bytes_since_fold for state in self._sources.values()):
+                self._schedule_quiet_fold_unlocked()
+
+    def _schedule_quiet_fold_unlocked(self) -> None:
+        if self._loop is None or self._quiet_fold_scheduled:
+            return
+        self._quiet_fold_scheduled = True
+        loop = self._loop
+        # call_later is not thread-safe; add_callback is.
+        loop.add_callback(lambda: loop.call_later(FOLD_QUIET_SECONDS, self._quiet_fold))
+
+    def _build_delta_unlocked(
+        self,
+        events: Sequence[Any],
+        transaction_id: str,
+        *,
+        echo_setter: str | None = None,
+        requested: Mapping[str, Mapping[str, Any]] | None = None,
+        force_requested: bool = False,
+    ) -> BokehDelta | None:
+        from bokeh.core.json_encoder import serialize_json
+        from bokeh.core.serialization import Serializer
+        from bokeh.document.events import (
+            ColumnDataChangedEvent,
+            ColumnsPatchedEvent,
+            ColumnsStreamedEvent,
+            MessageSentEvent,
+            ModelChangedEvent,
+            RootAddedEvent,
+            RootRemovedEvent,
+            TitleChangedEvent,
+        )
+
+        current = self._current_models()
+        added = [mid for mid in current if mid not in self._known_models]
+        added_set = set(added)
+        removed = sorted(self._known_models - set(current))
+        serializer = Serializer(references=set(current.values()), deferred=False)
+
+        def encode_json(value: Any) -> Any:
+            return json.loads(serialize_json(serializer.encode(value)))
+
+        touched: dict[str, set[str]] = {}
+        replaced: dict[str, set[str] | None] = {}
+        source_events: dict[str, list[Any]] = {}
+        source_order: list[str] = []
+        messages: list[dict[str, Any]] = []
+        meta_changed = False
+        encoded = _Encoded()
+
+        for event in events:
+            model = getattr(event, "model", None)
+            mid = str(model.id) if model is not None else None
+            # Foreign data edits are re-emitted with a version; foreign
+            # property writes are already in the session document.
+            echo = echo_setter is not None and event.setter == echo_setter
+            if isinstance(event, ColumnsStreamedEvent | ColumnsPatchedEvent):
+                if mid in current and mid not in added_set and _is_column_source(model):
+                    if mid not in source_events:
+                        source_order.append(mid)
+                    source_events.setdefault(mid, []).append(event)
+            elif isinstance(event, ColumnDataChangedEvent) or (
+                isinstance(event, ModelChangedEvent)
+                and event.attr == "data"
+                and _is_column_source(model)
+            ):
+                if mid in current and mid not in added_set:
+                    if mid not in source_events:
+                        source_order.append(mid)
+                    source_events.setdefault(mid, [])
+                    cols = getattr(event, "cols", None)
+                    previous = replaced.get(mid, set())
+                    if cols is None or previous is None:
+                        replaced[mid] = None
+                    else:
+                        replaced[mid] = previous | set(cols)
+            elif isinstance(event, ModelChangedEvent):
+                if not echo and mid in current and mid not in added_set:
+                    touched.setdefault(mid, set()).add(event.attr)
+            elif isinstance(event, MessageSentEvent) and not echo:
+                payload, _size = encoded.encode(event.msg_data, current.values())
+                messages.append({"msg_type": event.msg_type, "msg_data": payload})
+            elif isinstance(event, RootAddedEvent | RootRemovedEvent | TitleChangedEvent):
+                meta_changed = True
+
+        props_changed: dict[str, dict[str, Any]] = {}
+        for mid, attrs in touched.items():
+            model = current[mid]
+            for attr in attrs:
+                descriptor = model.lookup(attr, raises=False)
+                if descriptor is None or not descriptor.serialized:
+                    continue
+                with suppress(Exception):
+                    props_changed.setdefault(mid, {})[attr] = encode_json(getattr(model, attr))
+
+        # Correction rule: a foreign value Python rejected or changed must be
+        # written back even when Bokeh saw no change to report.
+        for mid, attrs in (requested or {}).items():
+            model = current.get(mid)
+            if model is None or mid in added_set:
+                continue
+            for attr, value in attrs.items():
+                if model.lookup(attr, raises=False) is None:
+                    continue
+                try:
+                    actual = encode_json(getattr(model, attr))
+                except Exception:  # noqa: BLE001
+                    continue
+                if force_requested or not _same_json(actual, value):
+                    props_changed.setdefault(mid, {})[attr] = actual
+
+        models_added = {mid: self._model_state(current[mid], serializer) for mid in added}
+
+        data_events: list[dict[str, Any]] = []
+        now = time.monotonic()
+        for mid in added:
+            if _is_column_source(current[mid]):
+                state = self._sources[mid] = _SourceState()
+                data_events.append(self._fold_event(mid, current[mid], state, encoded))
+        for mid in source_order:
+            data_events.extend(
+                self._source_data_events(
+                    mid, current[mid], source_events[mid], replaced, encoded, now
+                )
+            )
+
+        for mid in removed:
+            self._sources.pop(mid, None)
+        self._known_models = set(current)
+        with suppress(Exception):
+            self.document.models.flush_synced()
+
+        delta = BokehDelta(
+            session_id=self.session_id,
+            transaction_id=transaction_id,
+            models_added=models_added,
+            props_changed=props_changed,
+            models_removed=removed,
+            data_events=data_events,
+            messages=messages,
+            meta=self._meta() if meta_changed else None,
+            buffers=tuple(encoded.buffers),
+        )
+        return None if delta.is_empty() else delta
+
+    def _source_data_events(
+        self,
+        source_id: str,
+        source: Any,
+        events: Sequence[Any],
+        replaced: Mapping[str, set[str] | None],
+        encoded: _Encoded,
+        now: float,
+    ) -> list[dict[str, Any]]:
+        from bokeh.document.events import ColumnsStreamedEvent
+
+        state = self._sources.setdefault(source_id, _SourceState())
+        current_columns = set(source.data)
+        if source_id in replaced:
+            # One replacement from current values subsumes this flush's streams
+            # and patches. Streams and patches since the last fold also force
+            # all columns, so the blobs again describe one version.
+            requested_columns = replaced[source_id]
+            if requested_columns is None or state.bytes_since_fold:
+                columns = set(current_columns)
+            else:
+                columns = set(requested_columns)
+                for event in events:
+                    keys = event.data if isinstance(event, ColumnsStreamedEvent) else event.patches
+                    columns |= set(keys)
+            removed = sorted(set(state.column_sizes) - current_columns)
+            payload = {}
+            for name in sorted(columns & current_columns):
+                payload[name], state.column_sizes[name] = encoded.encode(source.data[name])
+            for name in removed:
+                state.column_sizes.pop(name, None)
+            base = state.version
+            state.version += 1
+            state.bytes_since_fold = 0
+            return [
+                {
+                    "kind": "ColumnDataChanged",
+                    "source_id": source_id,
+                    "base_version": base,
+                    "new_version": state.version,
+                    "columns": payload,
+                    "columns_removed": removed,
+                }
+            ]
+
+        out: list[dict[str, Any]] = []
+        for event in events:
+            base = state.version
+            state.version += 1
+            if isinstance(event, ColumnsStreamedEvent):
+                data, size = encoded.encode(event.data)
+                out.append(
+                    {
+                        "kind": "ColumnsStreamed",
+                        "source_id": source_id,
+                        "base_version": base,
+                        "new_version": state.version,
+                        "data": data,
+                        "rollover": event.rollover,
+                    }
+                )
+            else:
+                patches, size = encoded.encode(event.patches)
+                out.append(
+                    {
+                        "kind": "ColumnsPatched",
+                        "source_id": source_id,
+                        "base_version": base,
+                        "new_version": state.version,
+                        "patches": patches,
+                    }
+                )
+            state.bytes_since_fold += size
+            state.last_event_at = now
+        if state.bytes_since_fold >= FOLD_BYTE_RATIO * state.fold_size:
+            out.append(self._fold_event(source_id, source, state, encoded))
+        elif state.bytes_since_fold:
+            self._schedule_quiet_fold_unlocked()
+        return out
 
 
 class BokehSessionRegistry:
@@ -524,9 +937,9 @@ class BokehSessionRegistry:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._sessions: dict[str, BokehDocumentSession] = {}
-        self._event_sink: Callable[[BokehServerEvent], None] | None = None
+        self._event_sink: Callable[[BokehDelta], None] | None = None
 
-    def set_event_sink(self, sink: Callable[[BokehServerEvent], None] | None) -> None:
+    def set_event_sink(self, sink: Callable[[BokehDelta], None] | None) -> None:
         with self._lock:
             self._event_sink = sink
             sessions = list(self._sessions.values())

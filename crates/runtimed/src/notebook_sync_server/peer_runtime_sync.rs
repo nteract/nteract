@@ -203,7 +203,7 @@ fn send_runtime_state_sync_update(
     Ok(())
 }
 
-fn runtime_state_write_scope(scope: ConnectionScope) -> RuntimeStateWriteScope {
+pub(super) fn runtime_state_write_scope(scope: ConnectionScope) -> RuntimeStateWriteScope {
     match scope {
         ConnectionScope::Viewer => RuntimeStateWriteScope::Viewer,
         ConnectionScope::Editor => RuntimeStateWriteScope::Editor,

@@ -4700,6 +4700,7 @@ async fn send_frame_bytes(
         | frame_types::RUNTIME_STATE_SYNC
         | frame_types::COMMS_DOC_SYNC
         | frame_types::COMMENTS_DOC_SYNC
+        | frame_types::BOKEH_SESSION_DOC_SYNC
         | frame_types::POOL_STATE_SYNC
         | frame_types::PUT_BLOB => handle
             .forward_frame(frame_type, payload.to_vec())

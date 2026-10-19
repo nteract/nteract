@@ -31,19 +31,17 @@ use uuid::Uuid;
 use crate::async_outcome::{
     await_result_with_timeout, recv_oneshot_with_timeout, TimedOneShot, TimedResult,
 };
+use crate::bokeh_session::store::{BokehForeignForward, IngestContext, RawBokehDelta};
 use crate::bokeh_session::{
-    checkpoint_request_wire, parse_checkpoint_reply, parse_patch_reply, patch_request_wire,
-    BokehCheckpointFuture, BokehCloseFuture, BokehKernelCheckpoint, BokehKernelPatchResponse,
-    RawBokehKernelMessage, BOKEH_CHECKPOINT_REQUEST, BOKEH_CLOSE_REPLY, BOKEH_CLOSE_REQUEST,
-    BOKEH_PATCH_REPLY, BOKEH_PATCH_REQUEST,
+    BokehCloseFuture, BokehKernelCommand, BokehKernelRequester, RawBokehKernelMessage,
+    BOKEH_CLOSE_REPLY, BOKEH_CLOSE_REQUEST,
 };
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::output_committer::{OrdinaryOutputCommit, OrdinaryOutputKind};
 use crate::output_prep::{
     blob_store_large_state_values, escape_glob_pattern, extract_buffer_paths,
     media_to_display_data, message_content_to_nbformat, queue_command_channels,
-    store_widget_buffers, LifecycleSignal, QueueCommandReceivers, VisualizationStateCommand,
-    WorkCommand,
+    store_widget_buffers, LifecycleSignal, QueueCommandReceivers, WorkCommand,
 };
 use crate::output_redaction::OutputRedactor;
 use crate::output_store::{self, OutputManifest, DEFAULT_INLINE_THRESHOLD};
@@ -56,6 +54,9 @@ use crate::EnvType;
 use notebook_protocol::protocol::{
     BokehSessionPatchRequest, CommRequestMessage, KernelPorts, LaunchedEnvConfig,
 };
+
+/// A Panel callback runs inside the patch request, so allow long ones.
+const BOKEH_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 const REDACT_ENV_VALUES_IN_OUTPUTS_ENV: &str = "NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS";
 const KERNEL_ENV_SECRET_BLOCKLIST: &[&str] = &[
@@ -216,46 +217,23 @@ async fn bind_kernel_port_listeners(ip: IpAddr, ports: KernelPorts) -> Result<Ve
 /// Type alias for pending completion response channels.
 type PendingCompletions =
     Arc<StdMutex<HashMap<String, oneshot::Sender<(Vec<CompletionItem>, usize, usize)>>>>;
-type PendingBokehRequests = Arc<StdMutex<HashMap<String, oneshot::Sender<RawBokehKernelMessage>>>>;
-
-struct BokehCheckpointCommand {
-    session_id: String,
-    reply: oneshot::Sender<Result<BokehKernelCheckpoint>>,
-}
-
-#[derive(Clone)]
-struct BokehCheckpointRequester {
-    tx: mpsc::Sender<BokehCheckpointCommand>,
-}
-
-impl BokehCheckpointRequester {
-    async fn request(&self, session_id: String) -> Result<BokehKernelCheckpoint> {
-        let (reply, response) = oneshot::channel();
-        self.tx
-            .send(BokehCheckpointCommand { session_id, reply })
-            .await
-            .map_err(|_| anyhow::anyhow!("Bokeh checkpoint requester stopped"))?;
-        response
-            .await
-            .map_err(|_| anyhow::anyhow!("Bokeh checkpoint requester dropped its response"))?
-    }
-}
-
-async fn run_bokeh_checkpoint_requester(
+/// Send Bokeh patch and fold requests in order on a dedicated shell, so a
+/// long Panel callback never holds the primary shell or the agent loop.
+async fn run_bokeh_requester(
     connection_info: ConnectionInfo,
     kernel_session_id: String,
-    mut requests: mpsc::Receiver<BokehCheckpointCommand>,
+    mut requests: mpsc::UnboundedReceiver<BokehKernelCommand>,
 ) {
-    let checkpoint_session_id = format!("{kernel_session_id}-bokeh-checkpoint");
+    let requester_session_id = format!("{kernel_session_id}-bokeh");
     let mut shell: Option<jupyter_zmq_client::ClientShellConnection> = None;
     while let Some(command) = requests.recv().await {
         if shell.is_none() {
             let connection = async {
                 let identity =
-                    jupyter_zmq_client::peer_identity_for_session(&checkpoint_session_id)?;
+                    jupyter_zmq_client::peer_identity_for_session(&requester_session_id)?;
                 jupyter_zmq_client::create_client_shell_connection_with_identity(
                     &connection_info,
-                    &checkpoint_session_id,
+                    &requester_session_id,
                     identity,
                 )
                 .await
@@ -270,45 +248,39 @@ async fn run_bokeh_checkpoint_requester(
                 }
             }
         }
-
-        let Some(checkpoint_shell) = shell.as_mut() else {
-            let _ = command
-                .reply
-                .send(Err(anyhow::anyhow!("checkpoint shell was not initialized")));
+        let Some(bokeh_shell) = shell.as_mut() else {
             continue;
         };
-        let result = request_bokeh_checkpoint(checkpoint_shell, &command.session_id).await;
+        let result = send_bokeh_request(bokeh_shell, &command).await;
         if result.is_err() {
+            // A timed-out reply would otherwise answer the next request.
             shell = None;
         }
         let _ = command.reply.send(result);
     }
 }
 
-async fn request_bokeh_checkpoint(
+async fn send_bokeh_request(
     shell: &mut jupyter_zmq_client::ClientShellConnection,
-    session_id: &str,
-) -> Result<BokehKernelCheckpoint> {
-    let transaction_id = Uuid::new_v4().to_string();
-    let content = checkpoint_request_wire(session_id, &transaction_id);
+    command: &BokehKernelCommand,
+) -> Result<RawBokehKernelMessage> {
     let mut request: JupyterMessage = UnknownMessage {
-        msg_type: BOKEH_CHECKPOINT_REQUEST.to_string(),
-        content,
+        msg_type: command.msg_type.to_string(),
+        content: command.content.clone(),
     }
     .into();
+    request.buffers = command.buffers.clone();
     let request_id = request.header.msg_id.clone();
-    request.buffers = Vec::new();
     shell.send(request).await?;
-
-    let message = tokio::time::timeout(std::time::Duration::from_secs(10), shell.read())
+    let message = tokio::time::timeout(BOKEH_REQUEST_TIMEOUT, shell.read())
         .await
-        .map_err(|_| anyhow::anyhow!("Bokeh checkpoint request timed out"))??;
+        .map_err(|_| anyhow::anyhow!("Bokeh {} timed out", command.msg_type))??;
     anyhow::ensure!(
         message
             .parent_header
             .as_ref()
             .is_some_and(|parent| parent.msg_id == request_id),
-        "Bokeh checkpoint reply had an unexpected parent"
+        "Bokeh reply had an unexpected parent"
     );
     let buffers = message
         .buffers
@@ -316,13 +288,74 @@ async fn request_bokeh_checkpoint(
         .map(|buffer| buffer.to_vec())
         .collect();
     let JupyterMessageContent::UnknownMessage(unknown) = message.content else {
-        anyhow::bail!("Bokeh checkpoint request received an unexpected reply type");
+        anyhow::bail!("Bokeh request received an unexpected reply type");
     };
-    parse_checkpoint_reply(RawBokehKernelMessage {
+    Ok(RawBokehKernelMessage {
         msg_type: unknown.msg_type,
         content: unknown.content,
         buffers,
     })
+}
+
+/// Turn forwarded property changes into `ModelChanged` patch requests, in
+/// arrival order, and route each callback's output once it replies.
+async fn run_bokeh_forwarder(
+    mut forwards: mpsc::UnboundedReceiver<BokehForeignForward>,
+    requester: BokehKernelRequester,
+    state: runtime_doc::RuntimeStateHandle,
+    blob_store: Arc<crate::blob_store::BlobStore>,
+    blob_publisher: crate::output_blob_publisher::OutputBlobPublisher,
+) {
+    while let Some(forward) = forwards.recv().await {
+        let mut events = Vec::with_capacity(forward.changes.len());
+        for (model, attr, encoded) in &forward.changes {
+            match crate::bokeh_session::materialize::resolve_value(encoded, &blob_store).await {
+                Ok(new) => events.push(serde_json::json!({
+                    "kind": "ModelChanged",
+                    "model": {"id": model},
+                    "attr": attr,
+                    "new": new,
+                })),
+                Err(error) => warn!("[bokeh-session] Cannot forward {model}.{attr}: {error}"),
+            }
+        }
+        if events.is_empty() {
+            continue;
+        }
+        let request = BokehSessionPatchRequest {
+            session_id: forward.session_id,
+            transaction_id: forward.transaction_id,
+            patch: serde_json::json!({"events": events}),
+            buffers: Vec::new(),
+            buffer_refs: Vec::new(),
+        };
+        // Enqueued here, in order; only the reply is awaited off this loop.
+        let reply = requester.patch(&request);
+        let state = state.clone();
+        let blob_store = blob_store.clone();
+        let blob_publisher = blob_publisher.clone();
+        spawn_best_effort("bokeh-forward-reply", async move {
+            match reply.await {
+                Ok(response) => {
+                    if let Err(error) = crate::bokeh_session::append_callback_outputs(
+                        &request.session_id,
+                        &response,
+                        &state,
+                        &blob_store,
+                        &blob_publisher,
+                    )
+                    .await
+                    {
+                        warn!("[bokeh-session] Failed to append callback output: {error}");
+                    }
+                }
+                Err(error) => warn!(
+                    "[bokeh-session] Forwarding {} to the kernel failed: {error}",
+                    request.session_id
+                ),
+            }
+        });
+    }
 }
 
 const HISTORY_CACHE_CAPACITY: usize = 64;
@@ -505,34 +538,6 @@ fn try_send_comm_update(
     }
 }
 
-fn try_schedule_bokeh_checkpoint(
-    visualization_tx: &crate::output_prep::NonBlockingSender<VisualizationStateCommand>,
-    session_id: String,
-    force: bool,
-) {
-    match visualization_tx
-        .try_send(VisualizationStateCommand::CheckpointBokehSession { session_id, force })
-    {
-        Ok(()) => {}
-        Err(mpsc::error::TrySendError::Full(
-            VisualizationStateCommand::CheckpointBokehSession { session_id, .. },
-        )) => {
-            debug!(
-                "[bokeh-session] Deferring checkpoint for session {} because the visualization queue is full",
-                session_id
-            );
-        }
-        Err(mpsc::error::TrySendError::Closed(
-            VisualizationStateCommand::CheckpointBokehSession { session_id, .. },
-        )) => {
-            warn!(
-                "[bokeh-session] Cannot checkpoint session {} because the visualization queue is closed",
-                session_id
-            );
-        }
-    }
-}
-
 async fn resolve_output_widget_replay_state(
     replay_cache: &mut HashMap<String, Vec<serde_json::Value>>,
     comm_id: &str,
@@ -668,8 +673,6 @@ pub struct JupyterKernel {
     registered_execution_ids: Arc<StdMutex<HashSet<String>>>,
     /// Work command sender for iopub/shell tasks.
     work_cmd_tx: Option<crate::output_prep::NonBlockingSender<WorkCommand>>,
-    /// Bounded visualization checkpoint requests for the runtime agent.
-    visualization_cmd_tx: Option<crate::output_prep::NonBlockingSender<VisualizationStateCommand>>,
     /// Lifecycle command sender for iopub/shell tasks.
     lifecycle_cmd_tx: Option<mpsc::UnboundedSender<LifecycleSignal>>,
     /// Monotonic counter for comm insertion order (written to RuntimeStateDoc).
@@ -678,12 +681,12 @@ pub struct JupyterKernel {
     pending_history: Arc<StdMutex<HashMap<String, oneshot::Sender<Vec<HistoryEntry>>>>>,
     /// Pending completion requests: msg_id -> response channel.
     pending_completions: PendingCompletions,
-    /// Pending typed Bokeh patch replies on the primary shell connection.
-    pending_bokeh_requests: PendingBokehRequests,
-    /// Independent shell requester for document checkpoint serialization.
-    bokeh_checkpoint_requester: Option<BokehCheckpointRequester>,
-    /// Owns the independent checkpoint shell connection.
-    bokeh_checkpoint_task: Option<JoinHandle<()>>,
+    /// Serial Bokeh patch/fold requester on its own shell connection.
+    bokeh_requester: Option<BokehKernelRequester>,
+    /// The requester, delta ingest and foreign-change forwarder tasks.
+    bokeh_tasks: Vec<JoinHandle<()>>,
+    /// Session documents this kernel writes; its sessions leave on shutdown.
+    bokeh_sessions: crate::bokeh_session::store::BokehSessionStore,
     /// Per-kernel LRU cache for history searches.
     history_cache: HistoryLruCache,
     /// Terminal emulators for stream outputs (stdout/stderr).
@@ -1552,8 +1555,7 @@ impl KernelConnection for JupyterKernel {
         // Create command channels for queue processing. Lifecycle commands are
         // control-plane signals and must not be backpressured by bounded output
         // work such as captured Output widget updates.
-        let (lifecycle_cmd_tx, visualization_cmd_tx, work_cmd_tx, command_receivers) =
-            queue_command_channels(100);
+        let (lifecycle_cmd_tx, work_cmd_tx, command_receivers) = queue_command_channels(100);
 
         // Shared state refs for spawned tasks
         let registered_execution_ids: Arc<StdMutex<HashSet<String>>> =
@@ -1562,7 +1564,6 @@ impl KernelConnection for JupyterKernel {
         let pending_history: Arc<StdMutex<HashMap<String, oneshot::Sender<Vec<HistoryEntry>>>>> =
             Arc::new(StdMutex::new(HashMap::new()));
         let pending_completions: PendingCompletions = Arc::new(StdMutex::new(HashMap::new()));
-        let pending_bokeh_requests: PendingBokehRequests = Arc::new(StdMutex::new(HashMap::new()));
         let stream_terminals = Arc::new(tokio::sync::Mutex::new(StreamTerminals::new()));
 
         // Spawn process watcher — detects process exit and signals via oneshot
@@ -1597,7 +1598,6 @@ impl KernelConnection for JupyterKernel {
         let iopub_registered_execution_ids = registered_execution_ids.clone();
         let iopub_lifecycle_tx = lifecycle_cmd_tx.clone();
         let iopub_work_tx = work_cmd_tx.clone();
-        let iopub_visualization_tx = visualization_cmd_tx.clone();
         let blob_store = shared.blob_store.clone();
         let iopub_comm_seq = comm_seq.clone();
         let iopub_stream_terminals = stream_terminals.clone();
@@ -1605,11 +1605,24 @@ impl KernelConnection for JupyterKernel {
         let comms_for_iopub = shared.comms.clone();
         let iopub_output_redactor = output_redactor.clone();
         let iopub_output_blob_publisher = shared.output_blob_publisher.clone();
-        let bokeh_output_blob_publisher = iopub_output_blob_publisher.clone();
-        let bokeh_kernel_id = kernel_id.clone();
         // IOPub writes use transactions with the base kernel actor. Async
         // blob/manifest work is completed before the document transaction.
         let iopub_kernel_actor_id = kernel_actor_id.clone();
+        let (bokeh_delta_tx, bokeh_delta_rx) = mpsc::unbounded_channel::<RawBokehDelta>();
+        let bokeh_ingest_task = spawn_best_effort(
+            "bokeh-session-ingest",
+            crate::bokeh_session::store::run_ingest(
+                bokeh_delta_rx,
+                IngestContext {
+                    store: shared.bokeh_sessions.clone(),
+                    blob_store: blob_store.clone(),
+                    blob_publisher: iopub_output_blob_publisher.clone(),
+                    state: state_for_iopub.clone(),
+                    broadcast_tx: broadcast_tx.clone(),
+                    kernel_actor_id: kernel_actor_id.clone(),
+                },
+            ),
+        );
         let output_commit_context = crate::output_commit_context::OutputCommitContext::new(
             state_for_iopub.clone(),
             blob_store.clone(),
@@ -1618,7 +1631,8 @@ impl KernelConnection for JupyterKernel {
             kernel_id.clone(),
             iopub_lifecycle_tx.clone(),
             iopub_output_redactor.clone(),
-        );
+        )
+        .with_bokeh_sessions(shared.bokeh_sessions.clone());
         let stream_committer = crate::stream_committer::start_stream_committer(
             output_commit_context.clone(),
             iopub_stream_terminals.clone(),
@@ -2674,62 +2688,24 @@ impl KernelConnection for JupyterKernel {
                                 }
 
                                 JupyterMessageContent::UnknownMessage(unknown)
-                                    if unknown.msg_type == crate::bokeh_session::BOKEH_EVENT =>
+                                    if unknown.msg_type == crate::bokeh_session::BOKEH_DELTA =>
                                 {
-                                    // The initial display output creates the durable session
-                                    // record. Drain ordinary output work before accepting a
-                                    // later patch from the same ordered IOPub stream.
+                                    // The display output creates the session document. Drain
+                                    // ordinary output work first so a delta from the same
+                                    // ordered IOPub stream finds it.
                                     output_committer.flush_for_ordering().await;
-                                    let raw_buffers = message
-                                        .buffers
-                                        .iter()
-                                        .map(|buffer| buffer.to_vec())
-                                        .collect::<Vec<_>>();
-                                    match crate::bokeh_session::ingest_kernel_event(
-                                        &unknown.content,
-                                        &raw_buffers,
-                                        &bokeh_kernel_id,
-                                        &state_for_iopub,
-                                        &blob_store,
-                                        &bokeh_output_blob_publisher,
-                                        &broadcast_tx,
-                                    )
-                                    .await
-                                    {
-                                        Ok(crate::bokeh_session::BokehEventIngest::Applied {
-                                            checkpoint_needed: true,
-                                        }) => {
-                                            let session_id = unknown
-                                                .content
-                                                .get("session_id")
-                                                .and_then(serde_json::Value::as_str)
-                                                .unwrap_or_default()
-                                                .to_string();
-                                            if !session_id.is_empty() {
-                                                try_schedule_bokeh_checkpoint(
-                                                    &iopub_visualization_tx,
-                                                    session_id,
-                                                    false,
-                                                );
-                                            }
-                                        }
-                                        Ok(
-                                            crate::bokeh_session::BokehEventIngest::ResyncNeeded {
-                                                session_id,
-                                            },
-                                        ) => {
-                                            try_schedule_bokeh_checkpoint(
-                                                &iopub_visualization_tx,
-                                                session_id,
-                                                true,
-                                            );
-                                        }
-                                        Ok(_) => {}
-                                        Err(error) => {
-                                            warn!(
-                                                "[bokeh-session] Failed to ingest kernel event: {error}"
-                                            );
-                                        }
+                                    let raw = RawBokehDelta {
+                                        content: unknown.content.clone(),
+                                        buffers: message
+                                            .buffers
+                                            .iter()
+                                            .map(|buffer| buffer.to_vec())
+                                            .collect(),
+                                    };
+                                    if bokeh_delta_tx.send(raw).is_err() {
+                                        warn!(
+                                            "[bokeh-session] Delta ingest stopped; dropping delta"
+                                        );
                                     }
                                 }
 
@@ -2880,16 +2856,26 @@ impl KernelConnection for JupyterKernel {
             }
         }
 
-        let (bokeh_checkpoint_tx, bokeh_checkpoint_rx) = mpsc::channel(1);
-        let bokeh_checkpoint_requester = BokehCheckpointRequester {
-            tx: bokeh_checkpoint_tx,
-        };
-        let bokeh_checkpoint_task = spawn_best_effort(
-            "bokeh-checkpoint-shell",
-            run_bokeh_checkpoint_requester(
+        let (bokeh_request_tx, bokeh_request_rx) = mpsc::unbounded_channel();
+        let bokeh_requester = BokehKernelRequester::new(bokeh_request_tx, output_redactor.clone());
+        let bokeh_requester_task = spawn_best_effort(
+            "bokeh-shell",
+            run_bokeh_requester(
                 connection_info.clone(),
                 session_id.clone(),
-                bokeh_checkpoint_rx,
+                bokeh_request_rx,
+            ),
+        );
+        let (bokeh_forward_tx, bokeh_forward_rx) = mpsc::unbounded_channel();
+        shared.bokeh_sessions.set_forwarder(Some(bokeh_forward_tx));
+        let bokeh_forwarder_task = spawn_best_effort(
+            "bokeh-session-forwarder",
+            run_bokeh_forwarder(
+                bokeh_forward_rx,
+                bokeh_requester.clone(),
+                shared.state.clone(),
+                shared.blob_store.clone(),
+                shared.output_blob_publisher.clone(),
             ),
         );
 
@@ -2902,7 +2888,6 @@ impl KernelConnection for JupyterKernel {
         let shell_registered_execution_ids = registered_execution_ids.clone();
         let shell_pending_history = pending_history.clone();
         let shell_pending_completions = pending_completions.clone();
-        let shell_pending_bokeh_requests = pending_bokeh_requests.clone();
         let shell_state = shared.state.clone();
         let shell_blob_store = shared.blob_store.clone();
         let shell_kernel_actor_id = kernel_actor_id.clone();
@@ -3055,26 +3040,6 @@ impl KernelConnection for JupyterKernel {
                                                     reply.cursor_start,
                                                     reply.cursor_end,
                                                 ));
-                                            }
-                                        }
-                                    }
-                                }
-                                JupyterMessageContent::UnknownMessage(unknown)
-                                    if unknown.msg_type == BOKEH_PATCH_REPLY =>
-                                {
-                                    if let Some(ref parent) = msg.parent_header {
-                                        if let Ok(mut pending) = shell_pending_bokeh_requests.lock()
-                                        {
-                                            if let Some(tx) = pending.remove(&parent.msg_id) {
-                                                let _ = tx.send(RawBokehKernelMessage {
-                                                    msg_type: unknown.msg_type,
-                                                    content: unknown.content,
-                                                    buffers: msg
-                                                        .buffers
-                                                        .into_iter()
-                                                        .map(|buffer| buffer.to_vec())
-                                                        .collect(),
-                                                });
                                             }
                                         }
                                     }
@@ -3374,14 +3339,17 @@ impl KernelConnection for JupyterKernel {
             comm_coalesce_task: Some(comm_coalesce_task),
             registered_execution_ids,
             work_cmd_tx: Some(work_cmd_tx),
-            visualization_cmd_tx: Some(visualization_cmd_tx),
             lifecycle_cmd_tx: Some(lifecycle_cmd_tx),
             comm_seq,
             pending_history,
             pending_completions,
-            pending_bokeh_requests,
-            bokeh_checkpoint_requester: Some(bokeh_checkpoint_requester),
-            bokeh_checkpoint_task: Some(bokeh_checkpoint_task),
+            bokeh_requester: Some(bokeh_requester),
+            bokeh_tasks: vec![
+                bokeh_requester_task,
+                bokeh_ingest_task,
+                bokeh_forwarder_task,
+            ],
+            bokeh_sessions: shared.bokeh_sessions.clone(),
             history_cache: HistoryLruCache::new(HISTORY_CACHE_CAPACITY),
             stream_terminals,
             output_redactor,
@@ -3482,8 +3450,9 @@ impl KernelConnection for JupyterKernel {
         if let Some(task) = self.shell_reader_task.take() {
             task.abort();
         }
-        self.bokeh_checkpoint_requester.take();
-        if let Some(task) = self.bokeh_checkpoint_task.take() {
+        self.bokeh_requester.take();
+        self.bokeh_sessions.set_forwarder(None);
+        for task in self.bokeh_tasks.drain(..) {
             task.abort();
         }
         if let Some(task) = self.process_watcher_task.take() {
@@ -3557,7 +3526,6 @@ impl KernelConnection for JupyterKernel {
         self.connection_file = None;
         self.registered_execution_ids.lock().unwrap().clear();
         self.work_cmd_tx = None;
-        self.visualization_cmd_tx = None;
         self.lifecycle_cmd_tx = None;
 
         info!("[jupyter-kernel] Kernel shutdown complete");
@@ -3636,29 +3604,6 @@ impl KernelConnection for JupyterKernel {
 
     // ── Bokeh document sessions ─────────────────────────────────────────
 
-    async fn apply_bokeh_session_patch(
-        &mut self,
-        request: BokehSessionPatchRequest,
-    ) -> Result<BokehKernelPatchResponse> {
-        let (content, buffers) = patch_request_wire(&request);
-        let raw = self
-            .send_bokeh_shell_request(BOKEH_PATCH_REQUEST, content, buffers)
-            .await?;
-        let mut response = parse_patch_reply(raw)?;
-        response.stdout = self
-            .output_redactor
-            .redact_text(&response.stdout)
-            .into_owned();
-        response.stderr = self
-            .output_redactor
-            .redact_text(&response.stderr)
-            .into_owned();
-        if let Some(error) = response.error_output.take() {
-            response.error_output = Some(self.output_redactor.redact_output_value(&error));
-        }
-        Ok(response)
-    }
-
     fn bokeh_session_close_request(&self, session_id: String) -> Option<BokehCloseFuture> {
         let connection_info = self.connection_info.clone()?;
         let client_session_id = format!("{}-bokeh-close-{}", self.session_id, Uuid::new_v4());
@@ -3729,12 +3674,8 @@ impl KernelConnection for JupyterKernel {
         }))
     }
 
-    fn bokeh_session_checkpoint_request(
-        &self,
-        session_id: String,
-    ) -> Option<BokehCheckpointFuture> {
-        let requester = self.bokeh_checkpoint_requester.clone()?;
-        Some(Box::pin(async move { requester.request(session_id).await }))
+    fn bokeh_requester(&self) -> Option<BokehKernelRequester> {
+        self.bokeh_requester.clone()
     }
 
     // ── Completions ──────────────────────────────────────────────────────
@@ -3889,50 +3830,6 @@ impl KernelConnection for JupyterKernel {
 }
 
 impl JupyterKernel {
-    async fn send_bokeh_shell_request(
-        &mut self,
-        msg_type: &str,
-        content: serde_json::Value,
-        buffers: Vec<Bytes>,
-    ) -> Result<RawBokehKernelMessage> {
-        let pending = self.pending_bokeh_requests.clone();
-        let shell = self
-            .shell_writer
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("No kernel running"))?;
-
-        let mut message: JupyterMessage = UnknownMessage {
-            msg_type: msg_type.to_string(),
-            content,
-        }
-        .into();
-        message.buffers = buffers;
-        let msg_id = message.header.msg_id.clone();
-        let (tx, rx) = oneshot::channel();
-        pending
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Bokeh request lock poisoned"))?
-            .insert(msg_id.clone(), tx);
-
-        if let Err(error) = shell.send(message).await {
-            if let Ok(mut guard) = pending.lock() {
-                guard.remove(&msg_id);
-            }
-            return Err(error.into());
-        }
-
-        match recv_oneshot_with_timeout(rx, std::time::Duration::from_secs(10)).await {
-            TimedOneShot::Received(reply) => Ok(reply),
-            TimedOneShot::SenderDropped => Err(anyhow::anyhow!("Bokeh request cancelled")),
-            TimedOneShot::TimedOut => {
-                if let Ok(mut guard) = pending.lock() {
-                    guard.remove(&msg_id);
-                }
-                Err(anyhow::anyhow!("Bokeh request timed out"))
-            }
-        }
-    }
-
     /// Get an InterruptHandle for concurrent interrupt without &mut self.
     pub fn interrupt_handle(&self) -> Option<InterruptHandle> {
         self.connection_info.as_ref().map(|ci| InterruptHandle {
@@ -3959,6 +3856,9 @@ impl Drop for JupyterKernel {
         }
         self.comm_coalesce_tx.take();
         if let Some(task) = self.comm_coalesce_task.take() {
+            task.abort();
+        }
+        for task in self.bokeh_tasks.drain(..) {
             task.abort();
         }
 
@@ -4196,8 +4096,7 @@ mod tests {
 
     #[test]
     fn comm_update_replay_is_best_effort_when_work_queue_is_full() {
-        let (_lifecycle_tx, _visualization_tx, tx, mut receivers) =
-            crate::output_prep::queue_command_channels(1);
+        let (_lifecycle_tx, tx, mut receivers) = crate::output_prep::queue_command_channels(1);
 
         try_send_comm_update(
             &tx,

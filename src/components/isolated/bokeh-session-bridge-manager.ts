@@ -1,167 +1,71 @@
-import type {
-  BlobRef,
-  BokehSessionBufferRef,
-  BokehSessionPatchBroadcast,
-  BokehSessionPatchEvent,
-  BokehSessionPatchPayload,
-  BokehSessionPatchReply,
-  BokehSessionState,
-} from "runtimed";
+import type { BokehSessionBufferRef, BokehSessionEvents, BokehSessionState } from "runtimed";
 import type { BokehSessionMimePayload } from "@/components/outputs/bokeh-mime";
-import type { IsolatedFrameHandle } from "./isolated-frame";
-import type {
-  NteractBokehApplyPatchParams,
-  NteractBokehApplyPatchResult,
-  NteractBokehResolvedBuffer,
-  NteractBokehResolvedPatchEvent,
-  NteractBokehResolvedPatchPayload,
-  NteractBokehSessionOpenParams,
-  NteractBokehSessionSnapshot,
-} from "./rpc-methods";
+import type { BokehDocColumnRef } from "./bokeh-session-doc-store";
 import type { BokehSessionTransport } from "./bokeh-session-context";
+import type { IsolatedFrameHandle } from "./isolated-frame";
+import {
+  NTERACT_BOKEH_APPLY_PATCH,
+  NTERACT_BOKEH_SESSION_DATA,
+  NTERACT_BOKEH_SESSION_OPEN,
+  NTERACT_BOKEH_SET_PROPS,
+  type NteractBokehApplyPatchParams,
+  type NteractBokehApplyPatchResult,
+  type NteractBokehColumnData,
+  type NteractBokehDataEvent,
+  type NteractBokehMessage,
+  type NteractBokehResolvedBuffer,
+  type NteractBokehResolvedEvents,
+  type NteractBokehSessionDataParams,
+  type NteractBokehSessionDataResult,
+  type NteractBokehSessionMethod,
+  type NteractBokehSessionOpenParams,
+  type NteractBokehSessionOpenResult,
+  type NteractBokehSetPropsParams,
+  type NteractBokehSetPropsResult,
+} from "./rpc-methods";
 
 export interface BokehSessionOutputBinding {
   outputId: string;
   payload: BokehSessionMimePayload;
 }
 
-interface CheckpointArtifact {
-  sessionId: string;
-  revision: number;
-  document: Record<string, unknown>;
-  buffers: BokehSessionBufferRef[];
-}
+/** The daemon accepts only these over the one-off channel. */
+const ONE_OFF_EVENT_KINDS = new Set(["MessageSent", "ColumnsStreamed", "ColumnsPatched"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function requiredString(record: Record<string, unknown>, field: string): string {
-  const value = record[field];
+function requireString(params: Record<string, unknown>, field: string): string {
+  const value = params[field];
   if (typeof value !== "string" || value.length === 0) {
-    throw new Error(`Bokeh session artifact is missing ${field}`);
+    throw new Error(`Bokeh session request is missing ${field}`);
   }
   return value;
 }
 
-function requiredRevision(record: Record<string, unknown>, field: string): number {
-  const value = record[field];
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`Bokeh session artifact has an invalid ${field}`);
-  }
-  return value;
-}
-
-function bufferRefs(value: unknown): BokehSessionBufferRef[] {
-  if (!Array.isArray(value)) {
-    throw new Error("Bokeh session artifact buffers must be an array");
-  }
-  return value.map((entry) => {
-    if (!isRecord(entry)) {
-      throw new Error("Bokeh session buffer reference must be an object");
+function stringMap(value: unknown): Record<string, Record<string, string>> {
+  if (!isRecord(value)) throw new Error("Bokeh property writes must be an object");
+  const result: Record<string, Record<string, string>> = {};
+  for (const [modelId, props] of Object.entries(value)) {
+    if (!isRecord(props)) throw new Error("Bokeh property writes must map models to values");
+    for (const [name, encoded] of Object.entries(props)) {
+      if (typeof encoded !== "string") throw new Error("Bokeh property values must be JSON text");
+      (result[modelId] ??= {})[name] = encoded;
     }
-    const size = entry.size;
-    const mediaType = entry.media_type;
-    if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) {
-      throw new Error("Bokeh session buffer reference has an invalid size");
-    }
-    if (typeof mediaType !== "string" || mediaType.length === 0) {
-      throw new Error("Bokeh session buffer reference is missing media_type");
-    }
-    return {
-      id: requiredString(entry, "id"),
-      blob: requiredString(entry, "blob"),
-      size,
-      media_type: mediaType,
-    };
-  });
-}
-
-function patchPayload(value: unknown): BokehSessionPatchPayload | undefined {
-  if (value == null) return undefined;
-  if (!isRecord(value) || !isRecord(value.patch)) {
-    throw new Error("Bokeh session patch payload is invalid");
   }
-  return { patch: value.patch, buffers: bufferRefs(value.buffers) };
-}
-
-function patchEvent(value: unknown): BokehSessionPatchEvent {
-  if (!isRecord(value)) {
-    throw new Error("Bokeh session patch event must be an object");
-  }
-  const sessionId = requiredString(value, "session_id");
-  const baseRevision = requiredRevision(value, "base_revision");
-  const revision = requiredRevision(value, "revision");
-  const checkpointValue = value.checkpoint;
-  let checkpoint: BokehSessionPatchEvent["checkpoint"];
-  if (checkpointValue != null) {
-    if (!isRecord(checkpointValue) || !isRecord(checkpointValue.document)) {
-      throw new Error("Bokeh session event checkpoint is invalid");
-    }
-    const checkpointSessionId = requiredString(checkpointValue, "session_id");
-    const checkpointRevision = requiredRevision(checkpointValue, "revision");
-    if (checkpointSessionId !== sessionId) {
-      throw new Error("Bokeh session event checkpoint belongs to another session");
-    }
-    if (checkpointRevision !== revision) {
-      throw new Error("Bokeh session event checkpoint revision does not match its event");
-    }
-    checkpoint = {
-      session_id: checkpointSessionId,
-      revision: checkpointRevision,
-      document: checkpointValue.document,
-      buffers: bufferRefs(checkpointValue.buffers),
-    };
-  }
-  return {
-    session_id: sessionId,
-    transaction_id: requiredString(value, "transaction_id"),
-    base_revision: baseRevision,
-    revision,
-    client_patch: patchPayload(value.client_patch),
-    server_patch: patchPayload(value.server_patch),
-    checkpoint,
-  };
-}
-
-function replayKey(session: BokehSessionState): string {
-  const checkpoint = session.checkpoint;
-  const tail = session.patch_tail;
-  return JSON.stringify([
-    session.status,
-    session.head_revision,
-    checkpoint?.revision ?? null,
-    checkpoint?.content_ref.blob ?? null,
-    tail.map((patch) => [patch.base_revision, patch.revision, patch.content_ref.blob]),
-  ]);
-}
-
-function patchReply(reply: BokehSessionPatchReply): NteractBokehApplyPatchResult {
-  if (reply.status === "error") {
-    return {
-      status: "error",
-      sessionId: reply.session_id,
-      transactionId: reply.transaction_id,
-      revision: reply.revision,
-      error: reply.error,
-    };
-  }
-  return {
-    status: reply.status,
-    sessionId: reply.session_id,
-    transactionId: reply.transaction_id,
-    revision: reply.revision,
-  };
+  return result;
 }
 
 export class BokehSessionBridgeManager {
   private readonly frame: IsolatedFrameHandle;
   private readonly transport: BokehSessionTransport;
   private readonly bindings = new Map<string, BokehSessionOutputBinding>();
+  private readonly docSubscriptions = new Map<string, () => void>();
+  private readonly eventQueues = new Map<string, Promise<void>>();
   private runtimeSessions: Record<string, BokehSessionState> = {};
   private stateSignatures = new Map<string, string>();
-  private patchQueues = new Map<string, Promise<void>>();
-  private readonly unsubscribePatches: () => void;
+  private readonly unsubscribeEvents: () => void;
   private disposed = false;
 
   constructor(options: {
@@ -172,8 +76,8 @@ export class BokehSessionBridgeManager {
     this.frame = options.frame;
     this.transport = options.transport;
     this.setBindings(options.bindings);
-    this.unsubscribePatches = this.transport.subscribePatches((broadcast) => {
-      this.enqueueBroadcast(broadcast);
+    this.unsubscribeEvents = this.transport.subscribeEvents((events) => {
+      this.enqueueEvents(events);
     });
   }
 
@@ -181,6 +85,9 @@ export class BokehSessionBridgeManager {
     this.bindings.clear();
     for (const binding of bindings) {
       this.bindings.set(binding.payload.session_id, binding);
+    }
+    for (const sessionId of this.docSubscriptions.keys()) {
+      if (!this.bindings.has(sessionId)) this.unsubscribeDoc(sessionId);
     }
   }
 
@@ -191,103 +98,180 @@ export class BokehSessionBridgeManager {
 
   notifyCurrentState(): void {
     for (const [sessionId, binding] of this.bindings) {
-      const session = this.runtimeSessions[sessionId];
-      const signature = session
-        ? `${session.status}:${session.head_revision}:${session.output_id}`
-        : `disconnected:${binding.payload.revision}:${binding.outputId}`;
+      const session = this.ownedSession(binding);
+      const status = session?.status ?? "disconnected";
+      const epoch = session?.epoch ?? null;
+      const signature = `${status}:${epoch}:${binding.outputId}`;
       if (this.stateSignatures.get(sessionId) === signature) continue;
       this.stateSignatures.set(sessionId, signature);
       this.frame.send({
         type: "bokeh_session_state",
-        payload: {
-          sessionId,
-          outputId: binding.outputId,
-          status: session?.status ?? "disconnected",
-          headRevision: session?.head_revision ?? binding.payload.revision,
-        },
+        payload: { sessionId, outputId: binding.outputId, status, epoch },
       });
     }
   }
 
-  async openSession(params: NteractBokehSessionOpenParams): Promise<NteractBokehSessionSnapshot> {
-    const binding = this.requireBinding(params.sessionId, params.outputId);
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const session = this.requireRuntimeSession(binding);
-      const key = replayKey(session);
-      const snapshot = await this.materializeSnapshot(params.sessionId, session);
-      const current = this.runtimeSessions[params.sessionId];
-      if (current && replayKey(current) === key) {
-        return snapshot;
-      }
+  /** Serve a request from the frame; it may only reach its own outputs' sessions. */
+  async handleRequest(method: NteractBokehSessionMethod, params: unknown): Promise<unknown> {
+    if (!isRecord(params)) throw new Error("Bokeh session request is invalid");
+    switch (method) {
+      case NTERACT_BOKEH_SESSION_OPEN:
+        return this.openSession(params as unknown as NteractBokehSessionOpenParams);
+      case NTERACT_BOKEH_SET_PROPS:
+        return this.setProps(params as unknown as NteractBokehSetPropsParams);
+      case NTERACT_BOKEH_APPLY_PATCH:
+        return this.applyPatch(params as unknown as NteractBokehApplyPatchParams);
+      case NTERACT_BOKEH_SESSION_DATA:
+        return this.loadData(params as unknown as NteractBokehSessionDataParams);
+      default:
+        throw new Error(`Unknown Bokeh session request ${String(method)}`);
     }
-    throw new Error(`Bokeh session ${params.sessionId} changed while its replay was loading`);
+  }
+
+  openSession(params: NteractBokehSessionOpenParams): NteractBokehSessionOpenResult {
+    const sessionId = requireString(params as unknown as Record<string, unknown>, "sessionId");
+    const binding = this.requireBinding(sessionId, params.outputId);
+    const session = this.ownedSession(binding);
+    const status = session?.status ?? "disconnected";
+    // A frozen or reloaded session renders its payload; only live ones sync.
+    const live = status === "connected";
+    this.unsubscribeDoc(sessionId);
+    if (live) {
+      const unsubscribe = this.transport.docs.subscribe(sessionId, (update) => {
+        if (this.disposed || !this.bindings.has(sessionId)) return;
+        this.frame.send({
+          type: "bokeh_session_doc",
+          payload: { outputId: binding.outputId, update },
+        });
+      });
+      this.docSubscriptions.set(sessionId, unsubscribe);
+    }
+    return { sessionId, outputId: binding.outputId, status, epoch: session?.epoch ?? null, live };
+  }
+
+  setProps(params: NteractBokehSetPropsParams): NteractBokehSetPropsResult {
+    const sessionId = requireString(params as unknown as Record<string, unknown>, "sessionId");
+    const binding = this.requireBinding(sessionId, params.outputId);
+    if (this.ownedSession(binding)?.status !== "connected") return { status: "read_only" };
+    return this.transport.docs.writeProps(sessionId, stringMap(params.props));
   }
 
   async applyPatch(params: NteractBokehApplyPatchParams): Promise<NteractBokehApplyPatchResult> {
-    const binding = this.requireBinding(params.sessionId, params.outputId);
-    const session = this.requireRuntimeSession(binding);
-    if (session.status !== "connected") {
+    const sessionId = requireString(params as unknown as Record<string, unknown>, "sessionId");
+    const transactionId = requireString(
+      params as unknown as Record<string, unknown>,
+      "transactionId",
+    );
+    const binding = this.requireBinding(sessionId, params.outputId);
+    const session = this.ownedSession(binding);
+    if (session?.status !== "connected") {
       return {
         status: "error",
-        sessionId: params.sessionId,
-        transactionId: params.transactionId,
-        revision: session.head_revision,
-        error: `Bokeh session is ${session.status}`,
+        sessionId,
+        transactionId,
+        error: `Bokeh session is ${session?.status ?? "disconnected"}`,
       };
     }
+    const events = isRecord(params.patch) ? params.patch.events : null;
+    if (
+      !Array.isArray(events) ||
+      !events.every((event) => isRecord(event) && ONE_OFF_EVENT_KINDS.has(String(event.kind)))
+    ) {
+      throw new Error("Bokeh session patches may only carry one-off events");
+    }
     const reply = await this.transport.applyPatch({
-      sessionId: params.sessionId,
-      transactionId: params.transactionId,
-      baseRevision: params.baseRevision,
+      sessionId,
+      transactionId,
       patch: params.patch,
-      buffers: params.buffers.map((buffer) => ({
+      buffers: (params.buffers ?? []).map((buffer) => ({
         id: buffer.id,
         data: new Uint8Array(buffer.data),
       })),
     });
-    return patchReply(reply);
+    if (reply.status === "error") {
+      return { status: "error", sessionId, transactionId, error: reply.error };
+    }
+    return { status: "accepted", sessionId, transactionId };
+  }
+
+  /** Column blobs at the document's current refs, plus the retained tail. */
+  async loadData(params: NteractBokehSessionDataParams): Promise<NteractBokehSessionDataResult> {
+    const sessionId = requireString(params as unknown as Record<string, unknown>, "sessionId");
+    this.requireBinding(sessionId, params.outputId);
+    if (!isRecord(params.sources)) throw new Error("Bokeh data request needs sources");
+    const sources: Record<string, string[] | null> = {};
+    for (const [sourceId, names] of Object.entries(params.sources)) {
+      sources[sourceId] = Array.isArray(names) ? names.map(String) : null;
+    }
+    const sourceIds = Object.keys(sources);
+    const tail = params.tail
+      ? await this.transport.getData(sessionId, sourceIds)
+      : { session_id: sessionId, epoch: 0, events: [], fold_requested: [] };
+    // Read refs after the tail so a fold in between is never older than it.
+    const refs = this.transport.docs.columnRefs(sessionId, sources);
+    if (!refs) throw new Error(`Bokeh session ${sessionId} has not synced`);
+    const columns: Record<string, Record<string, NteractBokehColumnData>> = {};
+    await Promise.all(
+      Object.entries(refs.columns).map(async ([sourceId, sourceRefs]) => {
+        columns[sourceId] = await this.loadColumns(sourceRefs);
+      }),
+    );
+    const events = await Promise.all(
+      tail.events
+        .filter((events) => events.session_id === sessionId)
+        .map((events) => this.resolveEvents(events)),
+    );
+    return { epoch: refs.epoch, columns, events, foldRequested: tail.fold_requested ?? [] };
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.unsubscribePatches();
+    this.unsubscribeEvents();
+    for (const sessionId of this.docSubscriptions.keys()) this.unsubscribeDoc(sessionId);
     this.bindings.clear();
-    this.patchQueues.clear();
+    this.eventQueues.clear();
   }
 
-  private requireBinding(sessionId: string, outputId: string): BokehSessionOutputBinding {
+  private unsubscribeDoc(sessionId: string): void {
+    this.docSubscriptions.get(sessionId)?.();
+    this.docSubscriptions.delete(sessionId);
+  }
+
+  private ownedSession(binding: BokehSessionOutputBinding): BokehSessionState | undefined {
+    const session = this.runtimeSessions[binding.payload.session_id];
+    return session?.output_id === binding.outputId ? session : undefined;
+  }
+
+  private requireBinding(sessionId: string, outputId: unknown): BokehSessionOutputBinding {
     const binding = this.bindings.get(sessionId);
     if (!binding || binding.outputId !== outputId) {
-      throw new Error(`Bokeh session ${sessionId} is not owned by output ${outputId}`);
+      throw new Error(`Bokeh session ${sessionId} is not owned by output ${String(outputId)}`);
     }
     return binding;
   }
 
-  private requireRuntimeSession(binding: BokehSessionOutputBinding): BokehSessionState {
-    const session = this.runtimeSessions[binding.payload.session_id];
-    if (!session || session.output_id !== binding.outputId) {
-      throw new Error(`Bokeh session ${binding.payload.session_id} is unavailable`);
-    }
-    if (!session.checkpoint) {
-      throw new Error(`Bokeh session ${binding.payload.session_id} has no checkpoint`);
-    }
-    return session;
-  }
-
-  private async fetchJson(ref: BlobRef): Promise<unknown> {
-    const response = await this.transport.fetchBlob(ref);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch Bokeh artifact ${ref.blob}: ${response.status}`);
-    }
-    return response.json();
+  private async loadColumns(
+    refs: Record<string, BokehDocColumnRef>,
+  ): Promise<Record<string, NteractBokehColumnData>> {
+    const entries = await Promise.all(
+      Object.entries(refs).map(async ([name, ref]) => {
+        const data = await this.transport.docs.loadJson({
+          blob: ref.blob,
+          size: ref.size,
+          media_type: "application/vnd.nteract.bokeh-column.v1+json",
+        });
+        return [name, { version: ref.version, data }] as const;
+      }),
+    );
+    return Object.fromEntries(entries);
   }
 
   private async resolveBuffers(
-    refs: BokehSessionBufferRef[],
+    refs: BokehSessionBufferRef[] | undefined,
   ): Promise<NteractBokehResolvedBuffer[]> {
     return Promise.all(
-      refs.map(async (ref) => {
+      (refs ?? []).map(async (ref) => {
         const response = await this.transport.fetchBlob(ref);
         if (!response.ok) {
           throw new Error(`Failed to fetch Bokeh buffer ${ref.blob}: ${response.status}`);
@@ -303,128 +287,67 @@ export class BokehSessionBridgeManager {
     );
   }
 
-  private async resolvePatchPayload(
-    payload: BokehSessionPatchPayload | undefined,
-  ): Promise<NteractBokehResolvedPatchPayload | undefined> {
-    if (!payload) return undefined;
-    return {
-      patch: payload.patch,
-      buffers: await this.resolveBuffers(payload.buffers),
-    };
-  }
-
-  private async resolvePatchEvent(
-    event: BokehSessionPatchEvent,
-  ): Promise<NteractBokehResolvedPatchEvent> {
-    if (
-      event.checkpoint &&
-      (event.checkpoint.session_id !== event.session_id ||
-        event.checkpoint.revision !== event.revision)
-    ) {
-      throw new Error("Bokeh session event checkpoint identity does not match its event");
-    }
-    const checkpoint = event.checkpoint
-      ? {
-          revision: event.checkpoint.revision,
-          document: event.checkpoint.document,
-          buffers: await this.resolveBuffers(event.checkpoint.buffers),
+  /** Load buffers, and the blobs of full-column replacements, for the frame. */
+  private async resolveEvents(events: BokehSessionEvents): Promise<NteractBokehResolvedEvents> {
+    const dataEvents = await Promise.all(
+      (events.data_events ?? []).map(async (event): Promise<NteractBokehDataEvent | null> => {
+        if (event.kind !== "ColumnDataChanged") return event as unknown as NteractBokehDataEvent;
+        const columns = isRecord(event.columns) ? event.columns : {};
+        const refs: Record<string, BokehDocColumnRef> = {};
+        for (const [name, ref] of Object.entries(columns)) {
+          if (isRecord(ref) && typeof ref.blob === "string") {
+            refs[name] = {
+              blob: ref.blob,
+              size: Number(ref.size ?? 0),
+              version: Number(ref.version ?? event.new_version ?? 0),
+            };
+          }
         }
-      : undefined;
-    return {
-      sessionId: event.session_id,
-      transactionId: event.transaction_id,
-      baseRevision: event.base_revision,
-      revision: event.revision,
-      clientPatch: await this.resolvePatchPayload(event.client_patch),
-      serverPatch: await this.resolvePatchPayload(event.server_patch),
-      checkpoint,
-    };
-  }
-
-  private async materializeSnapshot(
-    sessionId: string,
-    session: BokehSessionState,
-  ): Promise<NteractBokehSessionSnapshot> {
-    const checkpointRef = session.checkpoint;
-    if (!checkpointRef) {
-      throw new Error(`Bokeh session ${session.output_id} has no checkpoint`);
-    }
-    const checkpointValue = await this.fetchJson(checkpointRef.content_ref);
-    if (!isRecord(checkpointValue) || !isRecord(checkpointValue.document)) {
-      throw new Error("Bokeh checkpoint artifact is invalid");
-    }
-    const checkpoint: CheckpointArtifact = {
-      sessionId: requiredString(checkpointValue, "session_id"),
-      revision: requiredRevision(checkpointValue, "revision"),
-      document: checkpointValue.document,
-      buffers: bufferRefs(checkpointValue.buffers),
-    };
-    if (checkpoint.sessionId !== sessionId) {
-      throw new Error("Bokeh checkpoint belongs to another session");
-    }
-    if (checkpoint.revision !== checkpointRef.revision) {
-      throw new Error("Bokeh checkpoint revision does not match RuntimeStateDoc");
-    }
-
-    const tailValues = await Promise.all(
-      session.patch_tail.map((entry) => this.fetchJson(entry.content_ref)),
+        return {
+          kind: "ColumnDataChanged",
+          source_id: String(event.source_id),
+          base_version: Number(event.base_version),
+          new_version: Number(event.new_version),
+          columns: await this.loadColumns(refs),
+          columns_removed: Array.isArray(event.columns_removed)
+            ? event.columns_removed.map(String)
+            : [],
+        };
+      }),
     );
-    const events = tailValues.map(patchEvent);
-    let revision = checkpoint.revision;
-    for (const event of events) {
-      if (event.session_id !== sessionId) {
-        throw new Error("Bokeh patch tail contains an event for another session");
-      }
-      if (event.base_revision !== revision || event.revision !== revision + 1) {
-        throw new Error("Bokeh patch tail is not contiguous with its checkpoint");
-      }
-      revision = event.revision;
-    }
-    if (revision !== session.head_revision) {
-      throw new Error("Bokeh replay does not reach the RuntimeStateDoc head revision");
-    }
-
     return {
-      schemaVersion: 1,
-      sessionId,
-      outputId: session.output_id,
-      status: session.status,
-      headRevision: session.head_revision,
-      checkpoint: {
-        revision: checkpoint.revision,
-        document: checkpoint.document,
-        buffers: await this.resolveBuffers(checkpoint.buffers),
-      },
-      patchTail: await Promise.all(events.map((event) => this.resolvePatchEvent(event))),
+      sessionId: events.session_id,
+      epoch: events.epoch,
+      transactionId: events.transaction_id,
+      dataEvents: dataEvents.filter((event): event is NteractBokehDataEvent => event !== null),
+      messages: (events.messages ?? []) as unknown as NteractBokehMessage[],
+      buffers: await this.resolveBuffers(events.buffers),
     };
   }
 
-  private enqueueBroadcast(broadcast: BokehSessionPatchBroadcast): void {
-    const sessionId = broadcast.patch.session_id;
-    if (!this.bindings.has(sessionId) || this.disposed) return;
-    const previous = this.patchQueues.get(sessionId) ?? Promise.resolve();
+  private enqueueEvents(events: BokehSessionEvents): void {
+    const sessionId = events.session_id;
+    if (this.disposed || !this.bindings.has(sessionId)) return;
+    const previous = this.eventQueues.get(sessionId) ?? Promise.resolve();
+    // Resolve concurrently, deliver in broadcast order.
+    const resolved = this.resolveEvents(events);
     const next = previous
-      .catch(() => {})
       .then(async () => {
-        if (this.disposed) return;
+        const payload = await resolved;
         const binding = this.bindings.get(sessionId);
-        if (!binding) return;
-        const event = await this.resolvePatchEvent(patchEvent(broadcast.patch));
-        if (this.disposed || !this.bindings.has(sessionId)) return;
+        if (this.disposed || !binding) return;
         this.frame.send({
-          type: "bokeh_session_patch",
-          payload: { outputId: binding.outputId, event },
+          type: "bokeh_session_events",
+          payload: { outputId: binding.outputId, events: payload },
         });
       })
-      .catch((error) => {
-        console.error("[bokeh-session] Failed to deliver document patch:", error);
+      .catch((error: unknown) => {
+        // The frame detects the version gap on the next event and reloads.
+        console.error("[bokeh-session] Failed to deliver session events:", error);
       });
-    this.patchQueues.set(sessionId, next);
-    const clearSettledQueue = () => {
-      if (this.patchQueues.get(sessionId) === next) {
-        this.patchQueues.delete(sessionId);
-      }
-    };
-    void next.then(clearSettledQueue, clearSettledQueue);
+    this.eventQueues.set(sessionId, next);
+    void next.then(() => {
+      if (this.eventQueues.get(sessionId) === next) this.eventQueues.delete(sessionId);
+    });
   }
 }

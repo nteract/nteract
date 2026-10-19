@@ -19,14 +19,13 @@ use runtime_doc::{CommsDocHandle, RuntimeStateHandle};
 use tokio::sync::{broadcast, RwLock};
 
 use crate::blob_store::BlobStore;
-use crate::bokeh_session::{BokehCheckpointFuture, BokehCloseFuture, BokehKernelPatchResponse};
+use crate::bokeh_session::store::BokehSessionStore;
+use crate::bokeh_session::{BokehCloseFuture, BokehKernelRequester};
 use crate::output_blob_publisher::OutputBlobPublisher;
 use crate::output_prep::QueueCommandReceivers;
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
 use crate::PooledEnv;
-use notebook_protocol::protocol::{
-    BokehSessionPatchRequest, CommRequestMessage, KernelPorts, LaunchedEnvConfig,
-};
+use notebook_protocol::protocol::{CommRequestMessage, KernelPorts, LaunchedEnvConfig};
 
 /// Configuration for launching a kernel.
 ///
@@ -81,6 +80,8 @@ pub struct KernelSharedRefs {
     /// `<principal>/<operator>` label. The desktop/UDS path leaves this unset
     /// and keeps the legacy `rt:kernel:*` actor prefix.
     pub kernel_actor_principal: Option<String>,
+    /// The runtime agent's Bokeh session documents.
+    pub bokeh_sessions: BokehSessionStore,
 }
 
 /// Internal abstraction over the Jupyter ZeroMQ IO boundary.
@@ -136,28 +137,13 @@ pub trait KernelConnection: Send {
         buffers: Vec<Vec<u8>>,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
-    /// Apply a typed patch to a kernel-owned Bokeh document session.
-    fn apply_bokeh_session_patch(
-        &mut self,
-        _request: BokehSessionPatchRequest,
-    ) -> impl std::future::Future<Output = Result<BokehKernelPatchResponse>> + Send {
-        async {
-            Err(anyhow::anyhow!(
-                "kernel does not support Bokeh document sessions"
-            ))
-        }
+    /// Serial Bokeh patch/fold requester bound to this kernel, if supported.
+    fn bokeh_requester(&self) -> Option<BokehKernelRequester> {
+        None
     }
 
     /// Build an owned close request bound to this kernel's transport.
     fn bokeh_session_close_request(&self, _session_id: String) -> Option<BokehCloseFuture> {
-        None
-    }
-
-    /// Build an owned checkpoint request that does not borrow the main agent loop.
-    fn bokeh_session_checkpoint_request(
-        &self,
-        _session_id: String,
-    ) -> Option<BokehCheckpointFuture> {
         None
     }
 

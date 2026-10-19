@@ -478,7 +478,7 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
         let mut resolved = Vec::with_capacity(outputs.len());
         for output in outputs {
             let output_value = resolve_cell_output(output, &room.blob_store).await;
-            resolved.push(output_value);
+            resolved.push(with_current_bokeh_state(room, output_value).await);
         }
         resolved_outputs_by_cell.insert(cell.id.clone(), resolved);
     }
@@ -1318,6 +1318,42 @@ pub(crate) async fn finalize_untitled_promotion(
         room.id, canonical
     );
     Ok(())
+}
+
+/// A saved Bokeh output carries its session's current state as `document`,
+/// so a reload renders it read-only without the session document. Sessions
+/// the hub never received keep the payload as stored.
+pub(super) async fn with_current_bokeh_state(
+    room: &NotebookRoom,
+    mut output: serde_json::Value,
+) -> serde_json::Value {
+    let Some(payload) = output
+        .get("data")
+        .and_then(|data| data.get(runtime_doc::BOKEH_SESSION_MIME))
+    else {
+        return output;
+    };
+    let payload = match payload {
+        serde_json::Value::String(text) => match serde_json::from_str(text) {
+            Ok(parsed) => parsed,
+            Err(_) => return output,
+        },
+        other => other.clone(),
+    };
+    let Some(snapshot) = payload
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|session_id| room.bokeh_sessions.snapshot(session_id))
+    else {
+        return output;
+    };
+    match crate::bokeh_session::materialize::frozen_payload(&payload, &snapshot, &room.blob_store)
+        .await
+    {
+        Ok(frozen) => output["data"][runtime_doc::BOKEH_SESSION_MIME] = frozen,
+        Err(error) => warn!("[notebook-sync] Saving Bokeh output without live state: {error}"),
+    }
+    output
 }
 
 /// Resolve a single cell output — handles both manifest hashes and raw JSON.

@@ -8,13 +8,7 @@ import {
   useState,
 } from "react";
 import type { IframeToParentMessage, ParentToIframeMessage, RenderPayload } from "./frame-bridge";
-import type {
-  NteractBokehApplyPatchParams,
-  NteractBokehApplyPatchResult,
-  NteractBokehSessionOpenParams,
-  NteractBokehSessionSnapshot,
-  NteractMeasureElementResult,
-} from "./rpc-methods";
+import type { NteractBokehSessionMethod, NteractMeasureElementResult } from "./rpc-methods";
 import { logIsolatedDiagnostic, type IsolatedDiagnosticHandler } from "./diagnostics";
 import {
   createIsolatedFrameDocument,
@@ -173,15 +167,8 @@ export interface IsolatedFrameProps {
    */
   onWidgetUpdate?: (commId: string, state: Record<string, unknown>) => void;
 
-  /** Materialize an authoritative Bokeh document replay for this frame. */
-  onBokehSessionOpen?: (
-    params: NteractBokehSessionOpenParams,
-  ) => Promise<NteractBokehSessionSnapshot>;
-
-  /** Apply a browser-authored Bokeh document transaction. */
-  onBokehApplyPatch?: (
-    params: NteractBokehApplyPatchParams,
-  ) => Promise<NteractBokehApplyPatchResult>;
+  /** Serve a Bokeh document-session request from this frame. */
+  onBokehSessionRequest?: (method: NteractBokehSessionMethod, params: unknown) => Promise<unknown>;
 
   /**
    * Callback when an error occurs in the iframe.
@@ -347,8 +334,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       onMouseUp,
       onDoubleClick,
       onWidgetUpdate,
-      onBokehSessionOpen,
-      onBokehApplyPatch,
+      onBokehSessionRequest,
       onError,
       onMessage,
       onDiagnostic,
@@ -400,8 +386,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const onMouseUpRef = useRef(onMouseUp);
     const onDoubleClickRef = useRef(onDoubleClick);
     const onWidgetUpdateRef = useRef(onWidgetUpdate);
-    const onBokehSessionOpenRef = useRef(onBokehSessionOpen);
-    const onBokehApplyPatchRef = useRef(onBokehApplyPatch);
+    const onBokehSessionRequestRef = useRef(onBokehSessionRequest);
     const onErrorRef = useRef(onError);
     const onMessageRef = useRef(onMessage);
     const onDiagnosticRef = useRef(onDiagnostic);
@@ -443,8 +428,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     onMouseUpRef.current = onMouseUp;
     onDoubleClickRef.current = onDoubleClick;
     onWidgetUpdateRef.current = onWidgetUpdate;
-    onBokehSessionOpenRef.current = onBokehSessionOpen;
-    onBokehApplyPatchRef.current = onBokehApplyPatch;
+    onBokehSessionRequestRef.current = onBokehSessionRequest;
     onErrorRef.current = onError;
     onMessageRef.current = onMessage;
     onDiagnosticRef.current = onDiagnostic;
@@ -530,19 +514,12 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
           onWidgetUpdate: (commId, state) => {
             onWidgetUpdateRef.current?.(commId, state);
           },
-          onBokehSessionOpen: async (params) => {
-            const handler = onBokehSessionOpenRef.current;
+          onBokehSessionRequest: async (method, params) => {
+            const handler = onBokehSessionRequestRef.current;
             if (!handler) {
               throw new Error("Bokeh document sessions are not available in this host");
             }
-            return handler(params);
-          },
-          onBokehApplyPatch: async (params) => {
-            const handler = onBokehApplyPatchRef.current;
-            if (!handler) {
-              throw new Error("Bokeh document sessions are read-only in this host");
-            }
-            return handler(params);
+            return handler(method, params);
           },
           onError: (error) => {
             onErrorRef.current?.(error);
