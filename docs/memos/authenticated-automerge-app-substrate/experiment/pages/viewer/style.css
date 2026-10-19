@@ -1052,3 +1052,16 @@ dialog::backdrop {
 .picker-error {
   margin: 0 1.2rem 1rem;
 }
+
+/* Page choices are real links, including modified-click and copy-link behavior. */
+.page-card,
+.picker-page {
+  color: inherit;
+  text-decoration: none;
+}
+.app-notice {
+  margin: 0.5rem auto;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.875rem;
+}

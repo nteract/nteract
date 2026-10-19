@@ -27,6 +27,35 @@ The experiment shares its parent's pinned upstream packages and one Automerge
 instance. Its browser and Worker entry points initialize the corresponding
 upstream WASM packaging; document objects never cross independent WASM instances.
 
+## Opening and creating Pages
+
+Each Page has a canonical browser route, `/p/<page_id>`. Navigation pushes browser
+history, Back/Forward reopen the corresponding document, and the former
+`/?page=<page_id>` links normalize without adding an extra history entry. Direct
+links open independently of the account catalog, including the return from OIDC
+sign-in. Page choices are ordinary links; the document menu offers Copy link,
+and MCP creation/read/list responses include browser URLs. Links retain the
+existing account permissions; copying one does not grant access.
+
+New Page allocates its ID and Automerge history in the browser and waits only for
+local IndexedDB persistence before opening the editor. The immutable initial
+history registers through the authenticated host in the background; subsequent
+edits arrive through native sync. Registration retries reuse the same ID,
+bootstrap, and idempotency key. Local recovery metadata is scoped by principal,
+and concurrent tabs merge their recovery checkpoints. Saved locally does not
+claim remote durability: Saved still requires the host receipt. A rejected draft
+can be deleted through the host; local tombstones prevent stale tabs from
+restoring deleted entries. Opening an existing local replica also
+avoids waiting for the network; uncached documents require an authenticated
+connection. This does not add a service worker or guarantee offline cold startup
+of the application or its authentication flow.
+
+Run `node scripts/navigation-smoke.mjs` against the local fixture to hold server
+registration open while editing, navigate Back/Forward, reload a pending draft,
+then release registration and verify two-peer sync and stable direct links. It
+also covers first-session edits, transient receipt retries, rejected-draft
+deletion, account renewal, and deletion while another tab is open.
+
 ## What owns what
 
 ```text
@@ -118,13 +147,16 @@ Saved only after a request containing its heads has reached the host, the host
 has flushed the Repo/backend, and `ctx.storage.sync()` has confirmed celld's
 configured durability. Native peer heads alone are not that receipt. Receipts
 are requested after edit bursts or reconnect, not by polling document content.
+Transient receipt failures get three bounded retries; authentication failures
+pause until the account is renewed.
 
 Browser storage belongs to one live backend. Each tab uses its own signing key
 and IndexedDB database, with Web Locks preventing duplicated tabs from sharing
-an active database. Reload in the same tab can reuse that identity. Closing the
-tab loses its sessionStorage locator; discovering and recovering abandoned,
-unsent local work in a new tab is not implemented. Browser storage eviction is
-also outside this prototype's guarantee.
+an active database. Reload in the same tab can reuse that identity. An
+account-scoped IndexedDB catalog checkpoints each Page snapshot and immutable
+registration request, so another tab can recover pending work using its own
+native backend. Concurrent checkpoints merge Automerge history atomically.
+Browser storage eviction remains outside this prototype's guarantee.
 
 API mutations require the exact `base_heads` from `read_page` and an
 `idempotency_key`. Read again after a stale-head rejection. Retry an uncertain

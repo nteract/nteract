@@ -3,7 +3,15 @@ import * as N from "@automerge/subduction";
 import { Repo } from "@automerge/automerge-repo";
 import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
 import { applyComment } from "../model/comments.mjs";
-import { projectPage } from "../model/page.mjs";
+import { createPageData, initializePage, projectPage } from "../model/page.mjs";
+import {
+  decodeSnapshot,
+  encodeSnapshot,
+  forgetLocalPage,
+  readLocalPage,
+  writeLocalPage,
+} from "./local-pages.mjs";
+export { listLocalPages, forgetLocalPage } from "./local-pages.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 16));
@@ -71,9 +79,23 @@ export class PageSession {
       throw e;
     }
   }
-  constructor(pageId, { refreshSession = () => request("/api/auth/session") } = {}) {
+  static async create({ title = "Untitled" } = {}, options = {}) {
+    const session = new PageSession(crypto.randomUUID(), options);
+    try {
+      await session.start({ title });
+      return session;
+    } catch (error) {
+      await session.close();
+      throw error;
+    }
+  }
+  constructor(
+    pageId,
+    { refreshSession = () => request("/api/auth/session"), authentication } = {},
+  ) {
     this.pageId = pageId;
     this.refreshSession = refreshSession;
+    this.authentication = authentication;
   }
   get doc() {
     return this.handle?.doc();
@@ -96,6 +118,7 @@ export class PageSession {
     this.notify(this.listeners);
   }
   receiveChange(event) {
+    if (!this.alive) return;
     this.resolveToolHints();
     const change = { ...event, remote: this.localDepth === 0 };
     if (this.composing && change.remote) this.deferredBefore ??= event.patchInfo.before;
@@ -107,7 +130,9 @@ export class PageSession {
     return this.doc ? projectPage(this.doc) : null;
   }
   requireSignIn(message = "Sign in again to sync this Page. Keep it open while you sign in.") {
+    if (this.deleted || !this.alive) return;
     this.authRequired = true;
+    this.cancelReceiptRetry();
     this.receiptRevision = (this.receiptRevision ?? 0) + 1;
     this.authProblem = message;
     this.status = "Sign in to sync";
@@ -147,8 +172,85 @@ export class PageSession {
       throw error;
     }
   }
-  async start() {
-    await this.refreshAuthentication();
+  async start(creation) {
+    // A known browser identity lets us open its local replica without a network
+    // round trip. Every remote connection still refreshes and verifies account
+    // access, including before publishing a previously offline creation.
+    if (this.authentication) {
+      if (!this.acceptAuthentication(this.authentication)) throw Error(this.authProblem);
+    } else await this.refreshAuthentication();
+    this.localPage = await readLocalPage(this.identity, this.pageId);
+    if (creation && !this.canWrite) throw Error("This account cannot create Pages");
+    await this.initializeLocal();
+    if (creation) {
+      const doc = A.change(
+        A.from(createPageData({ pageId: this.pageId, title: creation.title })),
+        (draft) => initializePage(draft),
+      );
+      this.handle = await this.repo.import(A.save(doc));
+      await this.repo.flush();
+      const now = new Date().toISOString();
+      const snapshot = encodeSnapshot(A.save(this.doc));
+      this.localPage = {
+        principal: this.identity.principal,
+        page_id: this.pageId,
+        document_id: this.handle.documentId,
+        title: this.doc.title,
+        created_at: now,
+        updated_at: now,
+        canWrite: true,
+        registered: false,
+        pending: true,
+        snapshot,
+        registration: {
+          expected_principal: this.identity.principal,
+          page_id: this.pageId,
+          document_id: this.handle.documentId,
+          initial_snapshot_base64: snapshot,
+          title: this.doc.title,
+          idempotency_key: crypto.randomUUID(),
+        },
+      };
+      await writeLocalPage(this.identity, this.localPage);
+    } else if (this.localPage) {
+      // Import merges with any history already on this replica's disk. The
+      // checkpoint also bootstraps a duplicated tab with its own signing key.
+      this.handle = await this.repo.import(decodeSnapshot(this.localPage.snapshot), {
+        docId: this.localPage.document_id,
+      });
+      this.canWrite = !!this.canWrite && !!this.localPage.canWrite;
+    } else {
+      await this.connect(false);
+      this.handle = await this.repo.find(this.connection.documentId, {
+        signal: AbortSignal.timeout(15000),
+      });
+      const now = new Date().toISOString();
+      this.localPage = {
+        principal: this.identity.principal,
+        page_id: this.pageId,
+        document_id: this.handle.documentId,
+        title: this.doc.title,
+        created_at: now,
+        updated_at: now,
+        canWrite: this.canWrite,
+        registered: true,
+        pending: false,
+        snapshot: encodeSnapshot(A.save(this.doc)),
+      };
+      await writeLocalPage(this.identity, this.localPage);
+    }
+    this.handle.on("change", (event) => this.receiveChange(event));
+    this.handle.on("ephemeral-message", (event) => this.ephemeral(event));
+    this.status = this.connection ? "Connected" : "Saved locally";
+    this.presenceTimer = setInterval(() => {
+      if (this.presenceValue) this.publishPresence(this.presenceValue);
+    }, 10000);
+    this.onlineListener = () => void this.retryConnection();
+    globalThis.addEventListener?.("online", this.onlineListener);
+    if (this.connection) this.queueSaved();
+    else void this.retryConnection();
+  }
+  async initializeLocal() {
     const scope = hex(
       new Uint8Array(
         await crypto.subtle.digest(
@@ -172,20 +274,66 @@ export class PageSession {
       ...BACKEND_LIMITS,
     });
     this.repo = new Repo({ backend: this.backend });
-    await this.connect(false);
-    this.handle = await this.repo.find(this.connection.documentId, {
-      signal: AbortSignal.timeout(15000),
-    });
-    this.handle.on("change", (event) => this.receiveChange(event));
-    this.handle.on("ephemeral-message", (event) => this.ephemeral(event));
-    this.status = "Connected";
-    if (!this.local.reloadRecovery)
-      this.problem =
-        "This browser keeps a local copy for this visit; same-tab reload recovery requires Web Locks.";
-    this.presenceTimer = setInterval(() => {
-      if (this.presenceValue) this.publishPresence(this.presenceValue);
-    }, 10000);
-    this.queueSaved();
+  }
+  persistLocal(patch = {}, { allowClosed = false } = {}) {
+    if (this.deleted || (!this.alive && !allowClosed) || !this.localPage || !this.handle)
+      return Promise.resolve();
+    const heads = A.getHeads(this.doc).join(",");
+    if (this.checkpointHeads !== heads) {
+      this.checkpointSnapshot = encodeSnapshot(A.save(this.doc));
+      this.checkpointHeads = heads;
+    }
+    const value = {
+      title: this.doc.title,
+      updated_at: new Date().toISOString(),
+      snapshot: this.checkpointSnapshot,
+      ...patch,
+    };
+    const work = (this.cacheTail ?? Promise.resolve())
+      .catch(() => {})
+      .then(async () => {
+        this.localPage = { ...this.localPage, ...value };
+        this.localPage = await writeLocalPage(this.identity, this.localPage);
+      });
+    this.cacheTail = work;
+    return work;
+  }
+  async registerDraft() {
+    if (!this.localPage?.registration || this.localPage.registered) return;
+    let result;
+    try {
+      result = await this.requestWithRenewal("/api/pages/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(this.localPage.registration),
+      });
+    } catch (error) {
+      if (error.status === 409 && error.message === "Page was deleted") await this.markDeleted();
+      throw error;
+    }
+    if (!this.alive) return;
+    if (result.page_id !== this.pageId || result.document_id !== this.localPage.document_id)
+      throw Error("Registered Page identity does not match its local document");
+    await this.persistLocal({ registered: true });
+  }
+  async markDeleted() {
+    if (this.deleted) return;
+    this.deleted = true;
+    this.canWrite = false;
+    this.authRequired = false;
+    this.status = "Deleted";
+    this.problem = "This Page was deleted.";
+    this.cancelReceiptRetry();
+    this.emit();
+    try {
+      await forgetLocalPage(this.identity, this.pageId);
+    } finally {
+      await this.close();
+    }
+  }
+  clearConnectionProblem() {
+    if (this.problem === this.connectionProblem) this.problem = "";
+    this.connectionProblem = "";
   }
   connect(refresh = true) {
     if (!this.alive) return Promise.resolve();
@@ -198,17 +346,24 @@ export class PageSession {
   async openConnection(refresh) {
     if (refresh) await this.refreshAuthentication();
     if (!this.alive) return;
+    await this.registerDraft();
+    if (!this.alive) return;
     try {
       const connection = await request(`/api/connect?page=${encodeURIComponent(this.pageId)}`);
       if (!this.alive) return;
       if (!this.acceptAuthentication(connection))
         throw Object.assign(Error(this.authProblem), { status: 401 });
+      if (this.localPage && connection.documentId !== this.localPage.document_id)
+        throw Error("Connected Page identity does not match its local document");
       this.connection = connection;
+      if (this.localPage) await this.persistLocal({ canWrite: this.canWrite });
     } catch (error) {
-      if (this.alive && (error.status === 401 || error.status === 403) && !this.authRequired)
+      if (error.status === 404) await this.markDeleted();
+      else if (this.alive && (error.status === 401 || error.status === 403) && !this.authRequired)
         this.requireSignIn();
       throw error;
     }
+    if (!this.alive) return;
     this.profiles = { ...this.profiles, ...this.connection.peerProfiles };
     const expected = new N.PeerId(bytes(this.connection.serverPeerId));
     const address = new URL(`/api/sync?page=${encodeURIComponent(this.pageId)}`, location.href);
@@ -230,7 +385,9 @@ export class PageSession {
       } finally {
         transport.free();
       }
+      if (!this.alive) return;
       this.retryAttempts = 0;
+      this.clearConnectionProblem();
       this.status = "Connected";
       this.emit();
       if (this.handle) this.queueSaved();
@@ -257,10 +414,11 @@ export class PageSession {
       if (error.status === 401 || error.status === 403)
         this.requireSignIn(this.authProblem || undefined);
       else {
-        this.problem = error.message;
+        this.connectionProblem = error.message;
+        if (!this.localProblem) this.problem = error.message;
         this.status = "Offline";
         this.emit();
-        this.scheduleReconnect();
+        if (!error.status || error.status >= 500) this.scheduleReconnect();
       }
     }
   }
@@ -289,12 +447,14 @@ export class PageSession {
     };
   }
   change(fn) {
+    if (!this.alive) throw Error("Page closed");
     if (!this.canWrite) throw Error("This Page is read only");
     this.localDepth++;
     try {
       const stored = this.handle.change(fn);
       this.queueSaved();
       Promise.resolve(stored).catch((error) => {
+        this.localProblem = error.message;
         this.problem = error.message;
         this.status = "Local save failed";
         this.emit();
@@ -326,7 +486,7 @@ export class PageSession {
   }
   ephemeral({ senderId, message }) {
     if (!message || typeof message !== "object") return;
-    if (senderId === this.connection.serverSenderId) {
+    if (senderId === this.connection?.serverSenderId) {
       if (message.kind === "identity-profiles") {
         this.profiles = { ...this.profiles, ...message.peerProfiles };
         return;
@@ -381,11 +541,37 @@ export class PageSession {
     });
   }
   queueSaved() {
+    if (!this.alive || this.deleted) return;
+    this.cancelReceiptRetry();
+    this.receiptRetryAttempts = 0;
     this.receiptRevision = (this.receiptRevision ?? 0) + 1;
     clearTimeout(this.savedTimer);
     this.status = this.authRequired ? "Sign in to sync" : "Saving";
     this.emit();
     this.savedTimer = setTimeout(() => void this.saveReceipt(), 300);
+  }
+  cancelReceiptRetry() {
+    clearTimeout(this.receiptRetryTimer);
+    this.receiptRetryTimer = undefined;
+  }
+  scheduleReceiptRetry(revision) {
+    const delays = [500, 1000, 2000];
+    const attempt = this.receiptRetryAttempts ?? 0;
+    if (
+      !this.alive ||
+      this.authRequired ||
+      this.deleted ||
+      revision !== this.receiptRevision ||
+      this.receiptRetryTimer ||
+      attempt >= delays.length
+    )
+      return;
+    this.receiptRetryAttempts = attempt + 1;
+    this.receiptRetryTimer = setTimeout(() => {
+      this.receiptRetryTimer = undefined;
+      if (this.alive && !this.authRequired && !this.deleted && revision === this.receiptRevision)
+        void this.saveReceipt();
+    }, delays[attempt]);
   }
   async requestWithRenewal(url, options) {
     try {
@@ -407,7 +593,27 @@ export class PageSession {
     const revision = this.receiptRevision;
     try {
       await this.repo.flush();
+      await this.persistLocal({ pending: true });
+      if (this.problem === this.localProblem) this.problem = "";
+      this.localProblem = "";
+    } catch (error) {
+      if (error.code === "LOCAL_PAGE_DELETED") {
+        await this.markDeleted();
+        return;
+      }
+      if (!this.alive || revision !== this.receiptRevision) return;
+      this.localProblem = this.problem = error.message;
+      this.status = "Local save failed";
+      this.emit();
+      return;
+    }
+    try {
       if (!this.alive || this.authRequired) return;
+      if (this.localPage && !this.connection) {
+        this.status = "Saved locally";
+        this.emit();
+        return;
+      }
       const heads = A.getHeads(this.doc);
       const result = await this.requestWithRenewal(
         `/api/saved?page=${encodeURIComponent(this.pageId)}`,
@@ -419,25 +625,62 @@ export class PageSession {
       );
       if (!this.alive || revision !== this.receiptRevision) return;
       this.savedHeads = result.durableHeads;
+      this.clearConnectionProblem();
       this.status = A.getHeads(this.doc).every((h) => this.savedHeads.includes(h))
         ? "Saved"
         : "Saving";
+      if (this.status === "Saved") {
+        this.cancelReceiptRetry();
+        this.receiptRetryAttempts = 0;
+        await this.persistLocal({ pending: false });
+      }
+      if (!this.alive || revision !== this.receiptRevision) return;
       this.emit();
     } catch (error) {
       if (this.alive && revision === this.receiptRevision) {
+        if (error.code === "LOCAL_PAGE_DELETED") {
+          await this.markDeleted();
+          return;
+        }
+        if (error.status === 401 || error.status === 403) this.requireSignIn();
         if (!this.authRequired) {
-          this.problem = error.message;
-          this.status = "Unsaved";
+          this.connectionProblem = error.message;
+          if (!this.localProblem) this.problem = error.message;
+          this.status = this.localPage ? "Saved locally" : "Unsaved";
+          if (!error.status || error.status === 409 || error.status >= 500)
+            this.scheduleReceiptRetry(revision);
         }
         this.emit();
       }
     }
   }
-  async close() {
+  close() {
+    this.closing ??= this.finishClose();
+    return this.closing;
+  }
+  async finishClose() {
     this.alive = false;
+    this.cancelReceiptRetry();
     clearTimeout(this.savedTimer);
     clearTimeout(this.retryTimer);
     clearInterval(this.presenceTimer);
+    globalThis.removeEventListener?.("online", this.onlineListener);
+    try {
+      if (!this.deleted) {
+        await this.repo?.flush();
+        await this.persistLocal({ pending: this.status !== "Saved" }, { allowClosed: true });
+      }
+    } catch (error) {
+      if (error.code === "LOCAL_PAGE_DELETED") {
+        this.deleted = true;
+        this.canWrite = false;
+        this.status = "Deleted";
+        this.problem = "This Page was deleted.";
+      } else {
+        this.problem = error.message;
+        this.status = "Local save failed";
+      }
+    }
     try {
       await this.repo?.shutdown();
     } catch {}

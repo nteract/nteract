@@ -1,3 +1,4 @@
+import { pagePath, isPlainNavigation } from "../shared/routes.mjs";
 import { useEffect, useRef, useState } from "react";
 import { Check, FileText, Plus, Search, X } from "lucide-react";
 
@@ -54,11 +55,14 @@ export function PagePicker({ open, pages, currentId, onClose, onOpen, onCreate, 
         )}
         <nav className="picker-list" aria-label="Pages">
           {matches.map((page) => (
-            <button
+            <a
               className="picker-page"
+              href={pagePath(page.page_id)}
               key={page.page_id}
               aria-current={page.page_id === currentId ? "page" : undefined}
-              onClick={() => {
+              onClick={(event) => {
+                if (!isPlainNavigation(event)) return;
+                event.preventDefault();
                 onClose();
                 void onOpen(page.page_id);
               }}
@@ -66,7 +70,7 @@ export function PagePicker({ open, pages, currentId, onClose, onOpen, onCreate, 
               <FileText size={18} aria-hidden="true" />
               <span>{page.title || "Untitled"}</span>
               {page.page_id === currentId && <Check size={16} aria-hidden="true" />}
-            </button>
+            </a>
           ))}
           {!matches.length && (
             <p className="muted">{query ? "No matching pages." : "No pages yet."}</p>
