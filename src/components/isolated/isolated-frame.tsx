@@ -29,7 +29,7 @@ import type {
 } from "./host-context";
 import { createNteractEmbedHostContext, mergeNteractEmbedHostContext } from "./host-context";
 import { IsolatedFrameRuntime } from "./isolated-frame-runtime";
-import { useIsolatedRenderer } from "./isolated-renderer-context";
+import { useIsolatedRenderer, useRegisterIsolatedOutput } from "./isolated-renderer-context";
 import {
   DEFAULT_OUTPUT_FRAME_MAX_HEIGHT,
   DEFAULT_OUTPUT_FRAME_MIN_HEIGHT,
@@ -82,6 +82,13 @@ export interface IsolatedFrameProps {
    * unset and uses srcDoc.
    */
   outputDocumentUrl?: string | null;
+
+  /**
+   * Register demand for the shared renderer bundle and asset-health notice.
+   * Set false for an empty, preloaded frame until it has content to render.
+   * @default true
+   */
+  requiresRenderer?: boolean;
 
   /**
    * Minimum height of the iframe in pixels.
@@ -333,6 +340,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       colorTheme,
       hostContext,
       outputDocumentUrl,
+      requiresRenderer = true,
       minHeight = DEFAULT_OUTPUT_FRAME_MIN_HEIGHT,
       maxHeight = DEFAULT_OUTPUT_FRAME_MAX_HEIGHT,
       autoHeight = false,
@@ -357,6 +365,9 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     },
     ref,
   ) {
+    // Direct consumers such as Markdown previews need the deferred bundle too,
+    // even when no OutputArea is mounted to register demand on their behalf.
+    useRegisterIsolatedOutput(requiresRenderer);
     // Get renderer bundle from context (provided by IsolatedRendererProvider)
     const {
       rendererCode,

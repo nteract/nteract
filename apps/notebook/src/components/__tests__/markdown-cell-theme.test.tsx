@@ -383,7 +383,7 @@ describe("MarkdownCell theme sync", () => {
         },
       ],
     };
-    const { getByTestId, container } = render(
+    const { getByTestId, getByLabelText, container } = render(
       <MarkdownCell
         cell={{ ...cell, source, markdownProjection }}
         onFocus={() => {}}
@@ -392,6 +392,7 @@ describe("MarkdownCell theme sync", () => {
     );
 
     expect(getByTestId("markdown-frame")).toBeInTheDocument();
+    expect(isolatedFrameProps.at(-1)?.requiresRenderer).toBe(true);
     expect(container.querySelector('[style*="background"]')).toBeNull();
     await waitFor(() => {
       expect(injectPluginsForMimes).toHaveBeenCalledWith(
@@ -407,6 +408,11 @@ describe("MarkdownCell theme sync", () => {
         }),
       );
     });
+    fireEvent.doubleClick(getByTestId("markdown-frame"));
+    await waitFor(() => {
+      expect(getByLabelText("Markdown cell content").className).toContain("hidden");
+    });
+    expect(isolatedFrameProps.at(-1)?.requiresRenderer).toBe(true);
   });
 
   it("passes the current color theme to the markdown iframe and re-syncs it on ready", async () => {
@@ -735,6 +741,7 @@ describe("MarkdownCell theme sync", () => {
 
     const preview = getByLabelText("Markdown cell content");
     expect(preview.className).toContain("hidden");
+    expect(isolatedFrameProps.at(-1)?.requiresRenderer).toBe(false);
 
     fireEvent.keyDown(getByTestId("markdown-editor"), { key: "Escape" });
 
