@@ -126,6 +126,32 @@ def _serialize_bokeh_value(value: Any) -> BokehSerialization:
     return BokehSerialization(content=encoded, buffers=buffers)
 
 
+def _combine_patches(patches: Sequence[BokehSerialization]) -> BokehSerialization | None:
+    """Batch frozen events without changing their order or buffer IDs."""
+    if not patches:
+        return None
+    return BokehSerialization(
+        content={"events": [event for patch in patches for event in patch.content["events"]]},
+        buffers=tuple(buffer for patch in patches for buffer in patch.buffers),
+    )
+
+
+def _defined_model_ids(patch: dict[str, Any]) -> set[str]:
+    """Models defined by replayable client events, including nested definitions."""
+    model_ids: set[str] = set()
+    replayable = _replayable_client_patch(patch, ())
+    pending: list[Any] = [replayable.content] if replayable is not None else []
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            if value.get("type") == "object" and isinstance(value.get("id"), str):
+                model_ids.add(value["id"])
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return model_ids
+
+
 def _current_io_loop() -> Any:
     """The kernel's IOLoop, which runs Bokeh session callbacks."""
     import asyncio
@@ -189,7 +215,8 @@ class BokehDocumentSession:
         self._lock = threading.RLock()
         self._revision = 0
         self._active_setter: str | None = None
-        self._transaction_events: list[Any] = []
+        self._transaction_patches: list[BokehSerialization] = []
+        self._transaction_client_models: set[str] = set()
         self._queued_server_events: list[BokehServerEvent] = []
         self._pending_patches: list[BokehSerialization] = []
         self._flush_scheduled = False
@@ -249,8 +276,9 @@ class BokehDocumentSession:
             base_revision = self._revision
 
             setter = f"nteract:{self.session_id}:{transaction_id}"
+            self._transaction_client_models = _defined_model_ids(patch)
             self._active_setter = setter
-            self._transaction_events = []
+            self._transaction_patches = []
             serialized_patch: Any = patch
             if buffers:
                 serialized_patch = Serialized(
@@ -262,7 +290,8 @@ class BokehDocumentSession:
                 self.document.apply_json_patch(serialized_patch, setter=setter)
             except Exception as exc:
                 self._active_setter = None
-                self._transaction_events = []
+                self._transaction_client_models = set()
+                self._transaction_patches = []
                 base_revision = self._revision
                 self._revision += 1
                 checkpoint = self._snapshot_unlocked()
@@ -284,11 +313,12 @@ class BokehDocumentSession:
                     checkpoint=checkpoint,
                 ) from exc
 
-            derived_events = self._transaction_events
+            derived_patches = self._transaction_patches
             self._active_setter = None
-            self._transaction_events = []
+            self._transaction_client_models = set()
+            self._transaction_patches = []
             self._revision += 1
-            derived = self._serialize_events_unlocked(derived_events)
+            derived = _combine_patches(derived_patches)
             result = BokehPatchResult(
                 transaction_id=transaction_id,
                 base_revision=base_revision,
@@ -322,7 +352,8 @@ class BokehDocumentSession:
             self._closed = True
             self._event_sink = None
             self._queued_server_events = []
-            self._transaction_events = []
+            self._transaction_client_models = set()
+            self._transaction_patches = []
             self._pending_patches = []
             cleanup = self._cleanup
 
@@ -408,10 +439,15 @@ class BokehDocumentSession:
         if self._event_transform is not None:
             self._event_transform(patch_events)
 
-        serializer = Serializer(
-            references=self.document.models.synced_references,
-            deferred=True,
-        )
+        references = self.document.models.synced_references
+        # Bokeh marks client-created models synced only after apply_json_patch
+        # returns. Callbacks run before then, but must already reference these
+        # models by ID; redefining them can replay streamed data twice in JS.
+        for model_id in self._transaction_client_models:
+            model = self.document.get_model_by_id(model_id)
+            if model is not None:
+                references.add(model)
+        serializer = Serializer(references=references, deferred=True)
         serialized = _serialize_bokeh_value(
             Serialized(
                 content={"events": serializer.encode(patch_events)},
@@ -428,15 +464,14 @@ class BokehDocumentSession:
                 self._active_setter is not None and event.setter == self._active_setter
             ):
                 return
-            if self._active_setter is not None:
-                self._transaction_events.append(event)
-                return
-
-            # Freeze model definitions and buffers now. Waiting until the loop
-            # flush can capture a later stream in a newly introduced model and
-            # then replay that stream again in the same batch.
+            # Freeze model definitions and buffers before the next mutation.
+            # Both callbacks in a browser transaction and changes in one loop
+            # iteration may introduce a model and then stream into it.
             patch = self._serialize_events_unlocked([event])
             if patch is None:
+                return
+            if self._active_setter is not None:
+                self._transaction_patches.append(patch)
                 return
             self._pending_patches.append(patch)
             if self._loop is None:
@@ -458,10 +493,7 @@ class BokehDocumentSession:
         self._pending_patches = []
         if self._closed or not patches:
             return
-        patch = BokehSerialization(
-            content={"events": [event for patch in patches for event in patch.content["events"]]},
-            buffers=tuple(buffer for patch in patches for buffer in patch.buffers),
-        )
+        patch = _combine_patches(patches)
         self._revision += 1
         self._deliver_event_unlocked(
             BokehServerEvent(
