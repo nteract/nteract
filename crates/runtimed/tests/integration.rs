@@ -4664,10 +4664,18 @@ async fn test_notebook_sync_uuid_refuses_journal_without_source_file() {
 
     let daemon = Daemon::new_for_test(config.clone()).unwrap();
     let mut daemon_handle = tokio::spawn(async move {
-        daemon.run().await.ok();
+        daemon
+            .run()
+            .await
+            .expect("initial missing-source daemon failed");
     });
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client).await);
+    assert_running_daemon_ready(
+        &pool_client,
+        &mut daemon_handle,
+        "initial missing-source daemon",
+    )
+    .await;
 
     let opened = connect::connect_open(socket_path.clone(), saved_path.clone(), "open")
         .await
@@ -4686,7 +4694,7 @@ async fn test_notebook_sync_uuid_refuses_journal_without_source_file() {
         .unwrap();
     opened.handle.confirm_sync().await.unwrap();
     drop(opened);
-    stop_daemon_for_replacement(&pool_client, &mut daemon_handle).await;
+    stop_daemon_and_transport_for_replacement(&pool_client, &mut daemon_handle, &socket_path).await;
 
     let persist_path = config
         .notebook_docs_dir
@@ -4701,12 +4709,20 @@ async fn test_notebook_sync_uuid_refuses_journal_without_source_file() {
     let restarted =
         Daemon::new_for_test(replacement_config(config, &temp_dir, "journal-only")).unwrap();
     let mut restarted_handle = tokio::spawn(async move {
-        restarted.run().await.ok();
+        restarted
+            .run()
+            .await
+            .expect("replacement missing-source daemon failed");
     });
     let restarted_pool = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&restarted_pool).await);
+    assert_running_daemon_ready(
+        &restarted_pool,
+        &mut restarted_handle,
+        "replacement missing-source daemon",
+    )
+    .await;
 
-    match connect::connect(socket_path, notebook_id.clone(), "rejoin").await {
+    match connect::connect(socket_path.clone(), notebook_id.clone(), "rejoin").await {
         Err(notebook_sync::SyncError::NotebookUnavailable(ref message))
             if message.contains("saved source file is missing")
                 && message.contains("recovery journal was preserved") => {}
@@ -4723,7 +4739,8 @@ async fn test_notebook_sync_uuid_refuses_journal_without_source_file() {
         "journal-only refusal must not publish a disconnected room: {rooms:?}"
     );
 
-    stop_daemon_for_replacement(&restarted_pool, &mut restarted_handle).await;
+    stop_daemon_and_transport_for_replacement(&restarted_pool, &mut restarted_handle, &socket_path)
+        .await;
 }
 
 /// A UUID-keyed legacy `.automerge` mirror is not authoritative for a saved
