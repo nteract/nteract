@@ -184,6 +184,8 @@ jobs:
               - "crates/runtimed/tests/integration.rs"
               - "crates/runtimed/tests/support/windows_restart.rs"
             windows:
+              - "scripts/ci/install-nsis.mjs"
+              - "scripts/tests/install-nsis.test.mjs"
               - ".github/workflows/build.yml"
               - "crates/notebook/nsis/**"
               - "crates/notebook/src/**"
@@ -327,13 +329,24 @@ jobs:
           cd crates/notebook/nsis
           makensis -V4 validate-bootstrap.nsi
 
+      - name: Test NSIS setup failure handling
+        run: node --test scripts/tests/install-nsis.test.mjs
+
+      - name: Cache verified NSIS archive
+        if: runner.os == 'Windows'
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/nsis-download
+          key: nsis-archive-v1-${{ hashFiles('scripts/ci/install-nsis.mjs') }}
+
+      - name: Set up pinned NSIS
+        if: runner.os == 'Windows'
+        run: node scripts/ci/install-nsis.mjs
+
       - name: Check Windows PATH preservation
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install nsis --no-progress -y
-          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
-          $env:PATH += ';C:\Program Files (x86)\NSIS'
           Push-Location crates/notebook/nsis
           try {
             & makensis /V2 validate-bootstrap.nsi
