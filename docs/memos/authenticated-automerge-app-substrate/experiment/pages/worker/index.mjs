@@ -42,6 +42,7 @@ import {
 } from "./mutations.mjs";
 
 import { catalogTitle, listCatalog, refreshCatalogTitle } from "./catalog.mjs";
+import { readRegistration, requireRegistrationAccount, validPageId } from "./registration.mjs";
 
 const operations = new Set([
   "list_pages",
@@ -54,9 +55,6 @@ const operations = new Set([
   "delete_page",
 ]);
 const noop = async () => {};
-const validPageId = (id) =>
-  typeof id === "string" &&
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id);
 const publicIdentity = ({ principal, displayName, driver }) => ({ principal, displayName, driver });
 
 function validateCreateInput(args) {
@@ -154,6 +152,14 @@ export default {
           }
         });
       }
+      if (url.pathname === "/api/pages/register" && request.method === "POST") {
+        const identity = await authenticate(request, env);
+        requireWrite(identity);
+        const args = await readJson(request);
+        return env.CATALOGS.getByName(identity.principal).fetch(
+          forwarded(request, "/internal/catalog", { operation: "register_page", arguments: args }),
+        );
+      }
       if (url.pathname === "/api/tools" && request.method === "POST") {
         const body = await readJson(request);
         return await invoke(request, env, body.operation, body.arguments);
@@ -208,14 +214,32 @@ export class Catalog {
         return json({ pages: await listCatalog(this.ctx.storage), limit: 100 });
       }
       requireWrite(identity);
-      if (!["create_page", "delete_page"].includes(body.operation))
+      if (!["create_page", "register_page", "delete_page"].includes(body.operation))
         throw new HttpError(400, "Unknown catalog operation");
       // Reject deterministic input errors before reserving an intent or page.
+      const creating = ["create_page", "register_page"].includes(body.operation);
+      const registering = body.operation === "register_page";
+      if (
+        body.operation === "delete_page" &&
+        args.expected_principal !== undefined &&
+        args.expected_principal !== identity.principal
+      )
+        throw new HttpError(403, "Sign in with this Page's original account to delete it");
       if (body.operation === "create_page") validateCreateInput(args);
+      if (registering) {
+        requireRegistrationAccount(args, identity);
+        A.free(readRegistration(args).doc);
+        // The browser knows its UUID before the Page host has an intent. A
+        // successful deletion must also cancel retries of that local creation.
+        if (await this.ctx.storage.get(`host/deleted/${args.page_id}`))
+          throw new HttpError(409, "Page was deleted");
+      }
       const key = mutationKey(args);
       const digest = await fingerprint(body.operation, args, identity);
       let intent = await existingIntent(this.ctx.storage, key, digest);
       if (intent && !intent.pending) {
+        if (body.operation === "delete_page")
+          await this.ctx.storage.put(`host/deleted/${intent.pageId}`, true);
         // A previous attempt may have stored its receipt before sync failed.
         await this.ctx.storage.sync();
         return json(intent.receipt);
@@ -224,11 +248,10 @@ export class Catalog {
         await reserveCapacity(this.ctx.storage);
         if (body.operation === "delete_page" && !validPageId(args.page_id))
           throw new HttpError(400, "Invalid page_id");
-        if (
-          body.operation === "create_page" &&
-          (await this.ctx.storage.list({ prefix: "page/", limit: 100 })).size >= 100
-        )
+        if (creating && (await this.ctx.storage.list({ prefix: "page/", limit: 100 })).size >= 100)
           throw new HttpError(409, "This prototype permits 100 pages per account");
+        if (registering && (await this.ctx.storage.get(`page/${args.page_id}`)))
+          throw new HttpError(409, "Page already has another creation request");
         intent = {
           fingerprint: digest,
           pending: true,
@@ -238,7 +261,7 @@ export class Catalog {
         await this.ctx.storage.put(key, intent);
       }
       const pageId = intent.pageId;
-      if (body.operation === "create_page") {
+      if (creating) {
         await this.ctx.storage.put(`page/${pageId}`, {
           page_id: pageId,
           title: catalogTitle(args.title),
@@ -247,12 +270,12 @@ export class Catalog {
           pending: true,
         });
         const response = await this.env.PAGES.getByName(pageId).fetch(
-          forwarded(request, "/internal/create", { ...args, page_id: pageId }),
+          forwarded(request, registering ? "/internal/register" : "/internal/create", {
+            ...args,
+            page_id: pageId,
+          }),
         );
-        if (
-          response.status === 413 &&
-          response.headers.get("x-pages-create-rejected") === "before-intent"
-        ) {
+        if (!response.ok && response.headers.get("x-pages-create-rejected") === "before-intent") {
           // Only this explicit pre-intent rejection proves there is no Page
           // creation to recover. Ambiguous failures retain their reservation.
           await this.ctx.storage.delete(`page/${pageId}`);
@@ -273,6 +296,7 @@ export class Catalog {
         );
         // A missing Page is already absent; clean up this account's stale index.
         if (!response.ok && response.status !== 404) return response;
+        await this.ctx.storage.put(`host/deleted/${pageId}`, true);
         await this.ctx.storage.delete(`page/${pageId}`);
         intent.receipt = { page_id: pageId, deleted: true };
       }
@@ -429,6 +453,7 @@ export class Page {
       await this.ready;
       const identity = await authenticate(request, this.env);
       const url = new URL(request.url);
+      if (url.pathname === "/internal/register") return await this.register(request, identity);
       if (url.pathname === "/internal/create") {
         requireWrite(identity);
         if (this.metadata) {
@@ -447,7 +472,7 @@ export class Page {
           );
         }
         const args = await readJson(request);
-        if (!validPageId(args.page_id) || (this.ctx.id.name && args.page_id !== this.ctx.id.name))
+        if (!validPageId(args?.page_id) || (this.ctx.id.name && args.page_id !== this.ctx.id.name))
           throw new HttpError(400, "Invalid page_id");
         validateCreateInput(args);
         let intent = await this.ctx.storage.get("host/creation");
@@ -592,6 +617,65 @@ export class Page {
     } catch (error) {
       return errorResponse(error, "page");
     }
+  }
+
+  async register(request, identity) {
+    requireWrite(identity);
+    let intent;
+    // Only rejections before recording a creation may release the Catalog slot.
+    // An interrupted import keeps its immutable bytes and exact request digest.
+    try {
+      const args = await readJson(request);
+      requireRegistrationAccount(args, identity);
+      if (!validPageId(args.page_id) || (this.ctx.id.name && args.page_id !== this.ctx.id.name))
+        throw new HttpError(400, "Invalid page_id");
+      mutationKey(args);
+      const digest = await fingerprint("register_page", args, identity);
+      intent = await this.ctx.storage.get("host/creation");
+      const metadata = this.metadata ?? intent?.metadata;
+      if (metadata) {
+        if (metadata.owner !== identity.principal)
+          throw new HttpError(403, "Document access denied");
+        if (metadata.deleted) throw new HttpError(409, "Page was deleted");
+        if (metadata.registration !== digest)
+          throw new HttpError(409, "Page already has another creation request");
+      } else {
+        const { doc, bytes } = readRegistration(args);
+        try {
+          const metadata = {
+            pageId: args.page_id,
+            owner: identity.principal,
+            ownerName: identity.displayName,
+            documentId: args.document_id,
+            tree: logicalId(documentIdToBinary(args.document_id)),
+            deleted: false,
+            registration: digest,
+            createdReceipt: {
+              page_id: args.page_id,
+              document_id: args.document_id,
+              title: doc.title,
+              heads: A.getHeads(doc),
+            },
+          };
+          intent = { metadata, bytes };
+          assertIntentSize("host/creation", [bytes], { metadata });
+        } finally {
+          A.free(doc);
+        }
+      }
+    } catch (error) {
+      if (![400, 403, 409, 413].includes(error.status)) throw error;
+      const response = errorResponse(error, "page-registration");
+      response.headers.set("x-pages-create-rejected", "before-intent");
+      return response;
+    }
+    if (intent) {
+      // Put again on replay in case the prior barrier failed ambiguously.
+      await this.ctx.storage.put("host/creation", intent);
+      await this.initializeRepo();
+      await this.finishCreation(intent);
+    } else await this.flush();
+    return json(this.metadata.createdReceipt, 201);
   }
 
   async waitForHeads(heads) {

@@ -1,3 +1,4 @@
+import { pagePath, readPageRoute } from "./shared/routes.mjs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
@@ -36,7 +37,7 @@ export const tools = [
   }),
   tool(
     "create_page",
-    "Create an editable rich-text Page. Human and API edits sync into the same document.",
+    "Create an editable rich-text Page and return its browser URL. Human and API edits sync into the same document.",
     { title: string, markdown: string, idempotency_key: guard.idempotency_key },
     ["title", "idempotency_key"],
   ),
@@ -154,9 +155,18 @@ export async function handleMcp(request, invoke) {
       return { isError: true, content: [{ type: "text", text: "Unknown tool" }] };
     try {
       const result = await invoke(params.name, params.arguments ?? {});
+      const body = await result.json();
+      if (result.ok) {
+        if (body.page_id && !body.deleted) body.url = new URL(pagePath(body.page_id), origin).href;
+        if (Array.isArray(body.pages))
+          body.pages = body.pages.map((page) => ({
+            ...page,
+            url: new URL(pagePath(page.page_id), origin).href,
+          }));
+      }
       return {
         ...(result.ok ? {} : { isError: true }),
-        content: [{ type: "text", text: await result.text() }],
+        content: [{ type: "text", text: JSON.stringify(body) }],
       };
     } catch {
       return {
@@ -176,7 +186,7 @@ export async function handleMcp(request, invoke) {
     const { pages } = await result.json();
     return {
       resources: pages.map((page) => ({
-        uri: `${origin}/?page=${page.page_id}`,
+        uri: `${origin}${pagePath(page.page_id)}`,
         name: page.title,
         mimeType: "application/json",
       })),
@@ -184,12 +194,12 @@ export async function handleMcp(request, invoke) {
   });
   server.setRequestHandler(ReadResourceRequestSchema, async ({ params }) => {
     const url = new URL(params.uri);
-    const pageId = url.searchParams.get("page");
+    const route = readPageRoute(url.href);
+    const pageId = route.pageId;
     if (
       url.origin !== origin ||
-      url.pathname !== "/" ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(pageId ?? "") ||
-      url.href !== `${origin}/?page=${pageId}`
+      route.kind !== "page" ||
+      (url.href !== origin + route.path && url.href !== origin + "/?page=" + pageId)
     )
       throw Error("Unknown Page resource");
     const result = await invoke("read_page", { page_id: pageId });

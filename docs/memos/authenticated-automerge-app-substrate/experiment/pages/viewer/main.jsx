@@ -6,13 +6,21 @@ import {
   FileText,
   FolderOpen,
   LogOut,
+  Link,
   MessageSquare,
   MoreHorizontal,
   Plus,
   Trash2,
   UserRound,
 } from "lucide-react";
-import { PageSession, request, tool } from "./session.mjs";
+import { PageSession, request, tool, listLocalPages, forgetLocalPage } from "./session.mjs";
+import {
+  pagePath,
+  readPageRoute,
+  writePageRoute,
+  isPlainNavigation,
+  mergePageListings,
+} from "../shared/routes.mjs";
 import { maintainBrowserSession } from "./browser-session.mjs";
 import { RichEditor } from "./RichEditor.jsx";
 import { PagePicker } from "./PagePicker.jsx";
@@ -30,7 +38,8 @@ function App() {
     [session, setSession] = useState(null),
     [, paint] = useState(0),
     [error, setError] = useState(""),
-    [authError, setAuthError] = useState("");
+    [authError, setAuthError] = useState(""),
+    [notice, setNotice] = useState("");
   const [toolbar, setToolbar] = useState(null),
     [active, setActive] = useState(null),
     [commentsOpen, setCommentsOpen] = useState(false),
@@ -43,6 +52,10 @@ function App() {
     [focusBlock, setFocusBlock] = useState(null);
   const current = useRef(null),
     auth = useRef(null),
+    closingPages = useRef(new Map()),
+    authentication = useRef(null),
+    catalogRevision = useRef(0),
+    creationPending = useRef(false),
     generation = useRef(0),
     activeBlock = useRef(null),
     composerId = useRef(null),
@@ -50,9 +63,25 @@ function App() {
     article = useRef(null),
     commentsButton = useRef(null);
   const refresh = async () => {
-    const result = await tool("list_pages");
-    setPages(result.pages);
-    return result.pages;
+    const identity = authentication.current?.identity;
+    if (!identity) return [];
+    const revision = ++catalogRevision.current;
+    const remoteRequest = tool("list_pages").then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    const local = await listLocalPages(identity).catch(() => []);
+    const stillCurrent = () =>
+      identity.principal === authentication.current?.identity?.principal &&
+      revision === catalogRevision.current;
+    if (!stillCurrent()) return [];
+    setPages((previous) => mergePageListings(previous, local));
+    const remote = await remoteRequest;
+    if (!stillCurrent()) return [];
+    const result = mergePageListings(remote.value?.pages ?? null, local);
+    setPages(result);
+    if (remote.error && !result.length) throw remote.error;
+    return result;
   };
   function activateBlock(id) {
     if (activeBlock.current !== id) selection.current = null;
@@ -69,50 +98,94 @@ function App() {
     setCommentsOpen(false);
     setFocusBlock(null);
   }
-  async function open(id, { focus = false } = {}) {
+  function releaseCurrent() {
+    const old = current.current;
+    current.current = null;
+    setSession(null);
+    resetDocumentUI();
+    if (old) {
+      old.publishPresence(null);
+      const key = old.identity.principal + ":" + old.pageId;
+      const closing = old
+        .close()
+        .catch((error) => setError(error.message))
+        .finally(() => {
+          if (closingPages.current.get(key) === closing) closingPages.current.delete(key);
+        });
+      closingPages.current.set(key, closing);
+    }
+  }
+  async function install(next, revision, { focus = false } = {}) {
+    if (
+      revision !== generation.current ||
+      next.identity.principal !== authentication.current?.identity?.principal
+    ) {
+      await next.close();
+      return false;
+    }
+    current.current = next;
+    setSession(next);
+    next.subscribe(() => {
+      if (current.current === next) paint((n) => n + 1);
+    });
+    const first = orderedBlockIds(next.doc)[0] ?? null;
+    activateBlock(first);
+    if (focus) setFocusBlock(first);
+    return true;
+  }
+  async function open(id, { focus = false, historyMode = "push" } = {}) {
+    if (historyMode !== "none") writePageRoute(id, { replace: historyMode === "replace" });
+    setPickerOpen(false);
+    setNotice("");
+    if (current.current?.pageId === id) return;
     const revision = ++generation.current;
     setError("");
     setOpening(true);
-    resetDocumentUI();
-    setSession(null);
-    const old = current.current;
-    current.current = null;
+    releaseCurrent();
     try {
-      await old?.close();
+      // A quick Back may revisit a replica whose final local checkpoint is
+      // still flushing. Wait only for that same Page, never an unrelated one.
+      await closingPages.current.get(authentication.current?.identity?.principal + ":" + id);
       if (revision !== generation.current) return;
-      const next = await PageSession.open(id, { refreshSession: () => auth.current.refresh() });
-      if (revision !== generation.current) {
-        await next.close();
-        return;
-      }
-      current.current = next;
-      setSession(next);
-      next.subscribe(() => paint((n) => n + 1));
-      history.replaceState(null, "", `?page=${encodeURIComponent(id)}`);
-      const first = orderedBlockIds(next.doc)[0] ?? null;
-      activateBlock(first);
-      if (focus) setFocusBlock(first);
+      const next = await PageSession.open(id, {
+        authentication: authentication.current,
+        refreshSession: () => auth.current.refresh(),
+      });
+      await install(next, revision, { focus });
     } catch (error) {
       if (revision === generation.current) setError(error.message);
     } finally {
       if (revision === generation.current) setOpening(false);
     }
   }
-  async function home(event) {
-    event.preventDefault();
-    generation.current++;
-    const old = current.current;
-    current.current = null;
-    resetDocumentUI();
-    setOpening(false);
-    setSession(null);
-    history.replaceState(null, "", "/");
-    try {
-      await old?.close();
-      await refresh();
-    } catch (error) {
-      setError(error.message);
+  function home(event, { historyMode = "push", refreshCatalog = true } = {}) {
+    if (event) {
+      if (!isPlainNavigation(event)) return;
+      event.preventDefault();
     }
+    generation.current++;
+    releaseCurrent();
+    setAccount(authentication.current?.identity ?? null);
+    setError("");
+    setNotice("");
+    setOpening(false);
+    setPickerOpen(false);
+    if (historyMode !== "none") writePageRoute(null, { replace: historyMode === "replace" });
+    if (refreshCatalog) void refresh().catch((error) => setError(error.message));
+  }
+  function followRoute() {
+    const route = readPageRoute(location.href);
+    if (route.kind === "page") void open(route.pageId, { historyMode: "replace" });
+    else if (route.kind === "home") home(null, { historyMode: "none", refreshCatalog: false });
+    else {
+      generation.current++;
+      releaseCurrent();
+      setOpening(false);
+      setError("This Page link is not valid.");
+    }
+    void refresh().catch((error) => {
+      if (!current.current) setError(error.message);
+    });
   }
   useEffect(() => {
     let alive = true;
@@ -121,9 +194,19 @@ function App() {
       onSession: (result) => {
         if (!alive) return;
         setAuthError("");
+        const changed = authentication.current?.identity?.principal !== result.identity?.principal;
+        if (changed) {
+          generation.current++;
+          catalogRevision.current++;
+          setPages([]);
+          setOpening(false);
+        }
+        authentication.current = result;
         const live = current.current;
-        if (!live) setAccount(result.identity);
-        else {
+        if (!live) {
+          setAccount(result.identity);
+          if (changed && result.identity) followRoute();
+        } else {
           const resume = live.authRequired;
           if (live.acceptAuthentication(result)) {
             setAccount(result.identity);
@@ -138,20 +221,19 @@ function App() {
       },
     });
     auth.current = maintenance;
-    maintenance
-      .refresh()
-      .then(async (result) => {
-        if (!alive || !result?.identity) return;
-        const list = await refresh();
-        const id = new URL(location.href).searchParams.get("page");
-        if (alive && id && list.some((page) => page.page_id === id)) await open(id);
-      })
-      .catch((error) => {
-        if (alive) setError(error.message);
-      });
+    const onPopState = () => {
+      if (authentication.current?.identity) followRoute();
+      else home(null, { historyMode: "none", refreshCatalog: false });
+    };
+    window.addEventListener("popstate", onPopState);
+    maintenance.refresh().catch((error) => {
+      if (alive) setError(error.message);
+    });
     return () => {
       alive = false;
       maintenance.stop();
+      window.removeEventListener("popstate", onPopState);
+      catalogRevision.current++;
       generation.current++;
       void current.current?.close();
     };
@@ -173,43 +255,83 @@ function App() {
     return () => cancelAnimationFrame(frame);
   }, [focusBlock, session, page?.blocks.length]);
   async function create() {
-    if (creating) return;
+    if (creationPending.current || current.current?.authRequired) return;
+    creationPending.current = true;
     setCreating(true);
     setError("");
     setPickerError("");
+    const revision = ++generation.current;
     try {
-      const result = await tool("create_page", {
-        title: "Untitled",
-        markdown: "",
-        idempotency_key: crypto.randomUUID(),
-      });
-      await refresh();
+      const next = await PageSession.create(
+        { title: "Untitled" },
+        {
+          authentication: authentication.current,
+          refreshSession: () => auth.current.refresh(),
+        },
+      );
+      if (revision !== generation.current) {
+        await next.close();
+        return;
+      }
+      releaseCurrent();
+      writePageRoute(next.pageId);
       setPickerOpen(false);
-      await open(result.page_id, { focus: true });
+      setOpening(false);
+      setNotice("");
+      await install(next, revision, { focus: true });
+      void refresh().catch(() => {});
     } catch (error) {
-      setError(error.message);
-      setPickerError(error.message);
+      if (revision === generation.current) {
+        setError(error.message);
+        setPickerError(error.message);
+      }
     } finally {
+      creationPending.current = false;
       setCreating(false);
+    }
+  }
+  async function copyLink() {
+    if (!current.current) return;
+    try {
+      await navigator.clipboard.writeText(
+        new URL(pagePath(current.current.pageId), location.origin).href,
+      );
+      setNotice("Link copied");
+      if (documentDisclosure.current) documentDisclosure.current.open = false;
+    } catch {
+      setError("Couldn't copy the link. You can copy it from the address bar.");
     }
   }
   async function remove() {
     const deleting = current.current;
-    if (!deleting || !confirm("Delete this Page?")) return;
+    if (!deleting) return;
+    if (
+      deleting.authRequired ||
+      deleting.identity.principal !== authentication.current?.identity?.principal
+    ) {
+      setError("Sign in with this Page's original account to delete it.");
+      return;
+    }
+    if (!confirm("Delete this Page?")) return;
     try {
       await tool("delete_page", {
         page_id: deleting.pageId,
+        expected_principal: deleting.identity.principal,
         base_heads: A.getHeads(deleting.doc),
         idempotency_key: crypto.randomUUID(),
       });
-      if (current.current === deleting) {
+      const activeDeletion = current.current?.pageId === deleting.pageId ? current.current : null;
+      if (activeDeletion || readPageRoute(location.href).pageId === deleting.pageId) {
         generation.current++;
         current.current = null;
         resetDocumentUI();
         setSession(null);
-        history.replaceState(null, "", "/");
+        setOpening(false);
+        writePageRoute(null, { replace: true });
       }
       await deleting.close();
+      if (activeDeletion && activeDeletion !== deleting) await activeDeletion.close();
+      await forgetLocalPage(deleting.identity, deleting.pageId);
       await refresh();
     } catch (error) {
       setError(error.message);
@@ -279,6 +401,9 @@ function App() {
       setError(error.message);
     }
   }
+  useEffect(() => {
+    document.title = page ? `${page.title || "Untitled"} · Pages` : "Pages · nteract";
+  }, [page?.title]);
   const listedPages = pages.map((item) =>
     item.page_id === page?.page_id ? { ...item, title: page.title } : item,
   );
@@ -331,6 +456,11 @@ function App() {
           {error}
         </p>
       )}
+      {notice && (
+        <p className="app-notice" role="status">
+          {notice}
+        </p>
+      )}
       {authError && (
         <p role="alert" className="error app-error">
           {authError}
@@ -343,7 +473,10 @@ function App() {
       ) : !account ? (
         <main className="welcome">
           <h1>A place to write together.</h1>
-          <a className="primary" href="/api/auth/login">
+          <a
+            className="primary"
+            href={`/api/auth/login?return_to=${encodeURIComponent(location.pathname + location.search)}`}
+          >
             Sign In
           </a>
         </main>
@@ -356,7 +489,7 @@ function App() {
             onClose={() => setPickerOpen(false)}
             onOpen={open}
             onCreate={create}
-            creating={creating}
+            creating={creating || !!session?.authRequired}
             error={pickerError}
           />
           {page ? (
@@ -367,8 +500,8 @@ function App() {
                 <div className="document-meta">
                   <div className="document-status">
                     <span role="status">{session.status}</span>
-                    {session.status === "Unsaved" && (
-                      <button className="subtle-button" onClick={() => session.saveReceipt()}>
+                    {["Unsaved", "Offline", "Saved locally"].includes(session.status) && (
+                      <button className="subtle-button" onClick={() => session.retryConnection()}>
                         Retry
                       </button>
                     )}
@@ -391,7 +524,7 @@ function App() {
                       </span>
                       {openComments > 0 && <span className="comment-count">{openComments}</span>}
                     </button>
-                    {session.canWrite && (
+                    {
                       <details className="document-actions" ref={documentDisclosure}>
                         <summary
                           className="icon-button"
@@ -401,12 +534,17 @@ function App() {
                           <MoreHorizontal size={20} aria-hidden="true" />
                         </summary>
                         <div className="menu-popover">
-                          <button className="danger" onClick={remove}>
-                            <Trash2 size={16} aria-hidden="true" /> Delete
+                          <button onClick={copyLink}>
+                            <Link size={16} aria-hidden="true" /> Copy link
                           </button>
+                          {session.canWrite && (
+                            <button className="danger" onClick={remove}>
+                              <Trash2 size={16} aria-hidden="true" /> Delete
+                            </button>
+                          )}
                         </div>
                       </details>
-                    )}
+                    }
                   </div>
                 </div>
                 {session.authRequired && (
@@ -506,15 +644,23 @@ function App() {
               {!pages.length && <p className="muted">Start a page and write together.</p>}
               <div className="page-cards">
                 {listedPages.map((item) => (
-                  <button
+                  <a
                     className="page-card"
+                    href={pagePath(item.page_id)}
                     key={item.page_id}
-                    onClick={() => open(item.page_id)}
+                    onClick={(event) => {
+                      if (isPlainNavigation(event)) {
+                        event.preventDefault();
+                        void open(item.page_id);
+                      }
+                    }}
                   >
                     <FileText size={23} aria-hidden="true" />
                     <span className="page-card-title">{item.title || "Untitled"}</span>
-                    <span className="page-card-meta">Open page</span>
-                  </button>
+                    <span className="page-card-meta">
+                      {item.pending ? "Saved locally" : "Open page"}
+                    </span>
+                  </a>
                 ))}
               </div>
             </main>

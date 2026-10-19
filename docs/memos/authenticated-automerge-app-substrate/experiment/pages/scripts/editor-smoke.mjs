@@ -314,20 +314,6 @@ try {
   await a.locator(".thread").getByRole("button", { name: "Show block", exact: true }).click();
   await a.getByRole("button", { name: "Pages", exact: true }).click();
   await expect(a.getByRole("textbox", { name: "Search Pages" })).toBeFocused();
-  const failCreate = (route) =>
-    route.request().postDataJSON()?.operation === "create_page"
-      ? route.fulfill({
-          status: 503,
-          contentType: "application/json",
-          body: JSON.stringify({ error: "Please try creating this page again" }),
-        })
-      : route.continue();
-  await a.route("**/api/tools", failCreate);
-  await a.getByRole("button", { name: "New Page", exact: true }).click();
-  await expect(a.getByRole("dialog", { name: "Pages", exact: true }).getByRole("alert")).toHaveText(
-    "Please try creating this page again",
-  );
-  await a.unroute("**/api/tools", failCreate);
   await a.getByRole("button", { name: "New Page", exact: true }).click();
   await expect(a.locator(".ProseMirror")).toHaveCount(1);
   await expect(a.locator(".ProseMirror")).toBeFocused();
@@ -362,7 +348,7 @@ try {
         "text style and list commands",
         "desktop and 390px layout with modal comments",
         "comment target isolation, draft retargeting and detached block navigation",
-        "dialog error feedback, menu dismissal and new-page focus",
+        "menu dismissal and local new-page focus",
         "sign out revokes HTTP access",
       ],
       screenshots: output,
