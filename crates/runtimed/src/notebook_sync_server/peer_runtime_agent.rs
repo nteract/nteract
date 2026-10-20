@@ -916,6 +916,9 @@ fn validate_runtime_agent_broadcast(broadcast: &NotebookBroadcast) -> anyhow::Re
             );
             Ok(())
         }
+        NotebookBroadcast::EnvironmentSelectionChanged { .. } => {
+            anyhow::bail!("environment selection is owned by the local daemon, not a runtime agent")
+        }
     }
 }
 
@@ -1651,7 +1654,8 @@ mod tests {
                 assert_eq!(content["data"]["content"]["type"], "draw");
                 assert_eq!(buffers, vec![vec![1, 2, 3]]);
             }
-            NotebookBroadcast::BokehSessionPatch { .. } => {
+            NotebookBroadcast::BokehSessionPatch { .. }
+            | NotebookBroadcast::EnvironmentSelectionChanged { .. } => {
                 panic!("expected comm broadcast")
             }
         }
@@ -1663,6 +1667,18 @@ mod tests {
 
         forward_runtime_agent_broadcast(&tx, b"{not-json")
             .expect_err("malformed broadcast must fail");
+    }
+
+    #[test]
+    fn runtime_agent_cannot_publish_local_environment_selection() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(4);
+        let payload = serde_json::to_vec(&NotebookBroadcast::EnvironmentSelectionChanged {
+            selection: Default::default(),
+        })
+        .unwrap();
+        let error = forward_runtime_agent_broadcast(&tx, &payload).unwrap_err();
+        assert!(error.to_string().contains("owned by the local daemon"));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

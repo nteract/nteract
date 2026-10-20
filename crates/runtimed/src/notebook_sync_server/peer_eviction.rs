@@ -470,7 +470,7 @@ pub(super) async fn handle_peer_disconnect(
                     env_source.as_str(),
                     "pixi:toml" | "uv:pyproject" | "conda:env_yml"
                 );
-                if has_saved_path && !project_backed {
+                if has_saved_path && !project_backed && launched.local_environment.is_none() {
                     for runtime in [CapturedEnvRuntime::Uv, CapturedEnvRuntime::Conda] {
                         if flush_launched_deps_to_metadata(&room_for_teardown, launched, runtime)
                             .await
@@ -610,12 +610,18 @@ pub(super) async fn handle_peer_disconnect(
             // venv_path is nested (e.g. .pixi/envs/default) but we
             // operate on the top-level runtimed-pixi-* directory.
             {
+                let borrowed = room_for_teardown
+                    .runtime_agent_launched_config
+                    .read()
+                    .await
+                    .as_ref()
+                    .is_some_and(|config| config.local_environment.is_some());
                 let env_path = room_for_teardown
                     .runtime_agent_env_path
                     .read()
                     .await
                     .clone();
-                if let Some(ref path) = env_path {
+                if let Some(ref path) = env_path.filter(|_| !borrowed) {
                     let has_saved_path = room_for_teardown.file_binding.has_saved_path().await;
                     let metadata = {
                         let doc = room_for_teardown.doc.read().await;
@@ -671,7 +677,14 @@ pub(super) async fn handle_peer_disconnect(
             // peer-count check and now, their reconnect path zeroes this
             // back out — the reaper re-checks `active_peers == 0` under
             // the lock before sweeping.
-            room_for_teardown.connections.stamp_kernel_torn_down_now();
+            rooms_for_teardown
+                .serialize_with(|| {
+                    if teardown_fence_holds() {
+                        room_for_teardown.local_environment_selection.reset();
+                        room_for_teardown.connections.stamp_kernel_torn_down_now();
+                    }
+                })
+                .await;
 
             info!(
                 "[notebook-sync] Kernel torn down for {}; room held for resume",

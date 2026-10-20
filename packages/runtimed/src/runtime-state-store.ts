@@ -192,7 +192,13 @@ export class RuntimeStateStore extends ObservableStore<RuntimeState> {
 }
 
 function kernelInfoEquals(a: KernelInfo, b: KernelInfo): boolean {
-  return a.kernelType === b.kernelType && a.envSource === b.envSource;
+  return (
+    a.kernelType === b.kernelType &&
+    a.envSource === b.envSource &&
+    a.environmentId === b.environmentId &&
+    a.environmentName === b.environmentName &&
+    a.pythonVersion === b.pythonVersion
+  );
 }
 
 function queueStateEquals(a: DaemonQueueState, b: DaemonQueueState): boolean {

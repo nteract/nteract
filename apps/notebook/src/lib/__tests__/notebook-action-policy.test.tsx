@@ -110,14 +110,122 @@ describe("notebook action policy helpers", () => {
   it("recognizes launch errors rendered by the runtime banner", () => {
     expect(isLaunchErrorHandledByRuntimeBanner("ipykernel not found in pixi.toml")).toBe(true);
     expect(isLaunchErrorHandledByRuntimeBanner("ipykernel not found in prepared env")).toBe(true);
-    expect(
-      isLaunchErrorHandledByRuntimeBanner("environment.yml declares conda env named x"),
-    ).toBe(true);
+    expect(isLaunchErrorHandledByRuntimeBanner("environment.yml declares conda env named x")).toBe(
+      true,
+    );
     expect(isLaunchErrorHandledByRuntimeBanner("kernel crashed")).toBe(false);
   });
 });
 
 describe("useNotebookActionPolicy", () => {
+  it("does not approve captured Apply trust against a replacement notebook connection", async () => {
+    let generation = 1;
+    const options = createPolicyOptions({
+      applyEnvironmentSelection: vi.fn(),
+      getEnvironmentConnectionGeneration: () => generation,
+      checkTrust: vi.fn().mockResolvedValue({ status: "untrusted" }),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+    await act(async () => {
+      await result.current.handleApplyEnvironment(2);
+    });
+    generation = 2;
+    await act(async () => {
+      expect(await result.current.handleTrustApprove()).toBe(false);
+    });
+    expect(options.approveTrust).not.toHaveBeenCalled();
+    expect(options.applyEnvironmentSelection).not.toHaveBeenCalled();
+    expect(result.current.trustActionNotice).toMatch(/connection changed/i);
+  });
+
+  it("opens captured review if trust changes between precheck and daemon Apply admission", async () => {
+    const options = createPolicyOptions({
+      applyEnvironmentSelection: vi.fn().mockResolvedValue({
+        result: "guard_rejected",
+        reason: "Notebook dependencies need approval",
+      }),
+      getEnvironmentConnectionGeneration: () => 5,
+      checkTrust: vi
+        .fn()
+        .mockResolvedValueOnce({ status: "trusted" })
+        .mockResolvedValue({ status: "untrusted" }),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+    await act(async () => {
+      await result.current.handleApplyEnvironment(3);
+    });
+    expect(result.current.trustDialogOpen).toBe(true);
+    expect(result.current.pendingTrustAction).toMatchObject({
+      kind: "apply_environment",
+      expectedRevision: 3,
+      connectionGeneration: 5,
+      provenance: { observed_heads: ["head-1"] },
+    });
+    expect(options.shutdownKernel).not.toHaveBeenCalled();
+  });
+
+  it("captures Apply revision and source heads through trust review without generic restart", async () => {
+    const applyEnvironmentSelection = vi.fn().mockResolvedValue({
+      result: "environment_selection",
+      selection: { revision: 8, selected: null, applied: null, applying: false },
+    });
+    let heads = ["head-1"];
+    const options = createPolicyOptions({
+      getObservedHeads: () => heads,
+      getEnvironmentConnectionGeneration: () => 10,
+      applyEnvironmentSelection,
+      checkTrust: vi.fn().mockResolvedValue({ status: "untrusted" }),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+    await act(async () => {
+      await result.current.handleApplyEnvironment(6);
+    });
+    expect(applyEnvironmentSelection).not.toHaveBeenCalled();
+    expect(result.current.pendingTrustAction).toMatchObject({
+      kind: "apply_environment",
+      expectedRevision: 6,
+      connectionGeneration: 10,
+      provenance: { observed_heads: ["head-1"] },
+    });
+    expect(result.current.trustApproveLabel).toBe("Trust and Apply");
+    heads = ["head-2"];
+    await act(async () => {
+      await result.current.handleTrustApprove();
+    });
+    expect(options.approveTrust).toHaveBeenCalledWith({ observedHeads: ["head-1"] });
+    expect(applyEnvironmentSelection).toHaveBeenCalledWith(6, ["head-1"], 10);
+    expect(options.shutdownKernel).not.toHaveBeenCalled();
+    expect(options.launchKernel).not.toHaveBeenCalled();
+  });
+
+  it("trust-only approval never applies an environment or launches a replacement kernel", async () => {
+    const options = createPolicyOptions({
+      applyEnvironmentSelection: vi.fn(),
+      getEnvironmentConnectionGeneration: () => 1,
+      checkTrust: vi.fn().mockResolvedValue({ status: "untrusted" }),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+    await act(async () => {
+      await result.current.handleApplyEnvironment(2);
+    });
+    await act(async () => {
+      await result.current.handleTrustApproveOnly();
+    });
+    expect(options.applyEnvironmentSelection).not.toHaveBeenCalled();
+    expect(options.launchKernel).not.toHaveBeenCalled();
+  });
+
+  it("does not turn borrowed-environment dependency sync into a restart or installation", async () => {
+    const options = createPolicyOptions({ envSource: "conda:existing:local" });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+    await act(async () => {
+      expect(await result.current.handleSyncDeps()).toBe(false);
+    });
+    expect(options.syncEnvironment).not.toHaveBeenCalled();
+    expect(options.shutdownKernel).not.toHaveBeenCalled();
+    expect(options.launchKernel).not.toHaveBeenCalled();
+  });
+
   it("accepts another cell run as soon as the previous request settles", async () => {
     vi.useFakeTimers();
     try {
@@ -144,7 +252,10 @@ describe("useNotebookActionPolicy", () => {
     });
     const options = createPolicyOptions({
       kernelStatus: KERNEL_STATUS.IDLE,
-      executeCell: vi.fn().mockReturnValueOnce(execution).mockResolvedValue(response("cell_queued")),
+      executeCell: vi
+        .fn()
+        .mockReturnValueOnce(execution)
+        .mockResolvedValue(response("cell_queued")),
     });
     const { result } = renderHook(() => useNotebookActionPolicy(options));
 

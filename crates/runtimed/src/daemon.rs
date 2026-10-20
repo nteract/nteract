@@ -1373,6 +1373,8 @@ pub struct Daemon {
     /// Cheap to clone; merged into LaunchKernel/RestartKernel env_vars when
     /// `import_shell_environment` is on. Daemon process env stays untouched.
     pub(crate) shell_env_overlay: Arc<crate::shell_env_overlay::ShellEnvOverlay>,
+    /// Shared on-demand Conda inventory; no scan is scheduled at startup.
+    pub(crate) local_conda_environments: crate::local_conda_environments::LocalCondaEnvironments,
 }
 
 #[doc(hidden)]
@@ -1722,6 +1724,7 @@ impl Daemon {
             conda_warming_respawns: std::sync::atomic::AtomicU32::new(0),
             pixi_warming_respawns: std::sync::atomic::AtomicU32::new(0),
             shell_env_overlay,
+            local_conda_environments: Default::default(),
         }))
     }
 
@@ -5491,6 +5494,15 @@ impl Daemon {
             if let Some(ref env_path) = *room.runtime_agent_env_path.read().await {
                 paths.insert(pool_env_root(env_path));
             }
+            // Explicit apply can prepare the next environment while the old
+            // kernel still runs. Both paths remain live until RPC delivery.
+            if let Some(ref env_path) = *room
+                .preparing_kernel_env_path
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+            {
+                paths.insert(pool_env_root(env_path));
+            }
         }
         paths
     }
@@ -7866,6 +7878,35 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn preparing_apply_protects_both_old_and_next_environment_from_gc() {
+        let temp = TempDir::new().unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp)).unwrap();
+        let room = Arc::new(crate::notebook_sync_server::NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            temp.path(),
+            Arc::new(BlobStore::new(temp.path().join("blobs"))),
+            false,
+        ));
+        let old = temp.path().join("runtimed-uv-old");
+        let next = temp.path().join("runtimed-conda-next");
+        *room.preparing_kernel_env_path.lock().unwrap() = Some(old.clone());
+        *room.runtime_agent_env_path.write().await = Some(next.clone());
+        daemon
+            .notebook_rooms
+            .insert_or_get(room.id, room.clone(), None)
+            .await
+            .unwrap();
+        let active = daemon.collect_active_env_paths().await;
+        assert!(active.contains(&old));
+        assert!(active.contains(&next));
+        *room.preparing_kernel_env_path.lock().unwrap() = None;
+        let active = daemon.collect_active_env_paths().await;
+        assert!(!active.contains(&old));
+        assert!(active.contains(&next));
+    }
 
     #[test]
     fn lock_failures_do_not_capture_shell_environment() -> anyhow::Result<()> {

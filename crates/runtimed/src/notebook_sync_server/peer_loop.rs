@@ -23,10 +23,11 @@ use super::peer_session::{
     PeerSessionContext,
 };
 use super::peer_writer::{
-    enqueue_notebook_request, queue_hosted_bridge_status, queue_session_status,
-    spawn_peer_request_worker, spawn_peer_writer,
+    enqueue_notebook_request, queue_environment_selection, queue_hosted_bridge_status,
+    queue_session_status, spawn_peer_request_worker, spawn_peer_writer,
 };
 use super::*;
+use nteract_identity::ConnectionScope;
 use std::collections::VecDeque;
 
 async fn next_peer_frame(
@@ -76,6 +77,7 @@ where
     let mut kernel_broadcast_rx = room.broadcasts.kernel_broadcast_tx.subscribe();
     let mut presence_rx = room.broadcasts.presence_tx.subscribe();
     let mut state_changed_rx = room.state.subscribe();
+    let mut environment_selection_rx = room.local_environment_selection.subscribe();
     let mut comms_changed_rx = room.comms.subscribe();
     let mut comments_changed_rx = room.comments.subscribe();
     let mut hosted_bridge_status_rx = room.broadcasts.hosted_bridge_status_tx.subscribe();
@@ -454,6 +456,12 @@ where
                 }
             }
 
+            result = environment_selection_rx.changed(), if connection_identity.scope() == ConnectionScope::Owner => {
+                if result.is_err() { return Ok(()); }
+                let selection = environment_selection_rx.borrow_and_update().clone();
+                queue_environment_selection(&peer_writer, connection_identity.scope(), selection)?;
+            }
+
             // Older peers do not know the v4 hosted_bridge_status variant.
             result = hosted_bridge_status_rx.changed(), if client_protocol_version >= 4 => {
                 if result.is_err() {
@@ -519,7 +527,11 @@ where
             result = kernel_broadcast_rx.recv() => {
                 match result {
                     Ok(broadcast) => {
-                        peer_writer.send_json(NotebookFrameType::Broadcast, &broadcast)?;
+                        if let NotebookBroadcast::EnvironmentSelectionChanged { selection } = broadcast {
+                            queue_environment_selection(&peer_writer, connection_identity.scope(), selection)?;
+                        } else {
+                            peer_writer.send_json(NotebookFrameType::Broadcast, &broadcast)?;
+                        }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!(

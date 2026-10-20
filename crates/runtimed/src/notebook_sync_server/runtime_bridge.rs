@@ -81,17 +81,66 @@ pub(crate) async fn send_runtime_agent_request(
 /// failure.
 pub(crate) async fn send_runtime_agent_request_with_kernel_ports<F>(
     room: &NotebookRoom,
-    mut build_request: F,
+    build_request: F,
 ) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse>
 where
     F: FnMut(
         notebook_protocol::protocol::KernelPorts,
     ) -> notebook_protocol::protocol::RuntimeAgentRequest,
 {
+    send_runtime_agent_request_with_kernel_ports_on_delivery(
+        room,
+        build_request,
+        |message, permit| {
+            permit.send(message);
+            Ok(())
+        },
+    )
+    .await
+}
+
+/// All fallible reservation/enqueue waits precede the synchronous delivery
+/// commit, so a failed or cancelled preflight cannot destroy the old kernel.
+pub(crate) async fn send_runtime_agent_request_with_kernel_ports_on_delivery<F, C>(
+    room: &NotebookRoom,
+    mut build_request: F,
+    mut on_delivery: C,
+) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse>
+where
+    F: FnMut(
+        notebook_protocol::protocol::KernelPorts,
+    ) -> notebook_protocol::protocol::RuntimeAgentRequest,
+    C: FnMut(
+        RuntimeAgentMessage,
+        tokio::sync::mpsc::Permit<'_, RuntimeAgentMessage>,
+    ) -> anyhow::Result<()>,
+{
     for attempt in 1..=crate::kernel_ports::MAX_KERNEL_PORT_LAUNCH_ATTEMPTS {
         let port_reservation = crate::kernel_ports::reserve_kernel_ports().await?;
-        let response =
-            send_runtime_agent_request(room, build_request(port_reservation.ports())).await?;
+        let request = build_request(port_reservation.ports());
+        let timeout = runtime_agent_query_timeout(&request);
+        let tx = room
+            .runtime_agent_request_tx
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Runtime agent not connected"))?;
+        let permit = tx
+            .reserve()
+            .await
+            .map_err(|_| anyhow::anyhow!("Runtime agent disconnected"))?;
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        on_delivery(
+            RuntimeAgentMessage::Query(
+                notebook_protocol::protocol::RuntimeAgentRequestEnvelope {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    request,
+                },
+                reply_tx,
+            ),
+            permit,
+        )?;
+        let response = recv_runtime_agent_query_response(reply_rx, timeout).await?;
 
         if let Some(delay) = kernel_launch_retry_delay(
             &response,
@@ -313,6 +362,31 @@ mod tests {
             .expect_err("timeout should fail");
 
         assert_eq!(error.to_string(), "Runtime agent query timed out");
+    }
+
+    #[tokio::test]
+    async fn delivery_rejection_does_not_enqueue_a_restart() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(tx);
+        let response = send_runtime_agent_request_with_kernel_ports_on_delivery(
+            &room,
+            |_| notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
+            |_, _| anyhow::bail!("selection changed"),
+        )
+        .await;
+        assert!(response
+            .unwrap_err()
+            .to_string()
+            .contains("selection changed"));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

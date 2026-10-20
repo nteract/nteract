@@ -491,6 +491,11 @@ fn request_required_scope(
 
     match request {
         NotebookRequest::LaunchKernel { .. }
+        | NotebookRequest::ListCondaEnvironments { .. }
+        | NotebookRequest::ListInstalledCondaPackages { .. }
+        | NotebookRequest::GetEnvironmentSelection {}
+        | NotebookRequest::SetEnvironmentSelection { .. }
+        | NotebookRequest::ApplyEnvironmentSelection { .. }
         | NotebookRequest::ExecuteCell { .. }
         | NotebookRequest::ExecuteCellGuarded { .. }
         | NotebookRequest::GetHistory { .. }
@@ -529,6 +534,22 @@ pub(super) fn queue_request_error(
             },
         },
     )
+}
+
+pub(super) fn queue_environment_selection(
+    writer: &PeerWriter,
+    scope: ConnectionScope,
+    selection: notebook_protocol::protocol::EnvironmentSelectionSnapshot,
+) -> anyhow::Result<()> {
+    if scope == ConnectionScope::Owner {
+        writer.send_json(
+            NotebookFrameType::Broadcast,
+            &notebook_protocol::protocol::NotebookBroadcast::EnvironmentSelectionChanged {
+                selection,
+            },
+        )?;
+    }
+    Ok(())
 }
 
 pub(super) fn queue_session_status(
@@ -614,6 +635,24 @@ mod tests {
         assert!(!request_allowed_for_scope(
             &request,
             ConnectionScope::Viewer
+        ));
+    }
+
+    #[test]
+    fn installed_conda_inventory_is_owner_only() {
+        let request = NotebookRequest::ListInstalledCondaPackages { refresh: false };
+        assert!(request_allowed_for_scope(&request, ConnectionScope::Owner));
+        assert!(!request_allowed_for_scope(
+            &request,
+            ConnectionScope::Editor
+        ));
+        assert!(!request_allowed_for_scope(
+            &request,
+            ConnectionScope::Viewer
+        ));
+        assert!(!request_allowed_for_scope(
+            &request,
+            ConnectionScope::RuntimePeer
         ));
     }
 
@@ -1196,6 +1235,96 @@ mod tests {
             notebook_protocol::protocol::NotebookResponse::Error { ref error }
                 if error.contains("ExecuteCell is not allowed")
         ));
+    }
+
+    #[tokio::test]
+    async fn environment_selection_broadcast_exposes_paths_only_to_owners() {
+        let selection = notebook_protocol::protocol::EnvironmentSelectionSnapshot {
+            selected: Some(notebook_protocol::protocol::LocalCondaEnvironment {
+                id: "local".into(),
+                name: "analysis".into(),
+                prefix: "/private/analysis".into(),
+                python_path: "/private/analysis/bin/python".into(),
+                python_version: None,
+            }),
+            ..Default::default()
+        };
+        for scope in [
+            ConnectionScope::Viewer,
+            ConnectionScope::Editor,
+            ConnectionScope::RuntimePeer,
+            ConnectionScope::Owner,
+        ] {
+            let (writer, mut replies, mut broadcasts) = test_peer_writer_with_capacities(1, 1);
+            queue_environment_selection(&writer, scope, selection.clone()).unwrap();
+            if scope == ConnectionScope::Owner {
+                let frame = broadcasts.try_recv().unwrap();
+                assert_eq!(frame.frame_type, NotebookFrameType::Broadcast);
+                let broadcast: notebook_protocol::protocol::NotebookBroadcast =
+                    serde_json::from_slice(&frame.payload).unwrap();
+                assert!(
+                    matches!(broadcast, notebook_protocol::protocol::NotebookBroadcast::EnvironmentSelectionChanged { selection: actual } if actual == selection)
+                );
+            } else {
+                assert!(replies.try_recv().is_err());
+                assert!(broadcasts.try_recv().is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn local_environment_requests_are_owner_only_at_wire_admission() {
+        use notebook_protocol::protocol::LocalEnvironmentTarget;
+        let requests = [
+            NotebookRequest::ListCondaEnvironments { refresh: false },
+            NotebookRequest::ListInstalledCondaPackages { refresh: false },
+            NotebookRequest::ListInstalledCondaPackages { refresh: true },
+            NotebookRequest::GetEnvironmentSelection {},
+            NotebookRequest::SetEnvironmentSelection {
+                target: LocalEnvironmentTarget::Automatic,
+                expected_revision: 0,
+            },
+            NotebookRequest::ApplyEnvironmentSelection {
+                expected_revision: 0,
+                observed_heads: vec![],
+            },
+        ];
+        for scope in [
+            ConnectionScope::Viewer,
+            ConnectionScope::Editor,
+            ConnectionScope::RuntimePeer,
+            ConnectionScope::Owner,
+        ] {
+            for request in &requests {
+                let (tx, mut request_rx) = mpsc::channel(1);
+                let worker = PeerRequestWorker {
+                    tx,
+                    handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
+                };
+                let (writer, mut replies, _) = test_peer_writer_with_capacities(1, 1);
+                let payload =
+                    serde_json::to_vec(&notebook_protocol::protocol::NotebookRequestEnvelope {
+                        id: Some("selection".into()),
+                        required_heads: vec![],
+                        request: request.clone(),
+                    })
+                    .unwrap();
+                enqueue_notebook_request(&worker, &writer, &payload, "notebook", "peer", scope)
+                    .unwrap();
+                if scope == ConnectionScope::Owner {
+                    assert!(request_rx.try_recv().is_ok());
+                    assert!(replies.try_recv().is_err());
+                } else {
+                    assert!(request_rx.try_recv().is_err());
+                    let response: notebook_protocol::protocol::NotebookResponseEnvelope =
+                        serde_json::from_slice(&replies.try_recv().unwrap().payload).unwrap();
+                    assert!(matches!(
+                        response.response,
+                        notebook_protocol::protocol::NotebookResponse::Error { .. }
+                    ));
+                }
+            }
+        }
     }
 
     #[tokio::test]

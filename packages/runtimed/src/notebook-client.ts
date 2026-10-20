@@ -19,6 +19,7 @@ import type {
   CompletionItem,
   DependencyGuard,
   HistoryEntry,
+  LocalEnvironmentTarget,
   NotebookRequest,
   NotebookResponse,
   SaveBlockedReason,
@@ -211,6 +212,43 @@ export class NotebookClient {
       this.log.error("[notebook-client] Shutdown failed:", e);
       throw e;
     }
+  }
+
+  listCondaEnvironments(refresh: boolean): Promise<NotebookResponse> {
+    return this.sendRequest({ type: "list_conda_environments", refresh });
+  }
+
+  listInstalledCondaPackages(refresh = false): Promise<NotebookResponse> {
+    return this.sendRequest({ type: "list_installed_conda_packages", refresh });
+  }
+
+  getEnvironmentSelection(): Promise<NotebookResponse> {
+    return this.sendRequest({ type: "get_environment_selection" });
+  }
+
+  setEnvironmentSelection(
+    target: LocalEnvironmentTarget,
+    expectedRevision: number,
+  ): Promise<NotebookResponse> {
+    return this.sendRequest({
+      type: "set_environment_selection",
+      target,
+      expected_revision: expectedRevision,
+    });
+  }
+
+  applyEnvironmentSelection(
+    expectedRevision: number,
+    observedHeads: string[],
+  ): Promise<NotebookResponse> {
+    return this.sendRequest(
+      {
+        type: "apply_environment_selection",
+        expected_revision: expectedRevision,
+        observed_heads: observedHeads,
+      },
+      observedHeads.length ? { required_heads: observedHeads } : undefined,
+    );
   }
 
   /** Hot-sync environment — install new packages without restart (UV only). */

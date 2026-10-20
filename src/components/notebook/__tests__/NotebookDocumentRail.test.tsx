@@ -73,7 +73,7 @@ describe("NotebookDocumentRail", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Packages" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Packages & Environments" })).toBeVisible();
     expect(screen.queryByText("uv · 2 packages")).not.toBeInTheDocument();
     expect(screen.getByText("Package details")).toBeVisible();
   });
@@ -92,7 +92,10 @@ describe("NotebookDocumentRail", () => {
       />,
     );
 
-    const packagesButton = screen.getByRole("button", { name: "Packages", exact: true });
+    const packagesButton = screen.getByRole("button", {
+      name: "Packages & Environments",
+      exact: true,
+    });
     await user.click(packagesButton);
     expect(onActivePanelChange).toHaveBeenCalledWith("packages");
 

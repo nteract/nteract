@@ -52,7 +52,7 @@ export interface NotebookRailProps {
 
 const baseRailButtons: Array<RailItem<NotebookRailPanelId>> = [
   { id: "outline", label: "Outline", icon: ListTree },
-  { id: "packages", label: "Packages", icon: Package },
+  { id: "packages", label: "Packages & Environments", icon: Package },
 ];
 
 export function NotebookRail({

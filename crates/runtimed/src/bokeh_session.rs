@@ -1006,7 +1006,10 @@ mod tests {
                 assert_eq!(patch.session_id, "session-1");
                 assert_eq!(patch.revision, 1);
             }
-            NotebookBroadcast::Comm { .. } => panic!("expected Bokeh patch broadcast"),
+            NotebookBroadcast::Comm { .. }
+            | NotebookBroadcast::EnvironmentSelectionChanged { .. } => {
+                panic!("expected Bokeh patch broadcast")
+            }
         }
     }
 
@@ -1060,7 +1063,10 @@ mod tests {
                 assert!(patch.server_patch.is_none());
                 assert!(patch.checkpoint.is_none());
             }
-            NotebookBroadcast::Comm { .. } => panic!("expected Bokeh patch broadcast"),
+            NotebookBroadcast::Comm { .. }
+            | NotebookBroadcast::EnvironmentSelectionChanged { .. } => {
+                panic!("expected Bokeh patch broadcast")
+            }
         }
     }
 

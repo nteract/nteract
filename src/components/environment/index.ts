@@ -18,6 +18,14 @@ export {
 } from "./EnvironmentSummary";
 export { CondaDependencyPanel, type CondaDependencyPanelProps } from "./CondaDependencyPanel";
 export {
+  LocalEnvironmentSelector,
+  type LocalEnvironmentSelectorProps,
+} from "./LocalEnvironmentSelector";
+export {
+  InstalledCondaPackagesPanel,
+  type InstalledCondaPackagesPanelProps,
+} from "./InstalledCondaPackagesPanel";
+export {
   DenoDependencyPanel,
   type DenoConfigInfo,
   type DenoDependencyPanelProps,

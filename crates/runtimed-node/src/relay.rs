@@ -98,6 +98,7 @@ pub struct RelayInfo {
     pub runtime: Option<String>,
     pub actor_label: Option<String>,
     pub connection_scope: Option<String>,
+    pub local_environment_selection: Option<bool>,
     pub comments_doc_id: Option<String>,
     /// JSON encoding of the daemon-authoritative notebook reference.
     pub comments_notebook_ref_json: Option<String>,
@@ -411,6 +412,7 @@ fn relay_info_from_capabilities(
         runtime: None,
         actor_label: capabilities.actor_label,
         connection_scope: capabilities.connection_scope,
+        local_environment_selection: Some(capabilities.local_environment_selection),
         comments_doc_id: capabilities.comments_doc_id,
         comments_notebook_ref_json,
         protocol: capabilities.protocol,
@@ -490,11 +492,29 @@ mod tests {
     }
 
     #[test]
+    fn relay_preserves_handshake_selection_support_without_guessing() {
+        for supported in [false, true] {
+            let mut capabilities = ProtocolCapabilities::v4(None);
+            capabilities.local_environment_selection = supported;
+            let info = relay_info_from_capabilities(
+                "notebook-1".into(),
+                capabilities,
+                None,
+                PathBuf::from("/tmp/runtimed.sock"),
+                None,
+            );
+            assert_eq!(info.local_environment_selection, Some(supported));
+        }
+    }
+
+    #[test]
     fn relay_identity_never_falls_back_to_pool_metadata() {
         let daemon = serde_json::from_value(serde_json::json!({
             "endpoint": "/tmp/runtimed.sock",
             "pid": 42,
             "version": "2.6.3+pool-process",
+            "protocol_version": 4,
+            "daemon_api_version": 3,
             "started_at": "2026-08-11T00:00:00Z",
             "blob_port": 48637
         }))

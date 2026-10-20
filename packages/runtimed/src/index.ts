@@ -51,6 +51,11 @@ export { BUSY_THROTTLE_MS, RuntimeStateStore, throttleBusyStatus } from "./runti
 // Observable store base + free select helper (source stores extend this)
 export { ObservableStore, select } from "./observable-store";
 export { NotebookMetadataStore, type NotebookMetadataHandle } from "./notebook-metadata-store";
+export {
+  EnvironmentSelectionStore,
+  type EnvironmentSelectionState,
+} from "./environment-selection-store";
+export type { InstalledCondaPackage, InstalledCondaPackageInventory } from "./request-types";
 
 // Polling + fetch-on-input primitives (injected scheduler/fetch, abort-wired)
 export {
@@ -580,12 +585,16 @@ export type {
   BlobUploadErrorKind,
   CommRequestMessage,
   CompletionItem,
+  CondaEnvironmentInventory,
   DependencyGuard,
   DenoLaunchedConfig,
   EnvSource,
+  EnvironmentSelectionSnapshot,
   HistoryEntry,
   LaunchedEnvConfig,
   LaunchSpec,
+  LocalCondaEnvironment,
+  LocalEnvironmentTarget,
   NotebookRequest,
   NotebookResponse,
   PackageManager,

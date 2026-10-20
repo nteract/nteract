@@ -31,6 +31,62 @@ pub struct FeatureFlags {
     pub bootstrap_dx: bool,
 }
 
+/// Local-only candidate details. Prefixes are never notebook content or presence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LocalCondaEnvironment {
+    pub id: String,
+    pub name: String,
+    pub prefix: PathBuf,
+    pub python_path: PathBuf,
+    pub python_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CondaEnvironmentInventory {
+    pub environments: Vec<LocalCondaEnvironment>,
+    pub truncated: bool,
+    pub warnings: Vec<String>,
+}
+
+/// A package record from the selected Conda prefix's local `conda-meta` data.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstalledCondaPackage {
+    pub name: String,
+    pub version: String,
+    pub build: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstalledCondaPackageInventory {
+    pub packages: Vec<InstalledCondaPackage>,
+    pub truncated: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LocalEnvironmentTarget {
+    Automatic,
+    Conda { prefix: PathBuf },
+}
+
+/// Owner-scoped, daemon-session intent, separate from actual kernel facts.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnvironmentSelectionSnapshot {
+    pub revision: u64,
+    pub selected: Option<LocalCondaEnvironment>,
+    pub applied: Option<LocalCondaEnvironment>,
+    pub applying: bool,
+}
+
+/// Safe running identity projected to peers without local executable paths.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LocalEnvironmentIdentity {
+    pub id: String,
+    pub name: String,
+    pub python_version: Option<String>,
+}
+
 /// Environment configuration captured at kernel launch time.
 /// Used to detect when notebook metadata has drifted from the running kernel.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -84,6 +140,10 @@ pub struct LaunchedEnvConfig {
     /// Path to python executable (for hot-sync, avoids hardcoding bin/python vs Scripts/python.exe)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub python_path: Option<PathBuf>,
+
+    /// Borrowed local environment: execution only, never capture or package sync.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_environment: Option<LocalEnvironmentIdentity>,
 
     /// Unique identifier for this kernel launch session.
     /// Used to detect if kernel was swapped during async operations (e.g., hot-sync).
@@ -634,6 +694,25 @@ fn default_comm_channel() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum NotebookRequest {
+    /// Bounded passive Conda discovery. Only local Owner connections may list.
+    ListCondaEnvironments {
+        refresh: bool,
+    },
+    /// Read installed records from the actual running borrowed prefix only.
+    ListInstalledCondaPackages {
+        refresh: bool,
+    },
+    GetEnvironmentSelection {},
+    /// Stage intent without replacing a running kernel or writing notebook data.
+    SetEnvironmentSelection {
+        target: LocalEnvironmentTarget,
+        expected_revision: u64,
+    },
+    /// Explicitly start/restart the fixed reviewed target after trust checks.
+    ApplyEnvironmentSelection {
+        expected_revision: u64,
+        observed_heads: Vec<String>,
+    },
     /// Launch a kernel for this notebook room.
     /// If a kernel is already running, returns info about the existing kernel.
     LaunchKernel {
@@ -734,7 +813,9 @@ pub enum NotebookRequest {
     /// Resolve a recovered-room/source conflict by explicitly choosing one of
     /// the preservation policies in [`SourceReconciliation`]. Owner scope is
     /// required and ordinary mutation remains gated until this commits.
-    ReconcileNotebookSource { operation: SourceReconciliation },
+    ReconcileNotebookSource {
+        operation: SourceReconciliation,
+    },
 
     /// Fork the current notebook into a new ephemeral (in-memory only) room.
     ///
@@ -809,17 +890,33 @@ pub enum NotebookRequest {
     },
 
     /// Abort a peer-scoped multipart upload and discard staged parts.
-    AbortBlobUpload { upload_id: String },
+    AbortBlobUpload {
+        upload_id: String,
+    },
 }
 
 /// Responses from daemon to notebook app.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum NotebookResponse {
+    CondaEnvironments {
+        inventory: CondaEnvironmentInventory,
+    },
+    InstalledCondaPackages {
+        inventory: InstalledCondaPackageInventory,
+    },
+    EnvironmentSelection {
+        selection: EnvironmentSelectionSnapshot,
+    },
+    EnvironmentSelectionRejected {
+        error: String,
+    },
     /// The addressed notebook authority has accepted these required heads.
     /// Descendant changes may already be present; this is not a visible-state
     /// equality check or an .ipynb export receipt.
-    NotebookSyncAcknowledged { heads: Vec<String> },
+    NotebookSyncAcknowledged {
+        heads: Vec<String>,
+    },
     /// Kernel launched successfully.
     KernelLaunched {
         kernel_type: String,
@@ -859,10 +956,14 @@ pub enum NotebookResponse {
 
     /// A guarded action was not queued because current notebook state no
     /// longer matches the state the user approved.
-    GuardRejected { reason: String },
+    GuardRejected {
+        reason: String,
+    },
 
     /// All cells queued for execution.
-    AllCellsQueued { queued: Vec<QueueEntry> },
+    AllCellsQueued {
+        queued: Vec<QueueEntry>,
+    },
 
     /// Notebook saved successfully to disk by a committed atomic checkpoint.
     NotebookSaved {
@@ -930,10 +1031,14 @@ pub enum NotebookResponse {
     Ok {},
 
     /// Error response.
-    Error { error: String },
+    Error {
+        error: String,
+    },
 
     /// History search result.
-    HistoryResult { entries: Vec<HistoryEntry> },
+    HistoryResult {
+        entries: Vec<HistoryEntry>,
+    },
 
     /// Code completion result.
     CompletionResult {
@@ -943,7 +1048,9 @@ pub enum NotebookResponse {
     },
 
     /// Correlated acknowledgement for a Bokeh document patch request.
-    BokehSessionPatch { reply: BokehSessionPatchReply },
+    BokehSessionPatch {
+        reply: BokehSessionPatchReply,
+    },
 
     /// Environment sync completed successfully.
     SyncEnvironmentComplete {
@@ -987,10 +1094,14 @@ pub enum NotebookResponse {
     },
 
     /// Multipart blob upload was aborted.
-    BlobUploadAborted { upload_id: String },
+    BlobUploadAborted {
+        upload_id: String,
+    },
 
     /// Blob upload failed before publishing bytes.
-    BlobUploadError { reason: BlobUploadErrorKind },
+    BlobUploadError {
+        reason: BlobUploadErrorKind,
+    },
 }
 
 /// Broadcast messages from daemon to all peers in a room.
@@ -1005,6 +1116,10 @@ pub enum NotebookResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum NotebookBroadcast {
+    /// Local owner-only projection; must not be forwarded to document peers.
+    EnvironmentSelectionChanged {
+        selection: EnvironmentSelectionSnapshot,
+    },
     /// Comm message from kernel (ipywidgets protocol).
     /// Broadcast to all connected peers so all windows can display widgets.
     Comm {
@@ -1215,6 +1330,63 @@ impl RuntimeAgentRequest {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn local_environment_requests_preserve_prefixes_and_apply_provenance() {
+        for request in [
+            serde_json::json!({"action": "list_conda_environments", "refresh": true}),
+            serde_json::json!({"action": "get_environment_selection"}),
+            serde_json::json!({
+                "action": "set_environment_selection",
+                "target": {"kind": "conda", "prefix": "C:\\Conda Envs\\rankings"},
+                "expected_revision": 7
+            }),
+            serde_json::json!({
+                "action": "set_environment_selection",
+                "target": {"kind": "automatic"},
+                "expected_revision": 8
+            }),
+            serde_json::json!({
+                "action": "apply_environment_selection",
+                "expected_revision": 8,
+                "observed_heads": ["reviewed-head"]
+            }),
+        ] {
+            let parsed: NotebookRequest = serde_json::from_value(request.clone()).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), request);
+        }
+    }
+
+    #[test]
+    fn installed_conda_package_contract_keeps_records_separate_from_declarations() {
+        let request = serde_json::json!({
+            "action": "list_installed_conda_packages",
+            "refresh": true
+        });
+        let decoded: NotebookRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), request);
+
+        let response = serde_json::json!({
+            "result": "installed_conda_packages",
+            "inventory": {
+                "packages": [{"name":"numpy","version":"2.1.0","build":"py312_0"}],
+                "truncated": true,
+                "warnings": ["Package record limit reached"]
+            }
+        });
+        let decoded: NotebookResponse = serde_json::from_value(response.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), response);
+    }
+
+    #[test]
+    fn local_environment_selection_snapshot_keeps_automatic_explicit() {
+        let response = serde_json::json!({
+            "result": "environment_selection",
+            "selection": {"revision": 4, "selected": null, "applied": null, "applying": false}
+        });
+        let parsed: NotebookResponse = serde_json::from_value(response.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), response);
+    }
 
     #[test]
     fn env_kind_uv_round_trip() {
@@ -1569,6 +1741,22 @@ mod tests {
     #[test]
     fn wire_action_names_match_ts_discriminators() {
         let cases: Vec<(&str, serde_json::Value)> = vec![
+            (
+                "list_conda_environments",
+                serde_json::json!({"action": "list_conda_environments", "refresh": false}),
+            ),
+            (
+                "get_environment_selection",
+                serde_json::json!({"action": "get_environment_selection"}),
+            ),
+            (
+                "set_environment_selection",
+                serde_json::json!({"action": "set_environment_selection", "target": {"kind": "automatic"}, "expected_revision": 0}),
+            ),
+            (
+                "apply_environment_selection",
+                serde_json::json!({"action": "apply_environment_selection", "expected_revision": 1, "observed_heads": []}),
+            ),
             (
                 "launch_kernel",
                 serde_json::json!({

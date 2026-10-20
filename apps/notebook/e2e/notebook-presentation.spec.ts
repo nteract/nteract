@@ -170,7 +170,7 @@ test.describe("embedded notebook presentation", () => {
         await expect(rail).toHaveAttribute("data-collapsed", "false");
         await expect(
           notebook.getByRole("heading", {
-            name: panelId === "packages" ? "Packages" : "Outline",
+            name: panelId === "packages" ? "Packages & Environments" : "Outline",
             exact: true,
           }),
         ).toBeVisible();
@@ -179,7 +179,7 @@ test.describe("embedded notebook presentation", () => {
           await expect(toolbar).toBeHidden();
           await expect(
             notebook.getByRole("button", {
-              name: panelId === "packages" ? "Packages" : "Outline",
+              name: panelId === "packages" ? "Packages & Environments" : "Outline",
               exact: true,
             }),
           ).toBeFocused();
@@ -218,10 +218,14 @@ test.describe("embedded notebook presentation", () => {
       await indicator.click();
       await expect(rail).toHaveAttribute("data-collapsed", "false");
       await expect(indicator).toHaveAttribute("aria-expanded", "true");
-      await expect(notebook.getByRole("heading", { name: "Packages", exact: true })).toBeVisible();
+      await expect(
+        notebook.getByRole("heading", { name: "Packages & Environments", exact: true }),
+      ).toBeVisible();
       if (viewport.width < 600) {
         await expect(toolbar).toBeHidden();
-        await notebook.getByRole("button", { name: "Packages", exact: true }).click();
+        await notebook
+          .getByRole("button", { name: "Packages & Environments", exact: true })
+          .click();
       } else {
         await expect(toolbar).toBeVisible();
         await indicator.click();
@@ -240,9 +244,11 @@ test.describe("embedded notebook presentation", () => {
     const notebook = await openEmbeddedNotebook(page, {
       rail: { side: "right", initialPanel: "packages", initialCollapsed: false },
     });
-    await expect(notebook.getByRole("heading", { name: "Packages", exact: true })).toBeVisible();
+    await expect(
+      notebook.getByRole("heading", { name: "Packages & Environments", exact: true }),
+    ).toBeVisible();
     await expectRightGeometry(notebook, 1280);
-    await notebook.getByRole("button", { name: "Packages", exact: true }).click();
+    await notebook.getByRole("button", { name: "Packages & Environments", exact: true }).click();
     await expect(notebook.getByTestId("notebook-rail")).toHaveAttribute("data-collapsed", "true");
     await command(page, "outline");
     await expect(notebook.getByRole("heading", { name: "Outline", exact: true })).toBeVisible();
