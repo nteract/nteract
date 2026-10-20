@@ -354,6 +354,8 @@ jobs:
     name: Publish wrapper package
     needs: [pack-wrapper]
     runs-on: ubuntu-latest
+    # Allow the 30-minute native registry propagation wait plus setup/publication.
+    timeout-minutes: 40
     permissions:
       contents: read
       id-token: write
