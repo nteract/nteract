@@ -1138,6 +1138,7 @@ async fn test_local_environment_selection_owner_fanout_and_session_reset() {
     let config = test_config(&temp);
     let socket = config.socket_path.clone();
     let daemon = Daemon::new_for_test(config).unwrap();
+    let daemon_for_inspect = daemon.clone();
     let daemon_handle = tokio::spawn(async move { daemon.run().await.unwrap() });
     let pool = PoolClient::new(socket.clone());
     assert!(wait_for_daemon(&pool).await);
@@ -1272,9 +1273,23 @@ async fn test_local_environment_selection_owner_fanout_and_session_reset() {
 
     drop(attached_owner);
     drop(owner);
-    // The existing grace-window teardown must reset the session while leaving
-    // the notebook resident; a fresh attachment must not resurrect the override.
-    sleep(Duration::from_millis(300)).await;
+    // Wait for teardown itself rather than assuming the grace period plus
+    // filesystem work completes within a fixed delay on every platform.
+    let notebook_uuid = uuid::Uuid::parse_str(&notebook_id).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let room = daemon_for_inspect
+                .test_get_room(notebook_uuid)
+                .await
+                .expect("notebook room remains resident during kernel teardown");
+            if room.connections.last_kernel_torn_down_at().is_some() {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("kernel teardown resets the local environment selection");
     let rejoined = connect::connect(socket.clone(), notebook_id, "selection-rejoined")
         .await
         .unwrap();
