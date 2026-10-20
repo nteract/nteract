@@ -22,11 +22,13 @@ If you loaded this skill but neither the direct pi tools (`python`, `python_add_
 If Codex reports the plugin is installed but the tools still do not appear, ask the user to refresh and reinstall the selected plugin to clear stale local cache state:
 
 ```sh
-codex plugin marketplace upgrade nteract-plugins
-codex plugin remove nteract@nteract-plugins      # or nightly@nteract-plugins
-codex plugin add nteract@nteract-plugins         # or nightly@nteract-plugins
+codex plugin marketplace upgrade nteract-plugins &&
+codex plugin remove nightly@nteract-plugins &&
+codex plugin add nightly@nteract-plugins
 codex mcp list
 ```
+
+For stable, use `nteract@nteract-plugins` in both plugin commands. If the marketplace refresh fails or times out, stop before removing the plugin; follow the [marketplace recovery instructions](https://github.com/nteract/nteract#upgrade-the-codex-plugin).
 
 Start a new Codex session after reinstalling; running sessions do not hot-load newly installed MCP tools.
 
@@ -35,6 +37,10 @@ If tools still don't appear after restarting Codex:
 - Confirm the nteract desktop app/daemon is running.
 - Run `nteract doctor` to check the installation (`nteract --channel nightly doctor` for the Nightly install).
 - Share any error messages from the session.
+
+## If notebook calls report unsupported_notebook_target
+
+An older plugin proxy can reject a newer worker's ID-or-handle schema, even for `create_notebook`. The message "This child does not advertise required notebook_handle routing; upgrade the child before using notebook tools" can mean the plugin proxy needs updating, not the desktop app. Follow [Upgrade the Codex plugin](https://github.com/nteract/nteract#upgrade-the-codex-plugin), then restart Codex and use a fresh session. Calling `reconnect` only replaces the worker; it does not upgrade the proxy. Do not remove notebook targets or fall back to implicit selection. Verify recovery by creating a notebook and executing a synced cell.
 
 ## Quick Start (direct pi tools)
 
