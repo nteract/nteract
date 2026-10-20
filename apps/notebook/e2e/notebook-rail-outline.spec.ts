@@ -50,7 +50,7 @@ test.describe("notebook rail outline", () => {
       await expect(page.locator('[data-slot="rail-leading-slot"]').getByRole("img")).toBeVisible();
       await expect(toolbar.getByRole("img", { name: "nteract" })).toHaveCount(0);
 
-      for (const panel of ["Outline", "Packages"]) {
+      for (const panel of ["Outline", "Packages & Environments"]) {
         await page.getByRole("button", { name: panel, exact: true }).click();
         await expect(page.getByRole("heading", { name: panel, exact: true })).toBeVisible();
         expect(await logo.boundingBox()).toEqual(initialLogo);

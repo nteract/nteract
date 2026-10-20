@@ -1746,6 +1746,10 @@ mod tests {
                 serde_json::json!({"action": "list_conda_environments", "refresh": false}),
             ),
             (
+                "list_installed_conda_packages",
+                serde_json::json!({"action": "list_installed_conda_packages", "refresh": false}),
+            ),
+            (
                 "get_environment_selection",
                 serde_json::json!({"action": "get_environment_selection"}),
             ),

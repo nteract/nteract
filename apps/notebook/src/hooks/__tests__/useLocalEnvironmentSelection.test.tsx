@@ -1,4 +1,4 @@
-import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vite-plus/test";
 import { DirectTransport } from "../../../../../packages/runtimed/src/direct-transport";
@@ -79,7 +79,7 @@ describe("useLocalEnvironmentSelection", () => {
       await waitFor(() =>
         expect(screen.getByRole("button", { name: "Apply and restart" })).toBeEnabled(),
       );
-      expect(screen.getByText("uv managed")).toBeVisible();
+      expect(screen.getByText(/Running: uv managed/)).toBeVisible();
       expect(requests.map((request) => request.type)).toEqual([
         "get_environment_selection",
         "list_conda_environments",

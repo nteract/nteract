@@ -1152,7 +1152,7 @@ async fn test_local_environment_selection_owner_fanout_and_session_reset() {
     let notebook_id = owner.info.notebook_id.clone();
     let heads = owner.handle.confirm_notebook_sync().await.unwrap();
     let (frame_tx, mut frames) = mpsc::unbounded_channel();
-    let observer = connect::connect_relay_with_operator(
+    let attached_owner = connect::connect_relay_with_operator(
         socket.clone(),
         notebook_id.clone(),
         frame_tx,
@@ -1160,6 +1160,10 @@ async fn test_local_environment_selection_owner_fanout_and_session_reset() {
     )
     .await
     .unwrap();
+    assert_eq!(
+        attached_owner.capabilities.connection_scope.as_deref(),
+        Some("owner")
+    );
 
     let response = owner
         .handle
@@ -1196,7 +1200,7 @@ async fn test_local_environment_selection_owner_fanout_and_session_reset() {
         notification["selection"]["selected"]["prefix"],
         prefix.to_string_lossy().as_ref()
     );
-    let observer_state = observer
+    let observer_state = attached_owner
         .handle
         .send_request(NotebookRequest::GetEnvironmentSelection {})
         .await
@@ -1217,13 +1221,20 @@ async fn test_local_environment_selection_owner_fanout_and_session_reset() {
         ),
         "pending selection must not be inspected as installed: {installed:?}"
     );
-    let editor_response = observer
+    let attached_owner_response = attached_owner
         .handle
         .send_request(NotebookRequest::ListInstalledCondaPackages { refresh: false })
         .await
         .unwrap();
-    assert!(matches!(editor_response, NotebookResponse::Error { .. }));
-    let stale = observer
+    assert!(
+        matches!(
+            attached_owner_response,
+            NotebookResponse::EnvironmentSelectionRejected { ref error }
+                if error.contains("Start a local Conda environment")
+        ),
+        "a second local Owner also cannot inspect packages without a running Conda kernel: {attached_owner_response:?}"
+    );
+    let stale = attached_owner
         .handle
         .send_request(NotebookRequest::SetEnvironmentSelection {
             target: LocalEnvironmentTarget::Automatic,
@@ -1259,7 +1270,7 @@ async fn test_local_environment_selection_owner_fanout_and_session_reset() {
         b"not an executable"
     );
 
-    drop(observer);
+    drop(attached_owner);
     drop(owner);
     // The existing grace-window teardown must reset the session while leaving
     // the notebook resident; a fresh attachment must not resurrect the override.
