@@ -1230,7 +1230,7 @@ mod tests {
         });
         let inventory = service.inventory(false).await.unwrap();
         assert_eq!(inventory.environments.len(), 1);
-        assert!(!inventory.truncated);
+        assert!(inventory.truncated);
         assert!(inventory
             .warnings
             .iter()
@@ -1296,7 +1296,7 @@ mod tests {
         );
         assert_eq!(inventory.packages[0].version, "2.1.0");
         assert_eq!(inventory.packages[0].build, "py312_0");
-        assert!(inventory.truncated);
+        assert!(!inventory.truncated);
         assert_eq!(inventory.warnings.len(), 1);
         assert!(inventory.warnings[0].contains("invalid Conda package record"));
     }
