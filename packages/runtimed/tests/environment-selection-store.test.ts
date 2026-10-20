@@ -79,8 +79,9 @@ describe("EnvironmentSelectionStore", () => {
   it("refreshes the authoritative snapshot after a stale Apply rejection", async () => {
     const { store, client, broadcasts, transport, requests } = setup();
     transport.requestHandler = async (request) => {
-      requests.push(request as NotebookRequest);
-      return request.type === "list_installed_conda_packages"
+      const notebookRequest = request as NotebookRequest;
+      requests.push(notebookRequest);
+      return notebookRequest.type === "list_installed_conda_packages"
         ? {
             result: "installed_conda_packages",
             inventory: { packages: [], truncated: false, warnings: [] },
@@ -300,15 +301,11 @@ describe("EnvironmentSelectionStore", () => {
   });
 
   it("never carries installed-package records across runtime session replacement", async () => {
-    const { store, client, broadcasts } = setup();
+    const { store, client, broadcasts, transport } = setup();
     store.activate({ client, broadcasts$: broadcasts });
     await vi.waitFor(() => expect(store.snapshot.selection).not.toBeNull());
     const replies: Array<(response: unknown) => void> = [];
-    const mutableClient = client as NotebookClient & {
-      listInstalledCondaPackages: (refresh: boolean) => Promise<unknown>;
-    };
-    mutableClient.listInstalledCondaPackages = () =>
-      new Promise((resolve) => replies.push(resolve));
+    transport.requestHandler = () => new Promise((resolve) => replies.push(resolve));
     const request = store.loadInstalledPackages(false);
     expect(replies).toHaveLength(1);
     store.dispose();

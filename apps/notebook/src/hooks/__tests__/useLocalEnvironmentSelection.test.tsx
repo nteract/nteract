@@ -72,7 +72,10 @@ describe("useLocalEnvironmentSelection", () => {
       await waitFor(() => expect(screen.getByRole("button", { name: "Change" })).toBeEnabled());
       expect(requests).toEqual([{ type: "get_environment_selection" }]);
       await user.click(screen.getByRole("button", { name: "Change" }));
-      await user.click(await screen.findByRole("button", { name: /rankings \(Python 3.12\)/ }));
+      const rankingsOption = await screen.findByRole("button", { name: /rankings/ });
+      expect(within(rankingsOption).getByText("Python 3.12")).toBeVisible();
+      expect(within(rankingsOption).getByText("/Conda Envs/Rankings")).toBeVisible();
+      await user.click(rankingsOption);
       await waitFor(() =>
         expect(screen.getByRole("button", { name: "Apply and restart" })).toBeEnabled(),
       );
@@ -95,9 +98,7 @@ describe("useLocalEnvironmentSelection", () => {
           selection: { revision: 4, selected: null, applied: environment, applying: false },
         }),
       );
-      expect(screen.getByText("Selected for next start").nextElementSibling).toHaveTextContent(
-        "Automatic",
-      );
+      expect(screen.getByText(/Next: Automatic/)).toBeVisible();
       expect(harness.client.get_heads_hex()).toEqual(heads);
       view.unmount();
     } finally {

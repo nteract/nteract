@@ -369,8 +369,10 @@ mod tests {
             NotebookResponse::EnvironmentSelectionRejected { ref error }
                 if error.contains("Start a local Conda environment")
         ));
-        let mut managed = notebook_protocol::protocol::LaunchedEnvConfig::default();
-        managed.venv_path = Some(temp.path().to_owned());
+        let managed = notebook_protocol::protocol::LaunchedEnvConfig {
+            venv_path: Some(temp.path().to_owned()),
+            ..Default::default()
+        };
         *room.runtime_agent_launched_config.write().await = Some(managed);
         assert!(matches!(
             list_installed_packages(&room).await,
@@ -391,13 +393,15 @@ mod tests {
         ));
         let prefix = temp.path().join("borrowed");
         std::fs::create_dir_all(prefix.join("conda-meta")).unwrap();
-        let mut config = notebook_protocol::protocol::LaunchedEnvConfig::default();
-        config.venv_path = Some(prefix);
-        config.local_environment = Some(notebook_protocol::protocol::LocalEnvironmentIdentity {
-            id: "local-rankings".into(),
-            name: "rankings".into(),
-            python_version: None,
-        });
+        let config = notebook_protocol::protocol::LaunchedEnvConfig {
+            venv_path: Some(prefix),
+            local_environment: Some(notebook_protocol::protocol::LocalEnvironmentIdentity {
+                id: "local-rankings".into(),
+                name: "rankings".into(),
+                python_version: None,
+            }),
+            ..Default::default()
+        };
         *room.runtime_agent_launched_config.write().await = Some(config);
         assert!(matches!(
             list_installed_packages(&room).await,

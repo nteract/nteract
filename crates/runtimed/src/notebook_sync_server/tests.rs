@@ -14368,13 +14368,15 @@ async fn installed_package_inventory_uses_actual_running_prefix_not_pending_sele
         r#"{"name":"pandas","version":"2.2.0","build":"py312_0"}"#,
     )
     .unwrap();
-    let mut config = LaunchedEnvConfig::default();
-    config.venv_path = Some(running_prefix.clone());
-    config.local_environment = Some(LocalEnvironmentIdentity {
-        id: "running-id".into(),
-        name: "running".into(),
-        python_version: Some("3.12".into()),
-    });
+    let config = LaunchedEnvConfig {
+        venv_path: Some(running_prefix.clone()),
+        local_environment: Some(LocalEnvironmentIdentity {
+            id: "running-id".into(),
+            name: "running".into(),
+            python_version: Some("3.12".into()),
+        }),
+        ..Default::default()
+    };
     *room.runtime_agent_launched_config.write().await = Some(config);
     room.state
         .with_doc(|state| {
