@@ -52,6 +52,7 @@ vi.mock("../frame-html", () => ({
 }));
 
 vi.mock("../isolated-renderer-context", () => ({
+  useRegisterIsolatedOutput: vi.fn(),
   useIsolatedRenderer: () => ({
     rendererCode: undefined,
     rendererCss: undefined,

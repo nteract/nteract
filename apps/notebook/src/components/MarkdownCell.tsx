@@ -1223,6 +1223,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                 >
                   <IsolatedFrame
                     ref={frameRef}
+                    requiresRenderer={Boolean(previewSource)}
                     name={`md-${cell.id}`}
                     darkMode={darkMode}
                     colorTheme={colorTheme}

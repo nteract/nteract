@@ -12,6 +12,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { OutputArea, type JupyterOutput } from "../OutputArea";
+import { useHasIsolatedOutputs } from "@/components/isolated/isolated-renderer-context";
 
 let isolatedFrameMountCount = 0;
 let frameShouldThrow = false;
@@ -107,12 +108,23 @@ describe("OutputArea isolated degraded states", () => {
     mockRendererBundle.error = new Error("Failed to fetch renderer JS: 404");
     mockRendererBundle.lastError = mockRendererBundle.error;
 
-    render(<OutputArea cellId="cell-1" outputs={[htmlOutput("o1")]} isolated />);
+    function Presence() {
+      return <div data-testid="presence">{String(useHasIsolatedOutputs())}</div>;
+    }
+    const { rerender } = render(
+      <>
+        <Presence />
+        <OutputArea cellId="cell-1" outputs={[htmlOutput("o1")]} isolated />
+      </>,
+    );
 
     expect(screen.queryByTestId("isolated-frame")).toBeNull();
     expect(isolatedFrameMountCount).toBe(0);
     expect(screen.getByText("Output rendering failed")).toBeTruthy();
     expect(screen.getByText("Failed to fetch renderer JS: 404")).toBeTruthy();
+    expect(screen.getByTestId("presence").textContent).toBe("true");
+    rerender(<Presence />);
+    expect(screen.getByTestId("presence").textContent).toBe("false");
   });
 
   it("wires the fallback Retry to the shared provider retry()", () => {
