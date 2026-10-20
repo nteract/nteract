@@ -59,16 +59,66 @@ Restart Codex, then open the plugin directory, choose the nteract marketplace, a
 
 The distribution repository also includes a `nightly` plugin entry for pre-release builds.
 
-If Codex still does not show notebook tools after restarting, refresh the marketplace and reinstall the selected plugin:
+If tools are missing or notebook calls fail after an app update, follow [Upgrade the Codex plugin](#upgrade-the-codex-plugin).
 
-```
-codex plugin marketplace upgrade nteract-plugins
-codex plugin remove nteract@nteract-plugins      # or nightly@nteract-plugins
-codex plugin add nteract@nteract-plugins         # or nightly@nteract-plugins
-codex mcp list
+### Upgrade the Codex plugin
+
+The desktop app and the Codex plugin update separately. An older plugin can reject a newer app's notebook routing with `unsupported_notebook_target`, including this misleading message:
+
+```text
+This child does not advertise required notebook_handle routing;
+upgrade the child before using notebook tools
 ```
 
-Start a new Codex session after reinstalling; running sessions do not hot-load newly installed MCP tools.
+This can mean the **plugin proxy needs updating**, even when the desktop app is current. It can block notebook creation as well as calls using a notebook ID or handle. Plugin 0.6.6 and desktop 2.8.6 are a verified compatible pairing; their version numbers are independent.
+
+Save any notebook work before restarting your agent. Refresh the marketplace, then reinstall only the channel you use. Run these commands in a terminal. The `&&` operators stop the sequence if a step fails.
+
+Stable:
+
+```sh
+codex plugin marketplace upgrade nteract-plugins &&
+codex plugin remove nteract@nteract-plugins &&
+codex plugin add nteract@nteract-plugins
+```
+
+Nightly:
+
+```sh
+codex plugin marketplace upgrade nteract-plugins &&
+codex plugin remove nightly@nteract-plugins &&
+codex plugin add nightly@nteract-plugins
+```
+
+If you registered the marketplace at an older release with `--ref`, refreshing keeps that pin. To move to current `main`, replace the marketplace registration before reinstalling:
+
+```sh
+codex plugin marketplace remove nteract-plugins &&
+codex plugin marketplace add nteract/agent-plugins --ref main
+```
+
+Only reinstall the plugin after registration succeeds. If cloning fails, use the local checkout fallback below.
+
+Restart Codex and start a fresh session so it loads the updated proxy and tool catalog. The MCP `reconnect` tool restarts the worker behind the proxy; it does not upgrade the plugin proxy. Restarting Codex without updating the cached plugin can still launch the old binary.
+
+Check the installed plugin version in Codex's plugin settings, then ask the agent to create a notebook and run a cell containing `1 + 1`. Confirm that the cell returns `2`. Seeing a skill or a server in `codex mcp list` alone does not verify notebook execution. If it still fails, include the exact error, plugin version and channel, and `nteract --version` when [reporting an issue](https://github.com/nteract/nteract/issues).
+
+#### If the marketplace refresh times out
+
+If `marketplace upgrade` reports `git clone marketplace source timed out after 30s` or `fatal: early EOF`, stop before removing the installed plugin. The replacement marketplace has not finished downloading. Retry the refresh; if it continues to fail, clone a shallow checkout outside Codex's clone deadline and register that local directory. On macOS or Linux, for an existing `nteract-plugins` registration:
+
+```sh
+mkdir -p "$HOME/.local/share/nteract" &&
+git clone --depth 1 --single-branch --branch main \
+  https://github.com/nteract/agent-plugins.git \
+  "$HOME/.local/share/nteract/agent-plugins" &&
+codex plugin marketplace remove nteract-plugins &&
+codex plugin marketplace add "$HOME/.local/share/nteract/agent-plugins"
+```
+
+Use a new directory for the clone. The chain finishes downloading before removing the old marketplace registration. Codex requires that removal when changing sources under the same name; `marketplace remove` is separate from uninstalling the plugin with `plugin remove`. If you already removed the marketplace registration, skip that removal command.
+
+Only after registration succeeds, run the selected channel's `plugin remove` and `plugin add` commands above, then restart Codex. Keep the checkout: it is now the registered marketplace source. For future updates, run `git -C "$HOME/.local/share/nteract/agent-plugins" pull --ff-only` successfully before reinstalling the plugin; `marketplace upgrade` refreshes Git sources, not local directories. To return to a Git-managed marketplace later, use the remove-and-add registration commands above.
 
 ### Install the Claude Code plugin
 
