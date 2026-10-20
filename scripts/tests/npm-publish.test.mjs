@@ -139,6 +139,12 @@ test("native failures block wrapper, Pi is stable-only, and source/channel are e
   assert.match(jobs.get("pack-native"), /Smoke installed native tarball and compiled channel/);
 });
 
+test("wrapper job budget leaves room for native propagation and publication", () => {
+  const timeout = /^    timeout-minutes: (\d+)$/m.exec(jobs.get("publish-wrapper"));
+  assert.ok(timeout, "declare a bounded wrapper job budget");
+  assert.ok(Number(timeout[1]) >= 40, "allow the 30-minute native wait plus setup and publication");
+});
+
 test("Sift packs independently, tests the stamped package, and publishes only behind its gate", () => {
   const resolve = jobs.get("resolve-release");
   assert.match(resolve, /plan "\$RUNNER_TEMP\/release-identity\.json" release-source\/packages\/sift\/package\.json "\$RUNNER_TEMP\/npm-release-tools\/sift-plan\.json"/);

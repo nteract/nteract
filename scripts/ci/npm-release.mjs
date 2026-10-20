@@ -211,7 +211,7 @@ export async function registryPackage(name, fetchImpl = fetch) {
 }
 
 export async function assertNativeDependencies(manifest, plan, fetchPackage = registryPackage, {
-  timeoutMs = 600_000, intervalMs = 10_000, now = () => performance.now(),
+  timeoutMs = 1_800_000, intervalMs = 10_000, now = () => performance.now(),
   wait = sleep, onWait = message => console.error(message),
 } = {}) {
   const deadline = now() + timeoutMs;
@@ -240,7 +240,10 @@ export async function assertNativeDependencies(manifest, plan, fetchPackage = re
     onWait(`Waiting for native npm publication: ${missing.join(", ")}`);
     await wait(Math.min(intervalMs, remaining));
   } while (now() < deadline);
-  throw new Error(`Required native package is not published after ${timeoutMs}ms: ${missing.join(", ")}`);
+  throw new Error(`Required native package is not published after ${timeoutMs}ms: ${missing.join(", ")}. ` +
+    "npm may still be processing the native publication. Verify these exact versions and their release identity, " +
+    "then rerun only the failed Publish wrapper package job in this workflow run to reuse its retained npm-package-wrapper artifact. " +
+    "Do not rebuild or republish the native packages.");
 }
 
 export async function publishPackage(manifest, plan, target, { fetchPackage = registryPackage, publish, nativeWait }) {

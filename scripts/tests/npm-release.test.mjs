@@ -209,6 +209,53 @@ test("wrapper waits for exact native versions then publishes only once", async (
   assert.match(f.messages[0], /node-darwin-arm64@/);
 });
 
+test("default native wait accepts delayed propagation beyond ten minutes", async () => {
+  const f = readinessFixture();
+  const delayed = packageName("linux-arm64-gnu");
+  const availableAt = 21 * 60_000;
+  const checked = new Set();
+  let publishes = 0;
+  let wrapperReads = 0;
+  const result = await publishPackage(f.wrapper, plan, "wrapper", {
+    nativeWait: {...f.nativeWait, timeoutMs: undefined, intervalMs: undefined},
+    fetchPackage: async name => {
+      if (name === f.wrapper.name) {
+        wrapperReads++;
+        return empty();
+      }
+      checked.add(name);
+      if (name === delayed && f.nativeWait.now() < availableAt) return empty();
+      return packument([f.natives.get(name)]);
+    },
+    publish: () => publishes++,
+  });
+  assert.equal(result.status, "published");
+  assert.equal(publishes, 1);
+  assert.equal(wrapperReads, 2, "recheck the wrapper after the extended wait");
+  assert.deepEqual(checked, new Set(f.natives.keys()), "check every enabled native package");
+  assert.equal(f.nativeWait.now(), availableAt);
+  assert.ok(f.waits.every(ms => ms === 10_000));
+});
+
+test("default native wait stops at thirty minutes with retained-artifact recovery guidance", async () => {
+  const f = readinessFixture();
+  const delayed = packageName("linux-arm64-gnu");
+  await assert.rejects(publishPackage(f.wrapper, plan, "wrapper", {
+    nativeWait: {...f.nativeWait, timeoutMs: undefined, intervalMs: undefined},
+    fetchPackage: async name => name === f.wrapper.name || name === delayed ? empty() : packument([f.natives.get(name)]),
+    publish: () => assert.fail("missing native packages must block publication"),
+  }), error => {
+    assert.match(error.message, /not published after 1800000ms/);
+    assert.ok(error.message.includes(`${delayed}@${plan.version}`));
+    assert.ok(!error.message.includes(packageName("darwin-arm64")), "report only missing packages");
+    assert.match(error.message, /Verify these exact versions and their release identity/);
+    assert.match(error.message, /rerun only the failed Publish wrapper package job/);
+    assert.match(error.message, /retained npm-package-wrapper artifact/);
+    return true;
+  });
+  assert.equal(f.nativeWait.now(), 30 * 60_000);
+});
+
 test("permanent absence exhausts one shared deadline without publishing", async () => {
   const f = readinessFixture();
   await assert.rejects(publishPackage(f.wrapper, plan, "wrapper", {
