@@ -97,6 +97,8 @@ export interface IsolatedFrameProps {
   colorTheme?: string;
   hostContext?: NteractEmbedHostContextPatch;
   outputDocumentUrl?: string | null;
+  /** Accepted for shared callers; this inline adapter loads no renderer bundle. */
+  requiresRenderer?: boolean;
   minHeight?: number;
   maxHeight?: number;
   autoHeight?: boolean;
