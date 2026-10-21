@@ -33,7 +33,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
+mod bokeh_session;
 mod output_content;
+
+pub use bokeh_session::{bokeh_session_frame_header, BokehSessionDocHandle};
 
 const MARKDOWN_PROJECTION_MIME: &str = "application/vnd.nteract.markdown+json";
 const MARKDOWN_SOURCE_MIME: &str = "text/markdown";
@@ -229,6 +232,14 @@ pub enum FrameEvent {
     /// Daemon-to-hosted-room bridge health.
     HostedBridgeStatus {
         hosted_bridge_status: HostedBridgeStatusWire,
+    },
+    /// The daemon refused this peer's writes to a Bokeh session document.
+    /// The host drops that session's `BokehSessionDocHandle` and syncs a new
+    /// one for `epoch`.
+    BokehSessionResync {
+        session_id: String,
+        epoch: u64,
+        reason: String,
     },
     /// Runtime state document was synced — frontend should update runtime state UI.
     RuntimeStateSyncApplied {
@@ -3528,6 +3539,17 @@ impl NotebookHandle {
                     SessionControlMessage::HostedBridgeStatus { status } => {
                         events.push(FrameEvent::HostedBridgeStatus {
                             hosted_bridge_status: status,
+                        });
+                    }
+                    SessionControlMessage::BokehSessionResync {
+                        session_id,
+                        epoch,
+                        reason,
+                    } => {
+                        events.push(FrameEvent::BokehSessionResync {
+                            session_id,
+                            epoch,
+                            reason,
                         });
                     }
                 }

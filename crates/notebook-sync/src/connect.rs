@@ -303,7 +303,9 @@ pub async fn connect_with_options(
     build_and_spawn(doc, peer_state, notebook_id, reader, writer)
         .await
         .map(|(handle, broadcast_rx)| ConnectResult {
-            handle: handle.with_notebook_sync_receipt_capability(caps.notebook_sync_receipt),
+            handle: handle
+                .with_notebook_sync_receipt_capability(caps.notebook_sync_receipt)
+                .with_bokeh_session_doc_sync_capability(caps.bokeh_session_doc_sync),
             broadcast_rx,
             initial_metadata,
         })
@@ -358,7 +360,8 @@ pub async fn connect_open(
         .await
         .map(|(handle, broadcast_rx)| OpenResult {
             handle: handle
-                .with_notebook_sync_receipt_capability(info.capabilities.notebook_sync_receipt),
+                .with_notebook_sync_receipt_capability(info.capabilities.notebook_sync_receipt)
+                .with_bokeh_session_doc_sync_capability(info.capabilities.bokeh_session_doc_sync),
             broadcast_rx,
             info,
         })
@@ -416,7 +419,8 @@ pub async fn connect_open_hosted(
         .await
         .map(|(handle, broadcast_rx)| OpenResult {
             handle: handle
-                .with_notebook_sync_receipt_capability(info.capabilities.notebook_sync_receipt),
+                .with_notebook_sync_receipt_capability(info.capabilities.notebook_sync_receipt)
+                .with_bokeh_session_doc_sync_capability(info.capabilities.bokeh_session_doc_sync),
             broadcast_rx,
             info,
         })
@@ -471,7 +475,8 @@ pub async fn connect_create(
         .await
         .map(|(handle, broadcast_rx)| CreateResult {
             handle: handle
-                .with_notebook_sync_receipt_capability(info.capabilities.notebook_sync_receipt),
+                .with_notebook_sync_receipt_capability(info.capabilities.notebook_sync_receipt)
+                .with_bokeh_session_doc_sync_capability(info.capabilities.bokeh_session_doc_sync),
             broadcast_rx,
             info,
         })

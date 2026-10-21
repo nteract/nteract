@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
+import time
 from collections import deque
 from types import SimpleNamespace
 from typing import Any, cast
@@ -10,16 +11,15 @@ from unittest.mock import Mock
 
 import pytest
 from IPython.core.formatters import DisplayFormatter
-from nteract_kernel_launcher import _buffer_hook, _panel
+from nteract_kernel_launcher import _bokeh_session, _buffer_hook, _panel
 from nteract_kernel_launcher._bokeh_session import (
     BOKEH_SESSION_MIME,
+    INLINE_FLUSH_DELAY,
     BokehBuffer,
+    BokehDelta,
     BokehDocumentSession,
     BokehPatchApplyError,
-    BokehSerialization,
-    BokehServerEvent,
-    StaleBokehRevisionError,
-    _replayable_client_patch,
+    ref_props,
     session_registry,
 )
 from nteract_kernel_launcher._refs import BLOB_REF_MIME
@@ -53,6 +53,55 @@ def _load_panel():
     pn = pytest.importorskip("panel")
     pn.extension()
     return pn
+
+
+def _announced_panel(viewable):
+    """Format a viewable and announce its session as the display hook would."""
+    _ip, data, _metadata = _format_panel(viewable)
+    payload = data[BOKEH_SESSION_MIME]
+    session = session_registry.require(payload["session_id"])
+    delivered: list[BokehDelta] = []
+    session.set_event_sink(delivered.append)
+    session.mark_announced()
+    return payload, session, delivered
+
+
+def _bokeh_model(viewable, payload):
+    return viewable._models[payload["root_ids"][0]][0]
+
+
+def _model_changed(model_id: str, attr: str, new: Any) -> dict[str, Any]:
+    return {"kind": "ModelChanged", "model": {"id": model_id}, "attr": attr, "new": new}
+
+
+def _data_session(data: dict[str, Any]):
+    """A plain Bokeh document with one source, baselined and announced."""
+    from bokeh.document import Document
+    from bokeh.models import ColumnDataSource
+    from bokeh.plotting import figure
+
+    document = Document()
+    source = ColumnDataSource(data=data)
+    plot = figure(width=200, height=200)
+    plot.line("x", "y", source=source)
+    document.add_root(plot)
+    session = BokehDocumentSession(
+        document, [plot], producer_name="test", producer_version="0", announced=False
+    )
+    checkpoint = session.checkpoint()
+    delivered: list[BokehDelta] = []
+    session.set_event_sink(delivered.append)
+    session.mark_announced()
+    return session, source, checkpoint, delivered
+
+
+def _values(delta: BokehDelta) -> dict[str, Any]:
+    """``value`` changes by model; Panel 1.10 also sends ``TextInput.value_input``."""
+    return {mid: props["value"] for mid, props in delta.props_changed.items() if "value" in props}
+
+
+def _data_events(delivered: list[BokehDelta]) -> list[dict[str, Any]]:
+    return [event for delta in delivered for event in delta.data_events]
 
 
 def test_install_registers_panel_formatter_without_importing_panel():
@@ -96,11 +145,13 @@ def test_panel_bootstrap_filter_does_not_displace_buffer_hooks():
 
     _panel._install_bootstrap_filter(ip)
     _buffer_hook.install(ip)
+    _panel._install_bootstrap_filter(ip)
 
     for publisher in (ip.display_pub, ip.displayhook):
-        assert len(publisher._hooks) == 2
-        assert getattr(publisher._hooks[0], "_nteract_panel_bootstrap_filter", False)
-        assert publisher._hooks[1] is _buffer_hook.buffer_hook
+        assert len(publisher._hooks) == 3
+        assert isinstance(publisher._hooks[0], _panel._SessionAnnouncer)
+        assert getattr(publisher._hooks[1], "_nteract_panel_bootstrap_filter", False)
+        assert publisher._hooks[2] is _buffer_hook.buffer_hook
 
 
 def test_panel_bootstrap_filter_suppresses_legacy_autoloader():
@@ -281,6 +332,9 @@ def test_panel_bootstrap_filter_preserves_unrelated_mime_data():
     assert "application/vnd.holoviews_load.v0+json" in msg["content"]["data"]
 
 
+# ── Display payload and normalized session state ─────────────────────────
+
+
 def test_panel_formatter_emits_document_session_without_pyviz_comms():
     pn = _load_panel()
     from panel.io.state import state
@@ -293,7 +347,7 @@ def test_panel_formatter_emits_document_session_without_pyviz_comms():
     assert "application/javascript" not in data
     payload = data[BOKEH_SESSION_MIME]
     assert payload["schema_version"] == 1
-    assert payload["revision"] == 0
+    assert "revision" not in payload
     assert payload["producer"] == {"name": "panel", "version": pn.__version__}
     assert payload["document"]["version"] == payload["bokeh_version"]
     assert payload["root_ids"] == [payload["document"]["roots"][0]["id"]]
@@ -302,19 +356,63 @@ def test_panel_formatter_emits_document_session_without_pyviz_comms():
         "isolated": True,
     }
 
-    javascript_urls = [
-        entry["url"] for entry in payload["resources"]["javascript"] if entry["kind"] == "url"
+    # Released builds link CDN URLs; dev builds bundle the same files inline
+    # with a "BEGIN <file>" banner.
+    javascript = [
+        entry["url"] if entry["kind"] == "url" else entry["code"][:200]
+        for entry in payload["resources"]["javascript"]
     ]
-    assert any("bokeh-widgets" in url for url in javascript_urls)
-    assert any(url.endswith("/panel.min.js") for url in javascript_urls)
+    assert any("bokeh-widgets" in item for item in javascript)
+    assert any("panel.min.js" in item for item in javascript)
 
     session = session_registry.require(payload["session_id"])
     assert session.document is not None
+    assert not session.announced
     root_id = payload["root_ids"][0]
     assert state._views[root_id][3] is None
 
 
-def test_panel_formatter_stashes_bokeh_binary_buffers():
+def test_session_doc_carries_every_model_with_ref_props_and_meta():
+    pn = _load_panel()
+
+    slider = pn.widgets.IntSlider(start=0, end=10, value=4)
+    _ip, data, _metadata = _format_panel(pn.Row(slider))
+    payload = data[BOKEH_SESSION_MIME]
+    session = session_registry.require(payload["session_id"])
+    session_doc = payload["session_doc"]
+
+    assert set(session_doc["models"]) == {model.id for model in session.document.models}
+    meta = session_doc["meta"]
+    assert meta["session_id"] == payload["session_id"]
+    assert meta["producer_name"] == "panel"
+    assert meta["producer_version"] == pn.__version__
+    assert meta["bokeh_version"] == payload["bokeh_version"]
+    assert meta["root_ids"] == payload["root_ids"]
+    assert "roots" not in meta.get("doc_extras", {})
+
+    root = session_doc["models"][payload["root_ids"][0]]
+    assert root["type"] == "Row"
+    assert "children" in root["ref_props"]
+    assert root["props"]["children"] == [{"id": _bokeh_model(slider, payload).id}]
+    slider_state = session_doc["models"][_bokeh_model(slider, payload).id]
+    assert slider_state["props"]["value"] == 4
+    assert "value" not in slider_state["ref_props"]
+    assert all(isinstance(model["ref_props"], list) for model in session_doc["models"].values())
+
+
+def test_ref_props_come_from_property_descriptors():
+    pytest.importorskip("bokeh")
+    from bokeh.models import ColumnDataSource, GlyphRenderer, Row, Slider
+
+    assert "children" in ref_props(Row)
+    assert "width" not in ref_props(Row)
+    assert {"data_source", "glyph"} <= set(ref_props(GlyphRenderer))
+    assert "value" not in ref_props(Slider)
+    assert "data" not in ref_props(ColumnDataSource)
+    assert ref_props(Row) is ref_props(Row)
+
+
+def test_panel_formatter_stashes_buffers_once_for_document_and_session_doc():
     pn = _load_panel()
     np = pytest.importorskip("numpy")
     from bokeh.models import ColumnDataSource
@@ -335,501 +433,124 @@ def test_panel_formatter_stashes_bokeh_binary_buffers():
 
     assert len(payload["buffers"]) == 2
     assert len(refs) == 2
-    assert [buffer["id"] for buffer in payload["buffers"]]
     assert [buffer["buffer_index"] for buffer in payload["buffers"]] == [0, 1]
     assert [ref["buffer_index"] for ref in refs] == [0, 1]
     assert refs[0]["hash"] == refs[1]["hash"]
     assert refs[0]["hash"] in _buffer_hook.pending_buffers()
 
-
-def test_replayable_client_patch_excludes_ephemeral_messages():
-    model_event = {
-        "kind": "ModelChanged",
-        "model": {"id": "p1001"},
-        "attr": "value",
-        "new": 5,
-    }
-    message_event = {
-        "kind": "MessageSent",
-        "msg_type": "bokeh_event",
-        "msg_data": {"type": "event", "name": "button_click", "values": {}},
-    }
-
-    replayable = _replayable_client_patch(
-        {"events": [message_event, model_event]},
-        [BokehBuffer(id="buffer-1", data=b"payload")],
-    )
-
-    assert replayable is not None
-    assert replayable.content == {"events": [model_event]}
-    assert [buffer.id for buffer in replayable.buffers] == ["buffer-1"]
-    assert _replayable_client_patch({"events": [message_event]}, []) is None
+    # Column data lives in a fold, not in the source's props, and its buffers
+    # point at frames the DocJson already sends.
+    session_doc = payload["session_doc"]
+    assert "data" not in session_doc["models"][source.id]["props"]
+    [fold] = session_doc["data_events"]
+    assert fold["kind"] == "ColumnsFolded"
+    assert (fold["source_id"], fold["version"]) == (source.id, 0)
+    assert set(fold["columns"]) == {"x", "y"}
+    assert fold["columns"]["x"]["type"] == "ndarray"
+    assert [buffer["buffer_index"] for buffer in payload["session_doc_buffers"]] == [0, 0]
+    assert {buffer["hash"] for buffer in payload["session_doc_buffers"]} == {refs[0]["hash"]}
 
 
-def test_panel_patch_runs_python_callback_and_returns_only_derived_events():
-    pn = _load_panel()
-
-    source = pn.widgets.FloatSlider(label="source", start=0, end=10, value=1)
-    target = pn.widgets.FloatSlider(label="target", start=0, end=20, value=2)
-    source.param.watch(lambda event: setattr(target, "value", event.new * 2), "value")
-    layout = pn.Row(source, target)
-
-    _ip, data, _metadata = _format_panel(layout)
-    payload = data[BOKEH_SESSION_MIME]
-    session = session_registry.require(payload["session_id"])
-    root_id = payload["root_ids"][0]
-    source_model = source._models[root_id][0]
-    target_model = target._models[root_id][0]
-
-    result = session.apply_patch(
-        base_revision=0,
-        transaction_id="interaction-1",
-        patch={
-            "events": [
-                {
-                    "kind": "ModelChanged",
-                    "model": {"id": source_model.id},
-                    "attr": "value",
-                    "new": 5,
-                }
-            ]
-        },
-    )
-
-    assert source.value == 5
-    assert target.value == 10
-    assert result.transaction_id == "interaction-1"
-    assert result.revision == 1
-    assert result.derived is not None
-    events = result.derived.content["events"]
-    assert [event["model"]["id"] for event in events] == [target_model.id]
-    assert events[0]["new"] == 10
-
-    with pytest.raises(StaleBokehRevisionError) as error:
-        session.apply_patch(base_revision=2, patch={"events": []})
-    assert error.value.actual == 1
+# ── Delta shape ──────────────────────────────────────────────────────────
 
 
-def test_patch_against_older_revision_is_rebased_onto_python_changes():
-    """A browser patch racing Python-side updates applies on top of them, as
-    on a Bokeh server, instead of forcing the browser to resync."""
-    pn = _load_panel()
-
-    slider = pn.widgets.FloatSlider(start=0, end=10, value=1)
-    text = pn.widgets.TextInput(value="a")
-    layout = pn.Row(slider, text)
-    _ip, data, _metadata = _format_panel(layout)
-    payload = data[BOKEH_SESSION_MIME]
-    session = session_registry.require(payload["session_id"])
-    root_id = payload["root_ids"][0]
-    slider_model = slider._models[root_id][0]
-
-    text.value = "b"
-    slider.value = 2
-    assert [event.revision for event in session.pop_server_events()] == [1, 2]
-
-    result = session.apply_patch(
-        base_revision=0,
-        transaction_id="layout-1",
-        patch={
-            "events": [
-                {
-                    "kind": "ModelChanged",
-                    "model": {"id": slider_model.id},
-                    "attr": "value",
-                    "new": 5,
-                }
-            ]
-        },
-    )
-
-    assert slider.value == 5
-    assert text.value == "b"
-    assert (result.base_revision, result.revision) == (2, 3)
-    [event] = session.pop_server_events()
-    assert (event.transaction_id, event.base_revision, event.revision) == ("layout-1", 2, 3)
-    assert event.client_patch is not None
-
-
-def _coalescing_session(pn):
-    slider = pn.widgets.FloatSlider(start=0, end=10, value=1)
-    text = pn.widgets.TextInput(value="a")
-    _ip, data, _metadata = _format_panel(pn.Row(slider, text))
-    session = session_registry.require(data[BOKEH_SESSION_MIME]["session_id"])
-    delivered: list[Any] = []
-    session.set_event_sink(delivered.append)
-    return slider, text, session, delivered
-
-
-def test_python_changes_in_one_loop_iteration_share_a_revision():
-    pn = _load_panel()
-
-    async def change_both():
-        slider, text, _session, delivered = _coalescing_session(pn)
-        slider.value = 2
-        text.value = "b"
-        assert delivered == []
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        return delivered
-
-    [event] = asyncio.run(change_both())
-    assert (event.base_revision, event.revision) == (0, 1)
-    assert event.server_patch is not None
-    assert len(event.server_patch.content["events"]) == 2
-
-
-@pytest.mark.parametrize("transaction", [False, True], ids=["loop", "transaction"])
-@pytest.mark.parametrize("nested", [False, True], ids=["root", "layout-child"])
-@pytest.mark.parametrize("binary", [False, True], ids=["lists", "buffers"])
-def test_new_models_replay_streams_once(nested, binary, transaction):
-    pytest.importorskip("bokeh")
-
-    from bokeh.core.serialization import Buffer, Serialized
-    from bokeh.core.types import ID
-    from bokeh.document import Document
-    from bokeh.document.json import DocJson, PatchJson
-    from bokeh.models import ColumnDataSource, Div, Row
-    from bokeh.plotting import figure
-
-    np = pytest.importorskip("numpy")
-
-    def values(items):
-        return np.array(items, dtype=np.float64) if binary else items
-
-    async def change_and_replay():
-        document = Document()
-        root = Row(children=[]) if nested else Div(text="existing root")
-        document.add_root(root)
-        session = BokehDocumentSession(
-            document, document.roots, producer_name="test", producer_version="0"
-        )
-        try:
-            replica = Document.from_json(cast(DocJson, session.snapshot().content))
-            source = ColumnDataSource(data={"x": values([1, 2]), "y": values([1, 2])})
-
-            def add_and_stream():
-                if nested:
-                    plot = figure()
-                    plot.line("x", "y", source=source)
-                    root.children = [plot]
-                else:
-                    document.add_root(source)
-                source.stream({"x": values([3]), "y": values([3])})
-
-            if transaction:
-                root.on_change("name", lambda attr, old, new: add_and_stream())
-                client_patch = {
-                    "events": [
-                        {
-                            "kind": "ModelChanged",
-                            "model": {"id": root.id},
-                            "attr": "name",
-                            "new": "add source",
-                        }
-                    ]
-                }
-                result = session.apply_patch(
-                    base_revision=0, transaction_id="add-and-stream", patch=client_patch
-                )
-                assert (result.base_revision, result.revision) == (0, 1)
-                assert result.transaction_id == "add-and-stream"
-                replica.apply_json_patch(cast(PatchJson, client_patch))
-            else:
-                add_and_stream()
-            await asyncio.sleep(0)
-            await asyncio.sleep(0)
-
-            [event] = session.pop_server_events()
-            assert (event.base_revision, event.revision) == (0, 1)
-            patch = event.server_patch
-            if transaction:
-                assert event.transaction_id == result.transaction_id
-                assert patch is result.derived
-                assert event.client_patch is not None
-                assert event.client_patch.content == client_patch
-            else:
-                assert event.client_patch is None
-            assert patch is not None
-            assert len(patch.content["events"]) == 2
-            assert bool(patch.buffers) == binary
-            if binary:
-                # Equal payloads keep distinct Bokeh IDs across both events.
-                assert len({buffer.id for buffer in patch.buffers}) == 4
-                assert [buffer.data for buffer in patch.buffers] == [
-                    values([1, 2]).tobytes(),
-                    values([1, 2]).tobytes(),
-                    values([3]).tobytes(),
-                    values([3]).tobytes(),
-                ]
-            replica.apply_json_patch(
-                Serialized(
-                    content=cast(PatchJson, patch.content),
-                    buffers=[Buffer(ID(buffer.id), buffer.data) for buffer in patch.buffers],
-                )
-            )
-            replayed = replica.get_model_by_id(source.id)
-            assert replayed is not None
-            assert list(replayed.data["x"]) == list(source.data["x"]) == [1, 2, 3]
-            assert list(replayed.data["y"]) == list(source.data["y"]) == [1, 2, 3]
-        finally:
-            session.close()
-
-    asyncio.run(change_and_replay())
-
-
-@pytest.mark.parametrize("nested", [False, True], ids=["root", "property"])
-@pytest.mark.parametrize("binary", [False, True], ids=["lists", "buffers"])
-def test_callback_references_client_created_models_without_redefining_them(nested, binary):
-    pytest.importorskip("bokeh")
-    from bokeh.core.serialization import Serialized, Serializer
-    from bokeh.document import Document
-    from bokeh.models import ColumnDataSource, CustomJS
-    from nteract_kernel_launcher._bokeh_session import _serialize_bokeh_value
-
-    np = pytest.importorskip("numpy")
-    document = Document()
-    holder = CustomJS(code="")
-    trigger = CustomJS(code="")
-    document.add_root(holder)
-    document.add_root(trigger)
-    session = BokehDocumentSession(
-        document, document.roots, producer_name="test", producer_version="0"
-    )
-    source = ColumnDataSource(data={"x": np.array([1, 2], dtype="float64") if binary else [1, 2]})
-
-    def stream_and_reference(model):
-        model.stream({"x": np.array([3], dtype="float64") if binary else [3]})
-        holder.args = {"source": model}
-
-    if nested:
-        trigger.on_change("args", lambda attr, old, new: stream_and_reference(new["source"]))
-    else:
-
-        def on_root(event):
-            if event.kind == "RootAdded" and event.model.id == source.id:
-                stream_and_reference(event.model)
-
-        document.on_change(on_root)
-
-    try:
-        session.snapshot()
-        serializer = Serializer(deferred=True)
-        if nested:
-            client_event = {
-                "kind": "ModelChanged",
-                "model": {"id": trigger.id},
-                "attr": "args",
-                "new": serializer.encode({"source": source}),
-            }
-        else:
-            client_event = {"kind": "RootAdded", "model": serializer.encode(source)}
-        client = _serialize_bokeh_value(
-            Serialized(content={"events": [client_event]}, buffers=serializer.buffers)
-        )
-        result = session.apply_patch(
-            base_revision=0,
-            transaction_id="client-source",
-            patch=client.content,
-            buffers=client.buffers,
-        )
-        assert result.derived is not None
-        stream, reference = result.derived.content["events"]
-        assert stream["kind"] == "ColumnsStreamed"
-        # BokehJS decodes every definition before applying any event. Redefining
-        # this client model with its already-streamed data would append the row twice.
-        assert reference["new"]["entries"] == [["source", {"id": source.id}]]
-        assert list(holder.args["source"].data["x"]) == [1, 2, 3]
-        assert len(result.derived.buffers) == (1 if binary else 0)
-        [event] = session.pop_server_events()
-        assert (event.transaction_id, event.base_revision, event.revision) == (
-            "client-source",
-            0,
-            1,
-        )
-        assert event.client_patch is not None
-        assert event.client_patch.buffers == client.buffers
-    finally:
-        session.close()
-
-
-@pytest.mark.parametrize("binary", [False, True], ids=["lists", "buffers"])
-def test_message_callback_defines_models_for_peers_without_replaying_the_message(binary):
-    pytest.importorskip("bokeh")
-    from bokeh.core.serialization import Buffer, Serialized, Serializer
-    from bokeh.core.types import ID
-    from bokeh.document import Document
-    from bokeh.document.json import DocJson, PatchJson
-    from bokeh.models import ColumnDataSource
-    from nteract_kernel_launcher._bokeh_session import _serialize_bokeh_value
-
-    np = pytest.importorskip("numpy")
-    document = Document()
-    session = BokehDocumentSession(
-        document, document.roots, producer_name="test", producer_version="0"
-    )
-    try:
-        replica = Document.from_json(cast(DocJson, session.snapshot().content))
-        source = ColumnDataSource(data={"x": np.array([1, 2]) if binary else [1, 2]})
-        document.callbacks.on_message("attach-source", document.add_root)
-        serializer = Serializer(deferred=True)
-        client = _serialize_bokeh_value(
-            Serialized(
-                content={
-                    "events": [
-                        {
-                            "kind": "MessageSent",
-                            "msg_type": "attach-source",
-                            "msg_data": serializer.encode(source),
-                        }
-                    ]
-                },
-                buffers=serializer.buffers,
-            )
-        )
-        result = session.apply_patch(
-            base_revision=0,
-            transaction_id="message-source",
-            patch=client.content,
-            buffers=client.buffers,
-        )
-        [event] = session.pop_server_events()
-        assert event.client_patch is None
-        assert event.server_patch is result.derived
-        assert event.server_patch is not None
-        assert (event.base_revision, event.revision) == (0, 1)
-        replica.apply_json_patch(
-            Serialized(
-                content=cast(PatchJson, event.server_patch.content),
-                buffers=[
-                    Buffer(ID(buffer.id), buffer.data) for buffer in event.server_patch.buffers
-                ],
-            )
-        )
-        replayed = replica.get_model_by_id(source.id)
-        assert replayed is not None
-        assert list(replayed.data["x"]) == [1, 2]
-    finally:
-        session.close()
-
-
-@pytest.mark.parametrize("failure", ["callback", "serialization"])
-def test_failed_transaction_discards_partial_patches_and_recovers(failure):
-    pytest.importorskip("bokeh")
-    from bokeh.document import Document
-    from bokeh.document.json import DocJson, PatchJson
-    from bokeh.models import ColumnDataSource, Range1d
-
-    document = Document()
-    root = Range1d(start=0, end=1)
-    document.add_root(root)
-    source = ColumnDataSource(data={"x": [1, 2]})
-
-    def fail_serialization(events):
-        if failure == "serialization" and events[0].kind == "ColumnsStreamed":
-            raise ValueError("cannot serialize stream")
-
-    session = BokehDocumentSession(
-        document,
-        document.roots,
-        producer_name="test",
-        producer_version="0",
-        event_transform=fail_serialization,
-    )
-
-    def add_stream_and_fail(attr, old, new):
-        document.add_root(source)
-        source.stream({"x": [3]})
-        raise ValueError("callback failed after stream")
-
-    root.on_change("start", add_stream_and_fail)
-    try:
-        session.snapshot()
-        with pytest.raises(BokehPatchApplyError) as error:
-            session.apply_patch(
-                base_revision=0,
-                transaction_id="failed-stream",
-                patch={
-                    "events": [
-                        {
-                            "kind": "ModelChanged",
-                            "model": {"id": root.id},
-                            "attr": "start",
-                            "new": 1,
-                        }
-                    ]
-                },
-            )
-        assert error.value.revision == 1
-        [failed_event] = session.pop_server_events()
-        assert (failed_event.base_revision, failed_event.revision) == (0, 1)
-        assert failed_event.transaction_id == "failed-stream"
-        assert failed_event.client_patch is failed_event.server_patch is None
-        assert failed_event.checkpoint is error.value.checkpoint
-        replica = Document.from_json(cast(DocJson, error.value.checkpoint.content))
-        replayed = replica.get_model_by_id(source.id)
-        assert replayed is not None
-        assert list(replayed.data["x"]) == [1, 2, 3]
-
-        # A later successful transaction is acknowledged without stale derived events.
-        result = session.apply_patch(base_revision=1, transaction_id="next", patch={"events": []})
-        assert (result.base_revision, result.revision) == (1, 2)
-        assert result.derived is None
-        [next_event] = session.pop_server_events()
-        assert next_event.transaction_id == "next"
-        assert next_event.server_patch is next_event.checkpoint is None
-
-        # Callback state was cleared and checkpoint model references remain usable.
-        source.name = "recovered"
-        [event] = session.pop_server_events()
-        assert (event.base_revision, event.revision) == (2, 3)
-        assert event.server_patch is not None
-        replica.apply_json_patch(cast(PatchJson, event.server_patch.content))
-        assert replayed.name == "recovered"
-    finally:
-        session.close()
-
-
-def test_checkpoint_includes_changes_still_waiting_for_the_loop():
-    pn = _load_panel()
-
-    async def checkpoint_before_flush():
-        slider, _text, session, delivered = _coalescing_session(pn)
-        slider.value = 4
-        revision, snapshot = session.checkpoint()
-        return revision, snapshot, delivered
-
-    revision, snapshot, delivered = asyncio.run(checkpoint_before_flush())
-    assert revision == 1
-    assert [event.revision for event in delivered] == [1]
-    assert '"value":4' in str(snapshot.content).replace(" ", "").replace("'", '"')
-
-
-def test_python_change_queues_ordered_server_event():
+def test_python_change_publishes_props_changed():
     pn = _load_panel()
 
     slider = pn.widgets.FloatSlider(label="server", start=0, end=10, value=1)
-    _ip, data, _metadata = _format_panel(slider)
-    payload = data[BOKEH_SESSION_MIME]
-    session = session_registry.require(payload["session_id"])
-    root_id = payload["root_ids"][0]
-    slider_model = slider._models[root_id][0]
+    payload, session, delivered = _announced_panel(slider)
+    slider_model = _bokeh_model(slider, payload)
 
     slider.value = 7
 
-    events = session.pop_server_events()
-    assert len(events) == 1
-    assert events[0].revision == 1
-    assert events[0].client_patch is None
-    assert events[0].server_patch is not None
-    patch_event = events[0].server_patch.content["events"][0]
-    assert patch_event["model"]["id"] == slider_model.id
-    assert patch_event["attr"] == "value"
-    assert patch_event["new"] == 7
-    assert session.pop_server_events() == []
+    session.pop_deltas()
+    [delta] = delivered
+    assert delta.session_id == session.session_id
+    assert delta.transaction_id
+    assert delta.props_changed == {slider_model.id: {"value": 7}}
+    assert delta.models_added == {}
+    assert delta.models_removed == []
+    assert delta.data_events == []
+    assert delta.meta is None
 
 
-def test_python_change_to_esm_component_queues_server_event():
+def test_delta_adds_models_with_their_references_and_removes_them():
+    pn = _load_panel()
+
+    async def change_layout():
+        column = pn.Column(pn.widgets.TextInput(value="a"))
+        payload, _session, delivered = _announced_panel(column)
+        column_id = payload["root_ids"][0]
+        markdown = pn.pane.Markdown("added")
+        column.append(markdown)
+        await asyncio.sleep(0.05)
+        added_delta = delivered[-1]
+        markdown_id = markdown._models[column_id][0].id
+        column.pop(-1)
+        await asyncio.sleep(0.05)
+        return column_id, markdown_id, added_delta, delivered[-1]
+
+    column_id, markdown_id, added, removed = asyncio.run(change_layout())
+
+    model = added.models_added[markdown_id]
+    assert model["type"] == "panel.models.markup.HTML"
+    assert "stylesheets" in model["ref_props"]
+    assert "added" in model["props"]["text"]
+    # The new model lands in the same delta as the reference to it.
+    assert {"id": markdown_id} in added.props_changed[column_id]["children"]
+    for state in added.models_added.values():
+        assert set(state) == {"type", "ref_props", "props"}
+
+    assert markdown_id in removed.models_removed
+    assert {"id": markdown_id} not in removed.props_changed[column_id]["children"]
+    assert set(removed.models_removed) == set(added.models_added)
+
+
+def test_held_events_defer_the_delta_until_unhold():
+    pytest.importorskip("bokeh")
+    from bokeh.document import Document
+    from bokeh.models import Div, Row
+
+    document = Document()
+    row = Row(children=[Div(text="a")])
+    document.add_root(row)
+    session = BokehDocumentSession(document, [row], producer_name="test", producer_version="0")
+    delivered: list[BokehDelta] = []
+    session.set_event_sink(delivered.append)
+
+    document.hold()
+    added = Div(text="b")
+    row.children = [*row.children, added]
+    assert session.pop_deltas() == []
+    assert delivered == []
+    document.unhold()
+
+    [delta] = delivered
+    assert list(delta.models_added) == [added.id]
+    assert delta.props_changed[row.id]["children"][-1] == {"id": added.id}
+
+
+def test_root_changes_publish_meta():
+    pytest.importorskip("bokeh")
+    from bokeh.document import Document
+    from bokeh.models import Div
+
+    document = Document()
+    first = Div(text="a")
+    document.add_root(first)
+    session = BokehDocumentSession(document, [first], producer_name="test", producer_version="0")
+    delivered: list[BokehDelta] = []
+    session.set_event_sink(delivered.append)
+
+    second = Div(text="b")
+    document.add_root(second)
+
+    [delta] = delivered
+    assert delta.meta == {"root_ids": [first.id, second.id], "title": document.title}
+    assert list(delta.models_added) == [second.id]
+
+
+def test_python_change_to_esm_component_publishes_delta():
     pn = _load_panel()
     param = pytest.importorskip("param")
 
@@ -841,27 +562,477 @@ def test_python_change_to_esm_component_queues_server_event():
     async def change_from_python():
         counter = Counter()
         layout = pn.Column(counter)
-        _ip, data, _metadata = _format_panel(layout)
-        session = session_registry.require(data[BOKEH_SESSION_MIME]["session_id"])
+        _payload, session, delivered = _announced_panel(layout)
 
         counter.value = 3
         layout.append(pn.pane.Markdown("appended"))
         # Panel 1.9 releases the hold on the next tick of the kernel loop.
         await asyncio.sleep(0.05)
-        return session.pop_server_events()
+        session.pop_deltas()
+        return delivered
 
-    events = asyncio.run(change_from_python())
+    deltas = asyncio.run(change_from_python())
     changes = [
-        (event["attr"], event.get("new"))
-        for server_event in events
-        for event in server_event.server_patch.content["events"]
-        if event["kind"] == "ModelChanged"
+        (attr, value) for d in deltas for p in d.props_changed.values() for attr, value in p.items()
     ]
     assert ("value", 3) in changes
     assert any(attr == "children" for attr, _ in changes)
-    assert [(event.base_revision, event.revision) for event in events] == [
-        (index, index + 1) for index in range(len(events))
+    assert any(d.models_added for d in deltas)
+
+
+# ── Foreign patches and the correction rule ──────────────────────────────
+
+
+def test_foreign_patch_publishes_derived_changes_without_echo():
+    pn = _load_panel()
+
+    source = pn.widgets.FloatSlider(label="source", start=0, end=10, value=1)
+    target = pn.widgets.FloatSlider(label="target", start=0, end=20, value=2)
+    source.param.watch(lambda event: setattr(target, "value", event.new * 2), "value")
+    payload, session, delivered = _announced_panel(pn.Row(source, target))
+    source_model = _bokeh_model(source, payload)
+    target_model = _bokeh_model(target, payload)
+
+    result = session.apply_patch(
+        transaction_id="interaction-1",
+        patch={"events": [_model_changed(source_model.id, "value", 5)]},
+    )
+
+    assert source.value == 5
+    assert target.value == 10
+    assert result.transaction_id == "interaction-1"
+    assert delivered == [result.delta]
+    assert result.delta is not None
+    assert result.delta.transaction_id == "interaction-1"
+    # The accepted foreign value is already in the session document.
+    assert result.delta.props_changed == {target_model.id: {"value": 10}}
+
+
+def test_python_changes_publish_before_a_foreign_patch():
+    pn = _load_panel()
+
+    async def race():
+        slider = pn.widgets.FloatSlider(start=0, end=10, value=1)
+        text = pn.widgets.TextInput(value="a")
+        payload, session, delivered = _announced_panel(pn.Row(slider, text))
+        text.value = "b"
+        session.apply_patch(
+            transaction_id="tx",
+            patch={"events": [_model_changed(_bokeh_model(slider, payload).id, "value", 5)]},
+        )
+        return delivered, _bokeh_model(text, payload).id
+
+    delivered, text_id = asyncio.run(race())
+    assert _values(delivered[0]) == {text_id: "b"}
+    assert delivered[0].transaction_id != "tx"
+
+
+def test_correction_writes_back_a_value_python_rejected():
+    pn = _load_panel()
+
+    slider = pn.widgets.IntSlider(start=0, end=10, value=0)
+
+    def reject(event):
+        if event.new > 5:
+            slider.value = event.old
+
+    slider.param.watch(reject, "value")
+    payload, session, _delivered = _announced_panel(slider)
+    slider_model = _bokeh_model(slider, payload)
+
+    result = session.apply_patch(
+        transaction_id="rejected",
+        patch={"events": [_model_changed(slider_model.id, "value", 8)]},
+    )
+
+    assert slider.value == 0
+    assert result.delta is not None
+    assert result.delta.props_changed == {slider_model.id: {"value": 0}}
+
+
+def test_correction_bypasses_bokehs_equal_value_no_op():
+    """A value restored under the patch's own setter emits no event Bokeh would
+    publish, so only the comparison with the requested value catches it."""
+    pytest.importorskip("bokeh")
+    from bokeh.document import Document
+    from bokeh.models import Slider
+
+    document = Document()
+    slider = Slider(start=0, end=10, value=0)
+    document.add_root(slider)
+    session = BokehDocumentSession(document, [slider], producer_name="test", producer_version="0")
+
+    def restore(attr, old, new):
+        if new > 5:
+            slider.set_from_json("value", old, setter=cast(Any, session._active_setter))
+
+    slider.on_change("value", restore)
+
+    result = session.apply_patch(
+        transaction_id="restore", patch={"events": [_model_changed(slider.id, "value", 8)]}
+    )
+
+    assert slider.value == 0
+    assert result.delta is not None
+    assert result.delta.props_changed == {slider.id: {"value": 0}}
+
+    # Equal values need no correction, whatever their JSON number type.
+    accepted = session.apply_patch(patch={"events": [_model_changed(slider.id, "start", 0)]})
+    assert accepted.delta is None
+
+
+def test_apply_error_publishes_current_values_of_all_touched_keys():
+    pn = _load_panel()
+
+    slider = pn.widgets.IntSlider(start=0, end=10, value=1)
+    text = pn.widgets.TextInput(value="a")
+    payload, session, delivered = _announced_panel(pn.Row(text, slider))
+    slider_model = _bokeh_model(slider, payload)
+    text_model = _bokeh_model(text, payload)
+
+    with pytest.raises(BokehPatchApplyError) as error:
+        session.apply_patch(
+            transaction_id="failing",
+            patch={
+                "events": [
+                    _model_changed(text_model.id, "value", "b"),
+                    _model_changed(slider_model.id, "value", "not a number"),
+                ]
+            },
+        )
+
+    assert error.value.transaction_id == "failing"
+    assert not hasattr(error.value, "checkpoint")
+    [delta] = delivered
+    assert delta.transaction_id == "failing"
+    assert delta.props_changed == {
+        text_model.id: {"value": text_model.value},
+        slider_model.id: {"value": 1},
+    }
+
+
+# ── Data events and folding ──────────────────────────────────────────────
+
+
+def test_stream_and_patch_become_versioned_data_events():
+    np = pytest.importorskip("numpy")
+    session, source, _checkpoint, delivered = _data_session(
+        {"x": np.arange(1000, dtype=float), "y": np.zeros(1000)}
+    )
+
+    source.stream({"x": np.array([1000.0]), "y": np.array([1.0])}, rollover=1000)
+    source.patch({"y": [(0, 5.0)]})
+
+    streamed, patched = _data_events(delivered)
+    assert streamed["kind"] == "ColumnsStreamed"
+    assert (streamed["source_id"], streamed["base_version"], streamed["new_version"]) == (
+        source.id,
+        0,
+        1,
+    )
+    assert streamed["rollover"] == 1000
+    assert delivered[0].buffers
+    assert patched["kind"] == "ColumnsPatched"
+    assert (patched["base_version"], patched["new_version"]) == (1, 2)
+    assert patched["patches"]
+    session.close()
+
+
+def test_full_data_replacement_reports_removed_columns():
+    session, source, _checkpoint, delivered = _data_session({"x": [1, 2], "y": [3, 4]})
+
+    source.data = {"x": [5, 6], "z": [7, 8]}
+
+    [event] = _data_events(delivered)
+    assert event["kind"] == "ColumnDataChanged"
+    assert (event["base_version"], event["new_version"]) == (0, 1)
+    assert event["columns"] == {"x": [5, 6], "z": [7, 8]}
+    assert event["columns_removed"] == ["y"]
+    session.close()
+
+
+def test_partial_replacement_sends_only_replaced_columns():
+    session, source, _checkpoint, delivered = _data_session({"x": [1, 2], "y": [3, 4]})
+
+    source.data.update(y=[9, 9])
+
+    [event] = _data_events(delivered)
+    assert event["kind"] == "ColumnDataChanged"
+    assert event["columns"] == {"y": [9, 9]}
+    assert event["columns_removed"] == []
+    session.close()
+
+
+def test_replacement_after_unfolded_events_sends_every_column():
+    session, source, _checkpoint, delivered = _data_session(
+        {"x": list(range(100)), "y": list(range(100))}
+    )
+
+    source.stream({"x": [100], "y": [100]})
+    source.data.update(y=[0] * 101)
+
+    streamed, replaced = _data_events(delivered)
+    assert streamed["kind"] == "ColumnsStreamed"
+    assert replaced["kind"] == "ColumnDataChanged"
+    assert set(replaced["columns"]) == {"x", "y"}
+    assert (replaced["base_version"], replaced["new_version"]) == (1, 2)
+    session.close()
+
+
+def test_fold_when_event_bytes_reach_twice_the_last_fold():
+    session, source, _checkpoint, delivered = _data_session({"x": [0], "y": [0]})
+
+    for i in range(1, 50):
+        source.stream({"x": [i], "y": [i]})
+        if any(event["kind"] == "ColumnsFolded" for event in _data_events(delivered)):
+            break
+
+    events = _data_events(delivered)
+    fold_index = next(i for i, event in enumerate(events) if event["kind"] == "ColumnsFolded")
+    fold = events[fold_index]
+    stream = events[fold_index - 1]
+    # The fold follows the event that crossed the threshold, at its version.
+    assert stream["kind"] == "ColumnsStreamed"
+    assert fold["version"] == stream["new_version"]
+    assert fold["columns"]["x"] == source.data["x"]
+    assert session._sources[source.id].bytes_since_fold == 0
+    session.close()
+
+
+def test_fold_after_quiet_period(monkeypatch):
+    monkeypatch.setattr(_bokeh_session, "FOLD_QUIET_SECONDS", 0.05)
+
+    async def stream_then_wait():
+        session, source, _checkpoint, delivered = _data_session(
+            {"x": list(range(1000)), "y": list(range(1000))}
+        )
+        source.stream({"x": [1000], "y": [1000]})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0.2)
+        session.close()
+        return source, delivered
+
+    source, delivered = asyncio.run(stream_then_wait())
+    kinds = [event["kind"] for event in _data_events(delivered)]
+    assert kinds == ["ColumnsStreamed", "ColumnsFolded"]
+    fold = _data_events(delivered)[-1]
+    assert fold["version"] == 1
+    assert len(fold["columns"]["x"]) == 1001
+    assert delivered[-1].data_events == [fold]
+
+
+def test_fold_on_demand():
+    session, source, _checkpoint, delivered = _data_session(
+        {"x": list(range(1000)), "y": list(range(1000))}
+    )
+    source.stream({"x": [1000], "y": [1000]})
+
+    assert session.fold(transaction_id="fold-1") == [source.id]
+    assert delivered[-1].transaction_id == "fold-1"
+    assert delivered[-1].data_events[0]["kind"] == "ColumnsFolded"
+    # Nothing left to fold unless a source is named explicitly.
+    assert session.fold() == []
+    assert session.fold([source.id, "missing"]) == [source.id]
+    session.close()
+
+
+def test_new_source_arrives_with_a_fold():
+    pytest.importorskip("bokeh")
+    from bokeh.document import Document
+    from bokeh.models import ColumnDataSource, Row
+    from bokeh.plotting import figure
+
+    document = Document()
+    row = Row()
+    document.add_root(row)
+    session = BokehDocumentSession(document, [row], producer_name="test", producer_version="0")
+    delivered: list[BokehDelta] = []
+    session.set_event_sink(delivered.append)
+
+    source = ColumnDataSource(data={"x": [1], "y": [2]})
+    plot = figure(width=200, height=200)
+    plot.line("x", "y", source=source)
+    row.children = [plot]
+
+    [delta] = delivered
+    assert "data" not in delta.models_added[source.id]["props"]
+    assert delta.data_events == [
+        {
+            "kind": "ColumnsFolded",
+            "source_id": source.id,
+            "version": 0,
+            "columns": {"x": [1], "y": [2]},
+        }
     ]
+    session.close()
+
+
+# ── Flush timing and the display window ──────────────────────────────────
+
+
+def _two_widget_session(pn):
+    slider = pn.widgets.FloatSlider(start=0, end=10, value=1)
+    text = pn.widgets.TextInput(value="a")
+    payload, session, delivered = _announced_panel(pn.Row(slider, text))
+    return slider, text, payload, session, delivered
+
+
+def test_changes_in_one_loop_iteration_share_a_delta():
+    pn = _load_panel()
+
+    async def change_both():
+        slider, text, payload, _session, delivered = _two_widget_session(pn)
+        slider.value = 2
+        text.value = "b"
+        assert delivered == []
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return payload, slider, text, delivered
+
+    payload, slider, text, delivered = asyncio.run(change_both())
+    [delta] = delivered
+    assert _values(delta) == {
+        _bokeh_model(slider, payload).id: 2,
+        _bokeh_model(text, payload).id: "b",
+    }
+
+
+def test_inline_flush_only_once_the_scheduled_flush_has_waited():
+    pn = _load_panel()
+
+    async def blocking_cell():
+        slider, text, payload, _session, delivered = _two_widget_session(pn)
+        slider.value = 2
+        # Like a cell that sleeps between updates: the loop never runs.
+        time.sleep(INLINE_FLUSH_DELAY + 0.01)
+        assert delivered == []
+        text.value = "b"
+        flushed_while_blocked = list(delivered)
+        # The window restarts after an inline flush.
+        slider.value = 3
+        still_blocked = list(delivered)
+        await asyncio.sleep(0)
+        return payload, slider, text, flushed_while_blocked, still_blocked, delivered
+
+    payload, slider, text, blocked, still_blocked, delivered = asyncio.run(blocking_cell())
+    slider_id = _bokeh_model(slider, payload).id
+    text_id = _bokeh_model(text, payload).id
+    [first] = blocked
+    assert _values(first) == {slider_id: 2, text_id: "b"}
+    assert still_blocked == blocked
+    assert [_values(delta) for delta in delivered[1:]] == [{slider_id: 3}]
+
+
+def test_quiet_change_waits_for_the_loop_rather_than_flushing_inline():
+    pn = _load_panel()
+
+    async def after_idle():
+        slider, _text, payload, _session, delivered = _two_widget_session(pn)
+        # Long idle before the change: no flush is scheduled, so none has waited.
+        time.sleep(INLINE_FLUSH_DELAY + 0.01)
+        slider.value = 4
+        before_loop = list(delivered)
+        await asyncio.sleep(0)
+        return before_loop, delivered
+
+    before_loop, delivered = asyncio.run(after_idle())
+    assert before_loop == []
+    assert len(delivered) == 1
+
+
+def test_onload_changes_wait_for_the_display_announcement(monkeypatch):
+    pn = _load_panel()
+    checkpoint = BokehDocumentSession.checkpoint
+
+    def slow_checkpoint(self):
+        time.sleep(INLINE_FLUSH_DELAY + 0.01)  # stands in for a large document
+        return checkpoint(self)
+
+    monkeypatch.setattr(BokehDocumentSession, "checkpoint", slow_checkpoint)
+
+    async def cell():
+        markdown = pn.pane.Markdown("loading")
+        column = pn.Column(markdown)
+        mark_loaded = _panel._mark_document_loaded
+
+        def onload(document):
+            mark_loaded(document)
+            markdown.object = "loaded"  # what an onload callback or defer_load does
+
+        monkeypatch.setattr(_panel, "_mark_document_loaded", onload)
+        _ip, data, _metadata = _format_panel(column)
+        payload = data[BOKEH_SESSION_MIME]
+        session = session_registry.require(payload["session_id"])
+        delivered: list[BokehDelta] = []
+        session.set_event_sink(delivered.append)
+        time.sleep(INLINE_FLUSH_DELAY + 0.01)
+        markdown.object = "later"
+        await asyncio.sleep(0.05)
+        before_announcement = list(delivered)
+        session.mark_announced()
+        return payload, markdown, before_announcement, delivered
+
+    payload, markdown, before, delivered = asyncio.run(cell())
+    markdown_id = _bokeh_model(markdown, payload).id
+    assert before == []
+    assert "loading" in payload["session_doc"]["models"][markdown_id]["props"]["text"]
+    [delta] = delivered
+    assert "later" in delta.props_changed[markdown_id]["text"]
+
+
+def test_announcer_sends_the_display_message_before_any_delta():
+    pn = _load_panel()
+    wire: list[tuple[str, Any]] = []
+
+    class FakePub:
+        def __init__(self):
+            self._hooks: list[Any] = []
+            self.pub_socket = object()
+            self.topic = b"display_data"
+            self.session = SimpleNamespace(
+                send=lambda _socket, msg, ident=None, buffers=None: wire.append(("display", msg))
+            )
+
+        def register_hook(self, hook):
+            self._hooks.append(hook)
+
+        def publish(self, msg):
+            for hook in self._hooks:
+                msg = hook(msg)
+                if msg is None:
+                    return
+            self.session.send(self.pub_socket, msg, ident=self.topic)
+
+    publisher = FakePub()
+    sent_by_hook: list[Any] = []
+
+    def sends_itself(msg):
+        # Like the buffer hook: send directly and suppress the default send.
+        sent_by_hook.append(msg)
+        publisher.session.send(publisher.pub_socket, msg, ident=publisher.topic)
+        return None
+
+    publisher.register_hook(sends_itself)
+    _panel._install_session_announcer(publisher)
+    slider = pn.widgets.FloatSlider(start=0, end=10, value=1)
+    _ip, data, _metadata = _format_panel(slider)
+    session = session_registry.require(data[BOKEH_SESSION_MIME]["session_id"])
+    session.set_event_sink(lambda delta: wire.append(("delta", delta)))
+    slider.value = 5
+    assert wire == []
+
+    publisher.publish({"header": {"msg_type": "display_data"}, "content": {"data": data}})
+
+    assert [kind for kind, _ in wire] == ["display", "delta"]
+    assert len(sent_by_hook) == 1
+    assert session.announced
+    # Other messages pass through untouched.
+    other = {"header": {"msg_type": "display_data"}, "content": {"data": {"text/plain": "x"}}}
+    publisher.publish(other)
+    assert sent_by_hook[-1] is other
+
+
+# ── Session callbacks ────────────────────────────────────────────────────
 
 
 def test_session_runs_bokeh_session_callbacks_on_the_kernel_loop():
@@ -921,50 +1092,6 @@ def test_queued_next_tick_callback_observes_cancellation(operation):
     assert asyncio.run(schedule()) == []
 
 
-def test_failed_patch_advances_revision_with_authoritative_checkpoint():
-    pn = _load_panel()
-
-    slider = pn.widgets.FloatSlider(start=0, end=10, value=1)
-
-    def fail_after_update(event):
-        raise RuntimeError(f"rejected {event.new}")
-
-    slider.param.watch(fail_after_update, "value")
-    _ip, data, _metadata = _format_panel(slider)
-    payload = data[BOKEH_SESSION_MIME]
-    session = session_registry.require(payload["session_id"])
-    slider_model = slider._models[payload["root_ids"][0]][0]
-
-    with pytest.raises(BokehPatchApplyError) as error:
-        session.apply_patch(
-            base_revision=0,
-            transaction_id="failing-interaction",
-            patch={
-                "events": [
-                    {
-                        "kind": "ModelChanged",
-                        "model": {"id": slider_model.id},
-                        "attr": "value",
-                        "new": 6,
-                    }
-                ]
-            },
-        )
-
-    assert slider.value == 6
-    assert session.revision == 1
-    assert error.value.revision == 1
-    assert error.value.checkpoint.content["roots"][0]
-    events = session.pop_server_events()
-    assert len(events) == 1
-    assert events[0].transaction_id == "failing-interaction"
-    assert events[0].base_revision == 0
-    assert events[0].revision == 1
-    assert events[0].client_patch is None
-    assert events[0].server_patch is None
-    assert events[0].checkpoint == error.value.checkpoint
-
-
 def test_uninstall_closes_live_sessions():
     pn = _load_panel()
     slider = pn.widgets.FloatSlider(value=3)
@@ -976,15 +1103,32 @@ def test_uninstall_closes_live_sessions():
     assert session_registry.get(session_id) is None
 
 
+# ── Shell handlers and IOPub publication ─────────────────────────────────
+
+
 class _FakeKernel:
     def __init__(self):
         self.replies = []
+        self.log = Mock()
 
     def send_response(self, stream, msg_type, **kwargs):
         self.replies.append({"stream": stream, "msg_type": msg_type, **kwargs})
 
 
-def test_patch_shell_handler_captures_output_and_queues_canonical_event():
+def _patch_request(session_id: str, transaction_id: str, events: list[dict[str, Any]]):
+    return {
+        "content": {
+            "schema_version": 1,
+            "session_id": session_id,
+            "transaction_id": transaction_id,
+            "patch": {"events": events},
+            "buffers": [],
+        },
+        "buffers": [],
+    }
+
+
+def test_patch_shell_handler_captures_output_and_publishes_delta():
     pn = _load_panel()
     from nteract_kernel_launcher.app import _BOKEH_PATCH_REPLY, NteractKernel
 
@@ -996,106 +1140,87 @@ def test_patch_shell_handler_captures_output_and_queues_canonical_event():
         target.value = event.new * 2
 
     source.param.watch(callback, "value")
-    _ip, data, _metadata = _format_panel(pn.Row(source, target))
-    payload = data[BOKEH_SESSION_MIME]
-    session = session_registry.require(payload["session_id"])
-    source_model = source._models[payload["root_ids"][0]][0]
+    payload, session, delivered = _announced_panel(pn.Row(source, target))
+    source_model = _bokeh_model(source, payload)
     kernel = _FakeKernel()
 
     NteractKernel.nteract_bokeh_patch_request(
         cast(Any, kernel),
         "SHELL",
         [b"client"],
-        {
-            "content": {
-                "schema_version": 1,
-                "session_id": session.session_id,
-                "transaction_id": "tx-1",
-                "base_revision": 0,
-                "patch": {
-                    "events": [
-                        {
-                            "kind": "ModelChanged",
-                            "model": {"id": source_model.id},
-                            "attr": "value",
-                            "new": 6,
-                        }
-                    ]
-                },
-                "buffers": [],
-            },
-            "buffers": [],
-        },
+        _patch_request(session.session_id, "tx-1", [_model_changed(source_model.id, "value", 6)]),
     )
 
-    assert len(kernel.replies) == 1
-    reply = kernel.replies[0]
+    [reply] = kernel.replies
     assert reply["msg_type"] == _BOKEH_PATCH_REPLY
     assert reply["content"]["status"] == "ok"
     assert reply["content"]["transaction_id"] == "tx-1"
-    assert reply["content"]["revision"] == 1
     assert reply["content"]["stdout"] == "source=6\n"
+    assert "revision" not in reply["content"]
     assert target.value == 12
-
-    events = session.pop_server_events()
-    assert len(events) == 1
-    assert events[0].transaction_id == "tx-1"
-    assert events[0].client_patch is not None
-    assert events[0].server_patch is not None
+    [delta] = delivered
+    assert delta.transaction_id == "tx-1"
+    assert delta.props_changed == {_bokeh_model(target, payload).id: {"value": 12}}
 
 
-def test_patch_shell_error_reply_is_ack_only_and_event_carries_checkpoint():
+def test_patch_shell_handler_corrects_when_apply_patch_raises(monkeypatch):
+    """PR #4437 regression case 1: an edit the kernel never applied must not
+    stay in the session document."""
     pn = _load_panel()
-    from nteract_kernel_launcher.app import _BOKEH_PATCH_REPLY, NteractKernel
+    from nteract_kernel_launcher.app import NteractKernel
 
-    slider = pn.widgets.FloatSlider(start=0, end=10, value=1)
+    text = pn.widgets.TextInput(value="")
+    payload, session, delivered = _announced_panel(pn.Column(text))
+    text_model = _bokeh_model(text, payload)
 
-    def fail(event):
-        raise RuntimeError(f"callback rejected {event.new}")
+    def reject(**_kwargs):
+        raise RuntimeError("rejected by test")
 
-    slider.param.watch(fail, "value")
-    _ip, data, _metadata = _format_panel(slider)
-    payload = data[BOKEH_SESSION_MIME]
-    session = session_registry.require(payload["session_id"])
-    slider_model = slider._models[payload["root_ids"][0]][0]
+    monkeypatch.setattr(session, "apply_patch", reject)
     kernel = _FakeKernel()
 
     NteractKernel.nteract_bokeh_patch_request(
         cast(Any, kernel),
         "SHELL",
         [b"client"],
-        {
-            "content": {
-                "schema_version": 1,
-                "session_id": session.session_id,
-                "transaction_id": "tx-error",
-                "base_revision": 0,
-                "patch": {
-                    "events": [
-                        {
-                            "kind": "ModelChanged",
-                            "model": {"id": slider_model.id},
-                            "attr": "value",
-                            "new": 8,
-                        }
-                    ]
-                },
-                "buffers": [],
-            },
-            "buffers": [],
-        },
+        _patch_request(
+            session.session_id, "tx-rejected", [_model_changed(text_model.id, "value", "edit")]
+        ),
     )
 
-    reply = kernel.replies[0]
+    assert kernel.replies[0]["content"]["status"] == "error"
+    [delta] = delivered
+    assert delta.transaction_id == "tx-rejected"
+    assert delta.props_changed == {text_model.id: {"value": ""}}
+
+
+def test_patch_shell_error_reply_carries_no_revision_or_checkpoint():
+    pn = _load_panel()
+    from nteract_kernel_launcher.app import _BOKEH_PATCH_REPLY, NteractKernel
+
+    slider = pn.widgets.IntSlider(start=0, end=10, value=1)
+    payload, session, delivered = _announced_panel(slider)
+    slider_model = _bokeh_model(slider, payload)
+    kernel = _FakeKernel()
+
+    NteractKernel.nteract_bokeh_patch_request(
+        cast(Any, kernel),
+        "SHELL",
+        [b"client"],
+        _patch_request(
+            session.session_id, "tx-error", [_model_changed(slider_model.id, "value", "bad")]
+        ),
+    )
+
+    [reply] = kernel.replies
     assert reply["msg_type"] == _BOKEH_PATCH_REPLY
     assert reply["content"]["status"] == "error"
-    assert reply["content"]["revision"] == 1
+    assert reply["content"]["transaction_id"] == "tx-error"
+    assert "revision" not in reply["content"]
     assert "checkpoint" not in reply["content"]
     assert reply["buffers"] == []
-    events = session.pop_server_events()
-    assert len(events) == 1
-    assert events[0].revision == 1
-    assert events[0].checkpoint is not None
+    [delta] = delivered
+    assert delta.props_changed == {slider_model.id: {"value": 1}}
 
 
 def test_patch_request_buffers_reject_negative_index_and_hash_mismatch():
@@ -1112,35 +1237,33 @@ def test_patch_request_buffers_reject_negative_index_and_hash_mismatch():
         _request_buffers({"buffers": [b"payload"]}, {"buffers": [descriptor]})
 
 
-def test_checkpoint_and_close_shell_handlers():
-    pn = _load_panel()
-    from nteract_kernel_launcher.app import (
-        _BOKEH_CHECKPOINT_REPLY,
-        _BOKEH_CLOSE_REPLY,
-        NteractKernel,
-    )
+def test_fold_and_close_shell_handlers():
+    from nteract_kernel_launcher.app import _BOKEH_CLOSE_REPLY, _BOKEH_FOLD_REPLY, NteractKernel
 
-    _ip, data, _metadata = _format_panel(pn.widgets.FloatSlider(value=3))
-    session_id = data[BOKEH_SESSION_MIME]["session_id"]
+    session, source, _checkpoint, delivered = _data_session({"x": [1], "y": [2]})
+    session_registry.register(session)
+    session.set_event_sink(delivered.append)
     kernel = _FakeKernel()
 
-    NteractKernel.nteract_bokeh_checkpoint_request(
+    NteractKernel.nteract_bokeh_fold_request(
         cast(Any, kernel),
         "SHELL",
         [],
         {
             "content": {
                 "schema_version": 1,
-                "session_id": session_id,
-                "transaction_id": "checkpoint-1",
+                "session_id": session.session_id,
+                "transaction_id": "fold-1",
+                "source_ids": [source.id],
             }
         },
     )
-    checkpoint_reply = kernel.replies.pop()
-    assert checkpoint_reply["msg_type"] == _BOKEH_CHECKPOINT_REPLY
-    assert checkpoint_reply["content"]["status"] == "ok"
-    assert checkpoint_reply["content"]["revision"] == 0
-    assert checkpoint_reply["content"]["checkpoint"]["document"]["roots"]
+    fold_reply = kernel.replies.pop()
+    assert fold_reply["msg_type"] == _BOKEH_FOLD_REPLY
+    assert fold_reply["content"]["status"] == "ok"
+    assert fold_reply["content"]["source_ids"] == [source.id]
+    assert delivered[-1].transaction_id == "fold-1"
+    assert delivered[-1].data_events[0]["kind"] == "ColumnsFolded"
 
     NteractKernel.nteract_bokeh_close_request(
         cast(Any, kernel),
@@ -1149,7 +1272,7 @@ def test_checkpoint_and_close_shell_handlers():
         {
             "content": {
                 "schema_version": 1,
-                "session_id": session_id,
+                "session_id": session.session_id,
                 "transaction_id": "close-1",
             }
         },
@@ -1157,16 +1280,16 @@ def test_checkpoint_and_close_shell_handlers():
     close_reply = kernel.replies.pop()
     assert close_reply["msg_type"] == _BOKEH_CLOSE_REPLY
     assert close_reply["content"]["status"] == "ok"
-    assert session_registry.get(session_id) is None
+    assert session_registry.get(session.session_id) is None
 
 
 @pytest.mark.parametrize(
     ("handler_name", "reply_type", "error_match"),
     [
         (
-            "nteract_bokeh_checkpoint_request",
-            "nteract_bokeh_checkpoint_reply",
-            "Unsupported Bokeh checkpoint schema version",
+            "nteract_bokeh_fold_request",
+            "nteract_bokeh_fold_reply",
+            "Unsupported Bokeh fold schema version",
         ),
         (
             "nteract_bokeh_close_request",
@@ -1175,9 +1298,7 @@ def test_checkpoint_and_close_shell_handlers():
         ),
     ],
 )
-def test_checkpoint_and_close_handlers_reject_unsupported_schema(
-    handler_name, reply_type, error_match
-):
+def test_fold_and_close_handlers_reject_unsupported_schema(handler_name, reply_type, error_match):
     from nteract_kernel_launcher.app import NteractKernel
 
     kernel = _FakeKernel()
@@ -1201,95 +1322,125 @@ def test_checkpoint_and_close_handlers_reject_unsupported_schema(
     assert reply["content"]["error"]["evalue"] == error_match
 
 
-def test_wire_event_offsets_server_and_checkpoint_buffers():
-    from nteract_kernel_launcher.app import _wire_bokeh_event
+def test_wire_delta_has_the_apply_delta_field_names_and_indexed_buffers():
+    from nteract_kernel_launcher.app import _wire_bokeh_delta
 
-    event = BokehServerEvent(
+    delta = BokehDelta(
         session_id="session-1",
         transaction_id="tx-1",
-        base_revision=4,
-        revision=5,
-        client_patch=BokehSerialization(
-            content={"events": [{"kind": "client"}]},
-            buffers=(BokehBuffer("client-buffer", b"client"),),
-        ),
-        server_patch=BokehSerialization(
-            content={"events": [{"kind": "server"}]},
-            buffers=(BokehBuffer("server-buffer", b"server"),),
-        ),
-        checkpoint=BokehSerialization(
-            content={"roots": []},
-            buffers=(BokehBuffer("checkpoint-buffer", b"checkpoint"),),
-        ),
+        models_added={"p2": {"type": "Div", "ref_props": ["tags"], "props": {"text": "hi"}}},
+        props_changed={"p1": {"children": [{"id": "p2"}]}},
+        models_removed=["p0"],
+        data_events=[{"kind": "ColumnsStreamed", "source_id": "p3"}],
+        buffers=(BokehBuffer("a", b"one"), BokehBuffer("b", b"two")),
     )
 
-    content, buffers = _wire_bokeh_event(event)
+    content, buffers = _wire_bokeh_delta(delta)
 
-    assert content["client_patch"]["buffers"][0]["buffer_index"] == 0
-    assert content["server_patch"]["buffers"][0]["buffer_index"] == 1
-    assert content["checkpoint"]["buffers"][0]["buffer_index"] == 2
-    assert buffers == [b"client", b"server", b"checkpoint"]
+    assert content["schema_version"] == 1
+    assert {
+        "schema_version",
+        "session_id",
+        "transaction_id",
+        "models_added",
+        "props_changed",
+        "models_removed",
+        "data_events",
+        "messages",
+        "buffers",
+    } == set(content)
+    assert content["models_added"]["p2"]["ref_props"] == ["tags"]
+    assert [b["buffer_index"] for b in content["buffers"]] == [0, 1]
+    assert [b["id"] for b in content["buffers"]] == ["a", "b"]
+    assert buffers == [b"one", b"two"]
 
 
-def test_bokeh_event_drain_discards_unserializable_event_and_continues(
-    monkeypatch,
-):
+def _delta(name: str) -> BokehDelta:
+    return BokehDelta(session_id=name, transaction_id=f"tx-{name}")
+
+
+def _publishing_kernel(send):
     import nteract_kernel_launcher.app as app
 
-    bad_event = BokehServerEvent(
-        session_id="session-bad",
-        transaction_id="tx-bad",
-        base_revision=0,
-        revision=1,
-        client_patch=None,
-        server_patch=None,
-    )
-    good_event = BokehServerEvent(
-        session_id="session-good",
-        transaction_id="tx-good",
-        base_revision=1,
-        revision=2,
-        client_patch=None,
-        server_patch=None,
-    )
-    wire_event = app._wire_bokeh_event
-
-    def fail_one_event(event):
-        if event is bad_event:
-            raise ValueError("malformed event")
-        return wire_event(event)
-
-    monkeypatch.setattr(app, "_wire_bokeh_event", fail_one_event)
-    send = Mock()
-    log = Mock()
     kernel = SimpleNamespace(
         _bokeh_event_lock=threading.Lock(),
-        _bokeh_event_queue=deque([bad_event, good_event]),
-        _bokeh_event_drain_scheduled=True,
+        _bokeh_event_queue=deque(),
         session=SimpleNamespace(send=send),
         iopub_socket=object(),
-        log=log,
+        log=Mock(),
         _topic=lambda msg_type: msg_type,
     )
+    kernel._publish_bokeh_events = lambda: app.NteractKernel._publish_bokeh_events(
+        cast(Any, kernel)
+    )
+    return kernel
 
-    app.NteractKernel._drain_bokeh_events(cast(Any, kernel))
+
+def test_bokeh_delta_publication_discards_unserializable_delta_and_continues(monkeypatch):
+    import nteract_kernel_launcher.app as app
+
+    bad, good = _delta("bad"), _delta("good")
+    wire_delta = app._wire_bokeh_delta
+
+    def fail_one(delta):
+        if delta is bad:
+            raise ValueError("malformed delta")
+        return wire_delta(delta)
+
+    monkeypatch.setattr(app, "_wire_bokeh_delta", fail_one)
+    send = Mock()
+    kernel = _publishing_kernel(send)
+    kernel._bokeh_event_queue.extend([bad, good])
+
+    app.NteractKernel._publish_bokeh_events(cast(Any, kernel))
 
     assert list(kernel._bokeh_event_queue) == []
-    assert kernel._bokeh_event_drain_scheduled is False
-    log.exception.assert_called_once_with("Could not serialize Bokeh session event; dropping event")
+    kernel.log.exception.assert_called_once_with(
+        "Could not serialize Bokeh session delta; dropping it"
+    )
     send.assert_called_once()
-    assert send.call_args.args[1] == app._BOKEH_EVENT
-    assert send.call_args.args[2]["session_id"] == "session-good"
+    assert send.call_args.args[1] == app._BOKEH_DELTA
+    assert send.call_args.args[2]["session_id"] == "good"
+
+
+def test_bokeh_deltas_publish_on_the_calling_thread_without_the_io_loop():
+    import nteract_kernel_launcher.app as app
+
+    send = Mock()
+    # No io_loop attribute: publication must not depend on the kernel loop.
+    kernel = _publishing_kernel(send)
+
+    app.NteractKernel._enqueue_bokeh_event(cast(Any, kernel), _delta("one"))
+    app.NteractKernel._enqueue_bokeh_event(cast(Any, kernel), _delta("two"))
+
+    assert [call.args[2]["session_id"] for call in send.call_args_list] == ["one", "two"]
+    assert list(kernel._bokeh_event_queue) == []
+
+
+def test_failed_bokeh_publication_is_retried_before_the_next_delta():
+    import nteract_kernel_launcher.app as app
+
+    send = Mock(side_effect=[OSError("socket busy"), None, None])
+    kernel = _publishing_kernel(send)
+
+    app.NteractKernel._enqueue_bokeh_event(cast(Any, kernel), _delta("one"))
+    assert [delta.session_id for delta in kernel._bokeh_event_queue] == ["one"]
+
+    app.NteractKernel._enqueue_bokeh_event(cast(Any, kernel), _delta("two"))
+
+    assert [call.args[2]["session_id"] for call in send.call_args_list] == ["one", "one", "two"]
+    assert list(kernel._bokeh_event_queue) == []
 
 
 def test_nteract_kernel_registers_bokeh_shell_messages():
     from nteract_kernel_launcher.app import (
-        _BOKEH_CHECKPOINT_REQUEST,
         _BOKEH_CLOSE_REQUEST,
+        _BOKEH_FOLD_REQUEST,
         _BOKEH_PATCH_REQUEST,
         NteractKernel,
     )
 
     assert _BOKEH_PATCH_REQUEST in NteractKernel.msg_types
-    assert _BOKEH_CHECKPOINT_REQUEST in NteractKernel.msg_types
+    assert _BOKEH_FOLD_REQUEST in NteractKernel.msg_types
     assert _BOKEH_CLOSE_REQUEST in NteractKernel.msg_types
+    assert "nteract_bokeh_checkpoint_request" not in NteractKernel.msg_types

@@ -226,6 +226,7 @@ function nativeBokehRuntime(expectedVersion: string): BokehRuntime {
   };
   const serializationModule = bokeh.require("core/serialization") as {
     Buffer?: BokehRuntime["Buffer"];
+    Serializer?: BokehRuntime["Serializer"];
   };
   const deserializerModule = bokeh.require("core/serialization/deserializer") as {
     Deserializer?: BokehRuntime["Deserializer"];
@@ -240,6 +241,7 @@ function nativeBokehRuntime(expectedVersion: string): BokehRuntime {
   return {
     Document: documentModule.Document,
     Buffer: serializationModule.Buffer,
+    Serializer: serializationModule.Serializer,
     Deserializer: deserializerModule.Deserializer,
     addDocumentStandalone: embedModule.add_document_standalone,
   };

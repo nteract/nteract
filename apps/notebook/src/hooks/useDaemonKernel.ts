@@ -181,7 +181,8 @@ export function useDaemonKernel({
     refreshBlobPort();
 
     // Custom comm messages (buttons, model.send()) are handled by the
-    // SyncEngine.commBroadcasts$ subscriber in App.tsx. Env progress lives
+    // SyncEngine.commBroadcasts$ subscriber in App.tsx, Bokeh session events
+    // by SyncEngine.bokehSessionEventsBroadcasts$. Env progress lives
     // in RuntimeStateDoc, not the broadcast channel. Anything else that
     // arrives here is unexpected.
     const unsubscribeBroadcast = subscribeBroadcast((payload) => {
@@ -194,7 +195,7 @@ export function useDaemonKernel({
         typeof (payload as { event: unknown }).event === "string"
       ) {
         const event = (payload as { event: string }).event;
-        if (event === "comm") return;
+        if (event === "comm" || event === "bokeh_session_events") return;
         logger.debug(`[daemon-kernel] Unknown broadcast event: ${event}`);
       }
     });

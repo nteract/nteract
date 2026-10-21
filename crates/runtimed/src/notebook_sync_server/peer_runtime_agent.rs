@@ -343,6 +343,8 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     let mut changed_rx = room.broadcasts.changed_tx.subscribe();
     let mut state_changed_rx = room.state.subscribe();
     let mut comms_changed_rx = room.comms.subscribe();
+    let mut bokeh_changed_rx = room.bokeh_sessions.subscribe();
+    let mut bokeh_sync_states = crate::bokeh_session::store::BokehSyncStates::new();
     let execution_store =
         runtimed_client::execution_store::ExecutionStore::new(execution_store_dir);
     let mut persisted_execution_records: std::collections::HashMap<
@@ -569,6 +571,20 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                             }
                         }
                     }
+                    NotebookFrameType::BokehSessionDocSync => {
+                        let replies = room
+                            .bokeh_sessions
+                            .receive_runtime_frame(&mut bokeh_sync_states, &typed_frame.payload);
+                        for reply in replies {
+                            if let Err(e) = agent_writer.send_frame(
+                                NotebookFrameType::BokehSessionDocSync,
+                                reply,
+                            ) {
+                                warn!("[notebook-sync] Failed to queue Bokeh session sync reply to runtime agent: {}", e);
+                                break 'sync;
+                            }
+                        }
+                    }
                     NotebookFrameType::Response => {
                         if let Ok(envelope) = serde_json::from_slice::<
                             notebook_protocol::protocol::RuntimeAgentResponseEnvelope,
@@ -685,6 +701,28 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                 }
             }
 
+            // Peer writes to a session document → sync to runtime agent
+            result = bokeh_changed_rx.recv() => {
+                let sessions = match result {
+                    Ok(session_id) => vec![session_id],
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        room.bokeh_sessions.session_ids()
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                for session_id in sessions {
+                    for frame in room.bokeh_sessions.runtime_updates(&mut bokeh_sync_states, &session_id) {
+                        if let Err(e) = agent_writer.send_frame(
+                            NotebookFrameType::BokehSessionDocSync,
+                            frame,
+                        ) {
+                            warn!("[notebook-sync] Failed to queue Bokeh session sync to runtime agent: {}", e);
+                            break 'sync;
+                        }
+                    }
+                }
+            }
+
             // Forward requests to the runtime agent. Commands are fire-and-forget;
             // queries register a pending reply keyed by correlation ID.
             Some(msg) = ra_rx.recv() => {
@@ -733,7 +771,16 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     // A stale runtime agent disconnecting after a new one connected must not
     // clobber the new runtime agent's channel.
     //
-    cleanup_runtime_agent_disconnect(&room, &runtime_agent_id).await;
+    if cleanup_runtime_agent_disconnect(&room, &runtime_agent_id).await {
+        // Freezing rewrote Bokeh outputs of finished executions. Without a
+        // matching durable record the next load rejects the notebook.
+        persist_terminal_execution_records(
+            &room,
+            &execution_store,
+            &mut persisted_execution_records,
+        )
+        .await;
+    }
     info!(
         "[notebook-sync] Runtime agent sync connection closed: {}",
         runtime_agent_id
@@ -848,6 +895,7 @@ async fn cleanup_runtime_agent_disconnect(room: &NotebookRoom, runtime_agent_id:
         disconnected
     };
     if is_current {
+        super::peer_bokeh_sync::freeze_room_sessions(room).await;
         {
             let mut current = room.current_runtime_agent_id.write().await;
             if current.as_deref() == Some(runtime_agent_id) {
@@ -905,14 +953,14 @@ fn validate_runtime_agent_broadcast(broadcast: &NotebookBroadcast) -> anyhow::Re
             );
             Ok(())
         }
-        NotebookBroadcast::BokehSessionPatch { patch } => {
+        NotebookBroadcast::BokehSessionEvents { events } => {
             anyhow::ensure!(
-                !patch.session_id.is_empty() && !patch.transaction_id.is_empty(),
-                "runtime agent Bokeh patch is missing session or transaction identity"
+                !events.session_id.is_empty() && !events.transaction_id.is_empty(),
+                "runtime agent Bokeh events are missing session or transaction identity"
             );
             anyhow::ensure!(
-                patch.revision == patch.base_revision + 1,
-                "runtime agent Bokeh patch revision is not contiguous"
+                !events.data_events.is_empty() || !events.messages.is_empty(),
+                "runtime agent Bokeh events are empty"
             );
             Ok(())
         }
@@ -1651,7 +1699,7 @@ mod tests {
                 assert_eq!(content["data"]["content"]["type"], "draw");
                 assert_eq!(buffers, vec![vec![1, 2, 3]]);
             }
-            NotebookBroadcast::BokehSessionPatch { .. } => {
+            NotebookBroadcast::BokehSessionEvents { .. } => {
                 panic!("expected comm broadcast")
             }
         }
@@ -1700,19 +1748,25 @@ mod tests {
     }
 
     #[test]
-    fn accepts_runtime_agent_bokeh_noop_revision() {
-        let broadcast = NotebookBroadcast::BokehSessionPatch {
-            patch: Box::new(notebook_protocol::protocol::BokehSessionPatchEvent {
-                session_id: "session-1".to_string(),
-                transaction_id: "tx-button-click".to_string(),
-                base_revision: 0,
-                revision: 1,
-                client_patch: None,
-                server_patch: None,
-                checkpoint: None,
+    fn validates_runtime_agent_bokeh_events() {
+        let events = notebook_protocol::protocol::BokehSessionEvents {
+            session_id: "session-1".to_string(),
+            epoch: 0,
+            transaction_id: "tx-toast".to_string(),
+            messages: vec![serde_json::json!({"msg_type": "toast"})],
+            ..Default::default()
+        };
+        let broadcast = NotebookBroadcast::BokehSessionEvents {
+            events: Box::new(events.clone()),
+        };
+        validate_runtime_agent_broadcast(&broadcast).expect("valid message broadcast");
+
+        let empty = NotebookBroadcast::BokehSessionEvents {
+            events: Box::new(notebook_protocol::protocol::BokehSessionEvents {
+                messages: Vec::new(),
+                ..events
             }),
         };
-
-        validate_runtime_agent_broadcast(&broadcast).expect("valid no-op revision");
+        validate_runtime_agent_broadcast(&empty).expect_err("empty events");
     }
 }

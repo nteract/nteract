@@ -11,6 +11,7 @@ use runtime_doc::RuntimeStateHandle;
 use tokio::sync::mpsc;
 
 use crate::blob_store::BlobStore;
+use crate::bokeh_session::store::BokehSessionStore;
 use crate::output_blob_publisher::OutputBlobPublisher;
 use crate::output_prep::LifecycleSignal;
 use crate::output_redaction::OutputRedactor;
@@ -24,9 +25,15 @@ pub(crate) struct OutputCommitContext {
     pub(crate) kernel_id: String,
     pub(crate) lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
     pub(crate) redactor: Arc<OutputRedactor>,
+    pub(crate) bokeh_sessions: BokehSessionStore,
 }
 
 impl OutputCommitContext {
+    pub(crate) fn with_bokeh_sessions(mut self, bokeh_sessions: BokehSessionStore) -> Self {
+        self.bokeh_sessions = bokeh_sessions;
+        self
+    }
+
     pub(crate) fn new(
         state: RuntimeStateHandle,
         blob_store: Arc<BlobStore>,
@@ -44,6 +51,7 @@ impl OutputCommitContext {
             kernel_id,
             lifecycle_tx,
             redactor,
+            bokeh_sessions: BokehSessionStore::default(),
         }
     }
 }

@@ -316,6 +316,7 @@ mod tests {
                 daemon_version,
                 put_blob: None,
                 notebook_sync_receipt: false,
+                bokeh_session_doc_sync: false,
                 actor_label: None,
                 connection_scope: None,
                 comments_doc_id: None,
@@ -436,12 +437,25 @@ mod tests {
         assert!(info.capabilities.actor_label.is_none());
         assert!(info.capabilities.connection_scope.is_none());
         assert!(!info.capabilities.notebook_sync_receipt);
+        assert!(!info.capabilities.bokeh_session_doc_sync);
+
+        // The flag is omitted when false and round-trips when set.
+        let mut caps = capabilities(None, None);
+        assert!(!serde_json::to_string(&caps)
+            .unwrap()
+            .contains("bokeh_session_doc_sync"));
+        caps.bokeh_session_doc_sync = true;
+        let json = serde_json::to_string(&caps).unwrap();
+        assert!(json.contains(r#""bokeh_session_doc_sync":true"#));
+        let parsed: ProtocolCapabilities = serde_json::from_str(&json).unwrap();
+        assert!(parsed.bokeh_session_doc_sync);
     }
 
     #[test]
     fn protocol_capabilities_advertise_put_blob_frame_limit() {
         let caps = ProtocolCapabilities::v4(Some("0.1.0+abc123".into()));
         assert!(caps.notebook_sync_receipt);
+        assert!(caps.bokeh_session_doc_sync);
         let put_blob = caps.put_blob.expect("PutBlob is advertised");
         assert_eq!(put_blob.version, 1);
         assert_eq!(
@@ -626,6 +640,7 @@ mod tests {
             ft::COMMS_DOC_SYNC,
             ft::POOL_STATE_SYNC,
             ft::COMMENTS_DOC_SYNC,
+            ft::BOKEH_SESSION_DOC_SYNC,
             ft::SESSION_CONTROL,
             ft::PUT_BLOB,
         ] {
@@ -728,6 +743,14 @@ mod tests {
         assert_eq!(
             NotebookFrameType::try_from(0x09).unwrap(),
             NotebookFrameType::CommsDocSync
+        );
+        assert_eq!(
+            NotebookFrameType::try_from(0x0a).unwrap(),
+            NotebookFrameType::CommentsDocSync
+        );
+        assert_eq!(
+            NotebookFrameType::try_from(0x0b).unwrap(),
+            NotebookFrameType::BokehSessionDocSync
         );
         assert!(NotebookFrameType::try_from(0xFF).is_err());
     }

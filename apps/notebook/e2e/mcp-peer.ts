@@ -222,6 +222,26 @@ export class McpPeer {
     });
   }
 
+  async setBokehProperty(
+    cellId: string,
+    model: string,
+    property: string,
+    value: unknown,
+    waitMs?: number,
+  ): Promise<string> {
+    return await this.callAttachmentToolText("set_bokeh_property", {
+      cell_id: cellId,
+      model,
+      property,
+      value,
+      ...(waitMs === undefined ? {} : { wait_ms: waitMs }),
+    });
+  }
+
+  async restartKernel(): Promise<string> {
+    return await this.callAttachmentToolText("restart_kernel", {});
+  }
+
   async close(): Promise<void> {
     for (const [, pending] of this.pending) {
       clearTimeout(pending.timer);

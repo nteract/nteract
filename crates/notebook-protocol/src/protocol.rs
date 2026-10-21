@@ -549,12 +549,16 @@ fn default_binary_media_type() -> String {
     "application/octet-stream".to_string()
 }
 
-/// Browser-origin mutation for one kernel-owned Bokeh document session.
+/// Peer-originated one-off events for one kernel-owned Bokeh session.
+///
+/// `patch` is a Bokeh JSON patch whose events are only `MessageSent` (button
+/// clicks, DOM events, Panel custom messages), `ColumnsStreamed` and
+/// `ColumnsPatched` (browser data edits). Property changes travel through the
+/// session document instead.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BokehSessionPatchRequest {
     pub session_id: String,
     pub transaction_id: String,
-    pub base_revision: u64,
     pub patch: serde_json::Value,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub buffers: Vec<BokehSessionBuffer>,
@@ -569,53 +573,53 @@ pub enum BokehSessionPatchReply {
     Accepted {
         session_id: String,
         transaction_id: String,
-        revision: u64,
-    },
-    Stale {
-        session_id: String,
-        transaction_id: String,
-        revision: u64,
     },
     Error {
         session_id: String,
         transaction_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        revision: Option<u64>,
         error: String,
     },
 }
 
-/// One JSON patch and its content-addressed binary buffers.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BokehSessionPatchPayload {
-    pub patch: serde_json::Value,
-    #[serde(default)]
-    pub buffers: Vec<BokehSessionBufferRef>,
-}
-
-/// Full authoritative document replacement used after a partial patch error.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BokehSessionCheckpointPayload {
+/// One-off kernel output for a Bokeh session: versioned data events and
+/// Python-originated `MessageSent` messages, broadcast to every peer.
+///
+/// `data_events` are `ColumnsStreamed {source_id, base_version, new_version,
+/// data, rollover}`, `ColumnsPatched {source_id, base_version, new_version,
+/// patches}`, and `ColumnDataChanged {source_id, base_version, new_version,
+/// columns: {col: {blob, size, version}}, columns_removed}` (full-column
+/// replacements as blob refs; peers load the blobs). Payload buffers are
+/// referenced as `{"type": "bytes", "data": {"id": ...}}` and resolved through
+/// `buffers`. Events published under the `transaction_id` of a peer's own
+/// patch request carry content that peer already applied.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct BokehSessionEvents {
     pub session_id: String,
-    pub revision: u64,
-    pub document: serde_json::Value,
-    #[serde(default)]
-    pub buffers: Vec<BokehSessionBufferRef>,
-}
-
-/// Canonical ordered transaction emitted by the kernel on IOPub.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BokehSessionPatchEvent {
-    pub session_id: String,
+    pub epoch: u64,
     pub transaction_id: String,
-    pub base_revision: u64,
-    pub revision: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_patch: Option<BokehSessionPatchPayload>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub server_patch: Option<BokehSessionPatchPayload>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checkpoint: Option<BokehSessionCheckpointPayload>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_events: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buffers: Vec<BokehSessionBufferRef>,
+}
+
+/// Retained data events since each source's last fold, for a late joiner.
+///
+/// A joiner loads `columns/` blobs from the session document, then applies
+/// these events in order, skipping any whose `base_version` is below the
+/// column version it loaded. Sources in `fold_requested` had a retained tail
+/// larger than their fold; their events are omitted and the kernel folds
+/// them, which moves their `columns/` refs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct BokehSessionDataTail {
+    pub session_id: String,
+    pub epoch: u64,
+    #[serde(default)]
+    pub events: Vec<BokehSessionEvents>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fold_requested: Vec<String>,
 }
 
 fn empty_json_object() -> serde_json::Value {
@@ -690,9 +694,17 @@ pub enum NotebookRequest {
         message: Box<CommRequestMessage>,
     },
 
-    /// Apply a typed Bokeh document patch through the owning kernel session.
+    /// Send one-off Bokeh events (messages, data edits) to the owning kernel.
     ApplyBokehSessionPatch {
         request: Box<BokehSessionPatchRequest>,
+    },
+
+    /// Fetch the data events retained since each source's last fold.
+    GetBokehSessionData {
+        session_id: String,
+        /// Limit to these sources; all sources when omitted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_ids: Option<Vec<String>>,
     },
 
     /// Search the kernel's input history.
@@ -945,6 +957,9 @@ pub enum NotebookResponse {
     /// Correlated acknowledgement for a Bokeh document patch request.
     BokehSessionPatch { reply: BokehSessionPatchReply },
 
+    /// Retained Bokeh data events for a late joiner.
+    BokehSessionData { data: BokehSessionDataTail },
+
     /// Environment sync completed successfully.
     SyncEnvironmentComplete {
         /// Packages that were installed
@@ -996,12 +1011,12 @@ pub enum NotebookResponse {
 /// Broadcast messages from daemon to all peers in a room.
 ///
 /// Ephemeral, room-wide events. Custom comm messages (ipywidgets model
-/// updates, button clicks) and the low-latency Bokeh document patch path flow
-/// here. Kernel state, execution lifecycle, queue, outputs, the notebook's
-/// `path`, `last_saved` timestamp, and environment-preparation progress all
-/// live in `RuntimeStateDoc` (frame type `0x05`). Bokeh session topology and
-/// replay pointers also live there; the broadcast only accelerates delivery
-/// of an already canonical revision.
+/// updates, button clicks) and Bokeh one-off events (data events, Python
+/// messages) flow here. Kernel state, execution lifecycle, queue, outputs, the
+/// notebook's `path`, `last_saved` timestamp, and environment-preparation
+/// progress all live in `RuntimeStateDoc` (frame type `0x05`). Bokeh session
+/// topology lives there too; Bokeh session state lives in per-session
+/// documents (frame type `0x0b`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum NotebookBroadcast {
@@ -1017,8 +1032,8 @@ pub enum NotebookBroadcast {
         buffers: Vec<Vec<u8>>,
     },
 
-    /// Canonical ordered Bokeh document transaction from the kernel.
-    BokehSessionPatch { patch: Box<BokehSessionPatchEvent> },
+    /// Bokeh data events and Python messages from the kernel.
+    BokehSessionEvents { events: Box<BokehSessionEvents> },
 }
 
 // ── Runtime agent protocol types ──────────────────────────────────────────
@@ -1089,9 +1104,16 @@ pub enum RuntimeAgentRequest {
     /// Send a comm message to the kernel (widget interactions).
     SendComm { message: Box<CommRequestMessage> },
 
-    /// Apply a typed patch to a kernel-owned Bokeh document session.
+    /// Send one-off Bokeh events to the owning kernel.
     ApplyBokehSessionPatch {
         request: Box<BokehSessionPatchRequest>,
+    },
+
+    /// Read a session's retained data events, folding oversized tails.
+    GetBokehSessionData {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_ids: Option<Vec<String>>,
     },
 
     /// Close sessions whose last authoritative notebook output was retired.
@@ -1141,6 +1163,9 @@ pub enum RuntimeAgentResponse {
 
     /// Correlated acknowledgement for a Bokeh document patch request.
     BokehSessionPatch { reply: BokehSessionPatchReply },
+
+    /// Retained Bokeh data events.
+    BokehSessionData { data: BokehSessionDataTail },
 
     /// History search result.
     HistoryResult { entries: Vec<HistoryEntry> },
@@ -1732,9 +1757,16 @@ mod tests {
                     "request": {
                         "session_id": "session-1",
                         "transaction_id": "tx-1",
-                        "base_revision": 4,
                         "patch": {"events": []},
                     },
+                }),
+            ),
+            (
+                "get_bokeh_session_data",
+                serde_json::json!({
+                    "action": "get_bokeh_session_data",
+                    "session_id": "session-1",
+                    "source_ids": ["p1001"],
                 }),
             ),
         ];
@@ -1984,7 +2016,6 @@ mod tests {
             request: Box::new(BokehSessionPatchRequest {
                 session_id: "session-1".to_string(),
                 transaction_id: "tx-1".to_string(),
-                base_revision: 0,
                 patch: serde_json::json!({"events": []}),
                 buffers: Vec::new(),
                 buffer_refs: Vec::new(),
@@ -2008,57 +2039,46 @@ mod tests {
     }
 
     #[test]
-    fn bokeh_patch_broadcast_round_trip_preserves_checkpoint_and_buffers() {
-        let broadcast = NotebookBroadcast::BokehSessionPatch {
-            patch: Box::new(BokehSessionPatchEvent {
-                session_id: "session-1".to_string(),
-                transaction_id: "tx-1".to_string(),
-                base_revision: 4,
-                revision: 5,
-                client_patch: Some(BokehSessionPatchPayload {
-                    patch: serde_json::json!({"events": [{"kind": "ModelChanged"}]}),
-                    buffers: vec![BokehSessionBufferRef {
-                        id: "buffer-1".to_string(),
-                        blob: "abc123".to_string(),
-                        size: 3,
-                        media_type: "application/octet-stream".to_string(),
-                    }],
-                }),
-                server_patch: None,
-                checkpoint: Some(BokehSessionCheckpointPayload {
-                    session_id: "session-1".to_string(),
-                    revision: 5,
-                    document: serde_json::json!({"version": "3.9.1", "roots": []}),
-                    buffers: Vec::new(),
-                }),
-            }),
+    fn bokeh_events_broadcast_round_trip_preserves_events_and_buffers() {
+        let events = BokehSessionEvents {
+            session_id: "session-1".to_string(),
+            epoch: 2,
+            transaction_id: "tx-1".to_string(),
+            data_events: vec![serde_json::json!({
+                "kind": "ColumnsStreamed", "source_id": "p1", "base_version": 4,
+                "new_version": 5, "data": {"type": "map", "entries": []}, "rollover": null,
+            })],
+            messages: vec![serde_json::json!({"msg_type": "toast", "msg_data": {}})],
+            buffers: vec![BokehSessionBufferRef {
+                id: "buffer-1".to_string(),
+                blob: "abc123".to_string(),
+                size: 3,
+                media_type: "application/octet-stream".to_string(),
+            }],
+        };
+        let broadcast = NotebookBroadcast::BokehSessionEvents {
+            events: Box::new(events.clone()),
         };
 
         let json = serde_json::to_value(&broadcast).expect("serialize Bokeh broadcast");
-        assert_eq!(json["event"], "bokeh_session_patch");
-        assert_eq!(json["patch"]["revision"], 5);
-        assert_eq!(
-            json["patch"]["client_patch"]["buffers"][0]["blob"],
-            "abc123"
-        );
+        assert_eq!(json["event"], "bokeh_session_events");
+        assert_eq!(json["events"]["epoch"], 2);
+        assert_eq!(json["events"]["buffers"][0]["blob"], "abc123");
         let parsed: NotebookBroadcast =
             serde_json::from_value(json).expect("deserialize Bokeh broadcast");
-        let NotebookBroadcast::BokehSessionPatch { patch } = parsed else {
-            panic!("expected Bokeh patch broadcast");
+        let NotebookBroadcast::BokehSessionEvents { events: parsed } = parsed else {
+            panic!("expected Bokeh events broadcast");
         };
-        assert_eq!(patch.session_id, "session-1");
-        assert_eq!(patch.revision, 5);
+        assert_eq!(*parsed, events);
+
+        let reply = BokehSessionPatchReply::Accepted {
+            session_id: "session-1".to_string(),
+            transaction_id: "tx-1".to_string(),
+        };
         assert_eq!(
-            patch
-                .client_patch
-                .expect("client patch")
-                .buffers
-                .first()
-                .expect("buffer")
-                .blob,
-            "abc123"
+            serde_json::to_value(&reply).unwrap(),
+            serde_json::json!({"status": "accepted", "session_id": "session-1", "transaction_id": "tx-1"})
         );
-        assert!(patch.checkpoint.is_some());
     }
 
     #[test]

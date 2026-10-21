@@ -275,7 +275,6 @@ describe("NotebookClient", () => {
         status: "accepted",
         session_id: "session-1",
         transaction_id: "tx-1",
-        revision: 5,
       },
     });
 
@@ -283,7 +282,6 @@ describe("NotebookClient", () => {
       client.applyBokehSessionPatch({
         sessionId: "session-1",
         transactionId: "tx-1",
-        baseRevision: 4,
         patch: { events: [] },
         buffers: [{ id: "buffer-1", data: new Uint8Array([1, 2, 3]) }],
       }),
@@ -291,14 +289,12 @@ describe("NotebookClient", () => {
       status: "accepted",
       session_id: "session-1",
       transaction_id: "tx-1",
-      revision: 5,
     });
     expect(sendRequest).toHaveBeenCalledWith({
       type: "apply_bokeh_session_patch",
       request: {
         session_id: "session-1",
         transaction_id: "tx-1",
-        base_revision: 4,
         patch: { events: [] },
         buffers: [{ id: "buffer-1", data: [1, 2, 3] }],
         buffer_refs: [],
@@ -306,30 +302,55 @@ describe("NotebookClient", () => {
     });
   });
 
-  it("surfaces stale Bokeh revisions as typed replies", async () => {
+  it("surfaces Bokeh patch errors as typed replies", async () => {
     const { client, sendRequest } = stubClient();
     sendRequest.mockResolvedValueOnce({
       result: "bokeh_session_patch",
       reply: {
-        status: "stale",
+        status: "error",
         session_id: "session-1",
-        transaction_id: "tx-stale",
-        revision: 9,
+        transaction_id: "tx-error",
+        error: "Bokeh session is disconnected",
       },
     });
 
     await expect(
       client.applyBokehSessionPatch({
         sessionId: "session-1",
-        transactionId: "tx-stale",
-        baseRevision: 8,
+        transactionId: "tx-error",
         patch: { events: [] },
       }),
     ).resolves.toEqual({
-      status: "stale",
+      status: "error",
       session_id: "session-1",
-      transaction_id: "tx-stale",
-      revision: 9,
+      transaction_id: "tx-error",
+      error: "Bokeh session is disconnected",
+    });
+  });
+
+  it("fetches the retained Bokeh data tail for the requested sources", async () => {
+    const { client, sendRequest } = stubClient();
+    const tail = {
+      session_id: "session-1",
+      epoch: 2,
+      events: [{ session_id: "session-1", epoch: 2, transaction_id: "tx-1", data_events: [] }],
+      fold_requested: ["source-2"],
+    };
+    sendRequest.mockResolvedValueOnce({ result: "bokeh_session_data", data: tail });
+
+    await expect(client.getBokehSessionData("session-1", ["source-1"])).resolves.toEqual(tail);
+    expect(sendRequest).toHaveBeenCalledWith({
+      type: "get_bokeh_session_data",
+      session_id: "session-1",
+      source_ids: ["source-1"],
+    });
+
+    sendRequest.mockResolvedValueOnce({ result: "error", error: "unknown session" });
+    await expect(client.getBokehSessionData("session-1")).rejects.toThrow("unknown session");
+    expect(sendRequest).toHaveBeenLastCalledWith({
+      type: "get_bokeh_session_data",
+      session_id: "session-1",
+      source_ids: null,
     });
   });
 });

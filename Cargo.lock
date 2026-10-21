@@ -5356,6 +5356,7 @@ dependencies = [
  "log",
  "notebook-doc",
  "notebook-protocol",
+ "notebook-wire",
  "runt-workspace",
  "runtime-doc",
  "serde",
@@ -5371,6 +5372,7 @@ name = "notebook-wire"
 version = "0.5.6"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -7955,6 +7957,7 @@ dependencies = [
  "notebook-doc",
  "notebook-protocol",
  "notebook-sync",
+ "notebook-wire",
  "proptest",
  "regex",
  "repr-llm",
@@ -8073,6 +8076,7 @@ dependencies = [
  "clap",
  "comments-doc",
  "dirs",
+ "flate2",
  "futures",
  "hex",
  "http-body-util",

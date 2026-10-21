@@ -9,7 +9,9 @@
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
-use crate::bokeh_session::{prepare_initial_session, PreparedInitialBokehSession};
+use crate::bokeh_session::{
+    prepare_initial_session, strip_ingested_session_doc, PreparedInitialBokehSession,
+};
 use crate::output_blob_publisher::publish_or_warn;
 use crate::output_commit_context::OutputCommitContext;
 use crate::output_prep::LifecycleSignal;
@@ -272,10 +274,12 @@ async fn commit_output_batch(
         .map(|prepared| prepared.manifest.clone())
         .collect::<Vec<_>>();
 
+    let mut created_sessions = Vec::new();
     if let Err(e) = context.state.transact_at_current_heads(
         Some(&context.kernel_actor_id),
         "runtime-state-iopub-output-batch-transaction",
         |sd| {
+            created_sessions.clear();
             let mut index = 0;
             while index < outputs.len() {
                 let execution_id = outputs[index].output.execution_id.as_str();
@@ -285,12 +289,13 @@ async fn commit_output_batch(
                 }
                 sd.append_outputs(execution_id, &manifests[start..index])?;
             }
-            for prepared in &prepared_outputs {
+            for (position, prepared) in prepared_outputs.iter().enumerate() {
                 if let Some(session) = &prepared.bokeh_session {
                     // Session provenance and terminal state survive delayed or
                     // repeated publication of the same initial descriptor.
                     if sd.get_bokeh_session(&session.session_id).is_none() {
                         sd.put_bokeh_session(&session.session_id, &session.state)?;
+                        created_sessions.push(position);
                     }
                 }
             }
@@ -298,6 +303,17 @@ async fn commit_output_batch(
         },
     ) {
         warn!("[runtime-state] {}", e);
+        created_sessions.clear();
+    }
+    for position in created_sessions {
+        if let Some(session) = prepared_outputs[position].bokeh_session.take() {
+            context.bokeh_sessions.insert(
+                &session.session_id,
+                session.doc,
+                &context.kernel_id,
+                &context.kernel_actor_id,
+            );
+        }
     }
     info!(
         "[output-committer-timing] ordinary output batch committed count={} display_data_count={} execute_result_count={} error_count={} max_queue_age_ms={} elapsed_ms={}",
@@ -330,8 +346,9 @@ async fn prepare_output(
         }
     };
 
+    let stored_value = strip_ingested_session_doc(&output.nbformat_value);
     match output_store::create_manifest_with_redactor(
-        &output.nbformat_value,
+        stored_value.as_ref().unwrap_or(&output.nbformat_value),
         &context.blob_store,
         inline_threshold,
         &context.redactor,
@@ -583,23 +600,46 @@ mod tests {
             })
             .expect("execution entry");
         let (lifecycle_tx, _lifecycle_rx) = mpsc::unbounded_channel();
+        let bokeh_sessions = crate::bokeh_session::store::BokehSessionStore::default();
         let handle = start_output_committer_with_capacity(
-            commit_context(state.clone(), blob_store.clone(), lifecycle_tx),
+            commit_context(state.clone(), blob_store.clone(), lifecycle_tx)
+                .with_bokeh_sessions(bokeh_sessions.clone()),
             8,
         );
+        let column = br#"{"type":"ndarray","array":{"type":"bytes","data":{"id":"b1"}}}"#;
+        let column: serde_json::Value = serde_json::from_slice(column).unwrap();
+        let buffer = vec![1u8, 2, 3, 4];
+        let buffer_hash = blob_store
+            .put(&buffer, "application/octet-stream")
+            .await
+            .unwrap();
         let output = serde_json::json!({
             "output_type": "display_data",
             "data": {
                 crate::bokeh_session::BOKEH_SESSION_MIME: {
                     "schema_version": 1,
                     "session_id": "session-1",
-                    "revision": 0,
                     "producer": {"name": "panel", "version": "1.9.3"},
                     "bokeh_version": "3.9.1",
                     "document": {"version": "3.9.1", "roots": [{"id": "p1001"}]},
+                    "session_doc": {
+                        "meta": {"session_id": "session-1", "producer_name": "panel",
+                                 "producer_version": "1.9.3", "bokeh_version": "3.9.1",
+                                 "root_ids": ["p1001"], "title": "Bokeh Application"},
+                        "models": {
+                            "p1001": {"type": "Slider", "ref_props": ["js_property_callbacks"],
+                                      "props": {"value": 4, "title": "Value"}},
+                            "p1002": {"type": "ColumnDataSource", "ref_props": ["selected"],
+                                      "props": {}},
+                        },
+                        "data_events": [{"kind": "ColumnsFolded", "source_id": "p1002",
+                                         "version": 0, "columns": {"x": column}}],
+                    },
                     "root_ids": ["p1001"],
                     "resources": {"javascript": [], "stylesheets": []},
                     "buffers": [],
+                    "session_doc_buffers": [{"id": "b1", "hash": buffer_hash, "size": 4,
+                                             "buffer_index": 0}],
                 },
                 "text/plain": "FloatSlider(value=4)",
             },
@@ -623,27 +663,42 @@ mod tests {
         assert_eq!(session.cell_id, "cell-1");
         assert_eq!(session.execution_id, "exec-1");
         assert_eq!(session.kernel_id, "kernel-test");
-        assert_eq!(session.head_revision, 0);
-        let checkpoint = session.checkpoint.clone().expect("checkpoint");
-        assert_eq!(checkpoint.revision, 0);
-        let bytes = blob_store
-            .get(&checkpoint.content_ref.blob)
-            .await
-            .expect("read checkpoint")
-            .expect("checkpoint bytes");
-        let payload: serde_json::Value = serde_json::from_slice(&bytes).expect("checkpoint JSON");
-        assert_eq!(payload["session_id"], "session-1");
-        assert_eq!(payload["document"]["roots"][0]["id"], "p1001");
+        assert_eq!(session.epoch, 0);
+        assert_eq!(bokeh_sessions.epoch("session-1"), Some(0));
+        let doc_heads = bokeh_sessions
+            .with_doc("session-1", |doc| {
+                let snapshot = doc.read_snapshot().unwrap();
+                assert_eq!(snapshot.meta.title.as_deref(), Some("Bokeh Application"));
+                assert_eq!(snapshot.models["p1001"].props["value"], "4");
+                assert_eq!(
+                    snapshot.models["p1001"].ref_props,
+                    vec!["js_property_callbacks"]
+                );
+                assert_eq!(snapshot.columns["p1002"]["x"].version, 0);
+                crate::bokeh_session::hex_heads(&doc.get_heads())
+            })
+            .unwrap();
+        assert_eq!(session.doc_heads, doc_heads);
 
         let outputs = state
             .read(|doc| doc.get_outputs("exec-1"))
             .expect("read outputs");
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["output_id"], session.output_id);
+        let content: crate::output_store::ContentRef = serde_json::from_value(
+            outputs[0]["data"][crate::bokeh_session::BOKEH_SESSION_MIME].clone(),
+        )
+        .unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_str(&content.resolve(&blob_store).await.unwrap()).unwrap();
+        assert!(
+            stored.get("session_doc").is_none(),
+            "ingested state is not duplicated"
+        );
+        assert_eq!(stored["document"]["roots"][0]["id"], "p1001");
 
         let mut closed = session;
         closed.status = runtime_doc::BokehSessionStatus::Closed;
-        closed.head_revision = 3;
         state
             .with_doc(|doc| doc.put_bokeh_session("session-1", &closed))
             .unwrap();
@@ -661,7 +716,7 @@ mod tests {
                 .read(|doc| doc.get_bokeh_session("session-1"))
                 .unwrap(),
             Some(closed),
-            "late initial output must not reopen a retired session or rewind its revision"
+            "late initial output must not reopen a retired session"
         );
     }
 

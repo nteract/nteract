@@ -11,11 +11,9 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use notebook_protocol::protocol::{
-    BokehSessionPatchRequest, CommRequestMessage, LaunchedEnvConfig,
-};
+use notebook_protocol::protocol::{CommRequestMessage, LaunchedEnvConfig};
 
-use crate::bokeh_session::{BokehCheckpointFuture, BokehCloseFuture, BokehKernelPatchResponse};
+use crate::bokeh_session::{BokehCloseFuture, BokehKernelRequester};
 use crate::jupyter_kernel::JupyterKernel;
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::output_prep::QueueCommandReceivers;
@@ -107,13 +105,10 @@ impl KernelConnection for Kernel {
         }
     }
 
-    async fn apply_bokeh_session_patch(
-        &mut self,
-        request: BokehSessionPatchRequest,
-    ) -> Result<BokehKernelPatchResponse> {
+    fn bokeh_requester(&self) -> Option<BokehKernelRequester> {
         match self {
-            Kernel::Jupyter(k) => k.apply_bokeh_session_patch(request).await,
-            Kernel::Test(k) => k.apply_bokeh_session_patch(request).await,
+            Kernel::Jupyter(k) => k.bokeh_requester(),
+            Kernel::Test(k) => k.bokeh_requester(),
         }
     }
 
@@ -121,16 +116,6 @@ impl KernelConnection for Kernel {
         match self {
             Kernel::Jupyter(k) => k.bokeh_session_close_request(session_id),
             Kernel::Test(k) => k.bokeh_session_close_request(session_id),
-        }
-    }
-
-    fn bokeh_session_checkpoint_request(
-        &self,
-        session_id: String,
-    ) -> Option<BokehCheckpointFuture> {
-        match self {
-            Kernel::Jupyter(k) => k.bokeh_session_checkpoint_request(session_id),
-            Kernel::Test(k) => k.bokeh_session_checkpoint_request(session_id),
         }
     }
 

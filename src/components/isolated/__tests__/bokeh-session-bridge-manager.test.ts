@@ -1,15 +1,22 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import type { BokehSessionPatchBroadcast, BokehSessionState } from "runtimed";
+import type { BokehSessionEvents, BokehSessionState } from "runtimed";
 import { BokehSessionBridgeManager } from "../bokeh-session-bridge-manager";
 import type { BokehSessionTransport } from "../bokeh-session-context";
+import type { BokehSessionDocListener, BokehSessionDocStore } from "../bokeh-session-doc-store";
 import type { IsolatedFrameHandle } from "../isolated-frame";
+import {
+  NTERACT_BOKEH_APPLY_PATCH,
+  NTERACT_BOKEH_SESSION_DATA,
+  NTERACT_BOKEH_SESSION_OPEN,
+  NTERACT_BOKEH_SET_PROPS,
+  type NteractBokehDocUpdate,
+} from "../rpc-methods";
 
 const payload = {
   schema_version: 1 as const,
   session_id: "session-1",
-  revision: 0,
-  producer: { name: "panel", version: "1.9.3" },
-  bokeh_version: "3.9.1",
+  producer: { name: "panel", version: "1.9.4" },
+  bokeh_version: "3.9.2",
   document: { roots: [] },
   root_ids: ["root-1"],
   resources: {
@@ -21,94 +28,102 @@ const payload = {
   buffers: [],
 };
 
-function runtimeSession(): BokehSessionState {
+function runtimeSession(overrides: Partial<BokehSessionState> = {}): BokehSessionState {
   return {
     output_id: "output-1",
     cell_id: "cell-1",
     execution_id: "execution-1",
     kernel_id: "kernel-1",
     status: "connected",
-    head_revision: 1,
     producer_name: "panel",
-    producer_version: "1.9.3",
-    bokeh_version: "3.9.1",
+    producer_version: "1.9.4",
+    bokeh_version: "3.9.2",
     root_ids: ["root-1"],
-    checkpoint: {
-      revision: 0,
-      content_ref: {
-        blob: "checkpoint",
-        size: 100,
-        media_type: "application/vnd.nteract.bokeh-checkpoint.v1+json",
-      },
-    },
-    patch_tail: [
-      {
-        base_revision: 0,
-        revision: 1,
-        content_ref: {
-          blob: "patch-1",
-          size: 100,
-          media_type: "application/vnd.nteract.bokeh-patch.v1+json",
-        },
-      },
-    ],
+    epoch: 3,
+    doc_heads: ["head"],
+    ...overrides,
   };
 }
 
-function jsonResponse(value: unknown): Response {
-  return new Response(JSON.stringify(value), {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  });
-}
+const update: NteractBokehDocUpdate = {
+  sessionId: "session-1",
+  epoch: 3,
+  kind: "full",
+  canSwitch: false,
+  meta: { rootIds: ["root-1"], title: null, bokehVersion: "3.9.2", docExtras: null },
+  models: {},
+  props: {},
+  removed: [],
+  columns: {},
+};
 
 function makeHarness() {
-  let patchListener: ((broadcast: BokehSessionPatchBroadcast) => void) | null = null;
+  let eventsListener: ((events: BokehSessionEvents) => void) | null = null;
+  const docListeners = new Set<BokehSessionDocListener>();
   const blobs = new Map<string, () => Response>([
-    [
-      "checkpoint",
-      () =>
-        jsonResponse({
-          schema_version: 1,
-          session_id: "session-1",
-          revision: 0,
-          document: { roots: [{ id: "root-1" }] },
-          buffers: [
-            { id: "buffer-0", blob: "buffer-0", size: 3, media_type: "application/octet-stream" },
-          ],
-        }),
-    ],
-    [
-      "patch-1",
-      () =>
-        jsonResponse({
-          session_id: "session-1",
-          transaction_id: "transaction-1",
-          base_revision: 0,
-          revision: 1,
-          client_patch: { patch: { events: [{ kind: "ModelChanged" }] }, buffers: [] },
-          server_patch: null,
-          checkpoint: null,
-        }),
-    ],
-    ["buffer-0", () => new Response(new Uint8Array([1, 2, 3]), { status: 200 })],
+    ["col-x", () => new Response('{"type":"ndarray","array":[1,2]}')],
+    ["col-y", () => new Response("[3,4]")],
+    ["buffer-0", () => new Response(new Uint8Array([1, 2, 3]))],
   ]);
-  const transport: BokehSessionTransport = {
-    fetchBlob: vi.fn(async (ref) => {
-      const response = blobs.get(ref.blob)?.();
-      if (!response) return new Response(null, { status: 404 });
-      return response;
+  const fetchBlob = vi.fn(async (ref: { blob: string }) => {
+    const response = blobs.get(ref.blob)?.();
+    return response ?? new Response(null, { status: 404 });
+  });
+  const docs = {
+    subscribe: vi.fn((_sessionId: string, listener: BokehSessionDocListener) => {
+      docListeners.add(listener);
+      return () => docListeners.delete(listener);
     }),
+    writeProps: vi.fn(() => ({ status: "written" as const })),
+    columnRefs: vi.fn(() => ({
+      epoch: 3,
+      columns: {
+        source: {
+          x: { blob: "col-x", size: 30, version: 4 },
+          y: { blob: "col-y", size: 5, version: 2 },
+        },
+      },
+    })),
+    loadJson: vi.fn(async (ref: { blob: string }) =>
+      JSON.parse(await (await fetchBlob(ref)).text()),
+    ),
+  };
+  const transport: BokehSessionTransport = {
+    docs: docs as unknown as BokehSessionDocStore,
+    fetchBlob,
     applyPatch: vi.fn(async (options) => ({
       status: "accepted" as const,
       session_id: options.sessionId,
       transaction_id: options.transactionId,
-      revision: options.baseRevision + 1,
     })),
-    subscribePatches(listener) {
-      patchListener = listener;
+    getData: vi.fn(async (sessionId: string) => ({
+      session_id: sessionId,
+      epoch: 3,
+      events: [
+        {
+          session_id: sessionId,
+          epoch: 3,
+          transaction_id: "tx-tail",
+          data_events: [
+            {
+              kind: "ColumnsStreamed",
+              source_id: "source",
+              base_version: 4,
+              new_version: 5,
+              data: { type: "map", entries: [] },
+            },
+          ],
+          buffers: [
+            { id: "b0", blob: "buffer-0", size: 3, media_type: "application/octet-stream" },
+          ],
+        },
+      ],
+      fold_requested: ["other"],
+    })),
+    subscribeEvents(listener) {
+      eventsListener = listener;
       return () => {
-        patchListener = null;
+        eventsListener = null;
       };
     },
   };
@@ -119,210 +134,311 @@ function makeHarness() {
     bindings: [{ outputId: "output-1", payload }],
   });
   manager.updateRuntimeSessions({ "session-1": runtimeSession() });
-  return { blobs, frame, manager, patchListener: () => patchListener, transport };
+  return {
+    blobs,
+    docs,
+    docListeners,
+    emitEvents: (events: BokehSessionEvents) => eventsListener?.(events),
+    frame,
+    manager,
+    transport,
+  };
 }
 
-function patchQueueSize(manager: BokehSessionBridgeManager): number {
-  return (
-    manager as unknown as {
-      patchQueues: Map<string, Promise<void>>;
-    }
-  ).patchQueues.size;
-}
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("BokehSessionBridgeManager", () => {
-  it("materializes a checkpoint and contiguous patch tail from blob storage", async () => {
-    const { manager } = makeHarness();
+  it("projects status and epoch from RuntimeStateDoc once per change", () => {
+    const { frame, manager } = makeHarness();
+    expect(frame.send).toHaveBeenCalledWith({
+      type: "bokeh_session_state",
+      payload: { sessionId: "session-1", outputId: "output-1", status: "connected", epoch: 3 },
+    });
+    vi.mocked(frame.send).mockClear();
 
-    const snapshot = await manager.openSession({ sessionId: "session-1", outputId: "output-1" });
+    manager.updateRuntimeSessions({ "session-1": runtimeSession() });
+    expect(frame.send).not.toHaveBeenCalled();
 
-    expect(snapshot.status).toBe("connected");
-    expect(snapshot.headRevision).toBe(1);
-    expect(snapshot.checkpoint.revision).toBe(0);
-    expect(new Uint8Array(snapshot.checkpoint.buffers[0].data)).toEqual(new Uint8Array([1, 2, 3]));
-    expect(snapshot.patchTail).toHaveLength(1);
-    expect(snapshot.patchTail[0].revision).toBe(1);
+    manager.updateRuntimeSessions({ "session-1": runtimeSession({ status: "disconnected" }) });
+    expect(frame.send).toHaveBeenCalledWith({
+      type: "bokeh_session_state",
+      payload: { sessionId: "session-1", outputId: "output-1", status: "disconnected", epoch: 3 },
+    });
   });
 
-  it("rejects a replay checkpoint owned by another session", async () => {
-    const { blobs, manager } = makeHarness();
-    blobs.set("checkpoint", () =>
-      jsonResponse({
-        schema_version: 1,
-        session_id: "another-session",
-        revision: 0,
-        document: { roots: [{ id: "root-1" }] },
-        buffers: [],
-      }),
-    );
+  it("follows the session document of a live output and forwards its updates", async () => {
+    const { docs, docListeners, frame, manager } = makeHarness();
 
     await expect(
-      manager.openSession({ sessionId: "session-1", outputId: "output-1" }),
-    ).rejects.toThrow("another session");
-  });
-
-  it("validates output ownership before applying a typed patch", async () => {
-    const { manager, transport } = makeHarness();
-
-    await expect(
-      manager.applyPatch({
+      manager.handleRequest(NTERACT_BOKEH_SESSION_OPEN, {
         sessionId: "session-1",
-        outputId: "another-output",
-        transactionId: "transaction-2",
-        baseRevision: 1,
-        patch: { events: [] },
-        buffers: [],
+        outputId: "output-1",
       }),
-    ).rejects.toThrow("not owned");
-
-    const reply = await manager.applyPatch({
+    ).resolves.toEqual({
       sessionId: "session-1",
       outputId: "output-1",
-      transactionId: "transaction-2",
-      baseRevision: 1,
-      patch: { events: [] },
-      buffers: [],
+      status: "connected",
+      epoch: 3,
+      live: true,
     });
-    expect(reply).toEqual({
+    expect(docs.subscribe).toHaveBeenCalledWith("session-1", expect.any(Function));
+
+    for (const listener of docListeners) listener(update);
+    expect(frame.send).toHaveBeenCalledWith({
+      type: "bokeh_session_doc",
+      payload: { outputId: "output-1", update },
+    });
+
+    // Re-opening replaces the subscription instead of adding a second one.
+    await manager.handleRequest(NTERACT_BOKEH_SESSION_OPEN, {
+      sessionId: "session-1",
+      outputId: "output-1",
+    });
+    expect(docListeners.size).toBe(1);
+
+    manager.setBindings([]);
+    expect(docListeners.size).toBe(0);
+  });
+
+  it("renders frozen and unknown sessions from the payload without subscribing", async () => {
+    const { docs, manager } = makeHarness();
+    manager.updateRuntimeSessions({ "session-1": runtimeSession({ status: "disconnected" }) });
+
+    await expect(
+      manager.handleRequest(NTERACT_BOKEH_SESSION_OPEN, {
+        sessionId: "session-1",
+        outputId: "output-1",
+      }),
+    ).resolves.toMatchObject({ status: "disconnected", live: false });
+
+    manager.updateRuntimeSessions({});
+    await expect(
+      manager.handleRequest(NTERACT_BOKEH_SESSION_OPEN, {
+        sessionId: "session-1",
+        outputId: "output-1",
+      }),
+    ).resolves.toMatchObject({ status: "disconnected", epoch: null, live: false });
+    expect(docs.subscribe).not.toHaveBeenCalled();
+  });
+
+  it("keeps a frame to its own outputs' sessions", async () => {
+    const { manager, transport, docs } = makeHarness();
+
+    await expect(
+      manager.handleRequest(NTERACT_BOKEH_SESSION_OPEN, {
+        sessionId: "session-1",
+        outputId: "another-output",
+      }),
+    ).rejects.toThrow("not owned");
+    await expect(
+      manager.handleRequest(NTERACT_BOKEH_SET_PROPS, {
+        sessionId: "session-2",
+        outputId: "output-1",
+        props: {},
+      }),
+    ).rejects.toThrow("not owned");
+    await expect(
+      manager.handleRequest(NTERACT_BOKEH_SESSION_DATA, {
+        sessionId: "session-1",
+        outputId: "another-output",
+        sources: { source: null },
+        tail: false,
+      }),
+    ).rejects.toThrow("not owned");
+    expect(transport.applyPatch).not.toHaveBeenCalled();
+    expect(docs.writeProps).not.toHaveBeenCalled();
+  });
+
+  it("writes property values through the host replica only while connected", async () => {
+    const { docs, manager } = makeHarness();
+    const params = {
+      sessionId: "session-1",
+      outputId: "output-1",
+      props: { slider: { value: "0.5" } },
+    };
+
+    await expect(manager.handleRequest(NTERACT_BOKEH_SET_PROPS, params)).resolves.toEqual({
+      status: "written",
+    });
+    expect(docs.writeProps).toHaveBeenCalledWith("session-1", { slider: { value: "0.5" } });
+
+    await expect(
+      manager.handleRequest(NTERACT_BOKEH_SET_PROPS, {
+        ...params,
+        props: { slider: { value: 1 } },
+      }),
+    ).rejects.toThrow("JSON text");
+
+    manager.updateRuntimeSessions({ "session-1": runtimeSession({ status: "closed" }) });
+    await expect(manager.handleRequest(NTERACT_BOKEH_SET_PROPS, params)).resolves.toEqual({
+      status: "read_only",
+    });
+    expect(docs.writeProps).toHaveBeenCalledOnce();
+  });
+
+  it("sends only one-off events through apply_bokeh_session_patch", async () => {
+    const { manager, transport } = makeHarness();
+    const request = {
+      sessionId: "session-1",
+      outputId: "output-1",
+      transactionId: "tx-1",
+      patch: { events: [{ kind: "MessageSent", msg_type: "bokeh_event", msg_data: {} }] },
+      buffers: [{ id: "tx-1:0", data: new Uint8Array([7]).buffer }],
+    };
+
+    await expect(manager.handleRequest(NTERACT_BOKEH_APPLY_PATCH, request)).resolves.toEqual({
       status: "accepted",
       sessionId: "session-1",
-      transactionId: "transaction-2",
-      revision: 2,
+      transactionId: "tx-1",
+    });
+    expect(transport.applyPatch).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      transactionId: "tx-1",
+      patch: request.patch,
+      buffers: [{ id: "tx-1:0", data: new Uint8Array([7]) }],
+    });
+
+    await expect(
+      manager.handleRequest(NTERACT_BOKEH_APPLY_PATCH, {
+        ...request,
+        patch: { events: [{ kind: "ModelChanged", attr: "value" }] },
+      }),
+    ).rejects.toThrow("one-off");
+
+    manager.updateRuntimeSessions({ "session-1": runtimeSession({ status: "disconnected" }) });
+    await expect(manager.handleRequest(NTERACT_BOKEH_APPLY_PATCH, request)).resolves.toMatchObject({
+      status: "error",
+      error: "Bokeh session is disconnected",
     });
     expect(transport.applyPatch).toHaveBeenCalledOnce();
   });
 
-  it("delivers canonical broadcasts through the typed frame channel", async () => {
-    const { frame, manager, patchListener } = makeHarness();
-    vi.mocked(frame.send).mockClear();
-    patchListener()?.({
-      event: "bokeh_session_patch",
-      patch: {
-        session_id: "session-1",
-        transaction_id: "transaction-2",
-        base_revision: 1,
-        revision: 2,
-        server_patch: { patch: { events: [] }, buffers: [] },
-        checkpoint: {
-          session_id: "session-1",
-          revision: 2,
-          document: { roots: [{ id: "root-1" }] },
-          buffers: [],
+  it("loads column blobs and the retained tail for a data reload", async () => {
+    const { docs, manager, transport } = makeHarness();
+
+    const result = await manager.handleRequest(NTERACT_BOKEH_SESSION_DATA, {
+      sessionId: "session-1",
+      outputId: "output-1",
+      sources: { source: null },
+      tail: true,
+    });
+
+    expect(transport.getData).toHaveBeenCalledWith("session-1", ["source"]);
+    expect(docs.columnRefs).toHaveBeenCalledWith("session-1", { source: null });
+    expect(result).toMatchObject({
+      epoch: 3,
+      columns: {
+        source: {
+          x: { version: 4, data: { type: "ndarray", array: [1, 2] } },
+          y: { version: 2, data: [3, 4] },
         },
       },
+      events: [
+        {
+          sessionId: "session-1",
+          transactionId: "tx-tail",
+          dataEvents: [{ kind: "ColumnsStreamed", base_version: 4, new_version: 5 }],
+        },
+      ],
+      foldRequested: ["other"],
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    const events = (result as { events: Array<{ buffers: Array<{ data: ArrayBuffer }> }> }).events;
+    expect(new Uint8Array(events[0].buffers[0].data)).toEqual(new Uint8Array([1, 2, 3]));
+  });
 
-    expect(frame.send).toHaveBeenCalledWith({
-      type: "bokeh_session_patch",
+  it("resolves broadcast buffers and full-column replacements in order", async () => {
+    const { docs, emitEvents, frame } = makeHarness();
+    vi.mocked(frame.send).mockClear();
+    let releaseSlow: (() => void) | undefined;
+    const loadJson = docs.loadJson.getMockImplementation()!;
+    // The replacement's column loads slower than the next broadcast resolves.
+    docs.loadJson.mockImplementationOnce(
+      (ref) =>
+        new Promise((resolve) => {
+          releaseSlow = () => resolve(loadJson(ref));
+        }),
+    );
+
+    emitEvents({
+      session_id: "session-1",
+      epoch: 3,
+      transaction_id: "tx-replace",
+      data_events: [
+        {
+          kind: "ColumnDataChanged",
+          source_id: "source",
+          base_version: 4,
+          new_version: 5,
+          columns: { x: { blob: "col-x", size: 30, version: 5 } },
+          columns_removed: ["z"],
+        },
+      ],
+    });
+    emitEvents({
+      session_id: "session-1",
+      epoch: 3,
+      transaction_id: "tx-message",
+      messages: [{ msg_type: "bokeh_event", msg_data: { event_name: "click" } }],
+    });
+    emitEvents({ session_id: "session-2", epoch: 1, transaction_id: "tx-other" });
+    await settle();
+    expect(frame.send).not.toHaveBeenCalled();
+    releaseSlow?.();
+    await settle();
+
+    expect(frame.send).toHaveBeenNthCalledWith(1, {
+      type: "bokeh_session_events",
       payload: {
         outputId: "output-1",
-        event: expect.objectContaining({
+        events: {
           sessionId: "session-1",
-          transactionId: "transaction-2",
-          revision: 2,
-          checkpoint: expect.objectContaining({ revision: 2 }),
-        }),
-      },
-    });
-    expect(patchQueueSize(manager)).toBe(0);
-    manager.dispose();
-  });
-
-  it("does not deliver an in-flight broadcast after disposal", async () => {
-    const { frame, manager, patchListener, transport } = makeHarness();
-    vi.mocked(frame.send).mockClear();
-    let markFetchStarted: (() => void) | undefined;
-    let resolveFetch: ((response: Response) => void) | undefined;
-    const fetchStarted = new Promise<void>((resolve) => {
-      markFetchStarted = resolve;
-    });
-    const delayedResponse = new Promise<Response>((resolve) => {
-      resolveFetch = resolve;
-    });
-    vi.mocked(transport.fetchBlob).mockImplementationOnce(async () => {
-      markFetchStarted?.();
-      return delayedResponse;
-    });
-
-    patchListener()?.({
-      event: "bokeh_session_patch",
-      patch: {
-        session_id: "session-1",
-        transaction_id: "transaction-delayed",
-        base_revision: 1,
-        revision: 2,
-        server_patch: {
-          patch: { events: [] },
-          buffers: [
+          epoch: 3,
+          transactionId: "tx-replace",
+          dataEvents: [
             {
-              id: "buffer-delayed",
-              blob: "buffer-delayed",
-              size: 3,
-              media_type: "application/octet-stream",
+              kind: "ColumnDataChanged",
+              source_id: "source",
+              base_version: 4,
+              new_version: 5,
+              columns: { x: { version: 5, data: { type: "ndarray", array: [1, 2] } } },
+              columns_removed: ["z"],
             },
           ],
+          messages: [],
+          buffers: [],
         },
       },
     });
-    await fetchStarted;
-    manager.dispose();
-    resolveFetch?.(new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(frame.send).not.toHaveBeenCalled();
+    expect(frame.send).toHaveBeenNthCalledWith(2, {
+      type: "bokeh_session_events",
+      payload: expect.objectContaining({
+        events: expect.objectContaining({ transactionId: "tx-message" }),
+      }),
+    });
+    expect(frame.send).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects a live checkpoint whose identity does not match its event", async () => {
-    const { frame, manager, patchListener } = makeHarness();
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  it("does not deliver in-flight events after disposal", async () => {
+    const { emitEvents, frame, manager, transport } = makeHarness();
     vi.mocked(frame.send).mockClear();
+    let resolveFetch: ((response: Response) => void) | undefined;
+    vi.mocked(transport.fetchBlob).mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
 
-    patchListener()?.({
-      event: "bokeh_session_patch",
-      patch: {
-        session_id: "session-1",
-        transaction_id: "transaction-2",
-        base_revision: 1,
-        revision: 2,
-        checkpoint: {
-          session_id: "another-session",
-          revision: 2,
-          document: { roots: [{ id: "root-1" }] },
-          buffers: [],
-        },
-      },
+    emitEvents({
+      session_id: "session-1",
+      epoch: 3,
+      transaction_id: "tx-delayed",
+      buffers: [{ id: "b", blob: "buffer-0", size: 3, media_type: "application/octet-stream" }],
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    patchListener()?.({
-      event: "bokeh_session_patch",
-      patch: {
-        session_id: "session-1",
-        transaction_id: "transaction-3",
-        base_revision: 1,
-        revision: 2,
-        checkpoint: {
-          session_id: "session-1",
-          revision: 3,
-          document: { roots: [{ id: "root-1" }] },
-          buffers: [],
-        },
-      },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    manager.dispose();
+    resolveFetch?.(new Response(new Uint8Array([1, 2, 3])));
+    await settle();
 
     expect(frame.send).not.toHaveBeenCalled();
-    expect(consoleError).toHaveBeenNthCalledWith(
-      1,
-      "[bokeh-session] Failed to deliver document patch:",
-      expect.objectContaining({ message: expect.stringContaining("another session") }),
-    );
-    expect(consoleError).toHaveBeenNthCalledWith(
-      2,
-      "[bokeh-session] Failed to deliver document patch:",
-      expect.objectContaining({ message: expect.stringContaining("revision") }),
-    );
-    manager.dispose();
   });
 });

@@ -1,6 +1,8 @@
 export { CommBridgeManager, createCommBridgeManager } from "./comm-bridge-manager";
 export { BokehSessionBridgeManager } from "./bokeh-session-bridge-manager";
 export type { BokehSessionOutputBinding } from "./bokeh-session-bridge-manager";
+export { BokehSessionDocStore } from "./bokeh-session-doc-store";
+export type { BokehSessionDocReplica } from "./bokeh-session-doc-store";
 export { BokehSessionRuntimeProvider, useBokehSessionRuntime } from "./bokeh-session-context";
 export type { BokehSessionRuntime, BokehSessionTransport } from "./bokeh-session-context";
 // Message protocol types

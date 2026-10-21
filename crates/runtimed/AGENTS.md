@@ -65,6 +65,7 @@ API work is described in `docs/memos/runtime-writer-decomposition.md`.
 | RuntimeStateDoc (kernel status, queue, executions, env, trust) | Local daemon / room host / runtime peer, policy-scoped | Separate per-notebook Automerge doc synced via frame `0x05`; regular clients read it but do not author it |
 | CommsDoc (widget state) | Daemon/runtime agent + frontend comm deltas | Separate per-notebook Automerge doc synced via frame `0x09` |
 | CommentsDoc (notebook comments) | Frontend WASM + daemon | Durable sidecar per-notebook Automerge doc synced via frame `0x0a`; daemon persists to disk and validates change actor labels at ingress, stripping writes from scopes without comment authority |
+| BokehSessionDoc (one per Bokeh session and epoch) | Runtime agent (kernel actor) + frontend property writes | Synced via frame `0x0b` with a per-session header; the runtime agent owns the authoritative replica and the room keeps a hub replica (`bokeh_session/`). Peer frames pass epoch, write-permission, actor-label and content checks; a refusal resets that peer's sync state and sends `SessionControl::BokehSessionResync`. Foreign-won properties go to the kernel as `ModelChanged` patch requests. Data events and Python messages are `NotebookBroadcast::BokehSessionEvents`; RuntimeStateDoc `bokeh_sessions/` holds topology, status, epoch and document identity |
 
 ## RuntimeStateDoc
 

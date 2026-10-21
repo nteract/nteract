@@ -1570,6 +1570,8 @@ pub struct NotebookRoom {
     /// Per-notebook CommsDoc handle — widget comm state keyed by comm_id.
     /// RuntimeStateDoc remains the topology/membership source of truth.
     pub comms: runtime_doc::CommsDocHandle,
+    /// Hub replicas of the live Bokeh session documents (frame `0x0b`).
+    pub(crate) bokeh_sessions: Arc<crate::bokeh_session::hub::BokehSessionHub>,
     /// Per-notebook CommentsDoc handle for authored comment threads.
     pub comments: comments_doc::CommentsDocHandle,
     /// Disk-backed sidecar store for CommentsDoc persistence.
@@ -2276,6 +2278,7 @@ impl NotebookRoom {
             trusted_packages,
             state,
             comms,
+            bokeh_sessions: Arc::default(),
             comments,
             comments_store,
             runtime_agent_handle: Arc::new(Mutex::new(None)),

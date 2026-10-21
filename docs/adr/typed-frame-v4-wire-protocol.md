@@ -83,6 +83,7 @@ The fact that the same protocol-version preamble gates two different framing rul
 | `0x08` | `PutBlob` | Framed binary (see Decision 6) | client → daemon |
 | `0x09` | `CommsDocSync` | Binary, raw `automerge::sync::Message` bytes (`CommsDoc`) | bidirectional |
 | `0x0a` | `CommentsDocSync` | Binary, raw `automerge::sync::Message` bytes (`CommentsDoc`) | bidirectional |
+| `0x0b` | `BokehSessionDocSync` | `u32 header_len` + JSON `BokehSessionFrameHeader {session_id, epoch}` + `automerge::sync::Message` bytes (`BokehSessionDoc`) | bidirectional, gated by `ProtocolCapabilities::bokeh_session_doc_sync`; a peer subscribes by sending a frame, and refused writes yield a `bokeh_session_resync` session-control message |
 
 ### Direction is policy, not encoding
 
@@ -118,6 +119,7 @@ Every frame type has a hard cap (reject) and a soft warn threshold (log, continu
 | `RuntimeStateSync` | 64 MiB | 16 MiB | Snapshots of `RuntimeStateDoc` with output manifests |
 | `CommsDocSync` | 64 MiB | 16 MiB | Mutable widget comm state snapshots and sync deltas |
 | `CommentsDocSync` | 64 MiB | 16 MiB | Notebook comments with inline text and resolved thread state |
+| `BokehSessionDocSync` | 16 MiB | 1 MiB | One Bokeh session document; values over 1 KiB (256 B for arrays) and column data live in the blob store, so full syncs measured 7 to 21 KB |
 | `PoolStateSync` | 1 MiB | 256 KiB | Daemon pool state is small (counts, errors, env paths) |
 | `SessionControl` | 1 MiB | 256 KiB | Tiny readiness JSON |
 | `PutBlob` | 32 MiB | 8 MiB | Single-frame blob upload ceiling |
@@ -207,7 +209,7 @@ The first frame after the preamble is a JSON `Handshake`, length-prefixed but **
 |---------|---------|------------------------|
 | `Pool` | Pool IPC | Untyped JSON request/response |
 | `SettingsSync` | Global settings doc | Untyped binary Automerge sync |
-| `NotebookSync` | Per-notebook room | Typed frames (0x00 through 0x0a) |
+| `NotebookSync` | Per-notebook room | Typed frames (0x00 through 0x0b) |
 | `OpenNotebook` | Per-notebook room from file path | Typed frames |
 | `CreateNotebook` | New untitled room | Typed frames |
 | `OpenHostedNotebook` | Daemon-mediated hosted cloud room bridge | Typed frames |

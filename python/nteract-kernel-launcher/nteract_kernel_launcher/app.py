@@ -36,68 +36,28 @@ from traitlets import List, Type, Unicode
 from nteract_kernel_launcher._bokeh_session import (
     BOKEH_SESSION_SCHEMA_VERSION,
     BokehBuffer,
+    BokehDelta,
     BokehPatchApplyError,
-    BokehSerialization,
-    BokehServerEvent,
-    StaleBokehRevisionError,
     session_registry,
 )
 from nteract_kernel_launcher.transport import ReliableIOPubMixin
 
 _BOKEH_PATCH_REQUEST = "nteract_bokeh_patch_request"
 _BOKEH_PATCH_REPLY = "nteract_bokeh_patch_reply"
-_BOKEH_CHECKPOINT_REQUEST = "nteract_bokeh_checkpoint_request"
-_BOKEH_CHECKPOINT_REPLY = "nteract_bokeh_checkpoint_reply"
+_BOKEH_FOLD_REQUEST = "nteract_bokeh_fold_request"
+_BOKEH_FOLD_REPLY = "nteract_bokeh_fold_reply"
 _BOKEH_CLOSE_REQUEST = "nteract_bokeh_close_request"
 _BOKEH_CLOSE_REPLY = "nteract_bokeh_close_reply"
-_BOKEH_EVENT = "nteract_bokeh_event"
+_BOKEH_DELTA = "nteract_bokeh_delta"
 
 
-def _wire_serialization(
-    serialized: BokehSerialization | None,
-    *,
-    content_key: str,
-    buffer_offset: int = 0,
-) -> tuple[dict[str, Any] | None, list[bytes]]:
-    if serialized is None:
-        return None, []
-    descriptors = serialized.buffer_descriptors()
-    for descriptor in descriptors:
-        descriptor["buffer_index"] += buffer_offset
-    return (
-        {content_key: serialized.content, "buffers": descriptors},
-        [buffer.data for buffer in serialized.buffers],
-    )
-
-
-def _wire_bokeh_event(event: BokehServerEvent) -> tuple[dict[str, Any], list[bytes]]:
-    client_patch, client_buffers = _wire_serialization(
-        event.client_patch,
-        content_key="patch",
-    )
-    server_patch, server_buffers = _wire_serialization(
-        event.server_patch,
-        content_key="patch",
-        buffer_offset=len(client_buffers),
-    )
-    checkpoint, checkpoint_buffers = _wire_serialization(
-        event.checkpoint,
-        content_key="document",
-        buffer_offset=len(client_buffers) + len(server_buffers),
-    )
-    return (
-        {
-            "schema_version": BOKEH_SESSION_SCHEMA_VERSION,
-            "session_id": event.session_id,
-            "transaction_id": event.transaction_id,
-            "base_revision": event.base_revision,
-            "revision": event.revision,
-            "client_patch": client_patch,
-            "server_patch": server_patch,
-            "checkpoint": checkpoint,
-        },
-        [*client_buffers, *server_buffers, *checkpoint_buffers],
-    )
+def _wire_bokeh_delta(delta: BokehDelta) -> tuple[dict[str, Any], list[bytes]]:
+    content = {
+        "schema_version": BOKEH_SESSION_SCHEMA_VERSION,
+        **delta.content(),
+        "buffers": [buffer.descriptor(index) for index, buffer in enumerate(delta.buffers)],
+    }
+    return content, [buffer.data for buffer in delta.buffers]
 
 
 def _request_buffers(parent: dict[str, Any], content: dict[str, Any]) -> list[BokehBuffer]:
@@ -241,61 +201,53 @@ class NteractKernel(IPythonKernel):
     msg_types = [
         *IPythonKernel.msg_types,
         _BOKEH_PATCH_REQUEST,
-        _BOKEH_CHECKPOINT_REQUEST,
+        _BOKEH_FOLD_REQUEST,
         _BOKEH_CLOSE_REQUEST,
     ]
 
     def __init__(self, *args, **kwargs):
         self._bokeh_event_lock = threading.Lock()
-        self._bokeh_event_queue: deque[BokehServerEvent] = deque()
-        self._bokeh_event_drain_scheduled = False
+        self._bokeh_event_queue: deque[BokehDelta] = deque()
         super().__init__(*args, **kwargs)
         session_registry.set_event_sink(self._enqueue_bokeh_event)
 
-    def _enqueue_bokeh_event(self, event: BokehServerEvent) -> None:
+    def _enqueue_bokeh_event(self, delta: BokehDelta) -> None:
         with self._bokeh_event_lock:
-            self._bokeh_event_queue.append(event)
-            if self._bokeh_event_drain_scheduled:
-                return
-            self._bokeh_event_drain_scheduled = True
-        try:
-            self.io_loop.add_callback(self._drain_bokeh_events)
-        except Exception:
-            with self._bokeh_event_lock:
-                self._bokeh_event_drain_scheduled = False
-            self.log.exception("Could not schedule Bokeh session event publication")
+            self._bokeh_event_queue.append(delta)
+        self._publish_bokeh_events()
 
-    def _drain_bokeh_events(self) -> None:
-        while True:
-            with self._bokeh_event_lock:
-                if not self._bokeh_event_queue:
-                    self._bokeh_event_drain_scheduled = False
+    def _publish_bokeh_events(self) -> None:
+        """Send queued deltas in order from the calling thread.
+
+        Scheduling this on the kernel IOLoop would hold every update until a
+        running cell finishes. The IOPub socket hands messages to ipykernel's
+        IOPub thread, which is how ``print`` streams during a cell.
+        """
+        with self._bokeh_event_lock:
+            while self._bokeh_event_queue:
+                delta = self._bokeh_event_queue[0]
+                try:
+                    content, buffers = _wire_bokeh_delta(delta)
+                    wire_buffers: list[bytes | memoryview[bytes]] = list(buffers)
+                except Exception:
+                    # Deterministic for this delta; drop it rather than wedge the queue.
+                    self._bokeh_event_queue.popleft()
+                    self.log.exception("Could not serialize Bokeh session delta; dropping it")
+                    continue
+                try:
+                    self.session.send(
+                        self.iopub_socket,
+                        _BOKEH_DELTA,
+                        content,
+                        parent=None,
+                        ident=self._topic(_BOKEH_DELTA),
+                        buffers=wire_buffers,
+                    )
+                except Exception:
+                    # Kept queued; the next delta retries it first.
+                    self.log.exception("Could not publish Bokeh session delta")
                     return
-                event = self._bokeh_event_queue.popleft()
-
-            try:
-                content, buffers = _wire_bokeh_event(event)
-                wire_buffers: list[bytes | memoryview[bytes]] = list(buffers)
-            except Exception:
-                # Serialization failures are deterministic for this event. Drop
-                # it so one malformed payload cannot wedge the publication loop.
-                self.log.exception("Could not serialize Bokeh session event; dropping event")
-                continue
-            try:
-                self.session.send(
-                    self.iopub_socket,
-                    _BOKEH_EVENT,
-                    content,
-                    parent=None,
-                    ident=self._topic(_BOKEH_EVENT),
-                    buffers=wire_buffers,
-                )
-            except Exception:
-                with self._bokeh_event_lock:
-                    self._bokeh_event_queue.appendleft(event)
-                    self._bokeh_event_drain_scheduled = False
-                self.log.exception("Could not publish Bokeh session event")
-                return
+                self._bokeh_event_queue.popleft()
 
     def nteract_bokeh_patch_request(self, stream, ident, parent):
         content = parent.get("content", {})
@@ -303,6 +255,8 @@ class NteractKernel(IPythonKernel):
         transaction_id = content.get("transaction_id") or str(uuid.uuid4())
         stdout = StringIO()
         stderr = StringIO()
+        session = None
+        patch = None
 
         try:
             if content.get("schema_version") != BOKEH_SESSION_SCHEMA_VERSION:
@@ -311,17 +265,13 @@ class NteractKernel(IPythonKernel):
                 raise TypeError("Bokeh patch request requires session_id")
             if not isinstance(transaction_id, str):
                 raise TypeError("Bokeh patch request requires transaction_id")
-            base_revision = content.get("base_revision")
             patch = content.get("patch")
-            if type(base_revision) is not int or not isinstance(patch, dict):
-                raise TypeError(
-                    "Bokeh patch request requires integer base_revision and object patch"
-                )
-            buffers = _request_buffers(parent, content)
+            if not isinstance(patch, dict):
+                raise TypeError("Bokeh patch request requires an object patch")
             session = session_registry.require(session_id)
+            buffers = _request_buffers(parent, content)
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 result = session.apply_patch(
-                    base_revision=base_revision,
                     patch=patch,
                     buffers=buffers,
                     transaction_id=transaction_id,
@@ -331,17 +281,6 @@ class NteractKernel(IPythonKernel):
                 "schema_version": BOKEH_SESSION_SCHEMA_VERSION,
                 "session_id": session_id,
                 "transaction_id": result.transaction_id,
-                "revision": result.revision,
-                "stdout": stdout.getvalue(),
-                "stderr": stderr.getvalue(),
-            }
-        except StaleBokehRevisionError as exc:
-            reply = {
-                "status": "stale",
-                "schema_version": BOKEH_SESSION_SCHEMA_VERSION,
-                "session_id": session_id,
-                "transaction_id": transaction_id,
-                "revision": exc.actual,
                 "stdout": stdout.getvalue(),
                 "stderr": stderr.getvalue(),
             }
@@ -351,12 +290,17 @@ class NteractKernel(IPythonKernel):
                 "schema_version": BOKEH_SESSION_SCHEMA_VERSION,
                 "session_id": session_id,
                 "transaction_id": exc.transaction_id,
-                "revision": exc.revision,
                 "stdout": stdout.getvalue(),
                 "stderr": stderr.getvalue(),
                 "error": _error_payload(exc.__cause__ or exc),
             }
         except Exception as exc:  # noqa: BLE001
+            if session is not None and isinstance(patch, dict) and isinstance(transaction_id, str):
+                # The peers already hold the values this patch asked for.
+                try:
+                    session.correct(patch, transaction_id)
+                except Exception:  # noqa: BLE001
+                    self.log.exception("Could not publish Bokeh corrections for %s", session_id)
             reply = {
                 "status": "error",
                 "schema_version": BOKEH_SESSION_SCHEMA_VERSION,
@@ -375,26 +319,30 @@ class NteractKernel(IPythonKernel):
             reply,
         )
 
-    def nteract_bokeh_checkpoint_request(self, stream, ident, parent):
+    def nteract_bokeh_fold_request(self, stream, ident, parent):
+        """Fold sources on demand; the folds arrive as a delta with this transaction id."""
         content = parent.get("content", {})
         session_id = content.get("session_id")
         transaction_id = content.get("transaction_id") or str(uuid.uuid4())
-        reply_buffers: list[bytes] = []
         try:
             if content.get("schema_version") != BOKEH_SESSION_SCHEMA_VERSION:
-                raise ValueError("Unsupported Bokeh checkpoint schema version")
+                raise ValueError("Unsupported Bokeh fold schema version")
             if not isinstance(session_id, str):
-                raise TypeError("Bokeh checkpoint request requires session_id")
+                raise TypeError("Bokeh fold request requires session_id")
+            source_ids = content.get("source_ids")
+            if source_ids is not None and (
+                not isinstance(source_ids, list)
+                or not all(isinstance(source_id, str) for source_id in source_ids)
+            ):
+                raise TypeError("Bokeh fold request source_ids must be a list of strings")
             session = session_registry.require(session_id)
-            revision, snapshot = session.checkpoint()
-            checkpoint, reply_buffers = _wire_serialization(snapshot, content_key="document")
+            folded = session.fold(source_ids, transaction_id=transaction_id)
             reply = {
                 "status": "ok",
                 "schema_version": BOKEH_SESSION_SCHEMA_VERSION,
                 "session_id": session_id,
                 "transaction_id": transaction_id,
-                "revision": revision,
-                "checkpoint": checkpoint,
+                "source_ids": folded,
             }
         except Exception as exc:  # noqa: BLE001
             reply = {
@@ -404,14 +352,7 @@ class NteractKernel(IPythonKernel):
                 "transaction_id": transaction_id,
                 "error": _error_payload(exc),
             }
-        _send_bokeh_reply(
-            self,
-            stream,
-            ident,
-            _BOKEH_CHECKPOINT_REPLY,
-            reply,
-            reply_buffers,
-        )
+        _send_bokeh_reply(self, stream, ident, _BOKEH_FOLD_REPLY, reply)
 
     def nteract_bokeh_close_request(self, stream, ident, parent):
         content = parent.get("content", {})

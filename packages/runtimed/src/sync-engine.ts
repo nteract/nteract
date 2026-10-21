@@ -35,9 +35,9 @@ import {
 } from "rxjs";
 
 import {
-  type BokehSessionPatchBroadcast,
+  type BokehSessionEventsBroadcast,
   type CommBroadcast,
-  isBokehSessionPatchBroadcast,
+  isBokehSessionEventsBroadcast,
   isCommBroadcast,
 } from "./broadcast-types";
 import { type CellChangeset, mergeChangesets } from "./cell-changeset";
@@ -99,6 +99,13 @@ const nullLogger: SyncEngineLogger = {
   warn() {},
   error() {},
 };
+
+/** `SessionControl::BokehSessionResync`, surfaced by WASM as a frame event. */
+export interface BokehSessionResync {
+  session_id: string;
+  epoch: number;
+  reason: string;
+}
 
 export interface PresenceHeartbeatOptions {
   /** Interval in milliseconds between idle presence heartbeats. */
@@ -401,8 +408,24 @@ export class SyncEngine {
   /** Custom comm messages (buttons, model.send()). */
   readonly commBroadcasts$: Observable<CommBroadcast>;
 
-  /** Ordered Bokeh document transactions projected by the runtime. */
-  readonly bokehSessionPatchBroadcasts$: Observable<BokehSessionPatchBroadcast>;
+  /** Bokeh data events and Python messages (one-off, not document state). */
+  readonly bokehSessionEventsBroadcasts$: Observable<BokehSessionEventsBroadcast>;
+
+  /**
+   * Raw inbound `0x0b` BokehSessionDocSync frames, type byte included.
+   * WASM keeps no session replicas in the notebook handle, so the host routes
+   * these to its per-session `BokehSessionDocHandle`s by header.
+   */
+  readonly bokehSessionFrames$: Observable<Uint8Array>;
+
+  /** The daemon refused this peer's session-document writes and reset its sync state. */
+  readonly bokehSessionResyncs$: Observable<BokehSessionResync>;
+
+  /**
+   * A new connection (`resetForBootstrap`): the daemon holds no sync state
+   * for this peer's sessions, so every subscription must start over.
+   */
+  readonly bokehSessionsReset$: Observable<void>;
 
   /**
    * Comm state projection from RuntimeStateDoc topology + CommsDoc state.
@@ -505,6 +528,9 @@ export class SyncEngine {
   private readonly _notebookDocChanged$ = new Subject<void>();
   private readonly _notebookDocFlushDelivered$ = new ReplaySubject<void>(1);
   private readonly _notebookSyncApplied$ = new Subject<void>();
+  private readonly _bokehSessionFrames$ = new Subject<Uint8Array>();
+  private readonly _bokehSessionResyncs$ = new Subject<BokehSessionResync>();
+  private readonly _bokehSessionsReset$ = new Subject<void>();
 
   constructor(opts: SyncEngineOptions) {
     this.opts = {
@@ -534,7 +560,12 @@ export class SyncEngine {
 
     // Typed broadcast sub-observables (derived from broadcasts$)
     this.commBroadcasts$ = this.broadcasts$.pipe(filter(isCommBroadcast));
-    this.bokehSessionPatchBroadcasts$ = this.broadcasts$.pipe(filter(isBokehSessionPatchBroadcast));
+    this.bokehSessionEventsBroadcasts$ = this.broadcasts$.pipe(
+      filter(isBokehSessionEventsBroadcast),
+    );
+    this.bokehSessionFrames$ = this._bokehSessionFrames$.asObservable();
+    this.bokehSessionResyncs$ = this._bokehSessionResyncs$.asObservable();
+    this.bokehSessionsReset$ = this._bokehSessionsReset$.asObservable();
 
     // Queue-only projection derived from the execution view changeset.
     this.executionQueue$ = this.executionViewChanges$.pipe(
@@ -598,6 +629,10 @@ export class SyncEngine {
     const frameEvents$ = this.frameIn$.pipe(
       mergeMap((payload) => {
         try {
+          if (payload[0] === FrameType.BOKEH_SESSION_DOC_SYNC) {
+            this._bokehSessionFrames$.next(new Uint8Array(payload));
+            return EMPTY;
+          }
           const handle = this.opts.getHandle();
           if (!handle) {
             log.debug("[sync-engine] frame dropped: no handle");
@@ -644,6 +679,16 @@ export class SyncEngine {
           } else {
             log.debug(`[sync-engine] session status: ${formatSessionStatus(next)}`);
           }
+        }),
+    );
+
+    sub.add(
+      frameEvents$
+        .pipe(filter((event) => event.type === "bokeh_session_resync"))
+        .subscribe((event) => {
+          const { session_id, epoch, reason } = event as unknown as BokehSessionResync;
+          log.debug(`[sync-engine] Bokeh session ${session_id} resync: ${reason}`);
+          this._bokehSessionResyncs$.next({ session_id, epoch, reason });
         }),
     );
 
@@ -1692,6 +1737,7 @@ export class SyncEngine {
       runtime_state: "pending",
       initial_load: { phase: "not_needed" },
     });
+    this._bokehSessionsReset$.next();
   }
 }
 

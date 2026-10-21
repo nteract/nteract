@@ -1,5 +1,7 @@
 import { setMarkdownProjectionProjector } from "@/lib/markdown-projection";
 import init, {
+  bokeh_session_frame_header,
+  BokehSessionDocHandle,
   encode_heartbeat_presence,
   NotebookHandle,
   project_markdown_json,
@@ -19,4 +21,9 @@ export function ensureNotebookWasmReady(): Promise<void> {
   return notebookWasmReady;
 }
 
-export { encode_heartbeat_presence, NotebookHandle };
+export {
+  bokeh_session_frame_header,
+  BokehSessionDocHandle,
+  encode_heartbeat_presence,
+  NotebookHandle,
+};

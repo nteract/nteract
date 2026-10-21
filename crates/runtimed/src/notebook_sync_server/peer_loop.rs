@@ -1,4 +1,5 @@
 use super::blob_upload::{enqueue_put_blob, spawn_put_blob_worker, MultipartUploadState};
+use super::peer_bokeh_sync::{forward_bokeh_session_change, handle_bokeh_session_frame};
 use super::peer_comments_sync::{
     forward_comments_doc_broadcast, handle_comments_doc_frame, send_initial_comments_doc_sync,
 };
@@ -77,6 +78,7 @@ where
     let mut presence_rx = room.broadcasts.presence_tx.subscribe();
     let mut state_changed_rx = room.state.subscribe();
     let mut comms_changed_rx = room.comms.subscribe();
+    let mut bokeh_changed_rx = room.bokeh_sessions.subscribe();
     let mut comments_changed_rx = room.comments.subscribe();
     let mut hosted_bridge_status_rx = room.broadcasts.hosted_bridge_status_tx.subscribe();
 
@@ -134,6 +136,8 @@ where
 
     let mut state_peer_state = sync::State::new();
     let mut comms_peer_state = sync::State::new();
+    // Sessions this peer subscribed to by sending a frame for them.
+    let mut bokeh_peer_states = crate::bokeh_session::store::BokehSyncStates::new();
     let mut comments_peer_state = sync::State::new();
     let mut pool_peer_state = sync::State::new();
     let mut persisted_execution_records: std::collections::HashMap<
@@ -411,6 +415,16 @@ where
                                 }
                             }
 
+                            NotebookFrameType::BokehSessionDocSync => {
+                                handle_bokeh_session_frame(
+                                    room,
+                                    &mut bokeh_peer_states,
+                                    &peer_writer,
+                                    &frame.payload,
+                                    connection_identity,
+                                )?;
+                            }
+
                             NotebookFrameType::Response
                             | NotebookFrameType::Broadcast
                             | NotebookFrameType::SessionControl => {
@@ -474,6 +488,19 @@ where
                 )
                 .await?
                 {
+                    return Ok(());
+                }
+            }
+
+            // A Bokeh session document changed; push it if subscribed.
+            result = bokeh_changed_rx.recv() => {
+                if !forward_bokeh_session_change(
+                    room,
+                    peer_id,
+                    &mut bokeh_peer_states,
+                    &peer_writer,
+                    result,
+                )? {
                     return Ok(());
                 }
             }

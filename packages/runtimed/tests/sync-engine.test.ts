@@ -383,6 +383,70 @@ describe("SyncEngine", () => {
       engine.stop();
     });
 
+    it("routes raw Bokeh session frames past the notebook handle", () => {
+      const engine = createEngine();
+      engine.start();
+      const frames: Uint8Array[] = [];
+      engine.bokehSessionFrames$.subscribe((frame) => frames.push(frame));
+
+      transport.deliver(Array.from([FrameType.BOKEH_SESSION_DOC_SYNC, 1, 2]));
+
+      expect(frames).toEqual([new Uint8Array([FrameType.BOKEH_SESSION_DOC_SYNC, 1, 2])]);
+      expect(handle.receive_frame).not.toHaveBeenCalled();
+      engine.stop();
+    });
+
+    it("asks Bokeh session subscribers to start over on a new bootstrap", () => {
+      const engine = createEngine();
+      engine.start();
+      const resets = vi.fn();
+      engine.bokehSessionsReset$.subscribe(resets);
+
+      engine.resetForBootstrap();
+
+      expect(resets).toHaveBeenCalledOnce();
+      engine.stop();
+    });
+
+    it("surfaces Bokeh session resyncs from session control", () => {
+      vi.mocked(handle.receive_frame).mockReturnValueOnce([
+        {
+          type: "bokeh_session_resync",
+          session_id: "session-1",
+          epoch: 4,
+          reason: "foreign actor",
+        } as unknown as FrameEvent,
+      ]);
+      const engine = createEngine();
+      engine.start();
+      const resyncs: unknown[] = [];
+      engine.bokehSessionResyncs$.subscribe((resync) => resyncs.push(resync));
+
+      transport.deliver(Array.from([FrameType.SESSION_CONTROL, 1]));
+
+      expect(resyncs).toEqual([{ session_id: "session-1", epoch: 4, reason: "foreign actor" }]);
+      engine.stop();
+    });
+
+    it("narrows Bokeh session events broadcasts", () => {
+      const events = { session_id: "session-1", epoch: 1, transaction_id: "tx-1" };
+      vi.mocked(handle.receive_frame)
+        .mockReturnValueOnce([broadcastEvent({ event: "bokeh_session_events", events })])
+        .mockReturnValueOnce([broadcastEvent({ event: "comm" })]);
+      const engine = createEngine();
+      engine.start();
+      const received: unknown[] = [];
+      engine.bokehSessionEventsBroadcasts$.subscribe((broadcast) =>
+        received.push(broadcast.events),
+      );
+
+      transport.deliver(Array.from([FrameType.BROADCAST, 1]));
+      transport.deliver(Array.from([FrameType.BROADCAST, 2]));
+
+      expect(received).toEqual([events]);
+      engine.stop();
+    });
+
     it("resetForBootstrap emits a pending status so stale ready doesn't leak across reconnect", () => {
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValueOnce([
         sessionStatusEvent(interactiveStatus()),

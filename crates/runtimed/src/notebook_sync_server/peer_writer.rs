@@ -40,6 +40,7 @@ impl PeerEgressLane {
             | NotebookFrameType::RuntimeStateSync
             | NotebookFrameType::CommsDocSync
             | NotebookFrameType::CommentsDocSync
+            | NotebookFrameType::BokehSessionDocSync
             | NotebookFrameType::PoolStateSync
             | NotebookFrameType::SessionControl
             | NotebookFrameType::PutBlob => Self::Reliable,
@@ -467,6 +468,7 @@ fn request_allowed_for_scope(
         request,
         notebook_protocol::protocol::NotebookRequest::GetDocBytes {}
             | notebook_protocol::protocol::NotebookRequest::AcknowledgeNotebookSync {}
+            | notebook_protocol::protocol::NotebookRequest::GetBokehSessionData { .. }
     ) || match request_required_scope(request) {
         RequestRequiredScope::NotebookWrite => connection_scope.allows_notebook_write(),
         RequestRequiredScope::BlobUpload => connection_scope.allows_local_blob_upload(),
@@ -506,6 +508,7 @@ fn request_required_scope(
         | NotebookRequest::ApproveProjectEnvironment { .. } => RequestRequiredScope::Owner,
         NotebookRequest::SendComm { .. }
         | NotebookRequest::ApplyBokehSessionPatch { .. }
+        | NotebookRequest::GetBokehSessionData { .. }
         | NotebookRequest::CloneAsEphemeral { .. }
         | NotebookRequest::AcknowledgeNotebookSync {}
         | NotebookRequest::GetDocBytes {} => RequestRequiredScope::NotebookWrite,
@@ -787,6 +790,10 @@ mod tests {
         );
         assert_eq!(
             PeerEgressLane::classify(NotebookFrameType::CommsDocSync),
+            PeerEgressLane::Reliable
+        );
+        assert_eq!(
+            PeerEgressLane::classify(NotebookFrameType::BokehSessionDocSync),
             PeerEgressLane::Reliable
         );
         assert_eq!(

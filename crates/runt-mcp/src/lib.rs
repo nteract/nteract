@@ -22,6 +22,7 @@ use rmcp::{ErrorData as McpError, ServerHandler};
 use tokio::sync::RwLock;
 
 pub mod attachments;
+mod bokeh;
 pub mod cli;
 pub mod cloud;
 pub mod daemon_watch;

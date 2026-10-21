@@ -177,19 +177,27 @@ pub async fn execute_and_wait(
     // Execute paths (and `and_run` variants) always use preview mode —
     // agents that need unabridged output should call `get_cell(full_output=true)`
     // afterwards rather than paying for it on every run.
-    let ctx = output_resolver::ResolveCtx {
-        blob_base_url: blob_base_url.as_deref(),
-        blob_store_path: blob_store_path.as_deref(),
-        comms: comms.as_ref(),
-        execution_cell_map: Some(&execution_cell_map),
-        ..Default::default()
-    };
     let output_manifests = if !output_manifests.is_empty() {
         output_manifests
     } else {
         // Outputs live in RuntimeStateDoc under execution_id/output_id. Fetch
         // via the explicit lookup — CellSnapshot no longer carries them.
         handle.get_cell_outputs(cell_id).unwrap_or_default()
+    };
+    let bokeh_sessions = crate::bokeh::session_views(
+        handle,
+        &output_manifests,
+        blob_base_url.as_deref(),
+        blob_store_path.as_deref(),
+    )
+    .await;
+    let ctx = output_resolver::ResolveCtx {
+        blob_base_url: blob_base_url.as_deref(),
+        blob_store_path: blob_store_path.as_deref(),
+        comms: comms.as_ref(),
+        bokeh_sessions: Some(&bokeh_sessions),
+        execution_cell_map: Some(&execution_cell_map),
+        ..Default::default()
     };
 
     let (outputs, resolved_outputs_by_manifest) = if output_manifests.is_empty() {

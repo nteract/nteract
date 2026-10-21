@@ -46,6 +46,9 @@ pub struct ResolveCtx<'a> {
     pub blob_store_path: Option<&'a std::path::Path>,
     /// Widget state for comm-view synthesis on display_data outputs.
     pub comms: Option<&'a HashMap<String, CommDocEntry>>,
+    /// Live Bokeh session documents by output id. Session outputs without
+    /// an entry are summarized from the document saved in their payload.
+    pub bokeh_sessions: Option<&'a crate::bokeh_summary::BokehSessionViews>,
     /// Whether to render the blob-preview marker (default) or fetch the
     /// full blob text. See [`OutputLength`].
     pub length: OutputLength,
@@ -709,6 +712,7 @@ pub async fn resolve_output_for_llm(
                 &blob_base_url,
                 &blob_store_path,
                 ctx.comms,
+                ctx.bokeh_sessions,
             )
             .await
         }
@@ -919,6 +923,7 @@ async fn resolve_display_for_llm(
     blob_base_url: &Option<String>,
     blob_store_path: &Option<PathBuf>,
     comms: Option<&HashMap<String, CommDocEntry>>,
+    bokeh_sessions: Option<&crate::bokeh_summary::BokehSessionViews>,
 ) -> Option<Output> {
     let data_map = manifest.get("data")?.as_object()?;
 
@@ -945,6 +950,33 @@ async fn resolve_display_for_llm(
         .await
         {
             output_data.insert("text/llm+plain".to_string(), content);
+        }
+    }
+
+    // Bokeh sessions: prefer the live session document; the payload (often a
+    // large blob) is fetched only for its saved `document`.
+    if !output_data.contains_key("text/llm+plain") {
+        if let Some(payload_ref) = data_map.get(crate::bokeh_summary::BOKEH_SESSION_MIME) {
+            let view = manifest
+                .get("output_id")
+                .and_then(Value::as_str)
+                .and_then(|id| bokeh_sessions?.get(id));
+            let mut summary = view.and_then(crate::bokeh_summary::summarize_bokeh_session);
+            if summary.is_none() {
+                if let Some(DataValue::Json(payload)) = resolve_content_ref(
+                    payload_ref,
+                    blob_base_url,
+                    blob_store_path,
+                    Some(crate::bokeh_summary::BOKEH_SESSION_MIME),
+                )
+                .await
+                {
+                    summary = crate::bokeh_summary::summarize_bokeh_payload(&payload, view);
+                }
+            }
+            if let Some(summary) = summary {
+                output_data.insert("text/llm+plain".to_string(), DataValue::Text(summary));
+            }
         }
     }
 
