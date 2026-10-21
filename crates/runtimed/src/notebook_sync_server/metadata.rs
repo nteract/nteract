@@ -977,6 +977,16 @@ pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
         }
     }
 
+    if launched.local_environment.is_some() {
+        if let Err(error) = room
+            .state
+            .with_doc(|sd| sd.set_env_sync(true, &[], &[], false, false))
+        {
+            warn!("[runtime-state] {}", error);
+        }
+        return;
+    }
+
     // Check if we're tracking inline deps or deno config
     let is_tracking = launched.uv_deps.is_some()
         || launched.conda_deps.is_some()
@@ -1429,6 +1439,17 @@ pub(crate) async fn capture_env_into_metadata(
     env_id: &str,
 ) -> bool {
     let mut doc = room.doc.write().await;
+    let apply_heads = room
+        .local_environment_selection
+        .observed_heads()
+        .filter(|_| room.local_environment_selection.is_preparing());
+    if let Some(heads) = apply_heads.as_ref() {
+        if crate::requests::guarded::validate_dependencies_unchanged_since_observed(&doc, heads)
+            .is_err()
+        {
+            return false;
+        }
+    }
     let rollback_actor = doc.get_actor_id();
     let rollback_snapshot = doc.save();
     let heads = doc.get_heads();
@@ -1499,6 +1520,10 @@ pub(crate) async fn capture_env_into_metadata(
             return false;
         }
     }
+    if changed && apply_heads.is_some() {
+        room.local_environment_selection
+            .advance_capture_heads(&mut doc);
+    }
     drop(doc);
     if changed {
         // Notify the autosave debouncer so the capture lands in the .ipynb
@@ -1559,6 +1584,9 @@ pub(crate) async fn flush_launched_deps_to_metadata(
     launched: &LaunchedEnvConfig,
     runtime: CapturedEnvRuntime,
 ) -> bool {
+    if launched.local_environment.is_some() {
+        return false;
+    }
     let Some(new_deps) = effective_user_deps_from_launched(launched, runtime) else {
         return false;
     };
@@ -2452,6 +2480,12 @@ pub(crate) async fn reset_starting_state_with_outcome<'a>(
     expected_runtime_agent_id: Option<&str>,
     outcome: ResetOutcome<'a>,
 ) {
+    if room
+        .local_environment_selection
+        .preserves_agent(expected_runtime_agent_id)
+    {
+        return;
+    }
     // For guarded resets (post-spawn error paths), atomically check-and-clear
     // provenance AND capture the generation counter in a single write lock scope.
     // Clearing provenance to None immediately blocks late-arriving stale agents
@@ -2518,6 +2552,7 @@ pub(crate) async fn reset_starting_state_with_outcome<'a>(
                     }
                 }
                 sd.set_prewarmed_packages(&[])?;
+                sd.set_local_environment_identity("", "", None)?;
                 sd.clear_env_progress()?;
                 Ok(())
             }) {
@@ -2598,6 +2633,9 @@ pub(crate) fn publish_environment_launch_error(
     reason: Option<KernelErrorReason>,
     details: &str,
 ) {
+    if room.local_environment_selection.is_preparing() {
+        return;
+    }
     let published = room.commit_unless_launch_cancelled(|| {
         room.state.with_doc(|sd| {
             sd.set_lifecycle_with_error_details(&RuntimeLifecycle::Error, reason, Some(details))?;
@@ -3162,6 +3200,61 @@ async fn auto_launch_kernel_attempt(
             attempt.release_without_cooldown();
             return None;
         }
+    }
+
+    let applied = if room
+        .doc
+        .read()
+        .await
+        .get_metadata_snapshot()
+        .and_then(|metadata| metadata.detect_runtime())
+        .as_deref()
+        == Some("deno")
+    {
+        None
+    } else {
+        room.local_environment_selection.snapshot().applied
+    };
+    if let Some(environment) = applied {
+        let environment = match daemon
+            .local_conda_environments
+            .resolve_prefix(environment.prefix)
+            .await
+        {
+            Ok(environment) => environment,
+            Err(error) => {
+                reset_auto_launch_error_with_trust_check(room, None, None, &error).await;
+                return None;
+            }
+        };
+        if crate::requests::guarded::ensure_trusted(room)
+            .await
+            .is_err()
+        {
+            reset_auto_launch_error_with_trust_check(
+                room,
+                None,
+                None,
+                "Trust changed before the selected environment could launch",
+            )
+            .await;
+            return None;
+        }
+        if room.connections.active_peers.load(Ordering::Relaxed) == 0 {
+            return release_attempt_and_readmit_if_peer_waiting(room, attempt).await;
+        }
+        let _ = crate::requests::launch_kernel::handle_admitted(
+            room,
+            &daemon,
+            "auto".into(),
+            notebook_protocol::connection::LaunchSpec::Auto,
+            None,
+            attempt,
+            Some(environment),
+            None,
+        )
+        .await;
+        return None;
     }
 
     // Re-check peers (another race check)
@@ -4617,6 +4710,7 @@ pub(crate) async fn finish_auto_launch_success(
             if let Err(e) = room.state.with_doc(|sd| {
                 sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
                 sd.set_kernel_info(kernel_type, kernel_type, env_source_label)?;
+                sd.set_local_environment_identity("", "", None)?;
                 sd.set_runtime_agent_id(runtime_agent_id)?;
                 sd.set_env_sync(true, &[], &[], false, false)?;
                 Ok(())
@@ -5105,6 +5199,13 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
             }
         }
     };
+
+    if launched.local_environment.is_some() {
+        return NotebookResponse::SyncEnvironmentFailed {
+            error: "Package sync is disabled for a borrowed local environment; install packages externally".into(),
+            needs_restart: false,
+        };
+    }
 
     // For project-backed environments, promote inline deps to the project file.
     // Project envs can't hot-install — they need a kernel restart.

@@ -55,6 +55,8 @@ export interface RelayInfo {
   runtime?: string;
   actorLabel?: string;
   connectionScope?: string;
+  /** Optional daemon feature support; absent older bindings must fail closed. */
+  localEnvironmentSelection?: boolean;
   commentsDocId?: string;
   commentsNotebookRef: CommentsNotebookRef | null;
   protocol: string;

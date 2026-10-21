@@ -1247,9 +1247,52 @@ pub(crate) struct KernelLaunchAttempt {
     source: KernelLaunchSource,
     finished: bool,
     cancel_rx: tokio::sync::watch::Receiver<bool>,
+    preserved_kernel: Option<Box<runtime_doc::KernelState>>,
+    preserved_env_path: Option<PathBuf>,
 }
 
 impl KernelLaunchAttempt {
+    pub(crate) fn preserve_kernel_during_preparation(&mut self) {
+        if self
+            .room
+            .runtime_agent_request_tx
+            .try_lock()
+            .is_ok_and(|tx| tx.is_none())
+        {
+            return;
+        }
+        self.preserved_kernel = self
+            .room
+            .state
+            .read(|sd| sd.read_state().kernel)
+            .ok()
+            .map(Box::new);
+    }
+
+    pub(crate) fn commit_kernel_replacement(
+        &mut self,
+        commit: impl FnOnce() -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let gate = self.room.kernel_launch_gate.lock_state();
+        if gate.in_flight_generation != Some(self.generation)
+            || gate.cancelled_generations.contains(&self.generation)
+        {
+            anyhow::bail!("Kernel launch was cancelled");
+        }
+        commit()?;
+        self.preserved_kernel = None;
+        self.preserved_env_path = None;
+        Ok(())
+    }
+
+    pub(crate) fn preserve_environment_path(&mut self, path: Option<PathBuf>) {
+        self.preserved_env_path = path.clone();
+        *self
+            .room
+            .preparing_kernel_env_path
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = path;
+    }
     pub(crate) fn generation(&self) -> u64 {
         self.generation
     }
@@ -1444,6 +1487,8 @@ impl KernelLaunchAttempt {
             source: KernelLaunchSource::Auto,
             finished: false,
             cancel_rx,
+            preserved_kernel: None,
+            preserved_env_path: None,
         })
     }
 
@@ -1460,6 +1505,60 @@ impl Drop for KernelLaunchAttempt {
         if self.finished {
             return;
         }
+        if let Some(prior) = self.preserved_kernel.take() {
+            if !self.is_cancelled() {
+                if let Some(path) = self.preserved_env_path.take() {
+                    if let Ok(mut current) = self.room.runtime_agent_env_path.try_write() {
+                        *current = Some(path.clone());
+                        *self
+                            .room
+                            .preparing_kernel_env_path
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner()) = None;
+                    } else if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                        let room = self.room.clone();
+                        let generation = self.generation;
+                        handle.spawn(async move {
+                            let mut current = room.runtime_agent_env_path.write().await;
+                            let gate = room.kernel_launch_gate.lock_state();
+                            if gate.admitted_count == generation
+                                && !gate.cancelled_generations.contains(&generation)
+                            {
+                                *current = Some(path.clone());
+                                let mut protected = room
+                                    .preparing_kernel_env_path
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner());
+                                if protected.as_ref() == Some(&path) {
+                                    *protected = None;
+                                }
+                            }
+                        });
+                    }
+                }
+                self.room.commit_unless_launch_cancelled(|| {
+                    self.room.state.with_doc(|sd| {
+                        sd.set_lifecycle_with_error_details(
+                            &prior.lifecycle,
+                            prior
+                                .error_reason
+                                .as_deref()
+                                .and_then(runtime_doc::KernelErrorReason::parse),
+                            prior.error_details.as_deref(),
+                        )?;
+                        sd.set_kernel_info(&prior.name, &prior.language, &prior.env_source)?;
+                        sd.set_runtime_agent_id(&prior.runtime_agent_id)?;
+                        sd.clear_env_progress()?;
+                        sd.set_local_environment_identity(
+                            &prior.environment_id,
+                            &prior.environment_name,
+                            Some(&prior.python_version),
+                        )
+                    })
+                });
+                self.outcome = KernelLaunchOutcome::Released;
+            }
+        }
         if self.is_cancelled() || matches!(self.outcome, KernelLaunchOutcome::Failed) {
             // A request worker can be aborted at any await when its peer
             // disconnects, including after agent provenance, a subprocess, or
@@ -1475,6 +1574,13 @@ impl Drop for KernelLaunchAttempt {
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                 handle.spawn(async move {
                     room.cleanup_abandoned_launch(generation, source).await;
+                    let gate = room.kernel_launch_gate.lock_state();
+                    if gate.admitted_count == generation {
+                        *room
+                            .preparing_kernel_env_path
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner()) = None;
+                    }
                 });
                 return;
             }
@@ -1543,6 +1649,9 @@ pub struct NotebookRoom {
     /// Hosted rooms are cloud-authoritative and must not auto-launch local kernels.
     /// Read via `is_hosted()`; set once via `mark_hosted()` before peers attach.
     pub(crate) hosted: AtomicBool,
+    pub(crate) local_environment_selection:
+        crate::requests::local_environment_selection::LocalEnvironmentSelection,
+    pub(crate) preparing_kernel_env_path: std::sync::Mutex<Option<PathBuf>>,
     /// Latched by eviction (reaper or ShutdownNotebook) after the final
     /// autosave flush, right before legacy sidecar cleanup and file-claim
     /// release hand the path to other daemon processes. Once set,
@@ -1719,6 +1828,7 @@ impl NotebookRoom {
                         None,
                         Some("Kernel launch stopped before completion"),
                     )?;
+                    doc.set_local_environment_identity("", "", None)?;
                 }
                 Ok(())
             }) {
@@ -2270,6 +2380,8 @@ impl NotebookRoom {
             identity: RoomIdentity::new(persist_path),
             connections: RoomConnections::default(),
             hosted: AtomicBool::new(false),
+            local_environment_selection: Default::default(),
+            preparing_kernel_env_path: std::sync::Mutex::new(None),
             evicted: AtomicBool::new(false),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
@@ -2326,6 +2438,8 @@ impl NotebookRoom {
             source: KernelLaunchSource::Auto,
             finished: false,
             cancel_rx,
+            preserved_kernel: None,
+            preserved_env_path: None,
         })
     }
 
@@ -2363,6 +2477,8 @@ impl NotebookRoom {
             source: KernelLaunchSource::Manual,
             finished: false,
             cancel_rx,
+            preserved_kernel: None,
+            preserved_env_path: None,
         })
     }
 
@@ -2429,6 +2545,7 @@ impl NotebookRoom {
         commit_presence();
         if let Err(e) = self.state.with_doc(|sd| {
             commit_state(sd)?;
+            sd.set_local_environment_identity("", "", None)?;
             sd.clear_env_progress()?;
             sd.abort_inflight_executions()?;
             sd.set_queue(None, &[])?;
@@ -2486,6 +2603,7 @@ impl NotebookRoom {
         if let Err(e) = self.state.with_doc(|sd| {
             commit_state(sd)?;
             sd.clear_env_progress()?;
+            sd.set_local_environment_identity("", "", None)?;
             sd.abort_inflight_executions()?;
             sd.set_queue(None, &[])?;
             Ok(())

@@ -10,4 +10,10 @@ export type PendingTrustAction =
       kind: "run_all";
       provenance: GuardedNotebookProvenance;
     }
-  | { kind: "sync_deps"; provenance: DependencyGuard };
+  | { kind: "sync_deps"; provenance: DependencyGuard }
+  | {
+      kind: "apply_environment";
+      expectedRevision: number;
+      connectionGeneration: number;
+      provenance: GuardedNotebookProvenance;
+    };

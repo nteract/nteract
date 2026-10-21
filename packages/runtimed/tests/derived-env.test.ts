@@ -84,8 +84,39 @@ describe("deriveEnvManager", () => {
     ).toBe("conda");
   });
 
-  it("returns null when everything is empty", () => {
+  it("uses a configured default for a blank Python notebook after stronger sources", () => {
     expect(deriveEnvManager(stateWith({}), NO_METADATA)).toBeNull();
+    expect(
+      deriveEnvManager(
+        stateWith({ project_context: { state: "NotFound", observed_at: OBSERVED_AT } }),
+        { ...NO_METADATA, defaultPythonEnv: "conda" },
+      ),
+    ).toBe("conda");
+  });
+
+  it("uses configured default only after running, notebook, and project sources", () => {
+    expect(deriveEnvManager(stateWith({}), { ...NO_METADATA, defaultPythonEnv: "conda" })).toBe(
+      "conda",
+    );
+    expect(
+      deriveEnvManager(stateWith({ env_source: "uv:default" }), {
+        ...NO_METADATA,
+        defaultPythonEnv: "conda",
+      }),
+    ).toBe("uv");
+    expect(
+      deriveEnvManager(stateWith({}), {
+        ...NO_METADATA,
+        isCondaConfigured: true,
+        defaultPythonEnv: "uv",
+      }),
+    ).toBe("conda");
+    expect(
+      deriveEnvManager(stateWith({ project_context: detectedCtx("PixiToml") }), {
+        ...NO_METADATA,
+        defaultPythonEnv: "conda",
+      }),
+    ).toBe("pixi");
   });
 
   it("returns null for Pending / NotFound / Unreadable project_context with no other signal", () => {

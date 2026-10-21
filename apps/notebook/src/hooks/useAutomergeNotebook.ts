@@ -161,6 +161,9 @@ export function useNotebook() {
   const [localActor, setLocalActor] = useState(actorLabelRef.current);
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
   const [hostedNotebookUrl, setHostedNotebookUrl] = useState<string | null>(null);
+  const [localEnvironmentSelectionAvailable, setLocalEnvironmentSelectionAvailable] =
+    useState(false);
+  const [connectionGeneration, setConnectionGeneration] = useState(0);
   const canWriteNotebookRef = useRef(true);
   const initialLoadReadyForMutationsRef = useRef(false);
   const readyNotebookIdentityRef = useRef<string | null>(null);
@@ -456,6 +459,8 @@ export function useNotebook() {
           trigger.payload.comments_notebook_ref,
         );
         setHostedNotebookUrl(trigger.payload.hosted_notebook_url ?? null);
+        setLocalEnvironmentSelectionAvailable(trigger.payload.local_environment_selection === true);
+        setConnectionGeneration((generation) => generation + 1);
         const connectionScope = trigger.payload.connection_scope ?? null;
         setConnectionScope(connectionScope);
         canWriteNotebookRef.current = scopeAllowsNotebookWrite(connectionScope);
@@ -729,6 +734,8 @@ export function useNotebook() {
     localActor,
     connectionScope,
     hostedNotebookUrl,
+    localEnvironmentSelectionAvailable,
+    connectionGeneration,
   };
 }
 

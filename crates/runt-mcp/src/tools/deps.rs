@@ -605,7 +605,8 @@ async fn apply_dependency_changes(
                         "env_source": env_source,
                     });
                 }
-                Ok(NotebookResponse::Error { error }) => {
+                Ok(NotebookResponse::Error { error })
+                | Ok(NotebookResponse::EnvironmentSelectionRejected { error }) => {
                     result["apply"] = serde_json::json!({
                         "mode": "restart",
                         "success": false,
@@ -1042,7 +1043,190 @@ fn get_deps_for_manager(
 
 #[cfg(test)]
 mod tests {
+    use super::super::kernel::restart_fixture::{request, result_json, RestartFixture};
     use super::*;
+
+    const REJECTED_PREFIX: &str = "Conda environment directory does not exist or is inaccessible";
+
+    #[tokio::test]
+    async fn restart_rejection_preserves_dependency_edits_and_reports_partial_failure() {
+        let fixture = RestartFixture::new(NotebookResponse::EnvironmentSelectionRejected {
+            error: REJECTED_PREFIX.into(),
+        })
+        .await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            manage_dependencies(
+                &fixture.server,
+                &request(
+                    "manage_dependencies",
+                    serde_json::json!({
+                        "add": ["pandas"], "apply": "restart",
+                    }),
+                ),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_ne!(result.is_error, Some(true), "metadata edits succeeded");
+        let value = result_json(&result);
+        assert_eq!(
+            value["before"]["dependencies"],
+            serde_json::json!(["numpy"])
+        );
+        assert_eq!(
+            value["after"]["dependencies"],
+            serde_json::json!(["numpy", "pandas"])
+        );
+        assert_eq!(
+            value["apply"],
+            serde_json::json!({
+                "mode": "restart", "success": false, "error": REJECTED_PREFIX,
+            })
+        );
+        assert_eq!(fixture.synced_dependencies(), ["numpy", "pandas"]);
+        fixture.assert_single_restart();
+    }
+
+    #[tokio::test]
+    async fn restart_apply_only_reports_environment_selection_rejection() {
+        let fixture = RestartFixture::new(NotebookResponse::EnvironmentSelectionRejected {
+            error: REJECTED_PREFIX.into(),
+        })
+        .await;
+        let heads = fixture.handle.current_heads_hex().unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            manage_dependencies(
+                &fixture.server,
+                &request(
+                    "manage_dependencies",
+                    serde_json::json!({
+                        "apply": "restart",
+                    }),
+                ),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_ne!(result.is_error, Some(true));
+        assert_eq!(
+            result_json(&result)["apply"],
+            serde_json::json!({
+                "mode": "restart", "success": false, "error": REJECTED_PREFIX,
+            })
+        );
+        assert_eq!(fixture.handle.current_heads_hex().unwrap(), heads);
+        fixture.assert_single_restart();
+    }
+
+    #[tokio::test]
+    async fn restart_rejection_retains_legacy_add_and_remove_response_keys() {
+        for remove in [false, true] {
+            let fixture = RestartFixture::new(NotebookResponse::EnvironmentSelectionRejected {
+                error: REJECTED_PREFIX.into(),
+            })
+            .await;
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                if remove {
+                    remove_dependency(
+                        &fixture.server,
+                        &request(
+                            "remove_dependency",
+                            serde_json::json!({
+                                "package": "numpy", "after": "restart",
+                            }),
+                        ),
+                    )
+                    .await
+                } else {
+                    add_dependency(
+                        &fixture.server,
+                        &request(
+                            "add_dependency",
+                            serde_json::json!({
+                                "package": "pandas", "after": "restart",
+                            }),
+                        ),
+                    )
+                    .await
+                }
+            })
+            .await
+            .unwrap()
+            .unwrap();
+
+            assert_ne!(result.is_error, Some(true));
+            let value = result_json(&result);
+            assert!(value.get("apply").is_none());
+            assert_eq!(
+                value["restart"],
+                serde_json::json!({
+                    "mode": "restart", "success": false, "error": REJECTED_PREFIX,
+                })
+            );
+            if remove {
+                assert_eq!(value["was_present"], true);
+                assert!(fixture.synced_dependencies().is_empty());
+            } else {
+                assert_eq!(value["added"], "pandas");
+                assert_eq!(fixture.synced_dependencies(), ["numpy", "pandas"]);
+            }
+            fixture.assert_single_restart();
+        }
+    }
+
+    #[tokio::test]
+    async fn restart_apply_preserves_existing_success_and_failure_contracts() {
+        for (response, expected) in [
+            (
+                RestartFixture::launched(),
+                serde_json::json!({
+                    "mode": "restart", "success": true, "env_source": "conda:existing:local",
+                }),
+            ),
+            (
+                NotebookResponse::Error {
+                    error: "launch failed".into(),
+                },
+                serde_json::json!({
+                    "mode": "restart", "success": false, "error": "launch failed",
+                }),
+            ),
+            (
+                NotebookResponse::GuardRejected {
+                    reason: "dependencies are untrusted".into(),
+                },
+                serde_json::json!({
+                    "mode": "restart", "success": false, "error": "dependencies are untrusted",
+                }),
+            ),
+        ] {
+            let fixture = RestartFixture::new(response).await;
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                manage_dependencies(
+                    &fixture.server,
+                    &request(
+                        "manage_dependencies",
+                        serde_json::json!({
+                            "apply": "restart",
+                        }),
+                    ),
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_ne!(result.is_error, Some(true));
+            assert_eq!(result_json(&result)["apply"], expected);
+            fixture.assert_single_restart();
+        }
+    }
 
     fn make_request(args: serde_json::Value) -> CallToolRequestParams {
         serde_json::from_value(serde_json::json!({

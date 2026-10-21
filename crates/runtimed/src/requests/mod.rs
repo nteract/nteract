@@ -71,6 +71,7 @@ pub(crate) mod get_history;
 pub(crate) mod guarded;
 pub(crate) mod interrupt_execution;
 pub(crate) mod launch_kernel;
+pub(crate) mod local_environment_selection;
 pub(crate) mod reconcile_notebook_source;
 pub(crate) mod run_all_cells;
 pub(crate) mod save_notebook;
@@ -134,6 +135,11 @@ pub(crate) fn trim_runtime_executions_for_doc(
 /// carry large payloads (doc bytes, comm messages) that would bloat log lines.
 pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
     match req {
+        NotebookRequest::ListCondaEnvironments { .. } => "ListCondaEnvironments",
+        NotebookRequest::ListInstalledCondaPackages { .. } => "ListInstalledCondaPackages",
+        NotebookRequest::GetEnvironmentSelection {} => "GetEnvironmentSelection",
+        NotebookRequest::SetEnvironmentSelection { .. } => "SetEnvironmentSelection",
+        NotebookRequest::ApplyEnvironmentSelection { .. } => "ApplyEnvironmentSelection",
         NotebookRequest::LaunchKernel { .. } => "LaunchKernel",
         NotebookRequest::ExecuteCell { .. } => "ExecuteCell",
         NotebookRequest::ExecuteCellGuarded { .. } => "ExecuteCellGuarded",
@@ -446,6 +452,11 @@ pub(crate) async fn handle_notebook_request(
                 return handle_hosted_send_comm(&bridge, message);
             }
             NotebookRequest::LaunchKernel { .. }
+            | NotebookRequest::ListCondaEnvironments { .. }
+            | NotebookRequest::ListInstalledCondaPackages { .. }
+            | NotebookRequest::GetEnvironmentSelection {}
+            | NotebookRequest::SetEnvironmentSelection { .. }
+            | NotebookRequest::ApplyEnvironmentSelection { .. }
             | NotebookRequest::ShutdownKernel {}
             | NotebookRequest::SyncEnvironment { .. }
             | NotebookRequest::SaveNotebook { .. }
@@ -468,6 +479,24 @@ pub(crate) async fn handle_notebook_request(
     }
 
     match request {
+        NotebookRequest::ListCondaEnvironments { refresh } => {
+            local_environment_selection::list(room, &daemon, refresh).await
+        }
+        NotebookRequest::ListInstalledCondaPackages { refresh: _ } => {
+            local_environment_selection::list_installed_packages(room).await
+        }
+        NotebookRequest::GetEnvironmentSelection {} => local_environment_selection::get(room),
+        NotebookRequest::SetEnvironmentSelection {
+            target,
+            expected_revision,
+        } => local_environment_selection::set(room, &daemon, target, expected_revision).await,
+        NotebookRequest::ApplyEnvironmentSelection {
+            expected_revision,
+            observed_heads,
+        } => {
+            local_environment_selection::apply(room, &daemon, expected_revision, observed_heads)
+                .await
+        }
         NotebookRequest::LaunchKernel {
             kernel_type,
             env_source,

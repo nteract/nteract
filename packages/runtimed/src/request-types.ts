@@ -15,6 +15,7 @@ export type EnvSource =
   | "uv:pyproject"
   | "pixi:toml"
   | "conda:env_yml"
+  | "conda:existing:local"
   | `${PackageManager}:pep723`
   | "deno"
   | (string & {});
@@ -32,6 +33,47 @@ export interface DenoLaunchedConfig {
   flexible_npm_imports: boolean;
 }
 
+export interface LocalCondaEnvironment {
+  id: string;
+  name: string;
+  prefix: string;
+  python_path: string;
+  python_version: string | null;
+}
+
+export interface CondaEnvironmentInventory {
+  environments: LocalCondaEnvironment[];
+  truncated: boolean;
+  warnings: string[];
+}
+
+export interface InstalledCondaPackage {
+  name: string;
+  version: string;
+  build: string;
+}
+
+export interface InstalledCondaPackageInventory {
+  packages: InstalledCondaPackage[];
+  truncated: boolean;
+  warnings: string[];
+}
+
+export type LocalEnvironmentTarget = { kind: "automatic" } | { kind: "conda"; prefix: string };
+
+export interface EnvironmentSelectionSnapshot {
+  revision: number;
+  selected: LocalCondaEnvironment | null;
+  applied: LocalCondaEnvironment | null;
+  applying: boolean;
+}
+
+export interface LocalEnvironmentIdentity {
+  id: string;
+  name: string;
+  python_version: string | null;
+}
+
 export interface LaunchedEnvConfig extends FeatureFlags {
   uv_deps?: string[] | null;
   conda_deps?: string[] | null;
@@ -45,6 +87,7 @@ export interface LaunchedEnvConfig extends FeatureFlags {
   deno_config?: DenoLaunchedConfig | null;
   venv_path?: string | null;
   python_path?: string | null;
+  local_environment?: LocalEnvironmentIdentity | null;
   launch_id?: string | null;
   prewarmed_packages?: string[];
 }
@@ -100,6 +143,15 @@ export interface BlobUploadPart {
 }
 
 export type NotebookRequest =
+  | { type: "list_conda_environments"; refresh: boolean }
+  | { type: "list_installed_conda_packages"; refresh: boolean }
+  | { type: "get_environment_selection" }
+  | { type: "set_environment_selection"; target: LocalEnvironmentTarget; expected_revision: number }
+  | {
+      type: "apply_environment_selection";
+      expected_revision: number;
+      observed_heads: string[];
+    }
   | {
       type: "launch_kernel";
       kernel_type: string;
@@ -176,6 +228,10 @@ export interface CompletionItem {
 export type ExecutionIdRejectionReason = "malformed" | "already_exists" | "duplicate_in_request";
 
 export type NotebookResponse =
+  | { result: "conda_environments"; inventory: CondaEnvironmentInventory }
+  | { result: "installed_conda_packages"; inventory: InstalledCondaPackageInventory }
+  | { result: "environment_selection"; selection: EnvironmentSelectionSnapshot }
+  | { result: "environment_selection_rejected"; error: string }
   | {
       result: "kernel_launched";
       kernel_type: string;

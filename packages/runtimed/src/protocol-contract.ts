@@ -16,6 +16,11 @@ type MissingUnionMember<Union extends string, Values extends readonly string[]> 
 >;
 
 export const NOTEBOOK_REQUEST_TYPES = [
+  "list_conda_environments",
+  "list_installed_conda_packages",
+  "get_environment_selection",
+  "set_environment_selection",
+  "apply_environment_selection",
   "launch_kernel",
   "execute_cell",
   "execute_cell_guarded",
@@ -48,6 +53,10 @@ export const NOTEBOOK_REQUEST_TYPES_EXHAUSTIVE: MissingUnionMember<
   : never = true;
 
 export const NOTEBOOK_RESPONSE_RESULTS = [
+  "conda_environments",
+  "installed_conda_packages",
+  "environment_selection",
+  "environment_selection_rejected",
   "notebook_sync_acknowledged",
   "kernel_launched",
   "kernel_already_running",

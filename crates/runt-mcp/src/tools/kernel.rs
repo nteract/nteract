@@ -324,7 +324,8 @@ pub async fn restart_kernel(
             });
             tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
         }
-        Ok(NotebookResponse::Error { error }) => {
+        Ok(NotebookResponse::Error { error })
+        | Ok(NotebookResponse::EnvironmentSelectionRejected { error }) => {
             tool_error(&format!("Failed to restart kernel: {error}"))
         }
         Ok(NotebookResponse::GuardRejected { reason }) => tool_error(&format!(
@@ -336,8 +337,84 @@ pub async fn restart_kernel(
 }
 
 #[cfg(test)]
+#[path = "restart_fixture.rs"]
+pub(super) mod restart_fixture;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use restart_fixture::{request, result_json, RestartFixture};
+
+    #[tokio::test]
+    async fn restart_reports_environment_selection_rejection() {
+        let error = "Conda environment directory does not exist or is inaccessible";
+        let fixture = RestartFixture::new(NotebookResponse::EnvironmentSelectionRejected {
+            error: error.into(),
+        })
+        .await;
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            restart_kernel(
+                &fixture.server,
+                &request("restart_kernel", serde_json::json!({})),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.content[0].as_text().unwrap().text,
+            format!("Failed to restart kernel: {error}")
+        );
+        fixture.assert_single_restart();
+    }
+
+    #[tokio::test]
+    async fn restart_preserves_launch_success_and_error_results() {
+        for response in [
+            RestartFixture::launched(),
+            NotebookResponse::Error {
+                error: "launch failed".into(),
+            },
+            NotebookResponse::GuardRejected {
+                reason: "dependencies are untrusted".into(),
+            },
+        ] {
+            let expected_error = match &response {
+                NotebookResponse::Error { error } => {
+                    Some(format!("Failed to restart kernel: {error}"))
+                }
+                NotebookResponse::GuardRejected { reason } => Some(format!(
+                    "Kernel restart blocked by notebook trust: {reason}"
+                )),
+                _ => None,
+            };
+            let fixture = RestartFixture::new(response).await;
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                restart_kernel(
+                    &fixture.server,
+                    &request("restart_kernel", serde_json::json!({})),
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            if let Some(error) = expected_error {
+                assert_eq!(result.is_error, Some(true));
+                assert_eq!(result.content[0].as_text().unwrap().text, error);
+            } else {
+                assert_ne!(result.is_error, Some(true));
+                assert_eq!(result_json(&result)["restarted"], true);
+                assert_eq!(result_json(&result)["env_source"], "auto:conda");
+            }
+            fixture.assert_single_restart();
+        }
+    }
 
     fn readiness(target: &str) -> crate::session::SessionReadiness {
         crate::session::SessionReadiness {

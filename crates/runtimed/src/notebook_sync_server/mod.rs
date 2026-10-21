@@ -152,6 +152,12 @@ pub enum RuntimeAgentMessage {
         notebook_protocol::protocol::RuntimeAgentRequestEnvelope,
         tokio::sync::oneshot::Sender<notebook_protocol::protocol::RuntimeAgentResponse>,
     ),
+    /// Retain sync admission after the request worker times out or is cancelled.
+    EnvironmentSyncQuery(
+        notebook_protocol::protocol::RuntimeAgentRequestEnvelope,
+        tokio::sync::oneshot::Sender<notebook_protocol::protocol::RuntimeAgentResponse>,
+        Arc<()>,
+    ),
 }
 
 /// Sender half of the runtime agent channel.

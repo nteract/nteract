@@ -1,10 +1,16 @@
 import { AlertCircle, Check, FileText, Info, Plus, RefreshCw, X } from "lucide-react";
 import { type KeyboardEvent, useCallback, useState } from "react";
-import type { EnvProgressState, EnvironmentYmlDeps, EnvironmentYmlInfo } from "runtimed";
+import type {
+  EnvProgressState,
+  EnvironmentYmlDeps,
+  EnvironmentYmlInfo,
+  InstalledCondaPackageInventory,
+} from "runtimed";
 import { cn } from "@/lib/utils";
 import { Progress } from "@/components/ui/progress";
 import type { DependencyPanelVariant, EnvironmentSyncState } from "./dependency-panel-types";
 import { PackageSpecList } from "./PackageSpecList";
+import { InstalledCondaPackagesPanel } from "./InstalledCondaPackagesPanel";
 
 export interface CondaDependencyPanelProps {
   dependencies: string[];
@@ -31,6 +37,10 @@ export interface CondaDependencyPanelProps {
   environmentYmlDeps?: EnvironmentYmlDeps | null;
   /** Show success feedback after sync completed */
   justSynced?: boolean;
+  installedPackages?: InstalledCondaPackageInventory | null;
+  loadingInstalledPackages?: boolean;
+  installedPackagesError?: string | null;
+  onLoadInstalledPackages?: (refresh: boolean) => unknown;
 }
 
 export function CondaDependencyPanel({
@@ -53,6 +63,10 @@ export function CondaDependencyPanel({
   environmentYmlInfo,
   environmentYmlDeps,
   justSynced,
+  installedPackages = null,
+  loadingInstalledPackages = false,
+  installedPackagesError = null,
+  onLoadInstalledPackages,
 }: CondaDependencyPanelProps) {
   const [newDep, setNewDep] = useState("");
   const [newChannel, setNewChannel] = useState("");
@@ -130,7 +144,7 @@ export function CondaDependencyPanel({
 
   return (
     <div
-      className={cn(isRail ? "space-y-3" : "border-b bg-emerald-50/30 dark:bg-emerald-950/10")}
+      className={cn(isRail ? "space-y-2" : "border-b bg-emerald-50/30 dark:bg-emerald-950/10")}
       data-testid="conda-deps-panel"
       data-variant={variant}
     >
@@ -140,16 +154,13 @@ export function CondaDependencyPanel({
           className={cn(
             "mb-2 flex items-center gap-2",
             isRail &&
-              "mb-3 flex-wrap justify-between gap-x-2 gap-y-1 rounded-md border bg-background px-3 py-2 shadow-sm shadow-black/[0.02]",
+              "mb-2 flex-wrap justify-between gap-x-2 gap-y-1 border-b border-border/70 pb-2",
           )}
         >
           <div className={cn("flex min-w-0 items-center gap-2", isRail && "shrink-0")}>
             <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
               conda
             </span>
-            {isRail && (
-              <span className="whitespace-nowrap text-xs text-muted-foreground">Environment</span>
-            )}
           </div>
         </div>
 
@@ -498,6 +509,14 @@ export function CondaDependencyPanel({
                   Add
                 </button>
               </div>
+            )}
+            {readOnly && envSource === "conda:existing:local" && onLoadInstalledPackages && (
+              <InstalledCondaPackagesPanel
+                inventory={installedPackages}
+                loading={loadingInstalledPackages}
+                error={installedPackagesError}
+                onLoad={onLoadInstalledPackages}
+              />
             )}
           </>
         )}

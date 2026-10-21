@@ -2528,6 +2528,15 @@ async fn run_sync_environment(
         });
     };
 
+    // A coordinator sync can have been queued before a different Owner applied
+    // a borrowed prefix. Enforce non-mutation against the actual current kernel
+    // here, not only the coordinator's earlier configuration snapshot.
+    if launched.local_environment.is_some() {
+        return Some(RuntimeAgentResponse::Error {
+            error: "Package sync is disabled for a borrowed local environment; install packages externally".into(),
+        });
+    }
+
     // Deno doesn't support hot-sync — requires kernel restart.
     if es == "deno" {
         return Some(RuntimeAgentResponse::Error {
@@ -3277,6 +3286,57 @@ mod tests {
     use notebook_protocol::protocol::{BlobDurability, LaunchedEnvConfig};
     use std::path::PathBuf;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn queued_sync_cannot_mutate_the_current_borrowed_environment() {
+        use notebook_protocol::protocol::{EnvKind, LocalEnvironmentIdentity};
+        let temp = tempfile::TempDir::new().unwrap();
+        let prefix = temp.path().join("borrowed prefix");
+        std::fs::create_dir(&prefix).unwrap();
+        std::fs::write(prefix.join("sentinel"), "unchanged").unwrap();
+        let config = LaunchedEnvConfig {
+            local_environment: Some(LocalEnvironmentIdentity {
+                id: "borrowed".into(),
+                name: "rankings".into(),
+                python_version: None,
+            }),
+            // Missing executable prevents this test ever installing successfully
+            // if the execution-boundary guard is absent.
+            python_path: Some(prefix.join("missing-python")),
+            venv_path: Some(prefix.clone()),
+            ..Default::default()
+        };
+        for kind in [
+            EnvKind::Uv {
+                packages: vec!["never-install-this".into()],
+            },
+            EnvKind::Conda {
+                packages: vec!["never-install-this".into()],
+                channels: vec![],
+            },
+        ] {
+            let (_, _, state) = test_fixtures();
+            let before = state.read(|doc| doc.read_state()).unwrap();
+            let generation = Arc::new(std::sync::atomic::AtomicU64::new(1));
+            let response = run_sync_environment(
+                kind,
+                Some(("conda:existing:local".into(), config.clone())),
+                state.clone(),
+                1,
+                generation,
+            )
+            .await;
+            assert!(
+                matches!(response, Some(RuntimeAgentResponse::Error { error }) if error.starts_with("Package sync is disabled for a borrowed"))
+            );
+            assert_eq!(state.read(|doc| doc.read_state()).unwrap(), before);
+            assert_eq!(
+                std::fs::read_to_string(prefix.join("sentinel")).unwrap(),
+                "unchanged"
+            );
+            assert_eq!(std::fs::read_dir(&prefix).unwrap().count(), 1);
+        }
+    }
 
     // -- direct_python_path_for (B3: current_python launch plumbing) --------
     //

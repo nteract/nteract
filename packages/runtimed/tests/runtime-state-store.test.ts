@@ -133,6 +133,33 @@ describe("RuntimeStateStore", () => {
     expect(seen.map((q) => q.executing?.execution_id ?? null)).toEqual([null, "e1", null]);
   });
 
+  it("publishes an environment switch even when manager and language are unchanged", () => {
+    const store = new RuntimeStateStore();
+    const seen = collect(store.kernelInfo$);
+    for (const id of ["rankings", "analysis"]) {
+      store.set(
+        stateWith({
+          kernel: {
+            ...runningState("Idle").kernel,
+            language: "python",
+            env_source: "conda:existing:local",
+            environment_id: id,
+            environment_name: id,
+            python_version: "3.12.7",
+          },
+        }),
+      );
+    }
+    expect(seen).toHaveLength(3);
+    expect(seen[2]).toMatchObject({
+      environmentId: "analysis",
+      environmentName: "analysis",
+      pythonVersion: "3.12.7",
+    });
+    store.reset();
+    expect(seen[3]).toEqual({ kernelType: undefined, envSource: undefined });
+  });
+
   it("workstation$ dedups by attachment cache key across daemon ticks", () => {
     const store = new RuntimeStateStore();
     const attachment = {

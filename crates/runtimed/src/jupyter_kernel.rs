@@ -839,6 +839,19 @@ impl KernelConnection for JupyterKernel {
                         }
                         cmd
                     }
+                    "conda:existing:local" => {
+                        let borrowed = env.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "conda:existing:local requires a validated Conda prefix"
+                            )
+                        })?;
+                        existing_conda_kernel_command(
+                            &borrowed.python_path,
+                            &borrowed.venv_path,
+                            &connection_file_path,
+                            bootstrap_dx,
+                        )?
+                    }
                     "conda:env_yml" => {
                         // Use the project's named conda environment from environment.yml.
                         // The env prefix was resolved during launch preparation (named env
@@ -1207,6 +1220,16 @@ impl KernelConnection for JupyterKernel {
                 cmd.env("PATH", merged);
             } else {
                 cmd.env(key, value);
+            }
+        }
+        if env_source == "conda:existing:local" {
+            if let Some(prefix) = &env_path {
+                // Explicit borrowed activation must win over imported launch overlays.
+                activate_existing_conda(&mut cmd, prefix)?;
+                if bootstrap_dx {
+                    let launcher = crate::launcher_cache::launcher_cache_dir().await?;
+                    cmd.env("PYTHONPATH", launcher);
+                }
             }
         }
         scrub_secret_kernel_env(&mut cmd);
@@ -4019,10 +4042,193 @@ fn prepend_to_path(dir: &std::path::Path) -> String {
     }
 }
 
+fn existing_conda_kernel_command(
+    python: &Path,
+    prefix: &Path,
+    connection_file: &Path,
+    bootstrap_dx: bool,
+) -> Result<tokio::process::Command> {
+    let mut cmd = tokio::process::Command::new(python);
+    let launcher = if bootstrap_dx {
+        "nteract_kernel_launcher"
+    } else {
+        "ipykernel_launcher"
+    };
+    cmd.args(["-Xfrozen_modules=off", "-m", launcher, "-f"]);
+    cmd.arg(connection_file);
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::piped());
+    activate_existing_conda(&mut cmd, prefix)?;
+    Ok(cmd)
+}
+
+fn activate_existing_conda(cmd: &mut tokio::process::Command, prefix: &Path) -> Result<()> {
+    let existing = cmd
+        .as_std()
+        .get_envs()
+        .find_map(|(key, value)| {
+            (key == std::ffi::OsStr::new("PATH")).then(|| value.map(std::ffi::OsStr::to_os_string))
+        })
+        .flatten()
+        .or_else(|| std::env::var_os("PATH"));
+    let mut paths = conda_activation_paths(prefix, cfg!(windows));
+    if let Some(existing) = existing {
+        for path in std::env::split_paths(&existing) {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    cmd.env("PATH", std::env::join_paths(paths)?);
+    cmd.env("CONDA_PREFIX", prefix);
+    cmd.env("CONDA_DEFAULT_ENV", prefix);
+    cmd.env("PYTHONNOUSERSITE", "1");
+    cmd.env("PYTHONDONTWRITEBYTECODE", "1");
+    for key in ["VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH"] {
+        cmd.env_remove(key);
+    }
+    Ok(())
+}
+
+fn conda_activation_paths(prefix: &Path, windows: bool) -> Vec<PathBuf> {
+    if windows {
+        vec![
+            prefix.to_path_buf(),
+            prefix.join("Library/mingw-w64/bin"),
+            prefix.join("Library/usr/bin"),
+            prefix.join("Library/bin"),
+            prefix.join("Scripts"),
+            prefix.join("bin"),
+        ]
+    } else {
+        vec![prefix.join("bin")]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[test]
+    fn borrowed_conda_command_keeps_explicit_prefix_and_interpreter() {
+        let prefix = PathBuf::from("/environments/rankings with spaces");
+        let python = crate::project_file::conda_python_path(&prefix);
+        let connection_file = Path::new("/connections/kernel.json");
+        let cmd = existing_conda_kernel_command(&python, &prefix, connection_file, false).unwrap();
+        assert_eq!(cmd.as_std().get_program(), python.as_os_str());
+        assert_eq!(
+            cmd.as_std().get_args().collect::<Vec<_>>(),
+            [
+                OsStr::new("-Xfrozen_modules=off"),
+                OsStr::new("-m"),
+                OsStr::new("ipykernel_launcher"),
+                OsStr::new("-f"),
+                connection_file.as_os_str(),
+            ]
+        );
+        let envs: HashMap<_, _> = cmd.as_std().get_envs().collect();
+        assert_eq!(envs[OsStr::new("CONDA_PREFIX")], Some(prefix.as_os_str()));
+        assert_eq!(envs[OsStr::new("VIRTUAL_ENV")], None);
+        assert_eq!(envs[OsStr::new("PYTHONHOME")], None);
+        assert_eq!(envs[OsStr::new("PYTHONPATH")], None);
+        assert_eq!(
+            envs[OsStr::new("PYTHONDONTWRITEBYTECODE")],
+            Some(OsStr::new("1"))
+        );
+        let paths = std::env::split_paths(envs[OsStr::new("PATH")].unwrap()).collect::<Vec<_>>();
+        assert_eq!(
+            &paths[..conda_activation_paths(&prefix, cfg!(windows)).len()],
+            conda_activation_paths(&prefix, cfg!(windows))
+        );
+    }
+
+    #[test]
+    fn windows_conda_activation_includes_library_and_scripts_directories() {
+        let prefix = Path::new("C:/Users/owner/Anaconda/envs/rankings with spaces");
+        assert_eq!(
+            conda_activation_paths(prefix, true),
+            [
+                prefix.to_path_buf(),
+                prefix.join("Library/mingw-w64/bin"),
+                prefix.join("Library/usr/bin"),
+                prefix.join("Library/bin"),
+                prefix.join("Scripts"),
+                prefix.join("bin"),
+            ]
+        );
+        assert_eq!(conda_activation_paths(prefix, false), [prefix.join("bin")]);
+    }
+
+    #[test]
+    fn borrowed_conda_activation_overrides_conflicting_launch_overlay() {
+        let prefix = Path::new("/environments/selected");
+        let mut cmd = existing_conda_kernel_command(
+            &crate::project_file::conda_python_path(prefix),
+            prefix,
+            Path::new("connection.json"),
+            false,
+        )
+        .unwrap();
+        cmd.env("CONDA_PREFIX", "/wrong");
+        cmd.env("VIRTUAL_ENV", "/wrong-venv");
+        cmd.env("PYTHONPATH", "/wrong-site");
+        cmd.env(
+            "PATH",
+            std::env::join_paths([Path::new("/wrong/bin"), Path::new("/user/bin")]).unwrap(),
+        );
+        activate_existing_conda(&mut cmd, prefix).unwrap();
+        let envs: HashMap<_, _> = cmd.as_std().get_envs().collect();
+        assert_eq!(envs[OsStr::new("CONDA_PREFIX")], Some(prefix.as_os_str()));
+        assert_eq!(envs[OsStr::new("VIRTUAL_ENV")], None);
+        assert_eq!(envs[OsStr::new("PYTHONPATH")], None);
+        let paths = std::env::split_paths(envs[OsStr::new("PATH")].unwrap()).collect::<Vec<_>>();
+        assert_eq!(
+            paths.first().unwrap(),
+            &conda_activation_paths(prefix, cfg!(windows))[0]
+        );
+        assert!(paths.contains(&PathBuf::from("/user/bin")));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn borrowed_conda_activation_reaches_a_real_child_process() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let prefix = temp.path().join("rankings with spaces");
+        let mut cmd = tokio::process::Command::new("/bin/sh");
+        cmd.args(["-c", "test \"$CONDA_PREFIX\" = \"$1\" && test \"${PATH%%:*}\" = \"$1/bin\" && test -z \"$VIRTUAL_ENV\" && test -z \"$PYTHONHOME\" && test -z \"$PYTHONPATH\" && test \"$PYTHONDONTWRITEBYTECODE\" = 1", "sh"]);
+        cmd.arg(&prefix);
+        activate_existing_conda(&mut cmd, &prefix).unwrap();
+        assert!(cmd.status().await.unwrap().success());
+        assert!(
+            !prefix.exists(),
+            "activation must not create or write the borrowed prefix"
+        );
+    }
+
+    #[test]
+    fn borrowed_conda_preserves_bootstrap_launcher_without_prefix_vendoring() {
+        let prefix = Path::new("/environments/borrowed");
+        let cmd = existing_conda_kernel_command(
+            &crate::project_file::conda_python_path(prefix),
+            prefix,
+            Path::new("connection.json"),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            cmd.as_std().get_args().nth(2),
+            Some(OsStr::new("nteract_kernel_launcher"))
+        );
+        assert_eq!(
+            cmd.as_std()
+                .get_envs()
+                .find(|(key, _)| *key == OsStr::new("PYTHONDONTWRITEBYTECODE"))
+                .unwrap()
+                .1,
+            Some(OsStr::new("1"))
+        );
+    }
 
     #[test]
     fn delayed_iopub_starting_does_not_undo_kernel_info_readiness() {
