@@ -118,6 +118,60 @@ describe("notebook action policy helpers", () => {
 });
 
 describe("useNotebookActionPolicy", () => {
+  it.each(["uv:inline", "conda:inline"])(
+    "preserves the %s kernel when another client's sync is still in progress",
+    async (envSource) => {
+      const options = createPolicyOptions({
+        envSource,
+        kernelStatus: KERNEL_STATUS.IDLE,
+        syncEnvironment: vi.fn().mockResolvedValue({
+          result: "sync_environment_failed",
+          error: "Environment sync in progress; retry after it completes",
+          needs_restart: false,
+        } satisfies NotebookResponse),
+      });
+      const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+      await act(async () => {
+        expect(await result.current.handleSyncDeps()).toBe(false);
+      });
+
+      expect(options.syncEnvironment).toHaveBeenCalledTimes(1);
+      expect(options.shutdownKernel).not.toHaveBeenCalled();
+      expect(options.launchKernel).not.toHaveBeenCalled();
+      expect(result.current.justSynced).toBe(false);
+    },
+  );
+
+  it("still restarts when hot-sync explicitly requires a restart", async () => {
+    const events: string[] = [];
+    const options = createPolicyOptions({
+      kernelStatus: KERNEL_STATUS.IDLE,
+      syncEnvironment: vi.fn().mockResolvedValue({
+        result: "sync_environment_failed",
+        error: "Environment changes require a kernel restart",
+        needs_restart: true,
+      } satisfies NotebookResponse),
+      shutdownKernel: vi.fn(async () => {
+        events.push("shutdown");
+        return response("kernel_shutting_down");
+      }),
+      launchKernel: vi.fn(async () => {
+        events.push("launch");
+        return response("kernel_launched");
+      }),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      expect(await result.current.handleSyncDeps()).toBe(true);
+    });
+
+    expect(options.syncEnvironment).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(["shutdown", "launch"]);
+    expect(result.current.justSynced).toBe(true);
+  });
+
   it("reports a rejected environment selection as a failed kernel start with recovery guidance", async () => {
     const options = createPolicyOptions({
       launchKernel: vi.fn().mockResolvedValue({

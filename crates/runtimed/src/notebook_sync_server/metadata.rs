@@ -5201,7 +5201,10 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
     };
 
     if launched.local_environment.is_some() {
-        return NotebookResponse::Error { error: "Package sync is disabled for a borrowed local environment; install packages externally".into() };
+        return NotebookResponse::SyncEnvironmentFailed {
+            error: "Package sync is disabled for a borrowed local environment; install packages externally".into(),
+            needs_restart: false,
+        };
     }
 
     // For project-backed environments, promote inline deps to the project file.

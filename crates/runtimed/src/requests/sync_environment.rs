@@ -15,7 +15,12 @@ pub(crate) async fn handle(
 ) -> NotebookResponse {
     let _sync_lease = match room.local_environment_selection.begin_sync() {
         Ok(lease) => lease,
-        Err(error) => return NotebookResponse::Error { error },
+        Err(error) => {
+            return NotebookResponse::SyncEnvironmentFailed {
+                error,
+                needs_restart: false,
+            };
+        }
     };
     if room
         .runtime_agent_launched_config
@@ -24,7 +29,10 @@ pub(crate) async fn handle(
         .as_ref()
         .is_some_and(|config| config.local_environment.is_some())
     {
-        return NotebookResponse::Error { error: "Package sync is disabled for a borrowed local environment; install packages externally".into() };
+        return NotebookResponse::SyncEnvironmentFailed {
+            error: "Package sync is disabled for a borrowed local environment; install packages externally".into(),
+            needs_restart: false,
+        };
     }
     if let Err(rejection) = guarded::ensure_trusted(room).await {
         return rejection.into_response();
@@ -45,6 +53,64 @@ mod tests {
     use super::*;
     use std::future::Future;
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn overlapping_sync_rejects_without_restart_or_runtime_mutation() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(crate::blob_store::BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        );
+        room.state
+            .with_doc(|state| {
+                state.set_lifecycle(&runtime_doc::RuntimeLifecycle::Running(
+                    runtime_doc::KernelActivity::Idle,
+                ))?;
+                state.set_runtime_agent_id("running-agent")
+            })
+            .unwrap();
+        room.comms
+            .with_doc(|comms| comms.put_comm_state("widget", &serde_json::json!({ "value": 7 })))
+            .unwrap();
+        let kernel_before = room.state.read(|state| state.read_state().kernel).unwrap();
+        let comms_before = room.comms.read(|comms| comms.get_comms()).unwrap();
+        let heads_before = room.doc.write().await.get_heads();
+        let (tx, mut requests) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(tx);
+        let sync = room.local_environment_selection.begin_sync().unwrap();
+
+        let response = {
+            let _config = room.runtime_agent_launched_config.write().await;
+            let mut request = Box::pin(handle(&room, None));
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            match request.as_mut().poll(&mut cx) {
+                std::task::Poll::Ready(response) => response,
+                std::task::Poll::Pending => panic!("busy sync must reject before awaiting config"),
+            }
+        };
+        assert!(
+            matches!(response, NotebookResponse::SyncEnvironmentFailed { ref error, needs_restart: false }
+                if error.contains("sync in progress")),
+            "{response:?}"
+        );
+        assert!(requests.try_recv().is_err());
+        assert_eq!(
+            room.state.read(|state| state.read_state().kernel).unwrap(),
+            kernel_before
+        );
+        assert_eq!(
+            room.comms.read(|comms| comms.get_comms()).unwrap(),
+            comms_before
+        );
+        assert_eq!(room.doc.write().await.get_heads(), heads_before);
+        assert!(room.local_environment_selection.begin_sync().is_err());
+        assert!(room.local_environment_selection.begin_apply(0).is_err());
+        drop(sync);
+        assert!(room.local_environment_selection.begin_sync().is_ok());
+    }
 
     #[tokio::test]
     async fn sync_admission_blocks_apply_before_configuration_read() {
@@ -86,7 +152,7 @@ mod tests {
             let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
             assert!(matches!(
                 sync.as_mut().poll(&mut cx),
-                std::task::Poll::Ready(NotebookResponse::Error { error })
+                std::task::Poll::Ready(NotebookResponse::SyncEnvironmentFailed { error, needs_restart: false })
                     if error.contains("finish applying")
             ));
         }
@@ -117,10 +183,16 @@ mod tests {
                 ..Default::default()
             });
         let before = room.doc.write().await.get_heads();
-        let response = handle(&room, None).await;
-        assert!(
-            matches!(response, NotebookResponse::Error { error } if error.contains("borrowed"))
-        );
+        for response in [
+            handle(&room, None).await,
+            handle_sync_environment(&room).await,
+        ] {
+            assert!(
+                matches!(response, NotebookResponse::SyncEnvironmentFailed { ref error, needs_restart: false }
+                    if error.contains("borrowed")),
+                "{response:?}"
+            );
+        }
         assert_eq!(room.doc.write().await.get_heads(), before);
         assert!(room.local_environment_selection.begin_apply(0).is_ok());
         assert_eq!(
