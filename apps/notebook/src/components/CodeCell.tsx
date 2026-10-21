@@ -104,6 +104,7 @@ interface CodeCellProps {
   hiddenGroupErrorCount?: number;
   /** Content for the right gutter (e.g., delete button, input toggle) */
   rightGutterContent?: ReactNode;
+  pinActions?: boolean;
   readOnly?: boolean;
   canExecute?: boolean;
   onCreateSourceComment?: (anchor: SourceRangeCommentAnchor, quote?: string | null) => void;
@@ -360,6 +361,7 @@ export const CodeCell = memo(function CodeCell({
   onExpandHiddenGroupCell,
   hiddenGroupErrorCount,
   rightGutterContent,
+  pinActions,
   readOnly = false,
   canExecute = !readOnly,
   onCreateSourceComment,
@@ -768,6 +770,7 @@ export const CodeCell = memo(function CodeCell({
           ) : null
         }
         rightGutterContent={rightGutterContent}
+        pinActions={pinActions}
         stateLaneClassName={isSourceHidden && canRevealHiddenContent ? "pt-2 sm:pt-2" : undefined}
         dragHandleProps={dragHandleProps}
         isDragging={isDragging}

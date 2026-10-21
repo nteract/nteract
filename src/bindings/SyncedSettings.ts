@@ -95,6 +95,12 @@ export type SyncedSettings = {
    */
   disable_auto_format: boolean;
   /**
+   * Agent CLI that prompt cells run, resolved on the daemon's PATH when it
+   * has no path separator. The command must accept the Claude Code
+   * headless flags (`-p --output-format stream-json`).
+   */
+  agent_command: string;
+  /**
    * Redact eligible environment variable values from text outputs for newly
    * launched or restarted kernels.
    *

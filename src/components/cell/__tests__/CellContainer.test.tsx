@@ -70,6 +70,22 @@ describe("CellContainer", () => {
     expect(container).toHaveTextContent("visible output");
   });
 
+  it("keeps pinned right edge controls visible on unfocused cells", () => {
+    const { container } = render(
+      <CellContainer
+        id="pinned-cell"
+        cellType="code"
+        pinActions
+        codeContent={<div>source</div>}
+        rightGutterContent={<button type="button">Excluded from context</button>}
+      />,
+    );
+
+    const overlay = container.querySelector('[data-slot="cell-action-overlay"]');
+    expect(overlay).toHaveClass("opacity-100");
+    expect(overlay).toHaveClass("pointer-events-auto");
+  });
+
   it("keeps right edge controls hidden until hover or focus for unfocused cells", () => {
     const { container } = render(
       <CellContainer

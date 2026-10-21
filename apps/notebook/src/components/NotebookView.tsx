@@ -16,7 +16,8 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS as DndCSS } from "@dnd-kit/utilities";
-import { Eye, EyeOff, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { Bot, BotOff, Eye, EyeOff, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { contextToggleWrites, isContextExcluded, promptMode } from "@/lib/prompt-cells";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { notebookCellAnchorId, type NotebookInteractionTarget } from "runtimed";
 import { CellInsertionRibbon, type CellInsertionType } from "@/components/cell/CellInsertionRibbon";
@@ -81,7 +82,7 @@ import type { SourceCommentThread } from "../lib/comment-highlights";
 import type { OutputCommentAnchor, SourceRangeCommentAnchor } from "../lib/comment-source-anchor";
 
 type AddCellResult = NotebookCell | null;
-type AddCellHandler = (type: CellInsertionType, afterCellId?: string | null) => AddCellResult;
+type AddCellHandler = (type: "code" | "markdown", afterCellId?: string | null) => AddCellResult;
 type ChangeCellTypeHandler = (cellId: string, type: "code" | "markdown") => void;
 
 export interface NotebookViewProps {
@@ -101,11 +102,16 @@ export interface NotebookViewProps {
   onDeleteCell: (cellId: string) => void;
   onUpdateCellSource?: (cellId: string, source: string) => void;
   onAddCell: AddCellHandler;
+  onAddPromptCell?: (afterCellId?: string | null) => AddCellResult;
   onMoveCell: (cellId: string, afterCellId?: string | null) => void;
   onChangeCellType?: ChangeCellTypeHandler;
   onReportOutputMatchCount?: (cellId: string, count: number) => void;
   onSetCellSourceHidden?: (cellId: string, hidden: boolean) => void;
   onSetCellOutputsHidden?: (cellId: string, hidden: boolean) => void;
+  onSetCellMetadataAt?: (cellId: string, path: string[], value: unknown) => void;
+  promptRuns?: Readonly<Record<string, string>>;
+  onRunPromptCell?: (cellId: string) => void;
+  onCancelPromptCell?: (cellId: string) => void;
   onCreateSourceComment?: (anchor: SourceRangeCommentAnchor, quote?: string | null) => void;
   onCreateOutputComment?: (anchor: OutputCommentAnchor) => void;
   onActivateCommentThread?: (threadId: string) => void;
@@ -130,13 +136,23 @@ const NOTEBOOK_TAIL_PIN_THRESHOLD_PX = 96;
 function CellAdder({
   afterCellId,
   onAdd,
+  onAddPrompt,
   terminal = false,
 }: {
   afterCellId?: string | null;
   onAdd: AddCellHandler;
+  onAddPrompt?: (afterCellId?: string | null) => AddCellResult;
   terminal?: boolean;
 }) {
-  return <CellInsertionRibbon terminal={terminal} onInsert={(type) => onAdd(type, afterCellId)} />;
+  return (
+    <CellInsertionRibbon
+      terminal={terminal}
+      includePrompt={onAddPrompt !== undefined}
+      onInsert={(type: CellInsertionType) =>
+        type === "prompt" ? onAddPrompt?.(afterCellId) : onAdd(type, afterCellId)
+      }
+    />
+  );
 }
 
 function CellErrorFallback({
@@ -304,6 +320,7 @@ function SortableCell({
   index,
   renderCell,
   onAddCell,
+  onAddPromptCell,
   onDeleteCell,
   isLastCell,
   isHiddenInGroup,
@@ -320,6 +337,7 @@ function SortableCell({
     isDragging?: boolean,
   ) => React.ReactNode;
   onAddCell: AddCellHandler;
+  onAddPromptCell?: (afterCellId?: string | null) => AddCellResult;
   onDeleteCell: (cellId: string) => void;
   isLastCell?: boolean;
   isHiddenInGroup?: boolean;
@@ -369,7 +387,9 @@ function SortableCell({
         onCommandFocus(cellId);
       }}
     >
-      {canMutateCells && index === 0 && <CellAdder afterCellId={null} onAdd={onAddCell} />}
+      {canMutateCells && index === 0 && (
+        <CellAdder afterCellId={null} onAdd={onAddCell} onAddPrompt={onAddPromptCell} />
+      )}
       <ErrorBoundary
         fallback={(error, resetErrorBoundary) => (
           <CellErrorFallback
@@ -387,7 +407,14 @@ function SortableCell({
           isDragging={isDragging}
         />
       </ErrorBoundary>
-      {canMutateCells && <CellAdder afterCellId={cellId} onAdd={onAddCell} terminal={isLastCell} />}
+      {canMutateCells && (
+        <CellAdder
+          afterCellId={cellId}
+          onAdd={onAddCell}
+          onAddPrompt={onAddPromptCell}
+          terminal={isLastCell}
+        />
+      )}
     </div>
   );
 }
@@ -409,11 +436,16 @@ function NotebookViewContent({
   onDeleteCell,
   onUpdateCellSource,
   onAddCell,
+  onAddPromptCell,
   onMoveCell,
   onChangeCellType,
   onReportOutputMatchCount,
   onSetCellSourceHidden,
   onSetCellOutputsHidden,
+  onSetCellMetadataAt,
+  promptRuns,
+  onRunPromptCell,
+  onCancelPromptCell,
   onCreateSourceComment,
   onCreateOutputComment,
   onActivateCommentThread,
@@ -1090,6 +1122,38 @@ function NotebookViewContent({
         </button>
       ) : null;
 
+      const contextExcluded = isContextExcluded(cell);
+      const contextToggleButton =
+        canMutateCells && onSetCellMetadataAt ? (
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={() => {
+              for (const write of contextToggleWrites(
+                getNotebookCellsSnapshot(),
+                cell.id,
+                markdownHeadingAnchorsByCellId,
+              )) {
+                onSetCellMetadataAt(write.cellId, ["nteract", "context_exclude"], write.exclude);
+              }
+            }}
+            className={cn(
+              "flex items-center justify-center rounded p-1 transition-colors hover:text-foreground",
+              contextExcluded ? "text-muted-foreground/70" : "text-muted-foreground/40",
+            )}
+            title={
+              contextExcluded
+                ? "Excluded from the agent's context (click to include)"
+                : "In the agent's context (click to exclude)"
+            }
+            data-testid="cell-context-toggle"
+            data-context-excluded={contextExcluded}
+          >
+            {contextExcluded ? <BotOff className="size-3.5" /> : <Bot className="size-3.5" />}
+          </button>
+        ) : null;
+      const pinContextActions = contextExcluded && contextToggleButton !== null;
+
       let rightGutterContent: React.ReactNode;
       if (cell.cell_type === "code") {
         const isSourceHidden =
@@ -1118,16 +1182,21 @@ function NotebookViewContent({
         const visibleDeleteButton = !isSourceHidden ? deleteButton : null;
 
         rightGutterContent =
-          sourceToggleButton || visibleDeleteButton ? (
+          sourceToggleButton || contextToggleButton || visibleDeleteButton ? (
             <div className="flex flex-col gap-0.5">
               {sourceToggleButton}
+              {contextToggleButton}
               {visibleDeleteButton}
             </div>
           ) : undefined;
       } else {
-        rightGutterContent = deleteButton ? (
-          <div className="flex flex-col gap-0.5">{deleteButton}</div>
-        ) : undefined;
+        rightGutterContent =
+          contextToggleButton || deleteButton ? (
+            <div className="flex flex-col gap-0.5">
+              {contextToggleButton}
+              {deleteButton}
+            </div>
+          ) : undefined;
       }
 
       if (cell.cell_type === "code") {
@@ -1203,6 +1272,7 @@ function NotebookViewContent({
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
             rightGutterContent={rightGutterContent}
+            pinActions={pinContextActions}
             readOnly={!canEditCodeCellSources}
             canExecute={canExecuteCells}
             onCreateSourceComment={onCreateSourceComment}
@@ -1290,6 +1360,7 @@ function NotebookViewContent({
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
             rightGutterContent={rightGutterContent}
+            pinActions={pinContextActions}
             headingAnchors={markdownHeadingAnchorsByCellId?.get(cell.id)}
             commentThreads={commentThreadsByCell?.get(cell.id)}
             pendingCommentAnchor={
@@ -1303,11 +1374,33 @@ function NotebookViewContent({
         );
       }
 
-      // Raw cells
+      // Raw cells (prompt cells are raw cells carrying the prompt marker)
+      const mode = promptMode(cell);
       return (
         <RawCell
           key={cell.id}
           cell={cell}
+          prompt={
+            mode
+              ? {
+                  mode,
+                  running: promptRuns?.[cell.id] !== undefined,
+                  onRun:
+                    canExecuteCells && onRunPromptCell && promptRuns?.[cell.id] === undefined
+                      ? () => onRunPromptCell(cell.id)
+                      : undefined,
+                  onCancel:
+                    canExecuteCells && onCancelPromptCell
+                      ? () => onCancelPromptCell(cell.id)
+                      : undefined,
+                  onSetMode:
+                    canMutateCells && onSetCellMetadataAt
+                      ? (nextMode) =>
+                          onSetCellMetadataAt(cell.id, ["nteract", "prompt", "mode"], nextMode)
+                      : undefined,
+                }
+              : undefined
+          }
           onFocus={() => {
             focusInteractionTarget({ kind: "editor", cellId: cell.id });
           }}
@@ -1325,6 +1418,7 @@ function NotebookViewContent({
           dragHandleProps={dragHandleProps}
           isDragging={isDragging}
           rightGutterContent={rightGutterContent}
+          pinActions={pinContextActions}
           readOnly={!canEditCodeCellSources}
           onCreateSourceComment={onCreateSourceComment}
           onActivateCommentThread={onActivateCommentThread}
@@ -1346,6 +1440,10 @@ function NotebookViewContent({
       onReportOutputMatchCount,
       onSetCellSourceHidden,
       onSetCellOutputsHidden,
+      onSetCellMetadataAt,
+      promptRuns,
+      onRunPromptCell,
+      onCancelPromptCell,
       onCreateSourceComment,
       onCreateOutputComment,
       onActivateCommentThread,
@@ -1478,6 +1576,7 @@ function NotebookViewContent({
                     index={index}
                     renderCell={renderCell}
                     onAddCell={addCellFromControl}
+                    onAddPromptCell={onAddPromptCell}
                     onDeleteCell={handleDeleteCell}
                     isLastCell={index === cellIds.length - 1}
                     isHiddenInGroup={group != null && !group.isFirst}

@@ -173,6 +173,7 @@ function makeRuntimeState(
     executions: executions as RuntimeState["executions"],
     comms: {},
     bokeh_sessions: {},
+    prompt_runs: {},
   };
 }
 
@@ -890,6 +891,7 @@ describe("SyncEngine", () => {
         executions: {},
         comms: {},
         bokeh_sessions: {},
+        prompt_runs: {},
       };
 
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
@@ -991,6 +993,7 @@ describe("SyncEngine", () => {
         },
         comms: {},
         bokeh_sessions: {},
+        prompt_runs: {},
       };
 
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([

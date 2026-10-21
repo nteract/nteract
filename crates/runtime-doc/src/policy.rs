@@ -250,6 +250,13 @@ fn validate_runtime_peer_room_host_owned_delta(
             "room-host/daemon-owned",
         ));
     }
+    if before.state.prompt_runs != after.state.prompt_runs {
+        return Err(runtime_state_policy_error(
+            scope,
+            "prompt_runs",
+            "room-host/daemon-owned",
+        ));
+    }
 
     Ok(())
 }
@@ -1539,6 +1546,28 @@ mod tests {
         assert!(
             err.to_string().contains("queue"),
             "error should identify queue writes: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_peer_policy_rejects_prompt_run_changes() {
+        let mut before_doc = RuntimeStateDoc::new();
+        before_doc
+            .set_prompt_run("cell-1", "2026-09-23T10:00:00Z")
+            .unwrap();
+        let before = runtime_state_policy_snapshot(&before_doc);
+
+        let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        after_doc.clear_prompt_run("cell-1").unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        let err =
+            validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+                .unwrap_err();
+
+        assert!(
+            err.to_string().contains("prompt_runs"),
+            "error should identify prompt run writes: {err}"
         );
     }
 

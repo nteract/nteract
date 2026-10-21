@@ -94,6 +94,11 @@ export function useWorkstationAttachment(): WorkstationAttachmentState | null {
   return useRuntimeProjection(runtimeStateStore.workstation$);
 }
 
+/** Prompt cells with an agent run in progress, deduplicated across daemon ticks. */
+export function usePromptRuns(): Readonly<Record<string, string>> {
+  return useRuntimeProjection(runtimeStateStore.promptRuns$);
+}
+
 /**
  * Lifecycle status key with the busy flash suppressed by the shared
  * `throttleBusyStatus` pipeline. The underlying store gates reset windows on

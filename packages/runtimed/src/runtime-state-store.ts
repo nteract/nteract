@@ -180,6 +180,12 @@ export class RuntimeStateStore extends ObservableStore<RuntimeState> {
       notebookShellWorkstationAttachmentCacheKey(b),
   );
 
+  /** Prompt cells with an agent run in progress. Emits only when that set changes. */
+  readonly promptRuns$: Observable<Readonly<Record<string, string>>> = this.select(
+    (state) => state.prompt_runs,
+    promptRunsEquals,
+  );
+
   /** Push a new daemon snapshot. Host bridges call this. */
   set(state: RuntimeState): void {
     this.setState(state);
@@ -189,6 +195,14 @@ export class RuntimeStateStore extends ObservableStore<RuntimeState> {
   reset(): void {
     this.resetState(DEFAULT_RUNTIME_STATE);
   }
+}
+
+function promptRunsEquals(
+  a: Readonly<Record<string, string>>,
+  b: Readonly<Record<string, string>>,
+): boolean {
+  const aKeys = Object.keys(a);
+  return aKeys.length === Object.keys(b).length && aKeys.every((key) => a[key] === b[key]);
 }
 
 function kernelInfoEquals(a: KernelInfo, b: KernelInfo): boolean {

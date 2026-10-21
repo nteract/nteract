@@ -169,6 +169,7 @@ interface MarkdownCellProps {
   isDragging?: boolean;
   /** Content for the right gutter (e.g., delete button) */
   rightGutterContent?: ReactNode;
+  pinActions?: boolean;
   headingAnchors?: readonly MarkdownHeadingAnchor[];
   readOnly?: boolean;
   onCreateSourceComment?: (anchor: SourceRangeCommentAnchor, quote?: string | null) => void;
@@ -195,6 +196,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   dragHandleProps,
   isDragging,
   rightGutterContent,
+  pinActions,
   headingAnchors = EMPTY_HEADING_ANCHORS,
   readOnly = false,
   onCreateSourceComment,
@@ -1115,6 +1117,7 @@ export const MarkdownCell = memo(function MarkdownCell({
       presenceIndicators={<CellPresenceIndicators cellId={cell.id} />}
       dragHandleProps={dragHandleProps}
       isDragging={isDragging}
+      pinActions={pinActions}
       rightGutterContent={
         readOnly ? null : editing ? (
           <div className="flex flex-col gap-0.5">

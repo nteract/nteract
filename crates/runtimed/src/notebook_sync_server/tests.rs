@@ -2696,6 +2696,7 @@ fn test_room_with_path_and_store(
         runtime_agent_env_path: Arc::new(RwLock::new(None)),
         runtime_agent_launched_config: Arc::new(RwLock::new(None)),
         active_kernel_launch: std::sync::Mutex::new(None),
+        active_prompt_run: std::sync::Mutex::new(None),
         runtime_agent_request_tx: Arc::new(Mutex::new(None)),
         pending_runtime_agent_connect_tx: Arc::new(Mutex::new(None)),
         runtime_agent_generation: Arc::new(AtomicU64::new(0)),
