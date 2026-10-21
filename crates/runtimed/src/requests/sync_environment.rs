@@ -13,12 +13,10 @@ pub(crate) async fn handle(
     room: &NotebookRoom,
     guard: Option<DependencyGuard>,
 ) -> NotebookResponse {
-    if room.local_environment_selection.snapshot().applying {
-        return NotebookResponse::Error {
-            error: "Wait for the environment selection to finish applying before syncing packages"
-                .into(),
-        };
-    }
+    let _sync_lease = match room.local_environment_selection.begin_sync() {
+        Ok(lease) => lease,
+        Err(error) => return NotebookResponse::Error { error },
+    };
     if room
         .runtime_agent_launched_config
         .read()
@@ -45,7 +43,55 @@ pub(crate) async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn sync_admission_blocks_apply_before_configuration_read() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(crate::blob_store::BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        );
+        {
+            let _config = room.runtime_agent_launched_config.write().await;
+            let mut sync = Box::pin(handle(&room, None));
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(sync.as_mut().poll(&mut cx).is_pending());
+            assert!(
+                room.local_environment_selection.begin_apply(0).is_err(),
+                "an admitted sync must fence Apply before its first await"
+            );
+        }
+        assert!(room.local_environment_selection.begin_apply(0).is_ok());
+    }
+
+    #[tokio::test]
+    async fn apply_admission_rejects_sync_before_configuration_read() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(crate::blob_store::BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        );
+        let _apply = room.local_environment_selection.begin_apply(0).unwrap();
+        {
+            let _config = room.runtime_agent_launched_config.write().await;
+            let mut sync = Box::pin(handle(&room, None));
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(matches!(
+                sync.as_mut().poll(&mut cx),
+                std::task::Poll::Ready(NotebookResponse::Error { error })
+                    if error.contains("finish applying")
+            ));
+        }
+        assert!(room.local_environment_selection.sync_lease().is_none());
+    }
 
     #[tokio::test]
     async fn borrowed_environment_rejects_sync_without_changing_notebook_or_prefix() {
@@ -76,6 +122,7 @@ mod tests {
             matches!(response, NotebookResponse::Error { error } if error.contains("borrowed"))
         );
         assert_eq!(room.doc.write().await.get_heads(), before);
+        assert!(room.local_environment_selection.begin_apply(0).is_ok());
         assert_eq!(
             std::fs::read_to_string(prefix.join("sentinel")).unwrap(),
             "unchanged"

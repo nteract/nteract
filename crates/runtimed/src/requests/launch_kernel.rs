@@ -97,8 +97,8 @@ fn commit_apply_delivery(
         .doc
         .try_read()
         .map_err(|_| anyhow::anyhow!("Notebook changed during environment preflight; try again"))?;
-    if let Some(heads) = lease.observed_heads.as_ref() {
-        guarded::validate_dependencies_unchanged_since_observed(&doc, heads).map_err(|_| {
+    if let Some(heads) = lease.observed_heads() {
+        guarded::validate_dependencies_unchanged_since_observed(&doc, &heads).map_err(|_| {
             anyhow::anyhow!("Notebook dependencies changed during environment preflight")
         })?;
     }
@@ -361,10 +361,24 @@ pub(crate) async fn handle_admitted(
     apply: Option<super::local_environment_selection::EnvironmentApply<'_>>,
 ) -> NotebookResponse {
     let mut launch_attempt = Some(attempt);
+    // Request workers can be cancelled at any await, including agent lookup.
     if apply.is_some() {
         if let Some(attempt) = launch_attempt.as_mut() {
             attempt.preserve_kernel_during_preparation();
         }
+    }
+    let prior_agent_id = if apply.is_some() {
+        let id = room.current_runtime_agent_id.read().await.clone();
+        if room.runtime_agent_request_tx.lock().await.is_some() {
+            id
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if let Some(lease) = apply.as_ref() {
+        lease.preserve_agent(prior_agent_id.clone());
     }
     // Preparation is reversible for Apply: only the replacement RPC owns
     // destruction of the old kernel. Inherited resolver errors must not drop
@@ -388,6 +402,10 @@ pub(crate) async fn handle_admitted(
     )
     .await;
     if apply.is_some() && room.local_environment_selection.is_preparing() {
+        if prior_agent_id.is_none() {
+            let spawned_agent_id = room.current_runtime_agent_id.read().await.clone();
+            reset_starting_state(room, spawned_agent_id.as_deref()).await;
+        }
         if let Some(attempt) = launch_attempt.take() {
             if !attempt.is_cancelled() {
                 *room.runtime_agent_env_path.write().await = prior_env_path;
@@ -1873,10 +1891,10 @@ async fn handle_attempt(
     if let Some(lease) = apply.as_ref() {
         let mut rejection = guarded::ensure_trusted(room).await.err();
         if rejection.is_none() {
-            if let Some(heads) = lease.observed_heads.as_ref() {
+            if let Some(heads) = lease.observed_heads() {
                 let doc = room.doc.read().await;
                 rejection =
-                    guarded::validate_dependencies_unchanged_since_observed(&doc, heads).err();
+                    guarded::validate_dependencies_unchanged_since_observed(&doc, &heads).err();
             }
         }
         if let Some(rejection) = rejection {

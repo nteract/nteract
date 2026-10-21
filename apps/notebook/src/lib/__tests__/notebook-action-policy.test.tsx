@@ -118,6 +118,146 @@ describe("notebook action policy helpers", () => {
 });
 
 describe("useNotebookActionPolicy", () => {
+  it("reports a rejected environment selection as a failed kernel start with recovery guidance", async () => {
+    const options = createPolicyOptions({
+      launchKernel: vi.fn().mockResolvedValue({
+        result: "environment_selection_rejected",
+        error: "Conda environment directory does not exist or is inaccessible",
+      } satisfies NotebookResponse),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      expect(await result.current.tryStartKernel()).toBe(false);
+    });
+
+    expect(result.current.trustActionNotice).toContain(
+      "Conda environment directory does not exist or is inaccessible",
+    );
+    expect(result.current.trustActionNotice).toMatch(/review.*environment selection.*apply/i);
+    expect(options.resetEnvProgress).not.toHaveBeenCalled();
+  });
+
+  it.each(["run_cell", "run_all", "restart_and_run_all"] as const)(
+    "does not execute %s after kernel launch rejects the environment selection",
+    async (action) => {
+      const options = createPolicyOptions({
+        launchKernel: vi.fn().mockResolvedValue({
+          result: "environment_selection_rejected",
+          error: "Conda environment has no accessible Python interpreter",
+        } satisfies NotebookResponse),
+      });
+      const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+      await act(async () => {
+        if (action === "run_cell") await result.current.handleExecuteCell("cell-1");
+        else if (action === "run_all") await result.current.handleRunAllCells();
+        else await result.current.handleRestartAndRunAll();
+      });
+
+      expect(options.launchKernel).toHaveBeenCalledTimes(1);
+      expect(options.executeCell).not.toHaveBeenCalled();
+      expect(options.runAllCells).not.toHaveBeenCalled();
+      expect(result.current.trustActionNotice).toContain(
+        "Conda environment has no accessible Python interpreter",
+      );
+    },
+  );
+
+  it.each(["start_kernel", "run_cell", "run_all", "approve_only"] as const)(
+    "reports a rejected environment and stops the trust-approved %s launch handoff",
+    async (action) => {
+      const options = createPolicyOptions({
+        checkTrust: vi.fn().mockResolvedValue({ status: "untrusted" }),
+        launchKernel: vi.fn().mockResolvedValue({
+          result: "environment_selection_rejected",
+          error: "The directory is not a Conda environment (missing conda-meta)",
+        } satisfies NotebookResponse),
+      });
+      const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+      await act(async () => {
+        if (action === "run_cell") await result.current.handleExecuteCell("cell-1");
+        else if (action === "run_all") await result.current.handleRunAllCells();
+        else result.current.openTrustDialogForKernelStart();
+      });
+      await act(async () => {
+        if (action === "approve_only") await result.current.handleTrustApproveOnly();
+        else await result.current.handleTrustApprove();
+      });
+
+      expect(options.approveTrust).toHaveBeenCalledTimes(1);
+      expect(options.launchKernel).toHaveBeenCalledTimes(1);
+      expect(options.executeCellGuarded).not.toHaveBeenCalled();
+      expect(options.runAllCellsGuarded).not.toHaveBeenCalled();
+      expect(result.current.trustApprovalHandoffPending).toBe(false);
+      expect(result.current.trustActionNotice).toContain(
+        "The directory is not a Conda environment (missing conda-meta)",
+      );
+      expect(result.current.trustActionNotice).toMatch(/review.*environment selection.*apply/i);
+    },
+  );
+
+  it.each([false, true])(
+    "reports a rejected project-environment launch (joined auto-launch: %s)",
+    async (joinedAutoLaunch) => {
+      const launchKernel = vi.fn();
+      if (joinedAutoLaunch) {
+        launchKernel.mockResolvedValueOnce({
+          result: "kernel_already_running",
+          kernel_type: "python",
+          env_source: "uv:prewarmed",
+          launched_config: {},
+        } satisfies NotebookResponse);
+      }
+      launchKernel.mockResolvedValue({
+        result: "environment_selection_rejected",
+        error: "Notebook runtime changed; review the Python environment selection again",
+      } satisfies NotebookResponse);
+      const options = createPolicyOptions({ launchKernel });
+      const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+      await act(async () => {
+        await result.current.handleStartKernelWithPyproject();
+      });
+
+      expect(launchKernel).toHaveBeenCalledTimes(joinedAutoLaunch ? 2 : 1);
+      expect(result.current.trustActionNotice).toContain(
+        "Notebook runtime changed; review the Python environment selection again",
+      );
+      expect(result.current.trustActionNotice).toMatch(/review.*environment selection.*apply/i);
+    },
+  );
+
+  it("clears the trust-approved dependency-sync handoff when fallback launch rejects the selection", async () => {
+    const options = createPolicyOptions({
+      envSource: "uv:pyproject",
+      checkTrust: vi
+        .fn()
+        .mockResolvedValueOnce({ status: "untrusted" })
+        .mockResolvedValue({ status: "trusted" }),
+      launchKernel: vi.fn().mockResolvedValue({
+        result: "environment_selection_rejected",
+        error: "Conda environment directory does not exist or is inaccessible",
+      } satisfies NotebookResponse),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      await result.current.handleSyncDeps();
+    });
+    await act(async () => {
+      await result.current.handleTrustApprove();
+    });
+
+    expect(options.launchKernel).toHaveBeenCalledTimes(1);
+    expect(result.current.justSynced).toBe(false);
+    expect(result.current.trustApprovalHandoffPending).toBe(false);
+    expect(result.current.trustActionNotice).toContain(
+      "Conda environment directory does not exist or is inaccessible",
+    );
+  });
+
   it("does not approve captured Apply trust against a replacement notebook connection", async () => {
     let generation = 1;
     const options = createPolicyOptions({

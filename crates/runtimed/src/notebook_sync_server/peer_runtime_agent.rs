@@ -351,7 +351,10 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     > = std::collections::HashMap::new();
     let mut pending_replies: std::collections::HashMap<
         String,
-        tokio::sync::oneshot::Sender<RuntimeAgentResponse>,
+        (
+            tokio::sync::oneshot::Sender<RuntimeAgentResponse>,
+            Option<Arc<()>>,
+        ),
     > = std::collections::HashMap::new();
     let (agent_writer, mut writer_task) = spawn_peer_writer(
         writer,
@@ -573,7 +576,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                         if let Ok(envelope) = serde_json::from_slice::<
                             notebook_protocol::protocol::RuntimeAgentResponseEnvelope,
                         >(&typed_frame.payload) {
-                            if let Some(reply) = pending_replies.remove(&envelope.id) {
+                            if let Some((reply, _sync_lease)) = pending_replies.remove(&envelope.id) {
                                 let _ = reply.send(envelope.response);
                             } else {
                                 debug!("[notebook-sync] Agent response for unknown id: {}", envelope.id);
@@ -688,9 +691,10 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
             // Forward requests to the runtime agent. Commands are fire-and-forget;
             // queries register a pending reply keyed by correlation ID.
             Some(msg) = ra_rx.recv() => {
-                let (envelope, reply_tx) = match msg {
-                    RuntimeAgentMessage::Command(env) => (env, None),
-                    RuntimeAgentMessage::Query(env, tx) => (env, Some(tx)),
+                let (envelope, reply_tx, sync_lease) = match msg {
+                    RuntimeAgentMessage::Command(env) => (env, None, None),
+                    RuntimeAgentMessage::Query(env, tx) => (env, Some(tx), None),
+                    RuntimeAgentMessage::EnvironmentSyncQuery(env, tx, lease) => (env, Some(tx), Some(lease)),
                 };
                 let json = match serde_json::to_vec(&envelope) {
                     Ok(j) => j,
@@ -705,35 +709,30 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                 };
                 let reply_id = envelope.id.clone();
                 if let Some(tx) = reply_tx {
-                    pending_replies.insert(reply_id.clone(), tx);
+                    pending_replies.insert(reply_id.clone(), (tx, sync_lease));
                 }
                 if let Err(e) = agent_writer.send_frame(
                     NotebookFrameType::Request,
                     json,
                 ) {
-                    if let Some(tx) = pending_replies.remove(&reply_id) {
-                        let _ = tx.send(RuntimeAgentResponse::Error {
-                            error: format!("Send error: {}", e),
-                        });
-                    }
+                    warn!("[notebook-sync] Failed to queue runtime agent request: {}", e);
                     break;
                 }
             }
         }
     }
 
+    // Fence the disconnected agent before releasing pending or queued sync leases.
+    cleanup_runtime_agent_disconnect(&room, &runtime_agent_id).await;
+
     // Drain any pending query replies so callers get an error instead of hanging.
-    for (_id, reply_tx) in pending_replies.drain() {
+    for (_id, (reply_tx, _sync_lease)) in pending_replies.drain() {
         let _ = reply_tx.send(RuntimeAgentResponse::Error {
             error: "Runtime agent disconnected".to_string(),
         });
     }
 
-    // Cleanup: only clear state if we're still the current runtime agent.
-    // A stale runtime agent disconnecting after a new one connected must not
-    // clobber the new runtime agent's channel.
-    //
-    cleanup_runtime_agent_disconnect(&room, &runtime_agent_id).await;
+    drop(ra_rx);
     info!(
         "[notebook-sync] Runtime agent sync connection closed: {}",
         runtime_agent_id
@@ -1122,6 +1121,123 @@ mod tests {
     #[tokio::test]
     async fn runtime_agent_ready_waits_for_initial_state_acknowledgement() {
         assert_runtime_agent_initial_state_acknowledgement(false).await;
+    }
+
+    #[tokio::test]
+    async fn environment_sync_fence_outlives_caller_until_response_or_disconnect() {
+        use notebook_protocol::connection::recv_typed_frame;
+        use notebook_protocol::protocol::{EnvKind, RuntimeAgentResponseEnvelope};
+        use std::future::Future;
+        use tokio::io::AsyncWriteExt;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (id, _, room) = test_file_backed_room(&tmp);
+        let agent_id = "runtime-agent:sync-fence-test";
+        room.expect_runtime_agent(agent_id);
+        *room.current_runtime_agent_id.write().await = Some(agent_id.into());
+        let (coordinator_socket, agent_socket) = tokio::io::duplex(64 * 1024);
+        let (reader, writer) = tokio::io::split(coordinator_socket);
+        let mut peer = Box::pin(handle_runtime_agent_sync_connection(
+            reader,
+            writer,
+            room.clone(),
+            id.to_string(),
+            agent_id.into(),
+            tmp.path().join("executions"),
+        ));
+        let (mut reader, mut writer) = tokio::io::split(agent_socket);
+        tokio::select! {
+            () = &mut peer => panic!("peer disconnected before publishing request channel"),
+            result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while room.runtime_agent_request_tx.lock().await.is_none() {
+                    tokio::task::yield_now().await;
+                }
+            }) => result.unwrap(),
+        }
+
+        for disconnect in [false, true] {
+            let caller = tokio::spawn({
+                let room = room.clone();
+                async move {
+                    let _lease = room.local_environment_selection.begin_sync().unwrap();
+                    super::super::send_runtime_agent_request(
+                        &room,
+                        RuntimeAgentRequest::SyncEnvironment(EnvKind::Uv {
+                            packages: vec!["numpy".into()],
+                        }),
+                    )
+                    .await
+                }
+            });
+            let request = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let frame = recv_typed_frame(&mut reader).await.unwrap().unwrap();
+                    if frame.frame_type == NotebookFrameType::Request {
+                        break serde_json::from_slice(&frame.payload).unwrap();
+                    }
+                }
+            });
+            let envelope: RuntimeAgentRequestEnvelope = tokio::select! {
+                () = &mut peer => panic!("peer disconnected before forwarding query"),
+                result = request => result.unwrap(),
+            };
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+            assert!(room.local_environment_selection.begin_apply(0).is_err());
+            if disconnect {
+                writer.shutdown().await.unwrap();
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        {
+                            let _handle = room.runtime_agent_handle.try_lock().unwrap();
+                            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                            assert!(peer.as_mut().poll(&mut cx).is_pending());
+                        }
+                        if room.current_runtime_agent_id.read().await.is_none() {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                assert!(
+                    room.local_environment_selection.begin_apply(2).is_err(),
+                    "disconnect must retain the sync fence until agent resources are cleared"
+                );
+            } else {
+                let response = RuntimeAgentResponseEnvelope {
+                    id: envelope.id,
+                    response: RuntimeAgentResponse::EnvironmentSynced {
+                        synced_packages: vec!["numpy".into()],
+                    },
+                };
+                send_typed_frame(
+                    &mut writer,
+                    NotebookFrameType::Response,
+                    &serde_json::to_vec(&response).unwrap(),
+                )
+                .await
+                .unwrap();
+                let released = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    while room.local_environment_selection.sync_lease().is_some() {
+                        tokio::task::yield_now().await;
+                    }
+                });
+                tokio::select! {
+                    () = &mut peer => panic!("peer disconnected before replying"),
+                    result = released => result.unwrap(),
+                }
+                assert!(room.local_environment_selection.begin_apply(0).is_ok());
+                assert!(room.runtime_agent_request_tx.lock().await.is_some());
+            }
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), peer)
+            .await
+            .unwrap();
+        assert!(room.current_runtime_agent_id.read().await.is_none());
+        assert!(room.runtime_agent_request_tx.lock().await.is_none());
+        assert!(room.local_environment_selection.begin_apply(2).is_ok());
     }
 
     #[tokio::test]

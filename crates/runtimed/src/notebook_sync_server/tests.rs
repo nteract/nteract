@@ -9901,6 +9901,95 @@ async fn capture_writes_deps_and_env_id_for_fresh_uv_notebook() {
 }
 
 #[tokio::test]
+async fn local_environment_apply_capture_advances_only_its_own_dependency_fence() {
+    let (_tmp, room) = gate_test_room();
+    let observed = room.doc.write().await.get_heads_hex();
+    let lease = room.local_environment_selection.begin_apply(0).unwrap();
+    lease.set_observed_heads(observed);
+
+    assert!(capture_env_into_metadata(&room, CapturedEnvRuntime::Uv, &[], "first-apply").await);
+    let doc = room.doc.read().await;
+    crate::requests::guarded::validate_dependencies_unchanged_since_observed(
+        &doc,
+        &lease.observed_heads().unwrap(),
+    )
+    .expect("the daemon's own first capture must not reject Apply");
+    drop(doc);
+    room.doc
+        .write()
+        .await
+        .add_uv_dependency("unreviewed-package")
+        .unwrap();
+    let heads_after_edit = room.doc.write().await.get_heads();
+    assert!(
+        !capture_env_into_metadata(
+            &room,
+            CapturedEnvRuntime::Uv,
+            &["other-default".into()],
+            "first-apply"
+        )
+        .await
+    );
+    let mut doc = room.doc.write().await;
+    assert_eq!(doc.get_heads(), heads_after_edit);
+    assert!(
+        crate::requests::guarded::validate_dependencies_unchanged_since_observed(
+            &doc,
+            &lease.observed_heads().unwrap(),
+        )
+        .is_err(),
+        "capture must never approve a concurrent user dependency edit"
+    );
+}
+
+#[tokio::test]
+async fn local_environment_capture_rejects_edits_before_capture_and_keeps_trust_fence() {
+    let (_tmp, room) = gate_test_room();
+    let heads = room.doc.write().await.get_heads_hex();
+    let lease = room.local_environment_selection.begin_apply(0).unwrap();
+    lease.set_observed_heads(heads);
+    room.doc
+        .write()
+        .await
+        .add_uv_dependency("unreviewed-package")
+        .unwrap();
+    assert!(!capture_env_into_metadata(&room, CapturedEnvRuntime::Conda, &[], "first-apply").await);
+    assert!(room
+        .doc
+        .read()
+        .await
+        .get_metadata_snapshot()
+        .unwrap()
+        .runt
+        .conda
+        .is_none());
+    drop(lease);
+
+    let heads = room.doc.write().await.get_heads_hex();
+    let revision = room.local_environment_selection.snapshot().revision;
+    let lease = room
+        .local_environment_selection
+        .begin_apply(revision)
+        .unwrap();
+    lease.set_observed_heads(heads);
+    assert!(
+        capture_env_into_metadata(
+            &room,
+            CapturedEnvRuntime::Conda,
+            &["unapproved-default".into()],
+            "first-apply"
+        )
+        .await
+    );
+    assert!(
+        crate::requests::guarded::ensure_trusted(&room)
+            .await
+            .is_err(),
+        "advancing capture heads must not approve newly captured dependencies"
+    );
+}
+
+#[tokio::test]
 async fn capture_is_idempotent_on_existing_deps() {
     let (room, _tmp) = test_room_for_capture().await;
     // Pre-populate with user-edited deps.
@@ -14654,6 +14743,199 @@ async fn local_environment_automatic_prepare_failure_preserves_live_kernel() {
         room.try_begin_manual_launch(),
         ManualLaunchAdmission::Admitted(_)
     ));
+}
+
+#[tokio::test]
+async fn local_environment_initial_apply_reset_cleans_new_agent_authority() {
+    let (_tmp, room) = gate_test_room();
+    let lease = room.local_environment_selection.begin_apply(0).unwrap();
+    let attempt = match room.try_begin_manual_launch() {
+        ManualLaunchAdmission::Admitted(attempt) => attempt,
+        _ => panic!("admission"),
+    };
+    *room.current_runtime_agent_id.write().await = Some("new-agent".into());
+    assert!(attempt.expect_runtime_agent("new-agent"));
+    let (tx, _messages) = mpsc::channel(1);
+    *room.runtime_agent_request_tx.lock().await = Some(tx);
+    let (tx, _connected) = tokio::sync::oneshot::channel();
+    *room.pending_runtime_agent_connect_tx.lock().await = Some(tx);
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Connecting))
+        .unwrap();
+
+    reset_starting_state(&room, Some("new-agent")).await;
+
+    assert!(room.current_runtime_agent_id.read().await.is_none());
+    assert!(room.runtime_agent_request_tx.lock().await.is_none());
+    assert!(room.pending_runtime_agent_connect_tx.lock().await.is_none());
+    assert!(!room.mark_runtime_agent_connected("new-agent"));
+    assert_eq!(
+        room.state
+            .read(|sd| sd.read_state().kernel.lifecycle)
+            .unwrap(),
+        RuntimeLifecycle::NotStarted
+    );
+    attempt.release_without_cooldown();
+    drop(lease);
+}
+
+#[tokio::test]
+async fn local_environment_apply_cancelled_during_agent_lookup_preserves_old_kernel() {
+    let (tmp, room) = gate_test_room();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle)))
+        .unwrap();
+    *room.current_runtime_agent_id.write().await = Some("old-agent".into());
+    let (tx, _messages) = mpsc::channel(1);
+    *room.runtime_agent_request_tx.lock().await = Some(tx);
+    let before_kernel = room.state.read(|sd| sd.read_state().kernel).unwrap();
+    let attempt = match room.try_begin_manual_launch() {
+        ManualLaunchAdmission::Admitted(attempt) => attempt,
+        _ => panic!("admission"),
+    };
+    let lease = room.local_environment_selection.begin_apply(0).unwrap();
+    {
+        use std::future::Future;
+        let _identity = room.current_runtime_agent_id.write().await;
+        let mut apply = Box::pin(crate::requests::launch_kernel::handle_admitted(
+            &room,
+            &daemon,
+            "python".into(),
+            notebook_protocol::connection::LaunchSpec::Auto,
+            None,
+            attempt,
+            None,
+            Some(lease),
+        ));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(apply.as_mut().poll(&mut cx).is_pending());
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while room.launch_completion(1).is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        room.current_runtime_agent_id.read().await.as_deref(),
+        Some("old-agent")
+    );
+    assert!(room.runtime_agent_request_tx.lock().await.is_some());
+    assert_eq!(
+        room.state.read(|sd| sd.read_state().kernel).unwrap(),
+        before_kernel
+    );
+    assert!(!room.local_environment_selection.snapshot().applying);
+}
+
+#[tokio::test]
+async fn local_environment_apply_during_sync_preserves_running_kernel_and_comms() {
+    let (tmp, room) = gate_test_room();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+    room.state
+        .with_doc(|sd| {
+            sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
+            sd.set_kernel_info("python", "python", "uv:prewarmed")?;
+            sd.set_runtime_agent_id("old-agent")?;
+            sd.put_comm(
+                "widget",
+                "jupyter.widget",
+                "module",
+                "model",
+                &serde_json::json!({"value": 7}),
+                0,
+            )
+        })
+        .unwrap();
+    room.comms
+        .with_doc(|cd| cd.put_comm_state("widget", &serde_json::json!({"value": 7})))
+        .unwrap();
+    *room.current_runtime_agent_id.write().await = Some("old-agent".into());
+    let (tx, mut messages) = mpsc::channel(1);
+    *room.runtime_agent_request_tx.lock().await = Some(tx);
+    let kernel_before = room.state.read(|sd| sd.read_state().kernel).unwrap();
+    let comms_before = room.comms.read(|cd| cd.get_comms()).unwrap();
+    let topology_before = room.state.read(|sd| sd.get_comms()).unwrap();
+    let heads = room.doc.write().await.get_heads_hex();
+    let _sync = room.local_environment_selection.begin_sync().unwrap();
+    let response =
+        crate::requests::local_environment_selection::apply(&room, &daemon, 0, heads).await;
+    assert!(
+        matches!(response, crate::protocol::NotebookResponse::EnvironmentSelectionRejected { ref error } if error.contains("sync in progress")),
+        "{response:?}"
+    );
+    assert!(
+        messages.try_recv().is_err(),
+        "busy Apply must not deliver RestartKernel"
+    );
+    assert_eq!(
+        room.state.read(|sd| sd.read_state().kernel).unwrap(),
+        kernel_before
+    );
+    assert_eq!(room.comms.read(|cd| cd.get_comms()).unwrap(), comms_before);
+    assert_eq!(
+        room.state.read(|sd| sd.get_comms()).unwrap(),
+        topology_before
+    );
+    assert_eq!(
+        room.current_runtime_agent_id.read().await.as_deref(),
+        Some("old-agent")
+    );
+    assert!(room.runtime_agent_request_tx.lock().await.is_some());
+    assert!(!room.local_environment_selection.snapshot().applying);
+}
+
+#[cfg(unix)]
+#[tokio::test(start_paused = true)]
+async fn local_environment_initial_apply_connect_timeout_cleans_spawned_agent() {
+    let (tmp, room) = gate_test_room();
+    let mut config = test_daemon_config(&tmp);
+    config.runtime_agent_exe = Some("/usr/bin/true".into());
+    let daemon = crate::daemon::Daemon::new_for_test(config).unwrap();
+    let before_kernel = room.state.read(|sd| sd.read_state().kernel).unwrap();
+    let attempt = match room.try_begin_manual_launch() {
+        ManualLaunchAdmission::Admitted(attempt) => attempt,
+        _ => panic!("admission"),
+    };
+    let lease = room.local_environment_selection.begin_apply(0).unwrap();
+    let environment = notebook_protocol::protocol::LocalCondaEnvironment {
+        id: "borrowed".into(),
+        name: "borrowed".into(),
+        prefix: tmp.path().join("borrowed"),
+        python_path: tmp.path().join("borrowed/bin/python"),
+        python_version: None,
+    };
+    let response = crate::requests::launch_kernel::handle_admitted(
+        &room,
+        &daemon,
+        "python".into(),
+        notebook_protocol::connection::LaunchSpec::Auto,
+        None,
+        attempt,
+        Some(environment),
+        Some(lease),
+    )
+    .await;
+    assert!(
+        matches!(response, crate::protocol::NotebookResponse::Error { ref error } if error.contains("connect within 30s")),
+        "{response:?}"
+    );
+    assert!(room.current_runtime_agent_id.read().await.is_none());
+    assert!(room.runtime_agent_handle.lock().await.is_none());
+    assert!(room.runtime_agent_request_tx.lock().await.is_none());
+    assert!(room.pending_runtime_agent_connect_tx.lock().await.is_none());
+    assert!(room.active_kernel_launch().is_none());
+    assert_eq!(
+        room.state.read(|sd| sd.read_state().kernel).unwrap(),
+        before_kernel
+    );
+    assert!(!room.local_environment_selection.snapshot().applying);
+    match room.try_begin_manual_launch() {
+        ManualLaunchAdmission::Admitted(attempt) => attempt.release_without_cooldown(),
+        _ => panic!("failed initial Apply must release launch admission"),
+    }
 }
 
 #[tokio::test]

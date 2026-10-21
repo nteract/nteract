@@ -2,8 +2,12 @@
 //! revisioned apply lease freezes the staged target across asynchronous preflight
 //! and launch; cancellation releases it without committing a failed binding.
 //! Owners observe snapshots through a watch channel, never through NotebookDoc.
+//! Apply and package sync share admission; the sync lease outlives a cancelled
+//! caller while its runtime-agent query is pending. Only the prior agent is
+//! protected during preflight, and authorized capture advances the heads fence
+//! while the NotebookDoc write lock excludes concurrent dependency edits.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use crate::{daemon::Daemon, notebook_sync_server::NotebookRoom};
 use notebook_protocol::protocol::{
@@ -15,6 +19,9 @@ pub(crate) struct LocalEnvironmentSelection {
     state: Mutex<EnvironmentSelectionSnapshot>,
     changed: watch::Sender<EnvironmentSelectionSnapshot>,
     replacing: std::sync::atomic::AtomicBool,
+    observed_heads: Mutex<Option<Vec<String>>>,
+    preserved_agent_id: Mutex<Option<String>>,
+    syncing: Mutex<Weak<()>>,
 }
 
 impl Default for LocalEnvironmentSelection {
@@ -24,6 +31,9 @@ impl Default for LocalEnvironmentSelection {
             state: Mutex::new(EnvironmentSelectionSnapshot::default()),
             changed,
             replacing: std::sync::atomic::AtomicBool::new(false),
+            observed_heads: Mutex::new(None),
+            preserved_agent_id: Mutex::new(None),
+            syncing: Mutex::new(Weak::new()),
         }
     }
 }
@@ -55,15 +65,73 @@ impl LocalEnvironmentSelection {
     ) -> Result<EnvironmentApply<'_>, String> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         Self::validate(&state, expected_revision)?;
+        if self.sync_lease().is_some() {
+            return Err("Environment sync in progress; retry after it completes".into());
+        }
         state.applying = true;
+        *self
+            .observed_heads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .preserved_agent_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         self.replacing
             .store(false, std::sync::atomic::Ordering::Release);
         self.publish(&mut state);
         Ok(EnvironmentApply {
             selection: self,
             revision: state.revision,
-            observed_heads: None,
         })
+    }
+
+    pub(crate) fn begin_sync(&self) -> Result<Arc<()>, String> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.applying {
+            return Err(
+                "Wait for the environment selection to finish applying before syncing packages"
+                    .into(),
+            );
+        }
+        let mut syncing = self.syncing.lock().unwrap_or_else(|e| e.into_inner());
+        if syncing.upgrade().is_some() {
+            return Err("Environment sync in progress; retry after it completes".into());
+        }
+        let lease = Arc::new(());
+        *syncing = Arc::downgrade(&lease);
+        Ok(lease)
+    }
+
+    pub(crate) fn sync_lease(&self) -> Option<Arc<()>> {
+        self.syncing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .upgrade()
+    }
+
+    pub(crate) fn observed_heads(&self) -> Option<Vec<String>> {
+        self.observed_heads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn advance_capture_heads(&self, doc: &mut notebook_doc::NotebookDoc) {
+        *self
+            .observed_heads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(doc.get_heads_hex());
+    }
+
+    pub(crate) fn preserves_agent(&self, agent_id: Option<&str>) -> bool {
+        self.is_preparing()
+            && self
+                .preserved_agent_id
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_deref()
+                .is_some_and(|prior| agent_id.is_none_or(|id| id == prior))
     }
 
     fn validate(state: &EnvironmentSelectionSnapshot, expected: u64) -> Result<(), String> {
@@ -101,10 +169,29 @@ impl LocalEnvironmentSelection {
 pub(crate) struct EnvironmentApply<'a> {
     selection: &'a LocalEnvironmentSelection,
     revision: u64,
-    pub(crate) observed_heads: Option<Vec<String>>,
 }
 
 impl EnvironmentApply<'_> {
+    pub(crate) fn set_observed_heads(&self, heads: Vec<String>) {
+        *self
+            .selection
+            .observed_heads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(heads);
+    }
+
+    pub(crate) fn preserve_agent(&self, agent_id: Option<String>) {
+        *self
+            .selection
+            .preserved_agent_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = agent_id;
+    }
+
+    pub(crate) fn observed_heads(&self) -> Option<Vec<String>> {
+        self.selection.observed_heads()
+    }
+
     pub(crate) fn begin_replacement(&self) {
         self.selection
             .replacing
@@ -316,7 +403,7 @@ pub(crate) async fn apply(
             return rejected("A kernel launch is already in progress".into())
         }
     };
-    let mut lease = match room
+    let lease = match room
         .local_environment_selection
         .begin_apply(expected_revision)
     {
@@ -326,7 +413,7 @@ pub(crate) async fn apply(
             return rejected(error);
         }
     };
-    lease.observed_heads = Some(observed_heads);
+    lease.set_observed_heads(observed_heads);
     let response = super::launch_kernel::handle_admitted(
         room,
         daemon,

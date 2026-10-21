@@ -265,6 +265,13 @@ export function useNotebookActionPolicy({
           setTrustActionNotice(response.reason);
           return false;
         }
+        if (response.result === "environment_selection_rejected") {
+          setTrustApprovalHandoffPending(false);
+          setTrustActionNotice(
+            `${response.error}. Review the environment selection and apply a valid environment before starting the kernel again.`,
+          );
+          return false;
+        }
         resetEnvProgress();
         return true;
       }
@@ -583,6 +590,13 @@ export function useNotebookActionPolicy({
           setTrustActionNotice(response.reason);
           return;
         }
+        if (response.result === "environment_selection_rejected") {
+          setTrustApprovalHandoffPending(false);
+          setTrustActionNotice(
+            `${response.error}. Review the environment selection and apply a valid environment before starting the kernel again.`,
+          );
+          return;
+        }
         await runTrustApprovedAction(action);
       } catch (e) {
         logger.error("[notebook-action-policy] kernel launch after trust approval failed:", e);
@@ -741,6 +755,10 @@ export function useNotebookActionPolicy({
       );
     } else if (response.result === "guard_rejected") {
       setTrustActionNotice(response.reason);
+    } else if (response.result === "environment_selection_rejected") {
+      setTrustActionNotice(
+        `${response.error}. Review the environment selection and apply a valid environment before starting the kernel again.`,
+      );
     }
   }, [canExecute, launchKernel, sessionReady, shutdownKernel]);
 
@@ -770,7 +788,7 @@ export function useNotebookActionPolicy({
           kernelStatus === KERNEL_STATUS.AWAITING_TRUST
         ) {
           const started = await tryStartKernel(captureExecuteTrustAction(cellId));
-          if (!started && pendingKernelStartRef.current) return;
+          if (!started) return;
         }
         const response = await executeCell(cellId);
         if (response.result === "error") {

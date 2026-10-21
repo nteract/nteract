@@ -1439,6 +1439,17 @@ pub(crate) async fn capture_env_into_metadata(
     env_id: &str,
 ) -> bool {
     let mut doc = room.doc.write().await;
+    let apply_heads = room
+        .local_environment_selection
+        .observed_heads()
+        .filter(|_| room.local_environment_selection.is_preparing());
+    if let Some(heads) = apply_heads.as_ref() {
+        if crate::requests::guarded::validate_dependencies_unchanged_since_observed(&doc, heads)
+            .is_err()
+        {
+            return false;
+        }
+    }
     let rollback_actor = doc.get_actor_id();
     let rollback_snapshot = doc.save();
     let heads = doc.get_heads();
@@ -1508,6 +1519,10 @@ pub(crate) async fn capture_env_into_metadata(
             warn!("[notebook-sync] {error}");
             return false;
         }
+    }
+    if changed && apply_heads.is_some() {
+        room.local_environment_selection
+            .advance_capture_heads(&mut doc);
     }
     drop(doc);
     if changed {
@@ -2465,7 +2480,10 @@ pub(crate) async fn reset_starting_state_with_outcome<'a>(
     expected_runtime_agent_id: Option<&str>,
     outcome: ResetOutcome<'a>,
 ) {
-    if room.local_environment_selection.is_preparing() {
+    if room
+        .local_environment_selection
+        .preserves_agent(expected_runtime_agent_id)
+    {
         return;
     }
     // For guarded resets (post-spawn error paths), atomically check-and-clear
