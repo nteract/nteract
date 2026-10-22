@@ -19,6 +19,7 @@ import {
   legacyRoutes,
   resumePublication,
   routes,
+  routesFor,
 } from "./deployment/publish.mjs";
 
 const prefix =
@@ -307,4 +308,55 @@ test("pending reload keeps its receipt if restart is inactive or configuration c
     /Concurrent tunnel update/,
   );
   assert.equal(existsSync(fixture.pending), true);
+});
+
+test("page3 publication coexists with pages-next and migrates only its own routes", () => {
+  const original = prefix + routes + suffix;
+  const updated = insertRoutes(original, "page3");
+  assert.equal(updated, prefix + routes + routesFor("page3") + suffix);
+  assert.equal(insertRoutes(updated, "page3"), updated);
+  assert.equal(insertRoutes(updated), updated);
+  assert.equal(
+    insertRoutes(prefix + routesFor("page3") + suffix),
+    prefix + routesFor("page3") + routes + suffix,
+  );
+  assert.equal(insertRoutes(prefix + routes + routesFor("page3", true) + suffix, "page3"), updated);
+  assert.throws(
+    () => insertRoutes(updated + "# foreign page3.runtimed.run rules", "page3"),
+    /Conflicting/,
+  );
+  const pattern = new RegExp(/^    path: (.+)$/m.exec(routesFor("page3"))[1]);
+  assert.equal(pattern.test("/mcp"), true);
+  assert.equal(pattern.test("/api/sync"), true);
+  assert.equal(pattern.test("/oidc"), true);
+  assert.equal(pattern.test("/state"), false);
+  assert.equal(pattern.test("/internal/create"), false);
+});
+
+test("interrupted page3 publication resumes without changing pages-next routes", (t) => {
+  const fixture = publicationFixture(t);
+  fixture.target = "page3";
+  fixture.before = prefix + routes + suffix;
+  fixture.updated = insertRoutes(fixture.before, fixture.target);
+  writeFileSync(fixture.config, fixture.before);
+  writeFileSync(fixture.candidate, fixture.updated);
+  interruptAfterRename(fixture);
+  let restarts = 0;
+  assert.equal(
+    resumePublication({
+      ...fixture,
+      restart: () => {
+        restarts++;
+        return "active";
+      },
+    }),
+    true,
+  );
+  assert.equal(restarts, 1);
+  assert.equal(readFileSync(fixture.config, "utf8"), fixture.updated);
+  assert.equal(
+    readFileSync(fixture.config, "utf8").replace(routesFor("page3"), ""),
+    fixture.before,
+  );
+  assert.equal(existsSync(fixture.pending), false);
 });

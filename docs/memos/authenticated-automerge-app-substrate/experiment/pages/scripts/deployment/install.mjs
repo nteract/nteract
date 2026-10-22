@@ -14,13 +14,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-const [stage, apply] = process.argv.slice(2);
-if (
-  process.getuid() !== 0 ||
-  apply !== "--apply" ||
-  !/^\/tmp\/nteract-pages-next-stage-[A-Za-z0-9]{8}$/.test(stage ?? "")
-)
+import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
+const [stage, apply, extra] = process.argv.slice(2);
+if (process.getuid() !== 0 || apply !== "--apply" || extra)
   throw new Error("Explicit root installation with a prepared stage is required");
+const target = stageTarget(stage);
+const profile = deploymentProfile(target);
 const run = (command, args) => {
   try {
     return execFileSync(command, args, {
@@ -35,23 +34,7 @@ const run = (command, args) => {
 };
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const manifest = JSON.parse(readFileSync(stage + "/manifest.json"));
-const expected = {
-  host: "lab1",
-  hostname: "pages-next.runtimed.run",
-  service: "nteract-pages-next",
-  bucket: "nteract-celld-lab-621741996708",
-  prefix: "standalone/pages-next",
-  region: "us-east-1",
-  listen: "127.0.0.1:9472",
-  internalListen: "127.0.0.1:19472",
-  runtime: "/usr/local/bin/celld-v0.6.1",
-  requiredVersion: "celld 0.6.1",
-};
-if (
-  JSON.stringify(manifest.deployment) !== JSON.stringify(expected) ||
-  !/^[a-f0-9]{40}$/.test(manifest.source_sha)
-)
-  throw new Error("Unexpected deployment target or source");
+const expected = verifyDeployment(manifest, target);
 function stagedFiles(directory, prefix = "") {
   return readdirSync(directory)
     .sort()
@@ -74,7 +57,9 @@ if (
   throw new Error("Stage file set differs from manifest");
 for (const [file, digest] of Object.entries(manifest.files)) {
   if (
-    !/^(release\/[A-Za-z0-9_./-]+|(install|firewall|publish)[.]mjs)$/.test(file) ||
+    !/^(release\/[A-Za-z0-9_./-]+|(install|firewall|publish|profiles|isolated-publication|routes)[.]mjs)$/.test(
+      file,
+    ) ||
     file.split("/").includes("..")
   )
     throw new Error("Unsafe manifest path");
@@ -87,13 +72,16 @@ if (
   hash(readFileSync(expected.runtime)) !== manifest.runtime.sha256
 )
   throw new Error("Installed celld changed after preparation");
-const base = "/opt/nteract-pages-next",
-  configDir = "/etc/nteract-pages-next",
-  state = "/var/lib/nteract-pages-next";
-const unit = "/etc/systemd/system/nteract-pages-next.service";
+const base = "/opt/" + expected.service,
+  configDir = "/etc/" + expected.service,
+  state = "/var/lib/" + expected.service;
+const unit = "/etc/systemd/system/" + expected.service + ".service";
 const owned = existsSync(configDir + "/ownership.json");
-if (owned && JSON.parse(readFileSync(configDir + "/ownership.json")).prefix !== expected.prefix)
-  throw new Error("Existing service has different ownership");
+if (owned) {
+  const ownership = JSON.parse(readFileSync(configDir + "/ownership.json"));
+  if (ownership.prefix !== expected.prefix || ownership.hostname !== expected.hostname)
+    throw new Error("Existing service has different ownership");
+}
 if (!owned) {
   for (const target of [base, configDir, state, unit])
     if (existsSync(target)) throw new Error("An unowned deployment path already exists: " + target);
@@ -106,7 +94,11 @@ if (!owned) {
   if (
     run("ss", ["-H", "-ltn"])
       .split("\n")
-      .some((line) => /:(9472|19472)\s/.test(line))
+      .some((line) =>
+        [expected.listen, expected.internalListen].some((listen) =>
+          new RegExp(":" + listen.split(":").at(-1) + "\\s").test(line),
+        ),
+      )
   )
     throw new Error("Proposed listener port is occupied");
   const count = run("/usr/local/bin/aws", [
@@ -127,7 +119,11 @@ if (!owned) {
   ]);
   if (count !== "0") throw new Error("New Pages prefix is not empty");
   const rules = run("/usr/sbin/nft", ["-j", "list", "ruleset"]);
-  if (rules.includes("nteract_pages_next") || /0x20000000|536870912/.test(rules))
+  if (
+    rules.includes(profile.firewallTable) ||
+    rules.includes(profile.firewallMark) ||
+    rules.includes(String(Number(profile.firewallMark)))
+  )
     throw new Error("Proposed firewall namespace or mark is occupied");
   run("useradd", [
     "--system",
@@ -161,9 +157,10 @@ const configPath = release + "/wrangler.json",
 if (config.main !== "index.js" || config.no_bundle !== true || config.build || config.containers)
   throw new Error("Unexpected build configuration");
 config.vars = {
+  ...(profile.asyncPersistence ? { PAGES_ASYNC_PERSISTENCE: "true" } : {}),
   NOTEBOOK_CLOUD_OIDC_FLOW: "server",
-  NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages-next.runtimed.run",
-  NOTEBOOK_CLOUD_OIDC_REDIRECT_URI: "https://pages-next.runtimed.run/oidc",
+  NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://" + expected.hostname,
+  NOTEBOOK_CLOUD_OIDC_REDIRECT_URI: "https://" + expected.hostname + "/oidc",
   NOTEBOOK_CLOUD_OIDC_ISSUER: "https://auth.anaconda.com/api/auth",
   NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0",
   NOTEBOOK_CLOUD_OIDC_AUDIENCE: "anaconda,1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0",
@@ -247,8 +244,10 @@ permissions(base + "/releases");
 cpSync(expected.runtime, base + "/celld.next");
 chmodSync(base + "/celld.next", 0o755);
 renameSync(base + "/celld.next", base + "/celld");
-cpSync(stage + "/firewall.mjs", base + "/firewall.mjs");
-chmodSync(base + "/firewall.mjs", 0o644);
+for (const helper of ["firewall.mjs", "profiles.mjs"]) {
+  cpSync(stage + "/" + helper, base + "/" + helper);
+  chmodSync(base + "/" + helper, 0o644);
+}
 const receipt = run("runuser", [
   "-u",
   expected.service,
@@ -283,7 +282,7 @@ writeFileSync(
 );
 writeFileSync(
   unit,
-  `[Unit]\nDescription=Isolated native Pages experiment on celld\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=${expected.service}\nGroup=${expected.service}\nWorkingDirectory=${state}\nEnvironment=AWS_REGION=us-east-1\nEnvironment=CELLD_DURABILITY=bucket\nEnvironment=CELLD_TOKIO_THREADS=2\nEnvironment=CELLD_V8_HEAP_LIMIT_MB=256\nEnvironment=CELLD_MAX_REQUEST_BODY_BYTES=2097152\nEnvironment=CELLD_MAX_RSS_MB=768\nEnvironment=CELLD_LOCAL_CACHE_MAX_BYTES=536870912\nEnvironment=CELLD_TEST_DATA_DIR=${state}/cache\nExecStartPre=+/usr/bin/node ${base}/firewall.mjs\nExecStart=${base}/celld --bucket s3://${expected.bucket}/${expected.prefix} --region ${expected.region} --listen ${expected.listen} --internal-listen ${expected.internalListen}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=60\nLimitNOFILE=65536\nMemoryMax=1G\nCPUQuota=100%\nTasksMax=256\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nProtectSystem=strict\nReadWritePaths=${state}\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n`,
+  `[Unit]\nDescription=Isolated native Pages experiment on celld\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=${expected.service}\nGroup=${expected.service}\nWorkingDirectory=${state}\nEnvironment=AWS_REGION=us-east-1\nEnvironment=CELLD_DURABILITY=bucket\nEnvironment=CELLD_TOKIO_THREADS=2\nEnvironment=CELLD_V8_HEAP_LIMIT_MB=256\nEnvironment=CELLD_MAX_REQUEST_BODY_BYTES=2097152\nEnvironment=CELLD_MAX_RSS_MB=768\nEnvironment=CELLD_LOCAL_CACHE_MAX_BYTES=536870912\nEnvironment=CELLD_TEST_DATA_DIR=${state}/cache\nExecStartPre=+/usr/bin/node ${base}/firewall.mjs --target ${target}\nExecStart=${base}/celld --bucket s3://${expected.bucket}/${expected.prefix} --region ${expected.region} --listen ${expected.listen} --internal-listen ${expected.internalListen}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=60\nLimitNOFILE=65536\nMemoryMax=1G\nCPUQuota=100%\nTasksMax=256\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nProtectSystem=strict\nReadWritePaths=${state}\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n`,
   { mode: 0o644 },
 );
 run("systemd-analyze", ["verify", unit]);

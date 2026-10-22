@@ -11,37 +11,31 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const legacyRoutes = `  - hostname: pages-next.runtimed.run
-    path: ^/(index[.]html|app[.](js|css)|(automerge|subduction)[.]wasm|health|mcp|api/(tools|connect|sync|saved|auth/(login|logout|session))|oidc)?$
-    service: http://127.0.0.1:9472
-  - hostname: pages-next.runtimed.run
-    service: http_status:404
-`;
+import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
+import { routesFor } from "./routes.mjs";
+export { routesFor } from "./routes.mjs";
+export const legacyRoutes = routesFor("pages-next", true);
+export const routes = routesFor();
 
-export const routes = `  - hostname: pages-next.runtimed.run
-    path: ^/(index[.]html|app[.](js|css)|(automerge|subduction)[.]wasm|health|mcp|llms[.]txt|p/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|api/(tools|connect|sync|saved|pages/register|auth/(login|logout|session))|oidc)?$
-    service: http://127.0.0.1:9472
-  - hostname: pages-next.runtimed.run
-    service: http_status:404
-`;
-
-export function insertRoutes(before) {
-  if (before.includes("pages-next.runtimed.run")) {
-    for (const known of [routes, legacyRoutes]) {
+export function insertRoutes(before, target = "pages-next") {
+  const { hostname } = deploymentProfile(target).deployment;
+  const updated = routesFor(target);
+  if (before.includes(hostname)) {
+    for (const known of [updated, routesFor(target, true)]) {
       const parts = before.split(known);
       if (
         parts.length === 2 &&
-        !parts.join("").includes("pages-next.runtimed.run") &&
+        !parts.join("").includes(hostname) &&
         (!parts[0] || parts[0].endsWith("\n")) &&
         (!parts[1] || parts[1].startsWith("  - "))
       )
-        return parts.join(routes);
+        return parts.join(updated);
     }
-    throw new Error("Conflicting Pages-next routes");
+    throw new Error("Conflicting Pages routes for " + hostname);
   }
   const anchor = '  - hostname: "*.runtimed.run"\n';
   if (before.split(anchor).length !== 2) throw new Error("Tunnel wildcard layout changed");
-  return before.replace(anchor, routes + anchor);
+  return before.replace(anchor, updated + anchor);
 }
 
 // An earlier publication's backup must survive. A failed attempt can reuse only
@@ -74,7 +68,14 @@ function restartWithConfig(config, expectedHash, restart) {
 }
 
 // Resolve an interrupted publication before the unchanged-config fast path.
-export function resumePublication({ config, candidate, sourceSha, directory, restart }) {
+export function resumePublication({
+  config,
+  candidate,
+  sourceSha,
+  directory,
+  restart,
+  target = "pages-next",
+}) {
   const pending = pendingPath(directory);
   if (!existsSync(pending)) return false;
   const receipt = JSON.parse(readRegular(pending));
@@ -91,7 +92,7 @@ export function resumePublication({ config, candidate, sourceSha, directory, res
     "cloudflared." + sourceSha + "." + receipt.before_sha256 + ".before.yml",
   );
   const before = readRegular(backup);
-  const updated = insertRoutes(before);
+  const updated = insertRoutes(before, target);
   if (
     before === updated ||
     configHash(before) !== receipt.before_sha256 ||
@@ -154,23 +155,27 @@ export function applyPublication({
   unlinkSync(pending);
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [stage, apply] = process.argv.slice(2);
-  if (
-    process.getuid() !== 0 ||
-    apply !== "--apply" ||
-    !/^\/tmp\/nteract-pages-next-stage-[A-Za-z0-9]{8}$/.test(stage ?? "")
-  )
+  const [stage, apply, extra] = process.argv.slice(2);
+  if (process.getuid() !== 0 || apply !== "--apply" || extra)
     throw new Error("Explicit root publication with prepared stage required");
+  const target = stageTarget(stage);
+  if (target === "page3") {
+    const { publishIsolated } = await import("./isolated-publication.mjs");
+    console.log(JSON.stringify(publishIsolated(stage)));
+    process.exit(0);
+  }
   const manifest = JSON.parse(readFileSync(stage + "/manifest.json"));
-  const ownership = JSON.parse(readFileSync("/etc/nteract-pages-next/ownership.json"));
+  const deployment = verifyDeployment(manifest, target);
+  const directory = "/etc/" + deployment.service;
+  const ownership = JSON.parse(readFileSync(directory + "/ownership.json"));
   if (
-    ownership.hostname !== "pages-next.runtimed.run" ||
-    ownership.prefix !== "standalone/pages-next" ||
+    ownership.hostname !== deployment.hostname ||
+    ownership.prefix !== deployment.prefix ||
     manifest.deployment.hostname !== ownership.hostname
   )
     throw new Error("Unexpected publication target");
   const run = (command, args) => execFileSync(command, args, { encoding: "utf8" }).trim();
-  if (run("systemctl", ["is-active", "nteract-pages-next"]) !== "active")
+  if (run("systemctl", ["is-active", deployment.service]) !== "active")
     throw new Error("Prototype service is not active");
   const health = JSON.parse(
     run("curl", [
@@ -179,18 +184,19 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       "--show-error",
       "--max-time",
       "10",
-      "http://127.0.0.1:9472/health",
+      "http://" + deployment.listen + "/health",
     ]),
   );
   if (health.ok !== true || health.prototype !== "pages-celld-native")
     throw new Error("Unexpected local prototype health response");
   const config = "/etc/cloudflared/config.yml";
-  const candidate = "/etc/cloudflared/pages-next-candidate.yml";
+  const candidate = "/etc/cloudflared/" + target + "-candidate.yml";
   const publication = {
     config,
     candidate,
     sourceSha: manifest.source_sha,
-    directory: "/etc/nteract-pages-next",
+    directory,
+    target,
     restart: () => {
       run("systemctl", ["restart", "cloudflared.service"]);
       return run("systemctl", ["is-active", "cloudflared.service"]);
@@ -208,7 +214,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(0);
   }
   const before = readFileSync(config, "utf8");
-  const updated = insertRoutes(before);
+  const updated = insertRoutes(before, target);
   if (updated === before) {
     console.log(JSON.stringify({ published: true, changed: false, hostname: ownership.hostname }));
     process.exit(0);
@@ -217,20 +223,21 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   writeFileSync(candidate, updated, { mode: 0o600, flag: "wx" });
   try {
     run("/usr/bin/cloudflared", ["--config", candidate, "tunnel", "ingress", "validate"]);
+    const origin = "https://" + deployment.hostname;
     const checks = [
-      ["https://pages-next.runtimed.run/", "127.0.0.1:9472"],
-      ["https://pages-next.runtimed.run/api/sync?page=test", "127.0.0.1:9472"],
-      ["https://pages-next.runtimed.run/mcp", "127.0.0.1:9472"],
-      ["https://pages-next.runtimed.run/llms.txt", "127.0.0.1:9472"],
-      ["https://pages-next.runtimed.run/p/12345678-1234-4123-8123-123456789abc", "127.0.0.1:9472"],
-      ["https://pages-next.runtimed.run/p/12345678-1234-4123-8123-123456789abc/", "127.0.0.1:9472"],
-      ["https://pages-next.runtimed.run/api/pages/register", "127.0.0.1:9472"],
-      ["https://pages-next.runtimed.run/p/not-a-page", "http_status:404"],
-      ["https://pages-next.runtimed.run/llms.txt/private", "http_status:404"],
-      ["https://pages-next.runtimed.run/state", "http_status:404"],
-      ["https://pages-next.runtimed.run/internal/create", "http_status:404"],
-      ["https://pages-next.runtimed.run/internal/register", "http_status:404"],
-      ["https://pages-next.runtimed.run/dev/oidc/authorize", "http_status:404"],
+      [origin + "/", deployment.listen],
+      [origin + "/api/sync?page=test", deployment.listen],
+      [origin + "/mcp", deployment.listen],
+      [origin + "/llms.txt", deployment.listen],
+      [origin + "/p/12345678-1234-4123-8123-123456789abc", deployment.listen],
+      [origin + "/p/12345678-1234-4123-8123-123456789abc/", deployment.listen],
+      [origin + "/api/pages/register", deployment.listen],
+      [origin + "/p/not-a-page", "http_status:404"],
+      [origin + "/llms.txt/private", "http_status:404"],
+      [origin + "/state", "http_status:404"],
+      [origin + "/internal/create", "http_status:404"],
+      [origin + "/internal/register", "http_status:404"],
+      [origin + "/dev/oidc/authorize", "http_status:404"],
     ];
     for (const [url, expected] of checks)
       if (
@@ -250,6 +257,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       "https://m.runtimed.run/api/sync?page=test",
       "https://main.runtimed.run/",
       "https://deploy.runtimed.run/operator",
+      ...(target === "page3"
+        ? ["https://pages-next.runtimed.run/", "https://pages-next.runtimed.run/api/sync?page=test"]
+        : ["https://page3.runtimed.run/", "https://page3.runtimed.run/api/sync?page=test"]),
     ]) {
       const current = run("/usr/bin/cloudflared", [
         "--config",

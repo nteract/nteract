@@ -2,6 +2,7 @@ import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
 import { Repo, documentIdToBinary } from "@automerge/automerge-repo";
 import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
+import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
 import { applyComment } from "../model/comments.mjs";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
 import {
@@ -76,7 +77,10 @@ export class PageSession {
       await session.start();
       return session;
     } catch (e) {
-      await session.close();
+      // close() invalidates the session immediately, but draining native I/O can
+      // outlast a failed lookup. Surface the opening error while cleanup keeps
+      // ownership of the replica and its identity lock until it has finished.
+      void session.close().catch(() => {});
       throw e;
     }
   }
@@ -214,11 +218,19 @@ export class PageSession {
       };
       await writeLocalPage(this.identity, this.localPage);
     } else if (this.localPage) {
-      // Import merges with any history already on this replica's disk. The
-      // checkpoint also bootstraps a duplicated tab with its own signing key.
-      this.handle = await this.repo.import(decodeSnapshot(this.localPage.snapshot), {
-        docId: this.localPage.document_id,
-      });
+      // A checkpoint can contain more history than an ordinary edit batch.
+      // Merge its bounded complete record set before exposing a handle; this
+      // also retries any prefix left by an interrupted local import.
+      const checkpoint = A.load(decodeSnapshot(this.localPage.snapshot));
+      try {
+        await this.backend.storeSnapshot(
+          documentIdToBinary(this.localPage.document_id),
+          extractRecords(checkpoint),
+        );
+      } finally {
+        A.free(checkpoint);
+      }
+      this.handle = await this.repo.find(this.localPage.document_id);
       this.canWrite = !!this.canWrite && !!this.localPage.canWrite;
     } else {
       await this.connect(false);
@@ -636,13 +648,27 @@ export class PageSession {
       const result = await this.requestWithRenewal(
         `/api/saved?page=${encodeURIComponent(this.pageId)}`,
         {
+          // A lost response must not leave the UI at Saving forever. The host
+          // retains ownership of any persistence already in progress.
+          signal: AbortSignal.timeout(30_000),
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ heads }),
         },
       );
       if (!isCurrent()) return;
-      this.savedHeads = result.durableHeads;
+      if (
+        !Array.isArray(result?.durableHeads) ||
+        (heads.length > 0 && result.durableHeads.length === 0) ||
+        !result.durableHeads.every(
+          (head) => typeof head === "string" && /^[0-9a-f]{64}$/.test(head),
+        )
+      )
+        throw Error("Invalid durability receipt");
+      // A successful receipt waits for these requested heads and flushes them.
+      // The host frontier may already descend from them, so exact membership
+      // in its newer durableHeads cannot decide whether this client is saved.
+      this.savedHeads = heads;
       this.clearConnectionProblem();
       this.status = A.getHeads(this.doc).every((h) => this.savedHeads.includes(h))
         ? "Saved"
@@ -708,8 +734,14 @@ export class PageSession {
     try {
       await this.backend?.close();
     } catch {}
-    await this.storage?.close();
-    this.signer?.free();
-    this.local?.release();
+    try {
+      await this.storage?.close();
+    } finally {
+      try {
+        this.signer?.free();
+      } finally {
+        this.local?.release();
+      }
+    }
   }
 }

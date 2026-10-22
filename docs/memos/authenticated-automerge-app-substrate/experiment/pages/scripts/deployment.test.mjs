@@ -1,4 +1,5 @@
 import test from "node:test";
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +8,7 @@ import { sourceFingerprint } from "./source-fingerprint.mjs";
 import { insertRoutes, routes } from "./deployment/publish.mjs";
 import { configureDns } from "./deployment/dns.mjs";
 import { pagesFirewall } from "./deployment/firewall.mjs";
+import * as profiles from "./deployment/profiles.mjs";
 import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
@@ -213,10 +215,23 @@ test("release staging copies only built artifacts, never development credentials
   }
 });
 
-function installFixture(t, { failure, previous = true } = {}) {
+function installFixture(
+  t,
+  {
+    failure,
+    previous = true,
+    target = "pages-next",
+    fresh = false,
+    listeners = "",
+    rules = "{}",
+  } = {},
+) {
   const root = mkdtempSync(path.join(tmpdir(), "pages-install-retry-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const stage = "/tmp/nteract-pages-next-stage-test1234";
+  const deployment = profiles.deploymentProfile(target).deployment;
+  const stage = "/tmp/" + deployment.service + "-stage-test1234";
+  const configDir = "/etc/" + deployment.service;
+  const stateDir = "/var/lib/" + deployment.service;
   const local = (file) => path.join(root, file);
   const write = (file, value) => {
     mkdirSync(path.dirname(local(file)), { recursive: true });
@@ -231,25 +246,19 @@ function installFixture(t, { failure, previous = true } = {}) {
       esModuleInterop: true,
     },
   }).outputText;
-  const deployment = {
-    host: "lab1",
-    hostname: "pages-next.runtimed.run",
-    service: "nteract-pages-next",
-    bucket: "nteract-celld-lab-621741996708",
-    prefix: "standalone/pages-next",
-    region: "us-east-1",
-    listen: "127.0.0.1:9472",
-    internalListen: "127.0.0.1:19472",
-    runtime: "/usr/local/bin/celld-v0.6.1",
-    requiredVersion: "celld 0.6.1",
-  };
   const files = {
-    "release/wrangler.json": JSON.stringify({ main: "index.js", no_bundle: true }),
+    "release/wrangler.json": JSON.stringify({
+      main: "index.js",
+      no_bundle: true,
+      durable_objects: { bindings: [{ name: "PAGE_RECORDS", class_name: "PageRecords" }] },
+      migrations: [{ tag: "fixture", new_sqlite_classes: ["PageRecords"] }],
+    }),
     "release/index.js": "export default {};",
     "release/public/app.js": "console.log('fixture');",
     "install.mjs": "fixture installer",
     "firewall.mjs": "fixture firewall",
     "publish.mjs": "fixture publisher",
+    "profiles.mjs": "fixture profiles",
   };
   for (const [file, value] of Object.entries(files)) write(stage + "/" + file, value);
   const manifest = {
@@ -261,11 +270,16 @@ function installFixture(t, { failure, previous = true } = {}) {
   };
   write(stage + "/manifest.json", JSON.stringify(manifest));
   write(deployment.runtime, "qualified runtime");
-  write("/etc/nteract-pages-next/ownership.json", JSON.stringify({ prefix: deployment.prefix }));
-  write("/etc/nteract-pages-next/session-secret", "fixture-only-session-secret");
-  if (previous)
-    write("/etc/nteract-pages-next/deployment.json", JSON.stringify({ id: "previous" }));
-  mkdirSync(local("/var/lib/nteract-pages-next"), { recursive: true });
+  if (!fresh) {
+    write(
+      configDir + "/ownership.json",
+      JSON.stringify({ prefix: deployment.prefix, hostname: deployment.hostname }),
+    );
+    write(configDir + "/session-secret", "fixture-only-session-secret");
+    if (previous) write(configDir + "/deployment.json", JSON.stringify({ id: "previous" }));
+    mkdirSync(local(stateDir), { recursive: true });
+  }
+  for (const parent of ["/opt", "/etc", "/var/lib"]) mkdirSync(local(parent), { recursive: true });
   mkdirSync(local("/etc/systemd/system"), { recursive: true });
   const calls = [];
   let pendingFailure = failure;
@@ -299,7 +313,14 @@ function installFixture(t, { failure, previous = true } = {}) {
         throw Object.assign(Error("injected command failure"), { status: 1 });
       }
       if (command === deployment.runtime) return deployment.requiredVersion;
-      if (command === "id") return "998";
+      if (command === "id") {
+        if (fresh && args.length === 1) throw Object.assign(Error("missing user"), { status: 1 });
+        return "998";
+      }
+      if (command === "ss") return listeners;
+      if (command === "/usr/local/bin/aws") return "0";
+      if (command === "/usr/sbin/nft") return rules;
+      if (command === "useradd") return "";
       if (command === "runuser") return JSON.stringify({ id: "current" });
       if (command === "systemd-analyze" || command === "systemctl") return "";
       throw Error("Unexpected command: " + command);
@@ -307,9 +328,10 @@ function installFixture(t, { failure, previous = true } = {}) {
   };
   const modules = {
     "node:child_process": childProcess,
-    "node:crypto": { createHash },
+    "node:crypto": { createHash, randomBytes: (size) => Buffer.alloc(size, 42) },
     "node:fs": filesystem,
     "node:path": path,
+    "./profiles.mjs": profiles,
   };
   const execute = () =>
     runInNewContext(compiled, {
@@ -327,8 +349,10 @@ function installFixture(t, { failure, previous = true } = {}) {
     write,
     local,
     manifest,
-    release: "/opt/nteract-pages-next/releases/" + manifest.source_sha,
-    audit: "/etc/nteract-pages-next/rollout-" + manifest.source_sha,
+    stage,
+    configDir,
+    release: "/opt/" + deployment.service + "/releases/" + manifest.source_sha,
+    audit: configDir + "/rollout-" + manifest.source_sha,
     read: (file) => fs.readFileSync(local(file), "utf8"),
   };
 }
@@ -381,3 +405,150 @@ for (const tampering of ["artifact", "extra-file", "symlink", "audit-manifest"])
     );
     assert.equal(fixture.calls.filter(({ command }) => command === "runuser").length, 1);
   });
+
+test("deployment CLI preserves defaults and requires explicit allowlisted page3 target", () => {
+  const command = new URL("./deploy.mjs", import.meta.url);
+  const plan = (args) =>
+    JSON.parse(execFileSync(process.execPath, [command.pathname, ...args], { encoding: "utf8" }));
+  const next = plan([]),
+    page3 = plan(["--target", "page3", "plan"]);
+  assert.equal(next.hostname, "pages-next.runtimed.run");
+  assert.equal(page3.hostname, "page3.runtimed.run");
+  for (const key of ["hostname", "service", "prefix", "listen", "internalListen"])
+    assert.notEqual(page3[key], next[key], key);
+  assert.equal(page3.bucket, next.bucket);
+  for (const argv of [["--target"], ["--target", "elsewhere"], ["--target", "__proto__"]])
+    assert.throws(() => profiles.selectTarget(argv), /Unknown Pages deployment target/);
+});
+
+test("prepared stages and manifests cannot cross deployment targets", () => {
+  const next = profiles.deploymentProfile().deployment;
+  const page3 = profiles.deploymentProfile("page3").deployment;
+  assert.equal(profiles.stageTarget("/tmp/nteract-page3-stage-abcd1234"), "page3");
+  assert.equal(profiles.stagePattern().test("/tmp/nteract-page3-stage-abcd1234"), false);
+  assert.throws(() => profiles.stageTarget("/tmp/nteract-page3-stage-abcd1234/../other"));
+  assert.throws(() =>
+    profiles.verifyDeployment({ source_sha: "a".repeat(40), deployment: next }, "page3"),
+  );
+  assert.throws(() => profiles.verifyDeployment({ source_sha: "a".repeat(40), deployment: page3 }));
+});
+
+test("page3 firewall refreshes only its own table and cgroup", () => {
+  const rules = pagesFirewall(999, true, "page3");
+  assert.match(rules, /^delete table inet nteract_page3\n/);
+  assert.match(rules, /system.slice\/nteract-page3.service/);
+  assert.match(rules, /0x10000000/);
+  assert.doesNotMatch(rules, /pages.next|0x20000000|0x40000000|0x80000000/);
+});
+
+test("page3 DNS is independently owned and never adopts pages-next records", async () => {
+  const fixture = dnsFixture();
+  const args = { token: "fixture", tunnelId, target: "page3", fetchImpl: fixture.fetchImpl };
+  assert.equal((await configureDns(args)).present, false);
+  assert.ok(
+    fixture.calls.every(({ url, method }) => method === "GET" && !url.includes("pages-next")),
+  );
+  const created = await configureDns({ ...args, apply: true });
+  assert.equal(created.name, "page3.runtimed.run");
+  assert.equal(created.changed, true);
+  assert.equal((await configureDns({ ...args, apply: true })).changed, false);
+  const foreign = dnsFixture([
+    {
+      id: "b".repeat(32),
+      name: "page3.runtimed.run",
+      type: "CNAME",
+      content: `${tunnelId}.cfargotunnel.com`,
+      proxied: true,
+      ttl: 1,
+      comment: "nteract/pages:experiment:pages-next",
+    },
+  ]);
+  await assert.rejects(
+    configureDns({ ...args, apply: true, fetchImpl: foreign.fetchImpl }),
+    /conflicts/,
+  );
+  assert.ok(foreign.calls.every(({ method }) => method === "GET"));
+});
+
+for (const target of ["pages-next", "page3"])
+  test(`${target} installation retains auth, bindings, and bucket durability with isolated service state`, (t) => {
+    const fixture = installFixture(t, { target });
+    fixture.execute();
+    const deployment = profiles.deploymentProfile(target).deployment;
+    const config = JSON.parse(fixture.read(fixture.release + "/wrangler.json"));
+    assert.equal(config.vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN, "https://" + deployment.hostname);
+    assert.equal(
+      config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI,
+      "https://" + deployment.hostname + "/oidc",
+    );
+    assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_ISSUER, "https://auth.anaconda.com/api/auth");
+    assert.equal(
+      config.vars.NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL,
+      "https://anaconda.com/api/auth/sessions/whoami",
+    );
+    assert.equal(
+      config.vars.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE,
+      config.vars.NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE,
+    );
+    assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, target === "page3" ? "true" : undefined);
+    assert.deepEqual(config.durable_objects.bindings, [
+      { name: "PAGE_RECORDS", class_name: "PageRecords" },
+    ]);
+    assert.deepEqual(config.migrations, [{ tag: "fixture", new_sqlite_classes: ["PageRecords"] }]);
+    const unit = fixture.read("/etc/systemd/system/" + deployment.service + ".service");
+    assert.match(unit, /Environment=CELLD_DURABILITY=bucket/);
+    assert.ok(
+      unit.includes(
+        "--listen " + deployment.listen + " --internal-listen " + deployment.internalListen,
+      ),
+    );
+    assert.ok(unit.includes("firewall.mjs --target " + target));
+    assert.ok(unit.includes("s3://" + deployment.bucket + "/" + deployment.prefix));
+    const other = target === "page3" ? "nteract-pages-next" : "nteract-page3";
+    for (const directory of ["/opt/", "/etc/", "/var/lib/"])
+      assert.equal(fs.existsSync(fixture.local(directory + other)), false);
+    assert.ok(
+      fixture.calls
+        .filter(({ command }) => command === "systemctl")
+        .every(({ args }) => !args.includes(other)),
+    );
+  });
+
+test("page3 installation rejects a pages-next manifest before running any host command", (t) => {
+  const fixture = installFixture(t, { target: "page3" });
+  fixture.write(
+    fixture.stage + "/manifest.json",
+    JSON.stringify({ ...fixture.manifest, deployment: profiles.deploymentProfile().deployment }),
+  );
+  assert.throws(fixture.execute, /Unexpected deployment target/);
+  assert.equal(fixture.calls.length, 0);
+});
+
+test("new page3 setup tolerates pages-next resources but rejects its own port or mark collisions", (t) => {
+  const existing =
+    "LISTEN 0 4096 127.0.0.1:9472 0.0.0.0:*\nLISTEN 0 4096 127.0.0.1:19472 0.0.0.0:*";
+  const fixture = installFixture(t, {
+    target: "page3",
+    fresh: true,
+    listeners: existing,
+    rules: '{"name":"nteract_pages_next","mark":536870912}',
+  });
+  fixture.execute();
+  assert.equal(
+    JSON.parse(fixture.read(fixture.configDir + "/ownership.json")).hostname,
+    "page3.runtimed.run",
+  );
+  const prefixCheck = fixture.calls.find(({ command }) => command === "/usr/local/bin/aws");
+  assert.equal(prefixCheck.args[prefixCheck.args.indexOf("--prefix") + 1], "standalone/page3/");
+  for (const collision of [
+    { listeners: existing + "\nLISTEN 0 4096 127.0.0.1:19473 0.0.0.0:*" },
+    { rules: '{"mark":268435456}' },
+  ]) {
+    const rejected = installFixture(t, { target: "page3", fresh: true, ...collision });
+    assert.throws(rejected.execute, /port is occupied|firewall namespace or mark is occupied/);
+    assert.equal(
+      rejected.calls.some(({ command }) => command === "useradd"),
+      false,
+    );
+  }
+});
