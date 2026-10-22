@@ -2,6 +2,7 @@ import * as A from "@automerge/automerge/slim";
 import { RICH_FORMAT, setRichMarkdown, projectedBlock, blockMarkdown } from "./richtext.mjs";
 import { applyComment, projectComments } from "./comments.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
+import { replaceMatch } from "./replace-match.mjs";
 export { orderedBlockIds } from "./order.mjs";
 const block = (id = crypto.randomUUID(), position = positionForInsertion()) => ({
   id,
@@ -50,6 +51,7 @@ function applyEdit(doc, op) {
       doc.blocks[id].position = positionForInsertion(doc, op.after_block_id, id);
     return;
   }
+  if (op.op === "replace_match") return replaceMatch(doc, id, op);
   if (op.op === "replace_block_markdown") setRichMarkdown(doc, id, String(op.markdown ?? ""));
   else if (op.op === "patch_block_markdown") {
     let source = blockMarkdown(doc.blocks[id]);
@@ -81,6 +83,10 @@ export function applyPageOperation(doc, { operation, arguments: args = {}, ident
     throw Error("Unsupported Page operation");
   if (!Array.isArray(args.operations) || args.operations.length > 100)
     throw Error("Provide up to 100 operations");
-  for (const op of args.operations) applyEdit(doc, { ...op, op: op.op ?? op.type });
-  return { page_id: doc.page_id };
+  const edits = [];
+  for (const op of args.operations) {
+    const edit = applyEdit(doc, { ...op, op: op.op ?? op.type });
+    if (edit) edits.push(edit);
+  }
+  return { page_id: doc.page_id, ...(edits.length ? { edits } : {}) };
 }

@@ -1,18 +1,29 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { EditorState } from "prosemirror-state";
+import { EditorState, TextSelection } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { keymap } from "prosemirror-keymap";
 import { baseKeymap } from "prosemirror-commands";
 import { splitListItem, sinkListItem, liftListItem } from "prosemirror-schema-list";
 import { history } from "prosemirror-history";
-import { Bold, Italic, Code, List, ListOrdered, Undo2, Redo2 } from "lucide-react";
+import { Bold, Italic, Code, List, ListOrdered, Undo2, Redo2, MessageSquare } from "lucide-react";
 import { createToolbarCommands, observeToolbar, textStyles } from "./editor-toolbar.mjs";
 import { richComments, revealCommentPassage } from "./rich-comments.mjs";
 import { bindRichEditor } from "./rich-binding.mjs";
 import { richAttribution } from "./rich-attribution.mjs";
 import { richPresence, publishRichSelection, richCommentSelection } from "./rich-presence.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
+import {
+  changeTargetLink,
+  linkDestination,
+  linkRangeAt,
+  linkTargetKey,
+  observeLinkTarget,
+} from "./rich-links.mjs";
+import { LinkPopover } from "./LinkPopover.jsx";
+import { handleLinkDOMClick } from "./link-click.mjs";
+import { codeBlockEditing } from "./code-blocks.mjs";
+import "./code-block.css";
 import { schema } from "../model/richtext.mjs";
 import "prosemirror-view/style/prosemirror.css";
 const commands = createToolbarCommands(schema);
@@ -51,6 +62,7 @@ export function RichEditor({
   editable,
   onError,
   onSelection,
+  onComment,
   toolbarHost,
   onActivate,
   threads,
@@ -63,6 +75,7 @@ export function RichEditor({
   const writable = useRef(editable),
     report = useRef(onError),
     selected = useRef(onSelection),
+    comment = useRef(onComment),
     activate = useRef(onActivate);
   const comments = useRef(threads),
     activeComment = useRef(commentTarget?.id);
@@ -70,17 +83,54 @@ export function RichEditor({
   activeComment.current = commentTarget?.id;
   activate.current = onActivate;
   selected.current = onSelection;
+  comment.current = onComment;
   writable.current = editable;
   report.current = onError;
   const [generation, reset] = useState(0);
   const [formatting, setFormatting] = useState(null);
   const [tabStop, setTabStop] = useState("style");
   const [floating, setFloating] = useState(null);
+  const [canComment, setCanComment] = useState(false);
+  const [linkTarget, setLinkTarget] = useState(null);
+  const [editingLink, setEditingLink] = useState(false);
+  function commentSelection(state = editor.current?.state) {
+    if (!state || !writable.current || !comment.current) return false;
+    const selection = richCommentSelection(replica, id, state);
+    if (!selection) return false;
+    comment.current(selection);
+    return true;
+  }
+  function closeLink(restoreFocus = false) {
+    const view = editor.current;
+    if (!view) return;
+    view.dispatch(view.state.tr.setMeta(linkTargetKey, null).setMeta("addToHistory", false));
+    if (restoreFocus) view.focus();
+  }
   useEffect(() => {
     if (!host.current || !replica.doc?.blocks[id]) return;
     const binding = bindRichEditor(replica, id);
     let alive = true,
       release = null;
+    const activateLink = (view, pos, event) => {
+      const anchor = event.target.closest("a");
+      if (!anchor) return false;
+      event.preventDefault();
+      const target = linkRangeAt(view.state.doc, pos);
+      if (!target) return true;
+      if (event.metaKey || event.ctrlKey) {
+        const destination = linkDestination(target.attrs.href, location.href);
+        if (destination) window.open(destination, "_blank", "noopener,noreferrer");
+        return true;
+      }
+      setEditingLink(false);
+      view.dispatch(
+        view.state.tr
+          .setSelection(TextSelection.near(view.state.doc.resolve(pos)))
+          .setMeta(linkTargetKey, target)
+          .setMeta("addToHistory", false),
+      );
+      return true;
+    };
     const view = new EditorView(host.current, {
       state: EditorState.create({
         schema,
@@ -89,6 +139,7 @@ export function RichEditor({
           binding.plugin,
           history(),
           observeToolbar(setFormatting, commands),
+          observeLinkTarget(setLinkTarget),
           richAttribution(replica),
           richPresence(replica, id),
           richComments(
@@ -97,7 +148,16 @@ export function RichEditor({
             () => comments.current,
             () => activeComment.current,
           ),
+          codeBlockEditing(),
           keymap({
+            "Mod-Alt-m": commentSelection,
+            "Mod-k": (state, dispatch) => {
+              const target = linkRangeAt(state.doc, state.selection.from);
+              if (!target) return false;
+              setEditingLink(writable.current);
+              dispatch(state.tr.setMeta(linkTargetKey, target).setMeta("addToHistory", false));
+              return true;
+            },
             "Mod-b": commands.bold,
             "Mod-i": commands.italic,
             "Mod-`": commands.code,
@@ -135,7 +195,9 @@ export function RichEditor({
           updateToolbarPosition.current();
           if (tr.docChanged || tr.selectionSet) {
             publishRichSelection(replica, id, view);
-            selected.current?.(richCommentSelection(replica, id, view.state));
+            const selection = richCommentSelection(replica, id, view.state);
+            selected.current?.(selection);
+            setCanComment(!!selection);
           }
         } catch (error) {
           report.current(error instanceof Error ? error.message : String(error));
@@ -147,12 +209,15 @@ export function RichEditor({
         }
       },
       handleDOMEvents: {
+        click: (view, event) => handleLinkDOMClick(view, event, activateLink),
         focus: () => {
           activate.current();
           queueMicrotask(() => {
             if (alive) {
               publishRichSelection(replica, id, view);
-              selected.current?.(richCommentSelection(replica, id, view.state));
+              const selection = richCommentSelection(replica, id, view.state);
+              selected.current?.(selection);
+              setCanComment(!!selection);
               updateToolbarPosition.current();
             }
           });
@@ -177,10 +242,7 @@ export function RichEditor({
           return false;
         },
       },
-      handleClick(_view, _pos, event) {
-        // Links are editable content here; do not navigate away while placing a cursor.
-        return !!event.target.closest("a");
-      },
+      handleClick: activateLink,
     });
     editor.current = view;
     return () => {
@@ -321,9 +383,10 @@ export function RichEditor({
     "code",
     "bullet_list",
     "ordered_list",
+    "comment",
   ];
   const enabledControls = controlOrder.filter((name) =>
-    name === "style" ? styleEnabled : enabled(name),
+    name === "style" ? styleEnabled : name === "comment" ? editable && canComment : enabled(name),
   );
   const currentTabStop = enabledControls.includes(tabStop) ? tabStop : enabledControls[0];
   const styleValue = textStyles.some(({ value }) => value === formatting?.style)
@@ -437,10 +500,44 @@ export function RichEditor({
             {buttons(buttonGroups[1])}
             <span className="toolbar-separator" role="separator" aria-orientation="vertical" />
             {buttons(buttonGroups[2])}
+            <span className="toolbar-separator" role="separator" aria-orientation="vertical" />
+            <button
+              type="button"
+              className="toolbar-button toolbar-comment"
+              data-toolbar-control="comment"
+              aria-label="Comment on selection"
+              aria-keyshortcuts={`${isMac ? "Meta" : "Control"}+Alt+M`}
+              title={`Comment on selection (${isMac ? "⌘⌥M" : "Ctrl+Alt+M"})`}
+              disabled={!editable || !canComment}
+              tabIndex={currentTabStop === "comment" ? 0 : -1}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => commentSelection()}
+            >
+              <MessageSquare size={18} strokeWidth={1.8} aria-hidden="true" />
+              <span>Comment</span>
+            </button>
           </div>,
           toolbarHost,
         )}
       <div ref={host} />
+      {linkTarget && editor.current && (
+        <LinkPopover
+          view={editor.current}
+          target={linkTarget}
+          editable={editable}
+          editing={editingLink}
+          onEdit={() => setEditingLink(true)}
+          onChange={(href) => {
+            const view = editor.current;
+            return (
+              writable.current &&
+              !!view &&
+              changeTargetLink(view.state, view.dispatch, href, location.href)
+            );
+          }}
+          onClose={closeLink}
+        />
+      )}
     </div>
   );
 }

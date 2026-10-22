@@ -11,6 +11,7 @@ export const releaseArtifacts = Object.freeze([
   "build-receipt.json",
   "public/index.html",
   "public/app.js",
+  "public/mermaid.js",
   "public/app.css",
   "public/automerge.wasm",
   "public/subduction.wasm",

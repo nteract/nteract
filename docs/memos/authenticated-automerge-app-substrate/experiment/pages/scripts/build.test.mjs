@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { build } from "esbuild";
 import { celldCborPlugin } from "./celld-cbor.mjs";
+import { browserMermaidPlugin, mermaidSource } from "./browser-mermaid.mjs";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -90,6 +91,10 @@ test("failed rebuild removes the previous receipt before replacing any artifacts
     write("scripts/build.mjs", readFileSync(new URL("./build.mjs", import.meta.url), "utf8"));
     write("scripts/celld-cbor.mjs", "export const celldCborPlugin = () => ({});");
     write(
+      "scripts/browser-mermaid.mjs",
+      readFileSync(new URL("./browser-mermaid.mjs", import.meta.url), "utf8"),
+    );
+    write(
       "scripts/source-fingerprint.mjs",
       "export const sourceFingerprint = () => ({sha256:'source-B'}); export const writeBuildReceipt = () => {throw new Error('failed build must not certify outputs');};",
     );
@@ -137,4 +142,43 @@ test("failed rebuild removes the previous receipt before replacing any artifacts
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
+});
+
+test("browser bundles keep Mermaid as a separate dynamic local module", async () => {
+  const result = await build({
+    stdin: {
+      contents: `export const loadDiagram = () => import(${JSON.stringify(mermaidSource(app))});`,
+      resolveDir: app,
+    },
+    bundle: true,
+    write: false,
+    platform: "browser",
+    format: "esm",
+    target: "es2022",
+    metafile: true,
+    plugins: [browserMermaidPlugin(app)],
+  });
+  assert.match(result.outputFiles[0].text, /import\("\/mermaid\.js"\)/);
+  assert.deepEqual(Object.keys(result.metafile.inputs), ["<stdin>"]);
+  assert.deepEqual(result.metafile.outputs["stdin.js"].imports, [
+    { path: "/mermaid.js", kind: "dynamic-import", external: true },
+  ]);
+});
+
+test("an eager Mermaid source import fails the browser build instead of growing startup code", async () => {
+  await assert.rejects(
+    build({
+      stdin: {
+        contents: `import {mountMermaid} from ${JSON.stringify(mermaidSource(app))}; console.log(mountMermaid);`,
+        resolveDir: app,
+      },
+      bundle: true,
+      write: false,
+      platform: "browser",
+      format: "esm",
+      logLevel: "silent",
+      plugins: [browserMermaidPlugin(app)],
+    }),
+    /Mermaid renderer must remain a dynamic import/,
+  );
 });

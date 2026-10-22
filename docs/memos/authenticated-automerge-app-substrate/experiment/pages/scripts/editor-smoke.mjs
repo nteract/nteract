@@ -160,7 +160,7 @@ try {
   await a.keyboard.press("Shift+ArrowLeft");
   await a.keyboard.press("Shift+ArrowLeft");
   await expect(b.locator(".peer-selection")).toHaveCount(1);
-  await a.getByRole("button", { name: "Comment on this block" }).click();
+  await a.getByRole("button", { name: "Comment on selection", exact: true }).click();
   await a.getByRole("textbox", { name: "Comment on selection" }).fill("A realtime passage comment");
   await a.getByRole("button", { name: "Send", exact: true }).first().click();
   await b.getByRole("button", { name: /^Comments/ }).click();
@@ -335,7 +335,7 @@ try {
   await a.keyboard.press("ArrowRight");
   await expect(bold).toBeFocused();
   await a.keyboard.press("End");
-  await expect(a.getByRole("button", { name: "Numbered list", exact: true })).toBeFocused();
+  await expect(a.getByRole("button", { name: "Comment on selection", exact: true })).toBeFocused();
   await a.keyboard.press("Escape");
   await expect(ea).toBeFocused();
   await edge(ea, true);

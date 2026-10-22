@@ -29,6 +29,10 @@ test("Cloudflare staging separates native modules from browser assets and exclud
     "index.js",
     "subduction.wasm",
   ]);
+  assert.equal(
+    readFileSync(path.join(destination, "public/mermaid.js"), "utf8"),
+    "public/mermaid.js",
+  );
   assert.equal(config.main, "worker/index.js");
   assert.equal(config.d1_databases[0].database_id, id);
   assert.equal(config.routes, undefined, "domain reassignment is a separate verified action");

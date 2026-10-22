@@ -74,6 +74,44 @@ remain historical comparison material. celld and Cloudflare run the same
 application API with separate deployment configuration and data. A host name
 is an environment choice, not a separate editor implementation.
 
+## Writing, links, and diagrams
+
+Select text and choose **Comment** in the formatting toolbar, or press
+Cmd/Ctrl+Alt+M, to start a discussion anchored to that passage. The comment icon
+beside a block starts a block comment. Browser selection across separate Pages
+blocks is not yet supported.
+
+Click a link for **Open link**, **Edit link**, and **Remove link**. Cmd/Ctrl-click
+opens its destination directly; Cmd/Ctrl+K edits the current link. Link targets
+follow incoming edits and dismiss when the original link disappears. Opening and
+editing apply the same URL policy as the rich document, with an additional
+protocol check before navigation.
+
+Type three backticks on an empty paragraph, followed by Enter or Space, to make
+a code block. A language can follow the backticks, or be chosen from the code
+block's language selector. Choose Mermaid to preview a diagram; **Source** and
+**Preview** switch the local view without changing the document. Cmd/Ctrl+Enter
+continues in a paragraph after the code block. The source and language remain
+Automerge content and round-trip through Markdown. The preview reuses nteract's
+Mermaid renderer and SVG sanitizer, with its existing source and output limits;
+rendered SVG is never stored in the document. This does not add code execution.
+
+For agents, `patch_page` accepts `replace_match` to replace exactly one literal
+visible-text range, with optional context to disambiguate it. This preserves
+untouched character identities, marks, and comment anchors. Replacement text
+retains marks shared across the entire matched range; partial formatting does not
+spread to the new text. The existing
+Markdown patch operation remains available for syntax and structural changes.
+Tool calls are attributed atomic edits; they do not simulate a typing cursor.
+Regex replacement remains deferred until Pages has a bounded executor.
+
+`node scripts/authoring-smoke.mjs` exercises selection comments, link opening and
+editing, targeted tool edits, and synchronized code/diagram source in two local
+browser sessions, with reload and narrow-viewport checks.
+`node scripts/link-click-smoke.mjs` separately checks native link activation in
+editable and read-only ProseMirror views. The existing
+`node scripts/editor-smoke.mjs` covers the broader editor and recovery flows.
+
 ## What owns what
 
 ```text
