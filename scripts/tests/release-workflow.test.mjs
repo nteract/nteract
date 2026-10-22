@@ -537,3 +537,37 @@ test("image launch shape still selects the newest eligible standalone cache", (t
   assert.equal(result.status, 0, result.stderr);
   assert.ok(result.stdout.includes(`selected parent: ${result.fixtureHome}/.cache/runt-nightly/launcher\n`));
 });
+
+for (const failure of ["download", "checksum", "archive", null]) {
+  test(`Deno bootstrap ${failure ? `rejects ${failure} failure without fallback` : "installs after all integrity checks pass"}`, (t) => {
+    const fixture = mkdtempSync(join(tmpdir(), "deno-bootstrap-"));
+    t.after(() => rmSync(fixture, {recursive: true, force: true}));
+    const bin = join(fixture, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "curl"), `#!/bin/sh\nexit ${failure === "download" ? 1 : 0}\n`, {mode: 0o755});
+    writeFileSync(join(bin, "sha256sum"), `#!/bin/sh\ncat >/dev/null\nexit ${failure === "checksum" ? 1 : 0}\n`, {mode: 0o755});
+    writeFileSync(join(bin, "unzip"), [
+      "#!/bin/sh",
+      `if [ "$1" = "-tq" ]; then exit ${failure === "archive" ? 1 : 0}; fi`,
+      '[ "$1" = "-q" ] || exit 2',
+      'printf "#!/bin/sh\\necho qualified-deno\\n" > "$4/deno"',
+    ].join("\n"), {mode: 0o755});
+    writeFileSync(join(bin, "npm"), "#!/bin/sh\necho npm-fallback\nexit 1\n", {mode: 0o755});
+    const step = workflow("build").match(/      - name: Install Deno\n        run: \|\n([\s\S]*?)(?=\n      - name:)/)?.[1];
+    assert.ok(step, "must exercise the actual Deno installation step");
+    const result = spawnSync("bash", ["-s"], {
+      input: step.split("\n").map(line => line.replace(/^ {10}/, "")).join("\n"),
+      encoding: "utf8",
+      env: {...process.env, PATH: `${bin}:${process.env.PATH}`, RUNNER_TEMP: fixture, GITHUB_PATH: join(fixture, "github-path")},
+    });
+    assert.doesNotMatch(result.stdout, /npm-fallback/);
+    if (failure) {
+      assert.notEqual(result.status, 0, `${failure} failure must fail the job`);
+      assert.doesNotMatch(result.stdout, /qualified-deno/);
+    } else {
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /qualified-deno/);
+      assert.equal(readFileSync(join(fixture, "github-path"), "utf8"), `${fixture}/deno/bin\n`);
+    }
+  });
+}

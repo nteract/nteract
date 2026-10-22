@@ -61,8 +61,10 @@ Package clients launched from notebook code, including `pip`, `requests`, or an
 older environment-local uv, retain their own trust behavior.
 
 New managed UV environment builds require `uv>=0.13.5`, including offline
-resolutions. This also changes the package fingerprint used to admit prewarmed
-pool entries. Capture recognizes both the historical bare `uv` and the new
+resolutions. At daemon startup, UV pool entries with missing or mismatched
+package fingerprints are excluded and scheduled for cleanup; they cannot serve
+as an offline fallback with an old environment-local uv. Rebuilding that pool
+may require a network connection. Capture recognizes both the historical bare `uv` and the new
 base spec without recording them as user dependencies. Existing captured or
 project-owned environments are not rewritten, and a new environment is not
 proof that every package client inside it is patched. Python, pip, requests,

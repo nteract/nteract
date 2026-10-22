@@ -2090,21 +2090,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn test_nono_checksum_url_format() {
-        // SHA256SUMS.txt is served as a release asset alongside the archives,
-        // matching the same CDN path used by all other tools.
-        let version = NONO_TARGET_VERSION;
-        let url = format!(
-            "https://github.com/always-further/nono/releases/download/v{}/SHA256SUMS.txt",
-            version
-        );
-        assert!(url.contains("/always-further/nono/"));
-        assert!(url.contains(&format!("/v{}/", version)));
-        assert!(url.ends_with("SHA256SUMS.txt"));
-    }
-
     // ── Nono network integration test ───────────────────────────────
     //
     // Marked #[ignore] so `cargo test` is hermetic. CI runs it explicitly
@@ -2113,17 +2098,14 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    #[ignore = "makes real network calls to GitHub and Sigstore; run with --ignored"]
+    #[ignore = "makes real network calls to GitHub; run with --ignored"]
     async fn test_get_nono_path_downloads_and_verifies() {
         // This test exercises the full download + pinned SHA-256 verification path.
-        // It downloads the real nono binary from GitHub, verifies the bundle,
-        // and checks that the resulting binary is executable.
-        //
-        // Uses a temp dir so it does not pollute the real tools cache and
-        // can be re-run cleanly even if a previous run left a partial download.
+        // It downloads the real nono binary from GitHub into tools_cache_dir(),
+        // verifies its pinned digest, and checks that the binary is executable.
+        // Run with an isolated cache root when qualifying a fresh download.
         use std::os::unix::fs::PermissionsExt;
 
-        let tmp = tempfile::tempdir().expect("tempdir");
         let result = download_nono_from_github(NONO_TARGET_VERSION).await;
 
         match result {
@@ -2161,7 +2143,5 @@ mod tests {
             }
             Err(e) => panic!("download_nono_from_github failed: {e}"),
         }
-
-        drop(tmp);
     }
 }
