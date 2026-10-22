@@ -54,16 +54,25 @@ export function withBrowserSecurityHeaders(
   return response;
 }
 
-interface ImmutableR2ObjectOptions {
+const PROTECTED_OBJECT_CACHE_CONTROL = "private, no-store";
+
+export function withProtectedObjectCachePolicy(response: Response): Response {
+  // Immutable bytes do not imply immutable access. Each request must reach
+  // notebook authorization, including reads served from the Worker's own cache.
+  response.headers.set("Cache-Control", PROTECTED_OBJECT_CACHE_CONTROL);
+  return response;
+}
+
+interface ProtectedR2ObjectOptions {
   includeContentLength?: boolean;
 }
 
-export function immutableR2ObjectHeaders(
+export function protectedR2ObjectHeaders(
   object: R2Object,
-  options: ImmutableR2ObjectOptions = {},
+  options: ProtectedR2ObjectOptions = {},
 ): Headers {
   const headers = new Headers({
-    "Cache-Control": "public, max-age=31536000, immutable",
+    "Cache-Control": PROTECTED_OBJECT_CACHE_CONTROL,
     "Content-Type": object.httpMetadata?.contentType ?? "application/octet-stream",
     ETag: object.httpEtag,
   });
@@ -73,19 +82,19 @@ export function immutableR2ObjectHeaders(
   return headers;
 }
 
-export function immutableR2ObjectResponse(
+export function protectedR2ObjectResponse(
   object: R2ObjectBody,
-  options: ImmutableR2ObjectOptions = {},
+  options: ProtectedR2ObjectOptions = {},
 ): Response {
   return withCors(
-    new Response(object.body, { headers: immutableR2ObjectHeaders(object, options) }),
+    new Response(object.body, { headers: protectedR2ObjectHeaders(object, options) }),
   );
 }
 
-export function immutableR2ObjectHeadResponse(object: R2Object): Response {
+export function protectedR2ObjectHeadResponse(object: R2Object): Response {
   return withCors(
     new Response(null, {
-      headers: immutableR2ObjectHeaders(object, { includeContentLength: true }),
+      headers: protectedR2ObjectHeaders(object, { includeContentLength: true }),
     }),
   );
 }

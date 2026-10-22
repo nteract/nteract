@@ -2666,6 +2666,8 @@ fn test_room_with_path_and_store(
         identity: RoomIdentity::new(persist_path),
         connections: RoomConnections::default(),
         hosted: AtomicBool::new(false),
+        local_environment_selection: Default::default(),
+        preparing_kernel_env_path: std::sync::Mutex::new(None),
         evicted: AtomicBool::new(false),
         blob_store,
         trust_state: Arc::new(RwLock::new(TrustState {
@@ -8326,6 +8328,7 @@ fn test_compute_env_sync_diff_in_sync() {
         venv_path: None,
         python_path: None,
         launch_id: Some("abc".to_string()),
+        local_environment: None,
         feature_flags: notebook_protocol::protocol::FeatureFlags::default(),
         prewarmed_packages: vec![],
     };
@@ -8352,6 +8355,7 @@ fn test_compute_env_sync_diff_added() {
         venv_path: None,
         python_path: None,
         launch_id: None,
+        local_environment: None,
         feature_flags: notebook_protocol::protocol::FeatureFlags::default(),
         prewarmed_packages: vec![],
     };
@@ -8378,6 +8382,7 @@ fn test_compute_env_sync_diff_removed() {
         venv_path: None,
         python_path: None,
         launch_id: None,
+        local_environment: None,
         feature_flags: notebook_protocol::protocol::FeatureFlags::default(),
         prewarmed_packages: vec![],
     };
@@ -8403,6 +8408,7 @@ fn test_compute_env_sync_diff_added_and_removed() {
         venv_path: None,
         python_path: None,
         launch_id: None,
+        local_environment: None,
         feature_flags: notebook_protocol::protocol::FeatureFlags::default(),
         prewarmed_packages: vec![],
     };
@@ -8428,6 +8434,7 @@ fn test_compute_env_sync_diff_conda_channels_changed() {
         venv_path: None,
         python_path: None,
         launch_id: None,
+        local_environment: None,
         feature_flags: notebook_protocol::protocol::FeatureFlags::default(),
         prewarmed_packages: vec![],
     };
@@ -9890,6 +9897,95 @@ async fn capture_writes_deps_and_env_id_for_fresh_uv_notebook() {
     assert_eq!(
         snap.runt.uv.as_ref().unwrap().dependencies,
         vec!["pandas".to_string(), "numpy".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn local_environment_apply_capture_advances_only_its_own_dependency_fence() {
+    let (_tmp, room) = gate_test_room();
+    let observed = room.doc.write().await.get_heads_hex();
+    let lease = room.local_environment_selection.begin_apply(0).unwrap();
+    lease.set_observed_heads(observed);
+
+    assert!(capture_env_into_metadata(&room, CapturedEnvRuntime::Uv, &[], "first-apply").await);
+    let doc = room.doc.read().await;
+    crate::requests::guarded::validate_dependencies_unchanged_since_observed(
+        &doc,
+        &lease.observed_heads().unwrap(),
+    )
+    .expect("the daemon's own first capture must not reject Apply");
+    drop(doc);
+    room.doc
+        .write()
+        .await
+        .add_uv_dependency("unreviewed-package")
+        .unwrap();
+    let heads_after_edit = room.doc.write().await.get_heads();
+    assert!(
+        !capture_env_into_metadata(
+            &room,
+            CapturedEnvRuntime::Uv,
+            &["other-default".into()],
+            "first-apply"
+        )
+        .await
+    );
+    let mut doc = room.doc.write().await;
+    assert_eq!(doc.get_heads(), heads_after_edit);
+    assert!(
+        crate::requests::guarded::validate_dependencies_unchanged_since_observed(
+            &doc,
+            &lease.observed_heads().unwrap(),
+        )
+        .is_err(),
+        "capture must never approve a concurrent user dependency edit"
+    );
+}
+
+#[tokio::test]
+async fn local_environment_capture_rejects_edits_before_capture_and_keeps_trust_fence() {
+    let (_tmp, room) = gate_test_room();
+    let heads = room.doc.write().await.get_heads_hex();
+    let lease = room.local_environment_selection.begin_apply(0).unwrap();
+    lease.set_observed_heads(heads);
+    room.doc
+        .write()
+        .await
+        .add_uv_dependency("unreviewed-package")
+        .unwrap();
+    assert!(!capture_env_into_metadata(&room, CapturedEnvRuntime::Conda, &[], "first-apply").await);
+    assert!(room
+        .doc
+        .read()
+        .await
+        .get_metadata_snapshot()
+        .unwrap()
+        .runt
+        .conda
+        .is_none());
+    drop(lease);
+
+    let heads = room.doc.write().await.get_heads_hex();
+    let revision = room.local_environment_selection.snapshot().revision;
+    let lease = room
+        .local_environment_selection
+        .begin_apply(revision)
+        .unwrap();
+    lease.set_observed_heads(heads);
+    assert!(
+        capture_env_into_metadata(
+            &room,
+            CapturedEnvRuntime::Conda,
+            &["unapproved-default".into()],
+            "first-apply"
+        )
+        .await
+    );
+    assert!(
+        crate::requests::guarded::ensure_trusted(&room)
+            .await
+            .is_err(),
+        "advancing capture heads must not approve newly captured dependencies"
     );
 }
 
@@ -14340,6 +14436,84 @@ async fn auto_launch_no_peers_abort_readmits_reconnect_that_raced_the_abort() {
 }
 
 #[tokio::test]
+async fn installed_package_inventory_uses_actual_running_prefix_not_pending_selection() {
+    use notebook_protocol::protocol::{
+        InstalledCondaPackage, InstalledCondaPackageInventory, LaunchedEnvConfig,
+        LocalCondaEnvironment, LocalEnvironmentIdentity, NotebookResponse,
+    };
+    let (tmp, room) = gate_test_room();
+    let running_prefix = tmp.path().join("running borrowed");
+    let records = running_prefix.join("conda-meta");
+    std::fs::create_dir_all(&records).unwrap();
+    std::fs::write(
+        records.join("numpy-2.1.0-py312_0.json"),
+        r#"{"name":"numpy","version":"2.1.0","build":"py312_0"}"#,
+    )
+    .unwrap();
+    let pending_prefix = tmp.path().join("pending only");
+    std::fs::create_dir_all(pending_prefix.join("conda-meta")).unwrap();
+    std::fs::write(
+        pending_prefix.join("conda-meta/pandas-2.2.0-py312_0.json"),
+        r#"{"name":"pandas","version":"2.2.0","build":"py312_0"}"#,
+    )
+    .unwrap();
+    let config = LaunchedEnvConfig {
+        venv_path: Some(running_prefix.clone()),
+        local_environment: Some(LocalEnvironmentIdentity {
+            id: "running-id".into(),
+            name: "running".into(),
+            python_version: Some("3.12".into()),
+        }),
+        ..Default::default()
+    };
+    *room.runtime_agent_launched_config.write().await = Some(config);
+    room.state
+        .with_doc(|state| {
+            state.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
+            state.set_local_environment_identity("running-id", "running", Some("3.12"))
+        })
+        .unwrap();
+    room.local_environment_selection
+        .set(
+            Some(LocalCondaEnvironment {
+                id: "pending-id".into(),
+                name: "pending".into(),
+                prefix: pending_prefix.clone(),
+                python_path: pending_prefix.join("bin/python"),
+                python_version: Some("3.12".into()),
+            }),
+            0,
+        )
+        .unwrap();
+
+    let response =
+        crate::requests::local_environment_selection::list_installed_packages(&room).await;
+    let NotebookResponse::InstalledCondaPackages { inventory } = response else {
+        panic!("unexpected response: {response:?}")
+    };
+    assert_eq!(
+        inventory,
+        InstalledCondaPackageInventory {
+            packages: vec![InstalledCondaPackage {
+                name: "numpy".into(),
+                version: "2.1.0".into(),
+                build: "py312_0".into(),
+            }],
+            truncated: false,
+            warnings: vec![],
+        }
+    );
+    assert_eq!(
+        room.local_environment_selection
+            .snapshot()
+            .selected
+            .unwrap()
+            .id,
+        "pending-id"
+    );
+}
+
+#[tokio::test]
 async fn auto_launch_no_peers_abort_does_not_readmit_after_shutdown_during_reset() {
     use std::future::Future;
 
@@ -14411,8 +14585,631 @@ async fn auto_launch_no_peers_abort_stands_when_no_peer_waiting() {
 /// `attempt.succeed()` inside it drops the token as a failure, arms the 5s
 /// cooldown after every successful launch, and fails the admission assertion.
 #[tokio::test]
+async fn local_environment_preparation_abort_preserves_kernel_for_surviving_owner() {
+    let (_tmp, room) = gate_test_room();
+    room.connections.active_peers.store(1, Ordering::Release);
+    room.state
+        .with_doc(|sd| {
+            sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
+            sd.set_local_environment_identity("old", "old", Some("3.12"))
+        })
+        .unwrap();
+    *room.current_runtime_agent_id.write().await = Some("old-agent".into());
+    let old_path = std::path::PathBuf::from("/managed/old");
+    *room.runtime_agent_env_path.write().await = Some(old_path.clone());
+    let (tx, _messages) = mpsc::channel(1);
+    *room.runtime_agent_request_tx.lock().await = Some(tx);
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn({
+        let room = room.clone();
+        async move {
+            let _lease = room.local_environment_selection.begin_apply(0).unwrap();
+            let mut attempt = match room.try_begin_manual_launch() {
+                ManualLaunchAdmission::Admitted(attempt) => attempt,
+                _ => panic!("admission"),
+            };
+            let contended_agent_slot = room.runtime_agent_request_tx.lock().await;
+            attempt.preserve_kernel_during_preparation();
+            drop(contended_agent_slot);
+            attempt.preserve_environment_path(room.runtime_agent_env_path.read().await.clone());
+            *room.runtime_agent_env_path.write().await = Some("/managed/new".into());
+            room.state
+                .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::PreparingEnv))
+                .unwrap();
+            started.send(()).unwrap();
+            std::future::pending::<()>().await;
+            drop(attempt);
+        }
+    });
+    ready.await.unwrap();
+    assert_eq!(
+        room.preparing_kernel_env_path.lock().unwrap().as_ref(),
+        Some(&old_path)
+    );
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    let kernel = room.state.read(|sd| sd.read_state().kernel).unwrap();
+    assert_eq!(
+        kernel.lifecycle,
+        RuntimeLifecycle::Running(KernelActivity::Idle)
+    );
+    assert_eq!(kernel.environment_id, "old");
+    assert_eq!(
+        room.current_runtime_agent_id.read().await.as_deref(),
+        Some("old-agent")
+    );
+    assert!(room.runtime_agent_request_tx.lock().await.is_some());
+    assert_eq!(*room.runtime_agent_env_path.read().await, Some(old_path));
+    assert!(room.preparing_kernel_env_path.lock().unwrap().is_none());
+    assert!(!room.local_environment_selection.snapshot().applying);
+    assert_eq!(
+        room.launch_completion(1),
+        Some(KernelLaunchCompletion::Released)
+    );
+}
+
+#[tokio::test]
+async fn local_environment_source_without_applied_binding_never_launches_default_python() {
+    let (tmp, room) = gate_test_room();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+    let (tx, mut messages) = mpsc::channel(1);
+    *room.runtime_agent_request_tx.lock().await = Some(tx);
+    let before = room.doc.write().await.get_heads();
+    let response = crate::requests::launch_kernel::handle(
+        &room,
+        &daemon,
+        "python".into(),
+        notebook_protocol::connection::LaunchSpec::Concrete(
+            notebook_protocol::connection::EnvSource::ExistingConda,
+        ),
+        None,
+    )
+    .await;
+    assert!(matches!(
+        response,
+        crate::protocol::NotebookResponse::EnvironmentSelectionRejected { .. }
+    ));
+    assert!(messages.try_recv().is_err());
+    assert_eq!(room.doc.write().await.get_heads(), before);
+    assert_eq!(
+        room.state
+            .read(|sd| sd.read_state().kernel.lifecycle)
+            .unwrap(),
+        RuntimeLifecycle::NotStarted
+    );
+}
+
+#[tokio::test]
+async fn local_environment_automatic_prepare_failure_preserves_live_kernel() {
+    let (tmp, room) = gate_test_room();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+    room.state
+        .with_doc(|sd| {
+            sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
+            sd.set_kernel_info("python", "python", "conda:existing:local")?;
+            sd.set_local_environment_identity("old", "old", Some("3.12"))
+        })
+        .unwrap();
+    *room.current_runtime_agent_id.write().await = Some("test-agent".into());
+    let (tx, mut messages) = mpsc::channel(1);
+    *room.runtime_agent_request_tx.lock().await = Some(tx);
+    let before_kernel = room.state.read(|sd| sd.read_state().kernel).unwrap();
+    let before = room.doc.write().await.get_heads();
+    let lease = room.local_environment_selection.begin_apply(0).unwrap();
+    let attempt = match room.try_begin_manual_launch() {
+        ManualLaunchAdmission::Admitted(attempt) => attempt,
+        _ => panic!("admission"),
+    };
+    // A managed prewarmed pool miss occurs before replacement and must not
+    // trigger the inherited launch failure cleanup of the live runtime agent.
+    let response = crate::requests::launch_kernel::handle_admitted(
+        &room,
+        &daemon,
+        "python".into(),
+        notebook_protocol::connection::LaunchSpec::Concrete(
+            notebook_protocol::connection::EnvSource::Prewarmed(
+                notebook_protocol::connection::PackageManager::Uv,
+            ),
+        ),
+        None,
+        attempt,
+        None,
+        Some(lease),
+    )
+    .await;
+    assert!(matches!(
+        response,
+        crate::protocol::NotebookResponse::Error { .. }
+    ));
+    assert!(messages.try_recv().is_err());
+    assert!(room.runtime_agent_request_tx.lock().await.is_some());
+    assert_eq!(
+        room.current_runtime_agent_id.read().await.as_deref(),
+        Some("test-agent")
+    );
+    let kernel = room.state.read(|sd| sd.read_state().kernel).unwrap();
+    assert_eq!(
+        kernel.lifecycle,
+        RuntimeLifecycle::Running(KernelActivity::Idle)
+    );
+    assert_eq!(kernel.environment_id, "old");
+    assert_eq!(
+        kernel, before_kernel,
+        "failed preparation must preserve all actual kernel facts"
+    );
+    assert_eq!(room.doc.write().await.get_heads(), before);
+    assert!(!room.local_environment_selection.snapshot().applying);
+    assert!(matches!(
+        room.try_begin_manual_launch(),
+        ManualLaunchAdmission::Admitted(_)
+    ));
+}
+
+#[tokio::test]
+async fn local_environment_initial_apply_reset_cleans_new_agent_authority() {
+    let (_tmp, room) = gate_test_room();
+    let lease = room.local_environment_selection.begin_apply(0).unwrap();
+    let attempt = match room.try_begin_manual_launch() {
+        ManualLaunchAdmission::Admitted(attempt) => attempt,
+        _ => panic!("admission"),
+    };
+    *room.current_runtime_agent_id.write().await = Some("new-agent".into());
+    assert!(attempt.expect_runtime_agent("new-agent"));
+    let (tx, _messages) = mpsc::channel(1);
+    *room.runtime_agent_request_tx.lock().await = Some(tx);
+    let (tx, _connected) = tokio::sync::oneshot::channel();
+    *room.pending_runtime_agent_connect_tx.lock().await = Some(tx);
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Connecting))
+        .unwrap();
+
+    reset_starting_state(&room, Some("new-agent")).await;
+
+    assert!(room.current_runtime_agent_id.read().await.is_none());
+    assert!(room.runtime_agent_request_tx.lock().await.is_none());
+    assert!(room.pending_runtime_agent_connect_tx.lock().await.is_none());
+    assert!(!room.mark_runtime_agent_connected("new-agent"));
+    assert_eq!(
+        room.state
+            .read(|sd| sd.read_state().kernel.lifecycle)
+            .unwrap(),
+        RuntimeLifecycle::NotStarted
+    );
+    attempt.release_without_cooldown();
+    drop(lease);
+}
+
+#[tokio::test]
+async fn local_environment_apply_cancelled_during_agent_lookup_preserves_old_kernel() {
+    let (tmp, room) = gate_test_room();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle)))
+        .unwrap();
+    *room.current_runtime_agent_id.write().await = Some("old-agent".into());
+    let (tx, _messages) = mpsc::channel(1);
+    *room.runtime_agent_request_tx.lock().await = Some(tx);
+    let before_kernel = room.state.read(|sd| sd.read_state().kernel).unwrap();
+    let attempt = match room.try_begin_manual_launch() {
+        ManualLaunchAdmission::Admitted(attempt) => attempt,
+        _ => panic!("admission"),
+    };
+    let lease = room.local_environment_selection.begin_apply(0).unwrap();
+    {
+        use std::future::Future;
+        let _identity = room.current_runtime_agent_id.write().await;
+        let mut apply = Box::pin(crate::requests::launch_kernel::handle_admitted(
+            &room,
+            &daemon,
+            "python".into(),
+            notebook_protocol::connection::LaunchSpec::Auto,
+            None,
+            attempt,
+            None,
+            Some(lease),
+        ));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(apply.as_mut().poll(&mut cx).is_pending());
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while room.launch_completion(1).is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        room.current_runtime_agent_id.read().await.as_deref(),
+        Some("old-agent")
+    );
+    assert!(room.runtime_agent_request_tx.lock().await.is_some());
+    assert_eq!(
+        room.state.read(|sd| sd.read_state().kernel).unwrap(),
+        before_kernel
+    );
+    assert!(!room.local_environment_selection.snapshot().applying);
+}
+
+#[tokio::test]
+async fn local_environment_apply_during_sync_preserves_running_kernel_and_comms() {
+    let (tmp, room) = gate_test_room();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+    room.state
+        .with_doc(|sd| {
+            sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
+            sd.set_kernel_info("python", "python", "uv:prewarmed")?;
+            sd.set_runtime_agent_id("old-agent")?;
+            sd.put_comm(
+                "widget",
+                "jupyter.widget",
+                "module",
+                "model",
+                &serde_json::json!({"value": 7}),
+                0,
+            )
+        })
+        .unwrap();
+    room.comms
+        .with_doc(|cd| cd.put_comm_state("widget", &serde_json::json!({"value": 7})))
+        .unwrap();
+    *room.current_runtime_agent_id.write().await = Some("old-agent".into());
+    let (tx, mut messages) = mpsc::channel(1);
+    *room.runtime_agent_request_tx.lock().await = Some(tx);
+    let kernel_before = room.state.read(|sd| sd.read_state().kernel).unwrap();
+    let comms_before = room.comms.read(|cd| cd.get_comms()).unwrap();
+    let topology_before = room.state.read(|sd| sd.get_comms()).unwrap();
+    let heads = room.doc.write().await.get_heads_hex();
+    let _sync = room.local_environment_selection.begin_sync().unwrap();
+    let response =
+        crate::requests::local_environment_selection::apply(&room, &daemon, 0, heads).await;
+    assert!(
+        matches!(response, crate::protocol::NotebookResponse::EnvironmentSelectionRejected { ref error } if error.contains("sync in progress")),
+        "{response:?}"
+    );
+    assert!(
+        messages.try_recv().is_err(),
+        "busy Apply must not deliver RestartKernel"
+    );
+    assert_eq!(
+        room.state.read(|sd| sd.read_state().kernel).unwrap(),
+        kernel_before
+    );
+    assert_eq!(room.comms.read(|cd| cd.get_comms()).unwrap(), comms_before);
+    assert_eq!(
+        room.state.read(|sd| sd.get_comms()).unwrap(),
+        topology_before
+    );
+    assert_eq!(
+        room.current_runtime_agent_id.read().await.as_deref(),
+        Some("old-agent")
+    );
+    assert!(room.runtime_agent_request_tx.lock().await.is_some());
+    assert!(!room.local_environment_selection.snapshot().applying);
+}
+
+#[cfg(unix)]
+#[tokio::test(start_paused = true)]
+async fn local_environment_initial_apply_connect_timeout_cleans_spawned_agent() {
+    let (tmp, room) = gate_test_room();
+    let mut config = test_daemon_config(&tmp);
+    config.runtime_agent_exe = Some("/usr/bin/true".into());
+    let daemon = crate::daemon::Daemon::new_for_test(config).unwrap();
+    let before_kernel = room.state.read(|sd| sd.read_state().kernel).unwrap();
+    let attempt = match room.try_begin_manual_launch() {
+        ManualLaunchAdmission::Admitted(attempt) => attempt,
+        _ => panic!("admission"),
+    };
+    let lease = room.local_environment_selection.begin_apply(0).unwrap();
+    let environment = notebook_protocol::protocol::LocalCondaEnvironment {
+        id: "borrowed".into(),
+        name: "borrowed".into(),
+        prefix: tmp.path().join("borrowed"),
+        python_path: tmp.path().join("borrowed/bin/python"),
+        python_version: None,
+    };
+    let response = crate::requests::launch_kernel::handle_admitted(
+        &room,
+        &daemon,
+        "python".into(),
+        notebook_protocol::connection::LaunchSpec::Auto,
+        None,
+        attempt,
+        Some(environment),
+        Some(lease),
+    )
+    .await;
+    assert!(
+        matches!(response, crate::protocol::NotebookResponse::Error { ref error } if error.contains("connect within 30s")),
+        "{response:?}"
+    );
+    assert!(room.current_runtime_agent_id.read().await.is_none());
+    assert!(room.runtime_agent_handle.lock().await.is_none());
+    assert!(room.runtime_agent_request_tx.lock().await.is_none());
+    assert!(room.pending_runtime_agent_connect_tx.lock().await.is_none());
+    assert!(room.active_kernel_launch().is_none());
+    assert_eq!(
+        room.state.read(|sd| sd.read_state().kernel).unwrap(),
+        before_kernel
+    );
+    assert!(!room.local_environment_selection.snapshot().applying);
+    match room.try_begin_manual_launch() {
+        ManualLaunchAdmission::Admitted(attempt) => attempt.release_without_cooldown(),
+        _ => panic!("failed initial Apply must release launch admission"),
+    }
+}
+
+#[tokio::test]
+async fn local_environment_apply_uses_fixed_target_and_commits_running_identity() {
+    use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
+    let (tmp, room) = gate_test_room();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+    let prefix = tmp.path().join("rankings with spaces");
+    std::fs::create_dir_all(prefix.join("conda-meta")).unwrap();
+    let python_path = crate::project_file::conda_python_path(&prefix);
+    std::fs::create_dir_all(python_path.parent().unwrap()).unwrap();
+    std::fs::write(&python_path, "not executable; no preflight probes").unwrap();
+    std::fs::write(
+        prefix.join("conda-meta/python-3.12.1-0.json"),
+        r#"{"name":"python","version":"3.12.1"}"#,
+    )
+    .unwrap();
+    #[cfg(windows)]
+    let ipykernel = prefix.join("Lib/site-packages/ipykernel");
+    #[cfg(not(windows))]
+    let ipykernel = prefix.join("lib/python3.12/site-packages/ipykernel");
+    std::fs::create_dir_all(&ipykernel).unwrap();
+    std::fs::write(ipykernel.join("__init__.py"), "").unwrap();
+    std::fs::write(
+        ipykernel.parent().unwrap().join("ipykernel_launcher.py"),
+        "",
+    )
+    .unwrap();
+    let selected = daemon
+        .local_conda_environments
+        .resolve_prefix(prefix.clone())
+        .await
+        .unwrap();
+    room.local_environment_selection
+        .set(Some(selected.clone()), 0)
+        .unwrap();
+    *room.current_runtime_agent_id.write().await = Some("test-agent".into());
+    room.expect_runtime_agent("test-agent");
+    assert!(room.mark_runtime_agent_connected("test-agent"));
+    let before = room.doc.write().await.get_heads();
+    let observed_heads = before.iter().map(ToString::to_string).collect();
+    let (tx, mut messages) = mpsc::channel(1);
+    *room.runtime_agent_request_tx.lock().await = Some(tx);
+    let task = tokio::spawn({
+        let room = room.clone();
+        let daemon = daemon.clone();
+        async move {
+            crate::requests::local_environment_selection::apply(&room, &daemon, 1, observed_heads)
+                .await
+        }
+    });
+    // The transport is doubled only at the process boundary; selection, launch
+    // admission, launch config, success publication and trust guards remain real.
+    let RuntimeAgentMessage::Query(envelope, reply) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), messages.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("expected restart query")
+    };
+    let RuntimeAgentRequest::RestartKernel {
+        env_source,
+        launched_config,
+        ..
+    } = envelope.request
+    else {
+        panic!("expected restart")
+    };
+    assert_eq!(
+        env_source,
+        notebook_protocol::connection::EnvSource::ExistingConda
+    );
+    assert_eq!(
+        launched_config.venv_path,
+        Some(std::fs::canonicalize(&prefix).unwrap())
+    );
+    assert_eq!(
+        launched_config.python_path,
+        Some(selected.python_path.clone())
+    );
+    assert_eq!(
+        launched_config.local_environment.as_ref().unwrap().id,
+        selected.id
+    );
+    assert!(room.local_environment_selection.snapshot().applying);
+    assert!(room.local_environment_selection.set(None, 2).is_err());
+    reply
+        .send(RuntimeAgentResponse::KernelRestarted { env_source })
+        .unwrap();
+    let response = task.await.unwrap();
+    assert!(
+        matches!(response, crate::protocol::NotebookResponse::EnvironmentSelection { selection } if selection.applied == Some(selected.clone()) && !selection.applying && selection.revision == 3)
+    );
+    assert_eq!(room.doc.write().await.get_heads(), before);
+    assert!(room.runtime_agent_env_path.read().await.is_none());
+    let kernel = room.state.read(|sd| sd.read_state().kernel).unwrap();
+    assert_eq!(
+        kernel.lifecycle,
+        RuntimeLifecycle::Running(KernelActivity::Idle)
+    );
+    assert_eq!(kernel.environment_id, selected.id);
+    assert_eq!(kernel.python_version, "3.12.1");
+    assert!(prefix.join("conda-meta/python-3.12.1-0.json").exists());
+    room.local_environment_selection.set(None, 3).unwrap();
+    let shutdown = tokio::spawn({
+        let room = room.clone();
+        async move { crate::requests::shutdown_kernel::handle(&room).await }
+    });
+    let RuntimeAgentMessage::Query(_, reply) = messages.recv().await.unwrap() else {
+        panic!("expected shutdown query")
+    };
+    reply.send(RuntimeAgentResponse::Ok).unwrap();
+    assert!(matches!(
+        shutdown.await.unwrap(),
+        crate::protocol::NotebookResponse::KernelShuttingDown {}
+    ));
+    let restart = tokio::spawn({
+        let room = room.clone();
+        let daemon = daemon.clone();
+        async move {
+            crate::requests::launch_kernel::handle(
+                &room,
+                &daemon,
+                "python".into(),
+                notebook_protocol::connection::LaunchSpec::Auto,
+                None,
+            )
+            .await
+        }
+    });
+    let RuntimeAgentMessage::Query(envelope, reply) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), messages.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("expected committed-binding restart")
+    };
+    let RuntimeAgentRequest::RestartKernel {
+        env_source,
+        launched_config,
+        ..
+    } = envelope.request
+    else {
+        panic!("expected restart")
+    };
+    assert_eq!(
+        launched_config.local_environment.as_ref().unwrap().id,
+        selected.id,
+        "ordinary restart must use committed binding, not unapplied Automatic draft"
+    );
+    reply
+        .send(RuntimeAgentResponse::KernelRestarted { env_source })
+        .unwrap();
+    assert!(matches!(
+        restart.await.unwrap(),
+        crate::protocol::NotebookResponse::KernelLaunched { .. }
+    ));
+    assert!(room
+        .local_environment_selection
+        .snapshot()
+        .selected
+        .is_none());
+    assert_eq!(
+        room.local_environment_selection.snapshot().applied,
+        Some(selected.clone())
+    );
+    assert_eq!(room.doc.write().await.get_heads(), before);
+    room.local_environment_selection
+        .set(Some(selected.clone()), 4)
+        .unwrap();
+    let observed_heads = before.iter().map(ToString::to_string).collect();
+    let failed = tokio::spawn({
+        let room = room.clone();
+        let daemon = daemon.clone();
+        async move {
+            crate::requests::local_environment_selection::apply(&room, &daemon, 5, observed_heads)
+                .await
+        }
+    });
+    let RuntimeAgentMessage::Query(_, reply) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), messages.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("expected failing restart")
+    };
+    reply
+        .send(RuntimeAgentResponse::Error {
+            error: "import ipykernel failed".into(),
+        })
+        .unwrap();
+    assert!(
+        matches!(failed.await.unwrap(), crate::protocol::NotebookResponse::Error { error } if error.contains("ipykernel"))
+    );
+    let kernel = room.state.read(|sd| sd.read_state().kernel).unwrap();
+    assert_eq!(kernel.lifecycle, RuntimeLifecycle::Error);
+    assert!(kernel.environment_id.is_empty());
+    let snapshot = room.local_environment_selection.snapshot();
+    assert_eq!(snapshot.selected, Some(selected.clone()));
+    assert_eq!(snapshot.applied, Some(selected));
+    assert!(!snapshot.applying);
+    assert_eq!(snapshot.revision, 7);
+    assert!(
+        messages.try_recv().is_err(),
+        "a failed apply must not launch a fallback"
+    );
+    assert_eq!(room.doc.write().await.get_heads(), before);
+}
+
+#[tokio::test]
+async fn local_environment_apply_preflight_preserves_active_kernel_and_document() {
+    use notebook_protocol::protocol::LocalCondaEnvironment;
+    let (tmp, room) = gate_test_room();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+    let prefix = tmp.path().join("missing borrowed prefix");
+    room.local_environment_selection
+        .set(
+            Some(LocalCondaEnvironment {
+                id: "missing".into(),
+                name: "missing".into(),
+                python_path: crate::project_file::conda_python_path(&prefix),
+                prefix,
+                python_version: None,
+            }),
+            0,
+        )
+        .unwrap();
+    room.state
+        .with_doc(|sd| {
+            sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
+            sd.set_local_environment_identity("old", "old", Some("3.12"))
+        })
+        .unwrap();
+    let before = room.doc.write().await.get_heads();
+    let heads = before.iter().map(ToString::to_string).collect();
+    let (tx, mut messages) = mpsc::channel(1);
+    *room.runtime_agent_request_tx.lock().await = Some(tx);
+    let response =
+        crate::requests::local_environment_selection::apply(&room, &daemon, 1, heads).await;
+    assert!(matches!(
+        response,
+        crate::protocol::NotebookResponse::EnvironmentSelectionRejected { .. }
+    ));
+    assert!(
+        messages.try_recv().is_err(),
+        "passive preflight failure must not contact the old kernel"
+    );
+    assert_eq!(room.doc.write().await.get_heads(), before);
+    let kernel = room.state.read(|sd| sd.read_state().kernel).unwrap();
+    assert_eq!(
+        kernel.lifecycle,
+        RuntimeLifecycle::Running(KernelActivity::Idle)
+    );
+    assert_eq!(kernel.environment_id, "old");
+    assert_eq!(room.local_environment_selection.snapshot().revision, 1);
+    assert_eq!(
+        room.local_environment_selection
+            .snapshot()
+            .selected
+            .unwrap()
+            .id,
+        "missing"
+    );
+}
+
+#[tokio::test]
 async fn auto_launch_success_disposition_reopens_gate_immediately() {
     let (_tmp, room) = gate_test_room();
+    room.state
+        .with_doc(|sd| sd.set_local_environment_identity("stale", "stale", Some("3.11")))
+        .unwrap();
 
     let attempt = match room.try_begin_auto_launch() {
         AutoLaunchAdmission::Admitted(a) => a,
@@ -14433,6 +15230,11 @@ async fn auto_launch_success_disposition_reopens_gate_immediately() {
     .await;
 
     assert!(room.runtime_agent_launched_config.read().await.is_some());
+    assert!(room
+        .state
+        .read(|sd| sd.read_state().kernel.environment_id)
+        .unwrap()
+        .is_empty());
 
     let lifecycle = room
         .state

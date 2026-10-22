@@ -606,6 +606,8 @@ struct DaemonReadyPayload {
     actor_label: Option<String>,
     /// Server-enforced scope for this connection.
     connection_scope: Option<String>,
+    /// Optional daemon feature support, independent of the connection's authority.
+    local_environment_selection: bool,
     /// Daemon-authoritative CommentsDoc identity for this room.
     comments_doc_id: Option<String>,
     /// Daemon-authoritative notebook reference stored inside the CommentsDoc.
@@ -997,6 +999,7 @@ async fn initialize_notebook_sync_open(
         runtime: None,
         actor_label: info.capabilities.actor_label.clone(),
         connection_scope: info.capabilities.connection_scope.clone(),
+        local_environment_selection: info.capabilities.local_environment_selection,
         comments_doc_id: info.capabilities.comments_doc_id.clone(),
         comments_notebook_ref: info.capabilities.comments_notebook_ref.clone(),
     };
@@ -1082,6 +1085,7 @@ async fn initialize_notebook_sync_create(
         runtime: Some(runtime),
         actor_label: info.capabilities.actor_label.clone(),
         connection_scope: info.capabilities.connection_scope.clone(),
+        local_environment_selection: info.capabilities.local_environment_selection,
         comments_doc_id: info.capabilities.comments_doc_id.clone(),
         comments_notebook_ref: info.capabilities.comments_notebook_ref.clone(),
     };
@@ -1211,6 +1215,7 @@ fn attach_ready_payload(
         runtime,
         actor_label: capabilities.actor_label,
         connection_scope: capabilities.connection_scope,
+        local_environment_selection: capabilities.local_environment_selection,
         comments_doc_id: capabilities.comments_doc_id,
         comments_notebook_ref: capabilities.comments_notebook_ref,
     }
@@ -1308,6 +1313,7 @@ async fn initialize_notebook_sync_hosted(
         runtime: None,
         actor_label: info.capabilities.actor_label.clone(),
         connection_scope: info.capabilities.connection_scope.clone(),
+        local_environment_selection: info.capabilities.local_environment_selection,
         comments_doc_id: info.capabilities.comments_doc_id.clone(),
         comments_notebook_ref: info.capabilities.comments_notebook_ref.clone(),
     };

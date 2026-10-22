@@ -22,10 +22,14 @@ import {
   ISOLATED_FRAME_SANDBOX_ATTRS,
   type IsolatedFrameDocument,
 } from "./frame-config";
-import type { NteractEmbedContainerDimensions, NteractEmbedHostContextPatch } from "./host-context";
+import type {
+  NteractEmbedContainerDimensions,
+  NteractEmbedHostContext,
+  NteractEmbedHostContextPatch,
+} from "./host-context";
 import { createNteractEmbedHostContext, mergeNteractEmbedHostContext } from "./host-context";
 import { IsolatedFrameRuntime } from "./isolated-frame-runtime";
-import { useIsolatedRenderer } from "./isolated-renderer-context";
+import { useIsolatedRenderer, useRegisterIsolatedOutput } from "./isolated-renderer-context";
 import {
   DEFAULT_OUTPUT_FRAME_MAX_HEIGHT,
   DEFAULT_OUTPUT_FRAME_MIN_HEIGHT,
@@ -78,6 +82,13 @@ export interface IsolatedFrameProps {
    * unset and uses srcDoc.
    */
   outputDocumentUrl?: string | null;
+
+  /**
+   * Register demand for the shared renderer bundle and asset-health notice.
+   * Set false for an empty, preloaded frame until it has content to render.
+   * @default true
+   */
+  requiresRenderer?: boolean;
 
   /**
    * Minimum height of the iframe in pixels.
@@ -329,6 +340,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       colorTheme,
       hostContext,
       outputDocumentUrl,
+      requiresRenderer = true,
       minHeight = DEFAULT_OUTPUT_FRAME_MIN_HEIGHT,
       maxHeight = DEFAULT_OUTPUT_FRAME_MAX_HEIGHT,
       autoHeight = false,
@@ -353,6 +365,9 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     },
     ref,
   ) {
+    // Direct consumers such as Markdown previews need the deferred bundle too,
+    // even when no OutputArea is mounted to register demand on their behalf.
+    useRegisterIsolatedOutput(requiresRenderer);
     // Get renderer bundle from context (provided by IsolatedRendererProvider)
     const {
       rendererCode,
@@ -429,6 +444,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       [id, name],
     );
     const logFrameDiagnosticRef = useRef(logFrameDiagnostic);
+    const resolvedHostContextRef = useRef<NteractEmbedHostContext | undefined>(undefined);
 
     // Sync refs during render so effects always see the latest callbacks.
     onReadyRef.current = onReady;
@@ -474,6 +490,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       runtimeRef.current = new IsolatedFrameRuntime({
         getFrameWindow: () => iframeRef.current?.contentWindow,
         getInitialContent: () => initialContentRef.current,
+        getHostContext: () => resolvedHostContextRef.current,
         // Seed the runtime before passive effects so an early iframe bootstrap
         // message can report the current bundle state.
         rendererBundle: { rendererCode, rendererCss },
@@ -616,6 +633,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         ),
       [colorTheme, containerDimensions, darkMode, hostContext, imperativeHostContext],
     );
+    resolvedHostContextRef.current = resolvedHostContext;
 
     // Send theme and host context as soon as iframe bootstrap is ready. The
     // bootstrap document already handles theme over JSON-RPC; host context moves

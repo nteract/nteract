@@ -100,6 +100,10 @@ export interface KernelState {
   name: string;
   language: string;
   env_source: string;
+  /** Daemon-authored borrowed-environment facts; absent on older runtimes. */
+  environment_id?: string;
+  environment_name?: string;
+  python_version?: string;
   /**
    * Runtime-peer liveness heartbeat. Cloud runtime peers stamp this when their
    * room link is alive so viewers can distinguish "never attached" from

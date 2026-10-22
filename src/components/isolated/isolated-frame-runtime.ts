@@ -104,6 +104,7 @@ export interface IsolatedFrameRuntimeCallbacks {
 export interface IsolatedFrameRuntimeOptions {
   getFrameWindow: () => Window | null | undefined;
   getInitialContent?: () => RenderPayload | undefined;
+  getHostContext?: () => NteractEmbedHostContext | undefined;
   rendererBundle?: IsolatedFrameRendererBundle;
   callbacks: IsolatedFrameRuntimeCallbacks;
 }
@@ -172,6 +173,7 @@ function isJsonRpcMessage(data: unknown): boolean {
 export class IsolatedFrameRuntime {
   private readonly getFrameWindow: () => Window | null | undefined;
   private readonly getInitialContent: () => RenderPayload | undefined;
+  private readonly getHostContext: () => NteractEmbedHostContext | undefined;
   private readonly callbacks: IsolatedFrameRuntimeCallbacks;
   private transport: JsonRpcTransport | null = null;
   private pendingMessages: ParentToIframeMessage[] = [];
@@ -180,6 +182,7 @@ export class IsolatedFrameRuntime {
   private ready = false;
   private iframeReady = false;
   private lastHostContextDelivery: { channel: "legacy" | "rpc"; key: string } | null = null;
+  private latestHostContext: NteractEmbedHostContext | undefined;
   private disposed = false;
   private rendererReadyChannels = new Set<"legacy" | "rpc">();
   private rendererBundle: IsolatedFrameRendererBundle;
@@ -189,6 +192,7 @@ export class IsolatedFrameRuntime {
   constructor(options: IsolatedFrameRuntimeOptions) {
     this.getFrameWindow = options.getFrameWindow;
     this.getInitialContent = options.getInitialContent ?? (() => undefined);
+    this.getHostContext = options.getHostContext ?? (() => this.latestHostContext);
     this.callbacks = options.callbacks;
     this.rendererBundle = options.rendererBundle ?? {};
   }
@@ -266,11 +270,16 @@ export class IsolatedFrameRuntime {
     if (this.disposed) {
       return;
     }
+    this.latestHostContext = context;
     // Host context waits for the React renderer because the bootstrap document
     // handles only the simple theme/style subset. The renderer owns the richer
     // MCP Apps-shaped context application.
     const transport = this.rendererTransport();
     const channel = transport ? "rpc" : "legacy";
+    this.deliverHostContext(context, channel);
+  }
+
+  private deliverHostContext(context: NteractEmbedHostContext, channel: "legacy" | "rpc"): void {
     const key = stableHostContextKey(context);
     const lastDelivery = this.lastHostContextDelivery;
     if (lastDelivery?.channel === channel && lastDelivery.key === key) {
@@ -278,8 +287,8 @@ export class IsolatedFrameRuntime {
     }
     this.lastHostContextDelivery = { channel, key };
 
-    if (transport) {
-      transport.notify(MCP_UI_HOST_CONTEXT_CHANGED, context);
+    if (channel === "rpc") {
+      this.transport?.notify(MCP_UI_HOST_CONTEXT_CHANGED, context);
     } else {
       this.postLegacy({ type: "host_context", payload: context });
     }
@@ -731,6 +740,17 @@ export class IsolatedFrameRuntime {
     }
     const wasReady = this.ready;
     this.rendererReadyChannels.add(channel);
+
+    // Bootstrap delivery only applies theme/style fields. Replay the full
+    // context to each ready renderer before callbacks can send content, and
+    // before initial content or queued renders can start a WASM operation.
+    // Read the adapter's current context without waiting for a passive effect.
+    const hostContext = this.getHostContext() ?? this.latestHostContext;
+    if (hostContext) {
+      this.latestHostContext = hostContext;
+      this.lastHostContextDelivery = null;
+      this.deliverHostContext(hostContext, channel);
+    }
 
     if (!wasReady) {
       this.callbacks.onDiagnostic("renderer-ready", { channel });

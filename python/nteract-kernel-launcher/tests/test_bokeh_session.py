@@ -451,6 +451,360 @@ def test_patch_against_older_revision_is_rebased_onto_python_changes():
     assert event.client_patch is not None
 
 
+def _coalescing_session(pn):
+    slider = pn.widgets.FloatSlider(start=0, end=10, value=1)
+    text = pn.widgets.TextInput(value="a")
+    _ip, data, _metadata = _format_panel(pn.Row(slider, text))
+    session = session_registry.require(data[BOKEH_SESSION_MIME]["session_id"])
+    delivered: list[Any] = []
+    session.set_event_sink(delivered.append)
+    return slider, text, session, delivered
+
+
+def test_python_changes_in_one_loop_iteration_share_a_revision():
+    pn = _load_panel()
+
+    async def change_both():
+        slider, text, _session, delivered = _coalescing_session(pn)
+        slider.value = 2
+        text.value = "b"
+        assert delivered == []
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return delivered
+
+    [event] = asyncio.run(change_both())
+    assert (event.base_revision, event.revision) == (0, 1)
+    assert event.server_patch is not None
+    assert len(event.server_patch.content["events"]) == 2
+
+
+@pytest.mark.parametrize("transaction", [False, True], ids=["loop", "transaction"])
+@pytest.mark.parametrize("nested", [False, True], ids=["root", "layout-child"])
+@pytest.mark.parametrize("binary", [False, True], ids=["lists", "buffers"])
+def test_new_models_replay_streams_once(nested, binary, transaction):
+    pytest.importorskip("bokeh")
+
+    from bokeh.core.serialization import Buffer, Serialized
+    from bokeh.core.types import ID
+    from bokeh.document import Document
+    from bokeh.document.json import DocJson, PatchJson
+    from bokeh.models import ColumnDataSource, Div, Row
+    from bokeh.plotting import figure
+
+    np = pytest.importorskip("numpy")
+
+    def values(items):
+        return np.array(items, dtype=np.float64) if binary else items
+
+    async def change_and_replay():
+        document = Document()
+        root = Row(children=[]) if nested else Div(text="existing root")
+        document.add_root(root)
+        session = BokehDocumentSession(
+            document, document.roots, producer_name="test", producer_version="0"
+        )
+        try:
+            replica = Document.from_json(cast(DocJson, session.snapshot().content))
+            source = ColumnDataSource(data={"x": values([1, 2]), "y": values([1, 2])})
+
+            def add_and_stream():
+                if nested:
+                    plot = figure()
+                    plot.line("x", "y", source=source)
+                    root.children = [plot]
+                else:
+                    document.add_root(source)
+                source.stream({"x": values([3]), "y": values([3])})
+
+            if transaction:
+                root.on_change("name", lambda attr, old, new: add_and_stream())
+                client_patch = {
+                    "events": [
+                        {
+                            "kind": "ModelChanged",
+                            "model": {"id": root.id},
+                            "attr": "name",
+                            "new": "add source",
+                        }
+                    ]
+                }
+                result = session.apply_patch(
+                    base_revision=0, transaction_id="add-and-stream", patch=client_patch
+                )
+                assert (result.base_revision, result.revision) == (0, 1)
+                assert result.transaction_id == "add-and-stream"
+                replica.apply_json_patch(cast(PatchJson, client_patch))
+            else:
+                add_and_stream()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+            [event] = session.pop_server_events()
+            assert (event.base_revision, event.revision) == (0, 1)
+            patch = event.server_patch
+            if transaction:
+                assert event.transaction_id == result.transaction_id
+                assert patch is result.derived
+                assert event.client_patch is not None
+                assert event.client_patch.content == client_patch
+            else:
+                assert event.client_patch is None
+            assert patch is not None
+            assert len(patch.content["events"]) == 2
+            assert bool(patch.buffers) == binary
+            if binary:
+                # Equal payloads keep distinct Bokeh IDs across both events.
+                assert len({buffer.id for buffer in patch.buffers}) == 4
+                assert [buffer.data for buffer in patch.buffers] == [
+                    values([1, 2]).tobytes(),
+                    values([1, 2]).tobytes(),
+                    values([3]).tobytes(),
+                    values([3]).tobytes(),
+                ]
+            replica.apply_json_patch(
+                Serialized(
+                    content=cast(PatchJson, patch.content),
+                    buffers=[Buffer(ID(buffer.id), buffer.data) for buffer in patch.buffers],
+                )
+            )
+            replayed = replica.get_model_by_id(source.id)
+            assert replayed is not None
+            assert list(replayed.data["x"]) == list(source.data["x"]) == [1, 2, 3]
+            assert list(replayed.data["y"]) == list(source.data["y"]) == [1, 2, 3]
+        finally:
+            session.close()
+
+    asyncio.run(change_and_replay())
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["root", "property"])
+@pytest.mark.parametrize("binary", [False, True], ids=["lists", "buffers"])
+def test_callback_references_client_created_models_without_redefining_them(nested, binary):
+    pytest.importorskip("bokeh")
+    from bokeh.core.serialization import Serialized, Serializer
+    from bokeh.document import Document
+    from bokeh.models import ColumnDataSource, CustomJS
+    from nteract_kernel_launcher._bokeh_session import _serialize_bokeh_value
+
+    np = pytest.importorskip("numpy")
+    document = Document()
+    holder = CustomJS(code="")
+    trigger = CustomJS(code="")
+    document.add_root(holder)
+    document.add_root(trigger)
+    session = BokehDocumentSession(
+        document, document.roots, producer_name="test", producer_version="0"
+    )
+    source = ColumnDataSource(data={"x": np.array([1, 2], dtype="float64") if binary else [1, 2]})
+
+    def stream_and_reference(model):
+        model.stream({"x": np.array([3], dtype="float64") if binary else [3]})
+        holder.args = {"source": model}
+
+    if nested:
+        trigger.on_change("args", lambda attr, old, new: stream_and_reference(new["source"]))
+    else:
+
+        def on_root(event):
+            if event.kind == "RootAdded" and event.model.id == source.id:
+                stream_and_reference(event.model)
+
+        document.on_change(on_root)
+
+    try:
+        session.snapshot()
+        serializer = Serializer(deferred=True)
+        if nested:
+            client_event = {
+                "kind": "ModelChanged",
+                "model": {"id": trigger.id},
+                "attr": "args",
+                "new": serializer.encode({"source": source}),
+            }
+        else:
+            client_event = {"kind": "RootAdded", "model": serializer.encode(source)}
+        client = _serialize_bokeh_value(
+            Serialized(content={"events": [client_event]}, buffers=serializer.buffers)
+        )
+        result = session.apply_patch(
+            base_revision=0,
+            transaction_id="client-source",
+            patch=client.content,
+            buffers=client.buffers,
+        )
+        assert result.derived is not None
+        stream, reference = result.derived.content["events"]
+        assert stream["kind"] == "ColumnsStreamed"
+        # BokehJS decodes every definition before applying any event. Redefining
+        # this client model with its already-streamed data would append the row twice.
+        assert reference["new"]["entries"] == [["source", {"id": source.id}]]
+        assert list(holder.args["source"].data["x"]) == [1, 2, 3]
+        assert len(result.derived.buffers) == (1 if binary else 0)
+        [event] = session.pop_server_events()
+        assert (event.transaction_id, event.base_revision, event.revision) == (
+            "client-source",
+            0,
+            1,
+        )
+        assert event.client_patch is not None
+        assert event.client_patch.buffers == client.buffers
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("binary", [False, True], ids=["lists", "buffers"])
+def test_message_callback_defines_models_for_peers_without_replaying_the_message(binary):
+    pytest.importorskip("bokeh")
+    from bokeh.core.serialization import Buffer, Serialized, Serializer
+    from bokeh.core.types import ID
+    from bokeh.document import Document
+    from bokeh.document.json import DocJson, PatchJson
+    from bokeh.models import ColumnDataSource
+    from nteract_kernel_launcher._bokeh_session import _serialize_bokeh_value
+
+    np = pytest.importorskip("numpy")
+    document = Document()
+    session = BokehDocumentSession(
+        document, document.roots, producer_name="test", producer_version="0"
+    )
+    try:
+        replica = Document.from_json(cast(DocJson, session.snapshot().content))
+        source = ColumnDataSource(data={"x": np.array([1, 2]) if binary else [1, 2]})
+        document.callbacks.on_message("attach-source", document.add_root)
+        serializer = Serializer(deferred=True)
+        client = _serialize_bokeh_value(
+            Serialized(
+                content={
+                    "events": [
+                        {
+                            "kind": "MessageSent",
+                            "msg_type": "attach-source",
+                            "msg_data": serializer.encode(source),
+                        }
+                    ]
+                },
+                buffers=serializer.buffers,
+            )
+        )
+        result = session.apply_patch(
+            base_revision=0,
+            transaction_id="message-source",
+            patch=client.content,
+            buffers=client.buffers,
+        )
+        [event] = session.pop_server_events()
+        assert event.client_patch is None
+        assert event.server_patch is result.derived
+        assert event.server_patch is not None
+        assert (event.base_revision, event.revision) == (0, 1)
+        replica.apply_json_patch(
+            Serialized(
+                content=cast(PatchJson, event.server_patch.content),
+                buffers=[
+                    Buffer(ID(buffer.id), buffer.data) for buffer in event.server_patch.buffers
+                ],
+            )
+        )
+        replayed = replica.get_model_by_id(source.id)
+        assert replayed is not None
+        assert list(replayed.data["x"]) == [1, 2]
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("failure", ["callback", "serialization"])
+def test_failed_transaction_discards_partial_patches_and_recovers(failure):
+    pytest.importorskip("bokeh")
+    from bokeh.document import Document
+    from bokeh.document.json import DocJson, PatchJson
+    from bokeh.models import ColumnDataSource, Range1d
+
+    document = Document()
+    root = Range1d(start=0, end=1)
+    document.add_root(root)
+    source = ColumnDataSource(data={"x": [1, 2]})
+
+    def fail_serialization(events):
+        if failure == "serialization" and events[0].kind == "ColumnsStreamed":
+            raise ValueError("cannot serialize stream")
+
+    session = BokehDocumentSession(
+        document,
+        document.roots,
+        producer_name="test",
+        producer_version="0",
+        event_transform=fail_serialization,
+    )
+
+    def add_stream_and_fail(attr, old, new):
+        document.add_root(source)
+        source.stream({"x": [3]})
+        raise ValueError("callback failed after stream")
+
+    root.on_change("start", add_stream_and_fail)
+    try:
+        session.snapshot()
+        with pytest.raises(BokehPatchApplyError) as error:
+            session.apply_patch(
+                base_revision=0,
+                transaction_id="failed-stream",
+                patch={
+                    "events": [
+                        {
+                            "kind": "ModelChanged",
+                            "model": {"id": root.id},
+                            "attr": "start",
+                            "new": 1,
+                        }
+                    ]
+                },
+            )
+        assert error.value.revision == 1
+        [failed_event] = session.pop_server_events()
+        assert (failed_event.base_revision, failed_event.revision) == (0, 1)
+        assert failed_event.transaction_id == "failed-stream"
+        assert failed_event.client_patch is failed_event.server_patch is None
+        assert failed_event.checkpoint is error.value.checkpoint
+        replica = Document.from_json(cast(DocJson, error.value.checkpoint.content))
+        replayed = replica.get_model_by_id(source.id)
+        assert replayed is not None
+        assert list(replayed.data["x"]) == [1, 2, 3]
+
+        # A later successful transaction is acknowledged without stale derived events.
+        result = session.apply_patch(base_revision=1, transaction_id="next", patch={"events": []})
+        assert (result.base_revision, result.revision) == (1, 2)
+        assert result.derived is None
+        [next_event] = session.pop_server_events()
+        assert next_event.transaction_id == "next"
+        assert next_event.server_patch is next_event.checkpoint is None
+
+        # Callback state was cleared and checkpoint model references remain usable.
+        source.name = "recovered"
+        [event] = session.pop_server_events()
+        assert (event.base_revision, event.revision) == (2, 3)
+        assert event.server_patch is not None
+        replica.apply_json_patch(cast(PatchJson, event.server_patch.content))
+        assert replayed.name == "recovered"
+    finally:
+        session.close()
+
+
+def test_checkpoint_includes_changes_still_waiting_for_the_loop():
+    pn = _load_panel()
+
+    async def checkpoint_before_flush():
+        slider, _text, session, delivered = _coalescing_session(pn)
+        slider.value = 4
+        revision, snapshot = session.checkpoint()
+        return revision, snapshot, delivered
+
+    revision, snapshot, delivered = asyncio.run(checkpoint_before_flush())
+    assert revision == 1
+    assert [event.revision for event in delivered] == [1]
+    assert '"value":4' in str(snapshot.content).replace(" ", "").replace("'", '"')
+
+
 def test_python_change_queues_ordered_server_event():
     pn = _load_panel()
 

@@ -16,6 +16,10 @@ Related:
 - [Deployment Topology](../adr/deployment-topology.md) — Decision 1 names
   Cloudflare as the current hosted document engine and points at
   `aws-rust-room-host.md` as the only proposed alternative.
+- [Authenticated Automerge application infrastructure](authenticated-automerge-app-substrate/README.md)
+  explores reusable synchronization and account authorization independently
+  of the host runtime choice. It does not qualify Subduction on celld or
+  change the promotion gates below.
 - [AWS Rust Room Host](aws-rust-room-host.md) — a from-scratch Rust
   reimplementation of the room host on Postgres/S3.
 - `~/projects/sandbox/celld-lab/{README.md,NOTES-celld.md}` — the proof's

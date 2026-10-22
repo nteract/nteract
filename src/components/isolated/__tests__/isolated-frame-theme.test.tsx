@@ -6,6 +6,7 @@ import {
   MCP_UI_RESOURCE_TEARDOWN,
   MCP_UI_SIZE_CHANGED,
   NTERACT_RENDERER_READY,
+  NTERACT_RENDER_OUTPUT,
   NTERACT_RESIZE,
   NTERACT_THEME,
 } from "../rpc-methods";
@@ -51,6 +52,7 @@ vi.mock("../frame-html", () => ({
 }));
 
 vi.mock("../isolated-renderer-context", () => ({
+  useRegisterIsolatedOutput: vi.fn(),
   useIsolatedRenderer: () => ({
     rendererCode: undefined,
     rendererCss: undefined,
@@ -96,6 +98,38 @@ describe("IsolatedFrame theme updates", () => {
   afterEach(() => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("supplies asset context before initial content even when readiness precedes passive effects", () => {
+    const assets = { rendererAssetsBaseUrl: "https://assets.example/renderer-assets/" };
+    const initialContent = {
+      mimeType: "application/vnd.apache.arrow.stream",
+      data: "data:application/vnd.apache.arrow.stream;base64,/////w==",
+    };
+    const { container } = render(
+      <IsolatedFrame hostContext={{ nteract: assets }} initialContent={initialContent} />,
+    );
+    const iframeWindow = container.querySelector("iframe")!.contentWindow!;
+    // Both messages arrive in one turn, before React flushes readiness effects.
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          source: iframeWindow,
+          data: { type: "ready", payload: null },
+        }),
+      );
+      const transport = MockJsonRpcTransport.instances[0];
+      transport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
+      expect(transport.notify.mock.calls.slice(0, 2)).toEqual([
+        [
+          MCP_UI_HOST_CONTEXT_CHANGED,
+          expect.objectContaining({
+            nteract: expect.objectContaining(assets),
+          }),
+        ],
+        [NTERACT_RENDER_OUTPUT, initialContent],
+      ]);
+    });
   });
 
   it("uses JSON-RPC for live color-theme updates after the renderer is ready", async () => {

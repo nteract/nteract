@@ -86,6 +86,50 @@ async fn wait_for_joined_launch(
     }
 }
 
+fn commit_apply_delivery(
+    room: &NotebookRoom,
+    lease: &super::local_environment_selection::EnvironmentApply<'_>,
+    attempt: &mut KernelLaunchAttempt,
+    expected_runtime: &str,
+    deliver: impl FnOnce(),
+) -> anyhow::Result<()> {
+    let doc = room
+        .doc
+        .try_read()
+        .map_err(|_| anyhow::anyhow!("Notebook changed during environment preflight; try again"))?;
+    if let Some(heads) = lease.observed_heads() {
+        guarded::validate_dependencies_unchanged_since_observed(&doc, &heads).map_err(|_| {
+            anyhow::anyhow!("Notebook dependencies changed during environment preflight")
+        })?;
+    }
+    if let Some(metadata) = doc.get_metadata_snapshot() {
+        if metadata.detect_runtime().unwrap_or_else(|| "python".into()) != expected_runtime {
+            anyhow::bail!("Notebook runtime changed during environment preflight");
+        }
+        let trust = crate::notebook_sync_server::verify_trust_from_snapshot(
+            &metadata,
+            &room.trusted_packages,
+        );
+        if !matches!(
+            trust.status,
+            runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
+        ) {
+            anyhow::bail!("Notebook trust changed during environment preflight");
+        }
+    }
+    attempt.commit_kernel_replacement(|| {
+        room.comms.with_doc(|cd| cd.clear_comms())?;
+        room.state.with_doc(|sd| {
+            sd.clear_comms()?;
+            sd.set_local_environment_identity("", "", None)?;
+            sd.set_lifecycle(&RuntimeLifecycle::Launching)
+        })?;
+        lease.begin_replacement();
+        deliver();
+        Ok(())
+    })
+}
+
 async fn existing_kernel_response(room: &NotebookRoom) -> Option<NotebookResponse> {
     let active = room.active_kernel_launch()?;
     let lifecycle = room
@@ -126,6 +170,10 @@ async fn complete_manual_launch(
     kernel_type: &str,
     env_source: &EnvSource,
     launched_config: &notebook_protocol::protocol::LaunchedEnvConfig,
+    apply: Option<(
+        &super::local_environment_selection::EnvironmentApply<'_>,
+        Option<notebook_protocol::protocol::LocalCondaEnvironment>,
+    )>,
 ) -> Result<(), NotebookResponse> {
     let Some(attempt) = launch_attempt.take() else {
         return Err(NotebookResponse::Error {
@@ -149,6 +197,12 @@ async fn complete_manual_launch(
             if let Err(e) = room.state.with_doc(|sd| {
                 sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
                 sd.set_kernel_info(kernel_type, kernel_type, &env_source_label)?;
+                let identity = launched_config.local_environment.as_ref();
+                sd.set_local_environment_identity(
+                    identity.map_or("", |e| e.id.as_str()),
+                    identity.map_or("", |e| e.name.as_str()),
+                    identity.and_then(|e| e.python_version.as_deref()),
+                )?;
                 sd.set_prewarmed_packages(&launched_config.prewarmed_packages)?;
                 sd.set_runtime_agent_id(runtime_agent_id)?;
                 Ok(())
@@ -160,6 +214,13 @@ async fn complete_manual_launch(
                 kernel_type.to_string(),
                 env_source.clone(),
             );
+            *room
+                .preparing_kernel_env_path
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+            if let Some((lease, binding)) = apply {
+                lease.commit(binding);
+            }
         })
     };
 
@@ -208,7 +269,7 @@ pub(crate) async fn handle(
         return rejection.into_response();
     }
 
-    let mut launch_attempt = Some(loop {
+    let launch_attempt = loop {
         match room.try_begin_manual_launch() {
             ManualLaunchAdmission::Admitted(attempt) => {
                 // The active kernel can finish between admission and this
@@ -248,8 +309,150 @@ pub(crate) async fn handle(
                 }
             }
         }
-    });
+    };
 
+    let binding = if kernel_type == "deno" {
+        None
+    } else {
+        room.local_environment_selection.snapshot().applied
+    };
+    if binding.is_none() && matches!(env_source, LaunchSpec::Concrete(EnvSource::ExistingConda)) {
+        launch_attempt.release_without_cooldown();
+        return NotebookResponse::EnvironmentSelectionRejected {
+            error: "A local Conda launch requires an applied environment selection".into(),
+        };
+    }
+    let binding = match binding {
+        Some(environment) => match daemon
+            .local_conda_environments
+            .resolve_prefix(environment.prefix)
+            .await
+        {
+            Ok(environment) => Some(environment),
+            Err(error) => {
+                launch_attempt.release_without_cooldown();
+                return NotebookResponse::EnvironmentSelectionRejected { error };
+            }
+        },
+        None => None,
+    };
+    handle_admitted(
+        room,
+        daemon,
+        kernel_type,
+        env_source,
+        notebook_path,
+        launch_attempt,
+        binding,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn handle_admitted(
+    room: &Arc<NotebookRoom>,
+    daemon: &Arc<Daemon>,
+    kernel_type: String,
+    env_source: LaunchSpec,
+    notebook_path: Option<String>,
+    attempt: KernelLaunchAttempt,
+    local_environment: Option<notebook_protocol::protocol::LocalCondaEnvironment>,
+    apply: Option<super::local_environment_selection::EnvironmentApply<'_>>,
+) -> NotebookResponse {
+    let mut launch_attempt = Some(attempt);
+    // Request workers can be cancelled at any await, including agent lookup.
+    if apply.is_some() {
+        if let Some(attempt) = launch_attempt.as_mut() {
+            attempt.preserve_kernel_during_preparation();
+        }
+    }
+    let prior_agent_id = if apply.is_some() {
+        let id = room.current_runtime_agent_id.read().await.clone();
+        if room.runtime_agent_request_tx.lock().await.is_some() {
+            id
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if let Some(lease) = apply.as_ref() {
+        lease.preserve_agent(prior_agent_id.clone());
+    }
+    // Preparation is reversible for Apply: only the replacement RPC owns
+    // destruction of the old kernel. Inherited resolver errors must not drop
+    // its runtime agent merely because a new target could not be prepared.
+    let prior_kernel = room.state.read(|sd| sd.read_state().kernel).ok();
+    let prior_env_path = room.runtime_agent_env_path.read().await.clone();
+    if apply.is_some() {
+        if let Some(attempt) = launch_attempt.as_mut() {
+            attempt.preserve_environment_path(prior_env_path.clone());
+        }
+    }
+    let response = handle_attempt(
+        room,
+        daemon,
+        kernel_type,
+        env_source,
+        notebook_path,
+        &mut launch_attempt,
+        local_environment,
+        apply.as_ref(),
+    )
+    .await;
+    if apply.is_some() && room.local_environment_selection.is_preparing() {
+        if prior_agent_id.is_none() {
+            let spawned_agent_id = room.current_runtime_agent_id.read().await.clone();
+            reset_starting_state(room, spawned_agent_id.as_deref()).await;
+        }
+        if let Some(attempt) = launch_attempt.take() {
+            if !attempt.is_cancelled() {
+                *room.runtime_agent_env_path.write().await = prior_env_path;
+                *room
+                    .preparing_kernel_env_path
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = None;
+                if let Some(prior) = prior_kernel.as_ref() {
+                    room.commit_unless_launch_cancelled(|| {
+                        room.state.with_doc(|sd| {
+                            sd.set_lifecycle_with_error_details(
+                                &prior.lifecycle,
+                                prior
+                                    .error_reason
+                                    .as_deref()
+                                    .and_then(runtime_doc::KernelErrorReason::parse),
+                                prior.error_details.as_deref(),
+                            )?;
+                            sd.set_kernel_info(&prior.name, &prior.language, &prior.env_source)?;
+                            sd.set_runtime_agent_id(&prior.runtime_agent_id)?;
+                            sd.clear_env_progress()?;
+                            sd.set_local_environment_identity(
+                                &prior.environment_id,
+                                &prior.environment_name,
+                                Some(&prior.python_version),
+                            )
+                        })
+                    });
+                }
+                attempt.release_without_cooldown();
+            }
+        }
+    }
+    response
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_attempt(
+    room: &Arc<NotebookRoom>,
+    daemon: &Arc<Daemon>,
+    kernel_type: String,
+    env_source: LaunchSpec,
+    notebook_path: Option<String>,
+    launch_attempt: &mut Option<KernelLaunchAttempt>,
+    local_environment: Option<notebook_protocol::protocol::LocalCondaEnvironment>,
+    apply: Option<&super::local_environment_selection::EnvironmentApply<'_>>,
+) -> NotebookResponse {
     // Fall back to the room's on-disk path when the caller doesn't
     // supply one. The frontend typically launches with
     // `notebook_path: None` and relies on the room knowing its own
@@ -276,11 +479,13 @@ pub(crate) async fn handle(
     }) {
         warn!("[runtime-state] {}", e);
     }
-    if let Err(e) = room.comms.with_doc(|cd| cd.clear_comms()) {
-        warn!("[comms-doc] {}", e);
-    }
-    if let Err(e) = room.state.with_doc(|sd| sd.clear_comms()) {
-        warn!("[runtime-state] {}", e);
+    if apply.is_none() {
+        if let Err(e) = room.comms.with_doc(|cd| cd.clear_comms()) {
+            warn!("[comms-doc] {}", e);
+        }
+        if let Err(e) = room.state.with_doc(|sd| sd.clear_comms()) {
+            warn!("[runtime-state] {}", e);
+        }
     }
 
     let notebook_path = notebook_path.map(std::path::PathBuf::from);
@@ -315,6 +520,15 @@ pub(crate) async fn handle(
     } else {
         kernel_type.clone()
     };
+    let local_environment = if resolved_kernel_type == "python" {
+        local_environment
+    } else if local_environment.is_some() && apply.is_some() {
+        return NotebookResponse::EnvironmentSelectionRejected {
+            error: "Notebook runtime changed; review the Python environment selection again".into(),
+        };
+    } else {
+        None
+    };
     info!(
         "[notebook-sync] LaunchKernel: resolved kernel_type='{}' (from '{}')",
         resolved_kernel_type, kernel_type
@@ -343,6 +557,8 @@ pub(crate) async fn handle(
             }
         }
         EnvSource::Deno
+    } else if local_environment.is_some() {
+        EnvSource::ExistingConda
     } else if matches!(launch_spec, LaunchSpec::Auto | LaunchSpec::AutoScoped(_)) {
         // Auto-detect Python environment, optionally scoped to a package manager family.
         // "auto:uv" constrains to UV sources, "auto:conda" to conda sources,
@@ -685,6 +901,7 @@ pub(crate) async fn handle(
     } else {
         // Python kernels require pooled environment
         match resolved_env_source.as_str() {
+            "conda:existing:local" => None,
             "uv:prewarmed" | "conda:prewarmed" => {
                 // Route through the capture-aware acquirer so:
                 //  - Reopen path: if metadata has env_id + captured
@@ -1615,8 +1832,14 @@ pub(crate) async fn handle(
     // source — if the user explicitly asked for e.g. `uv:inline` and
     // we routed through inline flow, don't drag captured prewarmed
     // baselines along.
-    let venv_path = pooled_env.as_ref().map(|e| e.venv_path.clone());
-    let python_path = pooled_env.as_ref().map(|e| e.python_path.clone());
+    let venv_path = local_environment
+        .as_ref()
+        .map(|e| e.prefix.clone())
+        .or_else(|| pooled_env.as_ref().map(|e| e.venv_path.clone()));
+    let python_path = local_environment
+        .as_ref()
+        .map(|e| e.python_path.clone())
+        .or_else(|| pooled_env.as_ref().map(|e| e.python_path.clone()));
     let prewarmed_pkgs = pooled_env.as_ref().map(|e| e.prewarmed_packages.clone());
     let feature_flags = feature_flags_for_inline;
     let captured_env_for_config = match resolved_env_source.as_str() {
@@ -1630,7 +1853,7 @@ pub(crate) async fn handle(
         }
         _ => None,
     };
-    let launched_config = build_launched_config(
+    let mut launched_config = build_launched_config(
         &resolved_kernel_type,
         resolved_env_source.as_str(),
         inline_deps.as_deref(),
@@ -1642,6 +1865,19 @@ pub(crate) async fn handle(
         feature_flags,
         captured_env_for_config.as_ref(),
     );
+    launched_config.local_environment = local_environment.as_ref().map(|environment| {
+        notebook_protocol::protocol::LocalEnvironmentIdentity {
+            id: environment.id.clone(),
+            name: environment.name.clone(),
+            python_version: environment.python_version.clone(),
+        }
+    });
+    if let Some(environment) = local_environment.as_ref() {
+        launched_config.venv_path = Some(environment.prefix.clone());
+        launched_config.python_path = Some(environment.python_path.clone());
+        // Borrowed prefixes must never enter the daemon-owned cleanup slot.
+        *room.runtime_agent_env_path.write().await = None;
+    }
 
     if launch_attempt
         .as_ref()
@@ -1652,12 +1888,30 @@ pub(crate) async fn handle(
         };
     }
 
+    if let Some(lease) = apply.as_ref() {
+        let mut rejection = guarded::ensure_trusted(room).await.err();
+        if rejection.is_none() {
+            if let Some(heads) = lease.observed_heads() {
+                let doc = room.doc.read().await;
+                rejection =
+                    guarded::validate_dependencies_unchanged_since_observed(&doc, &heads).err();
+            }
+        }
+        if let Some(rejection) = rejection {
+            return rejection.into_response();
+        }
+    }
+
     // Transition to "launching" phase before starting the kernel process
-    if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
-        room.state
-            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Launching))
-    }) {
-        warn!("[runtime-state] {}", e);
+    if apply.is_none() {
+        if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
+            room.state.with_doc(|sd| {
+                sd.set_local_environment_identity("", "", None)?;
+                sd.set_lifecycle(&RuntimeLifecycle::Launching)
+            })
+        }) {
+            warn!("[runtime-state] {}", e);
+        }
     }
     let redact_env_values_in_outputs = daemon.redact_env_values_in_outputs().await;
     let import_shell_environment = daemon.import_shell_environment().await;
@@ -1682,9 +1936,7 @@ pub(crate) async fn handle(
                 };
             restart_env_vars.extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
             restart_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
-            match send_runtime_agent_request_with_captured_env_repair(
-                room,
-                captured_env_for_config.as_ref(),
+            let build_request =
                 |kernel_ports| notebook_protocol::protocol::RuntimeAgentRequest::RestartKernel {
                     kernel_type: resolved_kernel_type.clone(),
                     env_source: resolved_env_source.clone(),
@@ -1695,10 +1947,21 @@ pub(crate) async fn handle(
                     kernel_ports,
                     env_vars: restart_env_vars.clone(),
                     redact_env_values_in_outputs,
-                },
-            )
-            .await
-            {
+                };
+            let response = if let Some(lease) = apply {
+                crate::notebook_sync_server::send_runtime_agent_request_with_kernel_ports_on_delivery(room, build_request, |message, permit| {
+                    let attempt = launch_attempt.as_mut().ok_or_else(|| anyhow::anyhow!("Kernel launch ownership ended before delivery"))?;
+                    commit_apply_delivery(room, lease, attempt, &resolved_kernel_type, || { permit.send(message); })
+                }).await
+            } else {
+                send_runtime_agent_request_with_captured_env_repair(
+                    room,
+                    captured_env_for_config.as_ref(),
+                    build_request,
+                )
+                .await
+            };
+            match response {
                 Ok(notebook_protocol::protocol::RuntimeAgentResponse::KernelRestarted {
                     env_source: es,
                 }) => {
@@ -1736,11 +1999,12 @@ pub(crate) async fn handle(
                     }
                     if let Err(response) = complete_manual_launch(
                         room,
-                        &mut launch_attempt,
+                        launch_attempt,
                         &runtime_agent_id,
                         &resolved_kernel_type,
                         &es,
                         &launched_config,
+                        apply.map(|lease| (lease, local_environment.clone())),
                     )
                     .await
                     {
@@ -1760,7 +2024,15 @@ pub(crate) async fn handle(
                         ..
                     },
                 ) => {
-                    reset_starting_state(room, existing_runtime_agent_id.as_deref()).await;
+                    reset_starting_state_with_outcome(
+                        room,
+                        existing_runtime_agent_id.as_deref(),
+                        ResetOutcome::Error {
+                            reason: None,
+                            details: &error,
+                        },
+                    )
+                    .await;
                     return NotebookResponse::Error {
                         error: format!("Agent restart failed: {}", error),
                     };
@@ -1772,6 +2044,19 @@ pub(crate) async fn handle(
                     };
                 }
                 Err(e) => {
+                    if apply.is_some() || local_environment.is_some() {
+                        let details = format!("Agent restart failed: {e}");
+                        reset_starting_state_with_outcome(
+                            room,
+                            existing_runtime_agent_id.as_deref(),
+                            ResetOutcome::Error {
+                                reason: None,
+                                details: &details,
+                            },
+                        )
+                        .await;
+                        return NotebookResponse::Error { error: details };
+                    }
                     warn!(
                         "[notebook-sync] RestartKernel RPC failed: {} — spawning new runtime agent",
                         e
@@ -1960,9 +2245,7 @@ pub(crate) async fn handle(
                 launch_env_vars
                     .extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
                 launch_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
-                match send_runtime_agent_request_with_captured_env_repair(
-                    room,
-                    captured_env_for_config.as_ref(),
+                let build_request =
                     |kernel_ports| notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
                         kernel_type: resolved_kernel_type.clone(),
                         env_source: resolved_env_source.clone(),
@@ -1973,10 +2256,21 @@ pub(crate) async fn handle(
                         kernel_ports,
                         env_vars: launch_env_vars.clone(),
                         redact_env_values_in_outputs,
-                    },
-                )
-                .await
-                {
+                    };
+                let response = if let Some(lease) = apply {
+                    crate::notebook_sync_server::send_runtime_agent_request_with_kernel_ports_on_delivery(room, build_request, |message, permit| {
+                        let attempt = launch_attempt.as_mut().ok_or_else(|| anyhow::anyhow!("Kernel launch ownership ended before delivery"))?;
+                        commit_apply_delivery(room, lease, attempt, &resolved_kernel_type, || { permit.send(message); })
+                    }).await
+                } else {
+                    send_runtime_agent_request_with_captured_env_repair(
+                        room,
+                        captured_env_for_config.as_ref(),
+                        build_request,
+                    )
+                    .await
+                };
+                match response {
                     Ok(notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunched {
                         env_source: es,
                     }) => {
@@ -1997,11 +2291,12 @@ pub(crate) async fn handle(
                         }
                         if let Err(response) = complete_manual_launch(
                             room,
-                            &mut launch_attempt,
+                            launch_attempt,
                             &runtime_agent_id,
                             &resolved_kernel_type,
                             &es,
                             &launched_config,
+                            apply.map(|lease| (lease, local_environment.clone())),
                         )
                         .await
                         {
@@ -2100,6 +2395,83 @@ mod tests {
             false,
         ));
         (tmp, room)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn apply_delivery_rejects_current_runtime_before_replacing_old_kernel() {
+        let (_tmp, room) = test_room();
+        {
+            let mut doc = room.doc.write().await;
+            doc.set_metadata_value(
+                "kernelspec",
+                &serde_json::json!({"name":"deno","language":"typescript","display_name":"Deno"}),
+            )
+            .unwrap();
+            assert_eq!(doc.detect_runtime().as_deref(), Some("deno"));
+        }
+        room.state
+            .with_doc(|sd| {
+                sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
+                sd.set_kernel_info("python", "python", "conda:existing:local")?;
+                sd.set_local_environment_identity("old", "old", None)
+            })
+            .unwrap();
+        let before = room.state.read(|sd| sd.read_state().kernel).unwrap();
+        let lease = room.local_environment_selection.begin_apply(0).unwrap();
+        let mut attempt = match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::Admitted(attempt) => attempt,
+            _ => panic!("admission"),
+        };
+        let error = commit_apply_delivery(&room, &lease, &mut attempt, "python", || {
+            panic!("must not deliver")
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("runtime changed"));
+        assert_eq!(
+            room.state.read(|sd| sd.read_state().kernel).unwrap(),
+            before
+        );
+        assert!(room.local_environment_selection.is_preparing());
+        attempt.release_without_cooldown();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_clears_running_identity_but_preserves_session_binding() {
+        let (_tmp, room) = test_room();
+        let environment = notebook_protocol::protocol::LocalCondaEnvironment {
+            id: "local-rankings".into(),
+            name: "rankings".into(),
+            prefix: "/borrowed/rankings".into(),
+            python_path: "/borrowed/rankings/bin/python".into(),
+            python_version: Some("3.12".into()),
+        };
+        room.local_environment_selection
+            .set(Some(environment.clone()), 0)
+            .unwrap();
+        room.local_environment_selection
+            .begin_apply(1)
+            .unwrap()
+            .commit(Some(environment));
+        room.state
+            .with_doc(|sd| {
+                sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
+                sd.set_local_environment_identity("local-rankings", "rankings", Some("3.12"))
+            })
+            .unwrap();
+        crate::requests::shutdown_kernel::handle(&room).await;
+        let kernel = room.state.read(|sd| sd.read_state().kernel).unwrap();
+        assert_eq!(kernel.lifecycle, RuntimeLifecycle::Shutdown);
+        assert!(kernel.environment_id.is_empty());
+        assert!(kernel.environment_name.is_empty());
+        assert!(kernel.python_version.is_empty());
+        assert_eq!(
+            room.local_environment_selection
+                .snapshot()
+                .applied
+                .unwrap()
+                .name,
+            "rankings"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -2413,6 +2785,7 @@ mod tests {
             "python",
             &EnvSource::Prewarmed(PackageManager::Uv),
             &launched_config,
+            None,
         )
         .await
         .is_err());

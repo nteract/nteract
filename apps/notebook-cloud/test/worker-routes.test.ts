@@ -6476,8 +6476,16 @@ describe("Worker artifact routes", () => {
       );
       assert.equal(first.status, 200);
       assert.equal(first.headers.get("X-Notebook-Cloud-Blob-Cache"), "miss");
+      assert.equal(first.headers.get("Cache-Control"), "private, no-store");
       assert.deepEqual(new Uint8Array(await first.arrayBuffer()), body);
       await Promise.all(waitUntilPromises);
+
+      assert.equal(storedResponses.size, 1);
+      assert.equal(
+        [...storedResponses.values()][0].headers.get("Cache-Control"),
+        "public, max-age=31536000, immutable",
+        "the authorized Worker cache should retain immutable bytes",
+      );
 
       const second = await blobGet(
         env,
@@ -6485,6 +6493,7 @@ describe("Worker artifact routes", () => {
       );
       assert.equal(second.status, 200);
       assert.equal(second.headers.get("X-Notebook-Cloud-Blob-Cache"), "hit");
+      assert.equal(second.headers.get("Cache-Control"), "private, no-store");
       assert.deepEqual(new Uint8Array(await second.arrayBuffer()), body);
       assert.deepEqual(env.NOTEBOOK_SNAPSHOTS.getKeys, [key]);
 
@@ -6500,6 +6509,18 @@ describe("Worker artifact routes", () => {
       );
       assert.equal(anonymous.status, 404);
       assert.deepEqual(env.NOTEBOOK_SNAPSHOTS.getKeys, [key]);
+
+      const head = await worker.fetch(
+        new Request(`http://localhost/api/n/blob-cache-demo/blobs/${hash}`, {
+          method: "HEAD",
+          headers: { "X-User": "alice", "X-Scope": "viewer" },
+        }),
+        env,
+        fakeContext(),
+      );
+      assert.equal(head.status, 200);
+      assert.equal(head.headers.get("Cache-Control"), "private, no-store");
+      assert.equal(head.headers.get("Content-Length"), String(body.byteLength));
     } finally {
       restoreCaches();
     }
@@ -6539,6 +6560,7 @@ describe("Worker artifact routes", () => {
       );
       assert.equal(response.status, 200);
       assert.equal(response.headers.get("X-Notebook-Cloud-Blob-Cache"), "miss");
+      assert.equal(response.headers.get("Cache-Control"), "private, no-store");
       assert.deepEqual(new Uint8Array(await response.arrayBuffer()), body);
       await Promise.all(waitUntilPromises);
       assert.deepEqual(env.NOTEBOOK_SNAPSHOTS.getKeys, [key]);
@@ -6588,6 +6610,7 @@ describe("Worker artifact routes", () => {
       );
       assert.equal(response.status, 200);
       assert.equal(response.headers.get("X-Notebook-Cloud-Blob-Cache"), "miss");
+      assert.equal(response.headers.get("Cache-Control"), "private, no-store");
       assert.deepEqual(new Uint8Array(await response.arrayBuffer()), body);
       await Promise.all(waitUntilPromises);
       assert.equal(putCalls, 0);
@@ -8393,6 +8416,7 @@ describe("Worker artifact routes", () => {
       fakeContext(),
     );
     assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Cache-Control"), "private, no-store");
     assert.equal(
       (await response.arrayBuffer()).byteLength,
       notebookBytes.byteLength,
@@ -8407,6 +8431,7 @@ describe("Worker artifact routes", () => {
       fakeContext(),
     );
     assert.equal(runtimeResponse.status, 200);
+    assert.equal(runtimeResponse.headers.get("Cache-Control"), "private, no-store");
 
     const commsResponse = await worker.fetch(
       new Request("http://localhost/api/n/route-demo/comms-snapshots/comms-fixture", {
@@ -8416,6 +8441,7 @@ describe("Worker artifact routes", () => {
       fakeContext(),
     );
     assert.equal(commsResponse.status, 200);
+    assert.equal(commsResponse.headers.get("Cache-Control"), "private, no-store");
 
     const latestRenderRoute = await worker.fetch(
       new Request("http://localhost/api/n/route-demo/render"),

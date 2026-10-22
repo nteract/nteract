@@ -42,6 +42,35 @@ function stubClientWithHeads(heads: string[]) {
 }
 
 describe("NotebookClient", () => {
+  it("sends revisioned environment requests without changing notebook declarations", async () => {
+    const { client, sendRequest } = stubClient();
+    await client.listCondaEnvironments(false);
+    await client.listInstalledCondaPackages(true);
+    await client.listInstalledCondaPackages(true);
+    await client.getEnvironmentSelection();
+    await client.setEnvironmentSelection({ kind: "conda", prefix: "C:\\Env Root\\rankings" }, 4);
+    await client.setEnvironmentSelection({ kind: "automatic" }, 5);
+    await client.applyEnvironmentSelection(6, ["head-a"]);
+    expect(sendRequest.mock.calls).toEqual([
+      [{ type: "list_conda_environments", refresh: false }],
+      [{ type: "list_installed_conda_packages", refresh: true }],
+      [{ type: "list_installed_conda_packages", refresh: true }],
+      [{ type: "get_environment_selection" }],
+      [
+        {
+          type: "set_environment_selection",
+          target: { kind: "conda", prefix: "C:\\Env Root\\rankings" },
+          expected_revision: 4,
+        },
+      ],
+      [{ type: "set_environment_selection", target: { kind: "automatic" }, expected_revision: 5 }],
+      [
+        { type: "apply_environment_selection", expected_revision: 6, observed_heads: ["head-a"] },
+        { required_heads: ["head-a"] },
+      ],
+    ]);
+  });
+
   it("emits unguarded sync_environment requests", async () => {
     const { client, sendRequest } = stubClient();
 

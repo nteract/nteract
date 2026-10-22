@@ -44,6 +44,7 @@ pub(crate) mod kernel_launch_failure;
 pub(crate) mod kernel_ports;
 pub mod kernel_state;
 pub mod launcher_cache;
+pub(crate) mod local_conda_environments;
 pub mod markdown_assets;
 pub(crate) mod matplotlib_widget;
 pub(crate) mod notebook_registry;

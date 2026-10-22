@@ -316,6 +316,7 @@ mod tests {
                 daemon_version,
                 put_blob: None,
                 notebook_sync_receipt: false,
+                local_environment_selection: false,
                 actor_label: None,
                 connection_scope: None,
                 comments_doc_id: None,
@@ -436,6 +437,20 @@ mod tests {
         assert!(info.capabilities.actor_label.is_none());
         assert!(info.capabilities.connection_scope.is_none());
         assert!(!info.capabilities.notebook_sync_receipt);
+    }
+
+    #[test]
+    fn local_environment_selection_capability_is_optional_and_fail_closed() {
+        let old: ProtocolCapabilities = serde_json::from_value(serde_json::json!({
+            "protocol": "v4"
+        }))
+        .unwrap();
+        assert!(!old.local_environment_selection);
+        assert!(ProtocolCapabilities::v4(None).local_environment_selection);
+        assert_eq!(
+            serde_json::to_value(old).unwrap(),
+            serde_json::json!({"protocol": "v4"})
+        );
     }
 
     #[test]
@@ -910,6 +925,7 @@ mod tests {
         assert_eq!(EnvSource::Pyproject.as_str(), "uv:pyproject");
         assert_eq!(EnvSource::PixiToml.as_str(), "pixi:toml");
         assert_eq!(EnvSource::EnvYml.as_str(), "conda:env_yml");
+        assert_eq!(EnvSource::ExistingConda.as_str(), "conda:existing:local");
         assert_eq!(EnvSource::Pep723(PackageManager::Uv).as_str(), "uv:pep723");
         assert_eq!(
             EnvSource::Pep723(PackageManager::Pixi).as_str(),
@@ -930,6 +946,7 @@ mod tests {
             "uv:pyproject",
             "pixi:toml",
             "conda:env_yml",
+            "conda:existing:local",
             "uv:pep723",
             "pixi:pep723",
             "deno",
@@ -1021,6 +1038,10 @@ mod tests {
             Some(PackageManager::Conda)
         );
         assert_eq!(
+            EnvSource::ExistingConda.package_manager(),
+            Some(PackageManager::Conda)
+        );
+        assert_eq!(
             EnvSource::Pep723(PackageManager::Pixi).package_manager(),
             Some(PackageManager::Pixi)
         );
@@ -1037,6 +1058,7 @@ mod tests {
         assert!(EnvSource::Pyproject.prepares_own_env());
         assert!(EnvSource::PixiToml.prepares_own_env());
         assert!(EnvSource::EnvYml.prepares_own_env());
+        assert!(!EnvSource::ExistingConda.prepares_own_env());
         assert!(EnvSource::Pep723(PackageManager::Uv).prepares_own_env());
         assert!(EnvSource::Pep723(PackageManager::Pixi).prepares_own_env());
 

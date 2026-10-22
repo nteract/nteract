@@ -68,7 +68,10 @@ interface RoomPeer {
 export class RoomMaterializer {
   private hostReady: Promise<RoomHostHandle> | undefined;
   private operationQueue: Promise<void> = Promise.resolve();
+  // null: no write/clear yet; undefined: cleared here; string: written here.
+  // Recovery must retain this token so already-queued saves recognize our writes.
   private lastCheckpointMetadata: string | undefined | null = null;
+  private checkpointSnapshotsReusable = false;
   private readonly notebookChangeWaiters = new Set<() => void>();
   private loadedPublishedRevisionId: string | null = null;
   private loadedPublishedNotebookHeads: string[] | null = null;
@@ -405,12 +408,6 @@ export class RoomMaterializer {
         (this.lastCheckpointMetadata === null || current !== this.lastCheckpointMetadata)
       )
         throw new Error("Room checkpoint was replaced before persistence");
-      const [notebookBytes, runtimeStateBytes, commsDocBytes, commentsDocBytes] = [
-        toStoredArrayBuffer(host.save_notebook()),
-        toStoredArrayBuffer(host.save_runtime_state_doc()),
-        toStoredArrayBuffer(host.save_comms_doc()),
-        toStoredArrayBuffer(host.save_comments_doc()),
-      ];
       const metadata: RoomCheckpointMetadata = {
         version: CHECKPOINT_VERSION,
         notebook_heads: Array.from(host.get_heads_hex()),
@@ -424,6 +421,36 @@ export class RoomMaterializer {
         published_comms_doc_heads: this.loadedPublishedCommsDocHeads,
         published_comments_doc_heads: this.loadedPublishedCommentsDocHeads,
       };
+      // Only reuse snapshots this activation successfully wrote, and only
+      // while their metadata is still current. Hydration, legacy import,
+      // replacement, and recovery all take a complete first checkpoint.
+      const reusable: RoomCheckpointMetadata | undefined =
+        this.checkpointSnapshotsReusable && current && current === this.lastCheckpointMetadata
+          ? JSON.parse(current)
+          : undefined;
+      const notebookBytes =
+        !reusable || headsChanged(metadata.notebook_heads, reusable.notebook_heads)
+          ? toStoredArrayBuffer(host.save_notebook())
+          : undefined;
+      const runtimeStateBytes =
+        !reusable || headsChanged(metadata.runtime_state_heads, reusable.runtime_state_heads)
+          ? toStoredArrayBuffer(host.save_runtime_state_doc())
+          : undefined;
+      const commsDocBytes =
+        !reusable || headsChanged(metadata.comms_doc_heads, reusable.comms_doc_heads)
+          ? toStoredArrayBuffer(host.save_comms_doc())
+          : undefined;
+      const commentsDocBytes =
+        !reusable || headsChanged(metadata.comments_doc_heads, reusable.comments_doc_heads)
+          ? toStoredArrayBuffer(host.save_comments_doc())
+          : undefined;
+      metadata.documents = reusable?.documents;
+      if (
+        reusable &&
+        JSON.stringify({ ...metadata, saved_at: reusable.saved_at }) === JSON.stringify(reusable)
+      )
+        return;
+
       metadata.documents = await storeCheckpointObjects(
         this.env.NOTEBOOK_SNAPSHOTS,
         this.notebookId,
@@ -446,14 +473,16 @@ export class RoomMaterializer {
           cause,
         });
       }
+      // Failed uploads or manifest commits must leave the saved frontier retryable.
       this.lastCheckpointMetadata = JSON.stringify(metadata);
+      this.checkpointSnapshotsReusable = true;
       cloudLog("debug", "room.materializer.checkpoint.saved", {
         notebook_id: this.notebookId,
         duration_ms: durationMs(startedAt),
-        notebook_byte_length: notebookBytes.byteLength,
-        runtime_state_byte_length: runtimeStateBytes.byteLength,
-        comms_doc_byte_length: commsDocBytes.byteLength,
-        comments_doc_byte_length: commentsDocBytes.byteLength,
+        notebook_byte_length: notebookBytes?.byteLength ?? 0,
+        runtime_state_byte_length: runtimeStateBytes?.byteLength ?? 0,
+        comms_doc_byte_length: commsDocBytes?.byteLength ?? 0,
+        comments_doc_byte_length: commentsDocBytes?.byteLength ?? 0,
         notebook_head_count: metadata.notebook_heads.length,
         runtime_state_head_count: metadata.runtime_state_heads.length,
         comms_doc_head_count: metadata.comms_doc_heads.length,
@@ -946,6 +975,7 @@ export class RoomMaterializer {
   }
 
   private markLoadedCheckpoint(metadata: RoomCheckpointMetadata): void {
+    this.checkpointSnapshotsReusable = false;
     this.loadedPublishedRevisionId = metadata.published_revision_id;
     this.loadedPublishedNotebookHeads = metadata.published_notebook_heads;
     this.loadedPublishedRuntimeStateHeads = metadata.published_runtime_state_heads;
@@ -954,6 +984,7 @@ export class RoomMaterializer {
   }
 
   private markLoadedPublishedSnapshot(revisionId: string, host: RoomHostHandle): void {
+    this.checkpointSnapshotsReusable = false;
     this.loadedPublishedRevisionId = revisionId;
     this.loadedPublishedNotebookHeads = Array.from(host.get_heads_hex());
     this.loadedPublishedRuntimeStateHeads = Array.from(host.get_runtime_state_heads_hex());

@@ -1,5 +1,6 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { IsolatedFrame } from "../isolated-frame";
 import {
   _resetBundleCache,
   IsolatedRendererProvider,
@@ -100,6 +101,87 @@ describe("IsolatedRendererProvider retry behavior", () => {
 
     expect(loader).toHaveBeenCalledTimes(1);
     expect(probeState("a")).toMatchObject({ loading: "false", error: "", code: "code-v1" });
+  });
+
+  it("loads the deferred bundle for a directly mounted Markdown preview frame", async () => {
+    const loader = vi.fn(async () => ({ rendererCode: "code-v1", rendererCss: "css-v1" }));
+    function Presence() {
+      const active = useHasIsolatedOutputs();
+      return <div data-testid="presence">{String(active)}</div>;
+    }
+    const { container, rerender } = render(
+      <IsolatedRendererProvider loader={loader} autoLoad={false}>
+        <Probe id="a" />
+        <Presence />
+        <IsolatedFrame name="markdown-preview" outputDocumentUrl="https://outputs.example/frame/" />
+      </IsolatedRendererProvider>,
+    );
+    const iframe = container.querySelector("iframe");
+    expect(iframe).not.toBeNull();
+    const postMessage = vi.spyOn(iframe!.contentWindow!, "postMessage");
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent("message", { source: iframe!.contentWindow, data: { type: "ready" } }),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(loader).toHaveBeenCalledTimes(1);
+    expect(probeState("a")).toMatchObject({ loading: "false", error: "", code: "code-v1" });
+    expect(screen.getByTestId("presence").textContent).toBe("true");
+    expect(postMessage).toHaveBeenCalledWith(
+      { type: "eval", payload: { code: expect.stringContaining("code-v1") } },
+      "*",
+    );
+
+    rerender(
+      <IsolatedRendererProvider loader={loader} autoLoad={false}>
+        <Probe id="a" />
+        <Presence />
+      </IsolatedRendererProvider>,
+    );
+    expect(screen.getByTestId("presence").textContent).toBe("false");
+  });
+
+  it("keeps an empty preloaded frame dormant until it requires the renderer", async () => {
+    const loader = vi.fn(async () => ({ rendererCode: "code-v1", rendererCss: "css-v1" }));
+    function Fixture({ required }: { required: boolean }) {
+      const present = useHasIsolatedOutputs();
+      return (
+        <>
+          <div data-testid="presence">{String(present)}</div>
+          <IsolatedFrame requiresRenderer={required} />
+        </>
+      );
+    }
+    const { rerender } = render(
+      <IsolatedRendererProvider loader={loader} autoLoad={false}>
+        <Fixture required={false} />
+      </IsolatedRendererProvider>,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(loader).not.toHaveBeenCalled();
+    expect(screen.getByTestId("presence").textContent).toBe("false");
+
+    rerender(
+      <IsolatedRendererProvider loader={loader} autoLoad={false}>
+        <Fixture required />
+      </IsolatedRendererProvider>,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(loader).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("presence").textContent).toBe("true");
+
+    rerender(
+      <IsolatedRendererProvider loader={loader} autoLoad={false}>
+        <Fixture required={false} />
+      </IsolatedRendererProvider>,
+    );
+    expect(screen.getByTestId("presence").textContent).toBe("false");
   });
 
   it("retries on the backoff ladder before surfacing anything to consumers", async () => {

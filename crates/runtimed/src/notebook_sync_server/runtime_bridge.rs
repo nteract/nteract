@@ -26,12 +26,20 @@ pub(crate) async fn send_runtime_agent_command(
 
 /// Send a query to the runtime agent and wait for a sync response.
 ///
-/// Only used for Complete and GetHistory which need return values.
+/// Lifecycle and environment queries also wait for an agent acknowledgement.
 pub(crate) async fn send_runtime_agent_query(
     room: &NotebookRoom,
     request: notebook_protocol::protocol::RuntimeAgentRequest,
 ) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse> {
     let timeout = runtime_agent_query_timeout(&request);
+    let sync_lease = if matches!(
+        &request,
+        notebook_protocol::protocol::RuntimeAgentRequest::SyncEnvironment(_)
+    ) {
+        room.local_environment_selection.sync_lease()
+    } else {
+        None
+    };
     let tx = {
         let guard = room.runtime_agent_request_tx.lock().await;
         guard
@@ -43,7 +51,11 @@ pub(crate) async fn send_runtime_agent_query(
         request,
     };
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    tx.send(RuntimeAgentMessage::Query(envelope, reply_tx))
+    let message = match sync_lease {
+        Some(lease) => RuntimeAgentMessage::EnvironmentSyncQuery(envelope, reply_tx, lease),
+        None => RuntimeAgentMessage::Query(envelope, reply_tx),
+    };
+    tx.send(message)
         .await
         .map_err(|_| anyhow::anyhow!("Runtime agent disconnected"))?;
     recv_runtime_agent_query_response(reply_rx, timeout).await
@@ -81,17 +93,66 @@ pub(crate) async fn send_runtime_agent_request(
 /// failure.
 pub(crate) async fn send_runtime_agent_request_with_kernel_ports<F>(
     room: &NotebookRoom,
-    mut build_request: F,
+    build_request: F,
 ) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse>
 where
     F: FnMut(
         notebook_protocol::protocol::KernelPorts,
     ) -> notebook_protocol::protocol::RuntimeAgentRequest,
 {
+    send_runtime_agent_request_with_kernel_ports_on_delivery(
+        room,
+        build_request,
+        |message, permit| {
+            permit.send(message);
+            Ok(())
+        },
+    )
+    .await
+}
+
+/// All fallible reservation/enqueue waits precede the synchronous delivery
+/// commit, so a failed or cancelled preflight cannot destroy the old kernel.
+pub(crate) async fn send_runtime_agent_request_with_kernel_ports_on_delivery<F, C>(
+    room: &NotebookRoom,
+    mut build_request: F,
+    mut on_delivery: C,
+) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse>
+where
+    F: FnMut(
+        notebook_protocol::protocol::KernelPorts,
+    ) -> notebook_protocol::protocol::RuntimeAgentRequest,
+    C: FnMut(
+        RuntimeAgentMessage,
+        tokio::sync::mpsc::Permit<'_, RuntimeAgentMessage>,
+    ) -> anyhow::Result<()>,
+{
     for attempt in 1..=crate::kernel_ports::MAX_KERNEL_PORT_LAUNCH_ATTEMPTS {
         let port_reservation = crate::kernel_ports::reserve_kernel_ports().await?;
-        let response =
-            send_runtime_agent_request(room, build_request(port_reservation.ports())).await?;
+        let request = build_request(port_reservation.ports());
+        let timeout = runtime_agent_query_timeout(&request);
+        let tx = room
+            .runtime_agent_request_tx
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Runtime agent not connected"))?;
+        let permit = tx
+            .reserve()
+            .await
+            .map_err(|_| anyhow::anyhow!("Runtime agent disconnected"))?;
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        on_delivery(
+            RuntimeAgentMessage::Query(
+                notebook_protocol::protocol::RuntimeAgentRequestEnvelope {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    request,
+                },
+                reply_tx,
+            ),
+            permit,
+        )?;
+        let response = recv_runtime_agent_query_response(reply_rx, timeout).await?;
 
         if let Some(delay) = kernel_launch_retry_delay(
             &response,
@@ -280,6 +341,90 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn queued_environment_sync_keeps_apply_fenced_after_caller_abort() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = Arc::new(NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        ));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(tx);
+        let caller = tokio::spawn({
+            let room = room.clone();
+            async move {
+                let _lease = room.local_environment_selection.begin_sync().unwrap();
+                send_runtime_agent_request(
+                    &room,
+                    notebook_protocol::protocol::RuntimeAgentRequest::SyncEnvironment(
+                        notebook_protocol::protocol::EnvKind::Uv {
+                            packages: vec!["numpy".into()],
+                        },
+                    ),
+                )
+                .await
+            }
+        });
+        let pending = rx.recv().await.unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        assert!(
+            room.local_environment_selection.begin_apply(0).is_err(),
+            "a dispatched sync outlives cancellation of its request worker"
+        );
+        drop(pending);
+        assert!(room.local_environment_selection.begin_apply(0).is_ok());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_environment_sync_keeps_apply_fenced_after_query_timeout() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = Arc::new(NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        ));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(tx);
+        let caller = tokio::spawn({
+            let room = room.clone();
+            async move {
+                let _lease = room.local_environment_selection.begin_sync().unwrap();
+                send_runtime_agent_request(
+                    &room,
+                    notebook_protocol::protocol::RuntimeAgentRequest::SyncEnvironment(
+                        notebook_protocol::protocol::EnvKind::Uv {
+                            packages: vec!["numpy".into()],
+                        },
+                    ),
+                )
+                .await
+            }
+        });
+        let RuntimeAgentMessage::EnvironmentSyncQuery(_, reply, lease) = rx.recv().await.unwrap()
+        else {
+            panic!("sync RPC must retain its admitted lease")
+        };
+        tokio::time::advance(std::time::Duration::from_secs(241)).await;
+        assert_eq!(
+            caller.await.unwrap().unwrap_err().to_string(),
+            "Runtime agent query timed out"
+        );
+        assert!(room.local_environment_selection.begin_apply(0).is_err());
+        assert!(reply
+            .send(RuntimeAgentResponse::EnvironmentSynced {
+                synced_packages: vec!["numpy".into()],
+            })
+            .is_err());
+        drop(lease);
+        assert!(room.local_environment_selection.begin_apply(0).is_ok());
+    }
+
+    #[tokio::test]
     async fn runtime_agent_query_response_returns_success() {
         let (tx, rx) = tokio::sync::oneshot::channel();
         tx.send(RuntimeAgentResponse::Ok)
@@ -313,6 +458,31 @@ mod tests {
             .expect_err("timeout should fail");
 
         assert_eq!(error.to_string(), "Runtime agent query timed out");
+    }
+
+    #[tokio::test]
+    async fn delivery_rejection_does_not_enqueue_a_restart() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(tx);
+        let response = send_runtime_agent_request_with_kernel_ports_on_delivery(
+            &room,
+            |_| notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
+            |_, _| anyhow::bail!("selection changed"),
+        )
+        .await;
+        assert!(response
+            .unwrap_err()
+            .to_string()
+            .contains("selection changed"));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

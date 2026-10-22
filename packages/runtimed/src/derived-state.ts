@@ -50,6 +50,9 @@ export function isKernelStatus(value: string): value is KernelStatus {
 export interface KernelInfo {
   kernelType: string | undefined;
   envSource: string | undefined;
+  environmentId?: string;
+  environmentName?: string;
+  pythonVersion?: string;
 }
 
 export interface DaemonQueueState {
@@ -157,6 +160,11 @@ export interface EnvManagerMetadataInputs {
   environmentYmlHasDeps: boolean;
   /** pixi.toml detected with non-empty `[dependencies]` or `[pypi-dependencies]`. */
   pixiHasDeps: boolean;
+  /**
+   * UI fallback for a fresh Python notebook with no runtime, declaration, or
+   * project signal. This never overrides a manager the notebook/runtime chose.
+   */
+  defaultPythonEnv?: EnvManager;
 }
 
 const PYPROJECT: ProjectFileKind = "PyprojectToml";
@@ -168,6 +176,9 @@ export function deriveKernelInfo(state: RuntimeState): KernelInfo {
   return {
     kernelType: state.kernel.language || undefined,
     envSource: state.kernel.env_source || undefined,
+    ...(state.kernel.environment_id ? { environmentId: state.kernel.environment_id } : {}),
+    ...(state.kernel.environment_name ? { environmentName: state.kernel.environment_name } : {}),
+    ...(state.kernel.python_version ? { pythonVersion: state.kernel.python_version } : {}),
   };
 }
 
@@ -215,7 +226,7 @@ export function deriveEnvManager(
     }
   }
 
-  return null;
+  return metadata.defaultPythonEnv ?? null;
 }
 
 /**

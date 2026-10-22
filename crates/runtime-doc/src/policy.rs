@@ -33,6 +33,7 @@ pub struct RuntimeStatePolicySnapshot {
     state: RuntimeState,
     root_keys: Vec<String>,
     display_index: Option<Vec<DisplayIndexPolicySnapshot>>,
+    local_environment_identity: Vec<Vec<(String, String)>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,7 +53,28 @@ pub fn runtime_state_policy_snapshot(state_doc: &RuntimeStateDoc) -> RuntimeStat
         state: state_doc.read_state(),
         root_keys: root_key_policy_snapshot(state_doc.doc()),
         display_index: display_index_policy_snapshot(state_doc.doc()),
+        local_environment_identity: local_environment_identity_snapshot(state_doc.doc()),
     }
+}
+
+fn local_environment_identity_snapshot(doc: &automerge::AutoCommit) -> Vec<Vec<(String, String)>> {
+    let mut result = Vec::new();
+    let mut kernels = doc.get_all(ROOT, "kernel").unwrap_or_default();
+    kernels.sort_by_key(|(_, id)| id.to_string());
+    for (value, kernel) in kernels {
+        result.push(vec![(value.to_string(), kernel.to_string())]);
+        for field in ["environment_id", "environment_name", "python_version"] {
+            let mut values: Vec<_> = doc
+                .get_all(&kernel, field)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(value, object)| (value.to_string(), object.to_string()))
+                .collect();
+            values.sort();
+            result.push(values);
+        }
+    }
+    result
 }
 
 fn root_key_policy_snapshot(doc: &automerge::AutoCommit) -> Vec<String> {
@@ -194,6 +216,13 @@ fn validate_runtime_peer_room_host_owned_delta(
     // Runtime peers own kernel-facing state: lifecycle/activity, output
     // routing, comm topology, and accepted execution progress. Room hosts and
     // local daemons still own deployment metadata and trust/environment facts.
+    if before.local_environment_identity != after.local_environment_identity {
+        return Err(runtime_state_policy_error(
+            scope,
+            "local environment identity",
+            "room-host/daemon-owned",
+        ));
+    }
     if before.state.env != after.state.env {
         return Err(runtime_state_policy_error(
             scope,
@@ -1280,6 +1309,67 @@ mod tests {
 
         validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
             .unwrap();
+    }
+
+    #[test]
+    fn runtime_peer_cannot_replace_kernel_parent_of_daemon_identity() {
+        let before_doc = RuntimeStateDoc::new();
+        let before = runtime_state_policy_snapshot(&before_doc);
+        let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        after_doc.doc_mut().put(ROOT, "kernel", 42).unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+        assert!(validate_runtime_state_sync_scope(
+            &before,
+            &after,
+            RuntimeStateWriteScope::RuntimePeer
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn runtime_peer_cannot_hide_local_identity_writes_with_non_string_values() {
+        let before_doc = RuntimeStateDoc::new();
+        let before = runtime_state_policy_snapshot(&before_doc);
+        let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        let kernel = match after_doc.doc().get(ROOT, "kernel").unwrap().unwrap() {
+            (Value::Object(ObjType::Map), id) => id,
+            other => panic!("expected kernel map, got {other:?}"),
+        };
+        after_doc
+            .doc_mut()
+            .put(&kernel, "environment_id", 42)
+            .unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+        assert!(validate_runtime_state_sync_scope(
+            &before,
+            &after,
+            RuntimeStateWriteScope::RuntimePeer
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn runtime_peer_cannot_rewrite_local_environment_identity() {
+        for field in ["environment_id", "environment_name", "python_version"] {
+            let before_doc = RuntimeStateDoc::new();
+            let before = runtime_state_policy_snapshot(&before_doc);
+            let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+            let kernel = match after_doc.doc().get(ROOT, "kernel").unwrap().unwrap() {
+                (Value::Object(ObjType::Map), id) => id,
+                other => panic!("expected kernel map, got {other:?}"),
+            };
+            after_doc.doc_mut().put(&kernel, field, "forged").unwrap();
+            let after = runtime_state_policy_snapshot(&after_doc);
+            assert!(
+                validate_runtime_state_sync_scope(
+                    &before,
+                    &after,
+                    RuntimeStateWriteScope::RuntimePeer
+                )
+                .is_err(),
+                "runtime peers must not author daemon-owned {field}"
+            );
+        }
     }
 
     #[test]

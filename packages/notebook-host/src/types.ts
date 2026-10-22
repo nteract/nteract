@@ -89,6 +89,8 @@ export interface DaemonReadyPayload {
   actor_label?: string;
   /** Server-enforced connection scope for this room connection. */
   connection_scope?: string;
+  /** Optional daemon feature; absent on older daemons means unavailable. */
+  local_environment_selection?: boolean;
   /** Daemon-authoritative CommentsDoc identity for this room. */
   comments_doc_id?: string | null;
   /** Daemon-authoritative notebook reference stored inside the CommentsDoc. */

@@ -56,6 +56,11 @@ import {
   isMeasuredElementFound,
   registerMarkdownHeadingNavigator,
 } from "@/components/cell/markdown-heading-navigation";
+import {
+  documentAnchorForFragment,
+  navigateDocumentAnchor,
+} from "@/components/notebook/fragment-navigation";
+import { createNotebookViewModelFromNotebookCells } from "@/components/notebook/state/view-model-store";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
 import { toggleMarkdownTaskMarker } from "../lib/markdown-task-source";
@@ -826,8 +831,17 @@ export const MarkdownCell = memo(function MarkdownCell({
     return registerMarkdownHeadingNavigator(cell.id, scrollToHeading);
   }, [cell.id, scrollToHeading]);
 
-  // Handle link clicks from iframe - open in system browser
+  // Handle link clicks: "#…" jumps within the notebook, everything else opens
+  // in the system browser
   const handleLinkClick = useCallback((url: string) => {
+    if (url.startsWith("#")) {
+      const { documentAnchors } = createNotebookViewModelFromNotebookCells({
+        includeDocumentAnchors: true,
+      });
+      const anchor = documentAnchorForFragment(url, documentAnchors);
+      if (anchor) navigateDocumentAnchor(anchor);
+      return;
+    }
     openUrl(url);
   }, []);
 
@@ -1209,6 +1223,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                 >
                   <IsolatedFrame
                     ref={frameRef}
+                    requiresRenderer={Boolean(previewSource)}
                     name={`md-${cell.id}`}
                     darkMode={darkMode}
                     colorTheme={colorTheme}

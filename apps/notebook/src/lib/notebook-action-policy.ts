@@ -40,6 +40,12 @@ interface NotebookActionPolicyOptions {
   ) => Promise<NotebookResponse>;
   shutdownKernel: () => Promise<NotebookResponse>;
   syncEnvironment: (guard?: DependencyGuard) => Promise<NotebookResponse>;
+  applyEnvironmentSelection?: (
+    revision: number,
+    heads: string[],
+    connectionGeneration: number,
+  ) => Promise<NotebookResponse>;
+  getEnvironmentConnectionGeneration?: () => number;
   approveProjectEnvironment: (projectFilePath?: string) => Promise<NotebookResponse>;
   runAllCells: () => Promise<NotebookResponse>;
   runAllCellsGuarded: (provenance: GuardedNotebookProvenance) => Promise<NotebookResponse>;
@@ -81,6 +87,14 @@ export function isLaunchErrorHandledByRuntimeBanner(error: string): boolean {
 export function getPendingTrustActionDialogCopy(
   action: PendingTrustAction | null,
 ): PendingTrustActionDialogCopy {
+  if (action?.kind === "apply_environment") {
+    return {
+      approveLabel: "Trust and Apply",
+      approveOnlyLabel: "Trust Notebook",
+      description:
+        "Review this notebook before starting code in the selected environment. This action does not install packages into a selected Conda environment.",
+    };
+  }
   return {
     approveLabel:
       action?.kind === "execute_cell"
@@ -159,6 +173,8 @@ export function useNotebookActionPolicy({
   executeCellGuarded,
   shutdownKernel,
   syncEnvironment,
+  applyEnvironmentSelection,
+  getEnvironmentConnectionGeneration,
   approveProjectEnvironment,
   runAllCells,
   runAllCellsGuarded,
@@ -173,6 +189,8 @@ export function useNotebookActionPolicy({
   const [trustApprovalHandoffPending, setTrustApprovalHandoffPending] = useState(false);
   const [envBuildCreating, setEnvBuildCreating] = useState(false);
   const [justSynced, setJustSynced] = useState(false);
+  const [environmentApplyPending, setEnvironmentApplyPending] = useState(false);
+  const environmentApplyInFlightRef = useRef(false);
   const pendingKernelStartRef = useRef(false);
   const runAllInFlightRef = useRef(false);
   const executingCellsRef = useRef(new Set<string>());
@@ -185,7 +203,10 @@ export function useNotebookActionPolicy({
 
   useEffect(() => {
     if (!trustApprovalHandoffPending) return;
-    if (kernelStatus !== KERNEL_STATUS.AWAITING_TRUST && kernelStatus !== KERNEL_STATUS.NOT_STARTED) {
+    if (
+      kernelStatus !== KERNEL_STATUS.AWAITING_TRUST &&
+      kernelStatus !== KERNEL_STATUS.NOT_STARTED
+    ) {
       setTrustApprovalHandoffPending(false);
       return;
     }
@@ -244,6 +265,13 @@ export function useNotebookActionPolicy({
           setTrustActionNotice(response.reason);
           return false;
         }
+        if (response.result === "environment_selection_rejected") {
+          setTrustApprovalHandoffPending(false);
+          setTrustActionNotice(
+            `${response.error}. Review the environment selection and apply a valid environment before starting the kernel again.`,
+          );
+          return false;
+        }
         resetEnvProgress();
         return true;
       }
@@ -258,6 +286,7 @@ export function useNotebookActionPolicy({
 
   const performTrustedSyncDeps = useCallback(
     async (guard?: DependencyGuard): Promise<boolean> => {
+      if (envSource === "conda:existing:local") return false;
       if (shouldAttemptHotSyncDependencies(envSource, envSyncState)) {
         logger.debug("[notebook-action-policy] Trying hot-sync for additions");
         const response = await syncEnvironment(guard);
@@ -295,17 +324,11 @@ export function useNotebookActionPolicy({
       }
       return started;
     },
-    [
-      envSource,
-      envSyncState,
-      resetEnvProgress,
-      shutdownKernel,
-      syncEnvironment,
-      tryStartKernel,
-    ],
+    [envSource, envSyncState, resetEnvProgress, shutdownKernel, syncEnvironment, tryStartKernel],
   );
 
   const handleSyncDeps = useCallback(async (): Promise<boolean> => {
+    if (envSource === "conda:existing:local") return false;
     if (!sessionReady) {
       logger.debug("[notebook-action-policy] handleSyncDeps: session not ready, skipping");
       return false;
@@ -332,6 +355,7 @@ export function useNotebookActionPolicy({
     return performTrustedSyncDeps();
   }, [
     captureSyncTrustAction,
+    envSource,
     checkTrust,
     flushSync,
     performTrustedSyncDeps,
@@ -339,6 +363,112 @@ export function useNotebookActionPolicy({
     sessionReady,
     setBlockedTrustAction,
   ]);
+
+  const performEnvironmentApply = useCallback(
+    async (
+      action: Extract<PendingTrustAction, { kind: "apply_environment" }>,
+    ): Promise<boolean> => {
+      if (!canExecute || !sessionReady || !applyEnvironmentSelection) return false;
+      setEnvironmentApplyPending(true);
+      try {
+        const response = await applyEnvironmentSelection(
+          action.expectedRevision,
+          action.provenance.observed_heads,
+          action.connectionGeneration,
+        );
+        if (response.result === "environment_selection") {
+          resetEnvProgress();
+          return true;
+        }
+        if (response.result === "guard_rejected") {
+          setTrustActionNotice(response.reason);
+          const info = await checkTrust();
+          if (info && !isTrustedForRuntimeAction(info)) {
+            pendingKernelStartRef.current = true;
+            setBlockedTrustAction(action);
+            setTrustDialogOpen(true);
+          }
+        } else if (
+          response.result === "error" ||
+          response.result === "environment_selection_rejected"
+        )
+          setTrustActionNotice(response.error);
+        else setTrustActionNotice(`Environment apply did not complete: ${response.result}`);
+        return false;
+      } catch (error) {
+        setTrustActionNotice(error instanceof Error ? error.message : String(error));
+        return false;
+      } finally {
+        setEnvironmentApplyPending(false);
+      }
+    },
+    [
+      applyEnvironmentSelection,
+      canExecute,
+      checkTrust,
+      resetEnvProgress,
+      sessionReady,
+      setBlockedTrustAction,
+    ],
+  );
+
+  const handleApplyEnvironment = useCallback(
+    async (expectedRevision: number): Promise<boolean> => {
+      if (
+        !canExecute ||
+        !sessionReady ||
+        !applyEnvironmentSelection ||
+        !getEnvironmentConnectionGeneration ||
+        environmentApplyInFlightRef.current
+      )
+        return false;
+      environmentApplyInFlightRef.current = true;
+      setEnvironmentApplyPending(true);
+      const connectionGeneration = getEnvironmentConnectionGeneration();
+      try {
+        if (!(await flushSync())) {
+          setTrustActionNotice(
+            "Notebook changes could not be synchronized. Apply again when connected.",
+          );
+          return false;
+        }
+        const provenance = createNotebookProvenance(getObservedHeads());
+        if (!provenance) return false;
+        const action: Extract<PendingTrustAction, { kind: "apply_environment" }> = {
+          kind: "apply_environment",
+          expectedRevision,
+          connectionGeneration,
+          provenance,
+        };
+        const info = await checkTrust();
+        if (!info) return false;
+        if (!isTrustedForRuntimeAction(info)) {
+          pendingKernelStartRef.current = true;
+          setBlockedTrustAction(action);
+          setTrustDialogOpen(true);
+          return false;
+        }
+        return await performEnvironmentApply(action);
+      } catch (error) {
+        setTrustActionNotice(error instanceof Error ? error.message : String(error));
+        return false;
+      } finally {
+        environmentApplyInFlightRef.current = false;
+        setEnvironmentApplyPending(false);
+      }
+    },
+    [
+      applyEnvironmentSelection,
+      canExecute,
+      checkTrust,
+      flushSync,
+      getEnvironmentConnectionGeneration,
+      getObservedHeads,
+      performEnvironmentApply,
+      sessionReady,
+      setBlockedTrustAction,
+    ],
+  );
 
   const restartAndRunAll = useCallback(async () => {
     if (!sessionReady) {
@@ -373,11 +503,23 @@ export function useNotebookActionPolicy({
     } finally {
       runAllInFlightRef.current = false;
     }
-  }, [captureRunAllTrustAction, flushSync, runAllCells, sessionReady, shutdownKernel, tryStartKernel]);
+  }, [
+    captureRunAllTrustAction,
+    flushSync,
+    runAllCells,
+    sessionReady,
+    shutdownKernel,
+    tryStartKernel,
+  ]);
 
   const runTrustApprovedAction = useCallback(
     async (action: PendingTrustAction | null) => {
       if (!action) return;
+
+      if (action.kind === "apply_environment") {
+        await performEnvironmentApply(action);
+        return;
+      }
 
       if (action.kind === "execute_cell") {
         const response = await executeCellGuarded(action.cellId, action.provenance);
@@ -419,7 +561,7 @@ export function useNotebookActionPolicy({
         setTrustActionNotice("Kernel was not ready. Run all cells again when startup finishes.");
       }
     },
-    [executeCellGuarded, performTrustedSyncDeps, runAllCellsGuarded],
+    [executeCellGuarded, performEnvironmentApply, performTrustedSyncDeps, runAllCellsGuarded],
   );
 
   const handleTrustApprovedLaunch = useCallback(
@@ -448,6 +590,13 @@ export function useNotebookActionPolicy({
           setTrustActionNotice(response.reason);
           return;
         }
+        if (response.result === "environment_selection_rejected") {
+          setTrustApprovalHandoffPending(false);
+          setTrustActionNotice(
+            `${response.error}. Review the environment selection and apply a valid environment before starting the kernel again.`,
+          );
+          return;
+        }
         await runTrustApprovedAction(action);
       } catch (e) {
         logger.error("[notebook-action-policy] kernel launch after trust approval failed:", e);
@@ -460,37 +609,70 @@ export function useNotebookActionPolicy({
 
   const handleTrustApprove = useCallback(async () => {
     const action = pendingTrustActionRef.current;
+    if (
+      action?.kind === "apply_environment" &&
+      action.connectionGeneration !== getEnvironmentConnectionGeneration?.()
+    ) {
+      pendingKernelStartRef.current = false;
+      setBlockedTrustAction(null);
+      setTrustActionNotice(
+        "The notebook connection changed. Review the selection and apply again.",
+      );
+      return false;
+    }
     const success = await approveTrust(
       action ? { observedHeads: action.provenance.observed_heads } : undefined,
     );
     if (success && pendingKernelStartRef.current) {
       pendingKernelStartRef.current = false;
-      setTrustApprovalHandoffPending(true);
+      setTrustApprovalHandoffPending(action?.kind !== "apply_environment");
       setBlockedTrustAction(null);
-      if (action?.kind === "sync_deps") {
+      if (action?.kind === "sync_deps" || action?.kind === "apply_environment") {
         void runTrustApprovedAction(action);
       } else {
         void handleTrustApprovedLaunch(action);
       }
     }
     return success;
-  }, [approveTrust, handleTrustApprovedLaunch, runTrustApprovedAction, setBlockedTrustAction]);
+  }, [
+    approveTrust,
+    getEnvironmentConnectionGeneration,
+    handleTrustApprovedLaunch,
+    runTrustApprovedAction,
+    setBlockedTrustAction,
+  ]);
 
   const handleTrustApproveOnly = useCallback(async () => {
     const action = pendingTrustActionRef.current;
+    if (
+      action?.kind === "apply_environment" &&
+      action.connectionGeneration !== getEnvironmentConnectionGeneration?.()
+    ) {
+      pendingKernelStartRef.current = false;
+      setBlockedTrustAction(null);
+      setTrustActionNotice(
+        "The notebook connection changed. Review the selection and apply again.",
+      );
+      return false;
+    }
     const success = await approveTrust(
       action ? { observedHeads: action.provenance.observed_heads } : undefined,
     );
     if (success && pendingKernelStartRef.current) {
       pendingKernelStartRef.current = false;
-      setTrustApprovalHandoffPending(true);
+      setTrustApprovalHandoffPending(action?.kind !== "apply_environment");
       setBlockedTrustAction(null);
-      if (action?.kind !== "sync_deps") {
+      if (action?.kind !== "sync_deps" && action?.kind !== "apply_environment") {
         void handleTrustApprovedLaunch(null);
       }
     }
     return success;
-  }, [approveTrust, handleTrustApprovedLaunch, setBlockedTrustAction]);
+  }, [
+    approveTrust,
+    getEnvironmentConnectionGeneration,
+    handleTrustApprovedLaunch,
+    setBlockedTrustAction,
+  ]);
 
   const handleTrustDecline = useCallback(() => {
     pendingKernelStartRef.current = false;
@@ -573,6 +755,10 @@ export function useNotebookActionPolicy({
       );
     } else if (response.result === "guard_rejected") {
       setTrustActionNotice(response.reason);
+    } else if (response.result === "environment_selection_rejected") {
+      setTrustActionNotice(
+        `${response.error}. Review the environment selection and apply a valid environment before starting the kernel again.`,
+      );
     }
   }, [canExecute, launchKernel, sessionReady, shutdownKernel]);
 
@@ -602,7 +788,7 @@ export function useNotebookActionPolicy({
           kernelStatus === KERNEL_STATUS.AWAITING_TRUST
         ) {
           const started = await tryStartKernel(captureExecuteTrustAction(cellId));
-          if (!started && pendingKernelStartRef.current) return;
+          if (!started) return;
         }
         const response = await executeCell(cellId);
         if (response.result === "error") {
@@ -737,6 +923,8 @@ export function useNotebookActionPolicy({
     handleStartKernel,
     handleStartKernelWithPyproject,
     handleSyncDeps,
+    handleApplyEnvironment,
+    environmentApplyPending,
     handleTrustApprove,
     handleTrustApproveOnly,
     handleTrustDecline,

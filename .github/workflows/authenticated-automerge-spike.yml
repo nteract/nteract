@@ -1,0 +1,60 @@
+name: Authenticated Automerge spike
+
+on:
+  pull_request:
+    paths:
+      - docs/memos/authenticated-automerge-app-substrate/experiment/**
+      - apps/notebook-cloud/src/identity.ts
+      - apps/notebook-cloud/src/auth-shared.ts
+      - apps/notebook-cloud/src/loopback.ts
+      - apps/notebook-cloud/src/oidc-userinfo.ts
+      - apps/notebook-cloud/src/sharing.ts
+      - packages/runtimed/src/scope-capabilities.ts
+      - .github/workflows/authenticated-automerge-spike.yml
+  push:
+    branches: [main]
+    paths:
+      - docs/memos/authenticated-automerge-app-substrate/experiment/**
+      - apps/notebook-cloud/src/identity.ts
+      - apps/notebook-cloud/src/auth-shared.ts
+      - apps/notebook-cloud/src/loopback.ts
+      - apps/notebook-cloud/src/oidc-userinfo.ts
+      - apps/notebook-cloud/src/sharing.ts
+      - packages/runtimed/src/scope-capabilities.ts
+      - .github/workflows/authenticated-automerge-spike.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: authenticated-automerge-spike-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Authenticated Automerge integration fixture
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: docs/memos/authenticated-automerge-app-substrate/experiment
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            docs/memos/authenticated-automerge-app-substrate/experiment
+            apps/notebook-cloud/src
+            packages/runtimed/src
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      # No root dependency installation: the fixture's tsx configuration resolves
+      # identity.ts's capability re-export to the actual scope-capabilities source.
+      # Keep the path filters above in sync with production verifier imports.
+      - name: Prepare pinned upstream packages and locked fixture dependencies
+        run: npm run setup
+      - name: Test provider fixtures and real Repo/Subduction integration
+        run: npm test

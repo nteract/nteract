@@ -50,7 +50,7 @@ test.describe("notebook rail outline", () => {
       await expect(page.locator('[data-slot="rail-leading-slot"]').getByRole("img")).toBeVisible();
       await expect(toolbar.getByRole("img", { name: "nteract" })).toHaveCount(0);
 
-      for (const panel of ["Outline", "Packages"]) {
+      for (const panel of ["Outline", "Packages & Environments"]) {
         await page.getByRole("button", { name: panel, exact: true }).click();
         await expect(page.getByRole("heading", { name: panel, exact: true })).toBeVisible();
         expect(await logo.boundingBox()).toEqual(initialLogo);
@@ -68,27 +68,37 @@ test.describe("notebook rail outline", () => {
       await expect(indicator).not.toHaveAttribute("tabindex");
       await indicator.click();
       await expect(indicator).toHaveAttribute("aria-expanded", "false");
-      await expect(page.getByRole("heading", { name: "Packages", exact: true })).toBeHidden();
+      await expect(
+        page.getByRole("heading", { name: "Packages & Environments", exact: true }),
+      ).toBeHidden();
       await expect(toolbar).toBeVisible();
       expect(await logo.boundingBox()).toEqual(initialLogo);
       await indicator.click();
-      await expect(page.getByRole("heading", { name: "Packages", exact: true })).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "Packages & Environments", exact: true }),
+      ).toBeVisible();
 
       await page.getByTestId("add-code-cell-button").focus();
       await page.setViewportSize({ width: 390, height: 844 });
       await expect(toolbar).toBeHidden();
-      await expect(page.getByRole("heading", { name: "Packages", exact: true })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Packages", exact: true })).toBeFocused();
+      await expect(
+        page.getByRole("heading", { name: "Packages & Environments", exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Packages & Environments", exact: true }),
+      ).toBeFocused();
       await expect(logo).toBeVisible();
-      await page.getByRole("button", { name: "Packages", exact: true }).click();
+      await page.getByRole("button", { name: "Packages & Environments", exact: true }).click();
       await expect(toolbar).toBeVisible();
 
       await expect(indicator).toBeVisible();
       await expect(indicator).not.toHaveAttribute("tabindex");
       await indicator.click();
       await expect(toolbar).toBeHidden();
-      await expect(page.getByRole("heading", { name: "Packages", exact: true })).toBeVisible();
-      await page.getByRole("button", { name: "Packages", exact: true }).click();
+      await expect(
+        page.getByRole("heading", { name: "Packages & Environments", exact: true }),
+      ).toBeVisible();
+      await page.getByRole("button", { name: "Packages & Environments", exact: true }).click();
       await expect(toolbar).toBeVisible();
     } finally {
       cleanupOutlineFixture(dir);

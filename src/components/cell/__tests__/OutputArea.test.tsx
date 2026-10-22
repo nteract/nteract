@@ -60,6 +60,7 @@ vi.mock("@/components/isolated", async (importOriginal) => {
       autoHeight?: boolean;
       forwardWheelBoundaryScroll?: boolean;
       hostContext?: unknown;
+      requiresRenderer?: boolean;
       onMessage?: (message: unknown) => void;
       onMouseDown?: () => void;
       onMouseUp?: (params: { hasSelection?: boolean }) => void;
@@ -72,6 +73,7 @@ vi.mock("@/components/isolated", async (importOriginal) => {
       autoHeight,
       forwardWheelBoundaryScroll,
       hostContext,
+      requiresRenderer,
       onMessage,
       onMouseDown,
       onMouseUp,
@@ -123,6 +125,7 @@ vi.mock("@/components/isolated", async (importOriginal) => {
         data-auto-height={String(autoHeight)}
         data-forward-wheel-boundary-scroll={String(forwardWheelBoundaryScroll)}
         data-host-context={JSON.stringify(hostContext ?? null)}
+        data-requires-renderer={String(requiresRenderer)}
         data-scroll-passthrough={String(scrollPassthrough)}
         data-testid="isolated-frame"
       />
@@ -1355,6 +1358,18 @@ describe("OutputArea iframe theme sync", () => {
     );
 
     expect(screen.getAllByTestId("isolated-frame")).toHaveLength(1);
+  });
+
+  it("only requests the renderer once a preloaded frame has isolated output", () => {
+    const { rerender } = render(<OutputArea outputs={[]} preloadIframe />);
+    expect(screen.getByTestId("isolated-frame").getAttribute("data-requires-renderer")).toBe(
+      "false",
+    );
+
+    rerender(<OutputArea outputs={[makeWidgetOutput()]} preloadIframe />);
+    expect(screen.getByTestId("isolated-frame").getAttribute("data-requires-renderer")).toBe(
+      "true",
+    );
   });
 
   it("splits Sift into its own boundary without output collapse controls", () => {

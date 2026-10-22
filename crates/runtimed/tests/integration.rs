@@ -1091,6 +1091,278 @@ async fn test_local_identity_rejects_foreign_automerge_actor() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
+fn passive_conda_prefix(root: &Path) -> PathBuf {
+    let prefix = root.join("Conda Envs").join("rankings");
+    std::fs::create_dir_all(prefix.join("conda-meta")).unwrap();
+    std::fs::write(
+        prefix.join("conda-meta/python-3.12.7-0.json"),
+        r#"{"name":"python","version":"3.12.7"}"#,
+    )
+    .unwrap();
+    let (python, site_packages) = if cfg!(windows) {
+        (prefix.join("python.exe"), prefix.join("Lib/site-packages"))
+    } else {
+        (
+            prefix.join("bin/python"),
+            prefix.join("lib/python3.12/site-packages"),
+        )
+    };
+    std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+    // A deliberately non-executable file proves selection never runs Python.
+    std::fs::write(&python, "not an executable").unwrap();
+    std::fs::create_dir_all(site_packages.join("ipykernel")).unwrap();
+    std::fs::write(site_packages.join("ipykernel/__init__.py"), "").unwrap();
+    std::fs::canonicalize(prefix).unwrap()
+}
+
+fn write_untrusted_selection_notebook(path: &Path) {
+    let notebook = serde_json::json!({
+        "nbformat": 4, "nbformat_minor": 5,
+        "metadata": {
+            "kernelspec": {"name": "python3", "language": "python", "display_name": "Python 3"},
+            "runt": {"schema_version": "1", "uv": {"dependencies": ["selection-unapproved-package"]}}
+        },
+        "cells": []
+    });
+    std::fs::write(path, serde_json::to_vec(&notebook).unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn test_local_environment_selection_owner_fanout_and_session_reset() {
+    use notebook_protocol::protocol::LocalEnvironmentTarget;
+    let temp = TempDir::new().unwrap();
+    let prefix = passive_conda_prefix(temp.path());
+    let notebook_path = temp.path().join("environment-selection.ipynb");
+    write_untrusted_selection_notebook(&notebook_path);
+    let original_file = std::fs::read(&notebook_path).unwrap();
+    let config = test_config(&temp);
+    let socket = config.socket_path.clone();
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let daemon_for_inspect = daemon.clone();
+    let daemon_handle = tokio::spawn(async move { daemon.run().await.unwrap() });
+    let pool = PoolClient::new(socket.clone());
+    assert!(wait_for_daemon(&pool).await);
+
+    let owner = connect::connect_open(socket.clone(), notebook_path.clone(), "selection-owner")
+        .await
+        .unwrap();
+    assert_session_ready(&owner.handle, "selection owner").await;
+    let metadata = owner.handle.get_notebook_metadata();
+    assert!(metadata.is_some_and(|snapshot| snapshot.runt.uv.is_some()));
+    assert!(owner.info.capabilities.local_environment_selection);
+    let notebook_id = owner.info.notebook_id.clone();
+    let heads = owner.handle.confirm_notebook_sync().await.unwrap();
+    let (frame_tx, mut frames) = mpsc::unbounded_channel();
+    let attached_owner = connect::connect_relay_with_operator(
+        socket.clone(),
+        notebook_id.clone(),
+        frame_tx,
+        Some("selection-observer".into()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        attached_owner.capabilities.connection_scope.as_deref(),
+        Some("owner")
+    );
+
+    let response = owner
+        .handle
+        .send_request(NotebookRequest::SetEnvironmentSelection {
+            target: LocalEnvironmentTarget::Conda {
+                prefix: prefix.clone(),
+            },
+            expected_revision: 0,
+        })
+        .await
+        .unwrap();
+    let NotebookResponse::EnvironmentSelection { selection } = response else {
+        panic!("unexpected {response:?}")
+    };
+    assert_eq!(selection.revision, 1);
+    assert_eq!(selection.selected.as_ref().unwrap().prefix, prefix);
+    assert!(selection.applied.is_none());
+    assert!(!selection.applying);
+    let notification = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let frame = frames.recv().await.unwrap();
+            if frame.first() == Some(&frame_types::BROADCAST) {
+                let value: serde_json::Value = serde_json::from_slice(&frame[1..]).unwrap();
+                if value["event"] == "environment_selection_changed" {
+                    break value;
+                }
+            }
+        }
+    })
+    .await
+    .expect("attached Owner receives selection projection");
+    assert_eq!(notification["selection"]["revision"], 1);
+    assert_eq!(
+        notification["selection"]["selected"]["prefix"],
+        prefix.to_string_lossy().as_ref()
+    );
+    let observer_state = attached_owner
+        .handle
+        .send_request(NotebookRequest::GetEnvironmentSelection {})
+        .await
+        .unwrap();
+    assert!(
+        matches!(observer_state, NotebookResponse::EnvironmentSelection { selection: ref observed } if observed == &selection)
+    );
+    let installed = owner
+        .handle
+        .send_request(NotebookRequest::ListInstalledCondaPackages { refresh: false })
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            installed,
+            NotebookResponse::EnvironmentSelectionRejected { ref error }
+                if error.contains("Start a local Conda environment")
+        ),
+        "pending selection must not be inspected as installed: {installed:?}"
+    );
+    let attached_owner_response = attached_owner
+        .handle
+        .send_request(NotebookRequest::ListInstalledCondaPackages { refresh: false })
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            attached_owner_response,
+            NotebookResponse::EnvironmentSelectionRejected { ref error }
+                if error.contains("Start a local Conda environment")
+        ),
+        "a second local Owner also cannot inspect packages without a running Conda kernel: {attached_owner_response:?}"
+    );
+    let stale = attached_owner
+        .handle
+        .send_request(NotebookRequest::SetEnvironmentSelection {
+            target: LocalEnvironmentTarget::Automatic,
+            expected_revision: 0,
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        stale,
+        NotebookResponse::EnvironmentSelectionRejected { .. }
+    ));
+    let apply = owner
+        .handle
+        .send_request(NotebookRequest::ApplyEnvironmentSelection {
+            expected_revision: 1,
+            observed_heads: heads.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(apply, NotebookResponse::GuardRejected { .. }),
+        "untrusted apply must reject: {apply:?}"
+    );
+    assert_eq!(owner.handle.current_heads_hex().unwrap(), heads);
+    assert_eq!(std::fs::read(&notebook_path).unwrap(), original_file);
+    assert_eq!(
+        std::fs::read(prefix.join(if cfg!(windows) {
+            "python.exe"
+        } else {
+            "bin/python"
+        }))
+        .unwrap(),
+        b"not an executable"
+    );
+
+    drop(attached_owner);
+    drop(owner);
+    // Wait for teardown itself rather than assuming the grace period plus
+    // filesystem work completes within a fixed delay on every platform.
+    let notebook_uuid = uuid::Uuid::parse_str(&notebook_id).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let room = daemon_for_inspect
+                .test_get_room(notebook_uuid)
+                .await
+                .expect("notebook room remains resident during kernel teardown");
+            if room.connections.last_kernel_torn_down_at().is_some() {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("kernel teardown resets the local environment selection");
+    let rejoined = connect::connect(socket.clone(), notebook_id, "selection-rejoined")
+        .await
+        .unwrap();
+    assert_session_ready(&rejoined.handle, "selection rejoined").await;
+    let response = rejoined
+        .handle
+        .send_request(NotebookRequest::GetEnvironmentSelection {})
+        .await
+        .unwrap();
+    let NotebookResponse::EnvironmentSelection { selection: reset } = response else {
+        panic!("unexpected {response:?}")
+    };
+    assert!(reset.revision > selection.revision);
+    assert!(reset.selected.is_none());
+    assert!(reset.applied.is_none());
+    // Ordinary teardown saves normalize JSON formatting; the full notebook
+    // content, including all dependency declarations, must remain identical.
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&notebook_path).unwrap())
+            .unwrap(),
+        serde_json::from_slice::<serde_json::Value>(&original_file).unwrap()
+    );
+    drop(rejoined);
+    stop_claiming_daemon(&socket, daemon_handle).await;
+}
+
+#[tokio::test]
+async fn test_local_environment_selection_viewer_requests_are_denied_over_wire() {
+    use notebook_protocol::protocol::LocalEnvironmentTarget;
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("selection-read-only.ipynb");
+    write_untrusted_selection_notebook(&path);
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    let original_permissions = permissions.clone();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&path, permissions).unwrap();
+    let config = test_config(&temp);
+    let socket = config.socket_path.clone();
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let daemon_handle = tokio::spawn(async move { daemon.run().await.unwrap() });
+    let pool = PoolClient::new(socket.clone());
+    assert!(wait_for_daemon(&pool).await);
+    let viewer = connect::connect_open(socket.clone(), path.clone(), "selection-viewer")
+        .await
+        .unwrap();
+    assert_session_ready(&viewer.handle, "selection viewer").await;
+    assert_eq!(
+        viewer.info.capabilities.connection_scope.as_deref(),
+        Some("viewer")
+    );
+    for request in [
+        NotebookRequest::ListCondaEnvironments { refresh: false },
+        NotebookRequest::GetEnvironmentSelection {},
+        NotebookRequest::SetEnvironmentSelection {
+            target: LocalEnvironmentTarget::Automatic,
+            expected_revision: 0,
+        },
+        NotebookRequest::ApplyEnvironmentSelection {
+            expected_revision: 0,
+            observed_heads: vec![],
+        },
+    ] {
+        let response = viewer.handle.send_request(request).await.unwrap();
+        assert!(
+            matches!(response, NotebookResponse::Error { ref error } if error.contains("not allowed for viewer")),
+            "unexpected {response:?}"
+        );
+    }
+    std::fs::set_permissions(path, original_permissions).unwrap();
+    drop(viewer);
+    stop_claiming_daemon(&socket, daemon_handle).await;
+}
+
 #[tokio::test]
 async fn test_notebook_sync_via_unified_socket() {
     let temp_dir = TempDir::new().unwrap();
@@ -4664,10 +4936,18 @@ async fn test_notebook_sync_uuid_refuses_journal_without_source_file() {
 
     let daemon = Daemon::new_for_test(config.clone()).unwrap();
     let mut daemon_handle = tokio::spawn(async move {
-        daemon.run().await.ok();
+        daemon
+            .run()
+            .await
+            .expect("initial missing-source daemon failed");
     });
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client).await);
+    assert_running_daemon_ready(
+        &pool_client,
+        &mut daemon_handle,
+        "initial missing-source daemon",
+    )
+    .await;
 
     let opened = connect::connect_open(socket_path.clone(), saved_path.clone(), "open")
         .await
@@ -4686,7 +4966,7 @@ async fn test_notebook_sync_uuid_refuses_journal_without_source_file() {
         .unwrap();
     opened.handle.confirm_sync().await.unwrap();
     drop(opened);
-    stop_daemon_for_replacement(&pool_client, &mut daemon_handle).await;
+    stop_daemon_and_transport_for_replacement(&pool_client, &mut daemon_handle, &socket_path).await;
 
     let persist_path = config
         .notebook_docs_dir
@@ -4701,12 +4981,20 @@ async fn test_notebook_sync_uuid_refuses_journal_without_source_file() {
     let restarted =
         Daemon::new_for_test(replacement_config(config, &temp_dir, "journal-only")).unwrap();
     let mut restarted_handle = tokio::spawn(async move {
-        restarted.run().await.ok();
+        restarted
+            .run()
+            .await
+            .expect("replacement missing-source daemon failed");
     });
     let restarted_pool = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&restarted_pool).await);
+    assert_running_daemon_ready(
+        &restarted_pool,
+        &mut restarted_handle,
+        "replacement missing-source daemon",
+    )
+    .await;
 
-    match connect::connect(socket_path, notebook_id.clone(), "rejoin").await {
+    match connect::connect(socket_path.clone(), notebook_id.clone(), "rejoin").await {
         Err(notebook_sync::SyncError::NotebookUnavailable(ref message))
             if message.contains("saved source file is missing")
                 && message.contains("recovery journal was preserved") => {}
@@ -4723,7 +5011,8 @@ async fn test_notebook_sync_uuid_refuses_journal_without_source_file() {
         "journal-only refusal must not publish a disconnected room: {rooms:?}"
     );
 
-    stop_daemon_for_replacement(&restarted_pool, &mut restarted_handle).await;
+    stop_daemon_and_transport_for_replacement(&restarted_pool, &mut restarted_handle, &socket_path)
+        .await;
 }
 
 /// A UUID-keyed legacy `.automerge` mirror is not authoritative for a saved

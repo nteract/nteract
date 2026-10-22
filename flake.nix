@@ -33,7 +33,7 @@
         pnpm_11 = pkgs.callPackage (nixpkgs + "/pkgs/development/tools/pnpm/generic.nix") {
           nodejs = pkgs.nodejs_22;
           version = "11.9.0";
-          hash = "sha256-+6vWny6dQEB8NkN6EbV4wflBY+43mHSZ3tu7tG0pG3Q=";
+          hash = "sha256-K1Z6pmAmI4B4rC4KM77D/r1g6WKYeqxpdFbzGAgZsoc=";
         };
 
         # Shared dependency lists
@@ -102,8 +102,10 @@
           inherit version;
           src = filteredSrc;
           fetcherVersion = 2;
-          # Update with: nix build .#pnpmDeps 2>&1 | grep 'got:'
-          hash = "sha256-+6vWny6dQEB8NkN6EbV4wflBY+43mHSZ3tu7tG0pG3Q=";
+          # The Nix workflow updates this only after matching pnpmDeps.drvPath.
+          # For a lockfile change, run `nix build .#pnpmDeps --no-link` and copy
+          # that derivation's "got:" hash here; keep pnpm_11's hash unchanged.
+          hash = "sha256-rS/I3RVyTQy884HVPUGgS1VAP2cGBt42GC6flywRK8M=";
         };
 
         jsBuild = pkgs.stdenv.mkDerivation {
@@ -291,6 +293,8 @@ DESKTOP
         # Checks (nix flake check)
 
         checks = {
+          pnpm-toolchain = pnpm_11;
+
           clippy = craneLib.cargoClippy (craneCommonArgs // {
             inherit cargoArtifacts cargoVendorDir;
             preBuild = ''

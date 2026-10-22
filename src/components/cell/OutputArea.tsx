@@ -1209,6 +1209,7 @@ function OutputAreaSingle({
                 >
                   <IsolatedFrame
                     ref={setIsolatedFrameHandle}
+                    requiresRenderer={shouldIsolate}
                     name={frameName}
                     darkMode={darkMode}
                     colorTheme={colorTheme}

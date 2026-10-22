@@ -208,6 +208,8 @@ pub enum EnvSource {
     PixiToml,
     /// `environment.yml` on disk (`"conda:env_yml"`). Conda-only.
     EnvYml,
+    /// Explicit borrowed Conda prefix. Never prepare, capture or mutate it.
+    ExistingConda,
     /// PEP 723 script deps extracted from cell source (e.g. `"uv:pep723"`).
     Pep723(PackageManager),
     /// Deno TypeScript kernel — no Python env.
@@ -234,6 +236,7 @@ impl EnvSource {
             Self::Pyproject => "uv:pyproject",
             Self::PixiToml => "pixi:toml",
             Self::EnvYml => "conda:env_yml",
+            Self::ExistingConda => "conda:existing:local",
             Self::Pep723(PackageManager::Uv) => "uv:pep723",
             Self::Pep723(PackageManager::Conda) => "conda:pep723",
             Self::Pep723(PackageManager::Pixi) => "pixi:pep723",
@@ -256,6 +259,7 @@ impl EnvSource {
             "uv:pyproject" => Self::Pyproject,
             "pixi:toml" => Self::PixiToml,
             "conda:env_yml" => Self::EnvYml,
+            "conda:existing:local" => Self::ExistingConda,
             "uv:pep723" => Self::Pep723(PackageManager::Uv),
             "conda:pep723" => Self::Pep723(PackageManager::Conda),
             "pixi:pep723" => Self::Pep723(PackageManager::Pixi),
@@ -276,7 +280,7 @@ impl EnvSource {
             Self::Prewarmed(pm) | Self::Inline(pm) | Self::Pep723(pm) => Some(pm.clone()),
             Self::Pyproject => Some(PackageManager::Uv),
             Self::PixiToml => Some(PackageManager::Pixi),
-            Self::EnvYml => Some(PackageManager::Conda),
+            Self::EnvYml | Self::ExistingConda => Some(PackageManager::Conda),
             Self::Deno => None,
             Self::Unknown(s) => {
                 if s.starts_with("uv:") {

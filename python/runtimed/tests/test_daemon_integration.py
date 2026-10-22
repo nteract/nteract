@@ -32,6 +32,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.daemon_logs import preserve_daemon_log
 from tests.log_guards import assert_no_automerge_recovery_logs
 
 # Skip all tests if runtimed module not available
@@ -807,14 +808,11 @@ def daemon_process(request):
             # of any failure (see #2290).
             artifact_dir = os.environ.get("RUNTIMED_INTEGRATION_LOG_DIR")
             if artifact_dir and log_file.exists():
-                import shutil
-
-                dest_dir = Path(artifact_dir)
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                module_name = request.module.__name__.replace(".", "_")
-                dest = dest_dir / f"daemon-{module_name}-{xdist_worker}.log"
-                shutil.copy2(log_file, dest)
-                print(f"[test] Copied daemon log to {dest}", file=sys.stderr)
+                dest = preserve_daemon_log(
+                    log_file, Path(artifact_dir), request.module.__name__, xdist_worker
+                )
+                if dest is not None:
+                    print(f"[test] Copied daemon log to {dest}", file=sys.stderr)
 
             # Print daemon logs for debugging
             if log_file.exists():

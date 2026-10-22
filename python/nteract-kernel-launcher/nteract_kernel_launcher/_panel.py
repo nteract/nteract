@@ -306,14 +306,14 @@ def _native_panel_mimebundle(viewable: Any) -> tuple[dict[str, Any], dict[str, A
     session, resources, bokeh_version = _create_panel_session(viewable)
     stashed_hashes: set[str] = set()
     try:
-        snapshot = session.snapshot()
+        revision, snapshot = session.checkpoint()
         _mark_document_loaded(session.document)
         buffer_descriptors, refs = _stash_buffers(snapshot)
         stashed_hashes = {ref["hash"] for ref in refs}
         payload = {
             "schema_version": BOKEH_SESSION_SCHEMA_VERSION,
             "session_id": session.session_id,
-            "revision": session.revision,
+            "revision": revision,
             "producer": {
                 "name": session.producer_name,
                 "version": session.producer_version,

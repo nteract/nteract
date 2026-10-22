@@ -44,17 +44,25 @@ async function readBody(
   return bytes;
 }
 
-/** Upload the complete generation before the caller commits its small KV manifest. */
+/**
+ * Upload changed bodies and reuse committed references before the manifest commit.
+ * Omitted bodies must refer to unchanged documents in the caller's committed generation.
+ */
 export async function storeCheckpointObjects(
   bucket: R2Bucket | undefined,
   notebookId: string,
-  bodies: CheckpointBodies,
+  bodies: Partial<CheckpointBodies>,
   committed?: CheckpointObjects,
 ): Promise<CheckpointObjects> {
   if (!bucket) throw new Error("Room checkpoint object storage unavailable");
+  for (const kind of DOCUMENTS) {
+    if (bodies[kind] === undefined && !committed?.[kind])
+      throw new Error(`Missing ${kind} checkpoint body or committed reference`);
+  }
   const entries = await Promise.all(
     DOCUMENTS.map(async (kind) => {
       const bytes = bodies[kind];
+      if (bytes === undefined) return [kind, committed![kind]] as const;
       const reference = { sha256: await digest(bytes), byte_length: bytes.byteLength };
       // The selected generation already confirmed durability. Reuse unchanged bodies
       // without another object write; immutable objects are never deleted here.

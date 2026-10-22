@@ -11,6 +11,7 @@ import { createElement } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 vi.mock("../isolated-renderer-context", () => ({
+  useRegisterIsolatedOutput: vi.fn(),
   useIsolatedRenderer: () => ({
     rendererCode: undefined,
     rendererCss: undefined,

@@ -240,11 +240,15 @@ describe("NotebookDocumentShell", () => {
       expect(brandSlot).toContainElement(brand);
       expect(panelHost).not.toContainElement(brand);
 
-      await user.click(screen.getByRole("button", { name: "Packages" }));
-      expect(panelHost).toContainElement(screen.getByRole("heading", { name: "Packages" }));
+      await user.click(screen.getByRole("button", { name: "Packages & Environments" }));
+      expect(panelHost).toContainElement(
+        screen.getByRole("heading", { name: "Packages & Environments" }),
+      );
       expect(screen.queryByRole("heading", { name: "Outline" })).not.toBeInTheDocument();
-      await user.click(screen.getByRole("button", { name: "Packages" }));
-      expect(screen.queryByRole("heading", { name: "Packages" })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Packages & Environments" }));
+      expect(
+        screen.queryByRole("heading", { name: "Packages & Environments" }),
+      ).not.toBeInTheDocument();
       expect(brandSlot).toContainElement(brand);
       expect(screen.getAllByRole("img", { name: "nteract" })).toHaveLength(1);
       expect(screen.getByRole("button", { name: "Run" })).toBeVisible();

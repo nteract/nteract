@@ -424,8 +424,9 @@ function hasIsolatedOutputConsumers(): boolean {
 
 /**
  * Report that this component currently renders isolation-needing outputs.
- * OutputArea calls this with its `shouldIsolate` so `useHasIsolatedOutputs`
- * reflects what is actually on screen.
+ * IsolatedFrame registers direct consumers such as Markdown previews. OutputArea
+ * registers its isolating outputs even before deferred frames mount or while an
+ * asset-error fallback replaces them, keeping bundle loading and retry available.
  */
 export function useRegisterIsolatedOutput(active: boolean): void {
   useEffect(() => {

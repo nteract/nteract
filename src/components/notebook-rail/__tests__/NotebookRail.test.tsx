@@ -55,7 +55,33 @@ describe("NotebookRail", () => {
       "border-l",
       ...NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES.split(" "),
     );
-    expect(screen.getByRole("heading", { name: "Packages" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Packages & Environments" })).toBeVisible();
+  });
+
+  it("keeps the rail panel as the vertical scroll owner", () => {
+    const { container } = render(
+      <NotebookRail
+        activePanelId="packages"
+        collapsed={false}
+        outlineItems={[]}
+        packagesPanel={
+          <NotebookPackagesPanel>
+            <section data-testid="environment-section" className="space-y-2 border-b pb-3">
+              Environment summary
+            </section>
+            <div data-testid="packages-content">Package editor</div>
+          </NotebookPackagesPanel>
+        }
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    const railPanel = container.querySelector('[data-slot="notebook-rail-panel"]');
+    expect(railPanel?.querySelector('[data-slot="rail-panel-header"]')).toBeTruthy();
+    expect(railPanel?.querySelectorAll(".overflow-y-auto")).toHaveLength(1);
+    expect(screen.getByTestId("environment-section")).toBeVisible();
+    expect(screen.getByTestId("packages-content").className).not.toContain("overflow-y-auto");
   });
 
   it("keeps the home control in the shared rail button family", () => {
@@ -152,7 +178,7 @@ describe("NotebookRail", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Packages" }));
+    fireEvent.click(screen.getByRole("button", { name: "Packages & Environments" }));
     expect(onActivePanelChange).toHaveBeenCalledWith("packages");
     expect(onCollapsedChange).toHaveBeenCalledWith(false);
   });
@@ -245,9 +271,9 @@ describe("NotebookRail", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Packages" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Packages & Environments" })).toBeVisible();
     expect(container.querySelector('[data-slot="rail-panel-header"]')).toContainElement(
-      screen.getByRole("heading", { name: "Packages" }),
+      screen.getByRole("heading", { name: "Packages & Environments" }),
     );
     expect(screen.queryByText("../pyproject.toml · 25 packages")).not.toBeInTheDocument();
   });
@@ -305,7 +331,7 @@ describe("NotebookRail", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Packages" }));
+    fireEvent.click(screen.getByRole("button", { name: "Packages & Environments" }));
     expect(onCollapsedChange).toHaveBeenCalledWith(true);
     expect(onActivePanelChange).not.toHaveBeenCalled();
   });
@@ -325,7 +351,7 @@ describe("NotebookRail", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Packages" }));
+    fireEvent.click(screen.getByRole("button", { name: "Packages & Environments" }));
     expect(onActivePanelChange).toHaveBeenCalledWith("packages");
     expect(onCollapsedChange).toHaveBeenCalledWith(false);
   });

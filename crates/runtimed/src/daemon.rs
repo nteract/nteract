@@ -1373,6 +1373,8 @@ pub struct Daemon {
     /// Cheap to clone; merged into LaunchKernel/RestartKernel env_vars when
     /// `import_shell_environment` is on. Daemon process env stays untouched.
     pub(crate) shell_env_overlay: Arc<crate::shell_env_overlay::ShellEnvOverlay>,
+    /// Shared on-demand Conda inventory; no scan is scheduled at startup.
+    pub(crate) local_conda_environments: crate::local_conda_environments::LocalCondaEnvironments,
 }
 
 #[doc(hidden)]
@@ -1722,6 +1724,7 @@ impl Daemon {
             conda_warming_respawns: std::sync::atomic::AtomicU32::new(0),
             pixi_warming_respawns: std::sync::atomic::AtomicU32::new(0),
             shell_env_overlay,
+            local_conda_environments: Default::default(),
         }))
     }
 
@@ -5491,6 +5494,15 @@ impl Daemon {
             if let Some(ref env_path) = *room.runtime_agent_env_path.read().await {
                 paths.insert(pool_env_root(env_path));
             }
+            // Explicit apply can prepare the next environment while the old
+            // kernel still runs. Both paths remain live until RPC delivery.
+            if let Some(ref env_path) = *room
+                .preparing_kernel_env_path
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+            {
+                paths.insert(pool_env_root(env_path));
+            }
         }
         paths
     }
@@ -7866,6 +7878,138 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn first_automatic_apply_with_usable_uv_pool_succeeds() {
+        use crate::notebook_sync_server::{NotebookRoom, RuntimeAgentMessage};
+        use notebook_protocol::protocol::{
+            NotebookResponse, RuntimeAgentRequest, RuntimeAgentResponse,
+        };
+        let temp = TempDir::new().unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp)).unwrap();
+        let room = Arc::new(NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            temp.path(),
+            Arc::new(BlobStore::new(temp.path().join("blobs"))),
+            false,
+        ));
+        {
+            let mut doc = room.doc.write().await;
+            let mut metadata = notebook_doc::metadata::NotebookMetadataSnapshot::default();
+            metadata.kernelspec = Some(notebook_doc::metadata::KernelspecSnapshot {
+                name: "python3".into(),
+                display_name: "Python 3".into(),
+                language: Some("python".into()),
+                ..Default::default()
+            });
+            doc.set_metadata_snapshot(&metadata).unwrap();
+        }
+        let observed_heads = room.doc.write().await.get_heads_hex();
+        let cache = kernel_env::uv::default_cache_dir_uv();
+        std::fs::create_dir_all(&cache).unwrap();
+        let pool_dir = TempDir::new_in(&cache).unwrap();
+        std::fs::write(pool_dir.path().join(".warmed"), "").unwrap();
+        let python_path = pool_dir.path().join("bin/python");
+        std::fs::create_dir_all(python_path.parent().unwrap()).unwrap();
+        // Only the external Python lookup is doubled; pool claiming, capture,
+        // both dependency fences and launch publication are production code.
+        std::fs::write(
+            &python_path,
+            "#!/bin/sh\nprintf '%s/lib/site-packages\\n' \"$(dirname \"$(dirname \"$0\")\")\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&python_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        daemon.uv_pool.lock().await.add(PooledEnv {
+            env_type: EnvType::Uv,
+            venv_path: pool_dir.path().to_owned(),
+            python_path,
+            prewarmed_packages: vec![],
+        });
+        *room.current_runtime_agent_id.write().await = Some("test-agent".into());
+        room.expect_runtime_agent("test-agent");
+        assert!(room.mark_runtime_agent_connected("test-agent"));
+        let (tx, mut messages) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(tx);
+        let apply = tokio::spawn({
+            let room = room.clone();
+            let daemon = daemon.clone();
+            async move {
+                crate::requests::local_environment_selection::apply(
+                    &room,
+                    &daemon,
+                    0,
+                    observed_heads,
+                )
+                .await
+            }
+        });
+        let message =
+            tokio::time::timeout(std::time::Duration::from_secs(5), messages.recv()).await;
+        if let Ok(Some(RuntimeAgentMessage::Query(envelope, reply))) = message {
+            let RuntimeAgentRequest::RestartKernel { env_source, .. } = envelope.request else {
+                panic!("expected restart")
+            };
+            reply
+                .send(RuntimeAgentResponse::KernelRestarted { env_source })
+                .unwrap();
+        }
+        let response = apply.await.unwrap();
+        if let Some(claimed) = room.runtime_agent_env_path.read().await.as_ref() {
+            if claimed.exists() {
+                std::fs::remove_dir_all(claimed).unwrap();
+            }
+        }
+        assert!(
+            matches!(response, NotebookResponse::EnvironmentSelection { ref selection } if !selection.applying && selection.applied.is_none()),
+            "{response:?}"
+        );
+        assert!(room
+            .doc
+            .read()
+            .await
+            .get_metadata_snapshot()
+            .unwrap()
+            .runt
+            .uv
+            .is_some());
+        assert!(matches!(
+            room.state
+                .read(|sd| sd.read_state().kernel.lifecycle)
+                .unwrap(),
+            runtime_doc::RuntimeLifecycle::Running(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn preparing_apply_protects_both_old_and_next_environment_from_gc() {
+        let temp = TempDir::new().unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp)).unwrap();
+        let room = Arc::new(crate::notebook_sync_server::NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            temp.path(),
+            Arc::new(BlobStore::new(temp.path().join("blobs"))),
+            false,
+        ));
+        let old = temp.path().join("runtimed-uv-old");
+        let next = temp.path().join("runtimed-conda-next");
+        *room.preparing_kernel_env_path.lock().unwrap() = Some(old.clone());
+        *room.runtime_agent_env_path.write().await = Some(next.clone());
+        daemon
+            .notebook_rooms
+            .insert_or_get(room.id, room.clone(), None)
+            .await
+            .unwrap();
+        let active = daemon.collect_active_env_paths().await;
+        assert!(active.contains(&old));
+        assert!(active.contains(&next));
+        *room.preparing_kernel_env_path.lock().unwrap() = None;
+        let active = daemon.collect_active_env_paths().await;
+        assert!(!active.contains(&old));
+        assert!(active.contains(&next));
+    }
 
     #[test]
     fn lock_failures_do_not_capture_shell_environment() -> anyhow::Result<()> {

@@ -156,6 +156,13 @@ pub struct KernelState {
     pub language: String,
     #[serde(default)]
     pub env_source: String,
+    /// Daemon-owned, path-free identity of a borrowed local environment.
+    #[serde(default)]
+    pub environment_id: String,
+    #[serde(default)]
+    pub environment_name: String,
+    #[serde(default)]
+    pub python_version: String,
     /// ID of the runtime agent subprocess that owns this kernel (e.g., "runtime-agent:a1b2c3d4").
     /// Used for provenance: identifying which runtime agent is running and detecting stale ones.
     #[serde(default)]
@@ -204,6 +211,9 @@ impl Default for KernelState {
             name: String::new(),
             language: String::new(),
             env_source: String::new(),
+            environment_id: String::new(),
+            environment_name: String::new(),
+            python_version: String::new(),
             runtime_agent_id: String::new(),
             lifecycle: RuntimeLifecycle::NotStarted,
             error_reason: None,
@@ -1395,6 +1405,26 @@ impl RuntimeStateDoc {
         self.doc.put(&kernel, "name", name)?;
         self.doc.put(&kernel, "language", language)?;
         self.doc.put(&kernel, "env_source", env_source)?;
+        Ok(())
+    }
+
+    /// Set path-free environment facts only after a successful daemon launch.
+    pub fn set_local_environment_identity(
+        &mut self,
+        id: &str,
+        name: &str,
+        python_version: Option<&str>,
+    ) -> Result<(), RuntimeStateError> {
+        let kernel = self.scaffold_map("kernel")?;
+        for (field, value) in [
+            ("environment_id", id),
+            ("environment_name", name),
+            ("python_version", python_version.unwrap_or_default()),
+        ] {
+            if self.read_str(&kernel, field) != value {
+                self.doc.put(&kernel, field, value)?;
+            }
+        }
         Ok(())
     }
 
@@ -3480,6 +3510,9 @@ impl RuntimeStateDoc {
                     name: self.read_str(k, "name"),
                     language: self.read_str(k, "language"),
                     env_source: self.read_str(k, "env_source"),
+                    environment_id: self.read_str(k, "environment_id"),
+                    environment_name: self.read_str(k, "environment_name"),
+                    python_version: self.read_str(k, "python_version"),
                     runtime_agent_id: self.read_str(k, "runtime_agent_id"),
                     lifecycle,
                     error_reason,

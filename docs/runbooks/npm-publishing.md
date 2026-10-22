@@ -178,6 +178,20 @@ Use a newer successful release to produce a complete package set. Repeating a
 completed old run does not move the tag back to it. Do not treat a partly
 published native matrix as a completed SDK release.
 
+Native `npm publish` can succeed while the registry is still processing the
+package. The wrapper polls for every enabled native package's exact version for
+up to 30 minutes, within a 40-minute job budget. Missing versions are retried;
+registry errors, invalid metadata, and conflicting nightly release identities
+still fail immediately. The wrapper is checked again after waiting so a newer
+publication cannot cause an older candidate to move the channel tag backwards.
+
+If native propagation exceeds that window, check the exact versions named in
+the timeout and their release identity. Once all are visible, rerun only the
+failed **Publish wrapper package** job in the same workflow run while its
+`npm-package-wrapper` and `npm-release-tools` artifacts are retained. This reuses
+the packed wrapper and its release plan; do not rebuild or republish the native
+packages to recover a registry delay.
+
 Each publisher job records whether its package was newly published or already
 existed in its job summary, along with registry source metadata when available.
 The wrapper result artifact separates the requested release from registry

@@ -7,6 +7,14 @@ on:
       - 'pnpm-lock.yaml'
       - 'flake.nix'
       - 'flake.lock'
+  pull_request:
+    paths:
+      - 'pnpm-lock.yaml'
+      - 'flake.nix'
+      - 'flake.lock'
+      - '.github/workflows/nix.yml'
+      - 'scripts/ci/update-pnpm-deps-hash.mjs'
+      - 'scripts/tests/nix-hash-update.test.mjs'
   workflow_dispatch:
 
 concurrency:
@@ -14,6 +22,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  validate:
+    name: Validate Nix dependency hashes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+          persist-credentials: false
+
+      - name: Test hash updater
+        run: node --test scripts/tests/nix-hash-update.test.mjs
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build pnpm and its dependency store
+        run: nix build --no-link .#checks.x86_64-linux.pnpm-toolchain .#pnpmDeps
+
   update-hashes:
     name: Update Nix hashes
     runs-on: ubuntu-24.04
@@ -31,10 +62,14 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Check pnpmDeps hash
+      - name: Test hash updater
+        run: node --test scripts/tests/nix-hash-update.test.mjs
+
+      - name: Check and update pnpmDeps hash
         id: check
         run: |
           set -euo pipefail
+          EXPECTED_DERIVATION=$(nix eval --raw .#pnpmDeps.drvPath)
 
           run_pnpm_deps_build() {
             local attempt="$1"
@@ -49,20 +84,15 @@ jobs:
             echo "::endgroup::"
           }
 
-          extract_new_hash() {
-            awk '/^[[:space:]]*got:/ { print $2; exit }' "$1"
-          }
-
           is_transient_store_error() {
             grep -Eq 'creating file ".*/nix/store/tmp-[^"]+/.+": No such file or directory' "$1"
           }
 
           run_pnpm_deps_build 1
 
-          # fetchPnpmDeps hash mismatches print "got:" and should create/update
-          # the hash PR. Missing files under /nix/store/tmp-* are transient
-          # materialization failures, so retry once before failing the workflow.
-          if [ "$EXIT" -ne 0 ] && [ -z "$(extract_new_hash "$OUTPUT_FILE")" ] && is_transient_store_error "$OUTPUT_FILE"; then
+          # Retry only the known transient materialization error. The updater
+          # below rejects mismatches from any derivation other than pnpmDeps.
+          if [ "$EXIT" -ne 0 ] && ! grep -q 'hash mismatch in fixed-output derivation' "$OUTPUT_FILE" && is_transient_store_error "$OUTPUT_FILE"; then
             echo "pnpmDeps build hit a transient Nix store materialization error; retrying once..."
             run_pnpm_deps_build 2
           fi
@@ -71,23 +101,11 @@ jobs:
             echo "hash_ok=true" >> "$GITHUB_OUTPUT"
             echo "pnpmDeps hash is up to date"
           else
-            NEW_HASH=$(extract_new_hash "$OUTPUT_FILE")
-            if [ -n "$NEW_HASH" ]; then
-              echo "hash_ok=false" >> "$GITHUB_OUTPUT"
-              echo "new_hash=$NEW_HASH" >> "$GITHUB_OUTPUT"
-              echo "pnpmDeps hash outdated, new hash: $NEW_HASH"
-            else
-              echo "Build failed for unknown reason:"
-              exit 1
-            fi
+            node scripts/ci/update-pnpm-deps-hash.mjs flake.nix "$OUTPUT_FILE" "$EXPECTED_DERIVATION"
+            # Do not publish an unverified replacement, even if extraction succeeded.
+            nix build .#pnpmDeps --no-link
+            echo "hash_ok=false" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Update pnpmDeps hash in flake.nix
-        if: steps.check.outputs.hash_ok == 'false'
-        run: |
-          NEW_HASH="${{ steps.check.outputs.new_hash }}"
-          sed -i "s|hash = \"sha256-.*\";|hash = \"$NEW_HASH\";|" flake.nix
-          echo "Updated hash to $NEW_HASH"
 
       - name: Create or update PR
         if: steps.check.outputs.hash_ok == 'false'
