@@ -24,6 +24,8 @@ import { LinkPopover } from "./LinkPopover.jsx";
 import { handleLinkDOMClick } from "./link-click.mjs";
 import { codeBlockEditing } from "./code-blocks.mjs";
 import "./code-block.css";
+import { preservedTablePreview } from "./table-preview.mjs";
+import "./table-preview.css";
 import { schema } from "../model/richtext.mjs";
 import "prosemirror-view/style/prosemirror.css";
 const commands = createToolbarCommands(schema);
@@ -63,6 +65,7 @@ export function RichEditor({
   onError,
   onSelection,
   onComment,
+  onRevealComment,
   toolbarHost,
   onActivate,
   threads,
@@ -76,6 +79,7 @@ export function RichEditor({
     report = useRef(onError),
     selected = useRef(onSelection),
     comment = useRef(onComment),
+    revealComment = useRef(onRevealComment),
     activate = useRef(onActivate);
   const comments = useRef(threads),
     activeComment = useRef(commentTarget?.id);
@@ -84,6 +88,7 @@ export function RichEditor({
   activate.current = onActivate;
   selected.current = onSelection;
   comment.current = onComment;
+  revealComment.current = onRevealComment;
   writable.current = editable;
   report.current = onError;
   const [generation, reset] = useState(0);
@@ -147,8 +152,10 @@ export function RichEditor({
             id,
             () => comments.current,
             () => activeComment.current,
+            (thread) => revealComment.current?.(thread),
           ),
           codeBlockEditing(),
+          preservedTablePreview(),
           keymap({
             "Mod-Alt-m": commentSelection,
             "Mod-k": (state, dispatch) => {
@@ -272,6 +279,7 @@ export function RichEditor({
     const thread = comments.current.find((item) => item.id === commentTarget?.id);
     if (
       editor.current &&
+      commentTarget?.source === "quote" &&
       thread?.target.kind === "selection" &&
       thread.target.anchor.blockId === id
     )

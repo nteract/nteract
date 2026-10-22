@@ -53,9 +53,35 @@ export function commentsForSelection(doc, id, selection, threads) {
   });
 }
 
-export function richComments(replica, id, getThreads, getActive) {
+// A passage can have overlapping threads. Keep the active one when it still
+// covers the click; otherwise prefer the most specific surviving passage.
+export function commentAtPosition(doc, id, position, threads, active) {
+  const matching = commentRanges(doc, id, threads)
+    .filter((range) => range.state === "open" && range.from <= position && position < range.to)
+    .sort((a, b) => a.to - a.from - (b.to - b.from));
+  return matching.find((range) => range.id === active)?.id ?? matching[0]?.id ?? null;
+}
+
+export function richComments(replica, id, getThreads, getActive, onReveal) {
   return new Plugin({
     props: {
+      // ProseMirror invokes handleClick only for a click, not a dragged text
+      // selection. Let its normal caret behavior continue after opening context.
+      handleClick(_view, position, event) {
+        if (
+          event.button !== 0 ||
+          event.detail > 1 ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.altKey ||
+          event.shiftKey ||
+          event.target.closest?.("a")
+        )
+          return false;
+        const thread = commentAtPosition(replica.doc, id, position, getThreads(), getActive());
+        if (thread) onReveal?.(thread);
+        return false;
+      },
       decorations(state) {
         return DecorationSet.create(
           state.doc,
