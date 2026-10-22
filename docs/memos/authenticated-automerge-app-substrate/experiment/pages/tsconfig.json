@@ -17,6 +17,12 @@
       ],
       "jose": [
         "../node_modules/jose/dist/webapi/index.js"
+      ],
+      "dompurify": [
+        "../node_modules/dompurify/dist/purify.es.mjs"
+      ],
+      "pele": [
+        "../node_modules/pele/dist/pele.js"
       ]
     }
   }
