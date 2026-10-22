@@ -60,6 +60,10 @@ RUN apt-get update \
         python3 python3-dev python3-pip \
         clang llvm \
     && rm -rf /var/lib/apt/lists/* \
+    # Bootstrap pip's vendored CA bundle using the Python security advisory's
+    # hash-pinned wheel before the first ordinary package installation.
+    && python3 -m pip install --break-system-packages --no-cache-dir \
+        "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70" \
     && pip install --break-system-packages --no-cache-dir "maturin[patchelf]==1.11.5"
 
 # Pinned Node.js tarball from nodejs.org (npm included), integrity-checked
@@ -179,7 +183,9 @@ FROM python:${PYTHON_TAG} AS runtime
 # UV_BASE_PACKAGES parity (crates/kernel-env/src/uv.rs), derived from the
 # Rust constant at build time. UV-only — no conda in this image.
 COPY --from=builder /base-packages.txt /tmp/base-packages.txt
-RUN pip install --no-cache-dir -r /tmp/base-packages.txt \
+RUN python -m pip install --no-cache-dir \
+        "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70" \
+    && python -m pip install --no-cache-dir "certifi>=2026.10.19" "uv>=0.13.5" -r /tmp/base-packages.txt \
     && rm -f /tmp/base-packages.txt
 
 COPY --from=builder /wheels/ /tmp/wheels/

@@ -310,6 +310,21 @@ test("runtime-peer PR validation builds and smokes the release image without pub
   }
 });
 
+test("runtime-peer release refreshes trust layers and bootstraps pip before package installs", () => {
+  const build = jobs.get("image-runtime-peer-build");
+  assert.match(build, /^          pull: true$/m);
+  assert.match(build, /^          no-cache: true$/m);
+  const dockerfile = readFileSync(new URL("../../images/runtime-peer/Dockerfile", import.meta.url), "utf8");
+  const bootstrap = "pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70";
+  const builder = dockerfile.split(" AS builder")[1].split(" AS runtime")[0];
+  const runtime = dockerfile.split(" AS runtime")[1];
+  for (const [stage, firstInstall] of [[builder, '"maturin[patchelf]==1.11.5"'], [runtime, "-r /tmp/base-packages.txt"]]) {
+    assert.ok(stage.includes(bootstrap), "each stage must bootstrap the advisory's hash-pinned pip wheel");
+    assert.ok(stage.indexOf(bootstrap) < stage.indexOf(firstInstall), "patched pip must precede ordinary package resolution");
+  }
+  assert.match(runtime, /"certifi>=2026\.10\.19" "uv>=0\.13\.5"/);
+});
+
 test("runtime-peer image publication keeps packages:write scoped to the two image jobs", () => {
   const imageJobs = ["image-runtime-peer-build", "image-runtime-peer-publish"];
   for (const [id, body] of jobs) {

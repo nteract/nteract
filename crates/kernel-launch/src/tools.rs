@@ -4,7 +4,7 @@
 //! on demand. Tools are downloaded from GitHub releases and cached in `~/.cache/runt/tools/`.
 
 use anyhow::{anyhow, Result};
-use log::info;
+use log::{info, warn};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::future::Future;
@@ -23,14 +23,20 @@ use crate::CommandOutputExt;
 pub const DENO_TARGET_VERSION: &str = "2.7.1";
 
 /// Target UV version for GitHub download.
-pub const UV_TARGET_VERSION: &str = "0.10.8";
+pub const UV_TARGET_VERSION: &str = "0.13.5";
+
+/// Old system uv releases carry a CA bundle affected by the eMudhra incident.
+pub const UV_MIN_VERSION: &str = "0.13.5";
 
 /// Target ruff version for GitHub download.
 pub const RUFF_TARGET_VERSION: &str = "0.15.11";
 
 /// Target pixi version for GitHub download.
 /// Pinned to ensure stable `pixi info --json` and `pixi shell-hook --json` output.
-pub const PIXI_TARGET_VERSION: &str = "0.67.1";
+pub const PIXI_TARGET_VERSION: &str = "0.82.1";
+
+/// First pixi release with the eMudhra certificate verification fixes.
+pub const PIXI_MIN_VERSION: &str = "0.82.1";
 
 /// Minimum acceptable Deno major version for system deno.
 /// If system deno is below this version, we download a newer one.
@@ -930,34 +936,77 @@ fn is_executable_file(path: &std::path::Path) -> bool {
     path.is_file()
 }
 
+/// Only accept a stable numeric release. Unknown or prerelease builds do not
+/// establish that the security fix is present; use the pinned fallback instead.
+fn stable_tool_version(version: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = version.split('.');
+    let mut next = || {
+        let part = parts.next()?;
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        part.parse().ok()
+    };
+    let version = (next()?, next()?, next()?);
+    parts.next().is_none().then_some(version)
+}
+
+fn tool_version_is_supported(tool: &str, output: &[u8], minimum: &str) -> bool {
+    let Ok(output) = std::str::from_utf8(output) else {
+        return false;
+    };
+    let mut words = output.split_whitespace();
+    if words.next() != Some(tool) {
+        return false;
+    }
+    match (
+        words.next().and_then(stable_tool_version),
+        stable_tool_version(minimum),
+    ) {
+        (Some(actual), Some(minimum)) => actual >= minimum,
+        _ => false,
+    }
+}
+
+async fn supported_tool_at_path(path: &Path, tool: &str, minimum: &str) -> bool {
+    let mut command = tokio::process::Command::new(path);
+    command.arg("--version");
+    matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), command.output_owned()).await,
+        Ok(Ok(output)) if output.status.success()
+            && tool_version_is_supported(tool, &output.stdout, minimum)
+    )
+}
+
+async fn supported_system_tool(tool: &str, minimum: &str) -> Option<PathBuf> {
+    // Probe the exact executable we return. Absolutize relative PATH entries
+    // so a later kernel working directory cannot change what gets executed.
+    let path = std::path::absolute(find_in_path(tool)?).ok()?;
+    if supported_tool_at_path(&path, tool, minimum).await {
+        info!("Using supported system {tool} at {}", path.display());
+        Some(path)
+    } else {
+        warn!(
+            "Ignoring system {tool} at {}: could not verify a stable version >= {minimum}; \
+             using nteract's pinned fallback. The system installation is unchanged.",
+            path.display()
+        );
+        None
+    }
+}
+
 /// Get the path to uv, with the following priority:
 ///
-/// 1. System uv if available on PATH (fast path, respects user's installation)
-/// 2. Download from GitHub releases (v0.10.8) - most reliable source
+/// 1. System uv on PATH at or above [`UV_MIN_VERSION`].
+/// 2. Version-keyed cache or GitHub download of [`UV_TARGET_VERSION`].
 ///
-/// Results are cached for subsequent calls.
+/// Older/unknown system releases are left untouched. Results are cached until
+/// process restart; no user Python environments are upgraded by tool selection.
 pub async fn get_uv_path() -> Result<PathBuf> {
     let result = UV_PATH
         .get_or_init(|| async {
-            // 1. Check for system uv on PATH. Resolve to an absolute path so
-            //    spawned commands don't depend on the child process's PATH
-            //    (which may be overridden by per-launch env_vars).
-            if let Ok(output) = tokio::process::Command::new("uv")
-                .arg("--version")
-                .output_owned()
-                .await
-            {
-                if output.status.success() {
-                    if let Some(abs) = find_in_path("uv") {
-                        info!("Using system uv at {}", abs.display());
-                        return Arc::new(Ok(abs));
-                    }
-                    // Extremely unlikely: uv ran but isn't findable via PATH
-                    // walk. Fall back to the bare name so the daemon still
-                    // works (e.g. in test rigs that wrap the spawn).
-                    info!("Using system uv (could not resolve absolute path)");
-                    return Arc::new(Ok(PathBuf::from("uv")));
-                }
+            if let Some(path) = supported_system_tool("uv", UV_MIN_VERSION).await {
+                return Arc::new(Ok(path));
             }
 
             // 2. Download from GitHub releases
@@ -1070,28 +1119,16 @@ async fn download_pixi_from_github(version: &str) -> Result<BootstrappedTool> {
     Ok(tool)
 }
 
-/// Get the path to the pixi binary, checking system PATH first then downloading from GitHub.
+/// Get system pixi at or above [`PIXI_MIN_VERSION`], otherwise the version-keyed
+/// cache or GitHub download of [`PIXI_TARGET_VERSION`]. Old system installs and
+/// existing project environments are left untouched by tool selection.
 ///
 /// Results are cached for subsequent calls.
 pub async fn get_pixi_path() -> Result<PathBuf> {
     let result = PIXI_PATH
         .get_or_init(|| async {
-            // 1. Check for system pixi on PATH. Resolve to an absolute path
-            //    so spawned commands don't depend on the child process's
-            //    PATH (see `get_uv_path` for rationale).
-            if let Ok(output) = tokio::process::Command::new("pixi")
-                .arg("--version")
-                .output_owned()
-                .await
-            {
-                if output.status.success() {
-                    if let Some(abs) = find_in_path("pixi") {
-                        info!("Using system pixi at {}", abs.display());
-                        return Arc::new(Ok(abs));
-                    }
-                    info!("Using system pixi (could not resolve absolute path)");
-                    return Arc::new(Ok(PathBuf::from("pixi")));
-                }
+            if let Some(path) = supported_system_tool("pixi", PIXI_MIN_VERSION).await {
+                return Arc::new(Ok(path));
             }
 
             // 2. Download from GitHub releases (pinned version)
@@ -1422,6 +1459,211 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
             .map(|entry| entry.path())
             .collect()
+    }
+
+    #[test]
+    fn system_tool_security_version_policy() {
+        for (tool, minimum, old, current) in [
+            ("uv", UV_MIN_VERSION, "0.10.8", UV_TARGET_VERSION),
+            ("pixi", PIXI_MIN_VERSION, "0.67.1", PIXI_TARGET_VERSION),
+        ] {
+            for version in [minimum, current, "0.100.0", "1.0.0"] {
+                assert!(tool_version_is_supported(
+                    tool,
+                    format!("{tool} {version} (build metadata)\n").as_bytes(),
+                    minimum
+                ));
+            }
+            for version in [
+                old,
+                "0.9.99",
+                "0.0.0",
+                "0.99.0-rc.1",
+                "0.99.0+dev",
+                "1.0",
+                "1.0.0.1",
+                "v1.0.0",
+                "1.+0.0",
+            ] {
+                assert!(
+                    !tool_version_is_supported(
+                        tool,
+                        format!("{tool} {version}\n").as_bytes(),
+                        minimum
+                    ),
+                    "unexpectedly accepted {tool} {version}"
+                );
+            }
+            for output in [
+                b"".as_slice(),
+                b"other 1.0.0",
+                b"warning: uv 1.0.0",
+                b"uv \xff",
+            ] {
+                assert!(!tool_version_is_supported(tool, output, minimum));
+            }
+        }
+        assert!(!tool_version_is_supported(
+            "uv",
+            b"uv 0.13.4",
+            UV_MIN_VERSION
+        ));
+        assert!(!tool_version_is_supported(
+            "pixi",
+            b"pixi 0.82.0",
+            PIXI_MIN_VERSION
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn system_tool_probe_requires_success_and_preserves_executable() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("tool with spaces");
+        for (tool, minimum, version) in [
+            ("uv", UV_MIN_VERSION, UV_TARGET_VERSION),
+            ("pixi", PIXI_MIN_VERSION, PIXI_TARGET_VERSION),
+        ] {
+            for (reported, status, accepted) in [
+                (version, 0, true),
+                ("0.1.0", 0, false),
+                (version, 1, false),
+                ("unknown", 0, false),
+            ] {
+                let script = format!("#!/bin/sh\n[ \"$1\" = --version ] || exit 9\nprintf '{tool} {reported}\\n'\nexit {status}\n");
+                write_test_executable(&path, script.as_bytes())
+                    .await
+                    .unwrap();
+                assert_eq!(supported_tool_at_path(&path, tool, minimum).await, accepted);
+                assert_eq!(std::fs::read(&path).unwrap(), script.as_bytes());
+            }
+        }
+        assert!(
+            !supported_tool_at_path(&fixture.path().join("missing"), "uv", UV_MIN_VERSION).await
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn system_tool_resolution_process_helper() {
+        let Ok(root) = std::env::var("NTERACT_TOOL_SELECTION_FIXTURE") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        assert!(tools_cache_dir().starts_with(&root));
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            for (tool, version) in [("uv", UV_TARGET_VERSION), ("pixi", PIXI_TARGET_VERSION)] {
+                let cached = cached_tool_binary_path(tool, Some(version));
+                write_test_executable(&cached, b"fixed cached executable")
+                    .await
+                    .unwrap();
+                let selected = if tool == "uv" {
+                    get_uv_path().await
+                } else {
+                    get_pixi_path().await
+                }
+                .unwrap();
+                let expected = if std::env::var("NTERACT_EXPECT_SYSTEM").unwrap() == "true" {
+                    root.join("relative-bin").join(tool)
+                } else {
+                    cached
+                };
+                assert_eq!(selected, expected);
+                assert!(selected.is_absolute());
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn system_path_selection_uses_safe_version_or_pinned_cache() {
+        for safe in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().canonicalize().unwrap();
+            for (tool, version) in [("uv", UV_MIN_VERSION), ("pixi", PIXI_MIN_VERSION)] {
+                let version = if safe { version } else { "0.1.0" };
+                let script = format!("#!/bin/sh\nprintf '{tool} {version}\\n'\n");
+                write_test_executable(&root.join("relative-bin").join(tool), script.as_bytes())
+                    .await
+                    .unwrap();
+            }
+            // Child-only environment isolates PATH, HOME, and both OnceCells
+            // from concurrently running tests and real application caches.
+            let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tools::tests::system_tool_resolution_process_helper",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env("HOME", &root)
+                .env("XDG_CACHE_HOME", root.join("cache"))
+                .env("PATH", "relative-bin")
+                .env("NTERACT_TOOL_SELECTION_FIXTURE", &root)
+                .env("NTERACT_EXPECT_SYSTEM", safe.to_string())
+                .current_dir(&root)
+                .output_owned()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn security_pin_ignores_old_and_unversioned_caches_without_deleting_them() {
+        let cache = tempfile::tempdir().unwrap();
+        for (tool, old_version, version) in [
+            ("uv", "0.10.8", UV_TARGET_VERSION),
+            ("pixi", "0.67.1", PIXI_TARGET_VERSION),
+        ] {
+            let old = tool_cache_paths(cache.path(), tool, old_version);
+            let legacy = binary_path_for_env(
+                &cache
+                    .path()
+                    .join(format!("{tool}-{}", compute_tool_hash(tool, None))),
+                tool,
+            );
+            for path in [&old.binary_path, &legacy] {
+                write_test_executable(path, b"old executable")
+                    .await
+                    .unwrap();
+            }
+            // Failed fresh installation must not fall back to the unsafe cache.
+            let failure = install_tool_atomically(cache.path(), tool, version, |_, _, _| async {
+                Err(anyhow!("offline"))
+            })
+            .await;
+            assert!(failure.is_err());
+            let installed = install_tool_atomically(
+                cache.path(),
+                tool,
+                version,
+                |_, binary, _lease| async move {
+                    write_test_executable(&binary, b"fixed executable").await
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                std::fs::read(&installed.binary_path).unwrap(),
+                b"fixed executable"
+            );
+            assert_ne!(installed.binary_path, old.binary_path);
+            for path in [&old.binary_path, &legacy] {
+                assert_eq!(std::fs::read(path).unwrap(), b"old executable");
+            }
+            let reused = install_tool_atomically(cache.path(), tool, version, |_, _, _| async {
+                Err(anyhow!("must reuse fixed cache"))
+            })
+            .await
+            .unwrap();
+            assert_eq!(reused.binary_path, installed.binary_path);
+        }
     }
 
     #[tokio::test]
