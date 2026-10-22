@@ -19,8 +19,10 @@ use zip::ZipArchive;
 
 use crate::CommandOutputExt;
 
+mod pinned_hashes;
+
 /// Target Deno version for GitHub download.
-pub const DENO_TARGET_VERSION: &str = "2.7.1";
+pub const DENO_TARGET_VERSION: &str = "2.9.8";
 
 /// Target UV version for GitHub download.
 pub const UV_TARGET_VERSION: &str = "0.13.5";
@@ -38,9 +40,8 @@ pub const PIXI_TARGET_VERSION: &str = "0.82.1";
 /// First pixi release with the eMudhra certificate verification fixes.
 pub const PIXI_MIN_VERSION: &str = "0.82.1";
 
-/// Minimum acceptable Deno major version for system deno.
-/// If system deno is below this version, we download a newer one.
-pub const DENO_MIN_MAJOR_VERSION: u32 = 2;
+/// First Deno release that rejects compromised eMudhra intermediate keys.
+pub const DENO_MIN_VERSION: &str = "2.9.8";
 
 /// Platform information for GitHub release assets (shared by Deno, UV, and ruff).
 struct GithubPlatform {
@@ -378,6 +379,14 @@ fn extract_tool_zip(zip_bytes: &[u8], dest_dir: &Path, tool_name: &str) -> Resul
     Err(anyhow!("{binary_name} not found in zip archive"))
 }
 
+fn pinned_checksum(tool: &str, version: &str, asset: &str) -> Result<&'static str> {
+    pinned_hashes::ARCHIVES
+        .iter()
+        .find(|(t, v, a, _)| *t == tool && *v == version && *a == asset)
+        .map(|(_, _, _, hash)| *hash)
+        .ok_or_else(|| anyhow!("No trusted checksum for {tool} {version} asset {asset}"))
+}
+
 fn verify_checksum(bytes: &[u8], expected_hash: &str, tool_name: &str) -> Result<()> {
     info!("Verifying checksum...");
     let mut hasher = Sha256::new();
@@ -409,7 +418,7 @@ async fn download_ruff_from_github(version: &str) -> Result<BootstrappedTool> {
         "https://github.com/astral-sh/ruff/releases/download/{}/{}",
         version, asset_name
     );
-    let checksum_url = format!("{}.sha256", download_url);
+    let expected_hash = pinned_checksum("ruff", version, &asset_name)?;
 
     let cache_dir = tools_cache_dir();
     let tool = install_tool_atomically(
@@ -421,21 +430,6 @@ async fn download_ruff_from_github(version: &str) -> Result<BootstrappedTool> {
             let client = reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::limited(10))
                 .build()?;
-            info!("Fetching checksum from {}...", checksum_url);
-            let checksum_response = client.get(&checksum_url).send().await?;
-            if !checksum_response.status().is_success() {
-                return Err(anyhow!(
-                    "Failed to download checksum: {}",
-                    checksum_response.status()
-                ));
-            }
-            let checksum_text = checksum_response.text().await?;
-            let expected_hash = checksum_text
-                .split_whitespace()
-                .next()
-                .ok_or_else(|| anyhow!("Invalid checksum format"))?
-                .to_lowercase();
-
             info!("Downloading {}...", asset_name);
             let archive_response = client.get(&download_url).send().await?;
             if !archive_response.status().is_success() {
@@ -445,7 +439,7 @@ async fn download_ruff_from_github(version: &str) -> Result<BootstrappedTool> {
                 ));
             }
             let archive_bytes = archive_response.bytes().await?;
-            verify_checksum(&archive_bytes, &expected_hash, "ruff")?;
+            verify_checksum(&archive_bytes, expected_hash, "ruff")?;
 
             info!("Extracting ruff to {:?}...", staging_env);
             tokio::task::spawn_blocking(move || -> Result<()> {
@@ -525,78 +519,23 @@ pub async fn get_ruff_path() -> Result<PathBuf> {
 
 /// Global cache for the deno binary path.
 /// This avoids repeated lookups once deno is bootstrapped.
-static DENO_PATH: OnceCell<Arc<Result<PathBuf, String>>> = OnceCell::const_new();
+static DENO_PATH: OnceCell<PathBuf> = OnceCell::const_new();
 
-/// Check if a usable Deno is available without triggering a bootstrap.
-///
-/// Returns true if:
-/// - System deno exists and is version 2.x+, OR
-/// - A cached deno binary exists from a GitHub download
-///
-/// This is intended for UI availability checks where we don't want to
-/// trigger a full download during initialization.
+/// Check for supported system Deno or the current version-keyed cache.
+/// This UI probe never starts a download.
 pub async fn check_deno_available_without_bootstrap() -> bool {
-    // Check for acceptable system deno (2.x+)
-    if let Ok(output) = tokio::process::Command::new("deno")
-        .arg("--version")
-        .output_owned()
+    if supported_system_tool("deno", DENO_MIN_VERSION)
         .await
+        .is_some()
     {
-        if output.status.success() {
-            let version_str = String::from_utf8_lossy(&output.stdout);
-            if let Some(major) = parse_deno_major_version(&version_str) {
-                if major >= DENO_MIN_MAJOR_VERSION {
-                    return true;
-                }
-            }
-        }
+        return true;
     }
-
-    // Check for cached GitHub download (versioned path)
-    cached_tool_binary_path("deno", Some(DENO_TARGET_VERSION)).exists()
-}
-
-/// Parse a version string and return the major version number.
-/// Handles both "2.7.1" and "deno 2.7.1 (release, ...)" formats.
-fn parse_deno_major_version(version_output: &str) -> Option<u32> {
-    let line = version_output.lines().next()?;
-    // Find the first token that starts with a digit (the version number)
-    let version_str = line.split_whitespace().find(|s| {
-        s.chars()
-            .next()
-            .map(|c| c.is_ascii_digit())
-            .unwrap_or(false)
-    })?;
-    version_str.split('.').next()?.parse().ok()
-}
-
-/// Check if system deno is acceptable (major version >= 2).
-/// Returns Some(path) if acceptable, None otherwise.
-async fn check_system_deno_acceptable() -> Option<PathBuf> {
-    let output = tokio::process::Command::new("deno")
-        .arg("--version")
-        .output_owned()
-        .await
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let version_str = String::from_utf8_lossy(&output.stdout);
-    let major = parse_deno_major_version(&version_str)?;
-
-    if major >= DENO_MIN_MAJOR_VERSION {
-        let version_line = version_str.lines().next().unwrap_or("unknown");
-        info!("Using system deno ({})", version_line);
-        Some(PathBuf::from("deno"))
-    } else {
-        info!(
-            "System deno version {}.x is below minimum {}.x, will download newer version",
-            major, DENO_MIN_MAJOR_VERSION
-        );
-        None
-    }
+    supported_tool_at_path(
+        &cached_tool_binary_path("deno", Some(DENO_TARGET_VERSION)),
+        "deno",
+        DENO_MIN_VERSION,
+    )
+    .await
 }
 
 /// Extract the deno binary from a zip archive.
@@ -644,7 +583,7 @@ async fn download_deno_from_github(version: &str) -> Result<BootstrappedTool> {
         "https://github.com/denoland/deno/releases/download/v{}/{}",
         version, asset_name
     );
-    let checksum_url = format!("{}.sha256sum", zip_url);
+    let expected_hash = pinned_checksum("deno", version, &asset_name)?;
 
     let cache_dir = tools_cache_dir();
     let tool = install_tool_atomically(
@@ -657,21 +596,6 @@ async fn download_deno_from_github(version: &str) -> Result<BootstrappedTool> {
                 .redirect(reqwest::redirect::Policy::limited(10))
                 .build()?;
 
-            info!("Fetching checksum from {}...", checksum_url);
-            let checksum_response = client.get(&checksum_url).send().await?;
-            if !checksum_response.status().is_success() {
-                return Err(anyhow!(
-                    "Failed to download checksum: {}",
-                    checksum_response.status()
-                ));
-            }
-            let checksum_text = checksum_response.text().await?;
-            let expected_hash = checksum_text
-                .split_whitespace()
-                .next()
-                .ok_or_else(|| anyhow!("Invalid checksum format"))?
-                .to_lowercase();
-
             info!("Downloading {}...", asset_name);
             let zip_response = client.get(&zip_url).send().await?;
             if !zip_response.status().is_success() {
@@ -682,17 +606,7 @@ async fn download_deno_from_github(version: &str) -> Result<BootstrappedTool> {
             }
             let zip_bytes = zip_response.bytes().await?;
 
-            info!("Verifying checksum...");
-            let mut hasher = Sha256::new();
-            hasher.update(&zip_bytes);
-            let actual_hash = hex::encode(hasher.finalize());
-            if actual_hash != expected_hash {
-                return Err(anyhow!(
-                    "Checksum mismatch: expected {}, got {}",
-                    expected_hash,
-                    actual_hash
-                ));
-            }
+            verify_checksum(&zip_bytes, expected_hash, "deno")?;
 
             info!("Extracting deno to {:?}...", staging_env);
             tokio::task::spawn_blocking(move || -> Result<()> {
@@ -730,31 +644,21 @@ async fn download_deno_from_github(version: &str) -> Result<BootstrappedTool> {
 
 /// Get the path to deno, with the following priority:
 ///
-/// 1. System deno if version >= 2.x (fast path, respects user's installation)
-/// 2. Download from GitHub releases (v2.7.1) - most reliable source
+/// 1. System deno at or above DENO_MIN_VERSION.
+/// 2. Version-keyed cache or GitHub download of DENO_TARGET_VERSION.
 ///
-/// Results are cached for subsequent calls.
+/// Successful resolutions are cached; failures can be retried.
 pub async fn get_deno_path() -> Result<PathBuf> {
-    let result = DENO_PATH
-        .get_or_init(|| async {
-            // 1. Check for acceptable system deno (2.x+)
-            if let Some(path) = check_system_deno_acceptable().await {
-                return Arc::new(Ok(path));
-            }
-
-            // 2. Download from GitHub releases
-            info!("Resolving pinned deno version {}", DENO_TARGET_VERSION);
-            match download_deno_from_github(DENO_TARGET_VERSION).await {
-                Ok(tool) => Arc::new(Ok(tool.binary_path)),
-                Err(e) => Arc::new(Err(e.to_string())),
-            }
-        })
-        .await;
-
-    match result.as_ref() {
-        Ok(path) => Ok(path.clone()),
-        Err(e) => Err(anyhow!("{}", e)),
-    }
+    cached_tool_path(&DENO_PATH, || async {
+        if let Some(path) = supported_system_tool("deno", DENO_MIN_VERSION).await {
+            return Ok(path);
+        }
+        info!("Resolving pinned deno version {}", DENO_TARGET_VERSION);
+        Ok(download_deno_from_github(DENO_TARGET_VERSION)
+            .await?
+            .binary_path)
+    })
+    .await
 }
 
 // ── UV ───────────────────────────────────────────────────────────────
@@ -823,7 +727,7 @@ async fn download_uv_from_github(version: &str) -> Result<BootstrappedTool> {
         "https://github.com/astral-sh/uv/releases/download/{}/{}",
         version, asset_name
     );
-    let checksum_url = format!("{}.sha256", download_url);
+    let expected_hash = pinned_checksum("uv", version, &asset_name)?;
 
     let cache_dir = tools_cache_dir();
     let tool = install_tool_atomically(
@@ -835,21 +739,6 @@ async fn download_uv_from_github(version: &str) -> Result<BootstrappedTool> {
             let client = reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::limited(10))
                 .build()?;
-            info!("Fetching checksum from {}...", checksum_url);
-            let checksum_response = client.get(&checksum_url).send().await?;
-            if !checksum_response.status().is_success() {
-                return Err(anyhow!(
-                    "Failed to download checksum: {}",
-                    checksum_response.status()
-                ));
-            }
-            let checksum_text = checksum_response.text().await?;
-            let expected_hash = checksum_text
-                .split_whitespace()
-                .next()
-                .ok_or_else(|| anyhow!("Invalid checksum format"))?
-                .to_lowercase();
-
             info!("Downloading {}...", asset_name);
             let archive_response = client.get(&download_url).send().await?;
             if !archive_response.status().is_success() {
@@ -859,7 +748,7 @@ async fn download_uv_from_github(version: &str) -> Result<BootstrappedTool> {
                 ));
             }
             let archive_bytes = archive_response.bytes().await?;
-            verify_checksum(&archive_bytes, &expected_hash, "uv")?;
+            verify_checksum(&archive_bytes, expected_hash, "uv")?;
 
             info!("Extracting uv to {:?}...", staging_env);
             tokio::task::spawn_blocking(move || -> Result<()> {
@@ -896,7 +785,7 @@ async fn download_uv_from_github(version: &str) -> Result<BootstrappedTool> {
 
 /// Global cache for the uv binary path.
 /// This avoids repeated lookups once uv is bootstrapped.
-static UV_PATH: OnceCell<Arc<Result<PathBuf, String>>> = OnceCell::const_new();
+static UV_PATH: OnceCell<PathBuf> = OnceCell::const_new();
 
 /// Walk the current process's `PATH` for a binary by name. Returns the first
 /// candidate that exists AND has execute permission (on Unix) or the right
@@ -978,6 +867,16 @@ async fn supported_tool_at_path(path: &Path, tool: &str, minimum: &str) -> bool 
     )
 }
 
+/// Cache successful resolutions only so an offline/bootstrap failure can be
+/// retried by the next request without restarting the daemon.
+async fn cached_tool_path<F, Fut>(cache: &OnceCell<PathBuf>, init: F) -> Result<PathBuf>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<PathBuf>>,
+{
+    cache.get_or_try_init(init).await.cloned()
+}
+
 async fn supported_system_tool(tool: &str, minimum: &str) -> Option<PathBuf> {
     // Probe the exact executable we return. Absolutize relative PATH entries
     // so a later kernel working directory cannot change what gets executed.
@@ -1000,34 +899,25 @@ async fn supported_system_tool(tool: &str, minimum: &str) -> Option<PathBuf> {
 /// 1. System uv on PATH at or above [`UV_MIN_VERSION`].
 /// 2. Version-keyed cache or GitHub download of [`UV_TARGET_VERSION`].
 ///
-/// Older/unknown system releases are left untouched. Results are cached until
+/// Older/unknown system releases are left untouched. Successful results are cached until
 /// process restart; no user Python environments are upgraded by tool selection.
 pub async fn get_uv_path() -> Result<PathBuf> {
-    let result = UV_PATH
-        .get_or_init(|| async {
-            if let Some(path) = supported_system_tool("uv", UV_MIN_VERSION).await {
-                return Arc::new(Ok(path));
-            }
-
-            // 2. Download from GitHub releases
-            info!("Resolving pinned uv version {}", UV_TARGET_VERSION);
-            match download_uv_from_github(UV_TARGET_VERSION).await {
-                Ok(tool) => Arc::new(Ok(tool.binary_path)),
-                Err(e) => Arc::new(Err(e.to_string())),
-            }
-        })
-        .await;
-
-    match result.as_ref() {
-        Ok(path) => Ok(path.clone()),
-        Err(e) => Err(anyhow!("{}", e)),
-    }
+    cached_tool_path(&UV_PATH, || async {
+        if let Some(path) = supported_system_tool("uv", UV_MIN_VERSION).await {
+            return Ok(path);
+        }
+        info!("Resolving pinned uv version {}", UV_TARGET_VERSION);
+        Ok(download_uv_from_github(UV_TARGET_VERSION)
+            .await?
+            .binary_path)
+    })
+    .await
 }
 
 // ── Pixi ─────────────────────────────────────────────────────────────
 
 /// Global cache for the pixi binary path.
-static PIXI_PATH: OnceCell<Arc<Result<PathBuf, String>>> = OnceCell::const_new();
+static PIXI_PATH: OnceCell<PathBuf> = OnceCell::const_new();
 
 /// Download and verify the pixi binary from GitHub releases.
 ///
@@ -1048,7 +938,7 @@ async fn download_pixi_from_github(version: &str) -> Result<BootstrappedTool> {
         "https://github.com/prefix-dev/pixi/releases/download/v{}/{}",
         version, asset_name
     );
-    let checksum_url = format!("{}.sha256", download_url);
+    let expected_hash = pinned_checksum("pixi", version, &asset_name)?;
 
     let cache_dir = tools_cache_dir();
     let tool = install_tool_atomically(
@@ -1060,21 +950,6 @@ async fn download_pixi_from_github(version: &str) -> Result<BootstrappedTool> {
             let client = reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::limited(10))
                 .build()?;
-            info!("Fetching checksum from {}...", checksum_url);
-            let checksum_response = client.get(&checksum_url).send().await?;
-            if !checksum_response.status().is_success() {
-                return Err(anyhow!(
-                    "Failed to download checksum: {}",
-                    checksum_response.status()
-                ));
-            }
-            let checksum_text = checksum_response.text().await?;
-            let expected_hash = checksum_text
-                .split_whitespace()
-                .next()
-                .ok_or_else(|| anyhow!("Invalid checksum format"))?
-                .to_lowercase();
-
             info!("Downloading {}...", asset_name);
             let archive_response = client.get(&download_url).send().await?;
             if !archive_response.status().is_success() {
@@ -1084,7 +959,7 @@ async fn download_pixi_from_github(version: &str) -> Result<BootstrappedTool> {
                 ));
             }
             let archive_bytes = archive_response.bytes().await?;
-            verify_checksum(&archive_bytes, &expected_hash, "pixi")?;
+            verify_checksum(&archive_bytes, expected_hash, "pixi")?;
 
             info!("Extracting pixi to {:?}...", staging_env);
             tokio::task::spawn_blocking(move || -> Result<()> {
@@ -1123,27 +998,18 @@ async fn download_pixi_from_github(version: &str) -> Result<BootstrappedTool> {
 /// cache or GitHub download of [`PIXI_TARGET_VERSION`]. Old system installs and
 /// existing project environments are left untouched by tool selection.
 ///
-/// Results are cached for subsequent calls.
+/// Successful resolutions are cached; failures can be retried.
 pub async fn get_pixi_path() -> Result<PathBuf> {
-    let result = PIXI_PATH
-        .get_or_init(|| async {
-            if let Some(path) = supported_system_tool("pixi", PIXI_MIN_VERSION).await {
-                return Arc::new(Ok(path));
-            }
-
-            // 2. Download from GitHub releases (pinned version)
-            info!("Resolving pinned pixi version {}", PIXI_TARGET_VERSION);
-            match download_pixi_from_github(PIXI_TARGET_VERSION).await {
-                Ok(tool) => Arc::new(Ok(tool.binary_path)),
-                Err(e) => Arc::new(Err(e.to_string())),
-            }
-        })
-        .await;
-
-    match result.as_ref() {
-        Ok(path) => Ok(path.clone()),
-        Err(e) => Err(anyhow!("{}", e)),
-    }
+    cached_tool_path(&PIXI_PATH, || async {
+        if let Some(path) = supported_system_tool("pixi", PIXI_MIN_VERSION).await {
+            return Ok(path);
+        }
+        info!("Resolving pinned pixi version {}", PIXI_TARGET_VERSION);
+        Ok(download_pixi_from_github(PIXI_TARGET_VERSION)
+            .await?
+            .binary_path)
+    })
+    .await
 }
 
 // ── Nono (Unix only) ─────────────────────────────────────────────────
@@ -1164,11 +1030,11 @@ static NONO_PATH: OnceCell<Arc<Result<PathBuf, String>>> = OnceCell::const_new()
 /// Download and verify the nono binary from GitHub releases (Unix only).
 ///
 /// Asset naming: `nono-v{version}-{arch}-{platform}.tar.gz`
-/// Checksums:    single `SHA256SUMS.txt` (BSD-style: `<hash>  <filename>`)
+/// Checksums:    independent per-archive SHA-256 digests shipped with nteract.
 /// Tag format:   `v{version}` (the `v` also appears in the asset filename).
 ///
-/// Integrity is verified against the per-archive SHA-256 digest published in
-/// SHA256SUMS.txt, matching the same pattern used for uv, ruff, and pixi.
+/// Integrity is checked before extraction against the compiled-in digest.
+/// A remote checksum obtained through the same TLS connection is not trusted.
 #[cfg(unix)]
 async fn download_nono_from_github(version: &str) -> Result<BootstrappedTool> {
     let platform = get_github_platform()?;
@@ -1182,10 +1048,7 @@ async fn download_nono_from_github(version: &str) -> Result<BootstrappedTool> {
         "https://github.com/always-further/nono/releases/download/v{}/{}",
         version, asset_name
     );
-    let checksum_url = format!(
-        "https://github.com/always-further/nono/releases/download/v{}/SHA256SUMS.txt",
-        version
-    );
+    let expected_hash = pinned_checksum("nono", version, &asset_name)?;
 
     let cache_dir = tools_cache_dir();
     let tool = install_tool_atomically(
@@ -1198,31 +1061,6 @@ async fn download_nono_from_github(version: &str) -> Result<BootstrappedTool> {
                 .redirect(reqwest::redirect::Policy::limited(10))
                 .build()?;
 
-            info!("Fetching checksums from {}...", checksum_url);
-            let checksum_response = client.get(&checksum_url).send().await?;
-            if !checksum_response.status().is_success() {
-                return Err(anyhow!(
-                    "Failed to download SHA256SUMS.txt: {}",
-                    checksum_response.status()
-                ));
-            }
-            let checksum_text = checksum_response.text().await?;
-            let expected_hash = checksum_text
-                .lines()
-                .find_map(|line| {
-                    let mut parts = line.splitn(2, "  ");
-                    let hash = parts.next()?.trim();
-                    let name = parts.next()?.trim();
-                    if name == asset_name {
-                        Some(hash.to_lowercase())
-                    } else {
-                        None
-                    }
-                })
-                .ok_or_else(|| {
-                    anyhow!("Checksum for {} not found in SHA256SUMS.txt", asset_name)
-                })?;
-
             info!("Downloading {}...", asset_name);
             let archive_response = client.get(&download_url).send().await?;
             if !archive_response.status().is_success() {
@@ -1232,7 +1070,7 @@ async fn download_nono_from_github(version: &str) -> Result<BootstrappedTool> {
                 ));
             }
             let archive_bytes = archive_response.bytes().await?;
-            verify_checksum(&archive_bytes, &expected_hash, "nono")?;
+            verify_checksum(&archive_bytes, expected_hash, "nono")?;
 
             info!("Extracting nono to {:?}...", staging_env);
             tokio::task::spawn_blocking(move || -> Result<()> {
@@ -1462,12 +1300,72 @@ mod tests {
     }
 
     #[test]
+    fn pinned_checksums_cover_shipped_platforms_and_reject_unpinned_assets() {
+        for (tool, version) in [
+            ("uv", UV_TARGET_VERSION),
+            ("pixi", PIXI_TARGET_VERSION),
+            ("deno", DENO_TARGET_VERSION),
+            ("ruff", RUFF_TARGET_VERSION),
+        ] {
+            for arch in ["aarch64", "x86_64"] {
+                for platform in [
+                    "apple-darwin",
+                    "pc-windows-msvc",
+                    if tool == "pixi" {
+                        "unknown-linux-musl"
+                    } else {
+                        "unknown-linux-gnu"
+                    },
+                ] {
+                    let zip = tool == "deno" || platform.contains("windows");
+                    let asset = GithubPlatform { arch, platform }.asset_name(tool, zip);
+                    let hash = pinned_checksum(tool, version, &asset).unwrap();
+                    assert_eq!(hash.len(), 64);
+                    assert!(hex::decode(hash).is_ok());
+                    assert!(verify_checksum(b"substituted archive", hash, tool).is_err());
+                    assert!(pinned_checksum(tool, "unreviewed-version", &asset).is_err());
+                }
+            }
+        }
+        #[cfg(unix)]
+        for arch in ["aarch64", "x86_64"] {
+            for platform in ["apple-darwin", "unknown-linux-gnu"] {
+                let asset = format!("nono-v{NONO_TARGET_VERSION}-{arch}-{platform}.tar.gz");
+                assert!(pinned_checksum("nono", NONO_TARGET_VERSION, &asset).is_ok());
+            }
+        }
+        assert!(pinned_checksum("uv", UV_TARGET_VERSION, "../unknown.tar.gz").is_err());
+    }
+
+    #[tokio::test]
+    async fn tool_resolution_retries_after_failure_and_caches_success() {
+        let cache = OnceCell::new();
+        let failed = cached_tool_path(&cache, || async { Err(anyhow!("offline")) }).await;
+        assert!(failed.is_err());
+        assert!(cache.get().is_none());
+        let path = PathBuf::from("patched-tool");
+        assert_eq!(
+            cached_tool_path(&cache, || async { Ok(path.clone()) })
+                .await
+                .unwrap(),
+            path
+        );
+        assert_eq!(
+            cached_tool_path(&cache, || async { Err(anyhow!("must reuse success")) })
+                .await
+                .unwrap(),
+            path
+        );
+    }
+
+    #[test]
     fn system_tool_security_version_policy() {
         for (tool, minimum, old, current) in [
             ("uv", UV_MIN_VERSION, "0.10.8", UV_TARGET_VERSION),
             ("pixi", PIXI_MIN_VERSION, "0.67.1", PIXI_TARGET_VERSION),
+            ("deno", DENO_MIN_VERSION, "2.7.1", DENO_TARGET_VERSION),
         ] {
-            for version in [minimum, current, "0.100.0", "1.0.0"] {
+            for version in [minimum, current, "10.0.0", "20.0.0"] {
                 assert!(tool_version_is_supported(
                     tool,
                     format!("{tool} {version} (build metadata)\n").as_bytes(),
@@ -1523,6 +1421,7 @@ mod tests {
         for (tool, minimum, version) in [
             ("uv", UV_MIN_VERSION, UV_TARGET_VERSION),
             ("pixi", PIXI_MIN_VERSION, PIXI_TARGET_VERSION),
+            ("deno", DENO_MIN_VERSION, DENO_TARGET_VERSION),
         ] {
             for (reported, status, accepted) in [
                 (version, 0, true),
@@ -1552,15 +1451,20 @@ mod tests {
         let root = PathBuf::from(root);
         assert!(tools_cache_dir().starts_with(&root));
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            for (tool, version) in [("uv", UV_TARGET_VERSION), ("pixi", PIXI_TARGET_VERSION)] {
+            for (tool, version) in [
+                ("uv", UV_TARGET_VERSION),
+                ("pixi", PIXI_TARGET_VERSION),
+                ("deno", DENO_TARGET_VERSION),
+            ] {
                 let cached = cached_tool_binary_path(tool, Some(version));
                 write_test_executable(&cached, b"fixed cached executable")
                     .await
                     .unwrap();
-                let selected = if tool == "uv" {
-                    get_uv_path().await
-                } else {
-                    get_pixi_path().await
+                let selected = match tool {
+                    "uv" => get_uv_path().await,
+                    "pixi" => get_pixi_path().await,
+                    "deno" => get_deno_path().await,
+                    _ => unreachable!(),
                 }
                 .unwrap();
                 let expected = if std::env::var("NTERACT_EXPECT_SYSTEM").unwrap() == "true" {
@@ -1580,7 +1484,11 @@ mod tests {
         for safe in [false, true] {
             let directory = tempfile::tempdir().unwrap();
             let root = directory.path().canonicalize().unwrap();
-            for (tool, version) in [("uv", UV_MIN_VERSION), ("pixi", PIXI_MIN_VERSION)] {
+            for (tool, version) in [
+                ("uv", UV_MIN_VERSION),
+                ("pixi", PIXI_MIN_VERSION),
+                ("deno", DENO_MIN_VERSION),
+            ] {
                 let version = if safe { version } else { "0.1.0" };
                 let script = format!("#!/bin/sh\nprintf '{tool} {version}\\n'\n");
                 write_test_executable(&root.join("relative-bin").join(tool), script.as_bytes())
@@ -1620,6 +1528,7 @@ mod tests {
         for (tool, old_version, version) in [
             ("uv", "0.10.8", UV_TARGET_VERSION),
             ("pixi", "0.67.1", PIXI_TARGET_VERSION),
+            ("deno", "2.7.1", DENO_TARGET_VERSION),
         ] {
             let old = tool_cache_paths(cache.path(), tool, old_version);
             let legacy = binary_path_for_env(
@@ -1971,33 +1880,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_deno_major_version() {
-        // Full version output format from `deno --version`
-        assert_eq!(
-            parse_deno_major_version("deno 2.7.1 (release, aarch64-apple-darwin)"),
-            Some(2)
-        );
-        assert_eq!(
-            parse_deno_major_version("deno 1.45.2 (release, x86_64-unknown-linux-gnu)"),
-            Some(1)
-        );
-        assert_eq!(
-            parse_deno_major_version("deno 2.0.0 (release, x86_64-pc-windows-msvc)"),
-            Some(2)
-        );
-
-        // Simple version format
-        assert_eq!(parse_deno_major_version("2.7.1"), Some(2));
-        assert_eq!(parse_deno_major_version("1.0.0"), Some(1));
-        assert_eq!(parse_deno_major_version("10.2.3"), Some(10));
-
-        // Edge cases
-        assert_eq!(parse_deno_major_version(""), None);
-        assert_eq!(parse_deno_major_version("not a version"), None);
-        assert_eq!(parse_deno_major_version("deno"), None);
-    }
-
-    #[test]
     fn test_get_github_platform() {
         let result = get_github_platform();
         // Should succeed on supported platforms (macOS, Linux, Windows on x86_64 or aarch64)
@@ -2233,7 +2115,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "makes real network calls to GitHub and Sigstore; run with --ignored"]
     async fn test_get_nono_path_downloads_and_verifies() {
-        // This test exercises the full download + Sigstore attestation path.
+        // This test exercises the full download + pinned SHA-256 verification path.
         // It downloads the real nono binary from GitHub, verifies the bundle,
         // and checks that the resulting binary is executable.
         //

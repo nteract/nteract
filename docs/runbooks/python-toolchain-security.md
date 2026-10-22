@@ -1,4 +1,4 @@
-# Python toolchain trust after the eMudhra incident
+# Toolchain trust after the eMudhra incident
 
 The 2.9 candidate uses uv **0.13.5** and Pixi **0.82.1** for its fallback
 downloads. These are the upstream stable releases checked on October 22, 2026.
@@ -17,6 +17,12 @@ protection: compromised intermediate keys have alternate, cross-signed chains.
 [Google's response](https://blog.google/security/protecting-chrome-and-android-users-from-compromised-emudhra-intermediate-ca-certificates/)
 describe the affected keys and trust paths.
 
+Deno uses **2.9.8** as both its fallback and minimum system version; the image
+builder uses Node **22.23.4**. These releases reject the affected intermediate
+keys ([Deno](https://github.com/denoland/deno/releases/tag/v2.9.8),
+[Node](https://nodejs.org/en/blog/release/v22.23.4)). CI's primary and fallback
+Deno installs use the same patched version.
+
 ## Tool selection and caches
 
 - nteract resolves the first executable on PATH and probes that exact path.
@@ -29,8 +35,17 @@ describe the affected keys and trust paths.
 - Fallback paths are keyed by tool, exact release, platform and application
   channel/worktree. Older versioned or unversioned executables cannot satisfy
   the new key. A failed download fails the request; it does not select the old
-  executable. Downloads retain checksum verification, a per-key install lock,
-  staging and atomic publication. The existing cache root naming is unchanged.
+  executable. Successful uv/Pixi/Deno resolutions are cached; failures can be
+  retried by the next request. Background pool warming can still need a daemon
+  restart after an initial tool-resolution failure.
+- All fallback downloads (uv, Pixi, Deno, Ruff and nono) verify against SHA-256
+  digests shipped in `crates/kernel-launch/src/tools/pinned_hashes.rs` before
+  extraction. A forged TLS connection cannot replace both archive and expected
+  digest. New versions/platforms fail closed until their digest is reviewed and
+  added. Update the table from the upstream release asset metadata, and verify
+  the platform archive before changing a pin. Existing tool caches are not a
+  forensic scan for prior compromise. Downloads retain the per-key install lock,
+  staging and atomic publication; cache root naming is unchanged.
 - Old cache entries remain on disk for older application versions and active
   processes. No broad cache deletion or environment migration occurs. Tool paths
   are cached in memory: restart the updated application and its daemon through
@@ -45,11 +60,13 @@ also use a borrowed Python/Conda environment without invoking these tools.
 Package clients launched from notebook code, including `pip`, `requests`, or an
 older environment-local uv, retain their own trust behavior.
 
-The normal UV base package set still requests an unpinned environment-local
-`uv`. A newly created environment is therefore not proof that every package
-client inside it meets the security floor, especially with offline or cached
-resolutions. The application tool-selection policy applies to nteract's chosen
-executable, not every executable that notebook code can launch.
+New managed UV environment builds require `uv>=0.13.5`, including offline
+resolutions. This also changes the package fingerprint used to admit prewarmed
+pool entries. Capture recognizes both the historical bare `uv` and the new
+base spec without recording them as user dependencies. Existing captured or
+project-owned environments are not rewritten, and a new environment is not
+proof that every package client inside it is patched. Python, pip, requests,
+and user-selected package versions still need their own inventory.
 
 Owners should inventory their actual interpreters and package managers, then
 apply the upstream advisory within the selected environment. Its current floors
@@ -82,16 +99,21 @@ protection.
 | Existing environments | Owner-scoped pip, certifi, uv and Conda inventory/remediation, including borrowed environments and lockfiles. |
 | Runtime-peer image | Rebuild from refreshed base images with stale layer caching disabled; verify system certificates, Python/ensurepip/pip and environment-local tools. No image publication is implied by this source patch. |
 | CI/build tools | Verify runner trust stores, setup-action results, cached tools and independently bundled roots. Floating setup versions do not prove a particular historical run was patched. |
-| Deno/Node and other runtimes | Separate qualification: this patch does not update Deno 2.7.1, the CI Deno fallback, or runtime-peer's Node 22.23.3. Do not describe this Python-tool patch as whole-product trust remediation. |
+| Deno/Node and other runtimes | Deno 2.9.8 and image-builder Node 22.23.4 are pinned; qualify actual TLS rejection and kernel/build behavior. Other installed runtimes remain owner-managed. |
+| Cloud/workstation WebSockets | Native TLS still relies on host trust updates; test the actual client before claiming protection. Investigate exposure and rotate credentials if compromise is suspected; this patch alone is not evidence of credential theft. |
 | Hosted sites | Inspect each public served chain and its issuer; renew affected chains with the owning deployment team. A healthy server chain does not establish outbound client protection. |
 
-The release workflow requests fresh base images (`pull: true`) and disables
+Both release and PR-validation workflows request fresh base images (`pull: true`) and disables
 build layer reuse (`no-cache: true`) for runtime-peer. Both Docker stages
 bootstrap pip 26.2.2 from the advisory's hash-pinned wheel before ordinary
 package installation; the runtime also requires certifi >=2026.10.19 and uv
 >=0.13.5. Source guards do not prove a particular image was rebuilt or deployed.
 Retain its build result, resolved base digest, package inventory and TLS probes
-with release evidence before promotion.
+with release evidence before promotion. The image smoke test enforces the pip,
+certifi and uv version floors, plus Debian Bookworm ca-certificates
+`20250419~deb12u2` ([DLA-4845-1](https://security-tracker.debian.org/tracker/DLA-4845-1)).
+Both Docker stages refresh and enforce that native CA-package floor. Versions alone do not establish that
+OpenSSL rejects every affected chain.
 
 No application workaround should disable TLS verification, install a new trust
 anchor, modify platform security settings, or assume removal of one root blocks
@@ -104,7 +126,8 @@ trace the feature graph for each shipped artifact before asserting a backend.
 `cargo test -p kernel-launch` runs offline policy, process and cache regressions.
 These include old PATH versions, numeric version ordering, failed/unparseable
 probes, absolute resolution from relative PATH entries, reuse of the current
-cache, failure without fallback to the old cache, and preservation of old files.
+cache, failure without fallback to the old cache, preservation of old files, retry after a failed resolution, platform digest
+coverage, and rejection of substituted archive bytes.
 
 `crates/kernel-launch/tests/toolchain_qualification.rs` contains opt-in network
 tests. Build with `cargo test -p kernel-launch --test toolchain_qualification

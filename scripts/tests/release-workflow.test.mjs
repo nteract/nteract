@@ -314,6 +314,9 @@ test("runtime-peer release refreshes trust layers and bootstraps pip before pack
   const build = jobs.get("image-runtime-peer-build");
   assert.match(build, /^          pull: true$/m);
   assert.match(build, /^          no-cache: true$/m);
+  const validation = validationJobs.get("runtime-peer-image");
+  assert.match(validation, /^          pull: true$/m);
+  assert.match(validation, /^          no-cache: true$/m);
   const dockerfile = readFileSync(new URL("../../images/runtime-peer/Dockerfile", import.meta.url), "utf8");
   const bootstrap = "pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70";
   const builder = dockerfile.split(" AS builder")[1].split(" AS runtime")[0];
@@ -343,9 +346,8 @@ test("runtime-peer image publication keeps packages:write scoped to the two imag
   assert.match(jobs.get("compute-version"), /^    permissions:\n      contents: write$/m, "compute-version must keep tag-push access");
 
   const build = jobs.get("image-runtime-peer-build");
-  assert.match(build, /uses: docker\/build-push-action@v6\n[\s\S]*?load: true\n\s+push: false/, "build via build-push-action so the gha cache credentials are present; load locally, do not push");
-  assert.match(build, /cache-to: type=gha/, "gha cache requested through the action, not a raw docker build");
-  assert.doesNotMatch(build, /run: \|\n\s+docker build/, "raw docker build cannot see the Actions cache credentials");
+  assert.match(build, /uses: docker\/build-push-action@v6\n[\s\S]*?load: true\n\s+push: false/, "build via build-push-action with fresh layers; load locally, do not push");
+  assert.doesNotMatch(build, /run: \|\n\s+docker build/, "use the declared build action inputs");
   assert.match(build, /STAGING_TAG: ghcr\.io\/nteract\/runtime-peer:build-\$\{\{ inputs\.version_suffix \}\}-/, "staging tag must be channel-qualified so stable and nightly on one commit cannot overwrite each other");
   assert.match(build, /runtime-peer-image-smoke\.sh[\s\S]*docker push "\$STAGING_TAG"/, "smoke must gate the staging push");
   assert.match(build, /outputs:\n\s+digest: \$\{\{ steps\.push\.outputs\.DIGEST \}\}/, "build exports the pushed digest");

@@ -48,9 +48,20 @@ if [ -n "$EXPECTED_VERSION" ]; then
     esac
 fi
 
+CA_VERSION="$(dpkg-query -W -f='${Version}' ca-certificates)"
+dpkg --compare-versions "$CA_VERSION" ge '20250419~deb12u2' || fail "ca-certificates is below the Bookworm security floor: $CA_VERSION"
+echo "ca-certificates: $CA_VERSION"
+
 python3 - <<'PY' || fail "image Python package parity check failed"
 import importlib
+import importlib.metadata
 import sys
+from packaging.version import Version
+
+for package, minimum in {"pip": "26.2.2", "certifi": "2026.10.19", "uv": "0.13.5"}.items():
+    actual = importlib.metadata.version(package)
+    assert Version(actual) >= Version(minimum), f"{package}>={minimum} required, found {actual}"
+    print(f"security floor ok: {package} {actual}")
 
 for module in ("ipykernel", "ipywidgets", "anywidget", "nbformat", "pyarrow"):
     importlib.import_module(module)

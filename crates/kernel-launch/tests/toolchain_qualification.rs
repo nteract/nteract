@@ -207,7 +207,10 @@ async fn pinned_toolchain_environment_and_kernel_contracts() {
         info.default_prefix()
             .expect("pixi info must return the default prefix"),
     );
-    assert!(prefix.starts_with(&project));
+    assert!(prefix
+        .canonicalize()
+        .unwrap()
+        .starts_with(project.canonicalize().unwrap()));
     let activation = tools::pixi_shell_hook(
         &manifest,
         Some("default"),
@@ -272,4 +275,51 @@ async fn native_tls_rejects_affected_chains_with_positive_control() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[tokio::test]
+#[ignore = "downloads pinned Deno; public TLS probes require isolated environment"]
+async fn pinned_deno_rejects_affected_chains_with_positive_control() {
+    let root = fixture_root();
+    let deno = tools::get_deno_path().await.unwrap();
+    assert!(
+        deno.starts_with(&root),
+        "use the disposable fallback, not system Deno"
+    );
+    let script = r#"
+const control = await fetch("https://pypi.org/simple/ipykernel/", { signal: AbortSignal.timeout(20000) });
+if (!control.ok) throw new Error(`positive control failed: ${control.status}`);
+await control.body?.cancel();
+console.log("positive control: PyPI accepted");
+for (const host of ["dv-g3b", "dv-g3b-aaa", "dv-g3b-noct", "dv-g3b-aaa-noct"]) {
+  let rejected = false;
+  try {
+    const response = await fetch(`https://${host}-emudhra.we-have-a-problem.com/`, { signal: AbortSignal.timeout(20000) });
+    await response.body?.cancel();
+    console.log(`${host}: UNSAFE chain accepted, HTTP ${response.status}`);
+  } catch (error) {
+    const causes = [];
+    for (let cause = error; cause instanceof Error; cause = cause.cause) {
+      causes.push(String(cause));
+    }
+    const detail = causes.join("; ");
+    console.log(`${host}: ${detail}`);
+    if (!detail.includes("CertDistrusted")) throw error;
+    rejected = true;
+  }
+  if (!rejected) throw new Error(`${host}: expected certificate rejection`);
+}
+"#;
+    println!(
+        "{}",
+        String::from_utf8_lossy(
+            &success(
+                Command::new(&deno)
+                    .args(["eval", script])
+                    .env("DENO_DIR", root.join("deno"))
+            )
+            .await
+        )
+    );
+    assert_eq!(tools::get_deno_path().await.unwrap(), deno);
 }

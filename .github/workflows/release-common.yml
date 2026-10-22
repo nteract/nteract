@@ -1571,8 +1571,6 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.compute-version.outputs.version }}
-          cache-from: type=gha,scope=runtime-peer-${{ inputs.version_suffix }}
-          cache-to: type=gha,mode=max,scope=runtime-peer-${{ inputs.version_suffix }}
 
       - name: Smoke image (gates push)
         run: |

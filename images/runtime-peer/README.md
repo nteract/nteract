@@ -134,7 +134,7 @@ and nightly version tags is a follow-up. Local builds work without any registry.
   time, so it floats within the ranges the constant declares (e.g.
   `pyarrow>=14`) — deliberate, so the image always matches daemon-managed
   environments. Build tooling is pinned AND integrity-checked: Node
-  `22.23.3`, `pnpm@11.9.0`, `maturin==1.11.5` (matching the release
+  `22.23.4`, `pnpm@11.9.0`, `maturin==1.11.5` (matching the release
   workflow's maturin-action), wasm-pack `0.15.0`; the Node and wasm-pack
   tarballs verify against hard-coded SHA256 digests before extraction.
 - The BuildKit cache mounts only warm steps within one build (and local

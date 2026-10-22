@@ -79,7 +79,7 @@ pub const UV_BASE_PACKAGES: &[&str] = &[
     // except on Windows ARM64, where PyPI has no usable wheel. See
     // [`omit_default_pyarrow`].
     "pyarrow>=14",
-    "uv",
+    "uv>=0.13.5",
 ];
 
 /// Exact PyArrow spec in [`UV_BASE_PACKAGES`]. Comparisons and install lists
@@ -92,23 +92,25 @@ pub fn omit_default_pyarrow() -> bool {
     cfg!(all(target_os = "windows", target_arch = "aarch64"))
 }
 
-/// Effective UV base specs for this target. Same as [`UV_BASE_PACKAGES`]
-/// except PyArrow is dropped on Windows ARM64. Use this for install lists
-/// and [`crate::strip_base`] so capture matches what was actually installed.
+/// Effective base specs to exclude when recording user dependency intent.
+/// Include the historical bare uv spec for pools created before the security
+/// floor. It must never be added back to the install list.
 pub fn uv_base_packages_for_strip() -> Vec<&'static str> {
+    let mut specs: Vec<_> = effective_uv_base_packages().collect();
+    specs.push("uv");
+    specs
+}
+
+fn effective_uv_base_packages() -> impl Iterator<Item = &'static str> {
     UV_BASE_PACKAGES
         .iter()
         .copied()
         .filter(|spec| *spec != PYARROW_SPEC || !omit_default_pyarrow())
-        .collect()
 }
 
 /// Return the effective UV base set as owned package spec strings for install paths.
 pub fn uv_base_packages() -> Vec<String> {
-    uv_base_packages_for_strip()
-        .into_iter()
-        .map(str::to_string)
-        .collect()
+    effective_uv_base_packages().map(str::to_string).collect()
 }
 
 /// Compute the unified env hash for a notebook. Used by the captured-deps
@@ -1247,7 +1249,8 @@ mod tests {
             assert_eq!(packages.len(), UV_BASE_PACKAGES.len());
         }
         assert!(packages.iter().any(|pkg| pkg == "ipykernel"));
-        assert!(packages.iter().any(|pkg| pkg == "uv"));
+        assert!(packages.iter().any(|pkg| pkg == "uv>=0.13.5"));
+        assert!(!packages.iter().any(|pkg| pkg == "uv"));
     }
 
     /// Lock in the channel-namespaced cache path shape. Tests build with
