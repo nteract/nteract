@@ -58,7 +58,7 @@ page_id and block IDs. Browser link: ${origin}/p/<page_id>.
 
 - create_page: title, optional markdown, and idempotency_key.
 - read_page: page_id.
-- patch_page: literal find-and-replace in a block's Markdown; prefer this for prose.
+- patch_page: replace_match for literal visible-text edits; patch_block_markdown for Markdown syntax edits.
 - edit_page: set_title, replace_block_markdown, insert_markdown, move_block,
   or delete_block operations.
 - manage_page_comment: add, reply, resolve, reopen, edit, or delete_message.
@@ -78,16 +78,31 @@ A targeted edit:
     "base_heads": ["<head from read_page>"],
     "idempotency_key": "<new UUID>",
     "operations": [{
-      "op": "patch_block_markdown",
+      "op": "replace_match",
       "block_id": "<block ID from read_page>",
-      "replacements": [{"old": "exact existing text", "new": "replacement text"}]
+      "match_text": "exact existing text",
+      "replacement": "replacement text"
     }]
   }
 }
 \`\`\`
 
-Each old string must occur exactly once in that block's Markdown. Copy the whole
-heads array, even when it has more than one entry. On a stale-revision error,
+replace_match searches visible text without Markdown delimiters. It may cross
+formatting marks within a paragraph or code block, but cannot cross paragraph,
+code block, or embedded-node boundaries. replacement is literal text, not Markdown.
+Use optional context_before/context_after to distinguish repeated text; context
+must be in the same segment, between this occurrence and its neighboring matches.
+Exactly one match is required; zero or multiple matches reject the entire batch.
+Successful receipts include result.edits with matched: 1 for each replace_match.
+Replacement text keeps formatting shared by the entire matched range, including
+link destinations and titles. Formatting present on only part of the match does
+not spread across the replacement. Untouched characters, marks, and comment
+anchors retain their CRDT identities.
+
+For formatting or structural edits, use patch_block_markdown with replacements
+[{"old":"exact Markdown","new":"replacement Markdown"}]. Each old string must
+occur exactly once in that block's Markdown. Regex replacement is not supported.
+Copy the whole heads array, even when it has more than one entry. On a stale-revision error,
 read again, reconsider the edit, and use a new key. After a timeout or unknown
 outcome, retry the exact request body, key, account, and driver label.
 
@@ -120,7 +135,8 @@ links and resources/read reads those URLs. This endpoint does not provide an
 interactive MCP OAuth setup; configure the API-key Authorization header.
 
 Tool edits sync into the browser editor and carry the account/driver label.
-Use these tools for document work; /api/sync is a binary native client protocol,
+Each tool batch is atomic: it does not stream keystrokes or publish an agent cursor.
+Browser peers publish cursor presence separately. Use these tools for document work; /api/sync is a binary native client protocol,
 not a JSON editing endpoint.
 `;
 }

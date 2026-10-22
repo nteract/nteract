@@ -193,7 +193,7 @@ export function validateRich(block) {
   });
   exportMarkdown(tree);
 }
-function safeUrl(value) {
+export function safeUrl(value) {
   return (
     typeof value === "string" &&
     ![...value].some((c) => c.charCodeAt(0) <= 32 || c.charCodeAt(0) === 127) &&

@@ -136,16 +136,56 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
   if (health.ok !== true || health.prototype !== "pages-celld-native")
     throw new Error("Unexpected local page3 health response");
   const installation = directory + "/tunnel-installation.json";
-  const receipt =
+  const receiptFor = (config, extra = {}) =>
     JSON.stringify({
       schema: 1,
       tunnel_id: plan.tunnelId,
-      config_sha256: hash(plan.config),
+      config_sha256: hash(config),
       unit_sha256: hash(plan.unit),
+      ...extra,
     }) + "\n";
+  const receipt = receiptFor(plan.config);
+  // This is one known migration, not permission to adopt arbitrary tunnel edits.
+  const previousConfig = plan.config.replace("|mermaid[.]js|", "|");
+  const previousReceipt = receiptFor(previousConfig);
+  const pendingReceipt = receiptFor(plan.config, { previous_config_sha256: hash(previousConfig) });
+  const candidate = (file, contents) => {
+    // Distinct expected byte sequences cannot strand one another after a
+    // crash between staging and renaming an upgrade or rollback.
+    const next = file + ".next." + hash(contents);
+    if (filesystem.existsSync(next)) {
+      if (read(next) !== contents) throw new Error("Dedicated tunnel candidate differs");
+    } else filesystem.writeFileSync(next, contents, { mode: 0o600, flag: "wx" });
+    return next;
+  };
+  const replace = (file, contents) => filesystem.renameSync(candidate(file, contents), file);
+  let upgrading = false;
   if (filesystem.existsSync(installation)) {
-    if (read(installation) !== receipt)
-      throw new Error("Dedicated tunnel installation differs; inspect before retrying");
+    const installed = read(installation);
+    if (installed !== receipt) {
+      if (installed !== previousReceipt && installed !== pendingReceipt)
+        throw new Error("Dedicated tunnel installation differs; inspect before retrying");
+      const current = read(configPath);
+      if (
+        read(unitPath) !== plan.unit ||
+        (current !== previousConfig && (installed !== pendingReceipt || current !== plan.config))
+      )
+        throw new Error("Dedicated tunnel migration requires exact previous files");
+      // Validate the new bytes before changing the active file. The pending
+      // receipt survives a crash on either side of the atomic config rename;
+      // retries must restart this connector before sealing the final receipt.
+      const next = candidate(configPath, plan.config);
+      validateRoutes(next);
+      if (
+        read(configPath) !== current ||
+        read(unitPath) !== plan.unit ||
+        read(installation) !== installed
+      )
+        throw new Error("Dedicated tunnel changed during migration validation");
+      if (installed === previousReceipt) replace(installation, pendingReceipt);
+      filesystem.renameSync(next, configPath);
+      upgrading = true;
+    }
   } else {
     if (
       filesystem.existsSync(configPath) ||
@@ -166,44 +206,75 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
         throw new Error("Dedicated tunnel file differs; inspect before retrying");
     } else filesystem.writeFileSync(file, contents, { mode, flag: "wx" });
   }
-  run("/usr/bin/cloudflared", ["--config", configPath, "tunnel", "ingress", "validate"]);
-  for (const [pathname, expected] of [
-    ["/", plan.listen],
-    ["/mcp", plan.listen],
-    ["/api/sync", plan.listen],
-    ["/llms.txt", plan.listen],
-    ["/oidc", plan.listen],
-    ["/state", "http_status:404"],
-    ["/internal/create", "http_status:404"],
-  ]) {
-    const rule = run("/usr/bin/cloudflared", [
-      "--config",
-      configPath,
-      "tunnel",
-      "ingress",
-      "rule",
-      "https://" + plan.hostname + pathname,
-    ]);
-    if (
-      !rule.includes(
-        "service: " + (expected.startsWith("http_status:") ? expected : "http://" + expected),
+  function validateRoutes(file) {
+    run("/usr/bin/cloudflared", ["--config", file, "tunnel", "ingress", "validate"]);
+    for (const [pathname, expected] of [
+      ["/", plan.listen],
+      ["/mcp", plan.listen],
+      ["/mermaid.js", plan.listen],
+      ["/mermaid.js/private", "http_status:404"],
+      ["/mermaidXjs", "http_status:404"],
+      ["/api/sync", plan.listen],
+      ["/llms.txt", plan.listen],
+      ["/oidc", plan.listen],
+      ["/state", "http_status:404"],
+      ["/internal/create", "http_status:404"],
+    ]) {
+      const rule = run("/usr/bin/cloudflared", [
+        "--config",
+        file,
+        "tunnel",
+        "ingress",
+        "rule",
+        "https://" + plan.hostname + pathname,
+      ]);
+      if (
+        !rule.includes(
+          "service: " + (expected.startsWith("http_status:") ? expected : "http://" + expected),
+        )
       )
-    )
-      throw new Error("Dedicated tunnel route validation failed");
+        throw new Error("Dedicated tunnel route validation failed");
+    }
   }
+  validateRoutes(configPath);
   run("systemd-analyze", ["verify", unitPath]);
   run("systemctl", ["daemon-reload"]);
   run("systemctl", ["enable", service]);
-  run("systemctl", ["start", service]);
-  if (run("systemctl", ["is-active", service]) !== "active")
-    throw new Error("Dedicated tunnel connector is not active");
+  try {
+    run("systemctl", [upgrading ? "restart" : "start", service]);
+    if (run("systemctl", ["is-active", service]) !== "active")
+      throw new Error("Dedicated tunnel connector is not active");
+  } catch (error) {
+    if (upgrading) {
+      if (read(configPath) !== plan.config || read(installation) !== pendingReceipt)
+        throw new Error("Dedicated tunnel changed during restart; pending migration retained");
+      replace(configPath, previousConfig);
+      run("systemctl", ["restart", service]);
+      if (run("systemctl", ["is-active", service]) !== "active")
+        throw new Error("Dedicated tunnel rollback is not active; pending migration retained");
+      replace(installation, previousReceipt);
+    }
+    throw error;
+  }
   if (
     read("/etc/cloudflared/config.yml") !== sharedConfig ||
     run("systemctl", ["show", "cloudflared.service", "--property=MainPID", "--value"]) !== sharedPid
   )
     throw new Error("Shared tunnel changed during publication; inspect before claiming isolation");
+  if (upgrading) {
+    if (
+      read(configPath) !== plan.config ||
+      read(unitPath) !== plan.unit ||
+      read(installation) !== pendingReceipt
+    )
+      throw new Error(
+        "Dedicated tunnel changed before completing migration; pending receipt retained",
+      );
+    replace(installation, receipt);
+  }
   return {
     published: true,
+    routesUpdated: upgrading,
     hostname: plan.hostname,
     tunnelId: plan.tunnelId,
     service,

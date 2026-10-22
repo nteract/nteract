@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import { routesFor } from "./deployment/routes.mjs";
 import { deploymentProfile } from "./deployment/profiles.mjs";
 import { isolatedPublicationPlan, publishIsolated } from "./deployment/isolated-publication.mjs";
 
@@ -48,7 +50,7 @@ test("dedicated page3 plan cannot use shared or unowned tunnel credentials", () 
     assert.throws(() => isolatedPublicationPlan({ ...input, ...changed }));
 });
 
-function fixture(t, { failStart = false } = {}) {
+function fixture(t, { failStart = false, failRestart = false, interruptRollback = null } = {}) {
   const root = fs.mkdtempSync(path.join(tmpdir(), "page3-isolated-publication-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const local = (file) => path.join(root, file);
@@ -76,6 +78,21 @@ function fixture(t, { failStart = false } = {}) {
       stat.uid = 0;
       return stat;
     },
+    renameSync: (from, to) => {
+      writes.push(to);
+      const staged = fs.readFileSync(local(from), "utf8");
+      const oldConfig = isolatedPublicationPlan(input).config.replace("|mermaid[.]js|", "|");
+      if (
+        (interruptRollback === "config" && to.endsWith("/tunnel.yml") && staged === oldConfig) ||
+        (interruptRollback === "receipt" &&
+          to.endsWith("/tunnel-installation.json") &&
+          JSON.parse(staged).config_sha256 === digest(oldConfig))
+      ) {
+        interruptRollback = null;
+        throw Error("injected interruption before rollback rename");
+      }
+      return fs.renameSync(local(from), local(to));
+    },
     writeFileSync: (file, ...args) => {
       writes.push(file);
       return fs.writeFileSync(local(file), ...args);
@@ -88,6 +105,13 @@ function fixture(t, { failStart = false } = {}) {
       if (args[0] === "show") return args[1] === "cloudflared.service" ? "3393474" : "not-found";
       if (args[0] === "is-active")
         return args[1] === "nteract-page3" || active ? "active" : "inactive";
+      if (args[0] === "restart") {
+        if (failRestart) {
+          failRestart = false;
+          throw Error("injected connector restart failure");
+        }
+        active = true;
+      }
       if (args[0] === "start") {
         if (failStart) {
           failStart = false;
@@ -102,12 +126,9 @@ function fixture(t, { failStart = false } = {}) {
     if (command === "/usr/bin/cloudflared") {
       if (args.includes("validate")) return "OK";
       const pathname = new URL(args.at(-1)).pathname;
-      return (
-        "service: " +
-        (["/state", "/internal/create"].includes(pathname)
-          ? "http_status:404"
-          : "http://127.0.0.1:9473")
-      );
+      const contents = fs.readFileSync(local(args[1]), "utf8");
+      const pattern = new RegExp(/^    path: (.+)$/m.exec(contents)[1]);
+      return "service: " + (pattern.test(pathname) ? "http://127.0.0.1:9473" : "http_status:404");
     }
     throw Error("Unexpected command " + command);
   };
@@ -177,3 +198,150 @@ test("dedicated publisher refuses unowned or changed files instead of replacing 
     "foreign configuration",
   );
 });
+
+const digest = (text) => createHash("sha256").update(text).digest("hex");
+function previousInstallation(f, { pending = false, newConfig = false } = {}) {
+  const plan = isolatedPublicationPlan(input);
+  const oldConfig = plan.config.replace("|mermaid[.]js|", "|");
+  const receipt = (config, extra = {}) =>
+    JSON.stringify({
+      schema: 1,
+      tunnel_id: tunnelId,
+      config_sha256: digest(config),
+      unit_sha256: digest(plan.unit),
+      ...extra,
+    }) + "\n";
+  const oldReceipt = receipt(oldConfig);
+  const newReceipt = receipt(plan.config);
+  f.write(plan.configPath, newConfig ? plan.config : oldConfig);
+  f.write(plan.unitPath, plan.unit);
+  f.write(
+    "/etc/nteract-page3/tunnel-installation.json",
+    pending ? receipt(plan.config, { previous_config_sha256: digest(oldConfig) }) : oldReceipt,
+  );
+  return { plan, oldConfig, oldReceipt, newReceipt };
+}
+
+test("only page3 admits the exact Mermaid asset path; existing pages-next routes stay frozen", () => {
+  const current = new RegExp(/^    path: (.+)$/m.exec(routesFor("page3"))[1]);
+  const frozen = new RegExp(/^    path: (.+)$/m.exec(routesFor("pages-next"))[1]);
+  assert.equal(current.test("/mermaid.js"), true);
+  assert.equal(frozen.test("/mermaid.js"), false);
+  for (const path of [
+    "/mermaidXjs",
+    "/mermaid.js/",
+    "/mermaid.js/private",
+    "/renderer.js",
+    "/state",
+    "/internal/create",
+  ])
+    assert.equal(current.test(path), false, path);
+});
+
+test("known page3 route upgrade restarts only its dedicated connector then becomes a no-op", (t) => {
+  const f = fixture(t);
+  const expected = previousInstallation(f);
+  assert.equal(f.execute().routesUpdated, true);
+  assert.equal(fs.readFileSync(f.local(expected.plan.configPath), "utf8"), expected.plan.config);
+  assert.equal(
+    fs.readFileSync(f.local("/etc/nteract-page3/tunnel-installation.json"), "utf8"),
+    expected.newReceipt,
+  );
+  assert.equal(fs.readFileSync(f.local("/etc/cloudflared/config.yml"), "utf8"), sharedConfig);
+  assert.equal(f.execute().routesUpdated, false);
+  const restarts = f.calls.filter(
+    ({ command, args }) => command === "systemctl" && args[0] === "restart",
+  );
+  assert.deepEqual(
+    restarts.map(({ args }) => args[1]),
+    ["cloudflared-page3.service"],
+  );
+  assert.ok(f.writes.every((file) => file.startsWith("/etc/nteract-page3/")));
+});
+
+for (const newConfig of [false, true]) {
+  test(`interrupted route upgrade resumes with ${newConfig ? "new" : "old"} config bytes and a pending receipt`, (t) => {
+    const f = fixture(t);
+    const expected = previousInstallation(f, { pending: true, newConfig });
+    assert.equal(f.execute().routesUpdated, true);
+    assert.equal(
+      fs.readFileSync(f.local("/etc/nteract-page3/tunnel-installation.json"), "utf8"),
+      expected.newReceipt,
+    );
+    assert.equal(
+      f.calls.filter(({ command, args }) => command === "systemctl" && args[0] === "restart")
+        .length,
+      1,
+    );
+  });
+}
+
+test("failed dedicated upgrade restores exact old config and receipt before retry", (t) => {
+  const f = fixture(t, { failRestart: true });
+  const expected = previousInstallation(f);
+  assert.throws(f.execute, /injected connector restart failure/);
+  assert.equal(fs.readFileSync(f.local(expected.plan.configPath), "utf8"), expected.oldConfig);
+  assert.equal(
+    fs.readFileSync(f.local("/etc/nteract-page3/tunnel-installation.json"), "utf8"),
+    expected.oldReceipt,
+  );
+  assert.equal(f.execute().routesUpdated, true);
+  assert.equal(fs.readFileSync(f.local("/etc/cloudflared/config.yml"), "utf8"), sharedConfig);
+  assert.ok(
+    f.calls
+      .filter(({ command, args }) => command === "systemctl" && args[0] === "restart")
+      .every(({ args }) => args[1] === "cloudflared-page3.service"),
+  );
+});
+
+test("route migration rejects unknown receipt, modified unit/config, and unreceipted new bytes before writes", (t) => {
+  for (const changed of ["receipt", "unit", "config", "new-with-old-receipt"]) {
+    const f = fixture(t);
+    const expected = previousInstallation(f, { newConfig: changed === "new-with-old-receipt" });
+    if (changed === "receipt")
+      f.write("/etc/nteract-page3/tunnel-installation.json", "unknown receipt");
+    if (changed === "unit")
+      f.write(expected.plan.unitPath, expected.plan.unit + "# foreign change\n");
+    if (changed === "config")
+      f.write(expected.plan.configPath, expected.oldConfig + "# foreign change\n");
+    assert.throws(
+      f.execute,
+      /Dedicated tunnel (installation differs|migration requires exact previous files)/,
+    );
+    assert.equal(f.writes.length, 0);
+    assert.equal(
+      f.calls.some(
+        ({ command, args }) => command === "systemctl" && ["restart", "start"].includes(args[0]),
+      ),
+      false,
+    );
+  }
+});
+
+for (const interruptRollback of ["config", "receipt"]) {
+  test(`retry completes after interrupted rollback ${interruptRollback} rename leaves its staged bytes`, (t) => {
+    const f = fixture(t, { failRestart: true, interruptRollback });
+    const expected = previousInstallation(f);
+    assert.throws(f.execute, /injected interruption before rollback rename/);
+    const beforeRetry = fs.readFileSync(
+      f.local("/etc/nteract-page3/tunnel-installation.json"),
+      "utf8",
+    );
+    assert.ok(
+      JSON.parse(beforeRetry).previous_config_sha256,
+      "the pending receipt remains until an active configuration is confirmed",
+    );
+    assert.equal(f.execute().routesUpdated, true);
+    assert.equal(fs.readFileSync(f.local(expected.plan.configPath), "utf8"), expected.plan.config);
+    assert.equal(
+      fs.readFileSync(f.local("/etc/nteract-page3/tunnel-installation.json"), "utf8"),
+      expected.newReceipt,
+    );
+    assert.equal(fs.readFileSync(f.local("/etc/cloudflared/config.yml"), "utf8"), sharedConfig);
+    assert.ok(
+      f.calls
+        .filter(({ command, args }) => command === "systemctl" && args[0] === "restart")
+        .every(({ args }) => args[1] === "cloudflared-page3.service"),
+    );
+  });
+}

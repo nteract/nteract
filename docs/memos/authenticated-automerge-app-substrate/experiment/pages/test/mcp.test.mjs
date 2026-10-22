@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { handleMcp } from "../mcp.mjs";
+import { handleMcp, tools } from "../mcp.mjs";
 const request = (method, params = {}) =>
   new Request("https://pages.example/mcp", {
     method: "POST",
@@ -85,4 +85,46 @@ test("MCP reads canonical and legacy links while rejecting ambiguous resource UR
     assert.ok((await response.json()).error);
     assert.equal(invoked, false);
   }
+});
+
+test("MCP advertises visible-text replacement separately from Markdown replacement", async () => {
+  const patch = tools.find((tool) => tool.name === "patch_page");
+  const variants = patch.inputSchema.properties.operations.items.oneOf;
+  assert.deepEqual(
+    variants.map((operation) => operation.properties.op.const),
+    ["replace_match", "patch_block_markdown"],
+  );
+  assert.deepEqual(variants[0].required, ["op", "block_id", "match_text", "replacement"]);
+  assert.equal(variants[0].properties.context_before.type, "string");
+  assert.equal(variants[0].properties.context_after.type, "string");
+  assert.match(patch.description, /without a typing cursor/);
+  const args = {
+    page_id: pageId,
+    base_heads: ["a".repeat(64)],
+    idempotency_key: "replace-visible-text",
+    operations: [
+      {
+        op: "replace_match",
+        block_id: "block-a",
+        match_text: "word",
+        replacement: "phrase",
+        context_before: "second",
+      },
+    ],
+  };
+  const response = await handleMcp(
+    request("tools/call", { name: "patch_page", arguments: args }),
+    async (operation, received) => {
+      assert.equal(operation, "patch_page");
+      assert.deepEqual(received, args);
+      return Response.json({
+        page_id: pageId,
+        result: { edits: [{ op: "replace_match", block_id: "block-a", matched: 1 }] },
+      });
+    },
+  );
+  assert.equal(
+    JSON.parse((await response.json()).result.content[0].text).result.edits[0].matched,
+    1,
+  );
 });

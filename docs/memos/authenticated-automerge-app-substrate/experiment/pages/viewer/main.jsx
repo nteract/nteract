@@ -351,13 +351,15 @@ function App() {
       setError(error.message);
     }
   }
-  function startComment(id = activeBlock.current) {
+  function startComment(
+    id = activeBlock.current,
+    selected = id === activeBlock.current ? selection.current : null,
+  ) {
     if (!session) return;
     if (!id) {
       setCommentsOpen(true);
       return;
     }
-    const selected = id === activeBlock.current ? selection.current : null;
     activateBlock(id);
     if (session.canWrite) {
       try {
@@ -602,6 +604,7 @@ function App() {
                         onSelection={(value) => {
                           if (activeBlock.current === block.id) selection.current = value;
                         }}
+                        onComment={(selected) => startComment(block.id, selected)}
                         toolbarHost={active === block.id ? toolbar : null}
                         onActivate={() => activateBlock(block.id)}
                         threads={threads}
@@ -612,7 +615,7 @@ function App() {
                     )}
                     <button
                       className="comment-block icon-button"
-                      onClick={() => startComment(block.id)}
+                      onClick={() => startComment(block.id, null)}
                       aria-label="Comment on this block"
                       title="Comment on this block"
                     >

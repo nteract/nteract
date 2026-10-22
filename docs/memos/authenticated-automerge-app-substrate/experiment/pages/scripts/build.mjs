@@ -1,4 +1,5 @@
 import { celldCborPlugin } from "./celld-cbor.mjs";
+import { browserMermaidPlugin, mermaidSource } from "./browser-mermaid.mjs";
 import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
 import { build } from "esbuild";
 import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
@@ -55,6 +56,7 @@ await build({
   outfile: path.join(dist, "public/app.js"),
   define: { "process.env.NODE_ENV": '"production"' },
   plugins: [
+    browserMermaidPlugin(app),
     {
       name: "browser-wasm",
       setup(b) {
@@ -72,6 +74,17 @@ await build({
       },
     },
   ],
+});
+await build({
+  entryPoints: [mermaidSource(app)],
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2022",
+  minify: true,
+  tsconfig: path.join(app, "tsconfig.json"),
+  outfile: path.join(dist, "public/mermaid.js"),
+  define: { "process.env.NODE_ENV": '"production"' },
 });
 await writeFile(
   path.join(dist, "public/index.html"),

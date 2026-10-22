@@ -25,6 +25,39 @@ const guard = {
     description: "Unique request key. Reuse the same key and payload after an uncertain result.",
   },
 };
+const matchProperties = {
+  match_text: {
+    ...string,
+    minLength: 1,
+    maxLength: 262144,
+    description:
+      "Exact visible text, without Markdown markup. Must match once within a paragraph or code block; cannot cross block/embed boundaries.",
+  },
+  replacement: {
+    ...string,
+    maxLength: 262144,
+    description:
+      "Literal replacement text, not Markdown. Keeps formatting shared by the entire match (including link destination/title); partial formatting does not spread. Untouched text keeps its CRDT identity.",
+  },
+  context_before: {
+    ...string,
+    maxLength: 262144,
+    description:
+      "Optional literal context in the same text segment before the match, after the previous occurrence.",
+  },
+  context_after: {
+    ...string,
+    maxLength: 262144,
+    description:
+      "Optional literal context in the same text segment after the match, before the next occurrence.",
+  },
+};
+const replaceMatchOperation = {
+  type: "object",
+  properties: { op: { const: "replace_match" }, block_id: string, ...matchProperties },
+  required: ["op", "block_id", "match_text", "replacement"],
+  additionalProperties: false,
+};
 const tool = (name, description, properties, required = [], annotations) => ({
   name,
   description,
@@ -86,7 +119,7 @@ export const tools = [
   ),
   tool(
     "patch_page",
-    "Make literal find-and-replace edits to Markdown. Each old string must match exactly once. Changes use text-aware Automerge mutations and appear in the live editor.",
+    "Apply an atomic targeted edit batch. Prefer replace_match for visible prose: replace one literal range, optionally disambiguated by context, preserving untouched formatting and comment anchors. patch_block_markdown edits Markdown syntax. Zero or multiple matches fail the whole batch. Tool edits arrive atomically, without a typing cursor.",
     {
       ...guard,
       operations: {
@@ -94,21 +127,26 @@ export const tools = [
         minItems: 1,
         maxItems: 100,
         items: {
-          type: "object",
-          properties: {
-            op: { const: "patch_block_markdown" },
-            block_id: string,
-            replacements: {
-              type: "array",
-              minItems: 1,
-              items: {
-                type: "object",
-                properties: { old: string, new: string },
-                required: ["old", "new"],
+          oneOf: [
+            replaceMatchOperation,
+            {
+              type: "object",
+              properties: {
+                op: { const: "patch_block_markdown" },
+                block_id: string,
+                replacements: {
+                  type: "array",
+                  minItems: 1,
+                  items: {
+                    type: "object",
+                    properties: { old: string, new: string },
+                    required: ["old", "new"],
+                  },
+                },
               },
+              required: ["op", "block_id", "replacements"],
             },
-          },
-          required: ["op", "block_id", "replacements"],
+          ],
         },
       },
     },
