@@ -432,6 +432,98 @@ try {
   );
   await a.getByRole("button", { name: "Comments", exact: true }).click();
   await expect(a.getByRole("textbox", { name: "Comment on block", exact: true })).toHaveValue("");
+  // Replacing a list with different block markers must update already mounted
+  // rich-text projections, then leave both human and tool edits working.
+  const structuralBefore = "Intro.\n\n1. First item.\n\n2. Second item.\n\nAfter.";
+  const structuralAfter = "## Heading\n\nOne paragraph.\n\nAnother paragraph.";
+  const structural = await call(a, "create_page", {
+    title: "Structural replacement fixture " + Date.now(),
+    markdown: structuralBefore,
+    idempotency_key: crypto.randomUUID(),
+  });
+  for (const p of pages) {
+    await p.goto(origin + "/p/" + structural.page_id);
+    const editor = p.locator(".ProseMirror");
+    await expect(editor).toHaveCount(1);
+    await expect(editor.locator("ol > li")).toHaveCount(2, { timeout: 20000 });
+    await expect.poll(() => text(editor)).toBe("Intro.First item.Second item.After.");
+    await expect(p.getByRole("status")).toHaveText("Saved", { timeout: 20000 });
+  }
+  const structuralTimeOrigins = await Promise.all(
+    pages.map((p) => p.evaluate(() => performance.timeOrigin)),
+  );
+  let structuralCurrent = await call(a, "read_page", { page_id: structural.page_id });
+  assert.equal(structuralCurrent.blocks.length, 1);
+  assert.equal(structuralCurrent.blocks[0].markdown, structuralBefore);
+  const structuralBlock = structuralCurrent.blocks[0].id;
+  async function assertStructuralDocument(markdown, heading, paragraphs) {
+    for (const [index, p] of pages.entries()) {
+      const editor = p.locator(".ProseMirror");
+      await expect(editor).toHaveCount(1);
+      await expect(editor.locator(":scope > h2")).toHaveCount(1, { timeout: 20000 });
+      await expect.poll(() => text(editor.locator("h2"))).toBe(heading);
+      await expect(editor.locator(":scope > p")).toHaveCount(paragraphs.length);
+      for (const [paragraph, expected] of paragraphs.entries())
+        await expect.poll(() => text(editor.locator(":scope > p").nth(paragraph))).toBe(expected);
+      await expect(editor.locator("ol, ul, li")).toHaveCount(0);
+      await expect(p.getByRole("status")).toHaveText("Saved", { timeout: 20000 });
+      await expect(p.getByRole("alert")).toHaveCount(0);
+      assert.equal(
+        await p.evaluate(() => performance.timeOrigin),
+        structuralTimeOrigins[index],
+        "structural tool updates do not reload either browser",
+      );
+    }
+    const readback = await call(a, "read_page", { page_id: structural.page_id });
+    assert.equal(readback.blocks.length, 1);
+    assert.equal(readback.blocks[0].id, structuralBlock);
+    assert.equal(readback.blocks[0].markdown, markdown, "complete server Markdown readback");
+    assert.deepEqual(errors, []);
+    return readback;
+  }
+  await call(
+    a,
+    "edit_page",
+    {
+      page_id: structural.page_id,
+      base_heads: structuralCurrent.heads,
+      idempotency_key: crypto.randomUUID(),
+      operations: [
+        { op: "replace_block_markdown", block_id: structuralBlock, markdown: structuralAfter },
+      ],
+    },
+    "Structural fixture agent",
+  );
+  await assertStructuralDocument(structuralAfter, "Heading", [
+    "One paragraph.",
+    "Another paragraph.",
+  ]);
+  const keyboardSuffix = " Typed from the second browser.";
+  await edge(b.locator(".ProseMirror").locator(":scope > p").last(), true);
+  await b.keyboard.type(keyboardSuffix);
+  structuralCurrent = await assertStructuralDocument(structuralAfter + keyboardSuffix, "Heading", [
+    "One paragraph.",
+    "Another paragraph." + keyboardSuffix,
+  ]);
+  const structuralFollowup =
+    "## Updated heading\n\nOne paragraph.\n\nAnother paragraph." + keyboardSuffix + " Tool update.";
+  await call(
+    a,
+    "edit_page",
+    {
+      page_id: structural.page_id,
+      base_heads: structuralCurrent.heads,
+      idempotency_key: crypto.randomUUID(),
+      operations: [
+        { op: "replace_block_markdown", block_id: structuralBlock, markdown: structuralFollowup },
+      ],
+    },
+    "Structural fixture agent",
+  );
+  await assertStructuralDocument(structuralFollowup, "Updated heading", [
+    "One paragraph.",
+    "Another paragraph." + keyboardSuffix + " Tool update.",
+  ]);
   await b.getByLabel("Account", { exact: true }).click();
   await b.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(b.getByRole("link", { name: "Sign In" })).toBeVisible();
@@ -444,6 +536,7 @@ try {
   console.log(
     JSON.stringify({
       page_id: result.page_id,
+      structural_page_id: structural.page_id,
       checks: [
         "two browser native sync",
         "duplicate-tab exclusive IndexedDB ownership",
@@ -462,6 +555,7 @@ try {
         "desktop and 390px layout with modal comments",
         "comment target isolation, draft retargeting and detached block navigation",
         "menu dismissal and local new-page focus",
+        "structural tool replacement and bidirectional follow-up without reload",
         "sign out revokes HTTP access",
       ],
       tab_return: tabReturn,

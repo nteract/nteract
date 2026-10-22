@@ -306,6 +306,13 @@ Enter creates paragraphs and list items within a block. Cross-block selection an
 remain separate editor work. Incoming editor notifications are deferred during
 composition; native receive itself is not paused.
 
+The pinned `@automerge/prosemirror` 0.2 binding can reject an intermediate list
+structure while projecting a valid tool replacement. The editor recovers that
+pre-dispatch failure by validating the final CRDT projection and replacing only
+its differing editor range. This preserves the mounted editor, maps selection
+and history, and never writes the projection back as another CRDT edit. Invalid
+final content and errors from editor dispatch still propagate.
+
 Unexpected HTTP failures and failed native admission emit structured diagnostic
 categories with the request boundary, status, and error type. Provider error
 messages, credentials, request bodies, and document content are excluded.
