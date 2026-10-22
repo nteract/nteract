@@ -10,6 +10,7 @@ export function CommentsPanel({
   target,
   onClose,
   onReveal,
+  onSelect,
   onClearComposer,
 }) {
   const dialog = useRef(null),
@@ -48,14 +49,23 @@ export function CommentsPanel({
     }
   }, [open, mobile]);
   useEffect(() => {
-    if (!open || !composer?.key) return;
+    if (!open || !composer?.key || target) return;
     const frame = requestAnimationFrame(() => {
       const textarea = composerElement.current?.querySelector("textarea");
       textarea?.focus({ preventScroll: true });
       composerElement.current?.scrollIntoView({ block: "nearest" });
     });
     return () => cancelAnimationFrame(frame);
-  }, [open, composer?.key]);
+  }, [open, composer?.key, target]);
+  useEffect(() => {
+    if (!open || !target?.id) return;
+    const frame = requestAnimationFrame(() => {
+      dialog.current
+        ?.querySelector(`[data-thread-id="${CSS.escape(target.id)}"]`)
+        ?.scrollIntoView({ block: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [open, target]);
   const changeDraft = (id, value) => setDrafts((previous) => ({ ...previous, [id]: value }));
   let quote = composer?.quote || "",
     draftProblem = "";
@@ -102,7 +112,11 @@ export function CommentsPanel({
           (target?.id === thread.id ? " thread-active" : "")
         }
         key={thread.id}
+        data-thread-id={thread.id}
         aria-label="Comment thread"
+        onFocusCapture={() => {
+          if (target?.id !== thread.id) onSelect?.(thread.id);
+        }}
       >
         {thread.selectionContext?.text ? (
           <button className="quote" onClick={() => reveal(thread)} title="Show passage">

@@ -74,12 +74,14 @@ remain historical comparison material. celld and Cloudflare run the same
 application API with separate deployment configuration and data. A host name
 is an environment choice, not a separate editor implementation.
 
-## Writing, links, and diagrams
+## Writing, links, diagrams, and tables
 
 Select text and choose **Comment** in the formatting toolbar, or press
 Cmd/Ctrl+Alt+M, to start a discussion anchored to that passage. The comment icon
 beside a block starts a block comment. Browser selection across separate Pages
-blocks is not yet supported.
+blocks is not yet supported. Click a highlighted passage to reveal its discussion
+in the sidebar; click a thread’s quote to return to the passage. Reply drafts stay
+with their threads when switching context.
 
 Click a link for **Open link**, **Edit link**, and **Remove link**. Cmd/Ctrl-click
 opens its destination directly; Cmd/Ctrl+K edits the current link. Link targets
@@ -95,6 +97,20 @@ continues in a paragraph after the code block. The source and language remain
 Automerge content and round-trip through Markdown. The preview reuses nteract's
 Mermaid renderer and SVG sanitizer, with its existing source and output limits;
 rendered SVG is never stored in the document. This does not add code execution.
+
+Tables in preserved Markdown blocks render with header cells, alignment, inline
+formatting, and safe links. Use leading and trailing pipes in each row for new
+tables; existing rich imports keep their previous interpretation. Wide tables scroll within the document on narrow screens. **Source**
+shows the exact preserved Markdown; the preview is local and never replaces that
+source in Automerge. This first step supports reading and tool-driven table
+updates, not editing table cells directly. A block imported with a table remains
+an opaque source block, including any prose around it; use separate Pages blocks
+for prose that should remain WYSIWYG-editable. HTML remains text and images show
+their alt text without loading remote resources. Instruction blocks retain their
+existing display.
+
+`node scripts/table-smoke.mjs` verifies two-peer table updates, source round trips,
+link opening, and desktop/mobile layouts against the local OIDC fixture.
 
 For agents, `patch_page` accepts `replace_match` to replace exactly one literal
 visible-text range, with optional context to disambiguate it. This preserves

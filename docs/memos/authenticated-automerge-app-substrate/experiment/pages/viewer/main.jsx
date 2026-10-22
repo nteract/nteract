@@ -367,6 +367,7 @@ function App() {
         const key = crypto.randomUUID();
         composerId.current = key;
         setComposer({ key, draft, quote: selected?.text.replaceAll("\ufffc", "\n") || "" });
+        setTarget(null);
       } catch (error) {
         setError(error.message);
         return;
@@ -383,8 +384,12 @@ function App() {
     else if (composer) setCommentsOpen(true);
     else startComment();
   }
+  function selectComment(id) {
+    setTarget({ id, request: performance.now(), source: "passage" });
+    setCommentsOpen(true);
+  }
   function revealComment(thread) {
-    setTarget({ id: thread.id, request: Date.now() });
+    setTarget({ id: thread.id, request: performance.now(), source: "quote" });
     const id =
       thread.target.kind === "selection" ? thread.target.anchor.blockId : thread.target.blockId;
     if (thread.target.kind === "block" || thread.selectionContext?.status === "detached")
@@ -605,6 +610,7 @@ function App() {
                           if (activeBlock.current === block.id) selection.current = value;
                         }}
                         onComment={(selected) => startComment(block.id, selected)}
+                        onRevealComment={selectComment}
                         toolbarHost={active === block.id ? toolbar : null}
                         onActivate={() => activateBlock(block.id)}
                         threads={threads}
@@ -638,6 +644,7 @@ function App() {
                 target={target}
                 onClose={closeComments}
                 onReveal={revealComment}
+                onSelect={selectComment}
                 onClearComposer={(key) => {
                   if (composerId.current === key) {
                     composerId.current = null;
