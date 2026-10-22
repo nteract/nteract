@@ -1,3 +1,4 @@
+import { matchingPages } from "./page-list.mjs";
 import { pagePath, isPlainNavigation } from "../shared/routes.mjs";
 import { useEffect, useRef, useState } from "react";
 import { Check, FileText, Plus, Search, X } from "lucide-react";
@@ -13,9 +14,7 @@ export function PagePicker({ open, pages, currentId, onClose, onOpen, onCreate, 
       element.querySelector("input")?.focus();
     } else if (!open && element.open) element.close();
   }, [open]);
-  const matches = pages.filter((page) =>
-    (page.title || "Untitled").toLocaleLowerCase().includes(query.toLocaleLowerCase()),
-  );
+  const matches = matchingPages(pages, query);
   return (
     <dialog
       ref={dialog}

@@ -56,6 +56,24 @@ then release registration and verify two-peer sync and stable direct links. It
 also covers first-session edits, transient receipt retries, rejected-draft
 deletion, account renewal, and deletion while another tab is open.
 
+## Interface boundary
+
+The Pages service is the shared document layer for people and agents. Its own UI
+keeps the reading canvas quiet: a compact page bar, a searchable document list,
+contextual formatting, and comments beside their passages. Account, document,
+and block actions stay available through compact controls and the keyboard.
+
+A harness may add chat, an “ask for changes” action, or an agent sidebar around
+this surface. Those controls should use the same guarded operations and
+attribution as other clients; they do not need a second document store. Presence,
+comments, and edit illumination belong to the document experience. Sharing UI
+must wait for host-enforced permissions rather than imply access from a link.
+
+The active implementation is PR #4469. The earlier PR #4451 and m.runtimed.run
+remain historical comparison material. celld and Cloudflare run the same
+application API with separate deployment configuration and data. A host name
+is an environment choice, not a separate editor implementation.
+
 ## What owns what
 
 ```text
@@ -127,6 +145,12 @@ they do not extend the socket lifetime. Reconnect obtains current credentials
 and resumes the same native document. This keeps lease handling explicit, at the
 cost of periodic reconnects for programmatic native clients.
 
+The resident socket holds its admission request context through disconnection.
+Native callbacks retain that context for later authentication and storage I/O;
+finishing it immediately after admission can strand those operations on celld.
+Disconnect and admission failures release the context along with the existing
+lease timers and credential binding.
+
 Active requestor admission is separate from durable authorship admission. A live
 writer may relay history signed by a previously admitted writer for this Page,
 even after that author's session expired. Reader keys cannot acquire writer
@@ -148,7 +172,9 @@ has flushed the Repo/backend, and `ctx.storage.sync()` has confirmed celld's
 configured durability. Native peer heads alone are not that receipt. Receipts
 are requested after edit bursts or reconnect, not by polling document content.
 Transient receipt failures get three bounded retries; authentication failures
-pause until the account is renewed.
+pause until the account is renewed. A missing-heads receipt requests native
+synchronization on the existing connection within that same retry budget. This
+catch-up request does not itself mark the document Saved.
 
 Browser storage belongs to one live backend. Each tab uses its own signing key
 and IndexedDB database, with Web Locks preventing duplicated tabs from sharing

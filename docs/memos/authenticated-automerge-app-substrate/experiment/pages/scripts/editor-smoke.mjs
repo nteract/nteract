@@ -3,11 +3,12 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
+import { selectionToolbarPosition } from "../viewer/selection-toolbar.mjs";
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
 const output = process.env.PAGES_SCREENSHOTS || "/tmp/pages-native-browser";
 await mkdir(output, { recursive: true });
-const browser = await chromium.launch({ headless: true }),
+const browser = await chromium.launch({ headless: process.env.PAGES_HEADED !== "1" }),
   errors = [];
 const text = (editor) =>
   editor.evaluate((el) => {
@@ -25,6 +26,49 @@ async function edge(editor, end = false) {
     else s.collapseToStart();
   }, end);
   await editor.page().waitForTimeout(30);
+}
+async function assertStableToolbarGeometry(page) {
+  // Use the real controls and CSS, without moving the focused editor's toolbar.
+  const boxes = await page.locator(".rich-toolbar").evaluate((toolbar) => {
+    const fixture = document.createElement("div");
+    fixture.style.cssText = "position:absolute;left:-10000px;top:0;visibility:hidden";
+    fixture.style.width = toolbar.parentElement.getBoundingClientRect().width + "px";
+    const clone = toolbar.cloneNode(true);
+    clone.removeAttribute("style");
+    fixture.append(clone);
+    document.body.append(fixture);
+    try {
+      return [false, true].map((floating) => {
+        clone.classList.toggle("is-floating", floating);
+        const { width, height } = clone.getBoundingClientRect();
+        return { width, height };
+      });
+    } finally {
+      fixture.remove();
+    }
+  });
+  assert.deepEqual(boxes[0], boxes[1], "floating keeps the toolbar's measured box stable");
+  // This range leaves just enough room below for the normal row. If floating
+  // adds padding/borders, the ResizeObserver-driven decision oscillates forever.
+  const viewport = { left: 0, top: 64, right: 1200, bottom: 800 };
+  const selection = {
+    start: { left: 400, right: 400, top: 120, bottom: 144 },
+    end: { left: 600, right: 600, top: 714, bottom: 738 },
+    viewport,
+  };
+  let floating = false;
+  const placements = [];
+  for (let round = 0; round < 6; round++) {
+    const position = selectionToolbarPosition({ ...selection, ...boxes[Number(floating)] });
+    assert.ok(position, "the boundary selection has space for a floating toolbar");
+    assert.ok(position.top + boxes[Number(floating)].height <= viewport.bottom - 12);
+    placements.push(position);
+    floating = true;
+  }
+  assert.ok(
+    placements.every((position) => JSON.stringify(position) === JSON.stringify(placements[0])),
+    "placement settles without a resize feedback loop",
+  );
 }
 async function call(page, operation, args, driver) {
   return page.evaluate(
@@ -48,10 +92,16 @@ try {
   const contexts = await Promise.all([browser.newContext(), browser.newContext()]);
   let hold = false,
     blocked = null,
-    held = 0;
+    held = 0,
+    delaying = false;
+  const delayedFrames = [];
   await contexts[0].routeWebSocket(/\/api\/sync\?/, (ws) => {
     const server = ws.connectToServer();
     ws.onMessage((data) => {
+      if (delaying) {
+        delayedFrames.push({ server, data });
+        return;
+      }
       if (hold && !blocked) blocked = ws;
       if (ws === blocked) {
         held++;
@@ -65,7 +115,7 @@ try {
   for (const p of pages) {
     p.on("pageerror", (error) => errors.push(error.message));
     await p.goto(origin + "/api/auth/login");
-    await expect(p.getByRole("button", { name: "Pages", exact: true })).toBeVisible();
+    await expect(p.getByRole("button", { name: /, switch page$/ })).toBeVisible();
   }
   const [a, b] = pages;
   const result = await call(a, "create_page", {
@@ -165,6 +215,57 @@ try {
   await expect.poll(() => text(ea)).not.toContain("Own ");
   await expect.poll(() => text(ea)).toContain(" Peer");
   await expect(b.locator(".thread .quote")).toHaveText("o");
+  await expect(a.getByRole("status")).toHaveText("Saved", { timeout: 20000 });
+  await expect.poll(() => text(eb), { timeout: 20000 }).toBe(await text(ea));
+  // Cross the authorization recheck boundary before delaying native traffic.
+  // A fresh connection would miss the retired-admission-context regression.
+  await new Promise((resolve) => setTimeout(resolve, 17000));
+  // Delay real outbound native frames through the server's 10-second heads
+  // deadline, then return to the same tab and release the original bytes. A
+  // late receipt within the bounded retry window must clear its error
+  // without another edit, Retry or reload.
+  await a.bringToFront();
+  const documentTimeOrigin = await a.evaluate(() => performance.timeOrigin);
+  const delayedReceipt = a.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/saved" &&
+      new URL(response.url()).searchParams.get("page") === result.page_id &&
+      response.status() === 409,
+    { timeout: 20000 },
+  );
+  delaying = true;
+  await edge(ea, true);
+  await a.keyboard.type(" Returned from another tab.");
+  await expect.poll(() => delayedFrames.length).toBeGreaterThan(0);
+  const backgroundTab = await contexts[0].newPage();
+  await backgroundTab.goto("about:blank");
+  await backgroundTab.bringToFront();
+  const backgroundVisibility = await a.evaluate(() => document.visibilityState);
+  assert.equal(await backgroundTab.evaluate(() => document.visibilityState), "visible");
+  assert.equal((await text(eb)).includes("Returned from another tab."), false);
+  assert.equal((await (await delayedReceipt).json()).error, "Requested edits have not arrived");
+  await expect(a.getByRole("alert")).toContainText("Requested edits have not arrived");
+  await a.bringToFront();
+  const returnedVisibility = await a.evaluate(() => document.visibilityState);
+  assert.equal(returnedVisibility, "visible");
+  await backgroundTab.close();
+  delaying = false;
+  for (const { server, data } of delayedFrames.splice(0)) server.send(data);
+  await expect.poll(() => text(eb), { timeout: 20000 }).toContain("Returned from another tab.");
+  await expect(a.getByRole("status")).toHaveText("Saved", { timeout: 20000 });
+  await expect(a.getByRole("alert")).toHaveCount(0);
+  assert.equal(await a.evaluate(() => performance.timeOrigin), documentTimeOrigin, "no reload");
+  assert.equal(await text(ea), await text(eb));
+  const afterReturn = await call(a, "read_page", { page_id: result.page_id });
+  assert.match(afterReturn.blocks[0].markdown, /Returned from another tab\./);
+  const tabReturn = {
+    background_visibility: backgroundVisibility,
+    returned_visibility: returnedVisibility,
+    visibility_transition_verified: backgroundVisibility === "hidden",
+  };
+  // Headless Chromium can report every tab as visible. In that mode this is
+  // delayed-frame/receipt recovery, not proof of background throttling. Set
+  // PAGES_HEADED=1 to exercise actual tab visibility when the browser supports it.
   // Hold actual outbound native frames, persist a local edit, discard that
   // socket on reload, then reconstruct from the same exclusive IndexedDB store.
   await expect(a.getByRole("status")).toHaveText("Saved", { timeout: 20000 });
@@ -185,6 +286,13 @@ try {
   await expect(a.getByRole("status")).toHaveText("Saved", { timeout: 20000 });
   assert.equal(await text(ea), await text(eb));
   await expect(b.locator(".thread .quote")).toHaveText("o");
+  // Recovery must leave both existing peers able to send their next edit.
+  await edge(eb, true);
+  await b.keyboard.type(" Peer after reload.");
+  await expect.poll(() => text(ea), { timeout: 20000 }).toContain("Peer after reload.");
+  await edge(ea, true);
+  await a.keyboard.type(" Owner after reload.");
+  await expect.poll(() => text(eb), { timeout: 20000 }).toContain("Owner after reload.");
   await edge(ea, true);
   await a.keyboard.press("Enter");
   await a.keyboard.type("Another paragraph");
@@ -249,6 +357,7 @@ try {
   await a.getByRole("button", { name: "Numbered list", exact: true }).click();
   await expect(ea.locator("ol")).toHaveCount(0);
   await expect.poll(() => text(eb)).toBe(await text(ea));
+  await assertStableToolbarGeometry(a);
   const commentsToggle = a.getByRole("button", { name: "Comments", exact: true });
   if ((await commentsToggle.getAttribute("aria-expanded")) !== "true") await commentsToggle.click();
   await a.screenshot({ path: output + "/desktop.png", fullPage: true });
@@ -312,7 +421,7 @@ try {
     a.locator(".thread").getByRole("button", { name: "Show block", exact: true }),
   ).toBeVisible();
   await a.locator(".thread").getByRole("button", { name: "Show block", exact: true }).click();
-  await a.getByRole("button", { name: "Pages", exact: true }).click();
+  await a.getByRole("button", { name: /, switch page$/ }).click();
   await expect(a.getByRole("textbox", { name: "Search Pages" })).toBeFocused();
   await a.getByRole("button", { name: "New Page", exact: true }).click();
   await expect(a.locator(".ProseMirror")).toHaveCount(1);
@@ -343,14 +452,19 @@ try {
         "agent patch illumination and label",
         "peer-preserving undo",
         "pending IndexedDB reload and concurrent merge",
+        tabReturn.visibility_transition_verified
+          ? "delayed native frames and background-tab return without reload"
+          : "delayed native frames and receipt recovery without reload (tabs remained visible)",
         "paragraph split/join",
         "selection-driven toolbar and keyboard access",
+        "stable floating-toolbar geometry at viewport boundaries",
         "text style and list commands",
         "desktop and 390px layout with modal comments",
         "comment target isolation, draft retargeting and detached block navigation",
         "menu dismissal and local new-page focus",
         "sign out revokes HTTP access",
       ],
+      tab_return: tabReturn,
       screenshots: output,
     }),
   );

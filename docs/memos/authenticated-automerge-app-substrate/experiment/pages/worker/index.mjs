@@ -716,6 +716,7 @@ export class Page {
       socket = pair[1];
     socket.accept(); // Resident connection; reconnect reconstructs native state.
     const wire = new WebSocketByteTransport(socket);
+    const disconnected = new Promise((resolve) => wire.onDisconnect(resolve));
     this.wires.add(wire);
     let release = noop;
     let leaseTimer;
@@ -771,6 +772,9 @@ export class Page {
         } finally {
           transport.free();
         }
+        // Native callbacks retain this request's I/O context. Keep it alive
+        // while the resident socket can trigger authorization and storage work.
+        await disconnected;
       })().catch((error) => {
         logFailure(error, "native-admission");
         void wire.disconnect();

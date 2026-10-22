@@ -1,6 +1,6 @@
 import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
-import { Repo } from "@automerge/automerge-repo";
+import { Repo, documentIdToBinary } from "@automerge/automerge-repo";
 import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
 import { applyComment } from "../model/comments.mjs";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
@@ -13,6 +13,7 @@ import {
 } from "./local-pages.mjs";
 export { listLocalPages, forgetLocalPage } from "./local-pages.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
+import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 16));
 export async function request(url, options = {}) {
@@ -554,7 +555,7 @@ export class PageSession {
     clearTimeout(this.receiptRetryTimer);
     this.receiptRetryTimer = undefined;
   }
-  scheduleReceiptRetry(revision) {
+  scheduleReceiptRetry(revision, synchronize = false) {
     const delays = [500, 1000, 2000];
     const attempt = this.receiptRetryAttempts ?? 0;
     if (
@@ -570,7 +571,7 @@ export class PageSession {
     this.receiptRetryTimer = setTimeout(() => {
       this.receiptRetryTimer = undefined;
       if (this.alive && !this.authRequired && !this.deleted && revision === this.receiptRevision)
-        void this.saveReceipt();
+        void this.saveReceipt({ synchronize });
     }, delays[attempt]);
   }
   async requestWithRenewal(url, options) {
@@ -588,9 +589,11 @@ export class PageSession {
       }
     }
   }
-  async saveReceipt() {
+  async saveReceipt({ synchronize = false } = {}) {
     if (!this.alive || !this.handle) return;
     const revision = this.receiptRevision;
+    const isCurrent = () =>
+      this.alive && !this.deleted && !this.authRequired && revision === this.receiptRevision;
     try {
       await this.repo.flush();
       await this.persistLocal({ pending: true });
@@ -608,12 +611,27 @@ export class PageSession {
       return;
     }
     try {
-      if (!this.alive || this.authRequired) return;
+      if (!isCurrent()) return;
       if (this.localPage && !this.connection) {
         this.status = "Saved locally";
         this.emit();
         return;
       }
+      if (synchronize) {
+        // A native request can time out while its WebSocket stays open. Re-arm
+        // catch-up on that authenticated connection without replacing the live
+        // document or resetting this receipt's bounded retry budget.
+        const native = this.backend.open(documentIdToBinary(this.handle.documentId));
+        try {
+          await native.synchronize();
+          if (!isCurrent()) return;
+        } finally {
+          await native.close();
+        }
+        if (!isCurrent()) return;
+      }
+      // Native catch-up is not a durability receipt; the host must still
+      // acknowledge these exact heads after its storage barrier.
       const heads = A.getHeads(this.doc);
       const result = await this.requestWithRenewal(
         `/api/saved?page=${encodeURIComponent(this.pageId)}`,
@@ -623,7 +641,7 @@ export class PageSession {
           body: JSON.stringify({ heads }),
         },
       );
-      if (!this.alive || revision !== this.receiptRevision) return;
+      if (!isCurrent()) return;
       this.savedHeads = result.durableHeads;
       this.clearConnectionProblem();
       this.status = A.getHeads(this.doc).every((h) => this.savedHeads.includes(h))
@@ -634,10 +652,10 @@ export class PageSession {
         this.receiptRetryAttempts = 0;
         await this.persistLocal({ pending: false });
       }
-      if (!this.alive || revision !== this.receiptRevision) return;
+      if (!isCurrent()) return;
       this.emit();
     } catch (error) {
-      if (this.alive && revision === this.receiptRevision) {
+      if (isCurrent()) {
         if (error.code === "LOCAL_PAGE_DELETED") {
           await this.markDeleted();
           return;
@@ -648,7 +666,10 @@ export class PageSession {
           if (!this.localProblem) this.problem = error.message;
           this.status = this.localPage ? "Saved locally" : "Unsaved";
           if (!error.status || error.status === 409 || error.status >= 500)
-            this.scheduleReceiptRetry(revision);
+            this.scheduleReceiptRetry(
+              revision,
+              synchronize || (error.status === 409 && error.message === MISSING_EDITS_MESSAGE),
+            );
         }
         this.emit();
       }

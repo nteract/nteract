@@ -4,7 +4,11 @@ import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
 import { PageSession, listLocalPages, forgetLocalPage } from "./session.mjs";
 import { readLocalPage, decodeSnapshot } from "./local-pages.mjs";
-import { documentIdToBinary } from "@automerge/automerge-repo";
+import {
+  documentIdToBinary,
+  generateAutomergeUrl,
+  interpretAsDocumentId,
+} from "@automerge/automerge-repo";
 import { readRegistration } from "../worker/registration.mjs";
 
 function browser(t) {
@@ -293,7 +297,10 @@ test("cached permission cannot raise a current read-only credential or cross an 
 function receiptSession() {
   const session = new PageSession("receipt-fixture");
   const doc = A.from({ text: "Pending edit" });
-  session.handle = { doc: () => doc };
+  session.handle = {
+    doc: () => doc,
+    documentId: interpretAsDocumentId(generateAutomergeUrl()),
+  };
   session.repo = { flush: async () => {} };
   session.receiptRevision = 1;
   return session;
@@ -362,6 +369,200 @@ test("receipt retries stop after three attempts and stale, signed-out, or closed
     await drainTasks();
     assert.equal(requests, before);
     await session.close();
+  }
+});
+
+test("missing-heads receipt retries re-arm native catch-up before asking the host again", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const session = receiptSession();
+  const events = [];
+  session.backend = {
+    open(id) {
+      assert.deepEqual(id, documentIdToBinary(session.handle.documentId));
+      events.push("open");
+      return {
+        async synchronize() {
+          events.push("synchronize");
+          return { outcome: "complete" };
+        },
+        async close() {
+          events.push("close");
+        },
+      };
+    },
+  };
+  t.mock.method(session, "connect", () => assert.fail("catch-up must not reconnect"));
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    events.push("receipt");
+    return ++requests === 1
+      ? Response.json({ error: "Requested edits have not arrived" }, { status: 409 })
+      : Response.json({ durableHeads: A.getHeads(session.doc) });
+  });
+  t.after(() => session.close());
+  await session.saveReceipt();
+  t.mock.timers.tick(500);
+  await drainTasks();
+  assert.deepEqual(events, ["receipt", "open", "synchronize", "close", "receipt"]);
+  assert.equal(session.status, "Saved");
+  assert.equal(session.problem, "");
+  assert.equal(session.receiptRevision, 1, "catch-up keeps the same receipt generation");
+});
+
+test("native catch-up retains the receipt retry bound and cannot itself claim Saved", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const session = receiptSession();
+  let rounds = 0,
+    closed = 0,
+    requests = 0;
+  session.backend = {
+    open() {
+      return {
+        async synchronize() {
+          rounds++;
+          return { outcome: "complete" };
+        },
+        async close() {
+          closed++;
+        },
+      };
+    },
+  };
+  t.mock.method(globalThis, "fetch", async () => {
+    requests++;
+    return Response.json({ error: "Requested edits have not arrived" }, { status: 409 });
+  });
+  await session.saveReceipt();
+  for (const delay of [500, 1000, 2000]) {
+    t.mock.timers.tick(delay);
+    await drainTasks();
+  }
+  assert.equal(requests, 4);
+  assert.equal(rounds, 3);
+  assert.equal(closed, 3);
+  assert.notEqual(session.status, "Saved");
+  assert.equal(session.receiptRetryTimer, undefined);
+  t.mock.timers.tick(10000);
+  await drainTasks();
+  assert.equal(requests, 4);
+  await session.close();
+});
+
+test("failed native catch-up closes its session and remains scheduled within the same budget", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const session = receiptSession();
+  let rounds = 0,
+    closed = 0,
+    requests = 0;
+  session.backend = {
+    open() {
+      return {
+        async synchronize() {
+          if (++rounds === 1) throw Error("Native synchronization failed");
+          return { outcome: "complete" };
+        },
+        async close() {
+          closed++;
+        },
+      };
+    },
+  };
+  t.mock.method(globalThis, "fetch", async () =>
+    ++requests === 1
+      ? Response.json({ error: "Requested edits have not arrived" }, { status: 409 })
+      : Response.json({ durableHeads: A.getHeads(session.doc) }),
+  );
+  t.after(() => session.close());
+  await session.saveReceipt();
+  t.mock.timers.tick(500);
+  await drainTasks();
+  assert.equal(closed, 1);
+  assert.equal(requests, 1);
+  assert.equal(session.receiptRetryAttempts, 2);
+  t.mock.timers.tick(1000);
+  await drainTasks();
+  assert.equal(rounds, 2);
+  assert.equal(closed, 2);
+  assert.equal(requests, 2);
+  assert.equal(session.status, "Saved");
+});
+
+test("unrelated receipt failures do not start native catch-up", async (t) => {
+  for (const status of [409, 503]) {
+    await t.test(String(status), async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const session = receiptSession();
+      session.backend = { open: () => assert.fail("unrelated error must not trigger catch-up") };
+      let requests = 0;
+      t.mock.method(globalThis, "fetch", async () =>
+        ++requests === 1
+          ? Response.json({ error: "Unrelated error" }, { status })
+          : Response.json({ durableHeads: A.getHeads(session.doc) }),
+      );
+      t.after(() => session.close());
+      await session.saveReceipt();
+      t.mock.timers.tick(500);
+      await drainTasks();
+      assert.equal(requests, 2);
+      assert.equal(session.status, "Saved");
+    });
+  }
+});
+
+test("native catch-up cannot publish a stale receipt after either asynchronous boundary", async (t) => {
+  for (const phase of ["synchronize", "close"]) {
+    for (const invalidate of ["revision", "signout", "account", "deleted", "closed"]) {
+      await t.test(`${phase}: ${invalidate}`, async (t) => {
+        t.mock.timers.enable({ apis: ["setTimeout"] });
+        const session = receiptSession();
+        session.identity = { principal: "original" };
+        let finish,
+          fail,
+          closed = 0,
+          requests = 0;
+        const pending = new Promise((resolve, reject) => {
+          finish = resolve;
+          fail = reject;
+        });
+        session.backend = {
+          open() {
+            return {
+              async synchronize() {
+                if (phase === "synchronize") await pending;
+                return { outcome: "complete" };
+              },
+              async close() {
+                closed++;
+                if (phase === "close") await pending;
+              },
+            };
+          },
+        };
+        t.mock.method(globalThis, "fetch", async () => {
+          requests++;
+          return Response.json({ error: "Requested edits have not arrived" }, { status: 409 });
+        });
+        await session.saveReceipt();
+        t.mock.timers.tick(500);
+        await drainTasks();
+        if (invalidate === "revision") session.receiptRevision++;
+        else if (invalidate === "signout") session.requireSignIn();
+        else if (invalidate === "account")
+          session.acceptAuthentication({ identity: { principal: "other" }, canWrite: true });
+        else if (invalidate === "deleted") {
+          session.deleted = true;
+          session.status = "Deleted";
+        } else await session.close();
+        if (invalidate === "deleted") fail(Error("Stale native failure"));
+        else finish();
+        await drainTasks();
+        assert.equal(closed, 1);
+        assert.equal(requests, 1, "no stale HTTP receipt after native catch-up");
+        if (invalidate === "deleted") assert.equal(session.status, "Deleted");
+        assert.equal(session.receiptRetryTimer, undefined);
+        await session.close();
+      });
+    }
   }
 });
 
