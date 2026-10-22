@@ -1,9 +1,25 @@
 // Narrow tunnel change only. DNS is a separate operation after route validation.
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
-export const routes = `  - hostname: pages-next.runtimed.run
+export const legacyRoutes = `  - hostname: pages-next.runtimed.run
     path: ^/(index[.]html|app[.](js|css)|(automerge|subduction)[.]wasm|health|mcp|api/(tools|connect|sync|saved|auth/(login|logout|session))|oidc)?$
+    service: http://127.0.0.1:9472
+  - hostname: pages-next.runtimed.run
+    service: http_status:404
+`;
+
+export const routes = `  - hostname: pages-next.runtimed.run
+    path: ^/(index[.]html|app[.](js|css)|(automerge|subduction)[.]wasm|health|mcp|llms[.]txt|p/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|api/(tools|connect|sync|saved|pages/register|auth/(login|logout|session))|oidc)?$
     service: http://127.0.0.1:9472
   - hostname: pages-next.runtimed.run
     service: http_status:404
@@ -11,12 +27,131 @@ export const routes = `  - hostname: pages-next.runtimed.run
 
 export function insertRoutes(before) {
   if (before.includes("pages-next.runtimed.run")) {
-    if (before.split(routes).length !== 2) throw new Error("Conflicting Pages-next routes");
-    return before;
+    for (const known of [routes, legacyRoutes]) {
+      const parts = before.split(known);
+      if (
+        parts.length === 2 &&
+        !parts.join("").includes("pages-next.runtimed.run") &&
+        (!parts[0] || parts[0].endsWith("\n")) &&
+        (!parts[1] || parts[1].startsWith("  - "))
+      )
+        return parts.join(routes);
+    }
+    throw new Error("Conflicting Pages-next routes");
   }
   const anchor = '  - hostname: "*.runtimed.run"\n';
   if (before.split(anchor).length !== 2) throw new Error("Tunnel wildcard layout changed");
   return before.replace(anchor, routes + anchor);
+}
+
+// An earlier publication's backup must survive. A failed attempt can reuse only
+// the exact same regular file; exclusive creation never follows a symlink.
+export function backupRoutes(before, sourceSha, directory = "/etc/nteract-pages-next") {
+  if (!/^[a-f0-9]{40}$/.test(sourceSha ?? "")) throw new Error("Invalid prepared source");
+  const digest = createHash("sha256").update(before).digest("hex");
+  const file = path.join(directory, "cloudflared." + sourceSha + "." + digest + ".before.yml");
+  try {
+    writeFileSync(file, before, { mode: 0o600, flag: "wx" });
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    if (!lstatSync(file).isFile() || readFileSync(file, "utf8") !== before)
+      throw new Error("Existing tunnel backup differs; inspect before retrying");
+  }
+  return file;
+}
+const configHash = (text) => createHash("sha256").update(text).digest("hex");
+const pendingPath = (directory) => path.join(directory, "cloudflared.pending.json");
+function readRegular(file) {
+  if (!lstatSync(file).isFile()) throw new Error("Publication state must be a regular file");
+  return readFileSync(file, "utf8");
+}
+function restartWithConfig(config, expectedHash, restart) {
+  if (configHash(readRegular(config)) !== expectedHash)
+    throw new Error("Concurrent tunnel update; pending reload retained");
+  if (restart() !== "active") throw new Error("Tunnel service is not active after restart");
+  if (configHash(readRegular(config)) !== expectedHash)
+    throw new Error("Concurrent tunnel update; pending reload retained");
+}
+
+// Resolve an interrupted publication before the unchanged-config fast path.
+export function resumePublication({ config, candidate, sourceSha, directory, restart }) {
+  const pending = pendingPath(directory);
+  if (!existsSync(pending)) return false;
+  const receipt = JSON.parse(readRegular(pending));
+  if (
+    receipt.schema !== 1 ||
+    !/^[a-f0-9]{40}$/.test(sourceSha ?? "") ||
+    receipt.source_sha !== sourceSha ||
+    !/^[a-f0-9]{64}$/.test(receipt.before_sha256 ?? "") ||
+    !/^[a-f0-9]{64}$/.test(receipt.after_sha256 ?? "")
+  )
+    throw new Error("Conflicting pending tunnel reload; inspect before retrying");
+  const backup = path.join(
+    directory,
+    "cloudflared." + sourceSha + "." + receipt.before_sha256 + ".before.yml",
+  );
+  const before = readRegular(backup);
+  const updated = insertRoutes(before);
+  if (
+    before === updated ||
+    configHash(before) !== receipt.before_sha256 ||
+    configHash(updated) !== receipt.after_sha256
+  )
+    throw new Error("Pending tunnel reload does not match its backup");
+  const current = configHash(readRegular(config));
+  if (current === receipt.after_sha256) {
+    restartWithConfig(config, current, restart);
+    unlinkSync(pending);
+    return true;
+  }
+  if (current !== receipt.before_sha256)
+    throw new Error("Concurrent tunnel update; pending reload retained");
+  // Interrupted before rename (or during rollback): disk still needs migration.
+  // Remove only this attempt's exact candidate, then revalidate normally.
+  if (existsSync(candidate)) {
+    if (readRegular(candidate) !== updated) throw new Error("Existing candidate differs");
+    unlinkSync(candidate);
+  }
+  unlinkSync(pending);
+  return false;
+}
+
+export function applyPublication({
+  config,
+  candidate,
+  before,
+  updated,
+  sourceSha,
+  directory,
+  restart,
+}) {
+  backupRoutes(before, sourceSha, directory);
+  if (readRegular(config) !== before || readRegular(candidate) !== updated)
+    throw new Error("Concurrent tunnel update; retry after inspection");
+  const pending = pendingPath(directory);
+  writeFileSync(
+    pending,
+    JSON.stringify({
+      schema: 1,
+      source_sha: sourceSha,
+      before_sha256: configHash(before),
+      after_sha256: configHash(updated),
+    }) + "\n",
+    { mode: 0o600, flag: "wx" },
+  );
+  // The receipt must exist before replacing disk configuration: a killed
+  // process cannot let the next run mistake these bytes for a completed reload.
+  renameSync(candidate, config);
+  try {
+    restartWithConfig(config, configHash(updated), restart);
+  } catch (error) {
+    if (readRegular(config) !== updated) throw error;
+    writeFileSync(config, before, { mode: 0o600 });
+    restartWithConfig(config, configHash(before), restart);
+    unlinkSync(pending);
+    throw error;
+  }
+  unlinkSync(pending);
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [stage, apply] = process.argv.slice(2);
@@ -49,28 +184,52 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   );
   if (health.ok !== true || health.prototype !== "pages-celld-native")
     throw new Error("Unexpected local prototype health response");
-  const config = "/etc/cloudflared/config.yml",
-    before = readFileSync(config, "utf8");
-  const anchor = '  - hostname: "*.runtimed.run"\n';
-  if (before.includes("pages-next.runtimed.run")) {
-    if (before.split(routes).length !== 2)
-      throw new Error("Existing Pages-next routes differ; inspect instead of rewriting");
+  const config = "/etc/cloudflared/config.yml";
+  const candidate = "/etc/cloudflared/pages-next-candidate.yml";
+  const publication = {
+    config,
+    candidate,
+    sourceSha: manifest.source_sha,
+    directory: "/etc/nteract-pages-next",
+    restart: () => {
+      run("systemctl", ["restart", "cloudflared.service"]);
+      return run("systemctl", ["is-active", "cloudflared.service"]);
+    },
+  };
+  if (resumePublication(publication)) {
+    console.log(
+      JSON.stringify({
+        published: true,
+        changed: false,
+        reloaded: true,
+        hostname: ownership.hostname,
+      }),
+    );
+    process.exit(0);
+  }
+  const before = readFileSync(config, "utf8");
+  const updated = insertRoutes(before);
+  if (updated === before) {
     console.log(JSON.stringify({ published: true, changed: false, hostname: ownership.hostname }));
     process.exit(0);
   }
-  if (before.split(anchor).length !== 2)
-    throw new Error("Tunnel wildcard layout changed; inspect before insertion");
-  const candidate = "/etc/cloudflared/pages-next-candidate.yml";
   if (existsSync(candidate)) throw new Error("Existing candidate requires inspection");
-  writeFileSync(candidate, insertRoutes(before), { mode: 0o600, flag: "wx" });
+  writeFileSync(candidate, updated, { mode: 0o600, flag: "wx" });
   try {
     run("/usr/bin/cloudflared", ["--config", candidate, "tunnel", "ingress", "validate"]);
     const checks = [
       ["https://pages-next.runtimed.run/", "127.0.0.1:9472"],
       ["https://pages-next.runtimed.run/api/sync?page=test", "127.0.0.1:9472"],
       ["https://pages-next.runtimed.run/mcp", "127.0.0.1:9472"],
+      ["https://pages-next.runtimed.run/llms.txt", "127.0.0.1:9472"],
+      ["https://pages-next.runtimed.run/p/12345678-1234-4123-8123-123456789abc", "127.0.0.1:9472"],
+      ["https://pages-next.runtimed.run/p/12345678-1234-4123-8123-123456789abc/", "127.0.0.1:9472"],
+      ["https://pages-next.runtimed.run/api/pages/register", "127.0.0.1:9472"],
+      ["https://pages-next.runtimed.run/p/not-a-page", "http_status:404"],
+      ["https://pages-next.runtimed.run/llms.txt/private", "http_status:404"],
       ["https://pages-next.runtimed.run/state", "http_status:404"],
       ["https://pages-next.runtimed.run/internal/create", "http_status:404"],
+      ["https://pages-next.runtimed.run/internal/register", "http_status:404"],
       ["https://pages-next.runtimed.run/dev/oidc/authorize", "http_status:404"],
     ];
     for (const [url, expected] of checks)
@@ -112,20 +271,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       if (!service || !next.includes("service: " + service))
         throw new Error("Existing hostname routing changed");
     }
-    writeFileSync("/etc/nteract-pages-next/cloudflared.before.yml", before, {
-      mode: 0o600,
-      flag: "wx",
-    });
-    if (readFileSync(config, "utf8") !== before)
-      throw new Error("Concurrent tunnel update; retry after inspection");
-    renameSync(candidate, config);
-    try {
-      run("systemctl", ["restart", "cloudflared.service"]);
-    } catch (error) {
-      writeFileSync(config, before, { mode: 0o600 });
-      run("systemctl", ["restart", "cloudflared.service"]);
-      throw error;
-    }
+    applyPublication({ ...publication, before, updated });
   } finally {
     if (existsSync(candidate)) unlinkSync(candidate);
   }

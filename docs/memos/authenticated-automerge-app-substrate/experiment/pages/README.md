@@ -171,6 +171,11 @@ this API limit.
 
 ## API
 
+Public `GET /llms.txt` (also `HEAD`) explains API-key authentication, driver
+attribution, MCP discovery, and guarded Markdown edits. The initial HTML links
+the guide so agents can discover it without running JavaScript. Guide URLs use
+the configured public origin; no account or document data is included.
+
 - `POST /api/tools` with `{operation, arguments}` provides list/create/read,
   structural edits, literal Markdown patches, comments, and deletion.
 - `POST /mcp` exposes the same authorized operations through Streamable HTTP MCP.
