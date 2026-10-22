@@ -19,12 +19,22 @@ describe("Mermaid Markdown blocks", () => {
     mount.mockReset();
     mount.mockImplementation((element, source, _id, callbacks) => {
       element.textContent = `Diagram: ${source}`;
-      callbacks.onRender?.({ svg: "", width: 1, height: 1, type: "flowchart", links: [] });
+      const result = {
+        svg: "",
+        width: 1,
+        height: 1,
+        type: "flowchart" as const,
+        mermaidType: "flowchart-v2" as const,
+        links: [],
+      };
+      callbacks.onRender?.(result);
       return {
         destroy: vi.fn(),
         refresh: vi.fn(),
         update: vi.fn(),
-        result: { svg: "", width: 1, height: 1, type: "flowchart", links: [] },
+        result,
+        source,
+        error: undefined,
         zoom: undefined,
       };
     });
@@ -45,21 +55,37 @@ describe("Mermaid Markdown blocks", () => {
     await waitFor(() => expect(mount).toHaveBeenCalledTimes(2));
   });
 
-  it("keeps invalid source available, escapes the error, and recovers after an edit", async () => {
-    mount.mockImplementationOnce(() => {
-      throw new Error('<img src=x onerror="alert(1)">');
-    });
-    const { container, rerender } = render(
-      <MermaidDiagram source="broken" fallback={<pre>broken source</pre>} />,
-    );
-    await screen.findByText(/Diagram unavailable:/);
-    expect(screen.getByText("broken source")).toBeVisible();
-    expect(container.querySelector("img")).toBeNull();
-    rerender(<MermaidDiagram source="flowchart LR; A-->B" fallback={<pre>new source</pre>} />);
-    await screen.findByText("Diagram: flowchart LR; A-->B");
-    expect(screen.queryByText(/Diagram unavailable:/)).toBeNull();
-    expect(screen.queryByText("new source")).toBeNull();
-  });
+  it.each(["callback", "throw"])(
+    "keeps source available and recovers after a %s error",
+    async (mode) => {
+      mount.mockImplementationOnce((_element, source, _id, callbacks) => {
+        const error = new Error('<img src=x onerror="alert(1)">');
+        if (mode === "throw") throw error;
+        callbacks.onError?.(error);
+        return {
+          destroy: vi.fn(),
+          refresh: vi.fn(),
+          update: vi.fn(),
+          result: undefined,
+          source,
+          error,
+          zoom: undefined,
+        };
+      });
+      const { container, rerender } = render(
+        <MermaidDiagram source="broken" fallback={<pre>broken source</pre>} />,
+      );
+      await screen.findByText(/Diagram unavailable:/);
+      expect(screen.getByText("broken source")).toBeVisible();
+      expect(container.querySelector("img")).toBeNull();
+      const failedDiagram = mode === "callback" ? mount.mock.results[0].value : undefined;
+      rerender(<MermaidDiagram source="flowchart LR; A-->B" fallback={<pre>new source</pre>} />);
+      await screen.findByText("Diagram: flowchart LR; A-->B");
+      expect(screen.queryByText(/Diagram unavailable:/)).toBeNull();
+      expect(screen.queryByText("new source")).toBeNull();
+      if (failedDiagram) expect(failedDiagram.destroy).toHaveBeenCalledOnce();
+    },
+  );
 
   it("ignores callbacks from an obsolete source and destroys observers on unmount", async () => {
     const { rerender, unmount } = render(<MermaidDiagram source="first" fallback={null} />);
