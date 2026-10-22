@@ -10,6 +10,7 @@ import {
   MessageSquare,
   MoreHorizontal,
   Plus,
+  Search,
   Trash2,
   UserRound,
 } from "lucide-react";
@@ -24,6 +25,7 @@ import {
 import { maintainBrowserSession } from "./browser-session.mjs";
 import { RichEditor } from "./RichEditor.jsx";
 import { PagePicker } from "./PagePicker.jsx";
+import { matchingPages } from "./page-list.mjs";
 import { CommentsPanel } from "./CommentsPanel.jsx";
 import { captureCommentDraft } from "./comment-draft.mjs";
 import { applyPageOperation } from "../model/page.mjs";
@@ -39,7 +41,8 @@ function App() {
     [, paint] = useState(0),
     [error, setError] = useState(""),
     [authError, setAuthError] = useState(""),
-    [notice, setNotice] = useState("");
+    [notice, setNotice] = useState(""),
+    [libraryQuery, setLibraryQuery] = useState("");
   const [toolbar, setToolbar] = useState(null),
     [active, setActive] = useState(null),
     [commentsOpen, setCommentsOpen] = useState(false),
@@ -290,16 +293,18 @@ function App() {
       setCreating(false);
     }
   }
-  async function copyLink() {
-    if (!current.current) return;
+  async function copyLink(pageId = current.current?.pageId) {
+    if (!pageId) return;
     try {
-      await navigator.clipboard.writeText(
-        new URL(pagePath(current.current.pageId), location.origin).href,
-      );
+      await navigator.clipboard.writeText(new URL(pagePath(pageId), location.origin).href);
       setNotice("Link copied");
       if (documentDisclosure.current) documentDisclosure.current.open = false;
     } catch {
-      setError("Couldn't copy the link. You can copy it from the address bar.");
+      setError(
+        pageId === current.current?.pageId
+          ? "Couldn't copy the link. You can copy it from the address bar."
+          : "Couldn't copy the link. Open the page and copy its address.",
+      );
     }
   }
   async function remove() {
@@ -407,9 +412,10 @@ function App() {
   const listedPages = pages.map((item) =>
     item.page_id === page?.page_id ? { ...item, title: page.title } : item,
   );
+  const libraryPages = matchingPages(listedPages, libraryQuery);
   const openComments = threads.filter((thread) => thread.state === "open").length;
   return (
-    <div className="app">
+    <div className={page ? "app has-document" : "app"}>
       <header className="app-header">
         <div className="header-navigation">
           <a href="/" className="brand" onClick={account ? home : undefined}>
@@ -418,6 +424,8 @@ function App() {
           {account && (
             <button
               className="subtle-button pages-trigger"
+              aria-label={`${page?.title || (page ? "Untitled" : "Browse")}, switch page`}
+              title={page?.title || "Pages"}
               onClick={() => {
                 setPickerError("");
                 setPickerOpen(true);
@@ -425,13 +433,69 @@ function App() {
               aria-haspopup="dialog"
               aria-expanded={pickerOpen}
             >
-              <FolderOpen size={18} aria-hidden="true" />
-              <span>Pages</span>
+              {page ? (
+                <FileText size={16} aria-hidden="true" />
+              ) : (
+                <FolderOpen size={18} aria-hidden="true" />
+              )}
+              <span>{page?.title || (page ? "Untitled" : "Browse")}</span>
               <ChevronDown size={14} aria-hidden="true" />
             </button>
           )}
         </div>
         <div className="header-actions">
+          {page && (
+            <div className="document-meta">
+              <div className="document-status">
+                <span role="status">{session.status}</span>
+                {["Unsaved", "Offline", "Saved locally"].includes(session.status) && (
+                  <button className="subtle-button" onClick={() => session.retryConnection()}>
+                    Retry
+                  </button>
+                )}
+              </div>
+              <div className="document-controls">
+                <EditingPresence session={session} />
+                <button
+                  ref={commentsButton}
+                  className="subtle-button comments-toggle"
+                  aria-label="Comments"
+                  aria-describedby="open-comment-count"
+                  aria-expanded={commentsOpen}
+                  aria-controls="page-comments"
+                  onClick={toggleComments}
+                >
+                  <MessageSquare size={18} aria-hidden="true" />
+                  <span>Comments</span>
+                  <span id="open-comment-count" className="sr-only">
+                    {openComments} open {openComments === 1 ? "comment" : "comments"}
+                  </span>
+                  {openComments > 0 && <span className="comment-count">{openComments}</span>}
+                </button>
+                {
+                  <details className="document-actions" ref={documentDisclosure}>
+                    <summary
+                      className="icon-button"
+                      aria-label="Document actions"
+                      title="Document actions"
+                    >
+                      <MoreHorizontal size={20} aria-hidden="true" />
+                    </summary>
+                    <div className="menu-popover">
+                      <button onClick={() => copyLink()}>
+                        <Link size={16} aria-hidden="true" /> Copy link
+                      </button>
+                      {session.canWrite && (
+                        <button className="danger" onClick={remove}>
+                          <Trash2 size={16} aria-hidden="true" /> Delete
+                        </button>
+                      )}
+                    </div>
+                  </details>
+                }
+              </div>
+            </div>
+          )}
           {account && (
             <details className="account-actions" ref={accountDisclosure}>
               <summary
@@ -497,56 +561,6 @@ function App() {
               className={commentsOpen ? "workspace document with-comments" : "workspace document"}
             >
               <article ref={article}>
-                <div className="document-meta">
-                  <div className="document-status">
-                    <span role="status">{session.status}</span>
-                    {["Unsaved", "Offline", "Saved locally"].includes(session.status) && (
-                      <button className="subtle-button" onClick={() => session.retryConnection()}>
-                        Retry
-                      </button>
-                    )}
-                  </div>
-                  <div className="document-controls">
-                    <EditingPresence session={session} />
-                    <button
-                      ref={commentsButton}
-                      className="subtle-button comments-toggle"
-                      aria-label="Comments"
-                      aria-describedby="open-comment-count"
-                      aria-expanded={commentsOpen}
-                      aria-controls="page-comments"
-                      onClick={toggleComments}
-                    >
-                      <MessageSquare size={18} aria-hidden="true" />
-                      <span>Comments</span>
-                      <span id="open-comment-count" className="sr-only">
-                        {openComments} open {openComments === 1 ? "comment" : "comments"}
-                      </span>
-                      {openComments > 0 && <span className="comment-count">{openComments}</span>}
-                    </button>
-                    {
-                      <details className="document-actions" ref={documentDisclosure}>
-                        <summary
-                          className="icon-button"
-                          aria-label="Document actions"
-                          title="Document actions"
-                        >
-                          <MoreHorizontal size={20} aria-hidden="true" />
-                        </summary>
-                        <div className="menu-popover">
-                          <button onClick={copyLink}>
-                            <Link size={16} aria-hidden="true" /> Copy link
-                          </button>
-                          {session.canWrite && (
-                            <button className="danger" onClick={remove}>
-                              <Trash2 size={16} aria-hidden="true" /> Delete
-                            </button>
-                          )}
-                        </div>
-                      </details>
-                    }
-                  </div>
-                </div>
                 {session.authRequired && (
                   <p className="error" role="alert">
                     {session.authProblem}{" "}
@@ -641,28 +655,48 @@ function App() {
                   <Plus size={18} aria-hidden="true" /> New Page
                 </button>
               </div>
+              <label className="picker-search library-search">
+                <Search size={18} aria-hidden="true" />
+                <input
+                  aria-label="Search your pages"
+                  placeholder="Search pages"
+                  value={libraryQuery}
+                  onChange={(event) => setLibraryQuery(event.target.value)}
+                  type="search"
+                />
+              </label>
               {!pages.length && <p className="muted">Start a page and write together.</p>}
-              <div className="page-cards">
-                {listedPages.map((item) => (
-                  <a
-                    className="page-card"
-                    href={pagePath(item.page_id)}
-                    key={item.page_id}
-                    onClick={(event) => {
-                      if (isPlainNavigation(event)) {
-                        event.preventDefault();
-                        void open(item.page_id);
-                      }
-                    }}
-                  >
-                    <FileText size={23} aria-hidden="true" />
-                    <span className="page-card-title">{item.title || "Untitled"}</span>
-                    <span className="page-card-meta">
-                      {item.pending ? "Saved locally" : "Open page"}
-                    </span>
-                  </a>
+              {!!pages.length && !libraryPages.length && (
+                <p className="muted">No matching pages.</p>
+              )}
+              <ul className="page-list page-cards" aria-label="Your pages">
+                {libraryPages.map((item) => (
+                  <li className="page-row" key={item.page_id}>
+                    <a
+                      className="page-card"
+                      href={pagePath(item.page_id)}
+                      onClick={(event) => {
+                        if (isPlainNavigation(event)) {
+                          event.preventDefault();
+                          void open(item.page_id);
+                        }
+                      }}
+                    >
+                      <FileText size={19} aria-hidden="true" />
+                      <span className="page-card-title">{item.title || "Untitled"}</span>
+                      {item.pending && <span className="page-card-meta">Saved locally</span>}
+                    </a>
+                    <button
+                      className="icon-button page-row-action"
+                      aria-label={`Copy link to ${item.title || "Untitled"}`}
+                      title="Copy link"
+                      onClick={() => copyLink(item.page_id)}
+                    >
+                      <Link size={16} aria-hidden="true" />
+                    </button>
+                  </li>
                 ))}
-              </div>
+              </ul>
             </main>
           )}
         </>

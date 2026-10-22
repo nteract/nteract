@@ -7,17 +7,17 @@
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-  color: #26332d;
-  background: #f4f5f2;
+  color: #262626;
+  background: #ffffff;
   font-synthesis: none;
   font-size: 16px;
   --surface: #ffffff;
-  --canvas: #f4f5f2;
-  --line: #e1e6df;
-  --muted: #627067;
-  --accent: #315d49;
-  --accent-soft: #e6efe8;
-  --focus: #387556;
+  --canvas: #ffffff;
+  --line: #e8e8e8;
+  --muted: #737373;
+  --accent: #262626;
+  --accent-soft: #f0f0f0;
+  --focus: #707070;
 }
 * {
   box-sizing: border-box;
@@ -50,7 +50,7 @@ button {
 }
 button:hover:not(:disabled),
 summary:hover {
-  background: #edf1eb;
+  background: #f5f5f5;
 }
 button:disabled {
   opacity: 0.4;
@@ -106,16 +106,18 @@ summary svg {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+  position: sticky;
+  top: 0;
+  z-index: 6;
   min-height: 64px;
   padding: 0.65rem 1.5rem;
-  background: #fafbf8;
-  border-bottom: 1px solid var(--line);
+  background: var(--surface);
 }
 .brand {
   display: inline-flex;
   align-items: center;
   gap: 0.6rem;
-  font-size: 1.2rem;
+  font-size: 1rem;
   font-weight: 650;
   letter-spacing: -0.035em;
   text-decoration: none;
@@ -128,7 +130,8 @@ summary svg {
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: 0.5rem;
+  flex-shrink: 0;
   font-size: 0.85rem;
 }
 .header-actions > span {
@@ -148,7 +151,7 @@ summary svg {
   border-radius: 0.5rem;
 }
 .primary:hover:not(:disabled) {
-  background: #234a37;
+  background: #404040;
 }
 .avatar {
   display: inline-flex;
@@ -203,7 +206,7 @@ details.document-actions > div {
   background: white;
   border: 1px solid var(--line);
   border-radius: 0.65rem;
-  box-shadow: 0 8px 24px #223a251a;
+  box-shadow: 0 8px 24px #00000012;
 }
 details.account-actions > div button,
 details.document-actions > div button {
@@ -215,13 +218,13 @@ details.document-actions > div button {
 }
 .welcome,
 .page-library {
-  max-width: 1000px;
+  max-width: 840px;
   margin: auto;
-  padding: 4.5rem 2rem;
+  padding: 5rem 2rem;
 }
 .welcome h1,
 .page-library h1 {
-  font-size: clamp(2rem, 5vw, 3rem);
+  font-size: clamp(1.8rem, 4vw, 2.4rem);
   font-weight: 600;
   letter-spacing: -0.055em;
   line-height: 1.15;
@@ -241,45 +244,65 @@ details.document-actions > div button {
 .library-heading h1 {
   margin: 0;
 }
-.page-grid,
-.page-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 1rem;
+.picker-search.library-search {
+  margin: 0 0 1.5rem;
+  padding: 0.7rem 0.85rem;
+  background: #fafafa;
+}
+.page-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.page-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 0 0.5rem;
+  border-bottom: 1px solid #f0f0f0;
+  border-radius: 0.5rem;
+}
+.page-row:hover,
+.page-row:focus-within {
+  background: #fafafa;
 }
 .page-card {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  text-align: left;
-  gap: 1rem;
-  min-height: 156px;
-  padding: 1.35rem;
-  border: 1px solid var(--line);
-  border-radius: 0.8rem;
-  background: white;
-}
-.page-card:hover:not(:disabled) {
-  background: #fbfcfa;
-  border-color: #afc5b5;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+  min-height: 64px;
+  padding: 0.85rem 0.5rem;
+  gap: 0.85rem;
 }
 .page-card > svg {
-  color: #5e7d69;
-  width: 24px;
-  height: 24px;
+  color: var(--muted);
+  flex-shrink: 0;
 }
 .page-card-title {
-  font-size: 1.05rem;
-  font-weight: 600;
-  overflow-wrap: anywhere;
+  font-size: 0.95rem;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .page-card-meta {
+  margin-left: auto;
+  flex-shrink: 0;
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: 0.75rem;
+}
+.page-row-action {
+  color: var(--muted);
+  opacity: 0;
+}
+.page-row:hover .page-row-action,
+.page-row:focus-within .page-row-action {
+  opacity: 1;
 }
 .document {
-  max-width: 940px;
-  margin: 1.5rem auto 0;
+  max-width: 860px;
+  margin: 2.5rem auto 0;
   padding: 0 1.5rem 6rem;
 }
 .document article {
@@ -287,13 +310,10 @@ details.document-actions > div button {
   min-width: 0;
   min-height: 68vh;
   background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 0.85rem;
-  padding: 1.25rem 3.5rem 3rem;
-  box-shadow: 0 2px 7px #20312404;
+  padding: 1rem 2rem 3rem;
 }
 .document.with-comments {
-  max-width: 1280px;
+  max-width: 1180px;
   padding-right: 360px;
 }
 .document-meta {
@@ -302,7 +322,7 @@ details.document-actions > div button {
   justify-content: space-between;
   gap: 0.6rem;
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   min-height: 40px;
 }
 .document-meta > div,
@@ -323,7 +343,7 @@ details.document-actions > div button {
   white-space: nowrap;
 }
 .document-heading {
-  margin-top: 0.75rem;
+  margin-top: 0;
 }
 .title {
   display: block;
@@ -331,9 +351,9 @@ details.document-actions > div button {
   border: 0;
   border-bottom: 2px solid transparent;
   background: transparent;
-  color: #25382c;
-  font-size: clamp(2rem, 4vw, 2.65rem);
-  font-weight: 650;
+  color: #262626;
+  font-size: clamp(2rem, 4vw, 2.4rem);
+  font-weight: 600;
   line-height: 1.2;
   letter-spacing: -0.045em;
   padding: 0.25rem 0 0.6rem;
@@ -342,29 +362,45 @@ details.document-actions > div button {
 }
 .title:focus-visible {
   outline: none;
-  border-bottom-color: #8eaf99;
+  border-bottom-color: #a3a3a3;
 }
 .toolbar-host {
   position: sticky;
-  top: 0;
+  top: 64px;
   z-index: 4;
   min-height: 49px;
-  margin: 0 -1rem 1.25rem;
-  padding: 0.2rem 0.6rem;
-  background: #f7f9f5;
-  border: 1px solid #e2e8dd;
-  border-radius: 0.6rem;
-  box-shadow: 0 1px 2px #25382c04;
+  margin: 0 -0.5rem 1.25rem;
+  padding: 0.2rem 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
 }
 .rich-toolbar {
   display: flex;
   align-items: center;
   gap: 0.2rem;
+  width: max-content;
+  max-width: 100%;
   overflow-x: auto;
   scrollbar-width: thin;
   white-space: nowrap;
   font-size: 0.85rem;
   padding: 0.1rem 0;
+}
+.rich-toolbar.is-floating {
+  position: fixed;
+  z-index: 5;
+  max-width: calc(100vw - 2rem);
+  /* Keep the normal row's box size so placement cannot toggle on resize. */
+  padding: 0.1rem 0;
+  background: var(--surface);
+  border-radius: 0.7rem;
+  box-shadow:
+    inset 0 0 0 1px var(--line),
+    0 4px 24px #00000014,
+    0 1px 3px #0000000a;
+}
+.toolbar-host:has(.is-floating) {
+  border-bottom-color: transparent;
 }
 .toolbar-group {
   display: inline-flex;
@@ -376,7 +412,7 @@ details.document-actions > div button {
   width: 1px;
   height: 22px;
   margin: 0 0.35rem;
-  background: #dbe2d6;
+  background: #e5e5e5;
   flex-shrink: 0;
 }
 .toolbar-button {
@@ -395,14 +431,14 @@ details.document-actions > div button {
 }
 .toolbar-button[aria-pressed="true"],
 .toolbar-button.is-active {
-  background: #dce9de;
-  color: #244e34;
-  box-shadow: inset 0 0 0 1px #b9cfbd;
+  background: #ebebeb;
+  color: #171717;
+  box-shadow: inset 0 0 0 1px #d4d4d4;
 }
 .toolbar-button[aria-pressed="mixed"] {
-  background: #edf1e8;
-  color: #33583c;
-  box-shadow: inset 0 -2px #86a58d;
+  background: #f5f5f5;
+  color: #404040;
+  box-shadow: inset 0 -2px #a3a3a3;
 }
 .toolbar-select {
   height: 36px;
@@ -417,7 +453,7 @@ details.document-actions > div button {
   cursor: pointer;
 }
 .toolbar-select:hover {
-  background: #e8eee4;
+  background: #f5f5f5;
 }
 .ProseMirror {
   outline: none;
@@ -426,10 +462,10 @@ details.document-actions > div button {
   min-height: 70px;
   font-size: 17px;
   overflow-wrap: anywhere;
-  caret-color: #274b36;
+  caret-color: #262626;
 }
 .ProseMirror:focus-visible {
-  outline: 2px solid #e5eee5;
+  outline: 2px solid #f0f0f0;
   outline-offset: 9px;
   border-radius: 3px;
 }
@@ -439,14 +475,14 @@ details.document-actions > div button {
 .ProseMirror > p:only-child:has(> br.ProseMirror-trailingBreak:only-child)::before {
   content: "Start writing…";
   float: left;
-  color: #7a877c;
+  color: #929292;
   pointer-events: none;
   height: 0;
 }
 .ProseMirror pre,
 .opaque pre {
-  background: #f2f4ef;
-  border: 1px solid #e5e9e1;
+  background: #f7f7f7;
+  border: 1px solid #e8e8e8;
   border-radius: 0.45rem;
   padding: 0.85rem 1rem;
   overflow: auto;
@@ -457,22 +493,22 @@ details.document-actions > div button {
   font-size: 0.88em;
 }
 .ProseMirror p code {
-  background: #eff2eb;
+  background: #f3f3f3;
   padding: 0.12em 0.3em;
   border-radius: 0.25rem;
 }
 .ProseMirror blockquote {
-  border-left: 3px solid #a4b9a5;
+  border-left: 3px solid #d4d4d4;
   margin: 1.2rem 0;
   padding: 0.1rem 1.25rem;
-  color: #516150;
+  color: #666666;
 }
 .ProseMirror img {
   max-width: 100%;
   border-radius: 0.35rem;
 }
 .ProseMirror a {
-  color: #326549;
+  color: #404040;
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
@@ -514,7 +550,7 @@ details.document-actions > div button {
   width: 34px;
   height: 34px;
   padding: 0;
-  color: #5f7664;
+  color: #737373;
   opacity: 0;
 }
 .page-block:hover .comment-block,
@@ -536,16 +572,16 @@ dialog {
   color: inherit;
 }
 dialog::backdrop {
-  background: #1e2b2540;
+  background: #00000030;
   backdrop-filter: blur(2px);
 }
 .page-picker {
   width: min(520px, calc(100vw - 2rem));
   max-height: min(76dvh, 660px);
-  border: 1px solid #dce3d9;
+  border: 1px solid #e5e5e5;
   border-radius: 1rem;
   padding: 0;
-  box-shadow: 0 24px 100px #14261a33;
+  box-shadow: 0 24px 100px #00000024;
   background: white;
 }
 .picker-heading {
@@ -565,7 +601,7 @@ dialog::backdrop {
   gap: 0.65rem;
   margin: 0.5rem 1.2rem 1rem;
   padding: 0.65rem 0.8rem;
-  border: 1px solid #d9e2d5;
+  border: 1px solid #e5e5e5;
   border-radius: 0.55rem;
   color: var(--muted);
 }
@@ -606,24 +642,24 @@ dialog::backdrop {
 }
 .picker-page svg {
   flex-shrink: 0;
-  color: #6a806e;
+  color: #737373;
 }
 .picker-page[aria-current="page"] {
-  color: #28553a;
+  color: #262626;
   background: var(--accent-soft);
 }
 .comments {
   position: fixed;
-  inset: 96px max(24px, calc((100vw - 1280px) / 2 + 24px)) auto auto;
+  inset: 80px max(24px, calc((100vw - 1180px) / 2 + 24px)) auto auto;
   width: 312px;
   max-width: calc(100vw - 2rem);
-  max-height: calc(100dvh - 120px);
+  max-height: calc(100dvh - 104px);
   margin: 0;
   padding: 0;
-  border: 1px solid #dce3d8;
+  border: 1px solid #e5e5e5;
   border-radius: 0.8rem;
-  background: #fcfdfb;
-  box-shadow: 0 2px 8px #223a2507;
+  background: #ffffff;
+  box-shadow: 0 2px 8px #00000007;
   font-size: 0.875rem;
   overflow: hidden;
 }
@@ -659,7 +695,7 @@ dialog::backdrop {
   width: 100%;
   resize: vertical;
   min-height: 80px;
-  border: 1px solid #d2ddcc;
+  border: 1px solid #d4d4d4;
   background: white;
   border-radius: 0.5rem;
   padding: 0.65rem;
@@ -669,7 +705,7 @@ dialog::backdrop {
 }
 .comments label {
   font-size: 0.8rem;
-  color: #5d6e60;
+  color: #737373;
 }
 .comments form > button {
   display: flex;
@@ -682,7 +718,7 @@ dialog::backdrop {
   font-size: 0.8rem;
 }
 .comments form > button:hover:not(:disabled) {
-  background: #234a37;
+  background: #404040;
 }
 .comment-composer {
   padding-bottom: 1rem;
@@ -690,7 +726,7 @@ dialog::backdrop {
 .composer-context {
   border-left: 2px solid #bba56d;
   padding: 0.35rem 0.65rem;
-  color: #64715e;
+  color: #737373;
   font-size: 0.8rem;
   max-height: 100px;
   overflow-y: auto;
@@ -698,7 +734,7 @@ dialog::backdrop {
 }
 .thread {
   background: white;
-  border: 1px solid #e0e5dc;
+  border: 1px solid #e5e5e5;
   border-radius: 0.65rem;
   margin: 0 0 1rem;
   padding: 0.9rem;
@@ -739,10 +775,10 @@ dialog::backdrop {
 }
 .thread-actions button {
   font-size: 0.75rem;
-  color: #526b57;
+  color: #737373;
 }
 .resolved {
-  background: #f5f7f1;
+  background: #fafafa;
 }
 .resolved-threads > summary {
   padding: 0.5rem 0.25rem;
@@ -800,7 +836,7 @@ dialog::backdrop {
   background: #e9d69588;
 }
 .opaque small {
-  color: #627067;
+  color: #737373;
 }
 @keyframes illumination {
   from {
@@ -818,7 +854,7 @@ dialog::backdrop {
 @media (max-width: 900px) {
   .app-header,
   .app > header {
-    min-height: 56px;
+    min-height: 64px;
     padding: 0.5rem 0.8rem;
   }
   .header-actions > span {
@@ -831,7 +867,7 @@ dialog::backdrop {
     max-width: 760px;
   }
   .document article {
-    min-height: calc(100dvh - 56px);
+    min-height: calc(100dvh - 64px);
     border: 0;
     border-radius: 0;
     padding: 1rem 1.2rem 3rem;
@@ -849,9 +885,9 @@ dialog::backdrop {
     margin-bottom: 1rem;
   }
   .toolbar-host {
+    top: 64px;
     margin: 0 -0.65rem 1rem;
     padding: 0.15rem 0.3rem;
-    border-radius: 0.55rem;
   }
   .toolbar-button {
     min-width: 44px;
@@ -889,9 +925,9 @@ dialog::backdrop {
     max-width: 100%;
     max-height: min(78dvh, 680px);
     border: 0;
-    border-top: 1px solid #dce3d8;
+    border-top: 1px solid #e5e5e5;
     border-radius: 1rem 1rem 0 0;
-    box-shadow: 0 -12px 48px #15291f26;
+    box-shadow: 0 -12px 48px #00000026;
     padding-bottom: env(safe-area-inset-bottom);
   }
   .comments-heading {
@@ -912,13 +948,12 @@ dialog::backdrop {
     align-items: flex-start;
     gap: 0.5rem;
   }
-  .page-grid,
-  .page-cards {
-    grid-template-columns: 1fr;
-  }
   .page-card {
-    min-height: 120px;
+    min-height: 64px;
     gap: 0.7rem;
+  }
+  .page-row-action {
+    opacity: 1;
   }
   .page-picker {
     width: calc(100vw - 1rem);
@@ -929,7 +964,8 @@ dialog::backdrop {
   }
 }
 @media (hover: none) and (min-width: 901px) {
-  .comment-block {
+  .comment-block,
+  .page-row-action {
     opacity: 1;
   }
 }
@@ -964,11 +1000,23 @@ dialog::backdrop {
 .header-navigation {
   display: flex;
   align-items: center;
-  gap: 1.5rem;
+  gap: 1rem;
+  min-width: 0;
+  flex: 1;
 }
 .pages-trigger {
   color: var(--muted);
   font-size: 0.85rem;
+  min-width: 0;
+  max-width: 360px;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 2rem;
+}
+.pages-trigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .account-name {
   margin: 0.55rem 0.6rem;
@@ -1030,7 +1078,7 @@ dialog::backdrop {
 }
 @media (max-width: 900px) {
   .header-navigation {
-    gap: 1rem;
+    gap: 0.65rem;
   }
   .presence-label {
     display: none;
@@ -1064,4 +1112,57 @@ dialog::backdrop {
   text-align: center;
   color: var(--muted);
   font-size: 0.875rem;
+}
+
+@media (min-width: 901px) and (hover: hover) and (pointer: fine) {
+  .add-block {
+    opacity: 0;
+  }
+  article:hover .add-block,
+  article:focus-within .add-block {
+    opacity: 1;
+  }
+}
+@media (max-width: 600px) {
+  .app-header {
+    gap: 0.3rem;
+  }
+  .header-actions,
+  .document-meta,
+  .document-meta > div {
+    gap: 0.1rem;
+  }
+  .has-document .brand {
+    font-size: 0.85rem;
+  }
+  .has-document .pages-trigger {
+    max-width: 36vw;
+    padding-inline: 0.4rem;
+    gap: 0.3rem;
+  }
+  .has-document .pages-trigger > svg:first-child {
+    display: none;
+  }
+  .comments-toggle > span:not(.comment-count):not(.sr-only) {
+    display: none;
+  }
+  .comments-toggle {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .document-status {
+    max-width: 50px;
+    flex-wrap: wrap;
+    justify-content: center;
+    font-size: 0.65rem;
+    text-align: center;
+  }
+  .peer-avatars .avatar ~ .avatar {
+    display: none;
+  }
+  .page-card-meta {
+    max-width: 58px;
+    text-align: right;
+    font-size: 0.7rem;
+  }
 }

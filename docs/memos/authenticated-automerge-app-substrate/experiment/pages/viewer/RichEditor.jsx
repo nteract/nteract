@@ -12,6 +12,7 @@ import { richComments, revealCommentPassage } from "./rich-comments.mjs";
 import { bindRichEditor } from "./rich-binding.mjs";
 import { richAttribution } from "./rich-attribution.mjs";
 import { richPresence, publishRichSelection, richCommentSelection } from "./rich-presence.mjs";
+import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { schema } from "../model/richtext.mjs";
 import "prosemirror-view/style/prosemirror.css";
 const commands = createToolbarCommands(schema);
@@ -57,7 +58,8 @@ export function RichEditor({
 }) {
   const host = useRef(null),
     editor = useRef(null),
-    toolbar = useRef(null);
+    toolbar = useRef(null),
+    updateToolbarPosition = useRef(() => {});
   const writable = useRef(editable),
     report = useRef(onError),
     selected = useRef(onSelection),
@@ -73,6 +75,7 @@ export function RichEditor({
   const [generation, reset] = useState(0);
   const [formatting, setFormatting] = useState(null);
   const [tabStop, setTabStop] = useState("style");
+  const [floating, setFloating] = useState(null);
   useEffect(() => {
     if (!host.current || !replica.doc?.blocks[id]) return;
     const binding = bindRichEditor(replica, id);
@@ -129,6 +132,7 @@ export function RichEditor({
       dispatchTransaction(tr) {
         try {
           view.updateState(view.state.apply(tr));
+          updateToolbarPosition.current();
           if (tr.docChanged || tr.selectionSet) {
             publishRichSelection(replica, id, view);
             selected.current?.(richCommentSelection(replica, id, view.state));
@@ -149,22 +153,26 @@ export function RichEditor({
             if (alive) {
               publishRichSelection(replica, id, view);
               selected.current?.(richCommentSelection(replica, id, view.state));
+              updateToolbarPosition.current();
             }
           });
           return false;
         },
         blur: () => {
           replica.publishPresence(null);
+          updateToolbarPosition.current();
           return false;
         },
         compositionstart: () => {
           release ??= replica.holdRemote();
+          updateToolbarPosition.current();
           return false;
         },
         compositionend: () => {
           setTimeout(() => {
             release?.();
             release = null;
+            updateToolbarPosition.current();
           }, 0);
           return false;
         },
@@ -207,6 +215,91 @@ export function RichEditor({
     )
       revealCommentPassage(editor.current);
   }, [commentTarget]);
+  useEffect(() => {
+    const view = editor.current;
+    const element = toolbar.current;
+    if (!toolbarHost || !view || !element || !editable) {
+      setFloating(null);
+      return;
+    }
+    // Keep the same controls and DOM focus when the toolbar moves. Touch devices
+    // retain the stable row so the native selection handles/menu have room.
+    const media = matchMedia("(min-width: 901px) and (hover: hover) and (pointer: fine)");
+    let frame = null;
+    let dragging = false;
+    const position = () => {
+      frame = null;
+      let next = null;
+      const { from, to, empty } = view.state.selection;
+      if (
+        media.matches &&
+        !dragging &&
+        !empty &&
+        !view.composing &&
+        (view.hasFocus() || element.contains(document.activeElement))
+      ) {
+        const viewport = window.visualViewport;
+        const bounds = element.getBoundingClientRect();
+        const headerBottom =
+          document.querySelector(".app-header")?.getBoundingClientRect().bottom ?? 0;
+        next = selectionToolbarPosition({
+          start: view.coordsAtPos(from),
+          end: view.coordsAtPos(to),
+          width: bounds.width,
+          height: bounds.height,
+          viewport: {
+            left: viewport?.offsetLeft ?? 0,
+            top: Math.max(headerBottom, viewport?.offsetTop ?? 0),
+            right: (viewport?.offsetLeft ?? 0) + (viewport?.width ?? window.innerWidth),
+            bottom: (viewport?.offsetTop ?? 0) + (viewport?.height ?? window.innerHeight),
+          },
+        });
+      }
+      setFloating((previous) =>
+        previous?.left === next?.left && previous?.top === next?.top ? previous : next,
+      );
+    };
+    const schedule = () => {
+      if (frame === null) frame = requestAnimationFrame(position);
+    };
+    const pointerDown = (event) => {
+      if (event.button === 0 && view.dom.contains(event.target)) {
+        dragging = true;
+        schedule();
+      }
+    };
+    const pointerUp = () => {
+      dragging = false;
+      schedule();
+    };
+    updateToolbarPosition.current = schedule;
+    const resize = new ResizeObserver(schedule);
+    resize.observe(element);
+    media.addEventListener("change", schedule);
+    window.addEventListener("resize", schedule);
+    window.addEventListener("scroll", schedule, true);
+    window.visualViewport?.addEventListener("resize", schedule);
+    window.visualViewport?.addEventListener("scroll", schedule);
+    document.addEventListener("focusin", schedule);
+    document.addEventListener("pointerdown", pointerDown, true);
+    document.addEventListener("pointerup", pointerUp, true);
+    document.addEventListener("pointercancel", pointerUp, true);
+    schedule();
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      updateToolbarPosition.current = () => {};
+      resize.disconnect();
+      media.removeEventListener("change", schedule);
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("scroll", schedule, true);
+      window.visualViewport?.removeEventListener("resize", schedule);
+      window.visualViewport?.removeEventListener("scroll", schedule);
+      document.removeEventListener("focusin", schedule);
+      document.removeEventListener("pointerdown", pointerDown, true);
+      document.removeEventListener("pointerup", pointerUp, true);
+      document.removeEventListener("pointercancel", pointerUp, true);
+    };
+  }, [toolbarHost, editable, replica, id, generation]);
   function run(command, restoreFocus = true) {
     const view = editor.current;
     if (!view || !writable.current) return;
@@ -301,7 +394,8 @@ export function RichEditor({
       {toolbarHost &&
         createPortal(
           <div
-            className="rich-toolbar"
+            className={`rich-toolbar${floating ? " is-floating" : ""}`}
+            style={floating || undefined}
             ref={toolbar}
             role="toolbar"
             aria-label="Text formatting"
