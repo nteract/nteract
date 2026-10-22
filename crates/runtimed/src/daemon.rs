@@ -2791,17 +2791,11 @@ impl Daemon {
                         pool_package_hash_matches(&env_path, EnvType::Uv, &uv_prewarmed).await;
                     let mut pool = self.uv_pool.lock().await;
                     if !hash_matches {
-                        let env = PooledEnv {
-                            env_type: EnvType::Uv,
-                            venv_path: env_path.clone(),
-                            python_path,
-                            prewarmed_packages: vec![],
-                        };
-                        if pool.retire_env_if_fallback_needed(env) {
-                            retired_found += 1;
-                        } else {
-                            orphans.push(env_path);
-                        }
+                        // A legacy pool can contain an environment-local uv below
+                        // our security floor. Never offer it as an offline bridge:
+                        // only a matching package fingerprint proves it was built
+                        // with the current base requirements.
+                        orphans.push(env_path);
                     } else if pool.available.len() < pool.target {
                         pool.available.push_back(PoolEntry {
                             env: PooledEnv {
@@ -8188,7 +8182,7 @@ mod tests {
             "ipykernel".to_string(),
             "ipywidgets".to_string(),
             "anywidget".to_string(),
-            "uv".to_string(),
+            "uv>=0.13.5".to_string(),
             "nbformat".to_string(),
         ];
         if !kernel_env::omit_default_pyarrow() {
@@ -11218,7 +11212,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_existing_environments_retires_missing_package_hash_without_deleting() {
+    async fn find_existing_environments_rejects_uv_without_package_hash() {
         let temp_dir = TempDir::new().unwrap();
         let config = DaemonConfig {
             uv_pool_size: 1,
@@ -11233,12 +11227,13 @@ mod tests {
 
         let pool = daemon.uv_pool.lock().await;
         assert!(pool.available.is_empty());
-        assert!(pool.retired_paths.contains(&root));
-        assert!(root.exists(), "retired legacy env should stay on disk");
+        assert!(pool.retired_paths.is_empty());
+        assert!(pool.retired_available.is_empty());
+        assert!(!pool.tracked_paths().contains(&root));
     }
 
     #[tokio::test]
-    async fn find_existing_environments_orphans_surplus_missing_package_hashes() {
+    async fn find_existing_environments_never_uses_legacy_uv_as_offline_fallback() {
         let temp_dir = TempDir::new().unwrap();
         let config = DaemonConfig {
             uv_pool_size: 1,
@@ -11265,14 +11260,41 @@ mod tests {
 
         let pool = daemon.uv_pool.lock().await;
         assert!(pool.available.is_empty());
-        assert_eq!(pool.retired_paths.len(), 1);
+        assert!(pool.retired_paths.is_empty());
+        assert!(pool.retired_available.is_empty());
+        assert!(!pool.tracked_paths().contains(&root_a));
+        assert!(!pool.tracked_paths().contains(&root_b));
+    }
+
+    #[tokio::test]
+    async fn find_existing_environments_rejects_uv_built_before_security_floor() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = DaemonConfig {
+            uv_pool_size: 1,
+            ..lease_test_config(&temp_dir)
+        };
+        std::fs::create_dir_all(&config.cache_dir).unwrap();
+        let mut legacy_packages = uv_prewarmed_packages(&[], true);
+        let uv = legacy_packages
+            .iter_mut()
+            .find(|package| package.starts_with("uv>="))
+            .expect("current base must enforce a uv floor");
+        *uv = "uv".to_string();
+        let env = create_test_env_in(&config.cache_dir, "runtimed-uv-pre-security");
+        write_pool_package_hash(&env.venv_path, EnvType::Uv, &legacy_packages)
+            .await
+            .unwrap();
+
+        let daemon = Daemon::new_for_test(config).unwrap();
+        daemon.find_existing_environments().await;
+
+        let mut pool = daemon.uv_pool.lock().await;
+        assert!(pool.available.is_empty());
+        assert!(pool.retired_paths.is_empty());
+        assert!(pool.retired_available.is_empty());
         assert!(
-            pool.retired_paths.contains(&root_a) || pool.retired_paths.contains(&root_b),
-            "one legacy env should be protected as offline fallback"
-        );
-        assert!(
-            !pool.retired_paths.contains(&root_a) || !pool.retired_paths.contains(&root_b),
-            "surplus legacy env should become an orphan instead of permanent retired state"
+            pool.take().0.is_none(),
+            "old uv must not be an offline fallback"
         );
     }
 

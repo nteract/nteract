@@ -362,6 +362,15 @@ mod strip_base_tests {
     use super::*;
 
     #[test]
+    fn captures_legacy_and_patched_uv_base_without_losing_user_constraints() {
+        let installed = ["uv", "uv>=0.13.5", "uv==0.13.6", "pandas"].map(str::to_string);
+        assert_eq!(
+            strip_base(&installed, &uv_base_packages_for_strip()),
+            vec!["uv==0.13.6".to_string(), "pandas".to_string()]
+        );
+    }
+
+    #[test]
     fn strips_uv_base_leaves_user_defaults() {
         let base = uv_base_packages_for_strip();
         let mut installed: Vec<String> = base.iter().map(|s| (*s).to_string()).collect();

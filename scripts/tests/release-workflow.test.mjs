@@ -310,6 +310,24 @@ test("runtime-peer PR validation builds and smokes the release image without pub
   }
 });
 
+test("runtime-peer release refreshes trust layers and bootstraps pip before package installs", () => {
+  const build = jobs.get("image-runtime-peer-build");
+  assert.match(build, /^          pull: true$/m);
+  assert.match(build, /^          no-cache: true$/m);
+  const validation = validationJobs.get("runtime-peer-image");
+  assert.match(validation, /^          pull: true$/m);
+  assert.match(validation, /^          no-cache: true$/m);
+  const dockerfile = readFileSync(new URL("../../images/runtime-peer/Dockerfile", import.meta.url), "utf8");
+  const bootstrap = "pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70";
+  const builder = dockerfile.split(" AS builder")[1].split(" AS runtime")[0];
+  const runtime = dockerfile.split(" AS runtime")[1];
+  for (const [stage, firstInstall] of [[builder, '"maturin[patchelf]==1.11.5"'], [runtime, "-r /tmp/base-packages.txt"]]) {
+    assert.ok(stage.includes(bootstrap), "each stage must bootstrap the advisory's hash-pinned pip wheel");
+    assert.ok(stage.indexOf(bootstrap) < stage.indexOf(firstInstall), "patched pip must precede ordinary package resolution");
+  }
+  assert.match(runtime, /"certifi>=2026\.10\.19" "uv>=0\.13\.5"/);
+});
+
 test("runtime-peer image publication keeps packages:write scoped to the two image jobs", () => {
   const imageJobs = ["image-runtime-peer-build", "image-runtime-peer-publish"];
   for (const [id, body] of jobs) {
@@ -328,9 +346,8 @@ test("runtime-peer image publication keeps packages:write scoped to the two imag
   assert.match(jobs.get("compute-version"), /^    permissions:\n      contents: write$/m, "compute-version must keep tag-push access");
 
   const build = jobs.get("image-runtime-peer-build");
-  assert.match(build, /uses: docker\/build-push-action@v6\n[\s\S]*?load: true\n\s+push: false/, "build via build-push-action so the gha cache credentials are present; load locally, do not push");
-  assert.match(build, /cache-to: type=gha/, "gha cache requested through the action, not a raw docker build");
-  assert.doesNotMatch(build, /run: \|\n\s+docker build/, "raw docker build cannot see the Actions cache credentials");
+  assert.match(build, /uses: docker\/build-push-action@v6\n[\s\S]*?load: true\n\s+push: false/, "build via build-push-action with fresh layers; load locally, do not push");
+  assert.doesNotMatch(build, /run: \|\n\s+docker build/, "use the declared build action inputs");
   assert.match(build, /STAGING_TAG: ghcr\.io\/nteract\/runtime-peer:build-\$\{\{ inputs\.version_suffix \}\}-/, "staging tag must be channel-qualified so stable and nightly on one commit cannot overwrite each other");
   assert.match(build, /runtime-peer-image-smoke\.sh[\s\S]*docker push "\$STAGING_TAG"/, "smoke must gate the staging push");
   assert.match(build, /outputs:\n\s+digest: \$\{\{ steps\.push\.outputs\.DIGEST \}\}/, "build exports the pushed digest");
@@ -520,3 +537,37 @@ test("image launch shape still selects the newest eligible standalone cache", (t
   assert.equal(result.status, 0, result.stderr);
   assert.ok(result.stdout.includes(`selected parent: ${result.fixtureHome}/.cache/runt-nightly/launcher\n`));
 });
+
+for (const failure of ["download", "checksum", "archive", null]) {
+  test(`Deno bootstrap ${failure ? `rejects ${failure} failure without fallback` : "installs after all integrity checks pass"}`, (t) => {
+    const fixture = mkdtempSync(join(tmpdir(), "deno-bootstrap-"));
+    t.after(() => rmSync(fixture, {recursive: true, force: true}));
+    const bin = join(fixture, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "curl"), `#!/bin/sh\nexit ${failure === "download" ? 1 : 0}\n`, {mode: 0o755});
+    writeFileSync(join(bin, "sha256sum"), `#!/bin/sh\ncat >/dev/null\nexit ${failure === "checksum" ? 1 : 0}\n`, {mode: 0o755});
+    writeFileSync(join(bin, "unzip"), [
+      "#!/bin/sh",
+      `if [ "$1" = "-tq" ]; then exit ${failure === "archive" ? 1 : 0}; fi`,
+      '[ "$1" = "-q" ] || exit 2',
+      'printf "#!/bin/sh\\necho qualified-deno\\n" > "$4/deno"',
+    ].join("\n"), {mode: 0o755});
+    writeFileSync(join(bin, "npm"), "#!/bin/sh\necho npm-fallback\nexit 1\n", {mode: 0o755});
+    const step = workflow("build").match(/      - name: Install Deno\n        run: \|\n([\s\S]*?)(?=\n      - name:)/)?.[1];
+    assert.ok(step, "must exercise the actual Deno installation step");
+    const result = spawnSync("bash", ["-s"], {
+      input: step.split("\n").map(line => line.replace(/^ {10}/, "")).join("\n"),
+      encoding: "utf8",
+      env: {...process.env, PATH: `${bin}:${process.env.PATH}`, RUNNER_TEMP: fixture, GITHUB_PATH: join(fixture, "github-path")},
+    });
+    assert.doesNotMatch(result.stdout, /npm-fallback/);
+    if (failure) {
+      assert.notEqual(result.status, 0, `${failure} failure must fail the job`);
+      assert.doesNotMatch(result.stdout, /qualified-deno/);
+    } else {
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /qualified-deno/);
+      assert.equal(readFileSync(join(fixture, "github-path"), "utf8"), `${fixture}/deno/bin\n`);
+    }
+  });
+}

@@ -620,25 +620,23 @@ jobs:
       - name: Install Deno
         run: |
           set -euo pipefail
-          version=2.4.5
+          version=2.9.8
           asset=deno-x86_64-unknown-linux-gnu.zip
           url="https://github.com/denoland/deno/releases/download/v${version}/${asset}"
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
 
-          if curl --fail --location --show-error --retry 10 --retry-delay 4 --retry-all-errors \
+          curl --fail --location --show-error --retry 10 --retry-delay 4 --retry-all-errors \
             --output "$tmp/$asset" \
-            "$url" && unzip -tq "$tmp/$asset" >/dev/null; then
-            unzip -q "$tmp/$asset" -d "$tmp"
-            install_dir="$RUNNER_TEMP/deno/bin"
-            mkdir -p "$install_dir"
-            cp "$tmp/deno" "$install_dir/deno"
-            chmod +x "$install_dir/deno"
-          else
-            echo "::warning::Deno release download failed; falling back to npm deno package"
-            install_dir="$RUNNER_TEMP/deno-npm/bin"
-            npm_config_prefix="$RUNNER_TEMP/deno-npm" npm install -g deno@2.4.4
-          fi
+            "$url"
+          # Transport and integrity failures must fail the job, never switch trust paths.
+          echo "e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609  $tmp/$asset" | sha256sum --check --status
+          unzip -tq "$tmp/$asset" >/dev/null
+          unzip -q "$tmp/$asset" -d "$tmp"
+          install_dir="$RUNNER_TEMP/deno/bin"
+          mkdir -p "$install_dir"
+          cp "$tmp/deno" "$install_dir/deno"
+          chmod +x "$install_dir/deno"
 
           echo "$install_dir" >> "$GITHUB_PATH"
           "$install_dir/deno" --version

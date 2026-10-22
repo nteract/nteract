@@ -27,6 +27,7 @@ Start here to understand a subsystem. This is not a complete inventory.
 | Evidence and measurements | [`audits/`](audits/), [`measurements/`](measurements/) |
 | CLI and installation | [`runbooks/cli.md`](runbooks/cli.md), [`plans/unified-cli-release.md`](plans/unified-cli-release.md) |
 | Conda Python versions and Anaconda channels | [`runbooks/conda-environments.md`](runbooks/conda-environments.md) |
+| Python toolchain trust and existing-environment remediation | [`runbooks/python-toolchain-security.md`](runbooks/python-toolchain-security.md) |
 | Operational setup | [`runbooks/macos-setup.md`](runbooks/macos-setup.md), [`runbooks/hosted-direct-oidc-demo-runbook.md`](runbooks/hosted-direct-oidc-demo-runbook.md), [`runbooks/npm-publishing.md`](runbooks/npm-publishing.md) |
 | Embedding the hosted editor | [`runbooks/embedding-the-hosted-editor.md`](runbooks/embedding-the-hosted-editor.md) |
 
