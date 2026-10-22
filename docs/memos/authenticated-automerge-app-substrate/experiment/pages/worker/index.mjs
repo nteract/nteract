@@ -17,7 +17,9 @@ import { handleLocalOidcRequest } from "@cloud/dev-oidc.ts";
 import { createPageData, initializePage, projectPage, applyPageOperation } from "../model/page.mjs";
 import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
+import { agentGuideResponse } from "../agent-guide.mjs";
 import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
+import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import {
   authenticate,
   driverLabel,
@@ -109,6 +111,7 @@ export default {
         const local = await handleLocalOidcRequest(request, env);
         if (local) return local;
       }
+      if (url.pathname === "/llms.txt") return agentGuideResponse(request, env);
       if (url.pathname === "/health") return json({ ok: true, prototype: "pages-celld-native" });
       if (url.pathname === "/api/auth/login" && request.method === "GET")
         return beginServerOidcLogin(request, env);
@@ -697,7 +700,7 @@ export class Page {
       };
       const timer = setTimeout(() => {
         this.handle.off("heads-changed", changed);
-        reject(new HttpError(409, "Requested edits have not arrived"));
+        reject(new HttpError(409, MISSING_EDITS_MESSAGE));
       }, 10_000);
       this.handle.on("heads-changed", changed);
       changed();
