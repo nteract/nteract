@@ -1,8 +1,15 @@
 // Exact owned CNAME only. Default is inspection; no adoption, updates or deletion.
 import { pathToFileURL } from "node:url";
+import { deploymentProfile, selectTarget } from "./profiles.mjs";
 const zone = "7de7c86232f80c97a7aabfc880186b63";
-const name = "pages-next.runtimed.run";
-export async function configureDns({ token, tunnelId, apply = false, fetchImpl = fetch }) {
+export async function configureDns({
+  token,
+  tunnelId,
+  apply = false,
+  fetchImpl = fetch,
+  target = "pages-next",
+}) {
+  const name = deploymentProfile(target).deployment.hostname;
   if (
     typeof token !== "string" ||
     !token ||
@@ -16,7 +23,7 @@ export async function configureDns({ token, tunnelId, apply = false, fetchImpl =
     content: `${tunnelId}.cfargotunnel.com`,
     proxied: true,
     ttl: 1,
-    comment: "nteract/pages:experiment:pages-next",
+    comment: "nteract/pages:experiment:" + target,
   };
   async function request(path, method = "GET", body) {
     let response;
@@ -46,7 +53,7 @@ export async function configureDns({ token, tunnelId, apply = false, fetchImpl =
       !/^[a-f0-9]{32}$/.test(record?.id ?? "") ||
       !Object.entries(desired).every(([key, value]) => record[key] === value)
     )
-      throw new Error("Existing DNS record conflicts with exact Pages-next ownership or target");
+      throw new Error("Existing DNS record conflicts with exact Pages ownership or target");
     return record;
   }
   const actualZone = (await request(`/zones/${zone}`)).result;
@@ -90,14 +97,17 @@ export async function configureDns({ token, tunnelId, apply = false, fetchImpl =
   };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [tunnelId, mode] = process.argv.slice(2);
-  if (mode && mode !== "--apply") throw new Error("Usage: dns.mjs VERIFIED_TUNNEL_UUID [--apply]");
+  const { target, args } = selectTarget(process.argv.slice(2));
+  const [tunnelId, mode, extra] = args;
+  if (extra || (mode && mode !== "--apply"))
+    throw new Error("Usage: dns.mjs [--target pages-next|page3] VERIFIED_TUNNEL_UUID [--apply]");
   try {
     console.log(
       JSON.stringify(
         await configureDns({
           token: process.env.CLOUDFLARE_API_TOKEN,
           tunnelId,
+          target,
           apply: mode === "--apply",
         }),
       ),

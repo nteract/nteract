@@ -99,9 +99,13 @@ await writeFile(
         bindings: [
           { name: "PAGES", class_name: "Page" },
           { name: "CATALOGS", class_name: "Catalog" },
+          { name: "PAGE_RECORDS", class_name: "PageRecords" },
         ],
       },
-      migrations: [{ tag: "v1", new_sqlite_classes: ["Page", "Catalog"] }],
+      migrations: [
+        { tag: "v1", new_sqlite_classes: ["Page", "Catalog"] },
+        { tag: "v2", new_sqlite_classes: ["PageRecords"] },
+      ],
       d1_databases: [
         { binding: "DB", database_name: "pages-next-auth", database_id: "pages-next-auth" },
       ],

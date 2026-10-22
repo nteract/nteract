@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
 import { PageSession, listLocalPages, forgetLocalPage } from "./session.mjs";
-import { readLocalPage, decodeSnapshot } from "./local-pages.mjs";
+import { readLocalPage, decodeSnapshot, writeLocalPage, encodeSnapshot } from "./local-pages.mjs";
+import { createPageData, initializePage } from "../model/page.mjs";
+import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
 import {
   documentIdToBinary,
   generateAutomergeUrl,
@@ -658,4 +660,48 @@ test("a deletion marker from another tab terminates stale local checkpoint write
   await session.persistLocal({ pending: true }, { allowClosed: true });
   assert.deepEqual(await listLocalPages(auth.identity), []);
   assert.equal(await readLocalPage(auth.identity, session.pageId), null);
+});
+
+test("duplicated tabs open a shared checkpoint larger than an ordinary native edit batch", async (t) => {
+  browser(t);
+  t.mock.method(PageSession.prototype, "retryConnection", async () => {});
+  const auth = authentication(),
+    pageId = "0fbd48c2-6e1b-47e3-a42b-325abc946044";
+  const documentId = interpretAsDocumentId(generateAutomergeUrl());
+  const data = createPageData({ pageId, title: "Cached history" });
+  const block = Object.values(data.blocks)[0];
+  block.id = "36f62da1-539d-4d43-9974-dd46e51997a1";
+  data.blocks = { [block.id]: block };
+  // Fixed IDs and timestamps keep fragment aggregation stable across runs.
+  let doc = A.change(A.init({ actor: "ab".repeat(16) }), { time: 0 }, (draft) =>
+    Object.assign(draft, data),
+  );
+  doc = A.change(doc, { time: 0 }, initializePage);
+  for (let i = 0; i < 600; i++)
+    doc = A.change(doc, { time: 0 }, (draft) => {
+      draft.title = `Cached history ${i % 2}`;
+    });
+  const snapshot = A.save(doc);
+  assert.ok(extractRecords(doc).length > 128, "fixture must exceed ordinary batch admission");
+  const heads = A.getHeads(doc);
+  await writeLocalPage(auth.identity, {
+    principal: auth.identity.principal,
+    page_id: pageId,
+    document_id: documentId,
+    title: doc.title,
+    snapshot: encodeSnapshot(snapshot),
+    canWrite: true,
+    registered: true,
+    pending: true,
+  });
+  A.free(doc);
+  const first = await PageSession.open(pageId, { authentication: auth });
+  t.after(() => first.close());
+  const second = await PageSession.open(pageId, { authentication: auth });
+  t.after(() => second.close());
+  assert.notEqual(first.local.seed, second.local.seed, "each tab owns its native replica");
+  assert.deepEqual(A.getHeads(first.doc), heads);
+  assert.deepEqual(A.getHeads(second.doc), heads);
+  assert.equal(second.handle.documentId, documentId);
+  assert.equal(second.status, "Saved locally", "local import is not a server receipt");
 });

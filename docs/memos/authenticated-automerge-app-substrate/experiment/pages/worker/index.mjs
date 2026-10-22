@@ -32,6 +32,8 @@ import {
   readJson,
 } from "./auth.mjs";
 import { DurableByteStore, persistentSeed } from "./storage.mjs";
+import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
+export { PageRecords } from "./record-persistence.mjs";
 import { DocumentPolicy, hex, logicalId } from "./policy.mjs";
 import {
   documentMutation,
@@ -324,7 +326,7 @@ export class Page {
       const creation = await ctx.storage.get("host/creation");
       // Looking up an unknown page must not create a persisted signer or repo.
       if (!this.metadata && !creation) return;
-      await this.initializeRepo();
+      await this.initializeRepo(this.metadata ?? creation?.metadata);
       // A completed deletion wins over an earlier interrupted creation.
       if (creation && !this.metadata?.deleted) await this.finishCreation(creation);
       if (!this.handle && this.metadata?.documentId && !this.metadata.deleted) {
@@ -334,7 +336,7 @@ export class Page {
     });
   }
 
-  initializeRepo() {
+  initializeRepo(metadata = this.metadata) {
     if (this.repo) return Promise.resolve();
     if (this.initializing) return this.initializing;
     // Keep partial native resources private until the complete host is ready.
@@ -342,6 +344,8 @@ export class Page {
       const ctx = this.ctx;
       let signer, backend;
       try {
+        if (![undefined, "local", "buffered"].includes(metadata?.recordStorage))
+          throw Error("Unsupported Page record storage mode");
         signer = N.MemorySigner.fromBytes(await persistentSeed(ctx.storage));
         const serverKey = hex(signer.verifyingKey());
         const peer = signer.peerId();
@@ -357,15 +361,31 @@ export class Page {
           serverKey,
         });
         await policy.load();
+        const recordStore =
+          metadata?.recordStorage === "buffered"
+            ? new BufferedRecordStore(
+                new RemoteRecordSink(this.env.PAGE_RECORDS.getByName(metadata.pageId)),
+                { onDirty: () => this.schedulePersistence() },
+              )
+            : new DurableByteStore(ctx.storage);
+        if (recordStore.ready) await recordStore.ready;
         backend = new SubductionBackend({
           signer,
-          storage: new DurableByteStore(ctx.storage),
+          storage: recordStore,
           policy: policy.native(),
           ephemeralPolicy: policy.ephemeral(),
           ...BACKEND_LIMITS,
         });
         const repo = new Repo({ backend });
-        Object.assign(this, { signer, serverKey, serverSenderId, policy, backend, repo });
+        Object.assign(this, {
+          signer,
+          serverKey,
+          serverSenderId,
+          policy,
+          backend,
+          repo,
+          recordStore,
+        });
       } catch (error) {
         const failures = [error];
         // The backend borrows its signer until close finishes, even on failure.
@@ -438,9 +458,30 @@ export class Page {
     );
   }
 
+  schedulePersistence() {
+    if (this.persistenceScheduled) return;
+    this.persistenceScheduled = true;
+    this.ctx.waitUntil(
+      (async () => {
+        await new Promise((resolve) => setTimeout(resolve, this.persistenceDelay ?? 1000));
+        try {
+          await this.recordStore.flush();
+          this.persistenceDelay = 1000;
+        } catch (error) {
+          logFailure(error, "record-persistence");
+          this.persistenceDelay = Math.min((this.persistenceDelay ?? 1000) * 2, 30_000);
+        } finally {
+          this.persistenceScheduled = false;
+          if (this.recordStore.dirty) this.schedulePersistence();
+        }
+      })(),
+    );
+  }
+
   async flush() {
     await this.repo.flush([this.metadata.documentId]);
     await this.backend.flush();
+    await this.recordStore?.flush?.();
     await this.ctx.storage.sync();
   }
 
@@ -492,6 +533,7 @@ export class Page {
             assertDocumentLimits(doc);
             const documentId = interpretAsDocumentId(generateAutomergeUrl());
             const metadata = {
+              recordStorage: this.env.PAGES_ASYNC_PERSISTENCE === "true" ? "buffered" : "local",
               pageId: args.page_id,
               owner: identity.principal,
               ownerName: identity.displayName,
@@ -510,7 +552,7 @@ export class Page {
           }
           await this.ctx.storage.put("host/creation", intent);
         }
-        await this.initializeRepo();
+        await this.initializeRepo(intent.metadata);
         await this.finishCreation(intent);
         return json(intent.metadata.createdReceipt, 201);
       }
@@ -548,6 +590,7 @@ export class Page {
         for (const wire of this.wires) await wire.disconnect();
         await this.repo.delete(this.metadata.documentId);
         await this.backend.flush();
+        await this.recordStore?.flush?.();
         await this.ctx.storage.sync();
         return json(this.metadata.deletion.receipt);
       }
@@ -646,6 +689,7 @@ export class Page {
         const { doc, bytes } = readRegistration(args);
         try {
           const metadata = {
+            recordStorage: this.env.PAGES_ASYNC_PERSISTENCE === "true" ? "buffered" : "local",
             pageId: args.page_id,
             owner: identity.principal,
             ownerName: identity.displayName,
@@ -675,7 +719,7 @@ export class Page {
     if (intent) {
       // Put again on replay in case the prior barrier failed ambiguously.
       await this.ctx.storage.put("host/creation", intent);
-      await this.initializeRepo();
+      await this.initializeRepo(intent.metadata);
       await this.finishCreation(intent);
     } else await this.flush();
     return json(this.metadata.createdReceipt, 201);

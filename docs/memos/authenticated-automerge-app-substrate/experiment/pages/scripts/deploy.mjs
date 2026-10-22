@@ -15,6 +15,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
 import { stageArtifacts } from "./stage-artifacts.mjs";
+import {
+  deploymentProfile,
+  selectTarget,
+  stagePattern,
+  verifyDeployment,
+} from "./deployment/profiles.mjs";
 
 const scripts = path.dirname(fileURLToPath(import.meta.url));
 const pages = path.dirname(scripts);
@@ -22,18 +28,8 @@ const repo = execFileSync("git", ["rev-parse", "--show-toplevel"], {
   cwd: pages,
   encoding: "utf8",
 }).trim();
-export const deployment = Object.freeze({
-  host: "lab1",
-  hostname: "pages-next.runtimed.run",
-  service: "nteract-pages-next",
-  bucket: "nteract-celld-lab-621741996708",
-  prefix: "standalone/pages-next",
-  region: "us-east-1",
-  listen: "127.0.0.1:9472",
-  internalListen: "127.0.0.1:19472",
-  runtime: "/usr/local/bin/celld-v0.6.1",
-  requiredVersion: "celld 0.6.1",
-});
+const { target, args } = selectTarget(process.argv.slice(2));
+export const deployment = deploymentProfile(target).deployment;
 const run = (command, args, options = {}) =>
   execFileSync(command, args, { encoding: "utf8", ...options }).trim();
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -77,12 +73,19 @@ function prepare() {
     throw new Error(
       "lab1 runtime differs from the qualified celld 0.6.1; qualify it before deploying",
     );
-  const output = path.join(repo, ".context", "pages-next-deploy", source);
+  const output = path.join(repo, ".context", target + "-deploy", source);
   if (existsSync(output))
     throw new Error("Prepared release already exists; inspect it instead of replacing it");
   mkdirSync(output, { recursive: true });
   stageArtifacts(dist, path.join(output, "release"));
-  for (const name of ["install.mjs", "firewall.mjs", "publish.mjs"])
+  for (const name of [
+    "install.mjs",
+    "firewall.mjs",
+    "publish.mjs",
+    "profiles.mjs",
+    "isolated-publication.mjs",
+    "routes.mjs",
+  ])
     cpSync(path.join(scripts, "deployment", name), path.join(output, name));
   const manifest = {
     schema: 1,
@@ -109,23 +112,24 @@ function prepare() {
     ),
   );
 }
-const [mode = "plan", stage, flag] = process.argv.slice(2);
-if (mode === "plan") console.log(JSON.stringify(deployment, null, 2));
+const [mode = "plan", stage, flag, extra] = args;
+if (extra) throw new Error("Unexpected deployment argument");
+if (mode === "plan" && !stage) console.log(JSON.stringify(deployment, null, 2));
 else if (mode === "prepare" && !stage) prepare();
 else if (mode === "upload" && stage && !flag) {
   const absolute = path.resolve(stage);
   const manifest = JSON.parse(readFileSync(path.join(absolute, "manifest.json")));
-  if (!/^[a-f0-9]{40}$/.test(manifest.source_sha)) throw new Error("Invalid prepared source");
-  const remote = ssh("mktemp -d /tmp/nteract-pages-next-stage-XXXXXXXX");
-  if (!/^\/tmp\/nteract-pages-next-stage-[A-Za-z0-9]{8}$/.test(remote))
-    throw new Error("Unexpected remote staging directory");
+  verifyDeployment(manifest, target);
+  const remote = ssh("mktemp -d /tmp/" + deployment.service + "-stage-XXXXXXXX");
+  if (!stagePattern(target).test(remote)) throw new Error("Unexpected remote staging directory");
   run("scp", ["-r", absolute + "/.", deployment.host + ":" + remote]);
   console.log(JSON.stringify({ uploaded: remote, source_sha: manifest.source_sha }));
 } else if (
   ["install", "publish"].includes(mode) &&
-  /^\/tmp\/nteract-pages-next-stage-[A-Za-z0-9]{8}$/.test(stage ?? "") &&
+  stagePattern(target).test(stage ?? "") &&
   flag === "--apply"
 ) {
+  // Serialize operator commands across the two isolated deployment profiles.
   console.log(
     ssh(
       `sudo flock -n /run/nteract-pages-next-deploy.lock node ${quote(stage + "/" + mode + ".mjs")} ${quote(stage)} --apply`,
@@ -133,5 +137,5 @@ else if (mode === "upload" && stage && !flag) {
   );
 } else
   throw new Error(
-    "Usage: deploy.mjs [plan | prepare | upload LOCAL_STAGE | install REMOTE_STAGE --apply | publish REMOTE_STAGE --apply]",
+    "Usage: deploy.mjs [--target pages-next|page3] [plan | prepare | upload LOCAL_STAGE | install REMOTE_STAGE --apply | publish REMOTE_STAGE --apply]",
   );

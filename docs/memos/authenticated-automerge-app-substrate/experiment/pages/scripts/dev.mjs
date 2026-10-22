@@ -19,6 +19,7 @@ await writeFile(
   [
     `NOTEBOOK_CLOUD_APP_SESSION_SECRET=${secret}`,
     "NOTEBOOK_CLOUD_LOCAL_OIDC=true",
+    `PAGES_ASYNC_PERSISTENCE=${process.env.PAGES_ASYNC_PERSISTENCE === "true"}`,
     "NOTEBOOK_CLOUD_OIDC_FLOW=server",
     `NOTEBOOK_CLOUD_PUBLIC_ORIGIN=${origin}`,
     `NOTEBOOK_CLOUD_OIDC_ISSUER=${origin}/dev/oidc`,

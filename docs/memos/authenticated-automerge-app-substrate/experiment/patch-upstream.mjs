@@ -1,7 +1,9 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { patchStorageIndex } from "./patch-storage-index.mjs";
+import { patchSnapshotStore } from "./patch-snapshot-store.mjs";
 
-// The only runtime alteration to pinned Repo3 source. No wire or WASM changes.
+// Source-hash-checked alterations to pinned Repo3. No wire or WASM changes.
 export function patchUpstream(root) {
   const path = `${root}/packages/automerge-repo-subduction/src/index.ts`;
   let source = readFileSync(path, "utf8");
@@ -34,7 +36,13 @@ export function patchUpstream(root) {
     if (source.split(needle).length !== 2) throw new Error(`Patch mismatch: ${needle}`);
     source = source.replace(needle, replacement);
   }
+  source = patchSnapshotStore(source);
   writeFileSync(path, source);
   const after = createHash("sha256").update(source).digest("hex");
-  return { path: "packages/automerge-repo-subduction/src/index.ts", before, after };
+  return {
+    path: "packages/automerge-repo-subduction/src/index.ts",
+    before,
+    after,
+    storageIndex: patchStorageIndex(root),
+  };
 }

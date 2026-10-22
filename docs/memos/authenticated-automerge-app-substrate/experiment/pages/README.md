@@ -124,6 +124,64 @@ Relevant celld contracts:
 [WASM modules](https://celld.dev/docs/wasm/). Local celld storage tests do not
 establish cloud bucket durability, failover behavior, or lower operating cost.
 
+## Page3: live updates and background persistence
+
+The page3 deployment sets `PAGES_ASYNC_PERSISTENCE=true` for newly created Pages.
+Each Page records its storage mode at creation; changing the deployment flag
+never silently moves an existing document to another store. The pages-next
+profile keeps its existing storage mode and deployment.
+
+In this mode, the live Page holds a bounded record replica in memory. Native
+record saves update that replica immediately, allowing synchronization and
+presence to continue. A separate `PageRecords` Durable Object receives binary
+record batches in the background, normally after one second, or when a caller
+requests a durability receipt. Its SQLite/bucket output gate belongs to that
+object, so its uploads do not hold ordinary outgoing edits on the live Page.
+No runtime durability gate is disabled.
+
+`/api/saved` flushes the Repo, native backend, and captured record batches and
+waits for the persistence object's durable response before acknowledging heads.
+API mutation receipts retain their stronger durability requirement. A failed
+batch is retained beneath any newer local values and retried; partial writes
+are idempotent. Storage capacity failures reject new writes rather than evicting
+unpersisted history or claiming it was saved. A crashed live Page recovers the
+last persisted records; browser replicas retain and resynchronize newer history.
+Locally accepted or remotely visible edits are not a remote durability receipt.
+The browser bounds each remote receipt request at 30 seconds; a lost response
+retains the pending state and uses the existing retry path. Persistence itself
+continues under the host's ordered queue. A hung internal persistence call still
+requires diagnosis or host recovery; client timeout is not cancellation of that
+write and must never allow reordered writes to replace newer values.
+
+Buffered Pages require this build or a later compatible build. Rollback must
+retain the PageRecords binding and buffered storage implementation; older builds
+cannot read that separate record store.
+
+Account admission, signing-key bindings, deletion tombstones, and API operation
+intents remain durable control state on the live Page. Joining a new peer or an
+API mutation can therefore still encounter its output gate. This isolates the
+steady browser-edit path; it does not promise every operation is independent of
+cloud storage latency. Cold application startup also still requires application
+assets and authentication when neither is cached.
+
+The pinned Repo adapter additionally keeps a validated, exclusively owned record
+index instead of scanning every historical record for each write. It validates
+storage on first access and after ambiguous failures; count/size limits and
+same-key conflict checks remain enforced. Failed opens surface their error
+while native cleanup retains ownership of its local identity until it finishes.
+
+To exercise this mode locally:
+
+```sh
+PAGES_ASYNC_PERSISTENCE=true npm run dev --workspace @nteract/pages-native-experiment
+# In pages/, against that local server:
+node scripts/latency-smoke.mjs
+```
+
+The smoke records cold load and two-tab typing before and after adding 500
+independent history records without growing the document body. Local results do
+not establish bucket/failover performance; qualify the deployed target separately.
+
 ## Authentication and collaboration
 
 The existing cloud OIDC flow authenticates browser sessions; the existing
@@ -324,16 +382,33 @@ verification from local workerd fixtures.
 
 ## Isolated lab deployment
 
-The prepared target is `pages-next.runtimed.run`, service `nteract-pages-next`,
-with fleet storage at
-`s3://nteract-celld-lab-621741996708/standalone/pages-next` in `us-east-1`.
-`m.runtimed.run` uses its existing service and prefix. These scripts do not move
-or reuse its data or session secret.
+The default target remains `pages-next.runtimed.run`. An explicit `--target page3`
+selects the separate experiment; omitting the flag never selects it.
 
-Publication restarts the shared `cloudflared` service after validating the narrow
-route change. Expect existing tunnel connections, including `m.runtimed.run`
-WebSockets, to disconnect briefly and reconnect. Their application services and
-storage prefixes remain intact.
+| Target | Hostname | Service | Listener / internal port | S3 prefix |
+| --- | --- | --- | --- | --- |
+| `pages-next` (default) | `pages-next.runtimed.run` | `nteract-pages-next` | `9472` / `19472` | `standalone/pages-next` |
+| `page3` | `page3.runtimed.run` | `nteract-page3` | `9473` / `19473` | `standalone/page3` |
+
+Both use lab1, bucket `nteract-celld-lab-621741996708` in `us-east-1`, and the same
+production Anaconda OIDC client and API-key verifier. Each has separate `/opt`,
+`/etc`, and `/var/lib` directories named after its service, a host-generated
+session secret, service account, firewall table/mark, and prepared release stage.
+The new profile checks that its ports, prefix, and firewall resources are unused
+before creating them. `m.runtimed.run` keeps its existing service and prefix.
+These scripts do not move or reuse existing documents or session secrets.
+
+Only `page3` enables `PAGES_ASYNC_PERSISTENCE=true`; both services keep
+`CELLD_DURABILITY=bucket`. The installer preserves the build's Durable Object
+bindings and migrations, including `PAGE_RECORDS`, while supplying the selected
+public origin and its OIDC callback.
+
+The default `pages-next` publisher retains its existing shared-tunnel behavior.
+Do not publish that target while its users need uninterrupted connections.
+`page3` publication uses a **different tunnel and dedicated
+`cloudflared-page3.service`**. It neither writes the shared
+`/etc/cloudflared/config.yml` nor restarts `cloudflared.service`, and verifies
+that the shared configuration and process ID stayed unchanged.
 
 `node scripts/deploy.mjs plan` is read-only. After inspecting the current lab1
 runtime, ports, prefix, tunnel and firewall ownership, use `prepare`,
@@ -345,8 +420,56 @@ the deployment never upgrades `/usr/local/bin/celld` used by other services.
 It creates the session secret on the host. Only the explicit release-file
 allowlist is staged; local dev credentials and databases are excluded.
 
+For the separate experiment, run from this directory:
+
+```bash
+node scripts/deploy.mjs --target page3 plan
+node scripts/deploy.mjs --target page3 prepare
+node scripts/deploy.mjs --target page3 upload LOCAL_STAGE
+node scripts/deploy.mjs --target page3 install REMOTE_STAGE --apply
+node scripts/deploy.mjs --target page3 publish REMOTE_STAGE --apply
+```
+
+Prepared manifests and remote stage names must match the selected target;
+accidentally using a `pages-next` stage with `page3` is rejected. The existing
+deployment lock still serializes these operator commands, but page3 never uses
+the shared tunnel publisher. Its dedicated ingress allows only page3's public
+routes and ends in a catch-all 404. The public routes include `/mcp`, `/llms.txt`,
+`/p/<page_id>`, sync, and OIDC; internal Durable Object routes are not exposed.
+
+Before page3 publication, provision a new locally managed Cloudflare Tunnel named
+`nteract-page3` in account `1cfb529b94b3d6cde3aaf49d1d6ed5e6`; this is a separate,
+explicit operator action, never performed by `prepare` or `publish`. It requires
+Cloudflare Tunnel Edit permission. Store its returned credentials as root-owned
+mode 0600 `/etc/nteract-page3/tunnel.json` (`AccountTag`, `TunnelID`,
+`TunnelSecret`), and save the nonsecret creation receipt at
+`/etc/nteract-page3/tunnel-provisioning.json`:
+
+```json
+{
+  "schema": 1,
+  "account_id": "1cfb529b94b3d6cde3aaf49d1d6ed5e6",
+  "tunnel_id": "NEW_TUNNEL_UUID",
+  "name": "nteract-page3",
+  "config_src": "local"
+}
+```
+
+The publisher rejects the shared tunnel ID, missing credentials, or an unowned
+existing connector configuration. It installs `/etc/nteract-page3/tunnel.yml`
+and starts only `cloudflared-page3.service`, resuming partial installs only when
+the existing files match exactly. Do not run `cloudflared service install`, which
+targets the existing default service. Tunnel credentials never enter the source
+checkout or prepared release.
+
 DNS is separate: `scripts/deployment/dns.mjs` takes the verified tunnel UUID and
 checks the exact hostname without changes by default. Its `--apply` creates only
-an absent, owned CNAME and refuses conflicts. Verify anonymous denial, real OIDC,
-API-key editing, WebSockets and bucket recovery after publication. A prepared
+an absent, owned CNAME and refuses conflicts. For page3, use
+`node scripts/deployment/dns.mjs --target page3 VERIFIED_TUNNEL_UUID` to inspect,
+then append `--apply` to create the proxied CNAME pointing to
+`VERIFIED_TUNNEL_UUID.cfargotunnel.com`. This requires a Cloudflare API token with
+DNS read/edit access to the `runtimed.run` zone in `CLOUDFLARE_API_TOKEN`; the
+deploy commands separately require lab1 SSH and sudo access. No OIDC client
+secret is copied to the stage. Verify anonymous denial, real OIDC, API-key editing,
+WebSockets and bucket recovery after publication. A prepared
 script is not evidence that those live checks passed.
