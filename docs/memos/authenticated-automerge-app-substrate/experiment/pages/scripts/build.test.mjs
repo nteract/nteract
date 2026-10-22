@@ -182,3 +182,50 @@ test("an eager Mermaid source import fails the browser build instead of growing 
     /Mermaid renderer must remain a dynamic import/,
   );
 });
+
+test("shared renderer resolves ESM imports through fixture paths without a root install", async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "pages-renderer-dependencies-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const fixture = path.join(root, "experiment/pages");
+  const source = path.join(root, "src/shared-renderer.mjs");
+  mkdirSync(fixture, { recursive: true });
+  mkdirSync(path.dirname(source), { recursive: true });
+  writeFileSync(
+    source,
+    'import purify from "dompurify"; import {mount} from "pele"; export const renderer = [purify,mount];',
+  );
+  const { paths } = JSON.parse(
+    readFileSync(path.join(app, "tsconfig.json"), "utf8"),
+  ).compilerOptions;
+  writeFileSync(
+    path.join(fixture, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: { paths: { dompurify: paths.dompurify, pele: paths.pele } },
+    }),
+  );
+  for (const [name, relative, contents] of [
+    ["dompurify", "dist/purify.es.mjs", 'export default "browser purifier";'],
+    ["pele", "dist/pele.js", 'export const mount = "browser renderer";'],
+  ]) {
+    const directory = path.join(root, "experiment/node_modules", name);
+    mkdirSync(path.join(directory, "dist"), { recursive: true });
+    writeFileSync(path.join(directory, "package.json"), JSON.stringify({ name, type: "module" }));
+    writeFileSync(path.join(directory, relative), contents);
+  }
+  const result = await build({
+    entryPoints: [source],
+    bundle: true,
+    write: false,
+    platform: "browser",
+    format: "esm",
+    metafile: true,
+    tsconfig: path.join(fixture, "tsconfig.json"),
+  });
+  assert.match(result.outputFiles[0].text, /browser purifier/);
+  assert.match(result.outputFiles[0].text, /browser renderer/);
+  const files = Object.keys(result.metafile.inputs);
+  assert.ok(
+    files.some((file) => file.endsWith("experiment/node_modules/dompurify/dist/purify.es.mjs")),
+  );
+  assert.ok(files.some((file) => file.endsWith("experiment/node_modules/pele/dist/pele.js")));
+});
