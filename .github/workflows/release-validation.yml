@@ -96,14 +96,14 @@ jobs:
         with:
           context: .
           file: images/runtime-peer/Dockerfile
+          pull: true
+          no-cache: true
           load: true
           push: false
           provenance: false
           tags: ${{ env.IMAGE }}
           build-args: |
             RUNT_BUILD_CHANNEL=nightly
-          cache-from: type=gha,scope=runtime-peer-validation
-          cache-to: type=gha,mode=max,scope=runtime-peer-validation
       - name: Smoke image
         id: image-smoke
         shell: bash

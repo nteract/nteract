@@ -20,6 +20,7 @@ Start here to understand a subsystem. This is not a complete inventory.
 | Notebook shell, frontend convergence, and RxJS stores | [`adr/notebook-host-shell-convergence.md`](adr/notebook-host-shell-convergence.md), [`memos/electron-notebook-host-adapter.md`](memos/electron-notebook-host-adapter.md), [`adr/frontend-sync-bridge.md`](adr/frontend-sync-bridge.md), [`memos/shared-store-projection-convergence.md`](memos/shared-store-projection-convergence.md), [`adr/output-rendering-segmentation.md`](adr/output-rendering-segmentation.md) |
 | Hosted accounts, Notebook Home, and compute federation | [`adr/cloud-connected-local-mcp.md`](adr/cloud-connected-local-mcp.md), [`memos/hosted-notebook-federation.md`](memos/hosted-notebook-federation.md), [`memos/desktop-cloud-daemon-bridge.md`](memos/desktop-cloud-daemon-bridge.md), [`adr/remote-workstation-doc-agents.md`](adr/remote-workstation-doc-agents.md) |
 | Identity, trust, and hosted rooms | [`adr/identity-and-trust.md`](adr/identity-and-trust.md), [`adr/hosted-room-authorization.md`](adr/hosted-room-authorization.md), [`adr/deployment-topology.md`](adr/deployment-topology.md), [`memos/aws-rust-room-host.md`](memos/aws-rust-room-host.md), [`memos/celld-hosted-room-substrate.md`](memos/celld-hosted-room-substrate.md) |
+| Managed compute admission (proposal) | [`memos/cloud-compute-admission.md`](memos/cloud-compute-admission.md) |
 | Remote compute and workstations | [`adr/remote-workstation-doc-agents.md`](adr/remote-workstation-doc-agents.md), [`adr/runtime-principal-promotion.md`](adr/runtime-principal-promotion.md), [`memos/python-runtime-boundaries.md`](memos/python-runtime-boundaries.md), [`runbooks/remote-workstation.md`](runbooks/remote-workstation.md) |
 | Product requirements | [`prd/notebook-identity-environment-surfaces.md`](prd/notebook-identity-environment-surfaces.md), [`prd/hosted-sharing-invites.md`](prd/hosted-sharing-invites.md) |
 | MCP, cloud embedding, and Automerge audit | [`audits/mcp-cloud-automerge-audit.md`](audits/mcp-cloud-automerge-audit.md) |
@@ -27,6 +28,7 @@ Start here to understand a subsystem. This is not a complete inventory.
 | Evidence and measurements | [`audits/`](audits/), [`measurements/`](measurements/) |
 | CLI and installation | [`runbooks/cli.md`](runbooks/cli.md), [`plans/unified-cli-release.md`](plans/unified-cli-release.md) |
 | Conda Python versions and Anaconda channels | [`runbooks/conda-environments.md`](runbooks/conda-environments.md) |
+| Python toolchain trust and existing-environment remediation | [`runbooks/python-toolchain-security.md`](runbooks/python-toolchain-security.md) |
 | Operational setup | [`runbooks/macos-setup.md`](runbooks/macos-setup.md), [`runbooks/hosted-direct-oidc-demo-runbook.md`](runbooks/hosted-direct-oidc-demo-runbook.md), [`runbooks/npm-publishing.md`](runbooks/npm-publishing.md) |
 | Embedding the hosted editor | [`runbooks/embedding-the-hosted-editor.md`](runbooks/embedding-the-hosted-editor.md) |
 

@@ -161,7 +161,7 @@ impl Fixture {
         // Satisfy that probe locally so it cannot download a tool on startup.
         std::fs::create_dir(root.path().join("bin")).unwrap();
         let uv = root.path().join("bin/uv");
-        std::fs::write(&uv, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'uv 0.10.8\\n'; exit 0; fi\nprintf '%s\\n' \"$*\" >> \"$NTERACT_TEST_TOOL_VIOLATIONS\"\nexit 1\n").unwrap();
+        std::fs::write(&uv, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'uv 0.13.5\\n'; exit 0; fi\nprintf '%s\\n' \"$*\" >> \"$NTERACT_TEST_TOOL_VIOLATIONS\"\nexit 1\n").unwrap();
         std::fs::set_permissions(&uv, std::fs::Permissions::from_mode(0o755)).unwrap();
         let log = std::fs::File::create(root.path().join("daemon.log")).unwrap();
         let child = DaemonProcess(

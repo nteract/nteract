@@ -1558,6 +1558,10 @@ jobs:
         with:
           context: .
           file: images/runtime-peer/Dockerfile
+          # Trust-store updates must reach every security release, including
+          # unchanged apt/pip layers and refreshed Python base images.
+          pull: true
+          no-cache: true
           load: true
           push: false
           provenance: false
@@ -1567,8 +1571,6 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.compute-version.outputs.version }}
-          cache-from: type=gha,scope=runtime-peer-${{ inputs.version_suffix }}
-          cache-to: type=gha,mode=max,scope=runtime-peer-${{ inputs.version_suffix }}
 
       - name: Smoke image (gates push)
         run: |

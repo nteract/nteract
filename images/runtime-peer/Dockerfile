@@ -23,12 +23,12 @@ ARG RUST_VERSION=1.94.0
 ARG WASM_PACK_VERSION=0.15.0
 ARG PYTHON_TAG=3.12-slim-bookworm
 ARG PNPM_VERSION=11.9.0
-ARG NODE_VERSION=22.23.3
+ARG NODE_VERSION=22.23.4
 # SHA256 of each pinned tool tarball (verified before extraction; a
 # compromised CDN or release asset must not reach the builder that compiles
 # the shipped binaries).
-ARG NODE_SHA256_X64=1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af
-ARG NODE_SHA256_ARM64=5ced2d48d1d7198739b7f86804de0171aefb6823b684b12341d3321afc3cb0b2
+ARG NODE_SHA256_X64=b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406
+ARG NODE_SHA256_ARM64=f7a1e486dbc8b286847815b477d4fb5e9fb963ed4489c3e1588853d685f589f9
 ARG WASM_PACK_SHA256_X86_64=c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a
 ARG WASM_PACK_SHA256_AARCH64=e17ef0806381c3a0acb9c9ddad643a49facaa5a2ecf657a421d4d8f3357a24b7
 
@@ -59,7 +59,12 @@ RUN apt-get update \
         ca-certificates curl xz-utils \
         python3 python3-dev python3-pip \
         clang llvm \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge '20250419~deb12u2' \
     && rm -rf /var/lib/apt/lists/* \
+    # Bootstrap pip's vendored CA bundle using the Python security advisory's
+    # hash-pinned wheel before the first ordinary package installation.
+    && python3 -m pip install --break-system-packages --no-cache-dir \
+        "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70" \
     && pip install --break-system-packages --no-cache-dir "maturin[patchelf]==1.11.5"
 
 # Pinned Node.js tarball from nodejs.org (npm included), integrity-checked
@@ -176,10 +181,18 @@ PY
 # ---------------------------------------------------------------------------
 FROM python:${PYTHON_TAG} AS runtime
 
+# Debian Bookworm DLA-4845-1. Refresh native TLS roots independently of certifi.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge '20250419~deb12u2' \
+    && rm -rf /var/lib/apt/lists/*
+
 # UV_BASE_PACKAGES parity (crates/kernel-env/src/uv.rs), derived from the
 # Rust constant at build time. UV-only — no conda in this image.
 COPY --from=builder /base-packages.txt /tmp/base-packages.txt
-RUN pip install --no-cache-dir -r /tmp/base-packages.txt \
+RUN python -m pip install --no-cache-dir \
+        "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70" \
+    && python -m pip install --no-cache-dir "certifi>=2026.10.19" "uv>=0.13.5" -r /tmp/base-packages.txt \
     && rm -f /tmp/base-packages.txt
 
 COPY --from=builder /wheels/ /tmp/wheels/
