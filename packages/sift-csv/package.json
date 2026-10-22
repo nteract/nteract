@@ -1,6 +1,6 @@
 {
   "name": "@nteract/sift-csv",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "CSV and TSV to Arrow IPC in WebAssembly, for @nteract/sift and any Arrow consumer",
   "license": "BSD-3-Clause",
   "repository": {
