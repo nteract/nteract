@@ -8,6 +8,7 @@ on:
       - packages/local-oidc/src/**
       - packages/runtimed/src/scope-capabilities.ts
       - src/components/markdown/mermaid-renderer.ts
+      - src/components/sharing/**
       - .github/workflows/authenticated-automerge-spike.yml
   push:
     branches: [main]
@@ -17,6 +18,7 @@ on:
       - packages/local-oidc/src/**
       - packages/runtimed/src/scope-capabilities.ts
       - src/components/markdown/mermaid-renderer.ts
+      - src/components/sharing/**
       - .github/workflows/authenticated-automerge-spike.yml
   workflow_dispatch:
 
@@ -45,14 +47,15 @@ jobs:
             packages/runtimed/src
             packages/local-oidc/src
             src/components/markdown
+            src/components/sharing
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
           package-manager-cache: false
       # No root dependency installation: the fixture's tsx configuration resolves
       # identity.ts's capability re-export to the actual scope-capabilities source.
-      # Shared Mermaid rendering uses fixture-pinned browser dependencies as well.
-      # Keep the path filters above in sync with verifier and renderer imports.
+      # Shared Mermaid rendering and sharing UI use fixture-pinned browser dependencies.
+      # Keep checkout paths and filters in sync with imported verifier and UI sources.
       - name: Prepare pinned upstream packages and locked fixture dependencies
         run: npm run setup
       - name: Test provider fixtures and real Repo/Subduction integration
