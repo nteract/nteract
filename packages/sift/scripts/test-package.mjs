@@ -152,6 +152,8 @@ try {
   for (const name of ["parquet", "arrow-array"]) {
     assert.match(notices, new RegExp(`^\\| ${name} \\| `, "m"), `Notices must list ${name}`);
   }
+  // Inlined Lucide path data (src/components/icons.tsx) is ISC and must be credited.
+  assert.match(notices, /^### Lucide icon path data .*\(ISC\)$/m, "Notices must credit Lucide");
   const css = await readFile(join(packed, "lib/style.css"), "utf8");
   assert(css.includes(".sift-table-container"), "Compiled table styles must be shipped");
   assert(!/@(?:import|source|theme)\b/.test(css), "Consumers must not need a Tailwind compiler");

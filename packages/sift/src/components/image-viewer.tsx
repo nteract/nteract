@@ -1,7 +1,7 @@
-import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { createElement, useEffect, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Button } from "@/components/ui/button";
+import { ChevronLeft, ChevronRight, X } from "./icons";
 
 export type ImageViewerItem = {
   bytes: Uint8Array;
