@@ -72,6 +72,7 @@ pub(crate) mod guarded;
 pub(crate) mod interrupt_execution;
 pub(crate) mod launch_kernel;
 pub(crate) mod local_environment_selection;
+pub(crate) mod project_trust;
 pub(crate) mod reconcile_notebook_source;
 pub(crate) mod run_all_cells;
 pub(crate) mod save_notebook;
@@ -157,6 +158,8 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::SyncEnvironment { .. } => "SyncEnvironment",
         NotebookRequest::ApproveTrust { .. } => "ApproveTrust",
         NotebookRequest::ApproveProjectEnvironment { .. } => "ApproveProjectEnvironment",
+        NotebookRequest::ApproveProjectTrust { .. } => "ApproveProjectTrust",
+        NotebookRequest::DeclineProjectTrust { .. } => "DeclineProjectTrust",
         NotebookRequest::GetDocBytes { .. } => "GetDocBytes",
         NotebookRequest::AcknowledgeNotebookSync {} => "AcknowledgeNotebookSync",
         NotebookRequest::CreateBlobUpload { .. } => "CreateBlobUpload",
@@ -462,7 +465,10 @@ pub(crate) async fn handle_notebook_request(
             | NotebookRequest::SaveNotebook { .. }
             | NotebookRequest::GetHistory { .. }
             | NotebookRequest::ReconcileNotebookSource { .. }
-            | NotebookRequest::ApplyBokehSessionPatch { .. } => {
+            | NotebookRequest::ApplyBokehSessionPatch { .. }
+            | NotebookRequest::ApproveProjectEnvironment { .. }
+            | NotebookRequest::ApproveProjectTrust { .. }
+            | NotebookRequest::DeclineProjectTrust { .. } => {
                 return NotebookResponse::Error {
                     error: format!(
                         "{} is not supported on a daemon-bridged hosted notebook yet; \
@@ -608,6 +614,15 @@ pub(crate) async fn handle_notebook_request(
         NotebookRequest::ApproveProjectEnvironment { project_file_path } => {
             approve_project_environment::handle(room, project_file_path).await
         }
+
+        NotebookRequest::ApproveProjectTrust { directory } => {
+            project_trust::approve(room, directory).await
+        }
+
+        NotebookRequest::DeclineProjectTrust {
+            directory,
+            remember,
+        } => project_trust::decline(room, directory, remember).await,
 
         NotebookRequest::GetDocBytes {} => get_doc_bytes::handle(room).await,
 

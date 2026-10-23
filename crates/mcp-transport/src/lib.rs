@@ -426,6 +426,7 @@ pub fn notebook_scoped_tool(name: &str) -> bool {
             | "remove_dependency"
             | "get_dependencies"
             | "approve_trust"
+            | "approve_project_trust"
             | "replace_match"
             | "replace_regex"
             | "create_comment"

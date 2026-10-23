@@ -34,6 +34,7 @@ export const KERNEL_STATUS = {
   ERROR: "error",
   SHUTDOWN: "shutdown",
   AWAITING_TRUST: "awaiting_trust",
+  AWAITING_PROJECT_TRUST: "awaiting_project_trust",
   AWAITING_ENV_BUILD: "awaiting_env_build",
 } as const;
 
@@ -395,6 +396,7 @@ export function deriveEnvSyncState(state: RuntimeState): EnvSyncState | null {
     lc === "Shutdown" ||
     lc === "Error" ||
     lc === "AwaitingTrust" ||
+    lc === "AwaitingProjectTrust" ||
     lc === "AwaitingEnvBuild"
   ) {
     return null;
@@ -429,6 +431,8 @@ export function lifecycleToLegacyStatus(lc: RuntimeState["kernel"]["lifecycle"])
       return KERNEL_STATUS.NOT_STARTED;
     case "AwaitingTrust":
       return KERNEL_STATUS.AWAITING_TRUST;
+    case "AwaitingProjectTrust":
+      return KERNEL_STATUS.AWAITING_PROJECT_TRUST;
     case "AwaitingEnvBuild":
       return KERNEL_STATUS.AWAITING_ENV_BUILD;
     case "Resolving":
@@ -465,6 +469,7 @@ export function lifecycleToLegacyStatus(lc: RuntimeState["kernel"]["lifecycle"])
 export const RUNTIME_STATUS = {
   NOT_STARTED: "not_started",
   AWAITING_TRUST: "awaiting_trust",
+  AWAITING_PROJECT_TRUST: "awaiting_project_trust",
   AWAITING_ENV_BUILD: "awaiting_env_build",
   RESOLVING: "resolving",
   PREPARING_ENV: "preparing_env",
@@ -491,6 +496,8 @@ export function runtimeStatusKey(lc: RuntimeState["kernel"]["lifecycle"]): Runti
       return RUNTIME_STATUS.NOT_STARTED;
     case "AwaitingTrust":
       return RUNTIME_STATUS.AWAITING_TRUST;
+    case "AwaitingProjectTrust":
+      return RUNTIME_STATUS.AWAITING_PROJECT_TRUST;
     case "AwaitingEnvBuild":
       return RUNTIME_STATUS.AWAITING_ENV_BUILD;
     case "Resolving":
@@ -534,6 +541,8 @@ export function statusKeyToLegacyStatus(key: RuntimeStatusKey): KernelStatus {
       return KERNEL_STATUS.NOT_STARTED;
     case RUNTIME_STATUS.AWAITING_TRUST:
       return KERNEL_STATUS.AWAITING_TRUST;
+    case RUNTIME_STATUS.AWAITING_PROJECT_TRUST:
+      return KERNEL_STATUS.AWAITING_PROJECT_TRUST;
     case RUNTIME_STATUS.AWAITING_ENV_BUILD:
       return KERNEL_STATUS.AWAITING_ENV_BUILD;
     case RUNTIME_STATUS.RESOLVING:

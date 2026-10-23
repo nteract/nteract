@@ -2691,6 +2691,7 @@ fn test_room_with_path_and_store(
             pending_launch: false,
         })),
         trusted_packages,
+        project_trust_session_decline: std::sync::Mutex::new(None),
         state,
         comms,
         comments,
@@ -8599,6 +8600,10 @@ fn test_build_launched_config_pyproject_records_context_without_notebook_deps() 
     std::fs::write(&notebook_path, "{}").unwrap();
     write_pyproject_with_deps(tmp.path(), &["pandas", "numpy"]);
 
+    let trusted = crate::project_trust::TrustedProjectManifest::for_test(
+        tmp.path().join("pyproject.toml"),
+        crate::project_file::ProjectFileKind::PyprojectToml,
+    );
     let config = build_launched_config(
         "python",
         "uv:pyproject",
@@ -8607,7 +8612,7 @@ fn test_build_launched_config_pyproject_records_context_without_notebook_deps() 
         Some(PathBuf::from("/tmp/project/.venv")),
         Some(PathBuf::from("/tmp/project/.venv/bin/python")),
         None,
-        Some(&notebook_path),
+        Some(&trusted),
         notebook_protocol::protocol::FeatureFlags::default(),
         None,
     );
@@ -8633,6 +8638,10 @@ fn test_build_launched_config_pixi_records_context_without_notebook_deps() {
     )
     .unwrap();
 
+    let trusted = crate::project_trust::TrustedProjectManifest::for_test(
+        tmp.path().join("pixi.toml"),
+        crate::project_file::ProjectFileKind::PixiToml,
+    );
     let config = build_launched_config(
         "python",
         "pixi:toml",
@@ -8641,7 +8650,7 @@ fn test_build_launched_config_pixi_records_context_without_notebook_deps() {
         Some(PathBuf::from("/tmp/pixi-env")),
         Some(PathBuf::from("/tmp/pixi-env/bin/python")),
         None,
-        Some(&notebook_path),
+        Some(&trusted),
         notebook_protocol::protocol::FeatureFlags::default(),
         None,
     );
@@ -8667,6 +8676,10 @@ fn test_build_launched_config_env_yml_records_context_without_notebook_deps() {
     std::fs::write(&notebook_path, "{}").unwrap();
     write_env_yml(tmp.path(), &["conda-forge"], &["pandas", "numpy"]);
 
+    let trusted = crate::project_trust::TrustedProjectManifest::for_test(
+        tmp.path().join("environment.yml"),
+        crate::project_file::ProjectFileKind::EnvironmentYml,
+    );
     let config = build_launched_config(
         "python",
         "conda:env_yml",
@@ -8675,7 +8688,7 @@ fn test_build_launched_config_env_yml_records_context_without_notebook_deps() {
         Some(PathBuf::from("/tmp/conda-env")),
         Some(PathBuf::from("/tmp/conda-env/bin/python")),
         None,
-        Some(&notebook_path),
+        Some(&trusted),
         notebook_protocol::protocol::FeatureFlags::default(),
         None,
     );
@@ -11560,10 +11573,38 @@ fn test_project_file_deps_match_trust_info_no_project_file() {
     assert!(!project_file_deps_match_trust_info(&nb_path, &info));
 }
 
+/// An untrusted project folder cannot vouch for notebook deps. A shared
+/// notebook whose deps mirror an attacker-supplied pyproject.toml stays
+/// Untrusted until the user trusts the folder or approves the deps.
+#[tokio::test]
+async fn test_new_fresh_does_not_promote_from_untrusted_project_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_pyproject_with_deps(tmp.path(), &["pandas", "numpy"]);
+    let nb_path = tmp.path().join("notebook.ipynb");
+    write_unsigned_ipynb_with_uv_deps(&nb_path, &["pandas", "numpy"]);
+
+    let blob_store = test_blob_store(&tmp);
+    let store = open_test_store(&tmp);
+    let room = NotebookRoom::new_fresh_with_trusted_packages(
+        uuid::Uuid::new_v4(),
+        Some(nb_path.clone()),
+        tmp.path(),
+        blob_store,
+        false,
+        store,
+    )
+    .expect("create test notebook room");
+
+    assert_eq!(
+        room.trust_state.read().await.status,
+        runt_trust::TrustStatus::Untrusted,
+    );
+}
+
 /// Regression for #2150: a .ipynb on disk with deps that match a
 /// project file's but no signature (a notebook saved by the pre-fix
-/// build) must land on Trusted at room creation, so the auto-launch
-/// gate in peer_connection.rs doesn't block.
+/// build) must land on Trusted at room creation when the project folder
+/// is trusted, so the auto-launch gate in peer_connection.rs doesn't block.
 #[tokio::test]
 async fn test_new_fresh_promotes_untrusted_when_project_file_deps_match() {
     let tmp = tempfile::tempdir().unwrap();
@@ -11582,6 +11623,13 @@ async fn test_new_fresh_promotes_untrusted_when_project_file_deps_match() {
     // Trusted via the standard allowlist gate.
     let blob_store = test_blob_store(&tmp);
     let store = open_test_store(&tmp);
+    store
+        .set_directory_decision(
+            tmp.path(),
+            crate::trusted_packages::DirectoryDecision::Trusted,
+            "test",
+        )
+        .unwrap();
     let room = NotebookRoom::new_fresh_with_trusted_packages(
         uuid::Uuid::new_v4(),
         Some(nb_path.clone()),
@@ -11779,41 +11827,6 @@ fn test_missing_conda_env_yml_decision_detects_unbuilt_unnamed_envyml() {
             && decision.create_command.contains(" -f "),
         "unnamed env should get an explicit prefix create command; got {:?}",
         decision.create_command
-    );
-}
-
-#[tokio::test]
-async fn test_project_environment_build_uses_preapproved_packages() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let store =
-        crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
-            .unwrap();
-    let (room, _notebook_path) =
-        test_room_with_path_and_store(&tmp, "project-env.ipynb", store.clone());
-    let yml_path = tmp.path().join("environment.yml");
-    std::fs::write(
-        &yml_path,
-        "channels:\n  - conda-forge\ndependencies:\n  - python\n  - pandas\n  - six\n",
-    )
-    .unwrap();
-    let detected = crate::project_file::DetectedProjectFile {
-        path: yml_path.clone(),
-        kind: crate::project_file::ProjectFileKind::EnvironmentYml,
-    };
-
-    assert!(
-        !project_environment_build_approved(&room, &detected),
-        "unapproved project packages should gate environment creation",
-    );
-
-    let config = crate::project_file::parse_environment_yml(&yml_path).unwrap();
-    store
-        .add_from_info(&environment_yml_trust_info(&config), "test")
-        .unwrap();
-
-    assert!(
-        project_environment_build_approved(&room, &detected),
-        "preapproved project packages should allow seamless environment creation",
     );
 }
 
@@ -15866,4 +15879,104 @@ async fn assert_arrow_recovery(manifest_size: usize, conflict: Option<&str>) {
             .unwrap()
             .payload_matches(&expected));
     }
+}
+
+// ── Project trust requests ──────────────────────────────────────────
+fn project_trust_room(
+    tmp: &tempfile::TempDir,
+) -> (
+    Arc<NotebookRoom>,
+    crate::trusted_packages::TrustedPackageStore,
+    PathBuf,
+) {
+    let store = crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trust.sqlite"))
+        .unwrap();
+    let proj = tmp.path().join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(proj.join("pyproject.toml"), "[project]\nname = \"p\"\n").unwrap();
+    let (room, _path) = test_room_with_path_and_store(tmp, "proj/analysis.ipynb", store.clone());
+    (Arc::new(room), store, proj)
+}
+
+#[tokio::test]
+async fn approve_records_directory_and_releases_parked_lifecycle() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, store, proj) = project_trust_room(&tmp);
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::AwaitingProjectTrust))
+        .unwrap();
+
+    let response =
+        crate::requests::project_trust::approve(&room, proj.to_string_lossy().into_owned()).await;
+    assert!(
+        matches!(response, crate::protocol::NotebookResponse::Ok {}),
+        "{response:?}"
+    );
+
+    let found = store.directory_decision_for(&proj).unwrap().unwrap();
+    assert_eq!(
+        found.decision,
+        crate::trusted_packages::DirectoryDecision::Trusted
+    );
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
+    assert_eq!(
+        state.project_trust.status,
+        crate::project_trust::STATUS_TRUSTED
+    );
+    assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::NotStarted);
+}
+
+#[tokio::test]
+async fn approve_rejects_directory_that_does_not_contain_the_project() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, store, proj) = project_trust_room(&tmp);
+    let elsewhere = tmp.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+
+    let response =
+        crate::requests::project_trust::approve(&room, elsewhere.to_string_lossy().into_owned())
+            .await;
+    assert!(matches!(
+        response,
+        crate::protocol::NotebookResponse::Error { .. }
+    ));
+    assert_eq!(store.directory_decision_for(&proj).unwrap(), None);
+}
+
+#[tokio::test]
+async fn decline_without_remember_is_room_scoped() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, store, proj) = project_trust_room(&tmp);
+
+    let response =
+        crate::requests::project_trust::decline(&room, proj.to_string_lossy().into_owned(), false)
+            .await;
+    assert!(matches!(response, crate::protocol::NotebookResponse::Ok {}));
+    assert_eq!(store.directory_decision_for(&proj).unwrap(), None);
+    let detected = crate::project_file::detect_project_file(&proj).unwrap();
+    assert_eq!(
+        crate::project_trust::evaluate_for_room(&room, &detected).verdict,
+        crate::project_trust::ProjectTrustVerdict::UseNotebookEnv
+    );
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
+    assert_eq!(
+        state.project_trust.status,
+        crate::project_trust::STATUS_NOTEBOOK_ENV
+    );
+}
+
+#[tokio::test]
+async fn decline_with_remember_persists() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, store, proj) = project_trust_room(&tmp);
+
+    let response =
+        crate::requests::project_trust::decline(&room, proj.to_string_lossy().into_owned(), true)
+            .await;
+    assert!(matches!(response, crate::protocol::NotebookResponse::Ok {}));
+    let found = store.directory_decision_for(&proj).unwrap().unwrap();
+    assert_eq!(
+        found.decision,
+        crate::trusted_packages::DirectoryDecision::NotebookEnv
+    );
 }

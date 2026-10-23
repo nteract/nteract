@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
-import { KERNEL_ERROR_REASON } from "runtimed";
+import {
+  KERNEL_ERROR_REASON,
+  lifecycleToLegacyStatus,
+  notebookCommandRuntimeStateForStatusKey,
+} from "runtimed";
 import {
   getTrustApprovalHandoffDisplayStatus,
   getLifecycleLabel,
@@ -8,6 +12,8 @@ import {
   KERNEL_STATUS,
   RUNTIME_STATUS,
   RUNTIME_STATUS_LABELS,
+  runtimeStatusKey,
+  statusKeyToLegacyStatus,
   type RuntimeLifecycle,
   type RuntimeStatusKey,
 } from "../kernel-status";
@@ -29,8 +35,8 @@ describe("isKernelStatus", () => {
 });
 
 describe("KERNEL_STATUS", () => {
-  it("contains exactly eight statuses", () => {
-    expect(Object.keys(KERNEL_STATUS)).toHaveLength(8);
+  it("contains exactly nine statuses", () => {
+    expect(Object.keys(KERNEL_STATUS)).toHaveLength(9);
   });
 
   it("has expected values", () => {
@@ -41,7 +47,25 @@ describe("KERNEL_STATUS", () => {
     expect(KERNEL_STATUS.ERROR).toBe("error");
     expect(KERNEL_STATUS.SHUTDOWN).toBe("shutdown");
     expect(KERNEL_STATUS.AWAITING_TRUST).toBe("awaiting_trust");
+    expect(KERNEL_STATUS.AWAITING_PROJECT_TRUST).toBe("awaiting_project_trust");
     expect(KERNEL_STATUS.AWAITING_ENV_BUILD).toBe("awaiting_env_build");
+  });
+});
+
+describe("AwaitingProjectTrust", () => {
+  it("projects to its own status key and compressed bucket", () => {
+    const lifecycle: RuntimeLifecycle = { lifecycle: "AwaitingProjectTrust" };
+    expect(runtimeStatusKey(lifecycle)).toBe(RUNTIME_STATUS.AWAITING_PROJECT_TRUST);
+    expect(lifecycleToLegacyStatus(lifecycle)).toBe(KERNEL_STATUS.AWAITING_PROJECT_TRUST);
+    expect(statusKeyToLegacyStatus(RUNTIME_STATUS.AWAITING_PROJECT_TRUST)).toBe(
+      KERNEL_STATUS.AWAITING_PROJECT_TRUST,
+    );
+  });
+
+  it("reads as not started for notebook commands", () => {
+    expect(notebookCommandRuntimeStateForStatusKey(RUNTIME_STATUS.AWAITING_PROJECT_TRUST)).toBe(
+      "not_started",
+    );
   });
 });
 
@@ -50,6 +74,11 @@ describe("getLifecycleLabel", () => {
     const cases: [RuntimeLifecycle, string | null, string][] = [
       [{ lifecycle: "NotStarted" }, null, RUNTIME_STATUS_LABELS[RUNTIME_STATUS.NOT_STARTED]],
       [{ lifecycle: "AwaitingTrust" }, null, RUNTIME_STATUS_LABELS[RUNTIME_STATUS.AWAITING_TRUST]],
+      [
+        { lifecycle: "AwaitingProjectTrust" },
+        null,
+        RUNTIME_STATUS_LABELS[RUNTIME_STATUS.AWAITING_PROJECT_TRUST],
+      ],
       [
         { lifecycle: "AwaitingEnvBuild" },
         null,

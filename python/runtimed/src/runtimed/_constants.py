@@ -70,6 +70,7 @@ class KERNEL_ERROR_REASON:
 KernelStatusKey = Literal[
     "not_started",
     "awaiting_trust",
+    "awaiting_project_trust",
     "awaiting_env_build",
     "starting",
     "idle",
@@ -95,6 +96,7 @@ class KERNEL_STATUS:
 
     NOT_STARTED: Final[KernelStatusKey] = "not_started"
     AWAITING_TRUST: Final[KernelStatusKey] = "awaiting_trust"
+    AWAITING_PROJECT_TRUST: Final[KernelStatusKey] = "awaiting_project_trust"
     AWAITING_ENV_BUILD: Final[KernelStatusKey] = "awaiting_env_build"
     STARTING: Final[KernelStatusKey] = "starting"
     IDLE: Final[KernelStatusKey] = "idle"

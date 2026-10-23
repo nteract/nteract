@@ -88,6 +88,16 @@ test.describe("browser runtime fixture coverage", () => {
       await openNotebookPath(page, notebookPath, {
         environmentMode: "auto",
       });
+
+      // The daemon parks the room until the pyproject.toml folder is trusted.
+      const projectTrustDialog = page.getByTestId("project-trust-dialog");
+      await expect(projectTrustDialog).toBeVisible({ timeout: 120_000 });
+      await expect(projectTrustDialog.getByTestId("project-trust-folder")).toHaveText(
+        fs.realpathSync(dir),
+      );
+      await projectTrustDialog.getByTestId("project-trust-trust-button").click();
+      await expect(projectTrustDialog).toBeHidden({ timeout: 60_000 });
+
       await waitForKernelStatus(page, "idle", 300_000);
 
       await expect(page.getByTestId("runtime-environment-indicator")).toHaveAttribute(

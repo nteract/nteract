@@ -258,6 +258,13 @@ fn validate_runtime_peer_room_host_owned_delta(
             "room-host/daemon-owned",
         ));
     }
+    if before.state.project_trust != after.state.project_trust {
+        return Err(runtime_state_policy_error(
+            scope,
+            "project_trust",
+            "room-host/daemon-owned",
+        ));
+    }
     if before.state.path != after.state.path {
         return Err(runtime_state_policy_error(
             scope,
@@ -1442,6 +1449,37 @@ mod tests {
         assert!(
             err.to_string().contains("file_checkpoint"),
             "error should identify daemon-owned file checkpoint writes: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_peer_policy_rejects_project_trust_changes() {
+        let mut before_doc = RuntimeStateDoc::new();
+        before_doc
+            .set_project_trust(&crate::ProjectTrustRuntimeState {
+                status: "untrusted".to_string(),
+                needs_approval: true,
+                ..Default::default()
+            })
+            .unwrap();
+        let before = runtime_state_policy_snapshot(&before_doc);
+
+        let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        after_doc
+            .set_project_trust(&crate::ProjectTrustRuntimeState {
+                status: "trusted".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        let err =
+            validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+                .unwrap_err();
+
+        assert!(
+            err.to_string().contains("project_trust"),
+            "error should identify daemon-owned project trust writes: {err}"
         );
     }
 

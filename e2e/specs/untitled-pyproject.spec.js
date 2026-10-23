@@ -16,6 +16,7 @@
 
 import { browser } from "@wdio/globals";
 import {
+  approveProjectTrustDialog,
   setCellSource,
   waitForCellOutput,
   waitForKernelReady,
@@ -24,7 +25,14 @@ import {
 } from "../helpers.js";
 
 describe("Untitled Notebook with pyproject.toml", () => {
-  it("should auto-launch kernel with project deps", async () => {
+  it("should trust the project folder", async () => {
+    // The daemon parks the room until the pyproject.toml folder is trusted.
+    console.log("[untitled-pyproject] Waiting for the project trust dialog...");
+    const trusted = await approveProjectTrustDialog(120000);
+    console.log(`[untitled-pyproject] Project folder trusted: ${trusted}`);
+  });
+
+  it("should launch kernel with project deps after trust", async () => {
     console.log("[untitled-pyproject] Waiting for kernel to auto-launch...");
     // Wait for kernel to auto-launch using pyproject deps (300s, includes uv sync)
     await waitForKernelReady(300000);

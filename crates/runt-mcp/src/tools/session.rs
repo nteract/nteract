@@ -436,18 +436,18 @@ fn read_runtime_info(handle: &notebook_sync::handle::DocHandle) -> serde_json::V
                 }
                 info.insert("trust".into(), serde_json::Value::Object(trust_obj));
             }
-            if matches!(
-                state.kernel.lifecycle,
-                runtime_doc::RuntimeLifecycle::AwaitingTrust
-            ) {
+            // Project-directory trust gates project files (pyproject.toml,
+            // pixi.toml, environment.yml) separately from notebook
+            // dependency trust. Surface it whenever the daemon evaluated it
+            // so agents can see which manifest and directory are involved.
+            if !state.project_trust.status.is_empty() {
                 info.insert(
-                    "next_action".into(),
-                    serde_json::json!({
-                        "tool": "manage_dependencies",
-                        "args": { "trust": true },
-                        "reason": "Kernel launch is parked at awaiting_trust because the notebook's declared dependencies are not in the local trusted-package allowlist. Inspect the dependency list (e.g. with get_dependencies) before approving; call manage_dependencies with trust=true to grant approval and unblock launch.",
-                    }),
+                    "project_trust".into(),
+                    project_trust_json(&state.project_trust),
                 );
+            }
+            if let Some(next_action) = next_action_for_lifecycle(&state.kernel.lifecycle) {
+                info.insert("next_action".into(), next_action);
             }
         }
         Err(_) => {
@@ -495,7 +495,91 @@ fn projected_runtime_info(projection: &NotebookProjection) -> serde_json::Value 
             }),
         );
     }
+    // The connect-time projection carries kernel state but not the
+    // project-trust map; the hint still names the follow-up call.
+    if let Some(next_action) = next_action_for_lifecycle(&runtime.kernel.lifecycle) {
+        info.insert("next_action".into(), next_action);
+    }
     serde_json::Value::Object(info)
+}
+
+/// Remediation hint for lifecycles parked on a user decision.
+fn next_action_for_lifecycle(
+    lifecycle: &runtime_doc::RuntimeLifecycle,
+) -> Option<serde_json::Value> {
+    match lifecycle {
+        runtime_doc::RuntimeLifecycle::AwaitingTrust => Some(serde_json::json!({
+            "tool": "manage_dependencies",
+            "args": { "trust": true },
+            "reason": "Kernel launch is parked at awaiting_trust because the notebook's declared dependencies are not in the local trusted-package allowlist. Inspect the dependency list (e.g. with get_dependencies) before approving; call manage_dependencies with trust=true to grant approval and unblock launch.",
+        })),
+        runtime_doc::RuntimeLifecycle::AwaitingProjectTrust => Some(serde_json::json!({
+            "tool": "approve_project_trust",
+            "args": {},
+            "reason": "Kernel launch is parked at awaiting_project_trust because a project file (see project_trust.manifest_path) would drive the environment and its folder is not trusted on this machine. Trusting a folder lets uv, pixi, or conda run its build backends, sources, indexes, and activation scripts. Ask the user to choose in the notebook's project trust dialog. If the user approves here instead, review project_trust.summary with them and call approve_project_trust (directory defaults to project_trust.project_dir; pass use_notebook_environment=true to ignore the project file). The kernel launches after the decision.",
+        })),
+        _ => None,
+    }
+}
+
+/// Project-trust block for MCP payloads. Empty summary lists are omitted so
+/// the red flags (non-registry sources, indexes, build backend, activation
+/// scripts, paths outside the folder) stand out.
+pub(crate) fn project_trust_json(
+    state: &runtime_doc::ProjectTrustRuntimeState,
+) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("status".into(), serde_json::json!(state.status));
+    obj.insert(
+        "needs_approval".into(),
+        serde_json::json!(state.needs_approval),
+    );
+    if !state.manifest_path.is_empty() {
+        obj.insert(
+            "manifest_path".into(),
+            serde_json::json!(state.manifest_path),
+        );
+    }
+    if !state.kind.is_empty() {
+        obj.insert("kind".into(), serde_json::json!(state.kind));
+    }
+    if !state.project_dir.is_empty() {
+        obj.insert("project_dir".into(), serde_json::json!(state.project_dir));
+    }
+    if let Some(repo_root) = &state.repo_root {
+        obj.insert("repo_root".into(), serde_json::json!(repo_root));
+    }
+    if let Some(trusted_dir) = &state.trusted_dir {
+        obj.insert("trusted_dir".into(), serde_json::json!(trusted_dir));
+    }
+
+    let summary = &state.summary;
+    let mut summary_obj = serde_json::Map::new();
+    let lists = [
+        ("dependencies", &summary.dependencies),
+        ("non_registry_sources", &summary.non_registry_sources),
+        ("indexes_and_channels", &summary.indexes_and_channels),
+        ("activation_scripts", &summary.activation_scripts),
+        ("outside_directory", &summary.outside_directory),
+    ];
+    for (key, values) in lists {
+        if !values.is_empty() {
+            summary_obj.insert(key.into(), serde_json::json!(values));
+        }
+    }
+    if let Some(build_backend) = &summary.build_backend {
+        summary_obj.insert("build_backend".into(), serde_json::json!(build_backend));
+    }
+    if let Some(environment) = &summary.environment_to_build {
+        summary_obj.insert(
+            "environment_to_build".into(),
+            serde_json::json!(environment),
+        );
+    }
+    if !summary_obj.is_empty() {
+        obj.insert("summary".into(), serde_json::Value::Object(summary_obj));
+    }
+    serde_json::Value::Object(obj)
 }
 
 /// Snapshot `RuntimeState.project_context` for MCP responses.
@@ -3701,5 +3785,53 @@ mod tests {
             )),
             "Running(Idle) must not surface error details"
         );
+    }
+
+    #[test]
+    fn awaiting_project_trust_points_at_approve_project_trust() {
+        use runtime_doc::RuntimeLifecycle;
+        let hint = next_action_for_lifecycle(&RuntimeLifecycle::AwaitingProjectTrust).unwrap();
+        assert_eq!(hint["tool"], "approve_project_trust");
+        assert!(hint["reason"]
+            .as_str()
+            .unwrap()
+            .contains("project trust dialog"));
+
+        let hint = next_action_for_lifecycle(&RuntimeLifecycle::AwaitingTrust).unwrap();
+        assert_eq!(hint["tool"], "manage_dependencies");
+        assert!(next_action_for_lifecycle(&RuntimeLifecycle::NotStarted).is_none());
+    }
+
+    #[test]
+    fn project_trust_json_keeps_red_flags_and_drops_empty_fields() {
+        let state = runtime_doc::ProjectTrustRuntimeState {
+            status: "untrusted".into(),
+            needs_approval: true,
+            manifest_path: "/work/proj/pyproject.toml".into(),
+            kind: "pyproject_toml".into(),
+            project_dir: "/work/proj".into(),
+            repo_root: Some("/work".into()),
+            trusted_dir: None,
+            summary: runtime_doc::ProjectTrustSummary {
+                dependencies: vec!["pandas".into()],
+                non_registry_sources: vec!["mylib (git+https://example.com/mylib)".into()],
+                build_backend: Some("hatchling.build".into()),
+                ..Default::default()
+            },
+        };
+        let value = project_trust_json(&state);
+        assert_eq!(value["status"], "untrusted");
+        assert_eq!(value["needs_approval"], true);
+        assert_eq!(value["manifest_path"], "/work/proj/pyproject.toml");
+        assert_eq!(value["project_dir"], "/work/proj");
+        assert_eq!(value["repo_root"], "/work");
+        assert!(value.get("trusted_dir").is_none());
+        assert_eq!(value["summary"]["build_backend"], "hatchling.build");
+        assert_eq!(
+            value["summary"]["non_registry_sources"],
+            serde_json::json!(["mylib (git+https://example.com/mylib)"])
+        );
+        assert!(value["summary"].get("activation_scripts").is_none());
+        assert!(value["summary"].get("environment_to_build").is_none());
     }
 }

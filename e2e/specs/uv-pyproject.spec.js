@@ -13,6 +13,7 @@
 
 import { browser } from "@wdio/globals";
 import {
+  approveProjectTrustDialog,
   setCellSource,
   waitForCellOutputMatching,
   waitForKernelReady,
@@ -22,7 +23,14 @@ import {
 } from "../helpers.js";
 
 describe("UV pyproject.toml Detection", () => {
-  it("should auto-launch kernel with project deps", async () => {
+  it("should trust the project folder", async () => {
+    // The daemon parks the room until the pyproject.toml folder is trusted.
+    console.log("[uv-pyproject] Waiting for the project trust dialog...");
+    const trusted = await approveProjectTrustDialog(120000);
+    console.log(`[uv-pyproject] Project folder trusted: ${trusted}`);
+  });
+
+  it("should launch kernel with project deps after trust", async () => {
     // Wait for kernel to auto-launch (300s, includes uv sync if needed)
     console.log("[uv-pyproject] Waiting for kernel to be ready...");
     await waitForKernelReady(300000);

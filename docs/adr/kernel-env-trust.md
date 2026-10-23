@@ -162,14 +162,15 @@ The approval surface is the `NotebookRequest::ApproveTrust` RPC (`crates/runtime
 3. Calls `TrustedPackageStore::add_from_info(&info, "trust_dialog")`. This inserts the normalized identities; existing rows have their `approved_at` and `source` columns updated via `ON CONFLICT DO UPDATE` (`trusted_packages.rs:99-101`).
 4. Broadcasts a sync state change and calls `check_and_update_trust_state(room)` so the new verdict lands in RuntimeStateDoc immediately.
 
-Not every approval entry point runs all four steps. The four sources in the store are `trust_dialog`, `daemon-default`, `mcp_create_notebook`, `project_env_dialog`. The differences:
+Not every approval entry point runs all four steps. The package sources in the store are `trust_dialog`, `daemon-default`, `mcp_create_notebook`, `project_env_dialog`, and `project_file`. The differences:
 
 | Entry | Allowlist write | Broadcast / recheck | Conflict policy |
 |---|---|---|---|
 | `ApproveTrust` (dialog) | yes | yes | `ON CONFLICT DO UPDATE` |
 | `seed_trust_from_doc_metadata` (MCP) | yes | yes (via subsequent notebook-doc frame) | `ON CONFLICT DO UPDATE` |
 | `seed_defaults` / `seed_default_channels` (startup) | yes, scoped to default package names and built-in public Conda sources | no (no room exists at startup) | `ON CONFLICT DO NOTHING` so user approvals are preserved (`trusted_packages.rs`) |
-| `ApproveProjectEnvironment` (`environment.yml`) | yes | yes | `ON CONFLICT DO UPDATE` |
+| `ApproveProjectEnvironment` (`environment.yml`, older clients) | yes, plus a `trusted_directories` row for the file's folder | yes | `ON CONFLICT DO UPDATE` |
+| Room-open reconciliation (`project_file`) | yes, only when the project folder is trusted | yes | `ON CONFLICT DO UPDATE` |
 
 The notebook doc is not mutated. The allowlist is the source of truth; the doc only declares what is wanted. Two implications:
 
@@ -181,7 +182,7 @@ Three other approval entry points exist alongside the dialog:
 - `seed_trust_from_doc_metadata(room, source)` - the daemon seeds the allowlist when the caller is asserting that the deps already in the doc came from a consent-bearing channel. The MCP `create_notebook` tool uses this when the user has explicitly passed `dependencies` to the tool call: the act of typing those deps into the prompt is the consent. The same path is used by other paths that synthesize a notebook with known-good deps.
 - `seed_defaults(ecosystem, specs)` - the daemon pre-approves a user-configured default set on startup (`pandas`, `matplotlib`, etc., from synced settings). Source column reads `daemon-default`. This is what makes "open a fresh notebook, run a cell" silent for the user's curated default set.
 - `seed_default_channels(channels)` - the daemon pre-approves the built-in public channel policy for both Conda and Pixi: `conda-forge`, Conda's `defaults` alias, and the canonical `repo.anaconda.com/pkgs/{main,r,msys2}` URLs (with or without a trailing slash). Other named channels and URLs still require explicit approval.
-- `ApproveProjectEnvironment` - separate request for project-file consent (`crates/runtimed/src/requests/approve_project_environment.rs`). Records the *project file's* declared deps (today: only `environment.yml`) into the allowlist with source `project_env_dialog`. This is its own dialog because the deps in a project file are not in NotebookDoc; the regular trust dialog can't see them.
+- `ApproveProjectEnvironment` - the `environment.yml` build approval sent by clients that predate project-directory trust (`crates/runtimed/src/requests/approve_project_environment.rs`). It trusts the file's folder (Decision 9) and records the file's deps with source `project_env_dialog`. Current clients send `ApproveProjectTrust` instead.
 
 ## Decision 6: Kernel launch consults the trust gate; sync_environment also gates
 
@@ -221,6 +222,63 @@ The cache-path hash is content-addressed: same deps + same `env_id` -> same path
 This is deliberate. A trusted env and an untrusted env with the same dep set are byte-identical on disk; deduplicating them by hash saves space and avoids two prepare runs of the same packages. Trust gates the *act of preparing or launching*, not the *storage layout*. The result: a user on machine A who approves `pandas` and a user on machine B who has not yet approved `pandas` end up with the same hash if they ever do approve. Re-approval does not invalidate the on-disk env.
 
 The corollary: rotating the allowlist (removing approvals) does not delete cached envs. That is a separate GC concern handled by `kernel-env::gc`, which has its own age-based and pressure-based policies independent of trust.
+
+## Decision 9: Project files need a trusted directory
+
+The package allowlist reads notebook metadata only. A project file next to the notebook (`pyproject.toml`, `pixi.toml`, `environment.yml`) never passes through it, and a notebook with empty `metadata.runt.*` resolves to `NoDependencies`. Without a separate gate, opening a notebook from an attacker-supplied folder runs that folder's project through uv, pixi, or conda.
+
+A project file is a program, not a dependency list. These run with no package name the allowlist could check:
+
+- `[build-system]`: uv builds and installs the project itself.
+- `[tool.uv.sources]`, pixi `{ git = ..., path = ... }` deps, `pip:` URLs in `environment.yml`: an approved name resolved from a different source.
+- `[tool.uv] index-url` and friends, a sibling `uv.toml`, pixi `[pypi-options]`, non-default channels: dependency confusion for approved names.
+- pixi `[activation] scripts`, a pixi task named `python` (the kernel fallback runs `pixi run python`), and `activate.d` hooks in a shipped conda prefix.
+
+So consent is to a **directory**, like IDE workspace trust. An attacker-supplied project arrives as a subtree. Trusting that subtree is the decision being asked for, and editing a manifest inside it later stays inside the boundary the user accepted. There is no content hash and no re-prompt on manifest edits.
+
+### Store
+
+`trusted_directories` lives in the same SQLite file as `trusted_packages` (`crates/runtimed/src/trusted_packages.rs`):
+
+```sql
+CREATE TABLE trusted_directories (
+    canonical_path TEXT NOT NULL PRIMARY KEY,
+    decision TEXT NOT NULL,   -- 'trusted' | 'notebook_env'
+    approved_at TEXT NOT NULL,
+    source TEXT NOT NULL
+)
+```
+
+Paths are canonicalized, so a symlinked checkout and its target share a row. Lookup walks the manifest directory's ancestors and takes the nearest row. `notebook_env` is a remembered "use the notebook environment" choice. An unavailable store has no rows, so the gate asks (fail-closed).
+
+### Gate
+
+`crates/runtimed/src/project_trust.rs` owns the gate. It runs where a launch has chosen its env source: auto-launch (`auto_launch_kernel_attempt`), `LaunchKernel`, and the Automatic pre-check in `ApplyEnvironmentSelection`. A Deno notebook in a project folder is never parked.
+
+- `uv:pyproject`, `pixi:toml`, and `conda:env_yml` need a trusted directory. Otherwise the daemon writes `RuntimeStateDoc.project_trust` and parks the room in `RuntimeLifecycle::AwaitingProjectTrust`.
+- A remembered or room-scoped "use the notebook environment" drops the project from auto-selection before the env source is chosen.
+- A project env source with no manifest is an error. uv and pixi would otherwise discover a project from the cwd that the gate never saw.
+
+`TrustedProjectManifest` is only constructed by the gate. `prepare_uv_pyproject_environment`, `prepare_pixi_toml_environment`, and `build_launched_config` take it, so a new launch path cannot reach those tools without passing the gate. The launched config records the approved manifest path, and the runtime agent launches from it (`uv run --project <dir>`, `pixi shell-hook --manifest-path`, `pixi run --manifest-path`). It does not rediscover a project, which closes the gap between what the daemon checked and what the agent runs.
+
+Detection and the dialog summary are parse-only. Nothing spawns uv, pixi, or conda before the directory is trusted.
+
+### Requests
+
+- `ApproveProjectTrust { directory }` records `trusted`. `directory` must be the manifest's folder or an ancestor, and may not contain the home directory.
+- `DeclineProjectTrust { directory, remember }` uses the notebook environment, persisted when `remember` is set and room-scoped otherwise.
+
+Both release `AwaitingProjectTrust` to `NotStarted`; the client launches afterwards, as with `ApproveTrust`. Daemon-bridged hosted rooms reject both.
+
+### Interaction with the package allowlist
+
+The two gates are independent. A trusted project folder does not approve notebook metadata deps, with one exception: room-open reconciliation (#2150) seeds notebook deps that exactly mirror the project file, and only when the project folder is trusted. An untrusted file cannot vouch for a notebook.
+
+A trusted `environment.yml` whose env is missing is built on launch, the same way uv and pixi build theirs. Directory trust is the consent, so the daemon no longer emits `AwaitingEnvBuild`. The variant stays in the protocol for older daemons.
+
+### Hosts
+
+The daemon always asks. A host with its own trust boundary can record it: Kilo Desktop can call `ApproveProjectTrust` for the workspace root when the user opens a folder, since its agent already runs shell commands there. Notebooks opened from outside that root still get the dialog.
 
 ## Worked examples
 
@@ -266,14 +324,20 @@ The notebook doc is unchanged. There is no field that says "this notebook is tru
 
 If Claude later asks `manage_dependencies(add=["requests"])`, the same MCP-level consent argument applies and the same seeding path runs for `requests`.
 
-### environment.yml that needs building
+### Notebook opened from a cloned project folder
 
-1. Notebook lives in a directory with `environment.yml` declaring `pandas` from `conda-forge`. The named conda env does not exist on disk yet.
-2. Daemon detects this in `missing_conda_env_yml_decision` -> non-`None`.
-3. Frontend shows a "build this env" dialog with the `conda env create -p ... -f ...` command and the dep list from the YAML.
-4. User clicks "Approve and build". Frontend sends `ApproveProjectEnvironment { project_file_path }`.
-5. Handler parses the YAML, calls `environment_yml_trust_info(&config)`, and inserts the deps+channels into the allowlist with source `project_env_dialog`.
-6. Next auto-launch check sees `project_environment_build_approved -> true` and proceeds to build the env.
+1. Quill clones a repo and opens `analysis.ipynb`. The notebook has no inline deps; the folder has a `pyproject.toml` with a hatchling build backend and a `[tool.uv.sources]` git override.
+2. Auto-launch detects the pyproject, picks `uv:pyproject`, and asks the gate. No `trusted_directories` row covers the folder.
+3. The daemon writes `project_trust` with the parsed summary (build backend, git source) and parks in `AwaitingProjectTrust`. uv has not run.
+4. The dialog shows the folder, the repo root as a wider option, and the flagged rows. Quill trusts the folder. The client sends `ApproveProjectTrust` and then launches.
+5. The gate returns a `TrustedProjectManifest`. uv runs with `--project <folder>`. The launched config records the manifest; the runtime agent launches from it.
+6. Quill later adds a dependency to the pyproject. Nothing re-prompts.
+
+### environment.yml whose env is not built
+
+1. A notebook folder has an `environment.yml` naming a conda env that does not exist on this machine.
+2. If the folder is untrusted, the gate parks in `AwaitingProjectTrust`. The summary's `environment_to_build` shows the `conda env create` command the daemon will run.
+3. Once the folder is trusted, launch builds the env and starts the kernel. There is no second prompt.
 
 ## Open Questions
 
@@ -285,3 +349,5 @@ If Claude later asks `manage_dependencies(add=["requests"])`, the same MCP-level
 6. **Lockfile-based trust.** A `uv.lock` or `conda-lock.yml` is a stronger statement than a raw dep list: every transitive package and version is pinned. Trust against a lockfile hash (rather than dep names) would close the "approved pandas but pandas pulled a malicious transitive" gap. Open question how to surface that in the dialog without overwhelming the user.
 7. **Pre-resolution preview.** The user approves names, but the daemon resolves and installs full transitive trees. Showing the resolved tree before install (so the dialog can warn about surprise transitives) is a UX direction that needs solver cooperation.
 8. **Channel ordering.** `conda_channels` is treated as a set today: approving `[conda-forge, defaults]` is the same as `[defaults, conda-forge]`. Channel order affects which copy of a package wins, which is a separate supply-chain decision the current model does not capture.
+9. **Escapes from a trusted directory.** A `path =` source, workspace member, or activation script can point outside the folder the user trusted. The summary flags these in `outside_directory`; the gate does not refuse them, because legitimate monorepos do this. Revisit if the flag proves too quiet.
+10. **Directory revocation.** Like package rows, directory rows have no management surface yet. "Untrust ~/Downloads" is a real need.

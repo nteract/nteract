@@ -48,6 +48,9 @@ describe("notebook command runtime projection", () => {
     expect(notebookCommandRuntimeStateForStatusKey(RUNTIME_STATUS.AWAITING_TRUST)).toBe(
       "not_started",
     );
+    expect(notebookCommandRuntimeStateForStatusKey(RUNTIME_STATUS.AWAITING_PROJECT_TRUST)).toBe(
+      "not_started",
+    );
     expect(notebookCommandRuntimeStateForStatusKey(RUNTIME_STATUS.LAUNCHING)).toBe("starting");
     expect(notebookCommandRuntimeStateForStatusKey(RUNTIME_STATUS.RUNNING_IDLE)).toBe("idle");
     expect(notebookCommandRuntimeStateForStatusKey(RUNTIME_STATUS.RUNNING_UNKNOWN)).toBe("idle");

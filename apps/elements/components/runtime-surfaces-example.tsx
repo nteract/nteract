@@ -3,6 +3,7 @@
 import {
   AlertTriangle,
   CircleDot,
+  FolderLock,
   GitBranch,
   PackageCheck,
   RotateCw,
@@ -10,6 +11,7 @@ import {
   ShieldAlert,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
+import type { ProjectTrustState } from "runtimed";
 import { Button } from "@/components/ui/button";
 import { asyncTrue, noop } from "./fixture-notebook-host";
 import {
@@ -21,6 +23,7 @@ import {
   NotebookNotice,
   NotebookNoticeAction,
   PoolErrorBanner,
+  ProjectTrustDialog,
   RuntimeDecisionDialog,
   TrustDialog,
   UntrustedBanner,
@@ -53,6 +56,12 @@ const runtimePieces = [
     name: "EnvBuildDecisionDialog",
     source: "src/components/notebook/EnvBuildDecisionDialog.tsx",
     role: "Missing conda environment remediation with copy and create actions.",
+    status: "rendered",
+  },
+  {
+    name: "ProjectTrustDialog",
+    source: "src/components/notebook/ProjectTrustDialog.tsx",
+    role: "Project-folder trust gate with the manifest summary, red flags, folder scope, and notebook-environment fallback.",
     status: "rendered",
   },
   {
@@ -123,6 +132,36 @@ conda env create -f /Users/kyle/notebooks/environment.yml
 
 The declared environment includes Python 3.13, pandas, scikit-learn, and matplotlib.`;
 
+const projectTrustFixture: ProjectTrustState = {
+  status: "untrusted",
+  needs_approval: true,
+  manifest_path: "/Users/kyle/code/analysis/notebooks/pyproject.toml",
+  kind: "pyproject_toml",
+  project_dir: "/Users/kyle/code/analysis/notebooks",
+  repo_root: "/Users/kyle/code/analysis",
+  trusted_dir: null,
+  summary: {
+    dependencies: [
+      "pandas>=2.2",
+      "polars",
+      "scikit-learn",
+      "matplotlib",
+      "pyarrow",
+      "duckdb",
+      "httpx",
+      "rich",
+      "typer",
+      "pydantic",
+    ],
+    non_registry_sources: ["shared-utils @ git+https://github.com/example/shared-utils"],
+    indexes_and_channels: ["https://pypi.example.internal/simple"],
+    build_backend: "hatchling.build",
+    activation_scripts: [],
+    outside_directory: ["../../vendor/plotting"],
+    environment_to_build: null,
+  },
+};
+
 const kernelLaunchError = [
   "Kernel process exited immediately: exit status: 1",
   "stderr tail:",
@@ -133,6 +172,7 @@ const kernelLaunchError = [
 function RuntimeDialogs({ scenario }: { scenario: ElementsNotebookScenario }) {
   const [trustOpen, setTrustOpen] = useState(false);
   const [envOpen, setEnvOpen] = useState(false);
+  const [projectTrustOpen, setProjectTrustOpen] = useState(false);
   const [decisionShellOpen, setDecisionShellOpen] = useState(false);
 
   return (
@@ -173,6 +213,25 @@ function RuntimeDialogs({ scenario }: { scenario: ElementsNotebookScenario }) {
           onOpenChange={setEnvOpen}
           errorDetails={envBuildDetails}
           onCreate={noop}
+        />
+      </div>
+
+      <div className="rounded-lg border border-fd-border bg-fd-background p-4">
+        <FolderLock className="mb-3 size-4 text-amber-500" aria-hidden="true" />
+        <h3 className="text-sm font-semibold">Project folder trust</h3>
+        <p className="mt-2 min-h-[3rem] text-xs leading-5 text-fd-muted-foreground">
+          Opens the project-folder trust gate with a pyproject.toml fixture that carries every red
+          flag and a repository-root choice.
+        </p>
+        <Button className="mt-4" size="sm" onClick={() => setProjectTrustOpen(true)}>
+          Open ProjectTrustDialog
+        </Button>
+        <ProjectTrustDialog
+          open={projectTrustOpen}
+          onOpenChange={setProjectTrustOpen}
+          projectTrust={projectTrustFixture}
+          onTrust={() => setProjectTrustOpen(false)}
+          onUseNotebookEnv={() => setProjectTrustOpen(false)}
         />
       </div>
 

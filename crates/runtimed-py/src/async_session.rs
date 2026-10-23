@@ -312,6 +312,35 @@ impl AsyncSession {
         })
     }
 
+    /// Trust a folder so project files at or below it may drive uv, pixi,
+    /// or conda on this machine. Launch the kernel afterwards.
+    fn approve_project_trust<'py>(
+        &self,
+        py: Python<'py>,
+        directory: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move {
+            session_core::approve_project_trust(&state, directory).await
+        })
+    }
+
+    /// Use the notebook environment instead of the project file in
+    /// `directory`. With `remember`, the choice persists for that folder.
+    /// Launch the kernel afterwards.
+    #[pyo3(signature = (directory, remember=false))]
+    fn decline_project_trust<'py>(
+        &self,
+        py: Python<'py>,
+        directory: String,
+        remember: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move {
+            session_core::decline_project_trust(&state, directory, remember).await
+        })
+    }
+
     // =========================================================================
     // Connection
     // =========================================================================

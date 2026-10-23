@@ -1672,6 +1672,10 @@ pub struct NotebookRoom {
     /// allow the lint here rather than widen the store's surface.
     #[allow(private_interfaces)]
     pub trusted_packages: crate::trusted_packages::TrustedPackageStore,
+    /// Canonical directory the user chose "use the notebook environment"
+    /// for without remembering it. Room-scoped; persisted choices live in
+    /// the trusted-directories table.
+    pub(crate) project_trust_session_decline: std::sync::Mutex<Option<std::path::PathBuf>>,
     /// Per-notebook RuntimeStateDoc handle — daemon-authoritative ephemeral state
     /// (kernel status, queue, env sync). Clients sync read-only.
     /// Uses `std::sync::Mutex` internally (no `.await` needed).
@@ -2121,6 +2125,7 @@ impl NotebookRoom {
                 // cell source needs its own explicit notebook approval.
                 if matches!(initial.status, runt_trust::TrustStatus::Untrusted)
                     && initial.pep723_dependencies.is_empty()
+                    && crate::project_trust::notebook_project_is_trusted(&trusted_packages, p)
                     && project_file_deps_match_trust_info(p, &initial.info)
                 {
                     match trusted_packages.add_from_info(&initial.info, "project_file") {
@@ -2383,6 +2388,7 @@ impl NotebookRoom {
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
             trusted_packages,
+            project_trust_session_decline: std::sync::Mutex::new(None),
             state,
             comms,
             comments,

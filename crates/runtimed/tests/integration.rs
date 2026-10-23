@@ -1795,6 +1795,21 @@ async fn test_untrusted_launch_and_sync_environment_are_daemon_rejected() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
+/// Poll the synced RuntimeStateDoc until `predicate` holds.
+async fn wait_for_runtime_state(
+    handle: &notebook_sync::DocHandle,
+    predicate: impl Fn(&runtime_doc::RuntimeState) -> bool,
+) -> runtime_doc::RuntimeState {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let state = handle.get_runtime_state().unwrap();
+        if predicate(&state) || tokio::time::Instant::now() >= deadline {
+            return state;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 #[tokio::test]
 async fn test_launch_kernel_environment_mode_controls_project_priority() {
     use notebook_protocol::connection::CreateNotebookEnvironmentMode;
@@ -1842,46 +1857,101 @@ async fn test_launch_kernel_environment_mode_controls_project_priority() {
                 "{label} client should reach session-ready state"
             );
 
-            handle
+            let response = handle
                 .send_request(NotebookRequest::LaunchKernel {
                     kernel_type: "python".to_string(),
                     env_source: LaunchSpec::Auto,
                     notebook_path: Some(notebook_path.display().to_string()),
                 })
                 .await
-                .unwrap()
+                .unwrap();
+            (response, handle)
         }
     };
 
-    let auto = launch_with_mode(CreateNotebookEnvironmentMode::Auto, "auto").await;
+    // Auto keeps project-first priority, and the project folder is not
+    // trusted, so the launch parks before conda sees the file.
+    let (auto, auto_handle) = launch_with_mode(CreateNotebookEnvironmentMode::Auto, "auto").await;
     assert!(
-        matches!(
-            auto,
-            NotebookResponse::Error { ref error }
-                if error.contains("environment.yml declares conda env")
-        ),
-        "auto should preserve project-first priority and stop at the project environment.yml, got {auto:?}"
+        matches!(auto, NotebookResponse::Error { ref error } if error.contains("not trusted")),
+        "auto should stop at the untrusted project folder, got {auto:?}"
+    );
+    let parked = wait_for_runtime_state(&auto_handle, |s| {
+        s.kernel.lifecycle == RuntimeLifecycle::AwaitingProjectTrust
+    })
+    .await;
+    assert_eq!(
+        parked.kernel.lifecycle,
+        RuntimeLifecycle::AwaitingProjectTrust
+    );
+    assert!(parked.project_trust.needs_approval);
+    assert_eq!(parked.project_trust.kind, "environment_yml");
+    assert!(
+        parked
+            .project_trust
+            .summary
+            .indexes_and_channels
+            .iter()
+            .any(|c| c.contains("packages.example.invalid")),
+        "dialog summary should flag the custom channel: {:?}",
+        parked.project_trust.summary
+    );
+    assert!(
+        parked.project_trust.summary.environment_to_build.is_some(),
+        "dialog summary should say an environment will be built"
     );
 
-    let project = launch_with_mode(CreateNotebookEnvironmentMode::Project, "project").await;
+    let (project, _project_handle) =
+        launch_with_mode(CreateNotebookEnvironmentMode::Project, "project").await;
     assert!(
-        matches!(
-            project,
-            NotebookResponse::Error { ref error }
-                if error.contains("environment.yml declares conda env")
-        ),
-        "project should explicitly use project-first priority and stop at the project environment.yml, got {project:?}"
+        matches!(project, NotebookResponse::Error { ref error } if error.contains("not trusted")),
+        "project mode should stop at the untrusted project folder, got {project:?}"
     );
 
-    let notebook = launch_with_mode(CreateNotebookEnvironmentMode::Notebook, "notebook").await;
+    let (notebook, _notebook_handle) =
+        launch_with_mode(CreateNotebookEnvironmentMode::Notebook, "notebook").await;
     assert!(
         matches!(
             notebook,
             NotebookResponse::Error { ref error }
-                if error.contains("UV pool empty") && !error.contains("environment.yml")
+                if error.contains("UV pool empty") && !error.contains("not trusted")
         ),
         "notebook mode should ignore project files and fall through to notebook/prewarmed selection, got {notebook:?}"
     );
+
+    // A directory that does not contain the project is refused.
+    let elsewhere = temp_dir.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let refused = auto_handle
+        .send_request(NotebookRequest::ApproveProjectTrust {
+            directory: elsewhere.display().to_string(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(refused, NotebookResponse::Error { .. }),
+        "unrelated directory should be refused, got {refused:?}"
+    );
+
+    // Trusting the folder releases the parked lifecycle. The test stops
+    // here: relaunching would try to build a real conda env.
+    let approved = auto_handle
+        .send_request(NotebookRequest::ApproveProjectTrust {
+            directory: project_dir.display().to_string(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(approved, NotebookResponse::Ok {}),
+        "trusting the project folder should succeed, got {approved:?}"
+    );
+    let released = wait_for_runtime_state(&auto_handle, |s| {
+        s.project_trust.status == "trusted" && s.kernel.lifecycle == RuntimeLifecycle::NotStarted
+    })
+    .await;
+    assert_eq!(released.project_trust.status, "trusted");
+    assert!(!released.project_trust.needs_approval);
+    assert_eq!(released.kernel.lifecycle, RuntimeLifecycle::NotStarted);
 
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;

@@ -332,9 +332,7 @@ pub(crate) async fn apply(
     expected_revision: u64,
     observed_heads: Vec<String>,
 ) -> NotebookResponse {
-    use crate::notebook_sync_server::{
-        missing_conda_env_yml_decision, project_environment_build_approved, ManualLaunchAdmission,
-    };
+    use crate::notebook_sync_server::ManualLaunchAdmission;
     use notebook_protocol::connection::LaunchSpec;
     if room.is_hosted() {
         return rejected("Local environments are unavailable for hosted notebooks".into());
@@ -372,14 +370,16 @@ pub(crate) async fn apply(
                 Some(path) => Some(path),
                 None => room.identity.working_dir.read().await.clone(),
             };
+            // Check before the old kernel stops: Automatic would park on an
+            // untrusted project and leave the notebook without a kernel.
             if let Some(detected) = path
                 .as_deref()
                 .and_then(crate::project_file::detect_project_file)
             {
-                if missing_conda_env_yml_decision(&detected).is_some()
-                    && !project_environment_build_approved(room, &detected)
+                if crate::project_trust::evaluate_for_room(room, &detected).verdict
+                    == crate::project_trust::ProjectTrustVerdict::NeedsApproval
                 {
-                    return rejected("Review and approve the project environment build before applying Automatic".into());
+                    return rejected("Trust the project folder before applying Automatic".into());
                 }
             }
             None

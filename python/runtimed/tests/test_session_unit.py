@@ -265,6 +265,7 @@ class TestKernelStatusConstants:
         """Each constant matches the exact wire string the daemon writes."""
         assert runtimed.KERNEL_STATUS.NOT_STARTED == "not_started"
         assert runtimed.KERNEL_STATUS.AWAITING_TRUST == "awaiting_trust"
+        assert runtimed.KERNEL_STATUS.AWAITING_PROJECT_TRUST == "awaiting_project_trust"
         assert runtimed.KERNEL_STATUS.AWAITING_ENV_BUILD == "awaiting_env_build"
         assert runtimed.KERNEL_STATUS.STARTING == "starting"
         assert runtimed.KERNEL_STATUS.IDLE == "idle"
@@ -338,6 +339,7 @@ class _NotebookTrustSession:
     def __init__(self, fingerprint="sha256:current"):
         self._fingerprint = fingerprint
         self.approve_trust_calls = []
+        self.project_trust_calls = []
 
     async def dependency_fingerprint(self):
         return self._fingerprint
@@ -356,6 +358,12 @@ class _NotebookTrustSession:
 
     async def get_pep723_dependencies(self):
         return ["payload @ https://example.test/payload.tar.gz"]
+
+    async def approve_project_trust(self, directory):
+        self.project_trust_calls.append(("approve", directory))
+
+    async def decline_project_trust(self, directory, remember=False):
+        self.project_trust_calls.append(("decline", directory, remember))
 
 
 class TestNotebookTrustMethods:
@@ -399,6 +407,23 @@ class TestNotebookTrustMethods:
         await notebook.approve_trust("sha256:reviewed")
 
         assert session.approve_trust_calls == [None, "sha256:reviewed"]
+
+    @pytest.mark.asyncio
+    async def test_project_trust_decisions_delegate_to_session(self):
+        from runtimed._notebook import Notebook
+
+        session = _NotebookTrustSession()
+        notebook = Notebook(session)  # ty: ignore[invalid-argument-type]
+
+        await notebook.approve_project_trust("/work/proj")
+        await notebook.decline_project_trust("/work/proj")
+        await notebook.decline_project_trust("/work", remember=True)
+
+        assert session.project_trust_calls == [
+            ("approve", "/work/proj"),
+            ("decline", "/work/proj", False),
+            ("decline", "/work", True),
+        ]
 
 
 class _ExecutionEntry:

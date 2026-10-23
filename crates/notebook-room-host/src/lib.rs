@@ -1828,6 +1828,7 @@ fn lifecycle_is_live(lifecycle: &RuntimeLifecycle) -> bool {
         lifecycle,
         RuntimeLifecycle::Running(_)
             | RuntimeLifecycle::AwaitingTrust
+            | RuntimeLifecycle::AwaitingProjectTrust
             | RuntimeLifecycle::AwaitingEnvBuild
             | RuntimeLifecycle::Resolving
             | RuntimeLifecycle::PreparingEnv

@@ -202,6 +202,8 @@ export type NotebookRequest =
       reviewed_pep723_dependencies?: string[] | null;
     }
   | { type: "approve_project_environment"; project_file_path?: string | null }
+  | { type: "approve_project_trust"; directory: string }
+  | { type: "decline_project_trust"; directory: string; remember?: boolean }
   | { type: "get_doc_bytes" }
   | { type: "acknowledge_notebook_sync" }
   | {

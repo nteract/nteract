@@ -3,6 +3,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import {
   colorForActorIdentity,
   contrastColorForActorIdentity,
+  DEFAULT_PROJECT_TRUST_STATE,
   deriveEnvManager,
   deriveRuntimeKind,
   notebookCellAnchorId,
@@ -60,6 +61,7 @@ import {
   DaemonStatusBanner,
   DebugBanner,
   EnvBuildDecisionDialog,
+  ProjectTrustDialog,
   ComputeDisconnectedNotice,
   KernelLaunchErrorBanner,
   isRuntimePeerDisconnectedErrorDetails,
@@ -457,6 +459,12 @@ function AppContent() {
   const [showIsolationTest, setShowIsolationTest] = useState(false);
   const [envBuildDialogOpen, setEnvBuildDialogOpen] = useState(false);
   const [dismissedEnvBuildDetails, setDismissedEnvBuildDetails] = useState<string | null>(null);
+  const [projectTrustDialogOpen, setProjectTrustDialogOpen] = useState(false);
+  // Manifest path the user dismissed the project-trust dialog for. A
+  // different manifest re-presents the dialog.
+  const [dismissedProjectTrustManifest, setDismissedProjectTrustManifest] = useState<string | null>(
+    null,
+  );
   const [clearingDeps, setClearingDeps] = useState(false);
   // Per-error-instance dismissal for the kernel-launch error banner.
   // Stores the `errorDetails` string the user dismissed; cleared
@@ -659,6 +667,8 @@ function AppContent() {
     shutdownKernel,
     syncEnvironment,
     approveProjectEnvironment,
+    approveProjectTrust,
+    declineProjectTrust,
     runAllCells: daemonRunAllCells,
     runAllCellsGuarded,
     sendCommMessage,
@@ -1187,6 +1197,21 @@ function AppContent() {
     }
   }, [dismissedEnvBuildDetails, errorDetails, lifecycle.lifecycle]);
 
+  // Older daemons predate the additive field and omit it entirely.
+  const projectTrust = runtimeState.project_trust ?? DEFAULT_PROJECT_TRUST_STATE;
+  const projectTrustNeedsApproval =
+    lifecycle.lifecycle === "AwaitingProjectTrust" && projectTrust.needs_approval;
+  useEffect(() => {
+    if (!projectTrustNeedsApproval) {
+      setProjectTrustDialogOpen(false);
+      setDismissedProjectTrustManifest(null);
+      return;
+    }
+    if (projectTrust.manifest_path !== dismissedProjectTrustManifest) {
+      setProjectTrustDialogOpen(true);
+    }
+  }, [dismissedProjectTrustManifest, projectTrust.manifest_path, projectTrustNeedsApproval]);
+
   // Clear banner dismissal whenever the kernel leaves Error or the
   // details text changes, so the next failure re-presents the banner
   // even if the user dismissed an earlier identical-looking one.
@@ -1300,6 +1325,7 @@ function AppContent() {
     if (
       kernelStatus === KERNEL_STATUS.NOT_STARTED ||
       kernelStatus === KERNEL_STATUS.AWAITING_TRUST ||
+      kernelStatus === KERNEL_STATUS.AWAITING_PROJECT_TRUST ||
       kernelStatus === KERNEL_STATUS.AWAITING_ENV_BUILD
     ) {
       updateManager.reset();
@@ -1492,6 +1518,11 @@ function AppContent() {
     setEnvBuildDialogOpen(true);
   }, [resetDismissedEnvBuildDetails]);
 
+  const showProjectTrustDialog = useCallback(() => {
+    setDismissedProjectTrustManifest(null);
+    setProjectTrustDialogOpen(true);
+  }, []);
+
   const getProjectEnvironmentFilePath = useCallback(() => {
     if (
       runtimeState.project_context.state === "Detected" &&
@@ -1583,6 +1614,7 @@ function AppContent() {
   );
 
   const {
+    clearProjectTrustError,
     envBuildCreating,
     handleEnvBuildCreate,
     handleExecuteCell: handleExecuteCellAction,
@@ -1608,6 +1640,10 @@ function AppContent() {
     trustApproveOnlyLabel,
     trustDialogDescription,
     trustDialogOpen,
+    handleProjectTrustApprove,
+    handleProjectTrustUseNotebookEnv,
+    projectTrustBusy,
+    projectTrustError,
     tryStartKernel,
   } = useNotebookActionPolicy({
     canExecute: shellCapabilities.canExecute,
@@ -1628,11 +1664,14 @@ function AppContent() {
     applyEnvironmentSelection,
     getEnvironmentConnectionGeneration,
     approveProjectEnvironment,
+    approveProjectTrust,
+    declineProjectTrust,
     runAllCells: daemonRunAllCells,
     runAllCellsGuarded,
     getProjectEnvironmentFilePath,
     resetDismissedEnvBuildDetails,
     showEnvBuildDialog,
+    showProjectTrustDialog,
   });
 
   const handleExecuteCell = useCallback(
@@ -1653,6 +1692,31 @@ function AppContent() {
       }
     },
     [errorDetails],
+  );
+
+  const handleProjectTrustDialogOpenChange = useCallback(
+    (open: boolean) => {
+      setProjectTrustDialogOpen(open);
+      if (!open) {
+        setDismissedProjectTrustManifest(projectTrust.manifest_path);
+        clearProjectTrustError();
+      }
+    },
+    [clearProjectTrustError, projectTrust.manifest_path],
+  );
+
+  const handleProjectTrust = useCallback(
+    (directory: string) => {
+      void handleProjectTrustApprove(directory);
+    },
+    [handleProjectTrustApprove],
+  );
+
+  const handleProjectTrustUseNotebookEnvironment = useCallback(
+    (directory: string, remember: boolean) => {
+      void handleProjectTrustUseNotebookEnv(directory, remember);
+    },
+    [handleProjectTrustUseNotebookEnv],
   );
 
   const { kernelStatus: displayKernelStatus, statusKey: displayStatusKey } =
@@ -2148,6 +2212,15 @@ function AppContent() {
           errorDetails={errorDetails}
           onCreate={handleEnvBuildCreate}
           creating={envBuildCreating}
+        />
+        <ProjectTrustDialog
+          open={projectTrustDialogOpen}
+          onOpenChange={handleProjectTrustDialogOpenChange}
+          projectTrust={projectTrust}
+          onTrust={handleProjectTrust}
+          onUseNotebookEnv={handleProjectTrustUseNotebookEnvironment}
+          busy={projectTrustBusy}
+          error={projectTrustError}
         />
         <NotebookDocumentShell
           railSide={railSide}

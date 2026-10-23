@@ -429,6 +429,7 @@ pub async fn dispatch(
         "remove_dependency" => deps::remove_dependency(server, request).await,
         "get_dependencies" => deps::get_dependencies(server, request).await,
         "approve_trust" => deps::approve_trust(server, request).await,
+        "approve_project_trust" => deps::approve_project_trust(server, request).await,
         // Editing
         "replace_match" => editing::replace_match(server, request).await,
         "replace_regex" => editing::replace_regex(server, request).await,
@@ -1227,5 +1228,12 @@ mod tests {
         assert!(!names.contains(&"remove_dependency".to_string()));
         assert!(!names.contains(&"get_dependencies".to_string()));
         assert!(!names.contains(&"approve_trust".to_string()));
+        assert!(!names.contains(&"approve_project_trust".to_string()));
+        let hidden = hidden_tools()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect::<Vec<_>>();
+        assert!(!hidden.contains(&"approve_trust".to_string()));
+        assert!(!hidden.contains(&"approve_project_trust".to_string()));
     }
 }

@@ -13,7 +13,7 @@ import { SyncEngine } from "../src/sync-engine";
 import { DirectTransport } from "../src/direct-transport";
 import { FrameType } from "../src/transport";
 import { mergeChangesets } from "../src/cell-changeset";
-import { diffExecutions } from "../src/runtime-state";
+import { DEFAULT_PROJECT_TRUST_STATE, diffExecutions } from "../src/runtime-state";
 import type { FrameEvent, HostedBridgeStatus, SessionStatus, SyncableHandle } from "../src/handle";
 import type { CellChangeset } from "../src/cell-changeset";
 import type { RuntimeState } from "../src/runtime-state";
@@ -170,6 +170,7 @@ function makeRuntimeState(
     workstation: null,
     last_saved: null,
     file_checkpoint: { exported_heads: [], save_sequence: null, source_issue: null },
+    project_trust: DEFAULT_PROJECT_TRUST_STATE,
     executions: executions as RuntimeState["executions"],
     comms: {},
     bokeh_sessions: {},
@@ -887,6 +888,7 @@ describe("SyncEngine", () => {
         workstation: null,
         last_saved: null,
         file_checkpoint: { exported_heads: [], save_sequence: null, source_issue: null },
+        project_trust: DEFAULT_PROJECT_TRUST_STATE,
         executions: {},
         comms: {},
         bokeh_sessions: {},
@@ -982,6 +984,7 @@ describe("SyncEngine", () => {
         workstation: null,
         last_saved: null,
         file_checkpoint: { exported_heads: [], save_sequence: null, source_issue: null },
+        project_trust: DEFAULT_PROJECT_TRUST_STATE,
         executions: {
           "exec-1": {
             status: "running",

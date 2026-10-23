@@ -47,11 +47,14 @@ interface NotebookActionPolicyOptions {
   ) => Promise<NotebookResponse>;
   getEnvironmentConnectionGeneration?: () => number;
   approveProjectEnvironment: (projectFilePath?: string) => Promise<NotebookResponse>;
+  approveProjectTrust: (directory: string) => Promise<NotebookResponse>;
+  declineProjectTrust: (directory: string, remember: boolean) => Promise<NotebookResponse>;
   runAllCells: () => Promise<NotebookResponse>;
   runAllCellsGuarded: (provenance: GuardedNotebookProvenance) => Promise<NotebookResponse>;
   getProjectEnvironmentFilePath: () => string | undefined;
   resetDismissedEnvBuildDetails: () => void;
   showEnvBuildDialog: () => void;
+  showProjectTrustDialog: () => void;
 }
 
 interface PendingTrustActionDialogCopy {
@@ -176,11 +179,14 @@ export function useNotebookActionPolicy({
   applyEnvironmentSelection,
   getEnvironmentConnectionGeneration,
   approveProjectEnvironment,
+  approveProjectTrust,
+  declineProjectTrust,
   runAllCells,
   runAllCellsGuarded,
   getProjectEnvironmentFilePath,
   resetDismissedEnvBuildDetails,
   showEnvBuildDialog,
+  showProjectTrustDialog,
 }: NotebookActionPolicyOptions) {
   const [trustDialogOpen, setTrustDialogOpen] = useState(false);
   const [pendingTrustAction, setPendingTrustAction] = useState<PendingTrustAction | null>(null);
@@ -188,6 +194,8 @@ export function useNotebookActionPolicy({
   const [trustActionNotice, setTrustActionNotice] = useState<string | null>(null);
   const [trustApprovalHandoffPending, setTrustApprovalHandoffPending] = useState(false);
   const [envBuildCreating, setEnvBuildCreating] = useState(false);
+  const [projectTrustBusy, setProjectTrustBusy] = useState(false);
+  const [projectTrustError, setProjectTrustError] = useState<string | null>(null);
   const [justSynced, setJustSynced] = useState(false);
   const [environmentApplyPending, setEnvironmentApplyPending] = useState(false);
   const environmentApplyInFlightRef = useRef(false);
@@ -735,6 +743,49 @@ export function useNotebookActionPolicy({
     tryStartKernel,
   ]);
 
+  // Project-folder trust and "use the notebook environment" both reset the
+  // daemon lifecycle to NotStarted. The client launches the kernel after.
+  const resolveProjectTrust = useCallback(
+    async (request: () => Promise<NotebookResponse>, label: string): Promise<boolean> => {
+      setProjectTrustBusy(true);
+      setProjectTrustError(null);
+      try {
+        const response = await request();
+        if (response.result === "error") {
+          logger.error(`[notebook-action-policy] ${label} failed`, response.error);
+          setProjectTrustError(response.error);
+          return false;
+        }
+        await tryStartKernel();
+        return true;
+      } catch (error) {
+        logger.error(`[notebook-action-policy] ${label} failed`, error);
+        setProjectTrustError(error instanceof Error ? error.message : String(error));
+        return false;
+      } finally {
+        setProjectTrustBusy(false);
+      }
+    },
+    [tryStartKernel],
+  );
+
+  const handleProjectTrustApprove = useCallback(
+    (directory: string) =>
+      resolveProjectTrust(() => approveProjectTrust(directory), "approveProjectTrust"),
+    [approveProjectTrust, resolveProjectTrust],
+  );
+
+  const handleProjectTrustUseNotebookEnv = useCallback(
+    (directory: string, remember: boolean) =>
+      resolveProjectTrust(
+        () => declineProjectTrust(directory, remember),
+        "declineProjectTrust",
+      ),
+    [declineProjectTrust, resolveProjectTrust],
+  );
+
+  const clearProjectTrustError = useCallback(() => setProjectTrustError(null), []);
+
   const handleStartKernelWithPyproject = useCallback(async () => {
     if (!canExecute) {
       logger.debug(
@@ -796,6 +847,10 @@ export function useNotebookActionPolicy({
       executingCellsRef.current.add(cellId);
 
       try {
+        if (kernelStatus === KERNEL_STATUS.AWAITING_PROJECT_TRUST) {
+          showProjectTrustDialog();
+          return;
+        }
         if (
           kernelStatus === KERNEL_STATUS.NOT_STARTED ||
           kernelStatus === KERNEL_STATUS.AWAITING_TRUST
@@ -836,15 +891,20 @@ export function useNotebookActionPolicy({
       getNotebookCellsSnapshot,
       kernelStatus,
       sessionReady,
+      showProjectTrustDialog,
       tryStartKernel,
     ],
   );
 
   const handleStartKernel = useCallback(
     async (_name: string) => {
+      if (kernelStatus === KERNEL_STATUS.AWAITING_PROJECT_TRUST) {
+        showProjectTrustDialog();
+        return;
+      }
       await tryStartKernel();
     },
-    [tryStartKernel],
+    [kernelStatus, showProjectTrustDialog, tryStartKernel],
   );
 
   const handleRestartKernel = useCallback(async () => {
@@ -879,8 +939,13 @@ export function useNotebookActionPolicy({
       if (
         kernelStatus === KERNEL_STATUS.NOT_STARTED ||
         kernelStatus === KERNEL_STATUS.AWAITING_TRUST ||
+        kernelStatus === KERNEL_STATUS.AWAITING_PROJECT_TRUST ||
         kernelStatus === KERNEL_STATUS.AWAITING_ENV_BUILD
       ) {
+        if (kernelStatus === KERNEL_STATUS.AWAITING_PROJECT_TRUST) {
+          showProjectTrustDialog();
+          return;
+        }
         if (kernelStatus === KERNEL_STATUS.AWAITING_ENV_BUILD) {
           showEnvBuildDialog();
           return;
@@ -908,6 +973,7 @@ export function useNotebookActionPolicy({
     runAllCells,
     sessionReady,
     showEnvBuildDialog,
+    showProjectTrustDialog,
     tryStartKernel,
   ]);
 
@@ -927,6 +993,7 @@ export function useNotebookActionPolicy({
   );
 
   return {
+    clearProjectTrustError,
     envBuildCreating,
     handleEnvBuildCreate,
     handleExecuteCell,
@@ -946,6 +1013,10 @@ export function useNotebookActionPolicy({
     justSynced,
     openTrustDialogForKernelStart,
     pendingTrustAction,
+    handleProjectTrustApprove,
+    handleProjectTrustUseNotebookEnv,
+    projectTrustBusy,
+    projectTrustError,
     setTrustActionNotice,
     trustActionNotice,
     trustApprovalHandoffPending,

@@ -508,7 +508,9 @@ fn request_required_scope(
         | NotebookRequest::ReconcileNotebookSource { .. }
         | NotebookRequest::SyncEnvironment { .. }
         | NotebookRequest::ApproveTrust { .. }
-        | NotebookRequest::ApproveProjectEnvironment { .. } => RequestRequiredScope::Owner,
+        | NotebookRequest::ApproveProjectEnvironment { .. }
+        | NotebookRequest::ApproveProjectTrust { .. }
+        | NotebookRequest::DeclineProjectTrust { .. } => RequestRequiredScope::Owner,
         NotebookRequest::SendComm { .. }
         | NotebookRequest::ApplyBokehSessionPatch { .. }
         | NotebookRequest::CloneAsEphemeral { .. }

@@ -1,8 +1,9 @@
 //! `NotebookRequest::ApproveProjectEnvironment` handler.
 //!
-//! Project environment approval is local setup consent. It records the
-//! project file's packages in the existing local package allowlist, without
-//! writing notebook dependency metadata or trust signatures.
+//! Clients that predate project-directory trust send this from the
+//! environment.yml build dialog. It trusts the environment.yml's directory,
+//! which is the consent the launch gate checks, and records the file's
+//! packages in the local allowlist.
 
 use std::path::PathBuf;
 
@@ -36,6 +37,18 @@ pub(crate) async fn handle(
             };
         }
     };
+
+    if let Some(dir) = detected.path.parent() {
+        if let Err(error) = room.trusted_packages.set_directory_decision(
+            dir,
+            crate::trusted_packages::DirectoryDecision::Trusted,
+            "project_env_dialog",
+        ) {
+            return NotebookResponse::Error {
+                error: format!("Failed to trust project folder: {error}"),
+            };
+        }
+    }
 
     if let Err(error) = room
         .trusted_packages

@@ -101,6 +101,16 @@ impl FrameSink for Sink {
                 let envelope: NotebookRequestEnvelope = serde_json::from_slice(payload).unwrap();
                 let response = match &envelope.request {
                     NotebookRequest::ApproveTrust { .. } => NotebookResponse::Ok {},
+                    // The daemon releases a parked room after either decision
+                    // and leaves the launch to the client.
+                    NotebookRequest::ApproveProjectTrust { .. }
+                    | NotebookRequest::DeclineProjectTrust { .. } => {
+                        peer.runtime
+                            .set_lifecycle(&RuntimeLifecycle::NotStarted)
+                            .unwrap();
+                        peer.sync_runtime();
+                        NotebookResponse::Ok {}
+                    }
                     NotebookRequest::ShutdownKernel {} => {
                         peer.runtime
                             .set_lifecycle(&RuntimeLifecycle::Shutdown)
@@ -221,6 +231,38 @@ impl RestartFixture {
             env_source: EnvSource::ExistingConda,
             launched_config: Default::default(),
         }
+    }
+
+    /// Park the room the way the daemon does when a project file's folder
+    /// is untrusted, and wait until the client sees it.
+    pub(in crate::tools) async fn park_on_project_trust(
+        &self,
+        state: runtime_doc::ProjectTrustRuntimeState,
+    ) {
+        {
+            let mut peer = self.peer.lock().unwrap();
+            peer.runtime.set_kernel_info("", "", "").unwrap();
+            peer.runtime.set_project_trust(&state).unwrap();
+            peer.runtime
+                .set_lifecycle(&RuntimeLifecycle::AwaitingProjectTrust)
+                .unwrap();
+            peer.sync_runtime();
+        }
+        self.handle.confirm_state_sync().await.unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while self.handle.get_runtime_state().unwrap().kernel.lifecycle
+            != RuntimeLifecycle::AwaitingProjectTrust
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "client never saw park"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    pub(in crate::tools) fn requests(&self) -> Vec<NotebookRequest> {
+        self.peer.lock().unwrap().requests.clone()
     }
 
     pub(in crate::tools) fn synced_dependencies(&self) -> Vec<String> {

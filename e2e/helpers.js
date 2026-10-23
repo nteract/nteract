@@ -368,6 +368,43 @@ export async function approveTrustDialog(timeout = 15000) {
 }
 
 /**
+ * Trust the project folder when the project-trust dialog opens.
+ *
+ * The daemon parks a room in `AwaitingProjectTrust` when a project file
+ * (pyproject.toml, pixi.toml, environment.yml) would drive the environment
+ * and its folder is not trusted on this machine. The app opens the dialog
+ * on its own. This clicks "Trust folder", which trusts the default target
+ * (the manifest's folder), and waits for the daemon to leave the parked
+ * state.
+ *
+ * @param timeout Max time to wait for the dialog (default 60s)
+ * @returns true if the folder was trusted, false if the dialog never appeared
+ */
+export async function approveProjectTrustDialog(timeout = 60000) {
+  const dialog = await $('[data-testid="project-trust-dialog"]');
+  try {
+    await dialog.waitForExist({ timeout });
+  } catch {
+    console.log("Project trust dialog did not appear (folder may already be trusted)");
+    return false;
+  }
+
+  const trustButton = await $('[data-testid="project-trust-trust-button"]');
+  await trustButton.waitForEnabled({ timeout: 30000 });
+  await trustButton.waitForClickable({ timeout: 5000 });
+  await trustButton.click();
+
+  // The dialog closes when the daemon leaves AwaitingProjectTrust.
+  await browser.waitUntil(async () => !(await dialog.isExisting()), {
+    timeout: 60000,
+    interval: 300,
+    timeoutMsg: "Project trust dialog did not close",
+  });
+
+  return true;
+}
+
+/**
  * Wait for kernel ready while handling trust approval if needed.
  *
  * For untrusted notebooks, the kernel won't auto-launch — the user must

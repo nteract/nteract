@@ -266,6 +266,17 @@ export function useDaemonKernel({
     [client],
   );
 
+  const approveProjectTrust = useCallback(
+    (directory: string) => client.approveProjectTrust(directory) as Promise<NotebookResponse>,
+    [client],
+  );
+
+  const declineProjectTrust = useCallback(
+    (directory: string, remember: boolean) =>
+      client.declineProjectTrust(directory, remember) as Promise<NotebookResponse>,
+    [client],
+  );
+
   const runAllCells = useCallback(
     () => client.runAllCells() as Promise<NotebookResponse>,
     [client],
@@ -305,6 +316,8 @@ export function useDaemonKernel({
     shutdownKernel,
     syncEnvironment,
     approveProjectEnvironment,
+    approveProjectTrust,
+    declineProjectTrust,
     runAllCells,
     runAllCellsGuarded,
     sendCommMessage,

@@ -64,12 +64,10 @@ pub(crate) fn pixi_frozen_env_vars(frozen: bool) -> HashMap<String, String> {
 ///   `SkipOrOnline`: the existing launch path produces a better-typed
 ///   error than this probe can.
 pub(crate) async fn prepare_pixi_toml_environment(
-    notebook_path: Option<&Path>,
+    manifest: &crate::project_trust::TrustedProjectManifest,
     progress_handler: Arc<dyn ProgressHandler>,
 ) -> PixiPrepareOutcome {
-    let Some(manifest_path) = locate_pixi_manifest(notebook_path) else {
-        return PixiPrepareOutcome::SkipOrOnline;
-    };
+    let manifest_path = manifest.path().to_path_buf();
     let project_path_label = manifest_path.display().to_string();
 
     progress_handler.on_progress(
@@ -136,7 +134,9 @@ pub(crate) async fn prepare_pixi_toml_environment(
     }
 }
 
-fn locate_pixi_manifest(notebook_path: Option<&Path>) -> Option<std::path::PathBuf> {
+/// The pixi manifest a `pixi:toml` launch from `notebook_path` would use.
+/// The project trust gate evaluates this file before pixi sees it.
+pub(crate) fn locate_pixi_manifest(notebook_path: Option<&Path>) -> Option<std::path::PathBuf> {
     locate_pixi_manifest_with_home(notebook_path?, dirs::home_dir())
 }
 

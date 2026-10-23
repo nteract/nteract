@@ -387,6 +387,14 @@ async fn ensure_create_runtime_ready(
                 }
                 return Err(to_py_err(message));
             }
+            // Relaunching would only park again. The caller must decide with
+            // approve_project_trust() or decline_project_trust().
+            RuntimeLifecycle::AwaitingProjectTrust => {
+                return Err(to_py_err(
+                    "Kernel launch is waiting for project folder trust; call \
+                     approve_project_trust(directory) or decline_project_trust(directory)",
+                ));
+            }
             RuntimeLifecycle::NotStarted
             | RuntimeLifecycle::AwaitingTrust
             | RuntimeLifecycle::AwaitingEnvBuild
@@ -2033,6 +2041,53 @@ pub(crate) async fn approve_trust(
         NotebookResponse::Error { error } => Err(to_py_err(error)),
         other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
     }
+}
+
+/// Send a project-folder trust decision. The daemon releases a room parked at
+/// `AwaitingProjectTrust` to `NotStarted`; the caller launches afterwards.
+async fn send_project_trust_decision(
+    state: &Arc<Mutex<SessionState>>,
+    request: NotebookRequest,
+) -> PyResult<()> {
+    let handle = {
+        let st = state.lock().await;
+        st.handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone()
+    };
+
+    let response = handle.send_request(request).await.map_err(to_py_err)?;
+    match response {
+        NotebookResponse::Ok {} => Ok(()),
+        NotebookResponse::Error { error } => Err(to_py_err(error)),
+        other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
+    }
+}
+
+/// Trust a folder so project files at or below it may drive uv, pixi, or
+/// conda on this machine.
+pub(crate) async fn approve_project_trust(
+    state: &Arc<Mutex<SessionState>>,
+    directory: String,
+) -> PyResult<()> {
+    send_project_trust_decision(state, NotebookRequest::ApproveProjectTrust { directory }).await
+}
+
+/// Use the notebook environment instead of the project file in `directory`.
+pub(crate) async fn decline_project_trust(
+    state: &Arc<Mutex<SessionState>>,
+    directory: String,
+    remember: bool,
+) -> PyResult<()> {
+    send_project_trust_decision(
+        state,
+        NotebookRequest::DeclineProjectTrust {
+            directory,
+            remember,
+        },
+    )
+    .await
 }
 
 /// Set dependency metadata and immediately approve the resulting metadata.

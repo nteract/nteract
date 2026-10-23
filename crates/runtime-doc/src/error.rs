@@ -12,6 +12,8 @@ pub enum RuntimeStateError {
     InvalidProgressShape,
     #[error("invalid Bokeh session: {0}")]
     InvalidBokehSession(String),
+    #[error("invalid project trust state: {0}")]
+    InvalidProjectTrust(String),
     #[error("automerge: {0}")]
     Automerge(#[from] AutomergeError),
     #[error("automerge recovery: {0}")]

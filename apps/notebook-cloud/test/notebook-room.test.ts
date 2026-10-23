@@ -6488,6 +6488,8 @@ describe("NotebookRoom materialized sync routing", () => {
       "shutdown_kernel",
       "sync_environment",
       "get_history",
+      "approve_project_trust",
+      "decline_project_trust",
     ] as const;
 
     for (const action of unsupportedActions) {
