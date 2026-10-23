@@ -20,6 +20,30 @@ describe("CellContainer", () => {
     expect(lane).not.toHaveClass("-translate-x-full");
   });
 
+  it("pads the state lane from the editor line box unless a caller overrides it", () => {
+    const { container, rerender } = render(
+      <CellContainer id="lane-cell" cellType="code" codeContent={<div>source</div>} />,
+    );
+
+    const lane = () => container.querySelector('[data-slot="cell-state-lane"]');
+    expect(lane()).toHaveClass("pt-[calc(1rem+var(--cell-state-lane-shift,0px))]");
+    expect(lane()).toHaveClass("sm:pt-[calc(0.875rem+var(--cell-state-lane-shift,0px))]");
+
+    rerender(
+      <CellContainer
+        id="lane-cell"
+        cellType="code"
+        codeContent={<div>source</div>}
+        stateLaneClassName="pt-2 sm:pt-2"
+      />,
+    );
+
+    expect(lane()).toHaveClass("pt-2");
+    expect(lane()).toHaveClass("sm:pt-2");
+    expect(lane()).not.toHaveClass("pt-[calc(1rem+var(--cell-state-lane-shift,0px))]");
+    expect(lane()).not.toHaveClass("sm:pt-[calc(0.875rem+var(--cell-state-lane-shift,0px))]");
+  });
+
   it("shows right edge controls when the cell is focused", () => {
     const { container } = render(
       <CellContainer

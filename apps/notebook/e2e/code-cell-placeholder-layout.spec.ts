@@ -37,7 +37,9 @@ test.describe("code cell placeholder layout", () => {
 
     expect(metrics.editorMarginTop).toBe("0px");
     expect(Math.abs(metrics.placeholderToRowCenter)).toBeLessThanOrEqual(4);
-    expect(Math.abs(metrics.placeholderToExecuteCenter)).toBeLessThanOrEqual(2);
+    // Measured delta at this width is -0.2px; 0.5 catches the ~1.6px drift a
+    // host font-size change produces when the lane does not follow the line box.
+    expect(Math.abs(metrics.placeholderToExecuteCenter)).toBeLessThanOrEqual(0.5);
     expect(metrics.rowHeight).toBeGreaterThan(50);
   });
 });

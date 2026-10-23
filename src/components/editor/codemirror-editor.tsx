@@ -17,6 +17,7 @@ import {
 } from "react";
 
 import { cn } from "@/lib/utils";
+import { editorFontSizeClass } from "./editor-metrics";
 import { defaultExtensions } from "./extensions";
 import { editorFontFamilyForLanguage, useNotebookEditorSettings } from "./editor-settings-store";
 import { getIPythonExtension, getLanguageExtension, type SupportedLanguage } from "./languages";
@@ -464,7 +465,7 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
         ref={containerRef}
         onBlur={onBlur}
         onFocus={handleFocus}
-        className={cn("text-sm", className)}
+        className={cn(editorFontSizeClass, className)}
       />
     );
   },

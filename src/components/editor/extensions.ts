@@ -16,6 +16,7 @@ import {
   keymap,
   rectangularSelection,
 } from "@codemirror/view";
+import { editorLineHeight } from "./editor-metrics";
 
 /**
  * Custom editor styles for notebook contexts
@@ -32,6 +33,10 @@ export const notebookEditorTheme = EditorView.theme({
   // Remove focus dotted outline
   "&.cm-focused": {
     outline: "none",
+  },
+  // The cell state lane derives the first line box from this value.
+  ".cm-scroller": {
+    lineHeight: String(editorLineHeight),
   },
   // Top padding inside editor so peer cursor labels have room above line 1
   // Flag is ~19px tall (11px font × 1.2 line-height + 4px padding + 1px margin)
