@@ -182,9 +182,14 @@ export default {
           ...(request.method === "POST" ? await readJson(request) : {}),
           read: request.method === "GET",
         });
-        // The original GET passed authentication/origin checks. This POST is
-        // host-created and must carry the same-origin evidence of that check.
-        if (!internal.headers.has("origin")) internal.headers.set("origin", url.origin);
+        // The original request already passed authentication/origin checks.
+        // This host-created POST uses the configured public origin: a tunnel
+        // can give the inbound URL a private HTTP origin instead.
+        if (!internal.headers.has("origin"))
+          internal.headers.set(
+            "origin",
+            new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin,
+          );
         return env.PAGES.getByName(pageId).fetch(internal);
       }
       if (["/api/connect", "/api/sync", "/api/saved"].includes(url.pathname)) {
