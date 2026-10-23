@@ -1,0 +1,44 @@
+{
+  "name": "@nteract/pages-native-experiment",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/dev.mjs",
+    "test": "tsx --tsconfig tsconfig.json --test worker/*.test.mjs model/*.test.mjs viewer/*.test.mjs test/*.test.mjs scripts/*.test.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:editor": "node scripts/editor-smoke.mjs"
+  },
+  "dependencies": {
+    "@automerge/automerge": "3.5.0",
+    "@automerge/automerge-repo": "3.0.0-experimental.1",
+    "@automerge/automerge-repo-subduction": "3.0.0-experimental.1",
+    "@automerge/prosemirror": "0.2.0",
+    "@automerge/subduction": "0.23.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "diff": "8.0.2",
+    "dompurify": "3.4.17",
+    "fractional-indexing": "4.0.0",
+    "lucide-react": "1.17.0",
+    "markdown-it": "14.3.3",
+    "pele": "1.5.2",
+    "prosemirror-commands": "1.7.1",
+    "prosemirror-history": "1.4.1",
+    "prosemirror-keymap": "1.2.3",
+    "prosemirror-markdown": "1.13.2",
+    "prosemirror-model": "1.25.12",
+    "prosemirror-schema-list": "1.5.1",
+    "prosemirror-state": "1.4.3",
+    "prosemirror-view": "1.42.6",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "wordgard": "0.6.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.59.1",
+    "esbuild": "0.28.0",
+    "fake-indexeddb": "6.2.5",
+    "jsdom": "26.1.0",
+    "wrangler": "4.151.1"
+  }
+}

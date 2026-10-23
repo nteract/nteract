@@ -23,7 +23,7 @@ identity module's `runtimed` capability re-export directly to the real
 package barrel or relying on a root dependency installation; it does not replace
 credential verification. The focused CI job uses the same standalone setup.
 
-The only upstream runtime modification forwards `policy` and `ephemeralPolicy`
+The authorization patch forwards `policy` and `ephemeralPolicy`
 from `SubductionBackend` into the existing native constructor. Published
 Subduction 0.23.0 already contains these interfaces; this experiment does not
 need a Rust/WASM fork, custom binary, wire-format change, or replacement Repo.
@@ -33,6 +33,49 @@ IDs. Repo 3 reserves native IDs with a zeroed final 16 bytes for short legacy
 IDs; the bridge mirrors that normalization and rejects ambiguous long-form ACL
 registrations. Integration tests use generated 32-byte IDs. Legacy 16-byte
 document interoperability remains unqualified.
+
+The storage-index patch in `patch-storage-index.mjs` removes repeated byte-store
+history scans from the adapter's write, checkpoint and native hydration paths.
+The bridge retains validated plain records and owned serialized signed-envelope
+bytes under its existing ordered queue, within the byte-store
+contract that grants it exclusive namespace ownership. First access and reopening
+still validate stored envelopes, native identities, checksums and limits. Resolved
+writes update the index; failed operations and deletes invalidate it before reuse.
+Conflict checks, aggregate caps, persisted history and failure/flush receipts are
+unchanged. Returned records are copied. Native reads construct fresh wrappers
+from the validated envelope bytes; owning WASM wrappers and full hex-encoded
+storage frames are never cached. Startup and reset validate both record kinds.
+This adds a bounded-by-document-history memory copy for each accessed tree; it is
+not safe to share its storage namespace with an independent writer. The pinned
+WASM constructors copy the borrowed record blobs into native memory; regression
+tests exercise that ownership boundary.
+
+Inventory on connect/reconnect and individual point reads still validate storage
+directly. Expected conflict/capacity rejections conservatively invalidate indexes
+along with ambiguous I/O failures. Those remaining scans and full-record copies
+in the adapter are follow-up optimization work, not a claim of constant work
+per edit. Pages uses one backend/tree per Page; a generic multi-tree service would
+also need an aggregate cache budget.
+
+`storage-index.test.mjs` exercises actual signed native records, warm-read counts,
+conflicting/duplicate saves, concurrent caps, ambiguous partial batches, deletion,
+returned-byte ownership and corruption detection on reopening. Read counts show
+less storage work; live propagation latency still needs separate measurement.
+
+The snapshot-store patch in `patch-snapshot-store.mjs` adds an explicit local
+checkpoint import path. It validates the incoming records and their full union
+with existing storage before one queued native operation, bounded by the existing
+history count, total bytes and individual record limits. Ordinary edit and replay
+batches retain their 128-record limit. Native storage is not a batch transaction:
+a failed import can leave a persisted prefix, so Pages opens the document only
+after success and retries the same snapshot and document ID after failure.
+`snapshot-store.test.mjs` covers 602 real changes, divergent histories, interrupted
+prefix recovery, conflicts and capacity rejection before new writes.
+
+Pages uses this capability for cached checkpoints before `repo.find()`. Generic
+upstream `Repo.import()` still routes large imports and its conflict-merge fallback
+through ordinary batch admission; it remains unsuitable for this prototype's
+large checkpoints without an equivalent explicit snapshot path.
 
 ## Runtime evidence
 
