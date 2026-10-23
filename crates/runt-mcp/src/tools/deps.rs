@@ -412,9 +412,33 @@ fn remove_dep_for_manager(
 }
 
 fn dependency_fingerprint_for_handle(handle: &DocHandle) -> Option<String> {
-    handle
+    let metadata = handle
         .get_notebook_metadata()
-        .map(|snapshot| snapshot.dependency_fingerprint())
+        .map(|snapshot| snapshot.dependency_fingerprint());
+    let pep723 = notebook_doc::pep723::find_pep723_in_cells(&handle.get_cells())
+        .map(|pep| {
+            pep.map(|metadata| metadata.dependencies)
+                .unwrap_or_default()
+        })
+        .map_err(|error| error.to_string());
+    serde_json::to_string(&(metadata, pep723)).ok()
+}
+
+#[cfg(test)]
+fn dependency_fingerprint_for_doc(doc: &notebook_doc::NotebookDoc) -> Option<String> {
+    let pep723 = pep723_dependencies_for_doc(doc).map_err(|error| error.to_string());
+    serde_json::to_string(&(doc.get_dependency_fingerprint(), pep723)).ok()
+}
+
+#[cfg(test)]
+fn pep723_dependencies_for_doc(
+    doc: &notebook_doc::NotebookDoc,
+) -> Result<Vec<String>, notebook_doc::pep723::Pep723Error> {
+    Ok(
+        notebook_doc::pep723::find_pep723_in_cells(&doc.get_cells())?
+            .map(|pep| pep.dependencies)
+            .unwrap_or_default(),
+    )
 }
 
 fn observed_heads_for_handle(handle: &DocHandle) -> Option<Vec<String>> {
@@ -431,6 +455,7 @@ fn observed_heads_for_handle(handle: &DocHandle) -> Option<Vec<String>> {
 async fn approve_current_trust(
     handle: &DocHandle,
     observed_heads: Option<Vec<String>>,
+    include_pep723: bool,
     action: &str,
 ) -> Result<(), String> {
     if let Err(e) = handle.confirm_sync().await {
@@ -438,7 +463,11 @@ async fn approve_current_trust(
     }
 
     match handle
-        .send_request(NotebookRequest::ApproveTrust { observed_heads })
+        .send_request(NotebookRequest::ApproveTrust {
+            observed_heads,
+            include_pep723,
+            reviewed_pep723_dependencies: None,
+        })
         .await
     {
         Ok(NotebookResponse::Ok {}) => Ok(()),
@@ -465,6 +494,11 @@ fn dependency_state_json(
 ) -> serde_json::Value {
     let deps = get_deps_for_manager(handle, manager);
     let dependency_fingerprint = dependency_fingerprint_for_handle(handle);
+    let pep723_dependencies = notebook_doc::pep723::find_pep723_in_cells(&handle.get_cells())
+        .ok()
+        .flatten()
+        .map(|pep| pep.dependencies)
+        .unwrap_or_default();
     let runtime_state = handle.get_runtime_state().ok();
     let env_source = runtime_state
         .as_ref()
@@ -477,6 +511,7 @@ fn dependency_state_json(
 
     let mut result = serde_json::json!({
         "dependencies": deps,
+        "pep723_dependencies": pep723_dependencies,
         "package_manager": manager.as_str(),
         "mode": dependency_mode(env_source.as_deref()),
         "dependency_fingerprint": dependency_fingerprint,
@@ -703,7 +738,7 @@ pub async fn add_dependency(
     // For the response, use the first package as `package` for backward compat
     let package = packages.first().map(|s| s.as_str()).unwrap_or(raw_package);
 
-    if let Err(e) = approve_current_trust(&handle, None, "add_dependency").await {
+    if let Err(e) = approve_current_trust(&handle, None, false, "add_dependency").await {
         return tool_error(&e);
     }
 
@@ -785,7 +820,9 @@ pub async fn manage_dependencies(
     let mut trust_approved = false;
     let approved_fingerprint = if params.trust {
         if has_edits {
-            dependency_fingerprint_for_handle(&handle)
+            handle
+                .get_notebook_metadata()
+                .map(|snapshot| snapshot.dependency_fingerprint())
         } else {
             if let Some(expected) = params.dependency_fingerprint.as_deref() {
                 if before_fingerprint.as_deref() != Some(expected) {
@@ -806,7 +843,8 @@ pub async fn manage_dependencies(
         } else {
             observed_heads_for_handle(&handle)
         };
-        if let Err(e) = approve_current_trust(&handle, observed_heads, "manage_dependencies").await
+        if let Err(e) =
+            approve_current_trust(&handle, observed_heads, !has_edits, "manage_dependencies").await
         {
             return tool_error(&e);
         }
@@ -831,6 +869,7 @@ pub async fn manage_dependencies(
         "trust": {
             "requested": params.trust,
             "approved": trust_approved,
+            "scope": if has_edits { "metadata" } else { "notebook" },
             "dependency_fingerprint": approved_fingerprint,
         },
     });
@@ -872,7 +911,7 @@ pub async fn remove_dependency(
         .map_err(|e| McpError::internal_error(e, None))?;
 
     if removed {
-        if let Err(e) = approve_current_trust(&handle, None, "remove_dependency").await {
+        if let Err(e) = approve_current_trust(&handle, None, false, "remove_dependency").await {
             return tool_error(&e);
         }
     }
@@ -936,7 +975,7 @@ pub async fn approve_trust(
         None
     };
 
-    if let Err(e) = approve_current_trust(&handle, observed_heads, "approve_trust").await {
+    if let Err(e) = approve_current_trust(&handle, observed_heads, true, "approve_trust").await {
         return tool_error(&e);
     }
 
@@ -1274,6 +1313,24 @@ mod tests {
     #[test]
     fn parse_whitespace_trimmed() {
         assert_eq!(parse_package_param("  ['pandas']  "), vec!["pandas"]);
+    }
+
+    #[test]
+    fn dependency_review_includes_pep723_cell_changes() {
+        let mut doc = notebook_doc::NotebookDoc::new("mcp-pep723-review");
+        let before = dependency_fingerprint_for_doc(&doc);
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source(
+            "cell-1",
+            "# /// script\n# dependencies = [\"payload @ https://example.test/payload.tar.gz\"]\n# ///\n",
+        )
+        .unwrap();
+
+        assert_ne!(dependency_fingerprint_for_doc(&doc), before);
+        assert_eq!(
+            pep723_dependencies_for_doc(&doc).unwrap(),
+            vec!["payload @ https://example.test/payload.tar.gz"]
+        );
     }
 
     #[test]

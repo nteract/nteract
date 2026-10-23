@@ -39,12 +39,22 @@ export function useTrust() {
   // trust approval failures.
   const [approvalError, setApprovalError] = useState<string | null>(null);
 
+  const combinedUvDependencies = useMemo(
+    () => [
+      ...new Set([
+        ...(uvDeps?.dependencies ?? []),
+        ...(runtimeState.trust.pep723_dependencies ?? []),
+      ]),
+    ],
+    [uvDeps?.dependencies, runtimeState.trust.pep723_dependencies],
+  );
+
   // Compose TrustInfo from RuntimeStateDoc + dep hooks. Daemon is the sole
   // writer of `trust.status`; deps are synced via the notebook CRDT. No
   // Tauri round-trip.
   const trustInfo: TrustInfo | null = useMemo(() => {
     if (!runtimeLoaded) return null;
-    const uvList = uvDeps?.dependencies ?? [];
+    const uvList = combinedUvDependencies;
     const condaList = condaDeps?.dependencies ?? [];
     const channels = condaDeps?.channels ?? [];
     const pixiList = pixiDeps?.dependencies ?? [];
@@ -68,13 +78,13 @@ export function useTrust() {
   }, [
     runtimeLoaded,
     runtimeState.trust.status,
+    combinedUvDependencies,
     runtimeState.trust.approved_uv_dependencies,
     runtimeState.trust.approved_conda_dependencies,
     runtimeState.trust.approved_conda_channels,
     runtimeState.trust.approved_pixi_dependencies,
     runtimeState.trust.approved_pixi_pypi_dependencies,
     runtimeState.trust.approved_pixi_channels,
-    uvDeps?.dependencies,
     condaDeps?.dependencies,
     condaDeps?.channels,
     pixiDeps?.dependencies,
@@ -127,6 +137,7 @@ export function useTrust() {
       try {
         await host.trust.approve({
           observedHeads: options?.observedHeads,
+          reviewedPep723Dependencies: runtimeState.trust.pep723_dependencies ?? [],
         });
         return true;
       } catch (e) {
@@ -139,7 +150,7 @@ export function useTrust() {
         setLoading(false);
       }
     },
-    [host],
+    [host, runtimeState.trust.pep723_dependencies],
   );
 
   // Computed properties. While `trustInfo` is null (daemon hasn't pushed

@@ -161,6 +161,7 @@ pub struct DependencyStatus {
     pub uv: Option<UvDependencyStatus>,
     pub conda: Option<CondaDependencyStatus>,
     pub pixi: Option<PixiDependencyStatus>,
+    pub pep723_dependencies: Vec<String>,
     pub fingerprint: Option<String>,
     pub trust: DependencyTrustStatus,
 }
@@ -860,7 +861,7 @@ impl Session {
                 }
             })
             .map_err(to_napi_err)?;
-        approve_current_trust(&handle, None).await
+        approve_current_trust(&handle, None, false).await
     }
 
     /// Add a dependency to the selected package manager.
@@ -901,7 +902,7 @@ impl Session {
             })
             .map_err(to_napi_err)?;
         if removed > 0 {
-            approve_current_trust(&handle, None).await?;
+            approve_current_trust(&handle, None, false).await?;
         }
         Ok(removed.try_into().unwrap_or(u32::MAX))
     }
@@ -962,7 +963,7 @@ impl Session {
                 .ok_or_else(|| Error::from_reason("Not connected"))?
                 .clone()
         };
-        approve_current_trust(&handle, observed_heads).await
+        approve_current_trust(&handle, observed_heads, true).await
     }
 
     /// Ask the daemon to hot-install any pending dependency changes into
@@ -1813,9 +1814,16 @@ fn insertion_anchor_from_order(
 }
 
 fn dependency_fingerprint_for_handle(handle: &DocHandle) -> Option<String> {
-    handle
+    let metadata = handle
         .get_notebook_metadata()
-        .map(|snapshot| snapshot.dependency_fingerprint())
+        .map(|snapshot| snapshot.dependency_fingerprint());
+    let pep723 = notebook_doc::pep723::find_pep723_in_cells(&handle.get_cells())
+        .map(|pep| {
+            pep.map(|metadata| metadata.dependencies)
+                .unwrap_or_default()
+        })
+        .map_err(|error| error.to_string());
+    serde_json::to_string(&(metadata, pep723)).ok()
 }
 
 fn runtime_status_for_handle(handle: &DocHandle) -> RuntimeStatus {
@@ -1851,6 +1859,11 @@ fn dependency_status_for_handle(handle: &DocHandle) -> DependencyStatus {
     let conda = metadata.runt.conda.as_ref();
     let pixi = metadata.runt.pixi.as_ref();
     let trust = handle.get_runtime_state().ok().map(|state| state.trust);
+    let pep723_dependencies = notebook_doc::pep723::find_pep723_in_cells(&handle.get_cells())
+        .ok()
+        .flatten()
+        .map(|pep| pep.dependencies)
+        .unwrap_or_default();
 
     DependencyStatus {
         uv: uv.map(|uv| UvDependencyStatus {
@@ -1868,7 +1881,8 @@ fn dependency_status_for_handle(handle: &DocHandle) -> DependencyStatus {
             channels: pixi.channels.clone(),
             python: pixi.python.clone(),
         }),
-        fingerprint: Some(metadata.dependency_fingerprint()),
+        pep723_dependencies,
+        fingerprint: dependency_fingerprint_for_handle(handle),
         trust: DependencyTrustStatus {
             status: trust.as_ref().map(|trust| trust.status.clone()),
             needs_approval: trust.as_ref().map(|trust| trust.needs_approval),
@@ -1894,10 +1908,15 @@ fn dependency_status_for_handle(handle: &DocHandle) -> DependencyStatus {
 async fn approve_current_trust(
     handle: &DocHandle,
     observed_heads: Option<Vec<String>>,
+    include_pep723: bool,
 ) -> Result<()> {
     handle.confirm_sync().await.map_err(to_napi_err)?;
     let response = handle
-        .send_request(NotebookRequest::ApproveTrust { observed_heads })
+        .send_request(NotebookRequest::ApproveTrust {
+            observed_heads,
+            include_pep723,
+            reviewed_pep723_dependencies: None,
+        })
         .await
         .map_err(to_napi_err)?;
 

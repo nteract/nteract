@@ -289,11 +289,15 @@ describe("createTauriHost()", () => {
     const host = createTauriHost({ transport: stubTransport });
     vi.mocked(stubTransport.sendRequest).mockResolvedValueOnce({ result: "ok" });
 
-    await expect(host.trust.approve({ observedHeads: ["head-a"] })).resolves.toBeUndefined();
+    await expect(
+      host.trust.approve({ observedHeads: ["head-a"], reviewedPep723Dependencies: ["numpy"] }),
+    ).resolves.toBeUndefined();
 
     expect(stubTransport.sendRequest).toHaveBeenCalledWith({
       type: "approve_trust",
+      include_pep723: true,
       observed_heads: ["head-a"],
+      reviewed_pep723_dependencies: ["numpy"],
     });
   });
 

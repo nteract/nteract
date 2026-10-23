@@ -591,8 +591,18 @@ pub(crate) async fn handle_notebook_request(
 
         NotebookRequest::SyncEnvironment { guard } => sync_environment::handle(room, guard).await,
 
-        NotebookRequest::ApproveTrust { observed_heads } => {
-            approve_trust::handle(room, observed_heads).await
+        NotebookRequest::ApproveTrust {
+            observed_heads,
+            include_pep723,
+            reviewed_pep723_dependencies,
+        } => {
+            approve_trust::handle_reviewed(
+                room,
+                observed_heads,
+                include_pep723,
+                reviewed_pep723_dependencies,
+            )
+            .await
         }
 
         NotebookRequest::ApproveProjectEnvironment { project_file_path } => {

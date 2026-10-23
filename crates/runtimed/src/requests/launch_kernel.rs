@@ -106,10 +106,8 @@ fn commit_apply_delivery(
         if metadata.detect_runtime().unwrap_or_else(|| "python".into()) != expected_runtime {
             anyhow::bail!("Notebook runtime changed during environment preflight");
         }
-        let trust = crate::notebook_sync_server::verify_trust_from_snapshot(
-            &metadata,
-            &room.trusted_packages,
-        );
+        let trust =
+            crate::notebook_sync_server::verify_trust_from_doc(&doc, &room.trusted_packages);
         if !matches!(
             trust.status,
             runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
@@ -1050,6 +1048,10 @@ async fn handle_attempt(
         };
 
         if let Some(deps) = pep723_deps {
+            if let Err(rejection) = guarded::ensure_trusted(room).await {
+                reset_starting_state(room, None).await;
+                return rejection.into_response();
+            }
             info!(
                 "[notebook-sync] LaunchKernel: Preparing cached UV env for PEP 723 deps: {:?}",
                 deps
@@ -1898,6 +1900,13 @@ async fn handle_attempt(
             }
         }
         if let Some(rejection) = rejection {
+            return rejection.into_response();
+        }
+    }
+
+    if parsed_resolved.as_str().ends_with(":pep723") {
+        if let Err(rejection) = guarded::ensure_trusted(room).await {
+            reset_starting_state(room, None).await;
             return rejection.into_response();
         }
     }

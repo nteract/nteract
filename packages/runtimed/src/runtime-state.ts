@@ -178,6 +178,7 @@ export type TrustStatus = "trusted" | "untrusted" | "no_dependencies";
 export interface TrustState {
   status: TrustStatus;
   needs_approval: boolean;
+  pep723_dependencies?: string[];
   approved_uv_dependencies: string[];
   approved_conda_dependencies: string[];
   approved_conda_channels: string[];
@@ -443,6 +444,7 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   trust: {
     status: "no_dependencies",
     needs_approval: false,
+    pep723_dependencies: [],
     approved_uv_dependencies: [],
     approved_conda_dependencies: [],
     approved_conda_channels: [],

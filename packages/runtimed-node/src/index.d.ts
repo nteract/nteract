@@ -239,6 +239,7 @@ export interface DependencyStatus {
     channels: string[];
     python?: string;
   };
+  pep723Dependencies: string[];
   fingerprint?: string;
   trust?: unknown;
 }

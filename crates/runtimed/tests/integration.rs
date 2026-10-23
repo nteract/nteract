@@ -1989,6 +1989,8 @@ async fn test_approve_trust_guard_rejects_stale_observed_dependencies() {
     let response = handle
         .send_request(NotebookRequest::ApproveTrust {
             observed_heads: Some(observed_heads),
+            include_pep723: true,
+            reviewed_pep723_dependencies: None,
         })
         .await
         .unwrap();

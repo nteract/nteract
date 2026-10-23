@@ -166,8 +166,12 @@ export function createElectronHost(options: CreateElectronHostOptions): Notebook
       async approve(approveOptions) {
         const response = (await transport.sendRequest({
           type: "approve_trust",
+          include_pep723: true,
           ...(approveOptions?.observedHeads !== undefined
             ? { observed_heads: approveOptions.observedHeads }
+            : {}),
+          ...(approveOptions?.reviewedPep723Dependencies !== undefined
+            ? { reviewed_pep723_dependencies: approveOptions.reviewedPep723Dependencies }
             : {}),
         })) as NotebookResponse;
         switch (response.result) {

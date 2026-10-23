@@ -86,9 +86,7 @@ pub(crate) fn validate_sync_environment(
 ) -> GuardResult {
     let observed = parse_heads(observed_heads)?;
     let reviewed = dependency_fingerprint_at_observed_heads(doc, &observed)?;
-    let current = doc
-        .get_dependency_fingerprint()
-        .unwrap_or_else(|| serde_json::json!({}).to_string());
+    let current = current_dependency_fingerprint(doc);
     if current != reviewed {
         return Err(rejected(
             "Dependencies changed while the trust dialog was open. Review before syncing.",
@@ -103,9 +101,7 @@ pub(crate) fn validate_dependencies_unchanged_since_observed(
 ) -> GuardResult {
     let observed = parse_heads(observed_heads)?;
     let reviewed = dependency_fingerprint_at_observed_heads(doc, &observed)?;
-    let current = doc
-        .get_dependency_fingerprint()
-        .unwrap_or_else(|| serde_json::json!({}).to_string());
+    let current = current_dependency_fingerprint(doc);
     if current != reviewed {
         return Err(rejected(
             "Dependencies changed while the trust dialog was open. Review before approving.",
@@ -123,9 +119,27 @@ fn dependency_fingerprint_at_observed_heads(
             "Notebook state was not ready. Review before running again.",
         ));
     }
-    Ok(doc
-        .get_dependency_fingerprint_at_heads(observed)
-        .unwrap_or_else(|| serde_json::json!({}).to_string()))
+    Ok(dependency_fingerprint(
+        doc.get_dependency_fingerprint_at_heads(observed),
+        crate::notebook_sync_server::pep723_dependencies_from_cells(
+            &doc.get_cells_at_heads(observed),
+        ),
+    ))
+}
+
+fn current_dependency_fingerprint(doc: &NotebookDoc) -> String {
+    dependency_fingerprint(
+        doc.get_dependency_fingerprint(),
+        crate::notebook_sync_server::pep723_dependencies_from_cells(&doc.get_cells()),
+    )
+}
+
+fn dependency_fingerprint(
+    metadata: Option<String>,
+    pep723: Result<Vec<String>, notebook_doc::pep723::Pep723Error>,
+) -> String {
+    let pep723 = pep723.map_err(|error| error.to_string());
+    serde_json::to_string(&(metadata, pep723)).unwrap_or_default()
 }
 
 fn diff_from_observed(

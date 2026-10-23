@@ -216,14 +216,16 @@ class Notebook:
             return await self._session.get_uv_dependencies()
 
     async def get_dependencies(self) -> list[str]:
-        """Get current package dependencies."""
+        """Get current metadata and PEP 723 package dependencies."""
         pm = await self._package_manager()
         if pm == "pixi":
-            return await self._session.get_pixi_dependencies()
+            dependencies = await self._session.get_pixi_dependencies()
         elif pm == "conda":
-            return await self._session.get_conda_dependencies()
+            dependencies = await self._session.get_conda_dependencies()
         else:
-            return await self._session.get_uv_dependencies()
+            dependencies = await self._session.get_uv_dependencies()
+        pep723_dependencies = await self._session.get_pep723_dependencies()
+        return list(dict.fromkeys([*dependencies, *pep723_dependencies]))
 
     async def dependency_fingerprint(self) -> str | None:
         """Get the current dependency fingerprint for trust approval."""

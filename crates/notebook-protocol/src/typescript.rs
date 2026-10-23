@@ -373,7 +373,12 @@ export type NotebookRequest =
   | {{ type: "reconcile_notebook_source"; operation: SourceReconciliation }}
   | {{ type: "clone_as_ephemeral"; source_notebook_id: string }}
   | {{ type: "sync_environment"; guard?: DependencyGuard | null }}
-  | {{ type: "approve_trust"; observed_heads?: string[] | null }}
+  | {{
+      type: "approve_trust";
+      observed_heads?: string[] | null;
+      include_pep723?: boolean;
+      reviewed_pep723_dependencies?: string[] | null;
+    }}
   | {{ type: "approve_project_environment"; project_file_path?: string | null }}
   | {{ type: "get_doc_bytes" }}
   | {{ type: "acknowledge_notebook_sync" }}

@@ -273,6 +273,7 @@ export class NotebookClient {
     try {
       return await this.sendRequest({
         type: "approve_trust",
+        include_pep723: true,
         ...(observedHeads !== undefined ? { observed_heads: observedHeads } : {}),
       });
     } catch (e) {

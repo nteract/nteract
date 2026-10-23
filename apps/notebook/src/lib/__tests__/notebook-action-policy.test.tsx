@@ -218,6 +218,34 @@ describe("useNotebookActionPolicy", () => {
     },
   );
 
+  it("guards plain trust approval with the heads shown when the dialog opened", async () => {
+    const options = createPolicyOptions();
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    act(() => result.current.openTrustDialogForKernelStart());
+    await act(async () => {
+      await result.current.handleTrustApproveOnly();
+    });
+
+    expect(options.approveTrust).toHaveBeenCalledWith({ observedHeads: ["head-1"] });
+  });
+
+  it("guards direct kernel-start trust dialogs with the displayed heads", async () => {
+    const options = createPolicyOptions({
+      checkTrust: vi.fn().mockResolvedValue({ status: "untrusted" }),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      await result.current.tryStartKernel();
+    });
+    await act(async () => {
+      await result.current.handleTrustApproveOnly();
+    });
+
+    expect(options.approveTrust).toHaveBeenCalledWith({ observedHeads: ["head-1"] });
+  });
+
   it.each(["start_kernel", "run_cell", "run_all", "approve_only"] as const)(
     "reports a rejected environment and stops the trust-approved %s launch handoff",
     async (action) => {
