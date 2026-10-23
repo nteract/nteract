@@ -423,10 +423,28 @@ def test_patch_against_older_revision_is_rebased_onto_python_changes():
     session = session_registry.require(payload["session_id"])
     root_id = payload["root_ids"][0]
     slider_model = slider._models[root_id][0]
+    text_model = text._models[root_id][0]
 
     text.value = "b"
     slider.value = 2
-    assert [event.revision for event in session.pop_server_events()] == [1, 2]
+    python_events = session.pop_server_events()
+    # Panel can update additional properties (e.g. TextInput.value_input)
+    # for one Python assignment. Every emitted revision must remain ordered,
+    # and both requested property changes must reach the browser.
+    assert [(event.base_revision, event.revision) for event in python_events] == [
+        (revision - 1, revision) for revision in range(1, len(python_events) + 1)
+    ]
+    changes = {
+        (change["model"]["id"], change["attr"]): change["new"]
+        for event in python_events
+        if event.server_patch is not None
+        for change in event.server_patch.content["events"]
+        if change["kind"] == "ModelChanged"
+    }
+    assert changes[(text_model.id, "value")] == "b"
+    assert changes[(slider_model.id, "value")] == 2
+    latest_revision = python_events[-1].revision
+    assert session.revision == latest_revision
 
     result = session.apply_patch(
         base_revision=0,
@@ -445,9 +463,13 @@ def test_patch_against_older_revision_is_rebased_onto_python_changes():
 
     assert slider.value == 5
     assert text.value == "b"
-    assert (result.base_revision, result.revision) == (2, 3)
+    assert (result.base_revision, result.revision) == (latest_revision, latest_revision + 1)
     [event] = session.pop_server_events()
-    assert (event.transaction_id, event.base_revision, event.revision) == ("layout-1", 2, 3)
+    assert (event.transaction_id, event.base_revision, event.revision) == (
+        "layout-1",
+        latest_revision,
+        latest_revision + 1,
+    )
     assert event.client_patch is not None
 
 
@@ -465,18 +487,27 @@ def test_python_changes_in_one_loop_iteration_share_a_revision():
     pn = _load_panel()
 
     async def change_both():
-        slider, text, _session, delivered = _coalescing_session(pn)
+        slider, text, session, delivered = _coalescing_session(pn)
+        root_id = session.root_ids[0]
+        slider_model = slider._models[root_id][0]
+        text_model = text._models[root_id][0]
         slider.value = 2
         text.value = "b"
         assert delivered == []
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-        return delivered
+        return delivered, slider_model.id, text_model.id
 
-    [event] = asyncio.run(change_both())
+    [event], slider_id, text_id = asyncio.run(change_both())
     assert (event.base_revision, event.revision) == (0, 1)
     assert event.server_patch is not None
-    assert len(event.server_patch.content["events"]) == 2
+    changes = {
+        (change["model"]["id"], change["attr"]): change["new"]
+        for change in event.server_patch.content["events"]
+        if change["kind"] == "ModelChanged"
+    }
+    assert changes[(slider_id, "value")] == 2
+    assert changes[(text_id, "value")] == "b"
 
 
 @pytest.mark.parametrize("transaction", [False, True], ids=["loop", "transaction"])
