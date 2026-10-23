@@ -1,6 +1,11 @@
 import { forwardRef, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { cellContentColumnInset, cellOutputRowInset, notebookCellLayoutVars } from "./cell-layout";
+import {
+  cellContentColumnInset,
+  cellOutputRowInset,
+  cellStateLanePadding,
+  notebookCellLayoutVars,
+} from "./cell-layout";
 import { type GutterColorConfig, getGutterColors } from "./gutter-colors";
 
 interface CellContainerProps {
@@ -139,11 +144,13 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
           className,
         )}
       >
-        {/* Optional state lane - lives inside the source inset so clipped scroll containers do not hide it. */}
+        {/* Optional state lane - lives inside the source inset so clipped scroll containers do not hide it.
+            Its top padding follows the editor font size so the run button stays on the first line. */}
         <div
           data-slot="cell-state-lane"
           className={cn(
-            "absolute left-1 top-0 z-10 flex w-[var(--cell-content-column-inset,3.25rem)] flex-col items-center justify-start gap-0.5 pt-4 select-none sm:pt-3.5",
+            "absolute left-1 top-0 z-10 flex w-[var(--cell-content-column-inset,3.25rem)] flex-col items-center justify-start gap-0.5 select-none",
+            cellStateLanePadding,
             stateLaneClassName,
           )}
           onMouseDown={onFocus}

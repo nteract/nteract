@@ -35,7 +35,8 @@ code {
   font-family: var(--output-mono-font);
 }
 
-@media (max-width: 640px) {
+/* Same boundary as Tailwind `max-sm:`, matching the cell state lane. */
+@media (width < 40rem) {
   [data-slot="cell-code-content"] .cm-editor.cm-editor {
     margin-top: 0;
   }

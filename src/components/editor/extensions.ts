@@ -16,6 +16,7 @@ import {
   keymap,
   rectangularSelection,
 } from "@codemirror/view";
+import { editorLineHeight } from "./editor-metrics";
 
 /**
  * Custom editor styles for notebook contexts
@@ -33,6 +34,10 @@ export const notebookEditorTheme = EditorView.theme({
   "&.cm-focused": {
     outline: "none",
   },
+  // The cell state lane derives the first line box from this value.
+  ".cm-scroller": {
+    lineHeight: String(editorLineHeight),
+  },
   // Top padding inside editor so peer cursor labels have room above line 1
   // Flag is ~19px tall (11px font × 1.2 line-height + 4px padding + 1px margin)
   ".cm-content": {
@@ -44,8 +49,9 @@ export const notebookEditorTheme = EditorView.theme({
     paddingLeft: "0",
     caretColor: "var(--foreground)", // Ensure cursor is visible even when not focused
   },
-  // Mobile-friendly padding
-  "@media (max-width: 640px)": {
+  // Mobile-friendly padding. Same boundary as Tailwind `max-sm:` so the editor
+  // and the cell state lane switch breakpoints on the same pixel.
+  "@media (width < 40rem)": {
     ".cm-content": {
       padding: "0.75rem 0.5rem",
     },
