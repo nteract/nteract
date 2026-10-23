@@ -36,6 +36,9 @@ const WIDE: RowGeometry = {
 const DEFAULT_CASES: Array<{ width: number; expected: RowGeometry }> = [
   { width: 480, expected: COMPACT },
   { width: 639, expected: COMPACT },
+  // Exactly 40rem: the lane (`sm:`) and the editor's compact media query must
+  // agree, or the button takes wide values while the line takes compact ones.
+  { width: 640, expected: WIDE },
   { width: 641, expected: WIDE },
   { width: 900, expected: WIDE },
 ];

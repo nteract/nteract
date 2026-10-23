@@ -49,8 +49,9 @@ export const notebookEditorTheme = EditorView.theme({
     paddingLeft: "0",
     caretColor: "var(--foreground)", // Ensure cursor is visible even when not focused
   },
-  // Mobile-friendly padding
-  "@media (max-width: 640px)": {
+  // Mobile-friendly padding. Same boundary as Tailwind `max-sm:` so the editor
+  // and the cell state lane switch breakpoints on the same pixel.
+  "@media (width < 40rem)": {
     ".cm-content": {
       padding: "0.75rem 0.5rem",
     },
