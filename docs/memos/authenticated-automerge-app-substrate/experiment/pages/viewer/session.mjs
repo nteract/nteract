@@ -11,11 +11,29 @@ import {
   forgetLocalPage,
   readLocalPage,
   writeLocalPage,
+  prepareLocalPageReload,
+  listLocalRecoveries,
 } from "./local-pages.mjs";
 export { listLocalPages, forgetLocalPage } from "./local-pages.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+const ownerAccess = () => ({
+  role: "owner",
+  revision: 0,
+  generation: 0,
+  canRead: true,
+  canWrite: true,
+  canComment: true,
+  canManageAccess: true,
+  canDelete: true,
+});
+const replicaKey = (access, writer) => `${access?.generation ?? 0}:${writer ? "writer" : "reader"}`;
+const accessFailure = () =>
+  Object.assign(Error("Page access changed; reload its current version"), {
+    code: "PAGE_ACCESS_CHANGED",
+    status: 409,
+  });
 const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 16));
 export async function request(url, options = {}) {
   const response = await fetch(url, options),
@@ -71,6 +89,10 @@ export class PageSession {
   savedHeads = [];
   authRequired = false;
   authProblem = "";
+  accessProblem = "";
+  accessDenied = false;
+  accessReloadRequired = false;
+  sockets = new Set();
   static async open(pageId, options) {
     const session = new PageSession(pageId, options);
     try {
@@ -137,6 +159,7 @@ export class PageSession {
   requireSignIn(message = "Sign in again to sync this Page. Keep it open while you sign in.") {
     if (this.deleted || !this.alive) return;
     this.authRequired = true;
+    void this.disconnectSockets();
     this.cancelReceiptRetry();
     this.receiptRevision = (this.receiptRevision ?? 0) + 1;
     this.authProblem = message;
@@ -157,13 +180,185 @@ export class PageSession {
       );
       return false;
     }
-    if (this.authRequired) this.status = "Reconnecting";
+    if (this.authRequired && !this.accessDenied && !this.accessReloadRequired)
+      this.status = "Reconnecting";
     this.authRequired = false;
     this.authProblem = "";
     this.identity = result.identity;
-    this.canWrite = result.canWrite;
+    this.credentialCanWrite = !!result.canWrite;
+    if (
+      this.handle &&
+      this.access &&
+      this.replicaKey &&
+      !this.accessDenied &&
+      this.replicaKey !== replicaKey(this.access, this.credentialCanWrite && this.access.canWrite)
+    )
+      this.pauseForAccess(
+        "Your permissions changed. Reload the current Page; unsynced edits remain available as a local draft.",
+      );
+    this.updateCapabilities();
     this.emit();
     return true;
+  }
+  updateCapabilities() {
+    const enabled = !this.accessDenied && !this.accessReloadRequired;
+    this.canWrite = enabled && !!this.credentialCanWrite && !!this.access?.canWrite;
+    this.canComment = enabled && !!this.credentialCanWrite && !!this.access?.canComment;
+    this.canManageAccess = enabled && !!this.credentialCanWrite && !!this.access?.canManageAccess;
+    this.canDelete = enabled && !!this.credentialCanWrite && !!this.access?.canDelete;
+  }
+  get recoveryPending() {
+    return (
+      !!this.localPage?.pending ||
+      (!!this.doc && !A.getHeads(this.doc).every((head) => this.savedHeads.includes(head)))
+    );
+  }
+  disconnectSockets() {
+    const sockets = [...this.sockets];
+    this.sockets.clear();
+    for (const socket of sockets) socket.close();
+    return Promise.resolve();
+  }
+  socketDisconnected(socket) {
+    // Intentional teardown removes the socket before close() can fire. A late
+    // callback from that retired connection must not reconnect its successor.
+    if (!this.sockets.delete(socket)) return;
+    if (!this.alive || this.authRequired || this.accessDenied || this.accessReloadRequired) return;
+    this.status = "Reconnecting";
+    this.emit();
+    this.scheduleReconnect();
+  }
+  pauseForAccess(message, { denied = false, checkpoint = true } = {}) {
+    if (!this.alive || this.deleted) return;
+    this.accessDenied = denied;
+    this.accessReloadRequired = !denied;
+    this.accessProblem = message;
+    if (denied)
+      this.access = {
+        ...this.access,
+        role: "none",
+        canRead: false,
+        canWrite: false,
+        canComment: false,
+        canManageAccess: false,
+        canDelete: false,
+      };
+    this.updateCapabilities();
+    this.cancelReceiptRetry();
+    this.receiptRevision = (this.receiptRevision ?? 0) + 1;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+    this.status = denied ? "Access removed" : "Access changed";
+    void this.disconnectSockets();
+    // Recovery stays local, even when the host no longer permits publication.
+    if (checkpoint)
+      void this.persistLocal({ access: this.access, pending: this.recoveryPending }).catch(
+        (error) => {
+          this.localProblem = this.problem = error.message;
+          this.emit();
+        },
+      );
+    this.emit();
+  }
+  async localAccessChanged() {
+    const latest = await readLocalPage(this.identity, this.pageId);
+    if (latest?.access) this.access = latest.access;
+    this.pauseForAccess(
+      "Your permissions changed in another tab. Your local draft is kept on this device.",
+      {
+        denied: this.access?.role === "none",
+        checkpoint: false,
+      },
+    );
+  }
+  async acceptPageAccess(access) {
+    if (
+      !access ||
+      !["owner", "editor", "viewer", "none"].includes(access.role) ||
+      !Number.isSafeInteger(access.generation) ||
+      access.generation < 0 ||
+      !Number.isSafeInteger(access.revision) ||
+      access.revision < 0
+    )
+      throw Error("Invalid Page access response");
+    this.access = { ...access };
+    const nextKey = replicaKey(access, this.credentialCanWrite && access.canWrite);
+    if (!access.canRead) {
+      this.pauseForAccess(
+        "You no longer have access to this Page. Your local copy is kept on this device.",
+        { denied: true },
+      );
+      throw Object.assign(Error(this.accessProblem), { status: 403 });
+    }
+    if (this.replicaKey !== nextKey) {
+      if (this.handle) {
+        this.pauseForAccess(
+          "Your permissions changed. Reload the current Page; unsynced edits remain available as a local draft.",
+        );
+        throw accessFailure();
+      }
+      if (this.localPage?.resetReplica) {
+        // Another grant change can race the replacement's fetch. Advance only
+        // its empty reset marker, never import retired history into this key.
+        this.localPage = await prepareLocalPageReload(
+          this.identity,
+          this.localPage,
+          access,
+          nextKey,
+        );
+      }
+      await this.releaseLocal();
+      if (!this.alive) return;
+      await this.initializeLocal(nextKey);
+    }
+    this.accessDenied = false;
+    this.accessReloadRequired = false;
+    this.accessProblem = "";
+    this.updateCapabilities();
+  }
+  listRecoveries() {
+    return listLocalRecoveries(this.identity, this.pageId);
+  }
+  exportRecovery(record) {
+    if (!record && this.closedRecovery) return { ...this.closedRecovery };
+    const doc = record ? A.load(decodeSnapshot(record.snapshot)) : this.doc;
+    if (!doc) throw Error("No local Page to export");
+    try {
+      const page = projectPage(doc);
+      return {
+        title: page.title,
+        markdown: `# ${page.title}\n\n${page.blocks.map((block) => block.markdown).join("\n\n")}\n`,
+        snapshot: record?.snapshot ?? encodeSnapshot(A.save(doc)),
+        page_id: this.pageId,
+      };
+    } finally {
+      if (record) A.free(doc);
+    }
+  }
+  async reloadForAccess() {
+    if (!this.accessReloadRequired || !this.access?.canRead) throw accessFailure();
+    if (!this.skipCloseCheckpoint) {
+      if (!this.alive) throw Error("Page closed");
+      // Keep a separate account-scoped recovery record before retiring any key.
+      // The replacement fetches server history; it never re-signs this draft.
+      await this.repo.flush();
+      await this.persistLocal({ pending: this.recoveryPending });
+      await prepareLocalPageReload(
+        this.identity,
+        this.localPage,
+        this.access,
+        replicaKey(this.access, this.credentialCanWrite && this.access.canWrite),
+      );
+      this.closedRecovery = this.exportRecovery();
+      this.skipCloseCheckpoint = true;
+      await this.close();
+    }
+    // Opening can fail while offline. Retry against the already-prepared reset
+    // marker without touching the drained old backend or archiving again.
+    return PageSession.open(this.pageId, {
+      authentication: { identity: this.identity, canWrite: this.credentialCanWrite },
+      refreshSession: this.refreshSession,
+    });
   }
   async refreshAuthentication() {
     try {
@@ -185,8 +380,14 @@ export class PageSession {
       if (!this.acceptAuthentication(this.authentication)) throw Error(this.authProblem);
     } else await this.refreshAuthentication();
     this.localPage = await readLocalPage(this.identity, this.pageId);
-    if (creation && !this.canWrite) throw Error("This account cannot create Pages");
-    await this.initializeLocal();
+    if (creation && !this.credentialCanWrite) throw Error("This account cannot create Pages");
+    this.access =
+      this.localPage?.access ?? (creation || this.localPage ? ownerAccess() : undefined);
+    this.accessDenied = this.access?.role === "none";
+    this.updateCapabilities();
+    await this.initializeLocal(
+      this.localPage?.replicaKey ?? replicaKey(this.access, this.canWrite),
+    );
     if (creation) {
       const doc = A.change(
         A.from(createPageData({ pageId: this.pageId, title: creation.title })),
@@ -204,6 +405,8 @@ export class PageSession {
         created_at: now,
         updated_at: now,
         canWrite: true,
+        access: this.access,
+        replicaKey: this.replicaKey,
         registered: false,
         pending: true,
         snapshot,
@@ -217,7 +420,7 @@ export class PageSession {
         },
       };
       await writeLocalPage(this.identity, this.localPage);
-    } else if (this.localPage) {
+    } else if (this.localPage && !this.localPage.resetReplica) {
       // A checkpoint can contain more history than an ordinary edit batch.
       // Merge its bounded complete record set before exposing a handle; this
       // also retries any prefix left by an interrupted local import.
@@ -232,6 +435,7 @@ export class PageSession {
       }
       this.handle = await this.repo.find(this.localPage.document_id);
       this.canWrite = !!this.canWrite && !!this.localPage.canWrite;
+      if (!this.localPage.pending) this.savedHeads = A.getHeads(this.doc);
     } else {
       await this.connect(false);
       this.handle = await this.repo.find(this.connection.documentId, {
@@ -246,6 +450,8 @@ export class PageSession {
         created_at: now,
         updated_at: now,
         canWrite: this.canWrite,
+        access: this.access,
+        replicaKey: this.replicaKey,
         registered: true,
         pending: false,
         snapshot: encodeSnapshot(A.save(this.doc)),
@@ -254,7 +460,14 @@ export class PageSession {
     }
     this.handle.on("change", (event) => this.receiveChange(event));
     this.handle.on("ephemeral-message", (event) => this.ephemeral(event));
-    this.status = this.connection ? "Connected" : "Saved locally";
+    if (this.accessDenied)
+      this.accessProblem =
+        "You no longer have access to this Page. Your local copy is kept on this device.";
+    this.status = this.accessDenied
+      ? "Access removed"
+      : this.connection
+        ? "Connected"
+        : "Saved locally";
     this.presenceTimer = setInterval(() => {
       if (this.presenceValue) this.publishPresence(this.presenceValue);
     }, 10000);
@@ -263,12 +476,15 @@ export class PageSession {
     if (this.connection) this.queueSaved();
     else void this.retryConnection();
   }
-  async initializeLocal() {
+  async initializeLocal(key = replicaKey(this.access, this.canWrite)) {
+    this.replicaKey = key;
     const scope = hex(
       new Uint8Array(
         await crypto.subtle.digest(
           "SHA-256",
-          new TextEncoder().encode(`${this.identity.principal}\0${this.pageId}`),
+          new TextEncoder().encode(
+            `${this.identity.principal}\0${this.pageId}${key === "0:writer" ? "" : `\0${key}`}`,
+          ),
         ),
       ),
     );
@@ -300,6 +516,8 @@ export class PageSession {
       title: this.doc.title,
       updated_at: new Date().toISOString(),
       snapshot: this.checkpointSnapshot,
+      access: this.access,
+      replicaKey: this.replicaKey,
       ...patch,
     };
     const work = (this.cacheTail ?? Promise.resolve())
@@ -349,7 +567,7 @@ export class PageSession {
     this.connectionProblem = "";
   }
   connect(refresh = true) {
-    if (!this.alive) return Promise.resolve();
+    if (!this.alive || this.accessReloadRequired) return Promise.resolve();
     if (!this.connecting)
       this.connecting = this.openConnection(refresh).finally(() => {
         this.connecting = undefined;
@@ -358,58 +576,88 @@ export class PageSession {
   }
   async openConnection(refresh) {
     if (refresh) await this.refreshAuthentication();
+    if (!this.alive || this.accessReloadRequired) return;
+    await this.disconnectSockets();
     if (!this.alive) return;
     await this.registerDraft();
     if (!this.alive) return;
     try {
       const connection = await request(`/api/connect?page=${encodeURIComponent(this.pageId)}`);
       if (!this.alive) return;
-      if (!this.acceptAuthentication(connection))
+      if (
+        !this.acceptAuthentication({
+          identity: connection.identity,
+          canWrite: this.credentialCanWrite,
+        })
+      )
         throw Object.assign(Error(this.authProblem), { status: 401 });
       if (this.localPage && connection.documentId !== this.localPage.document_id)
         throw Error("Connected Page identity does not match its local document");
+      await this.acceptPageAccess(connection.access);
+      if (!this.alive) return;
       this.connection = connection;
-      if (this.localPage) await this.persistLocal({ canWrite: this.canWrite });
+      if (this.localPage && !this.localPage.resetReplica)
+        await this.persistLocal({ canWrite: this.canWrite });
+      if (this.accessDenied || this.accessReloadRequired) return;
     } catch (error) {
       if (error.status === 404) await this.markDeleted();
-      else if (this.alive && (error.status === 401 || error.status === 403) && !this.authRequired)
-        this.requireSignIn();
+      else if (this.alive && error.status === 401 && !this.authRequired) this.requireSignIn();
+      else if (this.alive && error.status === 403)
+        this.pauseForAccess(
+          "You no longer have access to this Page. Your local copy is kept on this device.",
+          { denied: true },
+        );
       throw error;
     }
     if (!this.alive) return;
-    this.profiles = { ...this.profiles, ...this.connection.peerProfiles };
+    this.replacePeerProfiles(this.connection.peerProfiles);
     const expected = new N.PeerId(bytes(this.connection.serverPeerId));
     const address = new URL(`/api/sync?page=${encodeURIComponent(this.pageId)}`, location.href);
     address.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    // Keep the browser socket itself: toTransport consumes the native wrapper,
+    // whereas the raw socket remains cancellable when account/page access changes.
+    const socket = new WebSocket(address);
+    socket.binaryType = "arraybuffer";
+    this.sockets.add(socket);
     try {
-      const socket = await N.SubductionWebSocket.tryConnect(address, this.signer, expected, () => {
-        if (!this.alive || this.authRequired) return;
-        this.status = "Reconnecting";
-        this.emit();
-        this.scheduleReconnect();
+      const authenticated = await N.SubductionWebSocket.setup(socket, this.signer, expected, () => {
+        this.socketDisconnected(socket);
       });
-      if (!this.alive) {
-        socket.free();
+      if (!this.alive || this.accessDenied || this.accessReloadRequired) {
+        authenticated.free();
+        socket.close();
+        this.sockets.delete(socket);
         return;
       }
-      const transport = socket.toTransport();
+      const transport = authenticated.toTransport();
       try {
         await this.backend.addConnection(transport);
       } finally {
         transport.free();
       }
-      if (!this.alive) return;
+      if (!this.alive || this.accessDenied || this.accessReloadRequired) return;
       this.retryAttempts = 0;
       this.clearConnectionProblem();
       this.status = "Connected";
       this.emit();
       if (this.handle) this.queueSaved();
+    } catch (error) {
+      socket.close();
+      this.sockets.delete(socket);
+      throw error;
     } finally {
       expected.free();
     }
   }
   scheduleReconnect() {
-    if (!this.alive || this.authRequired || this.retryTimer) return;
+    if (
+      !this.alive ||
+      this.authRequired ||
+      this.accessDenied ||
+      this.accessReloadRequired ||
+      this.retryTimer
+    )
+      return;
     const delay = Math.min(10000, 500 * 2 ** (this.retryAttempts ?? 0));
     this.retryAttempts = (this.retryAttempts ?? 0) + 1;
     this.retryTimer = setTimeout(() => {
@@ -423,9 +671,14 @@ export class PageSession {
     try {
       await this.connect();
     } catch (error) {
-      if (!this.alive) return;
-      if (error.status === 401 || error.status === 403)
-        this.requireSignIn(this.authProblem || undefined);
+      if (!this.alive || this.accessReloadRequired || this.accessDenied) return;
+      if (error.code === "PAGE_ACCESS_CHANGED") return;
+      if (error.status === 401) this.requireSignIn(this.authProblem || undefined);
+      else if (error.status === 403)
+        this.pauseForAccess(
+          "You no longer have access to this Page. Your local copy is kept on this device.",
+          { denied: true },
+        );
       else {
         this.connectionProblem = error.message;
         if (!this.localProblem) this.problem = error.message;
@@ -489,7 +742,7 @@ export class PageSession {
   }
   publishPresence(value) {
     this.presenceValue = value;
-    if (this.handle)
+    if (this.handle && !this.accessDenied && !this.accessReloadRequired)
       try {
         this.handle.broadcast({ kind: "selection", value });
       } catch (error) {
@@ -497,11 +750,21 @@ export class PageSession {
         this.emit();
       }
   }
+  replacePeerProfiles(profiles) {
+    this.profiles = { ...profiles };
+    let removed = false;
+    for (const peer of this.peers.keys())
+      if (!Object.hasOwn(this.profiles, peer)) {
+        this.peers.delete(peer);
+        removed = true;
+      }
+    if (removed) this.notify(this.presenceObservers);
+  }
   ephemeral({ senderId, message }) {
     if (!message || typeof message !== "object") return;
     if (senderId === this.connection?.serverSenderId) {
       if (message.kind === "identity-profiles") {
-        this.profiles = { ...this.profiles, ...message.peerProfiles };
+        this.replacePeerProfiles(message.peerProfiles);
         return;
       }
       if (message.kind === "tool-edit" && Array.isArray(message.heads)) {
@@ -559,7 +822,13 @@ export class PageSession {
     this.receiptRetryAttempts = 0;
     this.receiptRevision = (this.receiptRevision ?? 0) + 1;
     clearTimeout(this.savedTimer);
-    this.status = this.authRequired ? "Sign in to sync" : "Saving";
+    this.status = this.accessDenied
+      ? "Access removed"
+      : this.accessReloadRequired
+        ? "Access changed"
+        : this.authRequired
+          ? "Sign in to sync"
+          : "Saving";
     this.emit();
     this.savedTimer = setTimeout(() => void this.saveReceipt(), 300);
   }
@@ -573,6 +842,8 @@ export class PageSession {
     if (
       !this.alive ||
       this.authRequired ||
+      this.accessDenied ||
+      this.accessReloadRequired ||
       this.deleted ||
       revision !== this.receiptRevision ||
       this.receiptRetryTimer ||
@@ -582,7 +853,14 @@ export class PageSession {
     this.receiptRetryAttempts = attempt + 1;
     this.receiptRetryTimer = setTimeout(() => {
       this.receiptRetryTimer = undefined;
-      if (this.alive && !this.authRequired && !this.deleted && revision === this.receiptRevision)
+      if (
+        this.alive &&
+        !this.authRequired &&
+        !this.accessDenied &&
+        !this.accessReloadRequired &&
+        !this.deleted &&
+        revision === this.receiptRevision
+      )
         void this.saveReceipt({ synchronize });
     }, delays[attempt]);
   }
@@ -605,7 +883,12 @@ export class PageSession {
     if (!this.alive || !this.handle) return;
     const revision = this.receiptRevision;
     const isCurrent = () =>
-      this.alive && !this.deleted && !this.authRequired && revision === this.receiptRevision;
+      this.alive &&
+      !this.deleted &&
+      !this.authRequired &&
+      !this.accessDenied &&
+      !this.accessReloadRequired &&
+      revision === this.receiptRevision;
     try {
       await this.repo.flush();
       await this.persistLocal({ pending: true });
@@ -614,6 +897,10 @@ export class PageSession {
     } catch (error) {
       if (error.code === "LOCAL_PAGE_DELETED") {
         await this.markDeleted();
+        return;
+      }
+      if (error.code === "LOCAL_PAGE_ACCESS_CHANGED") {
+        await this.localAccessChanged();
         return;
       }
       if (!this.alive || revision !== this.receiptRevision) return;
@@ -686,8 +973,13 @@ export class PageSession {
           await this.markDeleted();
           return;
         }
-        if (error.status === 401 || error.status === 403) this.requireSignIn();
-        if (!this.authRequired) {
+        if (error.status === 401) this.requireSignIn();
+        if (error.status === 403)
+          this.pauseForAccess(
+            "You no longer have access to this Page. Your local copy is kept on this device.",
+            { denied: true },
+          );
+        if (!this.authRequired && !this.accessDenied && !this.accessReloadRequired) {
           this.connectionProblem = error.message;
           if (!this.localProblem) this.problem = error.message;
           this.status = this.localPage ? "Saved locally" : "Unsaved";
@@ -713,7 +1005,7 @@ export class PageSession {
     clearInterval(this.presenceTimer);
     globalThis.removeEventListener?.("online", this.onlineListener);
     try {
-      if (!this.deleted) {
+      if (!this.deleted && !this.skipCloseCheckpoint) {
         await this.repo?.flush();
         await this.persistLocal({ pending: this.status !== "Saved" }, { allowClosed: true });
       }
@@ -723,11 +1015,15 @@ export class PageSession {
         this.canWrite = false;
         this.status = "Deleted";
         this.problem = "This Page was deleted.";
-      } else {
+      } else if (error.code !== "LOCAL_PAGE_ACCESS_CHANGED") {
         this.problem = error.message;
         this.status = "Local save failed";
       }
     }
+    await this.releaseLocal();
+  }
+  async releaseLocal() {
+    await this.disconnectSockets();
     try {
       await this.repo?.shutdown();
     } catch {}
@@ -741,6 +1037,7 @@ export class PageSession {
         this.signer?.free();
       } finally {
         this.local?.release();
+        this.repo = this.backend = this.storage = this.signer = this.local = undefined;
       }
     }
   }

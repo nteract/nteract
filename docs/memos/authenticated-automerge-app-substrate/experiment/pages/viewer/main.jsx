@@ -27,6 +27,7 @@ import { RichEditor } from "./RichEditor.jsx";
 import { WordgardEditor } from "./WordgardEditor.jsx";
 import { PagePicker } from "./PagePicker.jsx";
 import { matchingPages } from "./page-list.mjs";
+import { SharingControls } from "./SharingControls.jsx";
 import { CommentsPanel } from "./CommentsPanel.jsx";
 import { captureCommentDraft } from "./comment-draft.mjs";
 import { applyPageOperation } from "../model/page.mjs";
@@ -55,7 +56,8 @@ function App() {
     [pickerError, setPickerError] = useState(""),
     [creating, setCreating] = useState(false),
     [opening, setOpening] = useState(false),
-    [focusBlock, setFocusBlock] = useState(null);
+    [focusBlock, setFocusBlock] = useState(null),
+    [localRecoveries, setLocalRecoveries] = useState([]);
   const current = useRef(null),
     auth = useRef(null),
     closingPages = useRef(new Map()),
@@ -67,7 +69,8 @@ function App() {
     composerId = useRef(null),
     selection = useRef(null),
     article = useRef(null),
-    commentsButton = useRef(null);
+    commentsButton = useRef(null),
+    reloadingAccess = useRef(null);
   const refresh = async () => {
     const identity = authentication.current?.identity;
     if (!identity) return [];
@@ -103,6 +106,7 @@ function App() {
     setTarget(null);
     setCommentsOpen(false);
     setFocusBlock(null);
+    setLocalRecoveries([]);
   }
   function releaseCurrent() {
     const old = current.current;
@@ -132,12 +136,47 @@ function App() {
     current.current = next;
     setSession(next);
     next.subscribe(() => {
-      if (current.current === next) paint((n) => n + 1);
+      if (current.current === next) {
+        paint((n) => n + 1);
+        if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
+      }
     });
+    void next
+      .listRecoveries()
+      .then((records) => {
+        if (current.current === next) setLocalRecoveries(records);
+      })
+      .catch(() => {});
+    if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
     const first = orderedBlockIds(next.doc)[0] ?? null;
     activateBlock(first);
     if (focus) setFocusBlock(first);
     return true;
+  }
+  async function reloadAccess(previous = current.current) {
+    if (!previous || current.current !== previous || reloadingAccess.current === previous) return;
+    reloadingAccess.current = previous;
+    const revision = ++generation.current;
+    try {
+      const next = await previous.reloadForAccess();
+      await install(next, revision);
+    } catch (error) {
+      if (current.current === previous) setError(error.message);
+    } finally {
+      if (reloadingAccess.current === previous) reloadingAccess.current = null;
+    }
+  }
+  function downloadDraft(record) {
+    const draft = current.current?.exportRecovery(record);
+    if (!draft) return;
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(draft, null, 2)], { type: "application/json" }),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${draft.page_id}-local-draft.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   async function open(id, { focus = false, historyMode = "push" } = {}) {
     if (historyMode !== "none") writePageRoute(id, { replace: historyMode === "replace" });
@@ -469,6 +508,7 @@ function App() {
               </div>
               <div className="document-controls">
                 <EditingPresence session={session} />
+                <SharingControls key={session.pageId} session={session} />
                 <button
                   ref={commentsButton}
                   className="subtle-button comments-toggle"
@@ -498,7 +538,12 @@ function App() {
                       <button onClick={() => copyLink()}>
                         <Link size={16} aria-hidden="true" /> Copy link
                       </button>
-                      {session.canWrite && (
+                      {localRecoveries.length > 0 && (
+                        <button onClick={() => downloadDraft(localRecoveries.at(-1))}>
+                          Download previous local draft
+                        </button>
+                      )}
+                      {session.canDelete && (
                         <button className="danger" onClick={remove}>
                           <Trash2 size={16} aria-hidden="true" /> Delete
                         </button>
@@ -583,6 +628,15 @@ function App() {
                     <button onClick={() => session.retryConnection()}>Retry connection</button>
                   </p>
                 )}
+                {session.accessProblem && (
+                  <div className="access-notice" role="status">
+                    <p>{session.accessProblem}</p>
+                    <button onClick={() => downloadDraft()}>Download local draft</button>
+                    {session.accessReloadRequired && (
+                      <button onClick={() => reloadAccess()}>Reload current Page</button>
+                    )}
+                  </div>
+                )}
                 {session.problem && (
                   <p className="error" role="alert">
                     {session.problem}
@@ -627,6 +681,7 @@ function App() {
                     )}
                     <button
                       className="comment-block icon-button"
+                      disabled={!session.canComment}
                       onClick={() => startComment(block.id, null)}
                       aria-label="Comment on this block"
                       title="Comment on this block"

@@ -29,8 +29,8 @@ upstream WASM packaging; document objects never cross independent WASM instances
 
 ## Wordgard comparison on page4
 
-`page4.runtimed.run` selects Wordgard with `PAGES_EDITOR=wordgard`. Other targets
-keep the ProseMirror editor. Both views use the same PageSession, authenticated
+`page4.runtimed.run` and the page5 sharing release select Wordgard with
+`PAGES_EDITOR=wordgard`. Earlier targets keep the ProseMirror editor. Both views use the same PageSession, authenticated
 Repo/Subduction connections, IndexedDB recovery, MCP operations, comments and
 host persistence. The Wordgard binding adapts the native-editor spike at
 [rgbkrk/wordgard-automerge](https://github.com/rgbkrk/wordgard-automerge/tree/c9c6ea8fce8d6f598bdd2d2605569c801cd8f81d);
@@ -98,8 +98,7 @@ and block actions stay available through compact controls and the keyboard.
 A harness may add chat, an “ask for changes” action, or an agent sidebar around
 this surface. Those controls should use the same guarded operations and
 attribution as other clients; they do not need a second document store. Presence,
-comments, and edit illumination belong to the document experience. Sharing UI
-must wait for host-enforced permissions rather than imply access from a link.
+comments, and edit illumination belong to the document experience. Sharing UI reflects host-enforced permissions; copying a link does not grant access.
 
 The active implementation is PR #4469. The earlier PR #4451 and m.runtimed.run
 remain historical comparison material. celld and Cloudflare run the same
@@ -307,9 +306,54 @@ strings inside imported Automerge history.
 
 Presence receives account and driver labels from the host's signed profile
 projection. Change illumination is a batch-level visual cue. Comment labels
-are editable document content, not a separate audit log. This initial prototype
-has private Pages per account; space ACLs and author-only comment editing are
-not implemented. Neither document fields nor comments can grant access.
+are editable document content, not a separate audit log. Pages start private;
+per-Page owner/editor/viewer access is host-owned. Space inheritance and author-only
+comment editing are not implemented. Neither document fields nor comments can grant access.
+
+### Per-Page sharing
+
+The Page Durable Object owns an ACL in its host metadata, outside Automerge. Its
+immutable owner manages access and deletion; editors write and comment; viewers
+read. Effective permission intersects the grant with the credential's read/write
+scope on every HTTP, MCP, native record, and presence admission. The shared
+`SharingPanel` also renders notebook-cloud and Elements; each host supplies its
+own authenticated controller and presentation primitives.
+
+Email invitations expire after seven days and are accepted when the recipient
+opens the Page. The invitation uses the configured provider namespace plus verified
+email proof from nteract OIDC (or the verified API-key identity). It becomes a
+stable principal grant. API-key email admission inherits notebook cloud's explicit
+trust contract: the authenticated Anaconda whoami endpoint supplies server-verified
+account email. Client headers cannot supply this proof. The service does not send email. A pending invite never
+authorizes a socket, and an older invite cannot override a newer explicit role
+change. There is no anonymous/public sharing or separate commenter role in this pass.
+
+`GET /api/access?page=UUID` returns effective access and, for owners, the member and
+invite ledger. Owner writes POST `action`, `expected_revision`, and `idempotency_key`.
+The ACL and its bounded retry receipt are one host record; permission increases
+stay hidden until its durability barrier, while reductions apply immediately.
+Shared catalog references use their own namespace and are checked before exposing
+even a title. They do not consume the owner's creation quota.
+
+Every principal grant has a generation. Downgrade/removal retires its native writer
+keys and disconnects affected peers; granting access again cannot revive those keys.
+Existing admitted history remains readable from the host. A browser changes signing
+identity with the grant generation and credential write class. Dirty replicas are
+paused for a downloadable local draft; reopening uses server history rather than
+silently re-signing rejected offline edits. Revocation cannot erase a copy that was
+already downloaded. Browser auth refresh alone never grants document access.
+
+The prototype caps active members and live invitations at 100 each. It retains
+the latest 256 sharing receipts; older retries fail their revision check rather
+than reapplying, and the window never prevents revocation. Expired invites are
+pruned during sharing changes. Native connections are capped at four per principal
+and 24 per Page, with four slots reserved for the owner. Durable signing bindings
+are capped at 32 per non-owner and 256 per Page, reserving 32 for the owner. These
+are lifetime key limits in this prototype: retired/reader bindings remain recorded
+to prevent them from regaining write authority. Existing keys can reconnect.
+Presence rosters include only current live peers. API permission failures are distinct from
+expired sign-in. `scripts/sharing-smoke.mjs` exercises three distinct local OIDC
+accounts, native collaboration, downgrade, removal, and the sharing panel.
 
 ## Durability and retries
 
@@ -478,7 +522,7 @@ verification from local workerd fixtures.
 
 ## Isolated lab deployment
 
-The current experiment uses explicit `--target page4`. The `page3` and
+The sharing experiment uses explicit `--target page5`. The `page4`, `page3` and
 `pages-next` deployments remain frozen for existing users. The historical
 default is still `pages-next`, so always pass the intended target.
 
@@ -487,8 +531,9 @@ default is still `pages-next`, so always pass the intended target.
 | `pages-next` (default) | `pages-next.runtimed.run` | `nteract-pages-next` | `9472` / `19472` | `standalone/pages-next` |
 | `page3` | `page3.runtimed.run` | `nteract-page3` | `9473` / `19473` | `standalone/page3` |
 | `page4` | `page4.runtimed.run` | `nteract-page4` | `9474` / `19474` | `standalone/page4` |
+| `page5` | `page5.runtimed.run` | `nteract-page5` | `9475` / `19475` | `standalone/page5` |
 
-All three use lab1, bucket `nteract-celld-lab-621741996708` in `us-east-1`, and the same
+All four use lab1, bucket `nteract-celld-lab-621741996708` in `us-east-1`, and the same
 production Anaconda OIDC client and API-key verifier. Each has separate `/opt`,
 `/etc`, and `/var/lib` directories named after its service, a host-generated
 session secret, service account, firewall table/mark, and prepared release stage.
@@ -496,8 +541,8 @@ The new profile checks that its ports, prefix, and firewall resources are unused
 before creating them. `m.runtimed.run` keeps its existing service and prefix.
 These scripts do not move or reuse existing documents or session secrets.
 
-`page3` and `page4` enable `PAGES_ASYNC_PERSISTENCE=true`; all services keep
-`CELLD_DURABILITY=bucket`. Only page4 sets `PAGES_EDITOR=wordgard`; the other
+`page3`, `page4`, and `page5` enable `PAGES_ASYNC_PERSISTENCE=true`; all services keep
+`CELLD_DURABILITY=bucket`. Page4 and page5 set `PAGES_EDITOR=wordgard`; the other
 profiles retain their existing editor configuration. The installer preserves the build's Durable Object
 bindings and migrations, including `PAGE_RECORDS`, while supplying the selected
 public origin and its OIDC callback.
@@ -523,14 +568,14 @@ the deployment never upgrades `/usr/local/bin/celld` used by other services.
 It creates the session secret on the host. Only the explicit release-file
 allowlist is staged; local dev credentials and databases are excluded.
 
-For page4, run from this directory after the source is reviewed and committed:
+For page5, run from this directory after the source is reviewed and committed:
 
 ```bash
-node scripts/deploy.mjs --target page4 plan
-node scripts/deploy.mjs --target page4 prepare
-node scripts/deploy.mjs --target page4 upload LOCAL_STAGE
-node scripts/deploy.mjs --target page4 install REMOTE_STAGE --apply
-node scripts/deploy.mjs --target page4 publish REMOTE_STAGE --apply
+node scripts/deploy.mjs --target page5 plan
+node scripts/deploy.mjs --target page5 prepare
+node scripts/deploy.mjs --target page5 upload LOCAL_STAGE
+node scripts/deploy.mjs --target page5 install REMOTE_STAGE --apply
+node scripts/deploy.mjs --target page5 publish REMOTE_STAGE --apply
 ```
 
 Prepared manifests and remote stage names must match the selected target;
@@ -580,3 +625,9 @@ deploy commands separately require lab1 SSH and sudo access. No OIDC client
 secret is copied to the stage. Verify anonymous denial, real OIDC, API-key editing,
 WebSockets and bucket recovery after publication. A prepared
 script is not evidence that those live checks passed.
+
+Page5 uses a fourth dedicated tunnel, `cloudflared-page5.service`, and its own
+`/etc/nteract-page5` provisioning files. Follow the page4 provisioning procedure
+with the page5 service name and target. Its publisher also freezes page4's app
+and tunnel alongside page3 and pages-next. Copying a document to a newer deployment
+is explicit; deployment never migrates or modifies another target's data.

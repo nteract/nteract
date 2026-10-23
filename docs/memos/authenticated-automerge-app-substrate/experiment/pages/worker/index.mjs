@@ -45,6 +45,9 @@ import {
   requireHeads,
 } from "./mutations.mjs";
 
+import { claimInvitation, proposeSharingMutation, sharingProjection } from "./sharing.mjs";
+import { pageAccess, restrictAccessDuringCommit } from "./access.mjs";
+
 import { catalogTitle, listCatalog, refreshCatalogTitle } from "./catalog.mjs";
 import { readRegistration, requireRegistrationAccount, validPageId } from "./registration.mjs";
 
@@ -170,6 +173,20 @@ export default {
         const body = await readJson(request);
         return await invoke(request, env, body.operation, body.arguments);
       }
+      if (url.pathname === "/api/access") {
+        await authenticate(request, env);
+        const pageId = url.searchParams.get("page");
+        if (!validPageId(pageId)) throw new HttpError(400, "Invalid page_id");
+        if (!["GET", "POST"].includes(request.method)) throw new HttpError(405, "Use GET or POST");
+        const internal = forwarded(request, "/internal/access", {
+          ...(request.method === "POST" ? await readJson(request) : {}),
+          read: request.method === "GET",
+        });
+        // The original GET passed authentication/origin checks. This POST is
+        // host-created and must carry the same-origin evidence of that check.
+        if (!internal.headers.has("origin")) internal.headers.set("origin", url.origin);
+        return env.PAGES.getByName(pageId).fetch(internal);
+      }
       if (["/api/connect", "/api/sync", "/api/saved"].includes(url.pathname)) {
         await authenticate(request, env);
         const id = url.searchParams.get("page");
@@ -199,6 +216,29 @@ export class Catalog {
   }
   async run(request) {
     try {
+      if (new URL(request.url).pathname === "/internal/projection") {
+        // Reachable only through the host's CATALOGS namespace, never the gateway.
+        const value = await readJson(request);
+        if (!validPageId(value.page_id)) throw new HttpError(400, "Invalid page_id");
+        const key = `${value.shared ? "shared/" : "page/"}${value.page_id}`;
+        const previous = await this.ctx.storage.get(key);
+        if (value.remove) await this.ctx.storage.delete(key);
+        else if (
+          !previous?.pending &&
+          !(await this.ctx.storage.get(`host/deleted/${value.page_id}`)) &&
+          (!previous?.updated_at || previous.updated_at <= value.observed_at)
+        ) {
+          await this.ctx.storage.put(key, {
+            ...previous,
+            page_id: value.page_id,
+            title: catalogTitle(value.title),
+            created_at: previous?.created_at ?? value.observed_at,
+            updated_at: value.observed_at,
+            shared: value.shared === true,
+          });
+        }
+        return json({ ok: true });
+      }
       const identity = await authenticate(request, this.env);
       if (this.ctx.id.name && this.ctx.id.name !== identity.principal)
         throw new HttpError(403, "Account access denied");
@@ -217,7 +257,23 @@ export class Catalog {
       }
       const args = body.arguments ?? {};
       if (body.operation === "list_pages") {
-        return json({ pages: await listCatalog(this.ctx.storage), limit: 100 });
+        const entries = await listCatalog(this.ctx.storage);
+        const pages = [];
+        // A shared discovery cache cannot authorize access, even to a title.
+        for (const entry of entries) {
+          if (!entry.shared) {
+            pages.push(entry);
+            continue;
+          }
+          const response = await this.env.PAGES.getByName(entry.page_id).fetch(
+            forwarded(request, "/internal/catalog", {}),
+          );
+          if (response.ok) pages.push({ ...entry, ...(await response.json()) });
+          else if ([403, 404].includes(response.status))
+            await this.ctx.storage.delete(`shared/${entry.page_id}`);
+          else throw new HttpError(503, "Shared Pages are temporarily unavailable");
+        }
+        return json({ pages, limit: 100 });
       }
       requireWrite(identity);
       if (!["create_page", "register_page", "delete_page"].includes(body.operation))
@@ -321,6 +377,7 @@ export class Page {
     this.ctx = ctx;
     this.env = env;
     this.wires = new Set();
+    this.wirePrincipals = new Map();
     this.tail = Promise.resolve();
     this.ready = ctx.blockConcurrencyWhile(async () => {
       this.metadata = await ctx.storage.get("host/document");
@@ -358,7 +415,7 @@ export class Page {
         }
         const policy = new DocumentPolicy({
           storage: ctx.storage,
-          metadata: () => this.metadata,
+          metadata: () => this.policyMetadata ?? this.metadata,
           serverKey,
         });
         await policy.load();
@@ -425,38 +482,77 @@ export class Page {
     return {
       ...this.policy.profiles(),
       [this.serverSenderId]: {
-        principal: this.metadata.owner,
-        displayName: this.metadata.ownerName,
-        driver: "Pages API",
+        principal: "service:pages",
+        displayName: "Pages",
+        driver: "API",
       },
     };
   }
 
-  cacheTitle(request) {
+  broadcastProfiles() {
+    if (!this.handle) return;
+    try {
+      this.handle.broadcast({ kind: "identity-profiles", peerProfiles: this.profiles() });
+    } catch (error) {
+      // Cleanup must still release socket capacity if the document is closing.
+      logFailure(error, "presence-profiles");
+    }
+  }
+
+  cacheTitle() {
     const title = catalogTitle(this.handle.doc().title);
     if (this.cachedTitle === title) return;
     this.cachedTitle = title;
-    // Best effort after a real read or save, never part of the content receipt.
-    // Reuse the verified caller credential; no internal identity headers.
-    const projection = forwarded(request, "/internal/title", {
-      page_id: this.metadata.pageId,
-      title,
-      observed_at: new Date().toISOString(),
-    });
-    // An authenticated GET may not carry Origin. This is a host-created POST,
-    // after the original request passed the browser origin and account gates.
-    if (!projection.headers.has("origin"))
-      projection.headers.set("origin", new URL(request.url).origin);
+    const recipients = [
+      this.metadata.owner,
+      ...Object.entries(this.metadata.acl?.members ?? {})
+        .filter(([, value]) => ["viewer", "editor"].includes(value.role))
+        .map(([principal]) => principal),
+    ];
+    const tasks = recipients.map((principal) =>
+      this.env.CATALOGS.getByName(principal).fetch(
+        new Request("https://pages.internal/internal/projection", {
+          method: "POST",
+          body: JSON.stringify({
+            page_id: this.metadata.pageId,
+            title,
+            observed_at: new Date().toISOString(),
+            shared: principal !== this.metadata.owner,
+          }),
+        }),
+      ),
+    );
     this.ctx.waitUntil(
-      this.env.CATALOGS.getByName(this.metadata.owner)
-        .fetch(projection)
-        .then((response) => {
-          if (!response.ok && this.cachedTitle === title) this.cachedTitle = undefined;
+      Promise.all(tasks)
+        .then((results) => {
+          if (results.some((response) => !response.ok) && this.cachedTitle === title)
+            this.cachedTitle = undefined;
         })
         .catch(() => {
           if (this.cachedTitle === title) this.cachedTitle = undefined;
         }),
     );
+  }
+
+  async installAccess(metadata) {
+    // Restrict immediately, but make no new grant visible before the single
+    // host record containing the ACL and receipt has crossed durability.
+    this.pendingAccess = metadata;
+    this.policyMetadata = {
+      ...restrictAccessDuringCommit(this.policyMetadata ?? this.metadata, metadata),
+      aclCommitting: true,
+    };
+    // Do not persist retired signer rows ahead of their grant generation. If
+    // this host record never commits, restart may legitimately retain old access.
+    await this.policy.refreshAccess({ persist: false });
+    await this.ctx.storage.put("host/document", metadata);
+    await this.ctx.storage.sync();
+    this.metadata = metadata;
+    this.policyMetadata = undefined;
+    await this.policy.refreshAccess();
+    this.pendingAccess = undefined;
+    this.cachedTitle = undefined;
+    this.cacheTitle();
   }
 
   schedulePersistence() {
@@ -487,7 +583,10 @@ export class Page {
   }
 
   fetch(request) {
-    if (!new URL(request.url).pathname.startsWith("/internal/")) return this.run(request);
+    // Permission changes/claims and HTTP mutations share one admission order.
+    // Native frames still run directly through the current DocumentPolicy.
+    if (["/api/sync", "/api/saved"].includes(new URL(request.url).pathname))
+      return this.run(request);
     const next = this.tail.then(() => this.run(request));
     this.tail = next.catch(() => {});
     return next;
@@ -498,6 +597,10 @@ export class Page {
       await this.ready;
       const identity = await authenticate(request, this.env);
       const url = new URL(request.url);
+      // An ambiguous storage failure retains the exact proposed ACL/receipt.
+      // Normal HTTP work retries that barrier before reading or changing it.
+      if (this.pendingAccess && !["/api/sync", "/api/saved"].includes(url.pathname))
+        await this.installAccess(this.pendingAccess);
       if (url.pathname === "/internal/register") return await this.register(request, identity);
       if (url.pathname === "/internal/create") {
         requireWrite(identity);
@@ -596,7 +699,26 @@ export class Page {
         return json(this.metadata.deletion.receipt);
       }
       if (this.metadata.deleted) throw new HttpError(404, "Page not found");
+      if (!["/api/sync", "/api/saved"].includes(url.pathname)) {
+        const claimed = await claimInvitation(this.metadata, identity, this.env);
+        if (claimed) await this.installAccess(claimed);
+      }
       this.policy.account(identity);
+      if (url.pathname === "/internal/catalog")
+        return json({
+          page_id: this.metadata.pageId,
+          title: catalogTitle(this.handle.doc().title),
+          shared: true,
+        });
+      if (url.pathname === "/internal/access") {
+        const args = await readJson(request);
+        if (args.read) return json(sharingProjection(this.metadata, identity));
+        const result = await proposeSharingMutation(this.metadata, identity, args);
+        // Replays repeat persistence: an earlier barrier may have failed after
+        // installing the in-memory ACL and receipt.
+        await this.installAccess(result.metadata);
+        return json({ ...sharingProjection(this.metadata, identity), receipt: result.receipt });
+      }
       if (url.pathname === "/api/connect" && request.method === "GET") {
         this.cacheTitle(request);
         return json({
@@ -605,7 +727,8 @@ export class Page {
           serverPeerId: this.serverKey,
           serverSenderId: this.serverSenderId,
           identity: publicIdentity(identity),
-          canWrite: identity.canWrite,
+          canWrite: pageAccess(this.metadata, identity).canWrite,
+          access: pageAccess(this.metadata, identity),
           peerProfiles: this.profiles(),
         });
       }
@@ -626,7 +749,7 @@ export class Page {
           this.cacheTitle(request);
           return json({ ...projectPage(this.handle.doc()), heads: A.getHeads(this.handle.doc()) });
         }
-        requireWrite(identity);
+        this.policy.account(identity, true);
         if (
           !["edit_page", "patch_page", "manage_page_comment", "reply_page_comment"].includes(
             body.operation,
@@ -756,6 +879,14 @@ export class Page {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket")
       throw new HttpError(426, "WebSocket upgrade required");
     if (this.wires.size >= 24) throw new HttpError(429, "Too many connected peers");
+    const principals = [...this.wirePrincipals.values()];
+    if (principals.filter((principal) => principal === identity.principal).length >= 4)
+      throw new HttpError(429, "Too many connections for this account");
+    if (
+      identity.principal !== this.metadata.owner &&
+      principals.filter((principal) => principal !== this.metadata.owner).length >= 20
+    )
+      throw new HttpError(429, "Member connection capacity reached");
     const pair = new WebSocketPair();
     const client = pair[0],
       socket = pair[1];
@@ -763,6 +894,9 @@ export class Page {
     const wire = new WebSocketByteTransport(socket);
     const disconnected = new Promise((resolve) => wire.onDisconnect(resolve));
     this.wires.add(wire);
+    // HTTP authentication already established this principal. Reserve before
+    // waiting on the native handshake, so idle handshakes cannot bypass quotas.
+    this.wirePrincipals.set(wire, identity.principal);
     let release = noop;
     let leaseTimer;
     let expiryTimer;
@@ -775,6 +909,8 @@ export class Page {
       clearTimeout(expiryTimer);
       release();
       this.wires.delete(wire);
+      this.wirePrincipals.delete(wire);
+      this.broadcastProfiles();
     });
     this.ctx.waitUntil(
       (async () => {
@@ -813,7 +949,7 @@ export class Page {
             clearTimeout(expiryTimer);
           });
           await this.backend.addConnection(transport);
-          this.handle.broadcast({ kind: "identity-profiles", peerProfiles: this.profiles() });
+          this.broadcastProfiles();
         } finally {
           transport.free();
         }

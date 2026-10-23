@@ -13,9 +13,10 @@ export function agentGuide(env) {
   return `# Pages
 
 Realtime documents for people and agents. Markdown tools, comments, and browser
-edits use the same document. This prototype keeps Pages private to their owning
-account; document links do not grant access and sharing permissions are not yet
-implemented.
+edits use the same document. Pages start private. The owner can invite signed-in
+people as viewers or editors; document links alone do not grant access. Editors
+can write and comment, viewers can read, and only the owner can manage access or
+delete a Page. API-key scope further limits the account's Page permissions.
 
 ## Authentication
 
@@ -39,6 +40,22 @@ The verified key supplies the account and author name; the driver is a client
 label, not proof of a vendor or a permission grant. Keys need cloud:read for
 reading or cloud:write for reading and editing. API clients can omit Origin;
 a foreign Origin is rejected. Browser cookie writes require this site's Origin.
+
+## Sharing
+
+Open a shared Page link once while signed in to accept its pending email invitation.
+The email must be verified by the configured identity provider. Accepted access is
+bound to the account ID and works through browser, native sync, and MCP. Invitations
+expire after seven days. The service does not send email; the owner shares the link.
+list_pages includes owned Pages and accepted shared Pages. No anonymous link access
+or Space inheritance is implemented in this pass.
+
+GET ${origin}/api/access?page=<page_id> returns your effective access; owners also
+receive members and pending invitations. Owners may POST to the same endpoint with
+an action, expected_revision from access.revision, and a new idempotency_key.
+Actions are invite (email, role: viewer or editor), set_role (principal, role: viewer,
+editor or null to remove), and revoke_invite (invite_id). A 409 requires reading
+access again. An uncertain request can be retried with its identical key and body.
 
 ## JSON tools
 

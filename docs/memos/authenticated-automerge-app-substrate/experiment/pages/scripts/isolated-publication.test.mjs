@@ -489,3 +489,107 @@ test("page4 rejects an unrecognized receipt instead of applying page3 historical
   assert.throws(f.execute, /Dedicated tunnel installation differs/);
   assert.equal(f.writes.length, before);
 });
+
+test("page5 plan owns its hostname, paths and connector and refuses frozen tunnel reuse", () => {
+  const value = inputFor("page5"),
+    plan = isolatedPublicationPlan(value);
+  assert.equal(plan.service, "cloudflared-page5.service");
+  assert.equal(plan.configPath, "/etc/nteract-page5/tunnel.yml");
+  assert.equal(plan.unitPath, "/etc/systemd/system/cloudflared-page5.service");
+  assert.match(plan.config, /hostname: page5.runtimed.run/);
+  assert.match(plan.config, /http:\/\/127.0.0.1:9475/);
+  assert.doesNotMatch(plan.config + plan.unit, /page3|page4|pages-next|9473|19473|9474|19474/);
+  assert.throws(
+    () =>
+      isolatedPublicationPlan({ ...value, frozenTunnelConfigs: ["tunnel: " + tunnelId + "\n"] }),
+    /different tunnel/,
+  );
+  assert.throws(
+    () => isolatedPublicationPlan({ ...value, target: "page3" }),
+    /Unexpected deployment target/,
+  );
+  assert.throws(() => isolatedPublicationPlan(inputFor("pages-next")), /dedicated tunnel target/);
+  const route = new RegExp(/^    path: (.+)$/m.exec(routesFor("page5"))[1]);
+  for (const pathname of [
+    "/",
+    "/mermaid.js",
+    "/mcp",
+    "/llms.txt",
+    "/oidc",
+    "/api/sync",
+    "/api/access",
+  ])
+    assert.equal(route.test(pathname), true, pathname);
+  for (const pathname of [
+    "/state",
+    "/mermaid.js/private",
+    "/internal/create",
+    "/api/config",
+    "/api/access/private",
+  ])
+    assert.equal(route.test(pathname), false, pathname);
+});
+
+test("page5 publication and retries touch only its connector and preserve all three frozen targets", (t) => {
+  const f = fixture(t, { target: "page5" });
+  for (let i = 0; i < 2; i++) {
+    const result = f.execute();
+    assert.deepEqual(result.frozenTargetsUnchanged, ["pages-next", "page3", "page4"]);
+    assert.equal(result.sharedTunnelUnchanged, true);
+    assert.equal(result.routesUpdated, false);
+  }
+  assert.ok(
+    f.writes.every(
+      (file) =>
+        file.startsWith("/etc/nteract-page5/") ||
+        file === "/etc/systemd/system/cloudflared-page5.service",
+    ),
+  );
+  assert.ok(
+    f.calls
+      .filter(
+        ({ command, args }) =>
+          command === "systemctl" && ["start", "restart", "stop", "enable"].includes(args[0]),
+      )
+      .every(({ args }) => args[1] === "cloudflared-page5.service"),
+  );
+  assert.equal(
+    f.calls.some(({ command, args }) => command === "systemctl" && args[0] === "restart"),
+    false,
+  );
+  assert.equal(fs.readFileSync(f.local("/etc/cloudflared/config.yml"), "utf8"), sharedConfig);
+});
+
+for (const mutation of ["config", "pid"])
+  test(`page5 publication detects changed frozen ${mutation} without claiming isolation`, (t) => {
+    const f = fixture(t, { target: "page5" });
+    assert.throws(
+      () =>
+        f.executeWith(() =>
+          mutation === "config"
+            ? f.write("/etc/nteract-page4/tunnel.yml", "foreign change")
+            : f.changeFrozenPid(),
+        ),
+      /Frozen Pages (configuration|service) changed/,
+    );
+  });
+
+test("page5 rejects an unrecognized receipt instead of applying page3 historical migrations", (t) => {
+  const f = fixture(t, { target: "page5" });
+  f.execute();
+  const before = f.writes.length;
+  f.write("/etc/nteract-page5/tunnel-installation.json", "{}\n");
+  assert.throws(f.execute, /Dedicated tunnel installation differs/);
+  assert.equal(f.writes.length, before);
+});
+
+test("sharing routes leave all frozen deployment ingress byte-identical", () => {
+  const expected = {
+    "pages-next": "2dbfabe3e649e0f79afc9df766e0a19c52177b76667d89ad8e45acaaf523e5f3",
+    page3: "db474e430d27227ee9bf407beee948ad6cf7f601fafd55c60bbf34effa38200a",
+    page4: "9c5872feed6898ee236a96dc70226c625d5c3a299c3c3866b351b0f4b41f47de",
+  };
+  for (const [target, hash] of Object.entries(expected)) {
+    assert.equal(digest(routesFor(target)), hash, target);
+  }
+});

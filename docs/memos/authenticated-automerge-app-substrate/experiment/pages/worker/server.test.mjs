@@ -3,6 +3,7 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { DurableByteStore, persistentSeed } from "./storage.mjs";
 import { DocumentPolicy } from "./policy.mjs";
+import { proposeAccessUpdate } from "./access.mjs";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
 import { listCatalog, refreshCatalogTitle } from "./catalog.mjs";
 import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
@@ -117,6 +118,11 @@ test("signer binding survives reload and rejects account or driver reassignment"
     policy.bind(key, key, { ...f.identity, driver: "Mobile" }, {}),
     /another binding/,
   );
+  assert.deepEqual(policy.profiles(), {}, "stored author history is not a live roster");
+  await policy.bind(key, key, f.identity, {
+    reauthenticate: async () => f.identity,
+    disconnect: async () => {},
+  });
   assert.deepEqual(policy.profiles()[key], {
     principal: "user:owner",
     displayName: "Kyle",
@@ -377,4 +383,323 @@ test("catalog lists stored projections and late title updates cannot revive dele
     observed_at: "2026-10-03T00:00:00Z",
   });
   assert.deepEqual(await listCatalog(storage), []);
+});
+
+function grant(f, principal, role) {
+  const proposal = proposeAccessUpdate(
+    f.metadata,
+    f.identity,
+    {
+      principal,
+      role,
+      expected_revision: f.metadata.acl?.revision ?? 0,
+    },
+    { now: 1000 },
+  );
+  f.metadata.acl = proposal.acl;
+}
+
+test("Page grants gate native writes independently of the credential ceiling", async () => {
+  const f = fixture();
+  grant(f, "user:viewer", "viewer");
+  grant(f, "user:editor", "editor");
+  const viewer = { ...f.identity, principal: "user:viewer" };
+  await f.bind(key, viewer);
+  await f.policy.access(key, f.metadata.tree);
+  assert.equal(f.policy.bindings.get(key).writer, false);
+  await assert.rejects(f.policy.put(key, key, f.metadata.tree), /read-only/);
+  await f.bind(otherKey, { ...f.identity, principal: "user:editor", canWrite: false });
+  await f.policy.access(otherKey, f.metadata.tree);
+  await assert.rejects(f.policy.put(otherKey, otherKey, f.metadata.tree), /read-only/);
+});
+
+test("current editors can relay another member's admitted writer history", async () => {
+  const f = fixture();
+  grant(f, "user:editor", "editor");
+  await f.bind(key, { ...f.identity, principal: "user:editor", expiresAt: 2000 });
+  f.advance(3000);
+  await f.bind(otherKey);
+  await f.policy.put(otherKey, key, f.metadata.tree);
+  assert.equal(f.policy.bindings.get(key).generation, 1);
+});
+
+test("downgrade disconnects the writer and allows its old key only for reads", async () => {
+  const f = fixture();
+  const editor = { ...f.identity, principal: "user:editor" };
+  grant(f, editor.principal, "editor");
+  await f.bind(key, editor);
+  await f.bind(otherKey);
+  grant(f, editor.principal, "viewer");
+  await f.policy.refreshAccess();
+  assert.equal(f.closed(), 1);
+  assert.equal(f.policy.sessions.has(key), false);
+  assert.equal(f.policy.sessions.has(otherKey), true);
+  assert.equal(f.policy.bindings.get(key).retired, true);
+  await assert.rejects(f.policy.put(otherKey, key, f.metadata.tree), /Unknown document author/);
+  const release = await f.bind(key, editor);
+  await f.policy.access(key, f.metadata.tree);
+  release();
+  grant(f, editor.principal, "editor");
+  await f.policy.refreshAccess();
+  await f.bind(key, editor);
+  await assert.rejects(f.policy.put(key, key, f.metadata.tree), /Signing key is read-only/);
+  const freshKey = "3".repeat(64);
+  await f.bind(freshKey, editor);
+  await f.policy.put(freshKey, freshKey, f.metadata.tree);
+  assert.equal(f.policy.bindings.get(freshKey).generation, 3);
+});
+
+test("removal denies fetch/presence and regrant cannot resurrect old author keys", async () => {
+  const f = fixture();
+  const editor = { ...f.identity, principal: "user:editor" };
+  grant(f, editor.principal, "editor");
+  await f.bind(key, editor);
+  await f.bind(otherKey);
+  grant(f, editor.principal, null);
+  await f.policy.refreshAccess();
+  await assert.rejects(f.policy.access(key, f.metadata.tree), /Unknown peer/);
+  await assert.rejects(f.bind(key, editor), /access denied/);
+  await assert.rejects(f.policy.put(otherKey, key, f.metadata.tree), /Unknown document author/);
+  grant(f, editor.principal, "editor");
+  const restored = new DocumentPolicy({
+    storage: f.storage,
+    metadata: () => f.metadata,
+    serverKey,
+    now: () => 1000,
+  });
+  await restored.load();
+  await restored.bind(key, key, editor, {
+    reauthenticate: async () => editor,
+    disconnect: async () => {},
+  });
+  await restored.access(key, f.metadata.tree);
+  await assert.rejects(restored.put(key, key, f.metadata.tree), /Signing key is read-only/);
+});
+
+test("metadata generation alone denies old authors after restart even if retirement did not persist", async () => {
+  const f = fixture();
+  const editor = { ...f.identity, principal: "user:editor" };
+  grant(f, editor.principal, "editor");
+  await f.bind(key, editor);
+  grant(f, editor.principal, null);
+  grant(f, editor.principal, "editor");
+  const restored = new DocumentPolicy({
+    storage: f.storage,
+    metadata: () => f.metadata,
+    serverKey,
+    now: () => 1000,
+  });
+  await restored.load();
+  await restored.bind(otherKey, otherKey, f.identity, {
+    reauthenticate: async () => f.identity,
+    disconnect: async () => {},
+  });
+  await assert.rejects(restored.put(otherKey, key, f.metadata.tree), /Unknown document author/);
+});
+
+test("access refresh fails closed and disconnects even when retiring keys cannot be stored", async () => {
+  const f = fixture();
+  const editor = { ...f.identity, principal: "user:editor" };
+  grant(f, editor.principal, "editor");
+  await f.bind(key, editor);
+  await f.bind(otherKey);
+  grant(f, editor.principal, "viewer");
+  f.storage.put = () => {
+    throw Error("storage failed");
+  };
+  await assert.rejects(f.policy.refreshAccess(), /Access refresh failed/);
+  assert.equal(f.closed(), 1);
+  assert.equal(f.policy.bindings.get(key).writer, false);
+  await assert.rejects(f.policy.put(otherKey, key, f.metadata.tree), /Unknown document author/);
+});
+
+test("reader signing keys are never promoted by a stronger credential", async () => {
+  const f = fixture();
+  const release = await f.bind(key, { ...f.identity, canWrite: false });
+  release();
+  await f.bind(key);
+  await assert.rejects(f.policy.put(key, key, f.metadata.tree), /Signing key is read-only/);
+  await f.bind(otherKey);
+  await f.policy.put(otherKey, otherKey, f.metadata.tree);
+});
+
+test("ACL changes during key persistence cannot admit the stale writer", async () => {
+  const f = fixture();
+  const editor = { ...f.identity, principal: "user:editor" };
+  grant(f, editor.principal, "editor");
+  const put = f.storage.put.bind(f.storage);
+  f.storage.put = async (name, value) => {
+    await put(name, value);
+    if (name === `host/binding/${key}`) grant(f, editor.principal, "viewer");
+  };
+  await assert.rejects(f.bind(key, editor), /access changed during connection/);
+  assert.equal(f.policy.sessions.has(key), false);
+});
+
+test("author relay waits until the key binding is durably admitted", async () => {
+  const f = fixture();
+  await f.bind(otherKey);
+  let continuePut;
+  const stalled = new Promise((resolve) => {
+    continuePut = resolve;
+  });
+  const put = f.storage.put.bind(f.storage);
+  f.storage.put = async (name, value) => {
+    if (name === `host/binding/${key}`) await stalled;
+    await put(name, value);
+  };
+  const admission = f.bind(key);
+  await assert.rejects(f.policy.put(otherKey, key, f.metadata.tree), /Unknown document author/);
+  continuePut();
+  await admission;
+  await f.policy.put(otherKey, key, f.metadata.tree);
+});
+
+test("native fetch and ephemeral policy reject a removed member immediately", async () => {
+  const f = fixture();
+  const viewer = { ...f.identity, principal: "user:viewer" };
+  grant(f, viewer.principal, "viewer");
+  await f.bind(key, viewer);
+  const nativeValue = (hex) => ({
+    toBytes: () => Uint8Array.from(Buffer.from(hex, "hex")),
+    free() {},
+  });
+  await f.policy.native().authorizeFetch(nativeValue(key), nativeValue(f.metadata.tree));
+  await f.policy.ephemeral().authorizePublish(nativeValue(key), nativeValue(f.metadata.tree));
+  grant(f, viewer.principal, null);
+  await assert.rejects(
+    f.policy.native().authorizeFetch(nativeValue(key), nativeValue(f.metadata.tree)),
+    /access denied/,
+  );
+  await assert.rejects(
+    f.policy.ephemeral().authorizePublish(nativeValue(key), nativeValue(f.metadata.tree)),
+    /Unknown peer/,
+  );
+});
+
+test("uncommitted permission reductions retire keys in memory without orphaning durable grants", async () => {
+  const f = fixture();
+  const editor = { ...f.identity, principal: "user:editor" };
+  f.metadata.acl = {
+    revision: 1,
+    members: { [editor.principal]: { role: "editor", generation: 1 } },
+  };
+  await f.bind(key, editor);
+  const persisted = await f.storage.get(`host/binding/${key}`);
+  f.metadata.acl = {
+    revision: 2,
+    members: { [editor.principal]: { role: "viewer", generation: 2 } },
+  };
+  f.metadata.aclCommitting = true;
+  await f.policy.refreshAccess({ persist: false });
+  assert.equal(f.policy.bindings.get(key).retired, true);
+  assert.deepEqual(await f.storage.get(`host/binding/${key}`), persisted);
+  await assert.rejects(f.bind(otherKey, editor), /being updated/);
+  delete f.metadata.aclCommitting;
+  await f.policy.refreshAccess();
+  assert.equal((await f.storage.get(`host/binding/${key}`)).retired, true);
+});
+
+const numberedKey = (value) => value.toString(16).padStart(64, "0");
+
+test("one member cannot consume other members' or the owner's signing-key capacity", async () => {
+  const f = fixture();
+  const viewer = { ...f.identity, principal: "user:viewer" };
+  grant(f, viewer.principal, "viewer");
+  grant(f, "user:editor", "editor");
+  for (let i = 1; i <= 32; i++) (await f.bind(numberedKey(i), viewer))();
+  await assert.rejects(
+    f.bind(numberedKey(33), { ...viewer, driver: "Different driver" }),
+    /32 signing keys per member/,
+  );
+  assert.equal(f.policy.bindings.size, 32);
+  (await f.bind(numberedKey(1), viewer))();
+  await f.bind(key);
+  await f.bind(otherKey, { ...f.identity, principal: "user:editor" });
+  assert.equal(f.policy.bindings.size, 34);
+  grant(f, viewer.principal, "editor");
+  await f.policy.refreshAccess();
+  await f.bind(numberedKey(1), viewer);
+  await assert.rejects(
+    f.policy.put(key, numberedKey(1), f.metadata.tree),
+    /Unknown document author/,
+  );
+  await assert.rejects(f.bind(numberedKey(33), viewer), /32 signing keys per member/);
+  assert.equal(f.policy.bindings.get(numberedKey(1)).retired, true);
+});
+
+test("member signing-key capacity reserves owner keys and known keys reconnect at the global cap", async () => {
+  const f = fixture();
+  let next = 1;
+  for (let member = 0; member < 7; member++) {
+    const identity = { ...f.identity, principal: `user:member-${member}` };
+    grant(f, identity.principal, "viewer");
+    for (let i = 0; i < 32; i++) (await f.bind(numberedKey(next++), identity))();
+  }
+  const nextMember = { ...f.identity, principal: "user:next-member" };
+  grant(f, nextMember.principal, "editor");
+  await assert.rejects(f.bind(numberedKey(next), nextMember), /Member signing-key capacity/);
+  for (let i = 0; i < 32; i++) (await f.bind(numberedKey(next++)))();
+  assert.equal(f.policy.bindings.size, 256);
+  await assert.rejects(f.bind(numberedKey(next)), /256 signing keys/);
+  const reader = { ...f.identity, principal: "user:member-0" };
+  (await f.bind(numberedKey(1), reader))();
+  (await f.bind(numberedKey(225)))();
+  assert.equal(f.policy.bindings.size, 256);
+  grant(f, reader.principal, null);
+  await f.policy.refreshAccess();
+  assert.equal(f.policy.bindings.size, 256, "retired-key denial records must remain durable");
+});
+
+test("pending key admission reserves quota and failed persistence releases only the new reservation", async () => {
+  const f = fixture();
+  const viewer = { ...f.identity, principal: "user:viewer" };
+  grant(f, viewer.principal, "viewer");
+  for (let i = 1; i <= 31; i++) (await f.bind(numberedKey(i), viewer))();
+  let fail;
+  const waiting = new Promise((_, reject) => {
+    fail = reject;
+  });
+  const put = f.storage.put.bind(f.storage);
+  f.storage.put = async (name, value) => {
+    if (name === `host/binding/${numberedKey(32)}`) await waiting;
+    return put(name, value);
+  };
+  const admission = f.bind(numberedKey(32), viewer);
+  const denied = assert.rejects(admission, /fixture persistence failure/);
+  await assert.rejects(f.bind(numberedKey(33), viewer), /32 signing keys per member/);
+  assert.deepEqual(f.policy.profiles(), {}, "pending keys do not expose profiles");
+  fail(new Error("fixture persistence failure"));
+  await denied;
+  assert.equal(f.policy.bindings.size, 31);
+  assert.equal(f.policy.sessions.size, 0);
+  await f.bind(numberedKey(33), viewer);
+  assert.equal(f.policy.bindings.size, 32);
+});
+
+test("presence profiles include only live authorized bindings without discarding author history", async () => {
+  const f = fixture();
+  const editor = { ...f.identity, principal: "user:editor" };
+  grant(f, editor.principal, "editor");
+  const release = await f.bind(key, editor);
+  await f.bind(otherKey);
+  assert.equal(f.policy.profiles()[key].principal, editor.principal);
+  release();
+  assert.equal(f.policy.profiles()[key], undefined);
+  await f.policy.put(otherKey, key, f.metadata.tree);
+  await f.bind(key, editor);
+  grant(f, editor.principal, "viewer");
+  assert.equal(f.policy.profiles()[key], undefined, "a changed grant hides a stale live lease");
+  await f.policy.refreshAccess();
+  await f.bind(key, editor);
+  assert.equal(f.policy.profiles()[key], undefined, "retired keys are not presence identities");
+  await f.bind("3".repeat(64), editor);
+  assert.equal(f.policy.profiles()["3".repeat(64)].principal, editor.principal);
+  grant(f, editor.principal, null);
+  assert.equal(f.policy.profiles()["3".repeat(64)], undefined);
+  await f.policy.refreshAccess();
+  assert.ok(f.policy.bindings.has(key));
+  assert.ok(f.storage.values.has(`host/binding/${key}`));
+  f.advance(62_000);
+  assert.deepEqual(f.policy.profiles(), {}, "expired live leases are excluded immediately");
 });
