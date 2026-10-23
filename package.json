@@ -72,7 +72,7 @@
     "leaflet": "^1.9.4",
     "lezer-toml": "^1.0.0",
     "lucide-react": "^0.513.0",
-    "pele": "1.5.2",
+    "pele": "1.8.0",
     "plotly.js-dist-min": "^3.4.0",
     "radix-ui": "^1.4.3",
     "react": "^19.2.7",

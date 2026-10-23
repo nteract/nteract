@@ -40,15 +40,25 @@ describe("Mermaid SVG admission", () => {
     }
   });
 
-  it("rejects oversized source before mounting it", () => {
+  it("reports oversized source through onError without admitting SVG", () => {
     const element = document.createElement("div");
     document.body.append(element);
+    const onError = vi.fn();
+    const onRender = vi.fn();
+    let diagram: ReturnType<typeof mountMermaid> | undefined;
     try {
-      expect(() =>
-        mountMermaid(element, "flowchart LR\n" + "A".repeat(50_001), "limits", {}),
-      ).toThrow();
+      diagram = mountMermaid(element, "flowchart LR\n" + "A".repeat(50_001), "limits", {
+        onError,
+        onRender,
+      });
+      expect(onError).toHaveBeenCalledOnce();
+      expect(onError).toHaveBeenCalledWith(expect.objectContaining({ code: "limit" }));
+      expect(diagram.error).toBe(onError.mock.calls[0][0]);
+      expect(diagram.result).toBeUndefined();
+      expect(onRender).not.toHaveBeenCalled();
       expect(element.querySelector("svg")).toBeNull();
     } finally {
+      diagram?.destroy();
       element.remove();
     }
   });

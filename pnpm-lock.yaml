@@ -178,8 +178,8 @@ importers:
         specifier: ^0.513.0
         version: 0.513.0(react@19.2.7)
       pele:
-        specifier: 1.5.2
-        version: 1.5.2
+        specifier: 1.8.0
+        version: 1.8.0
       plotly.js-dist-min:
         specifier: ^3.4.0
         version: 3.4.0
@@ -9247,8 +9247,8 @@ packages:
   pathe@2.0.3:
     resolution: {integrity: sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==}
 
-  pele@1.5.2:
-    resolution: {integrity: sha512-t1XarodlFluWbSy8eXE4PnkFNXUaP1qLUUKJANHiZpTM0VgDoLCEv9CENj3iHM8s507QXyRdSJFMDiZCmkvtGg==}
+  pele@1.8.0:
+    resolution: {integrity: sha512-AYmHttE70cwNJVXdfPMCANGivFlmc3bGGpMG0GqH5S5vE3RgtEuLlkqbhRfe94Csv/ZEd1TUbv2dMUHpw4p1Bg==}
     engines: {node: '>=20'}
 
   pend@1.2.0:
@@ -20409,7 +20409,7 @@ snapshots:
 
   pathe@2.0.3: {}
 
-  pele@1.5.2: {}
+  pele@1.8.0: {}
 
   pend@1.2.0: {}
 
