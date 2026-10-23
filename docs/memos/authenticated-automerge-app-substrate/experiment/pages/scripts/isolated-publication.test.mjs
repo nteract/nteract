@@ -31,6 +31,17 @@ const input = {
   sharedConfig,
 };
 
+function inputFor(target) {
+  const deployment = deploymentProfile(target).deployment;
+  return {
+    ...input,
+    target,
+    manifest: { ...input.manifest, deployment },
+    ownership: { hostname: deployment.hostname, prefix: deployment.prefix },
+    tunnelReceipt: { ...input.tunnelReceipt, name: deployment.service },
+  };
+}
+
 test("dedicated page3 plan cannot use shared or unowned tunnel credentials", () => {
   const plan = isolatedPublicationPlan(input);
   assert.equal(plan.service, "cloudflared-page3.service");
@@ -50,7 +61,14 @@ test("dedicated page3 plan cannot use shared or unowned tunnel credentials", () 
     assert.throws(() => isolatedPublicationPlan({ ...input, ...changed }));
 });
 
-function fixture(t, { failStart = false, failRestart = false, interruptRollback = null } = {}) {
+function fixture(
+  t,
+  { failStart = false, failRestart = false, interruptRollback = null, target = "page3" } = {},
+) {
+  const current = inputFor(target);
+  const profile = deploymentProfile(target);
+  const service = profile.deployment.service;
+  const configDir = "/etc/" + service;
   const root = fs.mkdtempSync(path.join(tmpdir(), "page3-isolated-publication-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const local = (file) => path.join(root, file);
@@ -58,16 +76,28 @@ function fixture(t, { failStart = false, failRestart = false, interruptRollback 
     fs.mkdirSync(path.dirname(local(file)), { recursive: true });
     fs.writeFileSync(local(file), value, { mode });
   };
-  const stage = "/tmp/nteract-page3-stage-test1234";
+  const stage = "/tmp/" + service + "-stage-test1234";
   for (const [file, value] of [
-    [stage + "/manifest.json", input.manifest],
-    ["/etc/nteract-page3/ownership.json", input.ownership],
-    ["/etc/nteract-page3/tunnel.json", input.credentials],
-    ["/etc/nteract-page3/tunnel-provisioning.json", input.tunnelReceipt],
+    [stage + "/manifest.json", current.manifest],
+    [configDir + "/ownership.json", current.ownership],
+    [configDir + "/tunnel.json", current.credentials],
+    [configDir + "/tunnel-provisioning.json", current.tunnelReceipt],
   ])
     write(file, JSON.stringify(value));
   write("/etc/cloudflared/config.yml", sharedConfig);
   fs.mkdirSync(local("/etc/systemd/system"), { recursive: true });
+  for (const frozenTarget of profile.frozenTargets ?? []) {
+    const frozen = deploymentProfile(frozenTarget);
+    for (const unit of [frozen.deployment.service + ".service", frozen.tunnelService].filter(
+      Boolean,
+    ))
+      write("/etc/systemd/system/" + unit, "unchanged " + unit);
+    if (frozen.tunnelService)
+      write(
+        "/etc/" + frozen.deployment.service + "/tunnel.yml",
+        "tunnel: abcdef12-1234-4123-8123-123456789abc\ningress:\n  - service: http_status:404\n",
+      );
+  }
   const writes = [],
     calls = [];
   const filesystem = {
@@ -81,7 +111,7 @@ function fixture(t, { failStart = false, failRestart = false, interruptRollback 
     renameSync: (from, to) => {
       writes.push(to);
       const staged = fs.readFileSync(local(from), "utf8");
-      const oldConfig = isolatedPublicationPlan(input).config.replace("|mermaid[.]js|", "|");
+      const oldConfig = isolatedPublicationPlan(current).config.replace("|mermaid[.]js|", "|");
       if (
         (interruptRollback === "config" && to.endsWith("/tunnel.yml") && staged === oldConfig) ||
         (interruptRollback === "receipt" &&
@@ -98,13 +128,16 @@ function fixture(t, { failStart = false, failRestart = false, interruptRollback 
       return fs.writeFileSync(local(file), ...args);
     },
   };
-  let active = false;
+  let active = false,
+    frozenPid = "12345";
   const run = (command, args) => {
     calls.push({ command, args });
     if (command === "systemctl") {
-      if (args[0] === "show") return args[1] === "cloudflared.service" ? "3393474" : "not-found";
-      if (args[0] === "is-active")
-        return args[1] === "nteract-page3" || active ? "active" : "inactive";
+      if (args[0] === "show") {
+        if (args[1] === "cloudflared.service") return "3393474";
+        return args.includes("--property=MainPID") ? frozenPid : "not-found";
+      }
+      if (args[0] === "is-active") return args[1] === service || active ? "active" : "inactive";
       if (args[0] === "restart") {
         if (failRestart) {
           failRestart = false;
@@ -128,12 +161,27 @@ function fixture(t, { failStart = false, failRestart = false, interruptRollback 
       const pathname = new URL(args.at(-1)).pathname;
       const contents = fs.readFileSync(local(args[1]), "utf8");
       const pattern = new RegExp(/^    path: (.+)$/m.exec(contents)[1]);
-      return "service: " + (pattern.test(pathname) ? "http://127.0.0.1:9473" : "http_status:404");
+      return (
+        "service: " +
+        (pattern.test(pathname) ? "http://" + profile.deployment.listen : "http_status:404")
+      );
     }
     throw Error("Unexpected command " + command);
   };
   return {
     execute: () => publishIsolated(stage, { filesystem, run }),
+    executeWith: (mutate) =>
+      publishIsolated(stage, {
+        filesystem,
+        run: (command, args) => {
+          const result = run(command, args);
+          if (command === "systemctl" && args[0] === "start") mutate();
+          return result;
+        },
+      }),
+    changeFrozenPid: () => {
+      frozenPid = "54321";
+    },
     write,
     writes,
     calls,
@@ -222,7 +270,7 @@ function previousInstallation(f, { pending = false, newConfig = false } = {}) {
   return { plan, oldConfig, oldReceipt, newReceipt };
 }
 
-test("only page3 admits the exact Mermaid asset path; existing pages-next routes stay frozen", () => {
+test("page3 admits the exact Mermaid asset path; existing pages-next routes stay frozen", () => {
   const current = new RegExp(/^    path: (.+)$/m.exec(routesFor("page3"))[1]);
   const frozen = new RegExp(/^    path: (.+)$/m.exec(routesFor("pages-next"))[1]);
   assert.equal(current.test("/mermaid.js"), true);
@@ -345,3 +393,99 @@ for (const interruptRollback of ["config", "receipt"]) {
     );
   });
 }
+
+test("page3 generated tunnel configuration stays byte-identical to the frozen deployment", () => {
+  const id = "9e9b461a-1f04-46b4-a635-72b547035d28";
+  const plan = isolatedPublicationPlan({
+    ...input,
+    credentials: { ...input.credentials, TunnelID: id },
+    tunnelReceipt: { ...input.tunnelReceipt, tunnel_id: id },
+  });
+  assert.equal(
+    digest(plan.config),
+    "6d611f651e87767a8c144b47cb40da4fb153c909178eb543aa9e6b55d47fc8ee",
+  );
+  assert.equal(
+    digest(plan.unit),
+    "881a11628ebf81ca02fbb50ba8c837ec4ef9f37c6e77a68c08317c451b0f4c5e",
+  );
+});
+
+test("page4 plan owns its hostname, paths and connector and refuses frozen tunnel reuse", () => {
+  const value = inputFor("page4"),
+    plan = isolatedPublicationPlan(value);
+  assert.equal(plan.service, "cloudflared-page4.service");
+  assert.equal(plan.configPath, "/etc/nteract-page4/tunnel.yml");
+  assert.equal(plan.unitPath, "/etc/systemd/system/cloudflared-page4.service");
+  assert.match(plan.config, /hostname: page4.runtimed.run/);
+  assert.match(plan.config, /http:\/\/127.0.0.1:9474/);
+  assert.doesNotMatch(plan.config + plan.unit, /page3|pages-next|9473|19473/);
+  assert.throws(
+    () =>
+      isolatedPublicationPlan({ ...value, frozenTunnelConfigs: ["tunnel: " + tunnelId + "\n"] }),
+    /different tunnel/,
+  );
+  assert.throws(
+    () => isolatedPublicationPlan({ ...value, target: "page3" }),
+    /Unexpected deployment target/,
+  );
+  assert.throws(() => isolatedPublicationPlan(inputFor("pages-next")), /dedicated tunnel target/);
+  const route = new RegExp(/^    path: (.+)$/m.exec(routesFor("page4"))[1]);
+  for (const pathname of ["/", "/mermaid.js", "/mcp", "/llms.txt", "/oidc", "/api/sync"])
+    assert.equal(route.test(pathname), true, pathname);
+  for (const pathname of ["/state", "/mermaid.js/private", "/internal/create", "/api/config"])
+    assert.equal(route.test(pathname), false, pathname);
+});
+
+test("page4 publication and retries touch only its connector and preserve both frozen targets", (t) => {
+  const f = fixture(t, { target: "page4" });
+  for (let i = 0; i < 2; i++) {
+    const result = f.execute();
+    assert.deepEqual(result.frozenTargetsUnchanged, ["pages-next", "page3"]);
+    assert.equal(result.sharedTunnelUnchanged, true);
+    assert.equal(result.routesUpdated, false);
+  }
+  assert.ok(
+    f.writes.every(
+      (file) =>
+        file.startsWith("/etc/nteract-page4/") ||
+        file === "/etc/systemd/system/cloudflared-page4.service",
+    ),
+  );
+  assert.ok(
+    f.calls
+      .filter(
+        ({ command, args }) =>
+          command === "systemctl" && ["start", "restart", "stop", "enable"].includes(args[0]),
+      )
+      .every(({ args }) => args[1] === "cloudflared-page4.service"),
+  );
+  assert.equal(
+    f.calls.some(({ command, args }) => command === "systemctl" && args[0] === "restart"),
+    false,
+  );
+  assert.equal(fs.readFileSync(f.local("/etc/cloudflared/config.yml"), "utf8"), sharedConfig);
+});
+
+for (const mutation of ["config", "pid"])
+  test(`page4 publication detects changed frozen ${mutation} without claiming isolation`, (t) => {
+    const f = fixture(t, { target: "page4" });
+    assert.throws(
+      () =>
+        f.executeWith(() =>
+          mutation === "config"
+            ? f.write("/etc/nteract-page3/tunnel.yml", "foreign change")
+            : f.changeFrozenPid(),
+        ),
+      /Frozen Pages (configuration|service) changed/,
+    );
+  });
+
+test("page4 rejects an unrecognized receipt instead of applying page3 historical migrations", (t) => {
+  const f = fixture(t, { target: "page4" });
+  f.execute();
+  const before = f.writes.length;
+  f.write("/etc/nteract-page4/tunnel-installation.json", "{}\n");
+  assert.throws(f.execute, /Dedicated tunnel installation differs/);
+  assert.equal(f.writes.length, before);
+});

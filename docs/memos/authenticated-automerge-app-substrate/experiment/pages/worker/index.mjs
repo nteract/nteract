@@ -138,6 +138,7 @@ export default {
           identity
             ? {
                 identity: publicIdentity(identity),
+                editor: env.PAGES_EDITOR === "wordgard" ? "wordgard" : "prosemirror",
                 canWrite: identity.canWrite,
                 expiresAt: identity.expiresAt,
               }

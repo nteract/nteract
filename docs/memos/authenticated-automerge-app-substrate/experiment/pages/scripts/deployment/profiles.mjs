@@ -42,6 +42,28 @@ const targets = Object.freeze({
     firewallMark: "0x10000000",
     firewallComment: "nteract/preview-infra standalone-page3",
     asyncPersistence: true,
+    tunnelService: "cloudflared-page3.service",
+  }),
+  page4: Object.freeze({
+    deployment: Object.freeze({
+      host: shared.host,
+      hostname: "page4.runtimed.run",
+      service: "nteract-page4",
+      bucket: shared.bucket,
+      prefix: "standalone/page4",
+      region: shared.region,
+      listen: "127.0.0.1:9474",
+      internalListen: "127.0.0.1:19474",
+      runtime: shared.runtime,
+      requiredVersion: shared.requiredVersion,
+    }),
+    firewallTable: "nteract_page4",
+    firewallMark: "0x08000000",
+    firewallComment: "nteract/preview-infra standalone-page4",
+    asyncPersistence: true,
+    editor: "wordgard",
+    tunnelService: "cloudflared-page4.service",
+    frozenTargets: Object.freeze(["pages-next", "page3"]),
   }),
 });
 export function deploymentProfile(target = "pages-next") {

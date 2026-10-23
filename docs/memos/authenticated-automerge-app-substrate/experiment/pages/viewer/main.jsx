@@ -24,6 +24,7 @@ import {
 } from "../shared/routes.mjs";
 import { maintainBrowserSession } from "./browser-session.mjs";
 import { RichEditor } from "./RichEditor.jsx";
+import { WordgardEditor } from "./WordgardEditor.jsx";
 import { PagePicker } from "./PagePicker.jsx";
 import { matchingPages } from "./page-list.mjs";
 import { CommentsPanel } from "./CommentsPanel.jsx";
@@ -35,6 +36,8 @@ import "./style.css";
 function App() {
   const accountDisclosure = useDismissibleDisclosure(),
     documentDisclosure = useDismissibleDisclosure();
+  const [editorKind, setEditorKind] = useState("prosemirror");
+  const PageEditor = editorKind === "wordgard" ? WordgardEditor : RichEditor;
   const [account, setAccount] = useState(undefined),
     [pages, setPages] = useState([]),
     [session, setSession] = useState(null),
@@ -197,6 +200,9 @@ function App() {
       onSession: (result) => {
         if (!alive) return;
         setAuthError("");
+        // Missing identity on renewal must not remount a different editor and
+        // discard its local selection, composition, or undo history.
+        if (["wordgard", "prosemirror"].includes(result.editor)) setEditorKind(result.editor);
         const changed = authentication.current?.identity?.principal !== result.identity?.principal;
         if (changed) {
           generation.current++;
@@ -247,7 +253,7 @@ function App() {
     if (!focusBlock || !session?.canWrite) return;
     const frame = requestAnimationFrame(() => {
       const element = article.current?.querySelector(
-        `[data-block-id="${CSS.escape(focusBlock)}"] .ProseMirror`,
+        `[data-block-id="${CSS.escape(focusBlock)}"] :is(.ProseMirror, wg-content)`,
       );
       if (element) {
         element.focus();
@@ -601,7 +607,7 @@ function App() {
                 {page.blocks.map((block) => (
                   <section className="page-block" data-block-id={block.id} key={block.id}>
                     {block.format === "automerge-rich-text-v1" ? (
-                      <RichEditor
+                      <PageEditor
                         replica={session}
                         id={block.id}
                         editable={session.canWrite}

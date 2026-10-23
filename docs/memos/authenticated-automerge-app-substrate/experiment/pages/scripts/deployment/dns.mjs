@@ -100,7 +100,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const { target, args } = selectTarget(process.argv.slice(2));
   const [tunnelId, mode, extra] = args;
   if (extra || (mode && mode !== "--apply"))
-    throw new Error("Usage: dns.mjs [--target pages-next|page3] VERIFIED_TUNNEL_UUID [--apply]");
+    throw new Error(
+      "Usage: dns.mjs [--target pages-next|page3|page4] VERIFIED_TUNNEL_UUID [--apply]",
+    );
   try {
     console.log(
       JSON.stringify(

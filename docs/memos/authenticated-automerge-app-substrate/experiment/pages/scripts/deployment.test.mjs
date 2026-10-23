@@ -470,7 +470,7 @@ test("page3 DNS is independently owned and never adopts pages-next records", asy
   assert.ok(foreign.calls.every(({ method }) => method === "GET"));
 });
 
-for (const target of ["pages-next", "page3"])
+for (const target of ["pages-next", "page3", "page4"])
   test(`${target} installation retains auth, bindings, and bucket durability with isolated service state`, (t) => {
     const fixture = installFixture(t, { target });
     fixture.execute();
@@ -490,7 +490,8 @@ for (const target of ["pages-next", "page3"])
       config.vars.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE,
       config.vars.NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE,
     );
-    assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, target === "page3" ? "true" : undefined);
+    assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, target === "pages-next" ? undefined : "true");
+    assert.equal(config.vars.PAGES_EDITOR, target === "page4" ? "wordgard" : undefined);
     assert.deepEqual(config.durable_objects.bindings, [
       { name: "PAGE_RECORDS", class_name: "PageRecords" },
     ]);
@@ -504,14 +505,18 @@ for (const target of ["pages-next", "page3"])
     );
     assert.ok(unit.includes("firewall.mjs --target " + target));
     assert.ok(unit.includes("s3://" + deployment.bucket + "/" + deployment.prefix));
-    const other = target === "page3" ? "nteract-pages-next" : "nteract-page3";
-    for (const directory of ["/opt/", "/etc/", "/var/lib/"])
-      assert.equal(fs.existsSync(fixture.local(directory + other)), false);
-    assert.ok(
-      fixture.calls
-        .filter(({ command }) => command === "systemctl")
-        .every(({ args }) => !args.includes(other)),
-    );
+    for (const otherTarget of ["pages-next", "page3", "page4"].filter(
+      (value) => value !== target,
+    )) {
+      const other = profiles.deploymentProfile(otherTarget).deployment.service;
+      for (const directory of ["/opt/", "/etc/", "/var/lib/"])
+        assert.equal(fs.existsSync(fixture.local(directory + other)), false);
+      assert.ok(
+        fixture.calls
+          .filter(({ command }) => command === "systemctl")
+          .every(({ args }) => !args.includes(other)),
+      );
+    }
   });
 
 test("page3 installation rejects a pages-next manifest before running any host command", (t) => {
@@ -545,6 +550,133 @@ test("new page3 setup tolerates pages-next resources but rejects its own port or
     { rules: '{"mark":268435456}' },
   ]) {
     const rejected = installFixture(t, { target: "page3", fresh: true, ...collision });
+    assert.throws(rejected.execute, /port is occupied|firewall namespace or mark is occupied/);
+    assert.equal(
+      rejected.calls.some(({ command }) => command === "useradd"),
+      false,
+    );
+  }
+});
+
+test("page4 is explicitly allowlisted and cannot accept either frozen target's stage or manifest", () => {
+  assert.deepEqual(profiles.selectTarget(["--target", "page4", "plan"]), {
+    target: "page4",
+    args: ["plan"],
+  });
+  const page4 = profiles.deploymentProfile("page4");
+  assert.equal(page4.deployment.hostname, "page4.runtimed.run");
+  assert.equal(page4.deployment.listen, "127.0.0.1:9474");
+  assert.equal(page4.deployment.internalListen, "127.0.0.1:19474");
+  assert.equal(page4.deployment.prefix, "standalone/page4");
+  assert.equal(page4.editor, "wordgard");
+  assert.equal(page4.tunnelService, "cloudflared-page4.service");
+  assert.throws(
+    () =>
+      insertRoutes(
+        'tunnel: test\ningress:\n  - hostname: "*.runtimed.run"\n    service: http_status:404\n',
+        "page4",
+      ),
+    /dedicated tunnel publisher/,
+  );
+  assert.equal(profiles.stageTarget("/tmp/nteract-page4-stage-abcd1234"), "page4");
+  for (const other of ["pages-next", "page3"]) {
+    assert.equal(profiles.stagePattern(other).test("/tmp/nteract-page4-stage-abcd1234"), false);
+    assert.throws(() =>
+      profiles.verifyDeployment(
+        { source_sha: "a".repeat(40), deployment: profiles.deploymentProfile(other).deployment },
+        "page4",
+      ),
+    );
+    assert.throws(() =>
+      profiles.verifyDeployment(
+        { source_sha: "a".repeat(40), deployment: page4.deployment },
+        other,
+      ),
+    );
+  }
+});
+
+test("page4 firewall owns only the new table, mark and cgroup", () => {
+  const rules = pagesFirewall(999, true, "page4");
+  assert.match(rules, /^delete table inet nteract_page4\n/);
+  assert.match(rules, /system.slice\/nteract-page4.service/);
+  assert.match(rules, /0x08000000/);
+  assert.doesNotMatch(rules, /pages.next|page3|0x10000000|0x20000000|0x40000000|0x80000000/);
+});
+
+test("page4 DNS creates only its independently owned hostname and rejects foreign ownership", async () => {
+  const fixture = dnsFixture();
+  const args = { token: "fixture", tunnelId, target: "page4", fetchImpl: fixture.fetchImpl };
+  assert.equal((await configureDns(args)).present, false);
+  assert.ok(
+    fixture.calls.every(
+      ({ url, method }) =>
+        method === "GET" && !url.includes("pages-next") && !url.includes("page3"),
+    ),
+  );
+  const created = await configureDns({ ...args, apply: true });
+  assert.equal(created.name, "page4.runtimed.run");
+  assert.equal(created.changed, true);
+  assert.equal((await configureDns({ ...args, apply: true })).changed, false);
+  for (const other of ["pages-next", "page3"]) {
+    const foreign = dnsFixture([
+      {
+        id: "b".repeat(32),
+        name: "page4.runtimed.run",
+        type: "CNAME",
+        content: `${tunnelId}.cfargotunnel.com`,
+        proxied: true,
+        ttl: 1,
+        comment: "nteract/pages:experiment:" + other,
+      },
+    ]);
+    await assert.rejects(
+      configureDns({ ...args, apply: true, fetchImpl: foreign.fetchImpl }),
+      /conflicts/,
+    );
+    assert.ok(foreign.calls.every(({ method }) => method === "GET"));
+  }
+});
+
+for (const other of ["pages-next", "page3"])
+  test(`page4 installation rejects ${other} manifest before running host commands`, (t) => {
+    const fixture = installFixture(t, { target: "page4" });
+    fixture.write(
+      fixture.stage + "/manifest.json",
+      JSON.stringify({
+        ...fixture.manifest,
+        deployment: profiles.deploymentProfile(other).deployment,
+      }),
+    );
+    assert.throws(fixture.execute, /Unexpected deployment target/);
+    assert.equal(fixture.calls.length, 0);
+  });
+
+test("new page4 setup tolerates frozen namespaces but rejects its own ports, mark and table collisions", (t) => {
+  const existing = [9472, 19472, 9473, 19473]
+    .map((port) => `LISTEN 0 4096 127.0.0.1:${port} 0.0.0.0:*`)
+    .join("\n");
+  const fixture = installFixture(t, {
+    target: "page4",
+    fresh: true,
+    listeners: existing,
+    rules:
+      '[{"name":"nteract_pages_next","mark":536870912},{"name":"nteract_page3","mark":268435456}]',
+  });
+  fixture.execute();
+  assert.equal(
+    JSON.parse(fixture.read(fixture.configDir + "/ownership.json")).hostname,
+    "page4.runtimed.run",
+  );
+  const prefixCheck = fixture.calls.find(({ command }) => command === "/usr/local/bin/aws");
+  assert.equal(prefixCheck.args[prefixCheck.args.indexOf("--prefix") + 1], "standalone/page4/");
+  for (const collision of [
+    { listeners: existing + "\nLISTEN 0 4096 127.0.0.1:9474 0.0.0.0:*" },
+    { listeners: existing + "\nLISTEN 0 4096 127.0.0.1:19474 0.0.0.0:*" },
+    { rules: '{"mark":134217728}' },
+    { rules: '{"table":"nteract_page4"}' },
+  ]) {
+    const rejected = installFixture(t, { target: "page4", fresh: true, ...collision });
     assert.throws(rejected.execute, /port is occupied|firewall namespace or mark is occupied/);
     assert.equal(
       rejected.calls.some(({ command }) => command === "useradd"),
