@@ -24,8 +24,49 @@ Browser: ${origin}/ — choose Sign In, or open ${origin}/api/auth/login.
 Agents: use an Anaconda API key for the same provider environment as browser
 Sign In. Production and staging keys are not interchangeable. Browser sign-in
 cookies and API keys are separate credentials; an OIDC access token is not an
-API key. Obtain a key from the account owner through your client's secret setup,
-not by putting it in a document or URL.
+API key.
+
+### Get an API key
+
+For production Anaconda, open https://anaconda.com/app/profile/api-keys and sign
+in with the same account you use for Pages. Choose Create API Key, name it for
+your client (for example "Pages - Kilo"), and set:
+
+- User Resources: Read and write for editing (cloud:read + cloud:write), or
+  Read-only for reading (cloud:read).
+- Platform Channels: No access. Pages does not need package repository access.
+- Expiration: choose the duration you need.
+
+Copy the newly created key into your MCP client's secret/header configuration;
+Anaconda shows the secret only when it is created. Naming a key for Pages does
+not scope it exclusively to Pages: User Resources is an Anaconda account scope.
+Pages also enforces the account's per-Page viewer/editor/owner permissions.
+Official instructions: https://www.anaconda.com/docs/anaconda-platform/user/api-keys
+
+If you already use the anaconda-auth CLI, retrieve its key through the supported
+command. Install the CLI and sign in first if needed:
+
+\`\`\`sh
+conda install anaconda-auth
+anaconda auth login --at anaconda.com
+export ANACONDA_API_KEY="$(anaconda auth api-key --at anaconda.com)"
+\`\`\`
+
+The last command captures the key without printing it. The CLI normally requests
+repository access too; the browser flow above lets you create a dedicated key
+with just User Resources. CLI documentation: https://anaconda.github.io/anaconda-auth/
+
+The account URL and CLI commands above are for production Anaconda. For a staging
+deployment, use its Anaconda account site and matching CLI --at domain instead;
+a production key will not work. If the client already has ANACONDA_AUTH_API_KEY,
+it can use that value as the bearer key; ANACONDA_API_KEY is the variable name in
+these examples. The service receives the header, not the environment variable.
+
+Agents: use a credential explicitly configured for this service or ask the account
+owner to complete the setup above. Do not search browser profiles, app databases,
+or keyring files for credentials. Keep keys out of chat, documents, URLs, and logs.
+
+### Configure the client
 
 Send these headers on API and MCP requests:
 
