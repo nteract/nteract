@@ -1,6 +1,6 @@
 /** Public onboarding contains no account or document data. URLs come only from
  * deployment configuration, never a request Host or forwarded header. */
-export function agentGuide(env) {
+export function pagesPublicOrigin(env) {
   const url = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN);
   if (
     url.username ||
@@ -9,7 +9,11 @@ export function agentGuide(env) {
       !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))
   )
     throw new Error("Configure the public Pages origin before serving agent instructions");
-  const origin = url.origin;
+  return url.origin;
+}
+
+export function agentGuide(env) {
+  const origin = pagesPublicOrigin(env);
   return `# Pages
 
 Realtime documents for people and agents. Markdown tools, comments, and browser
@@ -27,6 +31,8 @@ cookies and API keys are separate credentials; an OIDC access token is not an
 API key.
 
 ### Get an API key
+
+Human setup page: ${origin}/connect
 
 For production Anaconda, open https://anaconda.com/app/profile/api-keys and sign
 in with the same account you use for Pages. Choose Create API Key, name it for

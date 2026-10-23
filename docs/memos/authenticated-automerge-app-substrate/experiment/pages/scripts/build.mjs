@@ -94,6 +94,7 @@ await build({
   outfile: path.join(dist, "public/mermaid.js"),
   define: { "process.env.NODE_ENV": '"production"' },
 });
+await copyFile(path.join(app, "viewer/connect-agent.js"), path.join(dist, "public/connect.js"));
 await writeFile(
   path.join(dist, "public/index.html"),
   '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pages · nteract</title><link rel="stylesheet" href="/app.css"><link rel="describedby" type="text/plain" href="/llms.txt"></head><body><div id="root"><main class="welcome"><h1>Pages</h1><p>Realtime documents for people and agents.</p><p>Opening the editor…</p><p>For agents, read <a href="/llms.txt">the API and authentication guide</a>. Use an Anaconda API key with <code>Authorization: Bearer &lt;key&gt;</code> for <code>/mcp</code> or <code>/api/tools</code>.</p><noscript>Enable JavaScript to use the editor, or use the API guide above.</noscript></main></div><script type="module" src="/app.js"></script></body></html>',

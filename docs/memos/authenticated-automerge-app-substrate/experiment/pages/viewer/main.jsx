@@ -10,6 +10,7 @@ import {
   MessageSquare,
   MoreHorizontal,
   Plus,
+  Plug,
   Search,
   Trash2,
   UserRound,
@@ -565,6 +566,17 @@ function App() {
               </summary>
               <div className="menu-popover">
                 <p className="account-name">{account.displayName || "Your workspace"}</p>
+                <a
+                  href="/connect"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => {
+                    accountDisclosure.current.open = false;
+                  }}
+                >
+                  <Plug size={16} aria-hidden="true" /> Connect an agent
+                  <span className="sr-only"> (opens in a new tab)</span>
+                </a>
                 <button onClick={signout}>
                   <LogOut size={16} aria-hidden="true" /> Sign out
                 </button>
