@@ -16,6 +16,7 @@
     "@automerge/prosemirror": "0.2.0",
     "@automerge/subduction": "0.23.0",
     "@modelcontextprotocol/sdk": "1.29.0",
+    "diff": "8.0.2",
     "dompurify": "3.4.17",
     "fractional-indexing": "4.0.0",
     "lucide-react": "1.17.0",
@@ -30,7 +31,8 @@
     "prosemirror-state": "1.4.3",
     "prosemirror-view": "1.42.6",
     "react": "19.2.7",
-    "react-dom": "19.2.7"
+    "react-dom": "19.2.7",
+    "wordgard": "0.6.2"
   },
   "devDependencies": {
     "@playwright/test": "1.59.1",

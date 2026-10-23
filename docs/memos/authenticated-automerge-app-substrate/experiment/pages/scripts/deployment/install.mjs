@@ -158,6 +158,7 @@ if (config.main !== "index.js" || config.no_bundle !== true || config.build || c
   throw new Error("Unexpected build configuration");
 config.vars = {
   ...(profile.asyncPersistence ? { PAGES_ASYNC_PERSISTENCE: "true" } : {}),
+  ...(profile.editor ? { PAGES_EDITOR: profile.editor } : {}),
   NOTEBOOK_CLOUD_OIDC_FLOW: "server",
   NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://" + expected.hostname,
   NOTEBOOK_CLOUD_OIDC_REDIRECT_URI: "https://" + expected.hostname + "/oidc",

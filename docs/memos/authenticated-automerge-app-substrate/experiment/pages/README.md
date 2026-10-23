@@ -27,6 +27,36 @@ The experiment shares its parent's pinned upstream packages and one Automerge
 instance. Its browser and Worker entry points initialize the corresponding
 upstream WASM packaging; document objects never cross independent WASM instances.
 
+## Wordgard comparison on page4
+
+`page4.runtimed.run` selects Wordgard with `PAGES_EDITOR=wordgard`. Other targets
+keep the ProseMirror editor. Both views use the same PageSession, authenticated
+Repo/Subduction connections, IndexedDB recovery, MCP operations, comments and
+host persistence. The Wordgard binding adapts the native-editor spike at
+[rgbkrk/wordgard-automerge](https://github.com/rgbkrk/wordgard-automerge/tree/c9c6ea8fce8d6f598bdd2d2605569c801cd8f81d);
+its BSD notice is retained in `viewer/WORDGARD-NOTICE`. The React/RxJS branch at
+`1a35b6b` informed the view/session lifecycle. The existing Pages observer APIs
+remain the event source; the demo's replicas, localStorage and transport are not
+part of the hosted app.
+
+Run the comparison locally with `PAGES_EDITOR=wordgard npm run dev`. Typing
+applies native splices; formatting uses marks; structural edits reconcile native
+spans. Position maps account for the actual stored block markers, including
+implicit paragraphs. Markdown remains the tool/import/export projection, and
+ProseMirror still supplies that shared projection for this experiment; it does
+not mediate Wordgard keystrokes. Unrelated block changes skip editor projection.
+Within a changed block, projection still decodes and diffs the spans; this is not
+a demonstrated large-document performance improvement.
+
+Each Pages block has its own continuous Wordgard editor, retaining stable public
+IDs and fractional ordering. Cross-Pages-block selections and native editable
+table cells remain future work. Existing Markdown tables retain safe preview and
+source access. Mermaid previews appear beside the editable code source for each
+Mermaid code block. Wordgard handles incoming composition transactions directly;
+real OS IME and mobile-keyboard qualification remain distinct from synthetic
+browser coverage. Page4 has its own service, connector and object-storage prefix;
+page3 and pages-next stay unchanged for demos and existing MCP users.
+
 ## Opening and creating Pages
 
 Each Page has a canonical browser route, `/p/<page_id>`. Navigation pushes browser
@@ -443,15 +473,17 @@ verification from local workerd fixtures.
 
 ## Isolated lab deployment
 
-The default target remains `pages-next.runtimed.run`. An explicit `--target page3`
-selects the separate experiment; omitting the flag never selects it.
+The current experiment uses explicit `--target page4`. The `page3` and
+`pages-next` deployments remain frozen for existing users. The historical
+default is still `pages-next`, so always pass the intended target.
 
 | Target | Hostname | Service | Listener / internal port | S3 prefix |
 | --- | --- | --- | --- | --- |
 | `pages-next` (default) | `pages-next.runtimed.run` | `nteract-pages-next` | `9472` / `19472` | `standalone/pages-next` |
 | `page3` | `page3.runtimed.run` | `nteract-page3` | `9473` / `19473` | `standalone/page3` |
+| `page4` | `page4.runtimed.run` | `nteract-page4` | `9474` / `19474` | `standalone/page4` |
 
-Both use lab1, bucket `nteract-celld-lab-621741996708` in `us-east-1`, and the same
+All three use lab1, bucket `nteract-celld-lab-621741996708` in `us-east-1`, and the same
 production Anaconda OIDC client and API-key verifier. Each has separate `/opt`,
 `/etc`, and `/var/lib` directories named after its service, a host-generated
 session secret, service account, firewall table/mark, and prepared release stage.
@@ -459,8 +491,9 @@ The new profile checks that its ports, prefix, and firewall resources are unused
 before creating them. `m.runtimed.run` keeps its existing service and prefix.
 These scripts do not move or reuse existing documents or session secrets.
 
-Only `page3` enables `PAGES_ASYNC_PERSISTENCE=true`; both services keep
-`CELLD_DURABILITY=bucket`. The installer preserves the build's Durable Object
+`page3` and `page4` enable `PAGES_ASYNC_PERSISTENCE=true`; all services keep
+`CELLD_DURABILITY=bucket`. Only page4 sets `PAGES_EDITOR=wordgard`; the other
+profiles retain their existing editor configuration. The installer preserves the build's Durable Object
 bindings and migrations, including `PAGE_RECORDS`, while supplying the selected
 public origin and its OIDC callback.
 
@@ -469,7 +502,11 @@ Do not publish that target while its users need uninterrupted connections.
 `page3` publication uses a **different tunnel and dedicated
 `cloudflared-page3.service`**. It neither writes the shared
 `/etc/cloudflared/config.yml` nor restarts `cloudflared.service`, and verifies
-that the shared configuration and process ID stayed unchanged.
+that the shared configuration and process ID stayed unchanged. Page4 uses its
+own `cloudflared-page4.service` and a third tunnel. Its publisher additionally
+checks both frozen application PIDs, their service units, and page3's connector
+PID/configuration before and after publication. It refuses to reuse either
+existing tunnel ID.
 
 `node scripts/deploy.mjs plan` is read-only. After inspecting the current lab1
 runtime, ports, prefix, tunnel and firewall ownership, use `prepare`,
@@ -481,52 +518,56 @@ the deployment never upgrades `/usr/local/bin/celld` used by other services.
 It creates the session secret on the host. Only the explicit release-file
 allowlist is staged; local dev credentials and databases are excluded.
 
-For the separate experiment, run from this directory:
+For page4, run from this directory after the source is reviewed and committed:
 
 ```bash
-node scripts/deploy.mjs --target page3 plan
-node scripts/deploy.mjs --target page3 prepare
-node scripts/deploy.mjs --target page3 upload LOCAL_STAGE
-node scripts/deploy.mjs --target page3 install REMOTE_STAGE --apply
-node scripts/deploy.mjs --target page3 publish REMOTE_STAGE --apply
+node scripts/deploy.mjs --target page4 plan
+node scripts/deploy.mjs --target page4 prepare
+node scripts/deploy.mjs --target page4 upload LOCAL_STAGE
+node scripts/deploy.mjs --target page4 install REMOTE_STAGE --apply
+node scripts/deploy.mjs --target page4 publish REMOTE_STAGE --apply
 ```
 
 Prepared manifests and remote stage names must match the selected target;
-accidentally using a `pages-next` stage with `page3` is rejected. The existing
-deployment lock still serializes these operator commands, but page3 never uses
-the shared tunnel publisher. Its dedicated ingress allows only page3's public
+a stage from another target is rejected. The existing deployment lock still
+serializes these operator commands. Page3 and page4 use dedicated publishers;
+page4 also refuses the shared route-editing path. Each ingress allows only its public
 routes and ends in a catch-all 404. The public routes include `/mcp`, `/llms.txt`,
 `/p/<page_id>`, sync, and OIDC; internal Durable Object routes are not exposed.
 
-Before page3 publication, provision a new locally managed Cloudflare Tunnel named
-`nteract-page3` in account `1cfb529b94b3d6cde3aaf49d1d6ed5e6`; this is a separate,
+Before first page4 publication, provision a new locally managed Cloudflare Tunnel named
+`nteract-page4` in account `1cfb529b94b3d6cde3aaf49d1d6ed5e6`; this is a separate,
 explicit operator action, never performed by `prepare` or `publish`. It requires
 Cloudflare Tunnel Edit permission. Store its returned credentials as root-owned
-mode 0600 `/etc/nteract-page3/tunnel.json` (`AccountTag`, `TunnelID`,
+mode 0600 `/etc/nteract-page4/tunnel.json` (`AccountTag`, `TunnelID`,
 `TunnelSecret`), and save the nonsecret creation receipt at
-`/etc/nteract-page3/tunnel-provisioning.json`:
+`/etc/nteract-page4/tunnel-provisioning.json`:
 
 ```json
 {
   "schema": 1,
   "account_id": "1cfb529b94b3d6cde3aaf49d1d6ed5e6",
   "tunnel_id": "NEW_TUNNEL_UUID",
-  "name": "nteract-page3",
+  "name": "nteract-page4",
   "config_src": "local"
 }
 ```
 
-The publisher rejects the shared tunnel ID, missing credentials, or an unowned
-existing connector configuration. It installs `/etc/nteract-page3/tunnel.yml`
-and starts only `cloudflared-page3.service`, resuming partial installs only when
+Keep these files in a private temporary provisioning directory until `install`
+creates the owned `/etc/nteract-page4` directory, then copy only the credentials
+and receipt into it. Do not precreate that installation directory.
+
+The publisher rejects either frozen tunnel ID, missing credentials, or an unowned
+existing connector configuration. It installs `/etc/nteract-page4/tunnel.yml`
+and starts only `cloudflared-page4.service`, resuming partial installs only when
 the existing files match exactly. Do not run `cloudflared service install`, which
 targets the existing default service. Tunnel credentials never enter the source
 checkout or prepared release.
 
 DNS is separate: `scripts/deployment/dns.mjs` takes the verified tunnel UUID and
 checks the exact hostname without changes by default. Its `--apply` creates only
-an absent, owned CNAME and refuses conflicts. For page3, use
-`node scripts/deployment/dns.mjs --target page3 VERIFIED_TUNNEL_UUID` to inspect,
+an absent, owned CNAME and refuses conflicts. For page4, use
+`node scripts/deployment/dns.mjs --target page4 VERIFIED_TUNNEL_UUID` to inspect,
 then append `--apply` to create the proxied CNAME pointing to
 `VERIFIED_TUNNEL_UUID.cfargotunnel.com`. This requires a Cloudflare API token with
 DNS read/edit access to the `runtimed.run` zone in `CLOUDFLARE_API_TOKEN`; the

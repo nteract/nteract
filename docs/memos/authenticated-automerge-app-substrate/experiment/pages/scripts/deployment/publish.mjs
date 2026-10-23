@@ -18,6 +18,8 @@ export const legacyRoutes = routesFor("pages-next", true);
 export const routes = routesFor();
 
 export function insertRoutes(before, target = "pages-next") {
+  if (deploymentProfile(target).frozenTargets)
+    throw new Error("This target requires its dedicated tunnel publisher");
   const { hostname } = deploymentProfile(target).deployment;
   const updated = routesFor(target);
   if (before.includes(hostname)) {
@@ -159,7 +161,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (process.getuid() !== 0 || apply !== "--apply" || extra)
     throw new Error("Explicit root publication with prepared stage required");
   const target = stageTarget(stage);
-  if (target === "page3") {
+  if (deploymentProfile(target).tunnelService) {
     const { publishIsolated } = await import("./isolated-publication.mjs");
     console.log(JSON.stringify(publishIsolated(stage)));
     process.exit(0);

@@ -137,5 +137,5 @@ else if (mode === "upload" && stage && !flag) {
   );
 } else
   throw new Error(
-    "Usage: deploy.mjs [--target pages-next|page3] [plan | prepare | upload LOCAL_STAGE | install REMOTE_STAGE --apply | publish REMOTE_STAGE --apply]",
+    "Usage: deploy.mjs [--target pages-next|page3|page4] [plan | prepare | upload LOCAL_STAGE | install REMOTE_STAGE --apply | publish REMOTE_STAGE --apply]",
   );

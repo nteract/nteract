@@ -1,16 +1,23 @@
-// Page3 owns a separate tunnel and connector. Never modify shared cloudflared.
+// Each isolated target owns its tunnel and connector. Never modify frozen neighbors.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import { verifyDeployment } from "./profiles.mjs";
+import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
 import { routesFor } from "./routes.mjs";
 
 const accountId = "1cfb529b94b3d6cde3aaf49d1d6ed5e6";
-const directory = "/etc/nteract-page3";
-const service = "cloudflared-page3.service";
-const configPath = directory + "/tunnel.yml";
-const credentialsPath = directory + "/tunnel.json";
-const unitPath = "/etc/systemd/system/" + service;
+function publicationPaths(target) {
+  const profile = deploymentProfile(target);
+  if (!profile.tunnelService) throw new Error("A dedicated tunnel target is required");
+  const directory = "/etc/" + profile.deployment.service;
+  return {
+    directory,
+    service: profile.tunnelService,
+    configPath: directory + "/tunnel.yml",
+    credentialsPath: directory + "/tunnel.json",
+    unitPath: "/etc/systemd/system/" + profile.tunnelService,
+  };
+}
 const hash = (text) => createHash("sha256").update(text).digest("hex");
 
 export function isolatedPublicationPlan({
@@ -19,8 +26,11 @@ export function isolatedPublicationPlan({
   credentials,
   tunnelReceipt,
   sharedConfig,
+  frozenTunnelConfigs = [],
+  target = "page3",
 }) {
-  const deployment = verifyDeployment(manifest, "page3");
+  const deployment = verifyDeployment(manifest, target);
+  const { service, configPath, credentialsPath, unitPath } = publicationPaths(target);
   const tunnelId = credentials.TunnelID;
   if (
     ownership.hostname !== deployment.hostname ||
@@ -34,21 +44,25 @@ export function isolatedPublicationPlan({
     tunnelReceipt.schema !== 1 ||
     tunnelReceipt.account_id !== accountId ||
     tunnelReceipt.tunnel_id !== tunnelId ||
-    tunnelReceipt.name !== "nteract-page3" ||
+    tunnelReceipt.name !== deployment.service ||
     tunnelReceipt.config_src !== "local"
   )
-    throw new Error("Dedicated page3 tunnel credentials and provisioning receipt required");
-  const sharedId = /^tunnel:\s*["']?([a-f0-9-]{36})["']?\s*$/m.exec(sharedConfig)?.[1];
-  if (!sharedId || sharedId === tunnelId)
-    throw new Error("Page3 must use a different tunnel from the shared connector");
+    throw new Error(
+      "Dedicated " + target + " tunnel credentials and provisioning receipt required",
+    );
+  for (const config of [sharedConfig, ...frozenTunnelConfigs]) {
+    const existingId = /^tunnel:\s*["']?([a-f0-9-]{36})["']?\s*$/m.exec(config)?.[1];
+    if (!existingId || existingId === tunnelId)
+      throw new Error("Isolated targets must use a different tunnel from frozen connectors");
+  }
   const config = `tunnel: ${tunnelId}
 credentials-file: ${credentialsPath}
 ingress:
-${routesFor("page3")}  - service: http_status:404
+${routesFor(target)}  - service: http_status:404
 `;
   const unit = `[Unit]
-Description=Isolated page3 Cloudflare Tunnel
-After=network-online.target nteract-page3.service
+Description=Isolated ${target} Cloudflare Tunnel
+After=network-online.target ${deployment.service}.service
 Wants=network-online.target
 
 [Service]
@@ -93,6 +107,9 @@ function runCommand(command, args) {
   }
 }
 export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {}) {
+  const target = stageTarget(stage);
+  const profile = deploymentProfile(target);
+  const { directory, service, configPath, credentialsPath, unitPath } = publicationPaths(target);
   const read = (file, secret = false) => {
     const stat = filesystem.lstatSync(file);
     if (!stat.isFile() || (secret && (stat.uid !== 0 || stat.mode & 0o077)))
@@ -113,6 +130,24 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
     "--property=MainPID",
     "--value",
   ]);
+  const frozenConfigs = new Map(),
+    frozenPids = new Map();
+  const frozenTunnelConfigs = [];
+  for (const frozenTarget of profile.frozenTargets ?? []) {
+    const frozen = deploymentProfile(frozenTarget);
+    for (const name of [frozen.deployment.service, frozen.tunnelService].filter(Boolean)) {
+      const unit = name.endsWith(".service") ? name : name + ".service";
+      frozenPids.set(unit, run("systemctl", ["show", unit, "--property=MainPID", "--value"]));
+      const unitPath = "/etc/systemd/system/" + unit;
+      frozenConfigs.set(unitPath, read(unitPath));
+    }
+    if (frozen.tunnelService) {
+      const config = "/etc/" + frozen.deployment.service + "/tunnel.yml";
+      const contents = read(config);
+      frozenConfigs.set(config, contents);
+      frozenTunnelConfigs.push(contents);
+    }
+  }
   const manifest = readJson(stage + "/manifest.json");
   const plan = isolatedPublicationPlan({
     manifest,
@@ -120,9 +155,11 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
     credentials: readJson(credentialsPath, true),
     tunnelReceipt: readJson(directory + "/tunnel-provisioning.json"),
     sharedConfig,
+    frozenTunnelConfigs,
+    target,
   });
-  if (run("systemctl", ["is-active", "nteract-page3"]) !== "active")
-    throw new Error("Page3 service is not active");
+  if (run("systemctl", ["is-active", profile.deployment.service]) !== "active")
+    throw new Error("Isolated Pages service is not active");
   const health = JSON.parse(
     run("curl", [
       "--fail",
@@ -134,7 +171,7 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
     ]),
   );
   if (health.ok !== true || health.prototype !== "pages-celld-native")
-    throw new Error("Unexpected local page3 health response");
+    throw new Error("Unexpected local Pages health response");
   const installation = directory + "/tunnel-installation.json";
   const receiptFor = (config, extra = {}) =>
     JSON.stringify({
@@ -163,7 +200,7 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
   if (filesystem.existsSync(installation)) {
     const installed = read(installation);
     if (installed !== receipt) {
-      if (installed !== previousReceipt && installed !== pendingReceipt)
+      if (target !== "page3" || (installed !== previousReceipt && installed !== pendingReceipt))
         throw new Error("Dedicated tunnel installation differs; inspect before retrying");
       const current = read(configPath);
       if (
@@ -261,6 +298,12 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
     run("systemctl", ["show", "cloudflared.service", "--property=MainPID", "--value"]) !== sharedPid
   )
     throw new Error("Shared tunnel changed during publication; inspect before claiming isolation");
+  for (const [file, contents] of frozenConfigs)
+    if (read(file) !== contents)
+      throw new Error("Frozen Pages configuration changed during publication");
+  for (const [unit, pid] of frozenPids)
+    if (run("systemctl", ["show", unit, "--property=MainPID", "--value"]) !== pid)
+      throw new Error("Frozen Pages service changed during publication");
   if (upgrading) {
     if (
       read(configPath) !== plan.config ||
@@ -280,5 +323,6 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
     service,
     dnsConfigured: false,
     sharedTunnelUnchanged: true,
+    ...(profile.frozenTargets ? { frozenTargetsUnchanged: profile.frozenTargets } : {}),
   };
 }

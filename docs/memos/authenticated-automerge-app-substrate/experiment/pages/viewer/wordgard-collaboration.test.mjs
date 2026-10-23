@@ -1,0 +1,343 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as A from "@automerge/automerge";
+import { Decoration } from "wordgard/editor";
+import { applyComment, projectComments } from "../model/comments.mjs";
+import { enableRich, textPath } from "../model/richtext.mjs";
+import { captureCommentDraft, resolveCommentDraft } from "./comment-draft.mjs";
+import { decode } from "./wordgard-model.mjs";
+import { projectChanges } from "./wordgard-projection.mjs";
+import {
+  createWordgardCollaboration,
+  publishWordgardSelection,
+  wordgardCommentRanges,
+  wordgardCommentSelection,
+} from "./wordgard-collaboration.mjs";
+
+function fixture(source = "Same passage here and same passage again 😀.") {
+  let doc = A.from({ blocks: {}, comments: {} });
+  doc = A.change(doc, (d) => {
+    for (const [id, position] of [
+      ["first", "a0"],
+      ["second", "a1"],
+    ]) {
+      d.blocks[id] = { id, position, kind: "markdown", markdown: source };
+      enableRich(d, id);
+    }
+  });
+  return doc;
+}
+const current = (doc) => decode(A.spans(doc, textPath("first")));
+const entries = (set) => {
+  const result = [];
+  for (const cursor = set.cursor(); cursor.value; cursor.next())
+    result.push({ from: cursor.from, to: cursor.to, value: cursor.value });
+  return result;
+};
+const presence = (doc, from, to = from) => ({
+  block_id: "first",
+  start: A.getCursor(doc, textPath("first"), from, "after"),
+  end: A.getCursor(doc, textPath("first"), to, "before"),
+  heads: A.getHeads(doc),
+});
+function harness(doc) {
+  let time = 1000;
+  let target = null;
+  let focusCount = 0;
+  const scrolls = [];
+  const publications = [];
+  const names = new Map();
+  const replica = {
+    doc,
+    peers: new Map(),
+    canWrite: true,
+    publishPresence: (value) => publications.push(value),
+    actorDisplayName: (actor) => names.get(actor) ?? "Collaborator",
+  };
+  const editor = {
+    hasFocus: true,
+    state: { selection: { anchor: 1, head: 1 } },
+    focus() {
+      focusCount++;
+    },
+    domAtPos(position) {
+      return {
+        node: {
+          nodeType: 3,
+          parentElement: { scrollIntoView: (opts) => scrolls.push({ position, opts }) },
+        },
+      };
+    },
+  };
+  const collaboration = createWordgardCollaboration({
+    replica,
+    id: "first",
+    getEditor: () => editor,
+    getCurrent: () => current(replica.doc),
+    getThreads: () => projectComments(replica.doc),
+    getTarget: () => target,
+    now: () => time,
+  });
+  return {
+    replica,
+    editor,
+    collaboration,
+    publications,
+    scrolls,
+    names,
+    focusCount: () => focusCount,
+    setTime: (value) => {
+      time = value;
+    },
+    setTarget: (value) => {
+      target = value;
+    },
+  };
+}
+
+test("native Wordgard selections publish backwards cursors and preserve repeated Unicode comment passages", () => {
+  const h = harness(fixture("repeat 😀 and repeat 😀"));
+  const source = h.replica.doc.blocks.first.richText;
+  const from = source.lastIndexOf("repeat 😀");
+  const to = from + "repeat 😀".length;
+  const { map } = current(h.replica.doc);
+  h.editor.state.selection = { anchor: map.amToWg[to], head: map.amToWg[from] };
+  const heads = A.getHeads(h.replica.doc);
+  publishWordgardSelection(h.replica, "first", h.editor, map);
+  const value = h.publications[0];
+  assert.equal(value.backward, true);
+  assert.equal(A.getCursorPosition(h.replica.doc, textPath("first"), value.start), from);
+  assert.equal(A.getCursorPosition(h.replica.doc, textPath("first"), value.end), to);
+  assert.deepEqual(value.heads, heads);
+  const selection = wordgardCommentSelection(h.replica, "first", h.editor, map);
+  assert.deepEqual(selection, { text: "repeat 😀", occurrence: 2 });
+  const draft = captureCommentDraft(h.replica.doc, "first", selection);
+  h.replica.doc = A.change(h.replica.doc, (d) =>
+    A.splice(d, textPath("first"), 0, 0, "repeat 😀 "),
+  );
+  assert.deepEqual(resolveCommentDraft(h.replica.doc, draft), {
+    block_id: "first",
+    selected_text: "repeat 😀",
+    occurrence: 3,
+  });
+  h.editor.hasFocus = false;
+  publishWordgardSelection(h.replica, "first", h.editor, map);
+  assert.equal(h.publications.length, 1);
+});
+
+test("collapsed, invalid, and structure-only selections cannot become comments", () => {
+  const h = harness(fixture("# Heading\n\nText"));
+  const { map } = current(h.replica.doc);
+  const marker = h.replica.doc.blocks.first.richText.indexOf("\ufffc");
+  for (const selection of [
+    { anchor: 1, head: 1 },
+    { anchor: -1, head: 1 },
+    { anchor: map.amToWg[marker], head: map.amToWg[marker + 1] },
+  ]) {
+    h.editor.state.selection = selection;
+    assert.equal(wordgardCommentSelection(h.replica, "first", h.editor, map), null);
+  }
+});
+
+test("presence holds a causal cursor while newer heads are pending, then follows the arriving text", () => {
+  const h = harness(fixture("Hello world"));
+  const source = h.replica.doc.blocks.first.richText;
+  const at = source.indexOf("world");
+  h.replica.peers.set("peer", {
+    value: { ...presence(h.replica.doc, at, at + 5), name: "Untrusted" },
+    at: 1000,
+    displayName: "Kyle Kelley · Browser",
+  });
+  const first = h.collaboration.carets();
+  assert.equal(first.length, 1);
+  assert.equal(first[0].session, "peer");
+  assert.equal(first[0].displayName, "Kyle Kelley · Browser");
+  assert.equal(first[0].position, current(h.replica.doc).map.amToWg[at + 5]);
+  assert.ok(
+    entries(h.collaboration.ranges())[0].value.eq(
+      Decoration.Range.wrapper("span", {
+        attributes: { class: "peer-selection", title: "Kyle Kelley · Browser" },
+      }),
+    ),
+  );
+  const remote = A.change(A.clone(h.replica.doc), (d) =>
+    A.splice(d, textPath("first"), at, 0, "new "),
+  );
+  h.replica.peers.set("peer", {
+    value: presence(remote, at + 4, at + 9),
+    at: 1100,
+    displayName: "Kyle Kelley · Browser",
+  });
+  assert.equal(
+    h.collaboration.carets()[0].position,
+    first[0].position,
+    "missing heads keep the prior causal cursor",
+  );
+  h.replica.doc = A.merge(h.replica.doc, remote);
+  assert.equal(h.collaboration.carets()[0].position, current(h.replica.doc).map.amToWg[at + 9]);
+  h.replica.peers.delete("peer");
+  assert.equal(h.collaboration.carets().length, 0, "explicit departure clears cached presence");
+});
+
+test("presence cache expires and cannot cross blocks or replaced native text objects", () => {
+  const h = harness(fixture("Hello world"));
+  const peer = { value: presence(h.replica.doc, 3), at: 1000, displayName: "Kyle Kelley" };
+  h.replica.peers.set("peer", peer);
+  assert.equal(h.collaboration.carets().length, 1);
+  h.setTime(31001);
+  assert.equal(h.collaboration.carets().length, 0);
+  h.setTime(1000);
+  h.replica.peers.set("peer", peer);
+  assert.equal(h.collaboration.carets().length, 1);
+  h.replica.peers.set("peer", { ...peer, value: { ...peer.value, block_id: "second" } });
+  assert.equal(h.collaboration.carets().length, 0);
+  h.replica.peers.set("peer", { ...peer, value: { ...peer.value, heads: ["a".repeat(64)] } });
+  assert.equal(
+    h.collaboration.carets().length,
+    0,
+    "returning with unseen heads cannot revive a different-block cursor",
+  );
+  h.replica.peers.set("peer", peer);
+  assert.equal(h.collaboration.carets().length, 1);
+  h.replica.doc = A.change(h.replica.doc, (d) => {
+    delete d.blocks.first.richText;
+  });
+  h.replica.doc = A.change(h.replica.doc, (d) => {
+    d.blocks.first.richText = "Different text";
+  });
+  assert.equal(h.collaboration.carets().length, 0);
+});
+
+test("native comment anchors follow edits and choose active or narrower overlapping passages", () => {
+  let doc = fixture("Same passage here and same passage again");
+  const ids = {};
+  doc = A.change(doc, (d) => {
+    for (const [name, block_id, selected_text] of [
+      ["wide", "first", "Same passage here"],
+      ["narrow", "first", "passage"],
+      ["other", "second", "passage"],
+    ])
+      ids[name] = applyComment(d, { action: "add", block_id, selected_text, body: name }).thread_id;
+  });
+  const h = harness(doc);
+  const range = () =>
+    wordgardCommentRanges(
+      h.replica.doc,
+      "first",
+      current(h.replica.doc).map,
+      projectComments(h.replica.doc),
+    ).find((value) => value.id === ids.narrow);
+  assert.equal(h.collaboration.commentAtPosition(range().from + 1), ids.narrow);
+  h.setTarget({ id: ids.wide });
+  assert.equal(h.collaboration.commentAtPosition(range().from + 1), ids.wide);
+  h.replica.doc = A.change(h.replica.doc, (d) => A.splice(d, textPath("first"), 0, 0, "More "));
+  assert.equal(h.collaboration.commentAtPosition(range().from + 1), ids.wide);
+  h.replica.doc = A.change(h.replica.doc, (d) =>
+    applyComment(d, { action: "resolve", thread_id: ids.wide }),
+  );
+  assert.equal(h.collaboration.commentAtPosition(range().from + 1), ids.narrow);
+  assert.equal(
+    entries(h.collaboration.ranges()).length,
+    2,
+    "an active resolved thread remains visible alongside open passage",
+  );
+  const context = projectComments(h.replica.doc).find(
+    (thread) => thread.id === ids.narrow,
+  ).selectionContext;
+  h.replica.doc = A.change(h.replica.doc, (d) =>
+    A.splice(
+      d,
+      textPath("first"),
+      context.start.offsetUtf16,
+      context.end.offsetUtf16 - context.start.offsetUtf16,
+      "",
+    ),
+  );
+  assert.equal(
+    h.collaboration.commentAtPosition(5),
+    null,
+    "deleted quote never jumps to repeated words",
+  );
+});
+
+test("revealing a comment preserves selection, reply focus, read-only state, and native heads", () => {
+  let doc = fixture();
+  let thread;
+  doc = A.change(doc, (d) => {
+    thread = applyComment(d, {
+      action: "add",
+      block_id: "first",
+      selected_text: "passage",
+      body: "Look here",
+    }).thread_id;
+  });
+  const h = harness(doc);
+  const selection = h.editor.state.selection;
+  const heads = A.getHeads(doc);
+  assert.equal(h.collaboration.revealThread(thread), true);
+  assert.equal(h.scrolls.length, 1);
+  assert.equal(h.focusCount(), 0);
+  assert.equal(h.editor.state.selection, selection);
+  h.replica.canWrite = false;
+  h.collaboration.revealThread(thread, { focus: true, scroll: false });
+  assert.equal(h.focusCount(), 0);
+  h.editor.composing = true;
+  assert.equal(h.collaboration.revealThread(thread), false);
+  assert.deepEqual(A.getHeads(h.replica.doc), heads);
+});
+
+test("remote illumination follows native cursors, refreshes trusted names, and expires without document writes", () => {
+  const h = harness(fixture("Hello world"));
+  const before = h.replica.doc;
+  const at = before.blocks.first.richText.indexOf("world");
+  const after = A.change(A.clone(before), (d) => A.splice(d, textPath("first"), at, 0, "😀 new "));
+  h.replica.doc = after;
+  const decoded = current(after);
+  h.collaboration.observeChange({
+    nativeBefore: before,
+    nativeAfter: after,
+    before: current(before),
+    after: decoded,
+    changes: projectChanges(current(before).doc, decoded.doc),
+    actors: [A.getActorId(after)],
+    remote: true,
+  });
+  assert.ok(entries(h.collaboration.ranges()).length > 0);
+  h.names.set(A.getActorId(after), "Kyle Kelley · Codex");
+  const mark = entries(h.collaboration.ranges())[0];
+  assert.ok(
+    mark.value.eq(
+      Decoration.Range.wrapper("span", {
+        attributes: { class: "remote-edit", title: "Edited by Kyle Kelley · Codex" },
+      }),
+    ),
+  );
+  h.replica.doc = A.change(h.replica.doc, (d) => A.splice(d, textPath("first"), 0, 0, "prefix "));
+  assert.ok(entries(h.collaboration.ranges())[0].from > mark.from);
+  const heads = A.getHeads(h.replica.doc);
+  h.setTime(3000);
+  assert.equal(entries(h.collaboration.ranges()).length, 0);
+  assert.deepEqual(A.getHeads(h.replica.doc), heads);
+});
+
+test("illumination ignores own changes and does not attach to surviving text after a deletion", () => {
+  const h = harness(fixture("Hello world"));
+  const before = h.replica.doc;
+  const at = before.blocks.first.richText.indexOf("world");
+  const after = A.change(A.clone(before), (d) => A.splice(d, textPath("first"), at, 0, "XYZ "));
+  h.replica.doc = after;
+  const event = {
+    nativeBefore: before,
+    nativeAfter: after,
+    after: current(after),
+    changes: projectChanges(current(before).doc, current(after).doc),
+    actors: [A.getActorId(after)],
+  };
+  h.collaboration.observeChange({ ...event, remote: false });
+  assert.equal(entries(h.collaboration.ranges()).length, 0);
+  h.collaboration.observeChange({ ...event, remote: true });
+  assert.ok(entries(h.collaboration.ranges()).length > 0);
+  h.replica.doc = A.change(h.replica.doc, (d) => A.splice(d, textPath("first"), at, 4, ""));
+  assert.equal(entries(h.collaboration.ranges()).length, 0);
+  h.collaboration.destroy();
+});

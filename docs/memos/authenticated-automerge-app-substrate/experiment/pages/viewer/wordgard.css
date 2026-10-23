@@ -1,0 +1,121 @@
+.wordgard-editor {
+  position: relative;
+  min-width: 0;
+}
+.wordgard-editor .wordgard-document {
+  border: 0;
+  outline: none;
+  font: inherit;
+  color: inherit;
+  line-height: 1.7;
+}
+.wordgard-editor .wordgard-document:has(> wg-scroller > wg-content:focus-visible) {
+  outline: 2px solid #f0f0f0;
+  outline-offset: 9px;
+  border-radius: 3px;
+}
+.wordgard-document wg-content {
+  display: block;
+  outline: none;
+  min-height: 1.7em;
+  padding: 8px 0;
+  overflow-wrap: anywhere;
+}
+.wordgard-document wg-content p {
+  margin: 0 0 1em;
+}
+.wordgard-document wg-content h1,
+.wordgard-document wg-content h2,
+.wordgard-document wg-content h3 {
+  line-height: 1.3;
+  margin: 1.2em 0 0.6em;
+}
+.wordgard-document wg-content > :first-child {
+  margin-top: 0;
+}
+.wordgard-document wg-content ul,
+.wordgard-document wg-content ol {
+  padding-inline-start: 1.5em;
+}
+.wordgard-document wg-content li > p {
+  margin: 0.15em 0;
+}
+.wordgard-document wg-content a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.wordgard-document wg-content pre {
+  font:
+    14px/1.6 ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+  border-radius: 10px;
+  background: #f6f7f5;
+  padding: 40px 16px 16px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  position: relative;
+}
+.wordgard-document .wg-code-language {
+  font: 12px/1.4 inherit;
+  max-width: 160px;
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  border: 0;
+  border-radius: 4px;
+  background: #ededeb;
+}
+.wordgard-document wg-content img {
+  max-width: 100%;
+  height: auto;
+}
+.wordgard-caret-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.wordgard-caret-layer .peer-caret {
+  position: absolute;
+  width: 0;
+  border-left: 2px solid #8b5fbf;
+  pointer-events: none;
+}
+.wordgard-caret-layer .peer-caret > span {
+  max-width: min(220px, 60vw);
+}
+.wordgard-widget {
+  user-select: text;
+}
+.wordgard-diagram {
+  margin: 8px 0 24px;
+  border: 1px solid var(--line, #e4e8e3);
+  border-radius: 12px;
+  padding: 20px;
+  overflow: auto;
+}
+.wordgard-diagram > p {
+  color: var(--muted, #637469);
+  font-size: 13px;
+}
+.wordgard-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+.wordgard-document .remote-edit {
+  text-decoration: underline;
+  text-decoration-color: #b79551;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+}
+@media (max-width: 600px) {
+  .wordgard-document wg-content pre {
+    padding-inline: 12px;
+  }
+  .wordgard-diagram {
+    padding: 10px;
+  }
+}

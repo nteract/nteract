@@ -2,7 +2,7 @@ import { deploymentProfile } from "./profiles.mjs";
 
 export function routesFor(target = "pages-next", legacy = false) {
   const { hostname, listen } = deploymentProfile(target).deployment;
-  const renderer = target === "page3" ? "mermaid[.]js|" : "";
+  const renderer = deploymentProfile(target).tunnelService ? "mermaid[.]js|" : "";
   const paths = legacy
     ? "index[.]html|app[.](js|css)|(automerge|subduction)[.]wasm|health|mcp|api/(tools|connect|sync|saved|auth/(login|logout|session))|oidc"
     : "index[.]html|app[.](js|css)|" +
