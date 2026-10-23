@@ -18,6 +18,7 @@ import { createPageData, initializePage, projectPage, applyPageOperation } from 
 import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
 import { agentGuideResponse } from "../agent-guide.mjs";
+import { connectAgentResponse } from "../connect-agent.mjs";
 import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import {
@@ -116,6 +117,7 @@ export default {
         const local = await handleLocalOidcRequest(request, env);
         if (local) return local;
       }
+      if (url.pathname === "/connect") return connectAgentResponse(request, env);
       if (url.pathname === "/llms.txt") return agentGuideResponse(request, env);
       if (url.pathname === "/health") return json({ ok: true, prototype: "pages-celld-native" });
       if (url.pathname === "/api/auth/login" && request.method === "GET")

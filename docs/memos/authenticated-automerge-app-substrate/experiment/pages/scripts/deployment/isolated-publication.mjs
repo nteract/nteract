@@ -182,10 +182,19 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
       ...extra,
     }) + "\n";
   const receipt = receiptFor(plan.config);
-  // This is one known migration, not permission to adopt arbitrary tunnel edits.
-  const previousConfig = plan.config.replace("|mermaid[.]js|", "|");
-  const previousReceipt = receiptFor(previousConfig);
-  const pendingReceipt = receiptFor(plan.config, { previous_config_sha256: hash(previousConfig) });
+  // Only the exact known predecessor for this target may migrate. Other targets
+  // and arbitrary local edits still require inspection instead of adoption.
+  const previousConfig =
+    target === "page3"
+      ? plan.config.replace("|mermaid[.]js|", "|")
+      : target === "page5"
+        ? plan.config.replace("|connect|connect[.]js|", "|")
+        : null;
+  const previousReceipt = previousConfig === null ? null : receiptFor(previousConfig);
+  const pendingReceipt =
+    previousConfig === null
+      ? null
+      : receiptFor(plan.config, { previous_config_sha256: hash(previousConfig) });
   const candidate = (file, contents) => {
     // Distinct expected byte sequences cannot strand one another after a
     // crash between staging and renaming an upgrade or rollback.
@@ -200,7 +209,10 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
   if (filesystem.existsSync(installation)) {
     const installed = read(installation);
     if (installed !== receipt) {
-      if (target !== "page3" || (installed !== previousReceipt && installed !== pendingReceipt))
+      if (
+        previousConfig === null ||
+        (installed !== previousReceipt && installed !== pendingReceipt)
+      )
         throw new Error("Dedicated tunnel installation differs; inspect before retrying");
       const current = read(configPath);
       if (
@@ -248,6 +260,11 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
     for (const [pathname, expected] of [
       ["/", plan.listen],
       ["/mcp", plan.listen],
+      ["/connect", target === "page5" ? plan.listen : "http_status:404"],
+      ["/connect.js", target === "page5" ? plan.listen : "http_status:404"],
+      ["/connect/private", "http_status:404"],
+      ["/connect.js/private", "http_status:404"],
+      ["/connectXjs", "http_status:404"],
       ["/mermaid.js", plan.listen],
       ["/mermaid.js/private", "http_status:404"],
       ["/mermaidXjs", "http_status:404"],
