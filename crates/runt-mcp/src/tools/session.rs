@@ -495,8 +495,12 @@ fn projected_runtime_info(projection: &NotebookProjection) -> serde_json::Value 
             }),
         );
     }
-    // The connect-time projection carries kernel state but not the
-    // project-trust map; the hint still names the follow-up call.
+    if !runtime.project_trust.status.is_empty() {
+        info.insert(
+            "project_trust".into(),
+            project_trust_json(&runtime.project_trust),
+        );
+    }
     if let Some(next_action) = next_action_for_lifecycle(&runtime.kernel.lifecycle) {
         info.insert("next_action".into(), next_action);
     }

@@ -353,6 +353,8 @@ pub struct NotebookRuntimeProjection {
     pub kernel: runtime_doc::KernelState,
     pub env: runtime_doc::EnvState,
     pub trust: runtime_doc::TrustRuntimeState,
+    #[serde(default)]
+    pub project_trust: runtime_doc::ProjectTrustRuntimeState,
     pub project_context: runtime_doc::ProjectContext,
 }
 
@@ -836,7 +838,15 @@ mod tests {
                 execution_count: Some(1),
             }],
             dependencies: vec!["numpy".to_string()],
-            runtime: NotebookRuntimeProjection::default(),
+            runtime: NotebookRuntimeProjection {
+                project_trust: runtime_doc::ProjectTrustRuntimeState {
+                    status: "untrusted".to_string(),
+                    needs_approval: true,
+                    project_dir: "/tmp/example".to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             source_state: NotebookSourceProjectionState {
                 phase: NotebookSourcePhase::Publishing,
                 generation: 7,
