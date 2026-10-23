@@ -38,6 +38,37 @@ pub(crate) async fn ensure_trusted(room: &NotebookRoom) -> GuardResult {
     }
 }
 
+/// Authorize the exact PEP 723 dependency list captured for this launch.
+///
+/// A current trust verdict alone cannot authorize an older install vector:
+/// source may change while environment resolution awaits other work. Compare
+/// and verify the same document snapshot before consuming the captured inputs.
+pub(crate) async fn ensure_trusted_pep723(
+    room: &NotebookRoom,
+    expected_dependencies: &[String],
+) -> GuardResult {
+    let doc = room.doc.read().await;
+    let current_dependencies =
+        crate::notebook_sync_server::pep723_dependencies_from_cells(&doc.get_cells())
+            .map_err(|_| rejected("Invalid PEP 723 metadata. Review the notebook again."))?;
+    if current_dependencies.as_slice() != expected_dependencies {
+        return Err(rejected(
+            "PEP 723 dependencies changed before launch. Review the notebook again.",
+        ));
+    }
+    let trust = crate::notebook_sync_server::verify_trust_from_doc(&doc, &room.trusted_packages);
+    if matches!(
+        trust.status,
+        runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
+    ) {
+        Ok(())
+    } else {
+        Err(rejected(
+            "Trust changed before the action could run. Review the notebook again.",
+        ))
+    }
+}
+
 pub(crate) fn validate_execute_cell(
     doc: &mut NotebookDoc,
     cell_id: &str,

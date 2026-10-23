@@ -8945,6 +8945,116 @@ async fn test_pep723_approval_covers_live_doc_dependencies() {
     );
 }
 
+fn pep723_guard_source(dependencies: &[&str]) -> String {
+    format!(
+        "# /// script\n# dependencies = {}\n# ///\n",
+        serde_json::to_string(dependencies).unwrap()
+    )
+}
+
+#[tokio::test]
+async fn test_pep723_install_guard_rejects_removed_or_replaced_inputs() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = open_test_store(&tmp);
+    store.seed_defaults("pypi", &["approved"]).unwrap();
+    let (room, _path) = test_room_with_path_and_store(&tmp, "pep723.ipynb", store);
+    let captured = {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source(
+            "cell-1",
+            &pep723_guard_source(&["payload @ https://example.test/payload.tar.gz"]),
+        )
+        .unwrap();
+        pep723_dependencies_from_cells(&doc.get_cells()).unwrap()
+    };
+
+    // Model an edit during environment resolution, after the installer inputs
+    // were captured. Both live states pass a generic current-room trust check.
+    for replacement in [
+        "print('removed')".to_string(),
+        pep723_guard_source(&["approved"]),
+    ] {
+        {
+            let mut doc = room.doc.write().await;
+            doc.update_source("cell-1", &replacement).unwrap();
+        }
+        assert!(crate::requests::guarded::ensure_trusted(&room)
+            .await
+            .is_ok());
+        assert!(
+            crate::requests::guarded::ensure_trusted_pep723(&room, &captured)
+                .await
+                .is_err(),
+            "current trust must not authorize the captured unapproved install vector"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_pep723_install_guard_requires_approval_of_matching_inputs() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = open_test_store(&tmp);
+    let (room, _path) = test_room_with_path_and_store(&tmp, "pep723.ipynb", store);
+    let captured = {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source(
+            "cell-1",
+            &pep723_guard_source(&["payload @ https://example.test/payload.tar.gz"]),
+        )
+        .unwrap();
+        pep723_dependencies_from_cells(&doc.get_cells()).unwrap()
+    };
+    assert!(
+        crate::requests::guarded::ensure_trusted_pep723(&room, &captured)
+            .await
+            .is_err()
+    );
+    {
+        let doc = room.doc.read().await;
+        room.trusted_packages
+            .add_from_info(&trust_info_from_doc(&doc), "test")
+            .unwrap();
+    }
+    // Read the allowlist directly, without relying on a cached room verdict.
+    assert!(
+        crate::requests::guarded::ensure_trusted_pep723(&room, &captured)
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn test_pep723_install_guard_rejects_malformed_source() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = open_test_store(&tmp);
+    store.seed_defaults("pypi", &["approved"]).unwrap();
+    let (room, _path) = test_room_with_path_and_store(&tmp, "pep723.ipynb", store);
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+    }
+    let captured = vec!["approved".to_string()];
+    for malformed in [
+        "# /// script\n# dependencies = \"approved\"\n# ///\n".to_string(),
+        pep723_guard_source(&["approved"]) + &pep723_guard_source(&["approved"]),
+    ] {
+        {
+            let mut doc = room.doc.write().await;
+            doc.update_source("cell-1", &malformed).unwrap();
+        }
+        for expected in [captured.as_slice(), &[]] {
+            assert!(
+                crate::requests::guarded::ensure_trusted_pep723(&room, expected)
+                    .await
+                    .is_err(),
+                "parser errors must not become an empty, trusted dependency list"
+            );
+        }
+    }
+}
+
 #[test]
 fn test_verify_trust_from_snapshot_uv_unapproved() {
     let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);

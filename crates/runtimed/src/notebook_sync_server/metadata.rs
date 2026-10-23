@@ -3702,7 +3702,7 @@ async fn auto_launch_kernel_attempt(
     let (pooled_env, inline_deps) = if matches!(env_source, EnvSource::Pep723(PackageManager::Uv)) {
         // PEP 723 deps were extracted from cell source in step 2b
         if let Some(ref deps) = pep723_deps {
-            if crate::requests::guarded::ensure_trusted(room)
+            if crate::requests::guarded::ensure_trusted_pep723(room, deps)
                 .await
                 .is_err()
             {
@@ -4502,9 +4502,12 @@ async fn auto_launch_kernel_attempt(
     }
 
     if env_source.as_str().ends_with(":pep723")
-        && crate::requests::guarded::ensure_trusted(room)
-            .await
-            .is_err()
+        && crate::requests::guarded::ensure_trusted_pep723(
+            room,
+            pep723_deps.as_deref().unwrap_or_default(),
+        )
+        .await
+        .is_err()
     {
         reset_starting_state(room, None).await;
         return None;

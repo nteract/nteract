@@ -842,13 +842,13 @@ pub enum NotebookRequest {
         guard: Option<DependencyGuard>,
     },
 
-    /// Approve the current dependency metadata for this notebook.
+    /// Approve the current dependencies for this notebook.
     ///
-    /// The daemon signs reviewed dependencies and writes the trust fields
-    /// into the Automerge document. `observed_heads` is supplied when approval
-    /// is tied to an already-open trust dialog; the daemon reconstructs the
-    /// dependencies at those heads and refuses to sign if the current
-    /// dependencies no longer match what the user reviewed.
+    /// The daemon records reviewed dependency identities in the local trusted
+    /// package allowlist without mutating NotebookDoc. `observed_heads` is
+    /// supplied when approval is tied to an already-open trust dialog; the
+    /// daemon reconstructs dependencies at those heads and refuses approval if
+    /// the current dependencies no longer match what the user reviewed.
     ApproveTrust {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         observed_heads: Option<Vec<String>>,
