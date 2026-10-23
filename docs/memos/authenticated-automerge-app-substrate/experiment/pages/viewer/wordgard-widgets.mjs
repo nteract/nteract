@@ -13,6 +13,9 @@ const table = Widget.define({
   render(value) {
     const dom = document.createElement("section");
     dom.className = "wordgard-widget preserved-table";
+    // A click on rendered content must not focus an insertion point in the
+    // surrounding editor. Keep native text selection and child controls usable.
+    dom.tabIndex = -1;
     const source = document.createElement("pre");
     source.className = "preserved-table-source";
     source.textContent = value.source;
@@ -135,6 +138,7 @@ const diagram = Widget.define({
   render({ source, editable }, editor) {
     const dom = document.createElement("section");
     dom.className = "wordgard-widget wordgard-diagram";
+    dom.tabIndex = -1;
     dom.setAttribute("aria-label", "Mermaid diagram");
     if (editable) {
       const edit = dom.appendChild(document.createElement("button"));

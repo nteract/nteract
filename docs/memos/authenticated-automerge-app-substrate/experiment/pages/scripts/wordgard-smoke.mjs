@@ -576,8 +576,37 @@ try {
   );
   checkpoint(stage);
 
+  stage = "preview clicks do not create a gap caret; keyboard and source carets remain";
+  const beforePreviewFocus = await call(a, "read_page", { page_id: code.page_id });
+  await content(a).first().locator(".wordgard-diagram-canvas").click();
+  await expect(a.locator("wg-cursor.wg-cursor-h:visible")).toHaveCount(0);
+  assert.equal(
+    await a.evaluate(() => !!document.activeElement.closest(".wordgard-diagram")),
+    true,
+    "clicking a rendered diagram focuses the preview, not the text editor",
+  );
+  // Keyboard entry still gets a real insertion position, then a text caret.
+  await content(a).first().focus();
+  await a.keyboard.press("ArrowLeft");
+  await expect(a.locator("wg-cursor.wg-cursor-h:visible")).toHaveCount(1);
+  await a.keyboard.press("ArrowRight");
+  await expect(content(a).first().locator("pre:visible")).toHaveCount(1);
+  await expect(a.locator("wg-cursor.wg-cursor-v:visible")).toHaveCount(1);
+  await previewDiagram(a);
+  await a.locator(".preserved-table th").first().click();
+  await expect(a.locator("wg-cursor.wg-cursor-h:visible")).toHaveCount(0);
+  await editDiagram(a);
+  await expect(a.locator("wg-cursor.wg-cursor-v:visible")).toHaveCount(1);
+  await previewDiagram(a);
+  const afterPreviewFocus = await call(a, "read_page", { page_id: code.page_id });
+  assert.deepEqual(afterPreviewFocus.heads, beforePreviewFocus.heads);
+  assert.deepEqual(afterPreviewFocus.blocks, beforePreviewFocus.blocks);
+  checkpoint(stage);
+
   stage = "mobile preview toggle and table without a source-header gap";
   await a.setViewportSize({ width: 390, height: 844 });
+  await content(a).first().locator(".wordgard-diagram-canvas").click();
+  await expect(a.locator("wg-cursor.wg-cursor-h:visible")).toHaveCount(0);
   await editDiagram(a);
   await expect.poll(() => textOf(a, 0)).toBe(diagram);
   await expect(content(b).first().locator("pre:visible")).toHaveCount(0);
