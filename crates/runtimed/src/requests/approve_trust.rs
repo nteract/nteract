@@ -176,6 +176,15 @@ mod tests {
     }
 
     #[test]
+    fn approval_rejects_empty_observed_heads() {
+        let doc = doc_with_uv_deps(&["numpy"]);
+        assert!(matches!(
+            apply_trust_approval(&doc, Some(&[])),
+            Err(TrustApprovalError::StaleDependencies)
+        ));
+    }
+
+    #[test]
     fn approval_rejects_stale_observed_dependencies() {
         let mut doc = doc_with_uv_deps(&["numpy"]);
         let observed_heads = doc.get_heads_hex();

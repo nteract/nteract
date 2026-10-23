@@ -127,8 +127,8 @@ export function useTrust() {
     };
   }, [host, uvList, condaList, pixiList, pixiPypiList]);
 
-  // Approve the notebook. The daemon signs dependencies and writes trust
-  // metadata into the CRDT so trust state stays on the backend side.
+  // The daemon records reviewed dependency identities in its local allowlist
+  // and publishes the resulting trust status through RuntimeStateDoc.
   const approveTrust = useCallback(
     async (options?: ApproveTrustOptions) => {
       setLoading(true);

@@ -186,8 +186,8 @@ export interface HostBlobs {
  *
  * Trust *status* is read from `RuntimeStateDoc.trust` via
  * `useRuntimeState()`; the daemon is the sole writer. This namespace
- * exists only for the explicit user action: asking the daemon to sign
- * current dependency metadata and apply the CRDT mutation.
+ * exists only for the explicit user action: asking the daemon to add
+ * reviewed dependency identities to its local trusted package allowlist.
  */
 export interface HostTrust {
   approve(options?: {

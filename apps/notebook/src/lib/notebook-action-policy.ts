@@ -631,9 +631,7 @@ export function useNotebookActionPolicy({
       return false;
     }
     const observedHeads = action?.provenance.observed_heads ?? plainTrustObservedHeadsRef.current;
-    const success = await approveTrust(
-      observedHeads?.length ? { observedHeads } : undefined,
-    );
+    const success = await approveTrust({ observedHeads: observedHeads ?? [] });
     if (success) plainTrustObservedHeadsRef.current = null;
     if (success && pendingKernelStartRef.current) {
       pendingKernelStartRef.current = false;
@@ -668,9 +666,7 @@ export function useNotebookActionPolicy({
       return false;
     }
     const observedHeads = action?.provenance.observed_heads ?? plainTrustObservedHeadsRef.current;
-    const success = await approveTrust(
-      observedHeads?.length ? { observedHeads } : undefined,
-    );
+    const success = await approveTrust({ observedHeads: observedHeads ?? [] });
     if (success) plainTrustObservedHeadsRef.current = null;
     if (success && pendingKernelStartRef.current) {
       pendingKernelStartRef.current = false;
