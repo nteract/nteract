@@ -95,6 +95,21 @@ async function insertAfter(page, anchor, text, block = 0) {
   await selectText(page, anchor, true, block);
   await page.keyboard.insertText(text);
 }
+async function previewDiagram(page, block = 0) {
+  const preview = content(page)
+    .nth(block)
+    .getByRole("button", { name: "Preview diagram", exact: true });
+  if (await preview.isVisible()) await preview.click();
+  await expect(content(page).nth(block).locator(".wordgard-diagram svg.pele")).toBeVisible({
+    timeout: 30000,
+  });
+  await expect(content(page).nth(block).locator("pre:visible")).toHaveCount(0);
+}
+async function editDiagram(page, block = 0) {
+  await content(page).nth(block).getByRole("button", { name: "Edit diagram", exact: true }).click();
+  await expect(content(page).nth(block).locator("pre")).toBeVisible();
+  await expect(content(page).nth(block).locator(".wordgard-diagram")).toHaveCount(0);
+}
 async function textOf(page, block) {
   const editors = block === undefined ? content(page) : content(page).nth(block);
   return editors.evaluateAll((elements) =>
@@ -187,7 +202,7 @@ try {
   const contexts = await Promise.all([browser.newContext(), browser.newContext()]);
   [a, b] = await Promise.all(contexts.map((context) => context.newPage()));
   for (const page of [a, b]) {
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", (error) => errors.push(error.stack ?? error.message));
     await page.goto(origin + "/api/auth/login");
     await expect(page.getByRole("button", { name: /, switch page$/ })).toBeVisible();
     assert.equal(
@@ -412,7 +427,7 @@ try {
   }
   checkpoint(stage);
 
-  stage = "code fence, language control, Mermaid rendering";
+  stage = "code fence, remote language change preserves active source, Mermaid rendering";
   const code = await create("", "Wordgard rich fixture " + Date.now());
   await content(a).click();
   await a.keyboard.type("```");
@@ -425,11 +440,75 @@ try {
   }
   await expect.poll(() => textOf(a)).toBe(diagram);
   await expect.poll(() => textOf(b)).toBe(diagram);
-  await a.locator("select.wg-code-language").selectOption("mermaid");
-  for (const page of [a, b]) {
-    await expect(page.locator(".wordgard-diagram svg.pele")).toBeVisible({ timeout: 30000 });
+  // A peer choosing Mermaid must not collapse the source under an active cursor.
+  await selectText(a, "Dashboard", true);
+  await b.locator("select.wg-code-language").selectOption("mermaid");
+  await expect(a.locator("select.wg-code-language")).toHaveValue("mermaid");
+  await expect(content(a).locator("pre:visible")).toHaveCount(1);
+  await a.keyboard.insertText(" view");
+  await expect.poll(() => textOf(a)).toBe(diagram.replace("Dashboard", "Dashboard view"));
+  await expect.poll(() => textOf(b)).toBe(diagram.replace("Dashboard", "Dashboard view"));
+  await a.keyboard.press("ControlOrMeta+z");
+  await expect.poll(() => textOf(a)).toBe(diagram);
+  await expect.poll(() => textOf(b)).toBe(diagram);
+  await previewDiagram(a);
+  await previewDiagram(b);
+  for (const page of [a, b])
     await expect(page.locator(".wordgard-diagram")).toContainText("Warehouse");
-  }
+  await saved(a);
+  checkpoint(stage);
+
+  stage = "Mermaid preview is local, preserves source and undo, and synchronizes edits";
+  const beforeToggle = await call(a, "read_page", { page_id: code.page_id });
+  await editDiagram(a);
+  await expect.poll(() => textOf(a)).toBe(diagram);
+  await expect(content(b).locator("pre:visible")).toHaveCount(0);
+  await previewDiagram(a);
+  const afterToggle = await call(a, "read_page", { page_id: code.page_id });
+  assert.deepEqual(
+    afterToggle.heads,
+    beforeToggle.heads,
+    "preview toggles do not write the document",
+  );
+  assert.deepEqual(
+    afterToggle.blocks,
+    beforeToggle.blocks,
+    "preview toggles preserve exact source",
+  );
+  // Arrowing into a collapsed code block must expose its native source before
+  // the user can type, rather than accepting edits behind the diagram widget.
+  await content(a).focus();
+  await a.keyboard.press("ArrowRight");
+  await expect(content(a).locator("pre")).toBeVisible();
+  await expect.poll(() => textOf(a)).toBe(diagram);
+  await expect(content(b).locator("pre:visible")).toHaveCount(0);
+  await previewDiagram(a);
+  await editDiagram(a);
+  await selectText(a, "Dashboard");
+  await a.keyboard.insertText("Overview");
+  await expect(b.locator(".wordgard-diagram")).toContainText("Overview", { timeout: 30000 });
+  await expect(content(b).locator("pre:visible")).toHaveCount(0);
+  await a.keyboard.press("ControlOrMeta+z");
+  await expect.poll(() => textOf(a)).toBe(diagram);
+  await expect(b.locator(".wordgard-diagram")).toContainText("Dashboard", { timeout: 30000 });
+  await previewDiagram(a);
+  await saved(a);
+  checkpoint(stage);
+
+  stage = "invalid Mermaid remains recoverable through Edit diagram";
+  await editDiagram(a);
+  await selectText(a, "graph TD");
+  await a.keyboard.insertText("not-a-supported-diagram");
+  await a.getByRole("button", { name: "Preview diagram", exact: true }).click();
+  await expect(a.locator(".wordgard-diagram")).toContainText("Diagram unavailable", {
+    timeout: 30000,
+  });
+  await expect(content(a).locator("pre:visible")).toHaveCount(0);
+  await editDiagram(a);
+  await selectText(a, "not-a-supported-diagram");
+  await a.keyboard.insertText("graph TD");
+  await previewDiagram(a);
+  await expect(b.locator(".wordgard-diagram")).toContainText("Warehouse", { timeout: 30000 });
   await saved(a);
   checkpoint(stage);
 
@@ -477,21 +556,50 @@ try {
   for (const page of [a, b]) await expect.poll(() => textOf(page, pastedIndex)).toBe(pastedDiagram);
   await expect(pastedEditor.locator("select.wg-code-language")).toHaveCount(1);
   await pastedEditor.locator("select.wg-code-language").selectOption("mermaid");
-  // Switch back to the first block: both diagrams must remain rendered.
-  await selectText(a, "Dashboard", true);
+  await previewDiagram(a, pastedIndex);
+  await previewDiagram(b, pastedIndex);
+  // Moving between blocks keeps inactive diagrams rendered, with no raw source.
+  await content(a).first().getByRole("button", { name: "Edit diagram", exact: true }).focus();
   for (const page of [a, b]) {
     await expect(page.locator(".wordgard-diagram svg.pele")).toHaveCount(2, { timeout: 30000 });
     await expect(page.locator(".preserved-table table")).toBeVisible();
     await expect(page.locator(".preserved-table table")).toContainText("Ready");
   }
-  await a.getByRole("button", { name: "Show table Markdown source", exact: true }).click();
-  await expect(a.locator(".preserved-table-source")).toHaveText(table);
-  await a.getByRole("button", { name: "Show rendered table", exact: true }).click();
+  await expect(
+    a.getByRole("button", { name: "Show table Markdown source", exact: true }),
+  ).toHaveCount(0);
+  await expect(a.locator(".preserved-table-toolbar,.preserved-table-source")).toHaveCount(0);
   current = await call(a, "read_page", { page_id: code.page_id });
   assert.ok(
     current.blocks.some((block) => block.markdown.includes(table)),
     "MCP round-trip preserves table source",
   );
+  checkpoint(stage);
+
+  stage = "mobile preview toggle and table without a source-header gap";
+  await a.setViewportSize({ width: 390, height: 844 });
+  await editDiagram(a);
+  await expect.poll(() => textOf(a, 0)).toBe(diagram);
+  await expect(content(b).first().locator("pre:visible")).toHaveCount(0);
+  await previewDiagram(a);
+  const tableGap = await a.locator(".preserved-table").evaluate((element) => {
+    const preview = element.querySelector(".markdown-table-scroll");
+    return preview.getBoundingClientRect().top - element.getBoundingClientRect().top;
+  });
+  assert.ok(tableGap <= 16, `table has no reserved source-toolbar space (${tableGap}px)`);
+  report.mobileTableTopGap = tableGap;
+  assert.equal(
+    await a.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+    true,
+    "mobile previews do not overflow the page",
+  );
+  await a.screenshot({ path: output + "/preview-mobile.png", fullPage: true });
+  await a.setViewportSize({ width: 1280, height: 900 });
+  // Source mode in both peers gives the caret tests a visible text target.
+  await editDiagram(a);
+  await editDiagram(b);
+  for (const page of [a, b])
+    await expect(content(page).locator("pre .wordgard-diagram")).toHaveCount(0);
   checkpoint(stage);
 
   stage = "deleting an inactive block retains active cursor presence";
@@ -570,7 +678,7 @@ try {
     storageState: await contexts[0].storageState(),
   });
   const reader = await readerContext.newPage();
-  reader.on("pageerror", (error) => errors.push(error.message));
+  reader.on("pageerror", (error) => errors.push(error.stack ?? error.message));
   await reader.route(/\/api\/(auth\/session|connect)(\?|$)/, async (route) => {
     const response = await route.fetch();
     const json = await response.json();
@@ -582,6 +690,9 @@ try {
   await expect(reader.locator(".preserved-table table")).toBeVisible();
   await expect(reader.getByRole("button", { name: "Bold", exact: true })).toBeDisabled();
   await expect(reader.locator("select.wg-code-language:enabled")).toHaveCount(0);
+  await expect(reader.getByRole("button", { name: "Edit diagram", exact: true })).toHaveCount(0);
+  await expect(reader.getByRole("button", { name: "Preview diagram", exact: true })).toHaveCount(0);
+  await expect(content(reader).locator("pre:visible")).toHaveCount(0);
   const beforeRead = await call(a, "read_page", { page_id: code.page_id });
   await content(reader).first().click();
   await reader.keyboard.type("must not edit");

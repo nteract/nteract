@@ -315,6 +315,7 @@ export function WordgardEditor(props) {
           try {
             const rect = editor.coordsAtPos(peer.position);
             if (
+              rect.bottom <= rect.top ||
               rect.bottom < Math.max(0, bounds.top) ||
               rect.top > Math.min(innerHeight, bounds.bottom)
             )

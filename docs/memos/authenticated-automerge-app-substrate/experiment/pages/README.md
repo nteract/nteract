@@ -50,9 +50,11 @@ a demonstrated large-document performance improvement.
 
 Each Pages block has its own continuous Wordgard editor, retaining stable public
 IDs and fractional ordering. Cross-Pages-block selections and native editable
-table cells remain future work. Existing Markdown tables retain safe preview and
-source access. Mermaid previews appear beside the editable code source for each
-Mermaid code block. Wordgard handles incoming composition transactions directly;
+table cells remain future work. Markdown tables display a safe preview without
+raw-source controls. Nonempty Mermaid blocks open as diagrams; **Edit diagram**
+opens native code editing and **Preview** returns to the diagram. This view mode
+is local to each editor and does not change the shared document. Wordgard handles
+incoming composition transactions directly;
 real OS IME and mobile-keyboard qualification remain distinct from synthetic
 browser coverage. Page4 has its own service, connector and object-storage prefix;
 page3 and pages-next stay unchanged for demos and existing MCP users.
@@ -121,8 +123,9 @@ protocol check before navigation.
 
 Type three backticks on an empty paragraph, followed by Enter or Space, to make
 a code block. A language can follow the backticks, or be chosen from the code
-block's language selector. Choose Mermaid to preview a diagram; **Source** and
-**Preview** switch the local view without changing the document. Cmd/Ctrl+Enter
+block's language selector. In Wordgard, **Edit diagram** opens the native code
+editor and **Preview** returns to the diagram. ProseMirror uses **Source** and
+**Preview**. Both switch only the local view. Cmd/Ctrl+Enter
 continues in a paragraph after the code block. The source and language remain
 Automerge content and round-trip through Markdown. The preview reuses nteract's
 Mermaid renderer and SVG sanitizer, with its existing source and output limits;
@@ -130,9 +133,11 @@ rendered SVG is never stored in the document. This does not add code execution.
 
 Tables in preserved Markdown blocks render with header cells, alignment, inline
 formatting, and safe links. Use leading and trailing pipes in each row for new
-tables; existing rich imports keep their previous interpretation. Wide tables scroll within the document on narrow screens. **Source**
-shows the exact preserved Markdown; the preview is local and never replaces that
-source in Automerge. This first step supports reading and tool-driven table
+tables; existing rich imports keep their previous interpretation. Wide tables
+scroll within the document on narrow screens. Wordgard shows the rendered table
+without raw-source controls; ProseMirror retains its **Source** toggle. Neither
+preview replaces the preserved Markdown in Automerge. This first step supports
+reading and tool-driven table
 updates, not editing table cells directly. A block imported with a table remains
 an opaque source block, including any prose around it; use separate Pages blocks
 for prose that should remain WYSIWYG-editable. HTML remains text and images show

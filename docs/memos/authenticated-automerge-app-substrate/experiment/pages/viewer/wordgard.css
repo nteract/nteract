@@ -89,21 +89,68 @@
 }
 .wordgard-widget {
   user-select: text;
+  white-space: normal;
 }
 .wordgard-diagram {
-  margin: 8px 0 24px;
-  border: 1px solid var(--line, #e4e8e3);
-  border-radius: 12px;
-  padding: 20px;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  margin: 0;
+  min-width: 0;
 }
 .wordgard-diagram > p {
+  margin: 0;
+  padding: 12px 0;
   color: var(--muted, #637469);
   font-size: 13px;
+}
+.wordgard-diagram-canvas {
+  overflow: auto;
+  text-align: center;
 }
 .wordgard-diagram svg {
   max-width: 100%;
   height: auto;
+}
+.wordgard-diagram-edit,
+.wordgard-diagram-preview {
+  position: absolute;
+  top: 4px;
+  z-index: 1;
+  min-height: 32px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: var(--paper, #fff);
+  color: var(--muted, #637469);
+  font:
+    12px/1.5 ui-sans-serif,
+    system-ui,
+    sans-serif;
+  cursor: pointer;
+}
+.wordgard-diagram-edit {
+  position: static;
+  align-self: flex-end;
+  order: 1;
+}
+.wordgard-diagram-preview {
+  left: 8px;
+  background: transparent;
+}
+.wordgard-diagram-edit:hover,
+.wordgard-diagram-preview:hover {
+  background: var(--accent-soft, #f6f7f5);
+  color: inherit;
+}
+.wordgard-diagram-edit:focus-visible,
+.wordgard-diagram-preview:focus-visible {
+  outline: 2px solid var(--focus, #4e7964);
+  outline-offset: 2px;
+}
+.wordgard-document .preserved-table,
+.wordgard-document .preserved-table .markdown-table-scroll {
+  margin: 0;
 }
 .wordgard-document .remote-edit {
   text-decoration: underline;
@@ -115,7 +162,8 @@
   .wordgard-document wg-content pre {
     padding-inline: 12px;
   }
-  .wordgard-diagram {
-    padding: 10px;
+  .wordgard-diagram-edit,
+  .wordgard-diagram-preview {
+    min-height: 40px;
   }
 }
