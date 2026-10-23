@@ -19,7 +19,7 @@ use crate::notebook_sync_server::file_checkpoint::{
 use crate::notebook_sync_server::recovery::source_fingerprint;
 use crate::notebook_sync_server::{
     apply_prepared_source_reconciliation, apply_reconciled_runtime_sidecars, canonical_target_path,
-    prepare_source_reconciliation, NotebookRoom, RoomAvailability,
+    check_and_update_trust_state, prepare_source_reconciliation, NotebookRoom, RoomAvailability,
 };
 
 use super::save_notebook;
@@ -502,6 +502,9 @@ async fn finish_reconciliation(
                 );
             }
         };
+    // Reconciliation can replace dependency-bearing metadata or PEP 723
+    // cells. Refresh trust before reopening interactive capabilities.
+    check_and_update_trust_state(room).await;
     room.durability.clear_degraded();
     room.clear_load_failed();
     room.lifecycle.complete_reconciliation(
@@ -536,4 +539,99 @@ fn blocked(
     reason: SourceReconciliationBlockedReason,
 ) -> NotebookResponse {
     NotebookResponse::NotebookSourceReconciliationBlocked { operation, reason }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn reconciliation_refreshes_pep723_trust_before_becoming_interactive() {
+        let dependency = "payload @ https://example.test/payload.tar.gz";
+        let pep723 = format!("# /// script\n# dependencies = [\"{dependency}\"]\n# ///\n");
+
+        for (old_source, new_source, dependencies, expected_status) in [
+            (
+                "print(1)",
+                pep723.as_str(),
+                vec![dependency.to_string()],
+                runt_trust::TrustStatus::Untrusted,
+            ),
+            (
+                pep723.as_str(),
+                "print(2)",
+                vec![],
+                runt_trust::TrustStatus::NoDependencies,
+            ),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let room = NotebookRoom::new_fresh(
+                uuid::Uuid::new_v4(),
+                None,
+                tmp.path(),
+                Arc::new(crate::blob_store::BlobStore::new(tmp.path().join("blobs"))),
+                false,
+            );
+            {
+                let mut doc = room.doc.write().await;
+                doc.add_cell(0, "cell-1", "code").unwrap();
+                doc.update_source("cell-1", old_source).unwrap();
+            }
+            check_and_update_trust_state(&room).await;
+            assert_ne!(room.trust_state.read().await.status, expected_status);
+
+            // The reconciliation has durably selected its source, but the
+            // cached trust still describes the previous document revision.
+            let (snapshot, heads, exported_heads) = {
+                let mut doc = room.doc.write().await;
+                doc.update_source("cell-1", new_source).unwrap();
+                let heads = doc.get_heads();
+                (
+                    doc.save(),
+                    heads.iter().map(|head| head.0).collect(),
+                    heads.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                )
+            };
+            room.lifecycle
+                .mark_source_conflict("external source changed".into(), exported_heads.clone());
+            room.durability
+                .commit_staged_source(
+                    &snapshot,
+                    heads,
+                    1,
+                    source_fingerprint(new_source.as_bytes()),
+                    vec![],
+                )
+                .unwrap();
+
+            let response = finish_reconciliation(
+                &room,
+                SourceReconciliationOperation::ArchiveRecoveryAndReloadSource,
+                tmp.path()
+                    .join("reconciled.ipynb")
+                    .to_string_lossy()
+                    .into_owned(),
+                None,
+                exported_heads,
+                1,
+                1,
+            )
+            .await;
+
+            assert!(matches!(
+                response,
+                NotebookResponse::NotebookSourceReconciled { .. }
+            ));
+            assert!(matches!(
+                room.lifecycle.availability(),
+                RoomAvailability::Interactive(_)
+            ));
+            let trust = room.trust_state.read().await;
+            assert_eq!(trust.status, expected_status);
+            assert_eq!(trust.pep723_dependencies, dependencies);
+            let runtime_trust = room.state.read(|sd| sd.read_state().trust).unwrap();
+            assert_eq!(runtime_trust.pep723_dependencies, dependencies);
+            assert_eq!(runtime_trust.needs_approval, !dependencies.is_empty());
+        }
+    }
 }

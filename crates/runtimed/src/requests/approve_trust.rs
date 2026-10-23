@@ -11,7 +11,7 @@ use crate::requests::guarded;
 use tracing::error;
 
 const TRUST_APPROVAL_STALE_REASON: &str =
-    "Dependencies changed while the trust dialog was open. Review before approving.";
+    "Dependencies changed while the trust dialog was open. Close this review and retry the original action to review the updated notebook.";
 
 #[cfg(test)]
 pub(crate) async fn handle(
@@ -107,10 +107,9 @@ fn apply_trust_approval_scoped(
             .map_err(|_| TrustApprovalError::StaleDependencies)?;
     }
     if include_pep723 {
+        let current = crate::notebook_sync_server::pep723_dependencies_from_cells(&doc.get_cells())
+            .map_err(|error| TrustApprovalError::InvalidPep723(error.to_string()))?;
         if let Some(reviewed) = reviewed_pep723_dependencies {
-            let current =
-                crate::notebook_sync_server::pep723_dependencies_from_cells(&doc.get_cells())
-                    .map_err(|error| TrustApprovalError::InvalidPep723(error.to_string()))?;
             if current != reviewed {
                 return Err(TrustApprovalError::StaleDependencies);
             }
@@ -269,15 +268,18 @@ mod tests {
     fn malformed_pep723_is_a_validation_error_not_a_stale_review() {
         let mut doc = NotebookDoc::new("trust-approval-malformed-pep723-test");
         doc.add_cell(0, "cell-1", "code").unwrap();
-        doc.update_source(
-            "cell-1",
+        for source in [
             "# /// script\n# dependencies = \"numpy\"\n# ///\n",
-        )
-        .unwrap();
-
-        let result = apply_trust_approval_scoped(&doc, None, true, Some(&[]));
-
-        assert!(matches!(result, Err(TrustApprovalError::InvalidPep723(_))));
+            "# /// script\n# dependencies = [\"numpy\"]\n# ///\n# /// script\n# dependencies = [\"pandas\"]\n# ///\n",
+        ] {
+            doc.update_source("cell-1", source).unwrap();
+            // Programmatic approval can omit the displayed list, but must
+            // still reject malformed or duplicate PEP 723 blocks.
+            for reviewed in [Some(&[][..]), None] {
+                let result = apply_trust_approval_scoped(&doc, None, true, reviewed);
+                assert!(matches!(result, Err(TrustApprovalError::InvalidPep723(_))));
+            }
+        }
     }
 
     #[test]

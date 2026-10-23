@@ -1042,6 +1042,12 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
 
     let mut new_trust = {
         let doc = room.doc.read().await;
+        // A streamed source can have metadata and early cells before its PEP
+        // 723 block arrives. Keep the disk-derived verdict until the source
+        // task reaches Ready, then verify the complete document.
+        if room.initial_load.state().is_loading() {
+            return;
+        }
         verify_trust_from_doc(&doc, &room.trusted_packages)
     };
     enrich_trust_info(room, &mut new_trust);

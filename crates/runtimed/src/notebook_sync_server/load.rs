@@ -1422,6 +1422,7 @@ pub(crate) fn spawn_claimed_room_initial_load(
                         document_heads,
                     ) {
                         task_room.clear_load_failed();
+                        check_and_update_trust_state(&task_room).await;
                         info!(
                             "[notebook-sync] Initial materialization complete: {} cells from {} (generation {})",
                             cell_count,
@@ -1479,6 +1480,7 @@ pub(crate) fn spawn_claimed_room_recovery_finalize(
                         document_heads,
                     ) {
                         task_room.clear_load_failed();
+                        check_and_update_trust_state(&task_room).await;
                         info!(
                             "[notebook-sync] Recovered source generation {} finalized for {}",
                             generation,
@@ -2774,6 +2776,128 @@ pub(crate) async fn apply_ipynb_changes_inner(
     }
 
     applied
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod source_trust_tests {
+    use super::*;
+
+    fn room_with_pep723_source(tmp: &tempfile::TempDir) -> (Arc<NotebookRoom>, PathBuf) {
+        let path = tmp.path().join("pep723.ipynb");
+        let source = "# /// script\n# dependencies = [\"approved\", \"payload @ https://example.test/payload.tar.gz\"]\n# ///\n";
+        let notebook = serde_json::json!({
+            "cells": [{
+                "cell_type": "code",
+                "id": "pep723-cell",
+                "metadata": {},
+                "source": [source],
+                "outputs": [],
+                "execution_count": null
+            }],
+            "metadata": {},
+            "nbformat": 4,
+            "nbformat_minor": 5
+        });
+        std::fs::write(&path, serde_json::to_vec(&notebook).unwrap()).unwrap();
+        let store =
+            crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
+                .unwrap();
+        store.seed_defaults("pypi", &["approved"]).unwrap();
+        let room = NotebookRoom::new_fresh_with_trusted_packages(
+            uuid::Uuid::new_v4(),
+            Some(path.clone()),
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("blobs"))),
+            false,
+            store,
+        )
+        .unwrap();
+        (Arc::new(room), path)
+    }
+
+    #[tokio::test]
+    async fn partial_source_load_preserves_disk_pep723_trust() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _path) = room_with_pep723_source(&tmp);
+        {
+            let trust = room.trust_state.read().await;
+            assert_eq!(trust.status, runt_trust::TrustStatus::Untrusted);
+            assert_eq!(trust.pep723_dependencies.len(), 2);
+            write_trust_to_runtime_state(&room, &trust);
+        }
+        assert!(matches!(
+            room.initial_load.begin(),
+            RoomInitialLoadStart::Started { .. }
+        ));
+
+        // Model the first streaming batch: metadata and a harmless cell are
+        // present, but the dependency-bearing cell has not arrived yet.
+        {
+            let mut doc = room.doc.write().await;
+            let metadata = NotebookMetadataSnapshot::from_metadata_value(&serde_json::json!({
+                "kernelspec": { "name": "python3", "display_name": "Python 3" }
+            }));
+            doc.set_metadata_snapshot(&metadata).unwrap();
+            doc.add_cell(0, "early-cell", "code").unwrap();
+            doc.update_source("early-cell", "print('loading')").unwrap();
+            assert_eq!(
+                verify_trust_from_doc(&doc, &room.trusted_packages).status,
+                runt_trust::TrustStatus::NoDependencies
+            );
+        }
+        check_and_update_trust_state(&room).await;
+
+        let trust = room.trust_state.read().await;
+        assert_eq!(trust.status, runt_trust::TrustStatus::Untrusted);
+        assert_eq!(trust.pep723_dependencies.len(), 2);
+        let projected = room.state.read(|sd| sd.read_state().trust).unwrap();
+        assert_eq!(projected.status, "untrusted");
+        assert!(projected.needs_approval);
+        assert_eq!(projected.pep723_dependencies, trust.pep723_dependencies);
+    }
+
+    #[tokio::test]
+    async fn completed_source_load_publishes_pep723_trust_without_peer_edits() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, path) = room_with_pep723_source(&tmp);
+        let expected_dependencies = {
+            let trust = room.trust_state.read().await;
+            // Approval markers are enriched from the allowlist only after
+            // the complete source is available in NotebookDoc.
+            assert!(trust.info.approved_uv_dependencies.is_empty());
+            trust.pep723_dependencies.clone()
+        };
+        let mut state_changed = room.state.subscribe();
+        start_room_initial_load(&room, path, tmp.path().join("executions"));
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let projected = room.state.read(|sd| sd.read_state().trust).unwrap();
+                if projected.pep723_dependencies == expected_dependencies
+                    && projected.approved_uv_dependencies == ["approved"]
+                {
+                    assert_eq!(projected.status, "untrusted");
+                    assert!(projected.needs_approval);
+                    break;
+                }
+                match state_changed.recv().await {
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(error) => panic!("room state notifications closed: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("completed load must publish trust without waiting for a peer edit");
+
+        assert!(matches!(
+            room.initial_load.state(),
+            RoomInitialLoadState::Ready { cell_count: 1, .. }
+        ));
+        let trust = room.trust_state.read().await;
+        assert_eq!(trust.pep723_dependencies, expected_dependencies);
+        assert_eq!(trust.info.approved_uv_dependencies, ["approved"]);
+    }
 }
 
 #[cfg(test)]

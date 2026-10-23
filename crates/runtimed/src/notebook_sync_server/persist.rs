@@ -2448,17 +2448,10 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
         let _ = room.broadcasts.changed_tx.send(());
     }
 
-    // Re-verify trust after external metadata edits.
-    // External edits via uv/editor (e.g. `uv add numpy`
-    // + save) rewrite metadata.runt.*.dependencies,
-    // and the cached trust state was computed against
-    // the old dep list. Trust lives in metadata, so
-    // gate on metadata_changed — cell-only edits
-    // can't affect dependency names.
-    // check_and_update_trust_state only writes when
-    // the status actually flipped and emits
-    // state_changed_tx so the frontend banner reacts.
-    if metadata_changed {
+    // Dependencies can live in metadata or PEP 723 code cells. Refresh both
+    // cached trust and its runtime projection after either kind of edit so
+    // the banner and launch admission use the imported dependency list.
+    if cells_changed || metadata_changed {
         check_and_update_trust_state(room).await;
     }
 }
@@ -2547,4 +2540,63 @@ pub(crate) fn spawn_notebook_file_watcher(
     });
 
     shutdown_tx
+}
+
+#[cfg(test)]
+mod trust_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn watcher_refreshes_trust_after_pep723_cell_only_edits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("external.ipynb");
+        let room = NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        );
+        let dependency = "payload @ https://example.test/payload.tar.gz";
+        let pep723 = format!("# /// script\n# dependencies = [\"{dependency}\"]\n# ///\n");
+
+        for (source, dependencies, expected_status) in [
+            ("print(1)", vec![], runt_trust::TrustStatus::NoDependencies),
+            (
+                pep723.as_str(),
+                vec![dependency.to_string()],
+                runt_trust::TrustStatus::Untrusted,
+            ),
+            ("print(2)", vec![], runt_trust::TrustStatus::NoDependencies),
+        ] {
+            // Notebook metadata stays identical across all three revisions.
+            let content = serde_json::json!({
+                "nbformat": 4,
+                "nbformat_minor": 5,
+                "metadata": { "kernelspec": { "name": "python3", "language": "python", "display_name": "Python 3" } },
+                "cells": [{
+                    "id": "cell-1",
+                    "cell_type": "code",
+                    "metadata": {},
+                    "source": source,
+                    "outputs": [],
+                    "execution_count": null
+                }]
+            });
+            tokio::fs::write(&path, content.to_string()).await.unwrap();
+
+            process_watcher_event(&room, &path).await;
+
+            assert_eq!(
+                room.doc.read().await.get_cell("cell-1").unwrap().source,
+                source
+            );
+            let trust = room.trust_state.read().await;
+            assert_eq!(trust.status, expected_status);
+            assert_eq!(trust.pep723_dependencies, dependencies);
+            let runtime_trust = room.state.read(|sd| sd.read_state().trust).unwrap();
+            assert_eq!(runtime_trust.pep723_dependencies, dependencies);
+            assert_eq!(runtime_trust.needs_approval, !dependencies.is_empty());
+        }
+    }
 }
