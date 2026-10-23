@@ -345,9 +345,32 @@ class _NotebookTrustSession:
     async def approve_trust(self, dependency_fingerprint=None):
         self.approve_trust_calls.append(dependency_fingerprint)
 
+    async def get_metadata_env_type(self):
+        return "uv"
+
+    async def env_source(self):
+        return None
+
+    async def get_uv_dependencies(self):
+        return ["numpy"]
+
+    async def get_pep723_dependencies(self):
+        return ["payload @ https://example.test/payload.tar.gz"]
+
 
 class TestNotebookTrustMethods:
     """Notebook trust helpers delegate to the native session."""
+
+    @pytest.mark.asyncio
+    async def test_get_dependencies_includes_pep723_for_review(self):
+        from runtimed._notebook import Notebook
+
+        notebook = Notebook(_NotebookTrustSession())  # ty: ignore[invalid-argument-type]
+
+        assert await notebook.get_dependencies() == [
+            "numpy",
+            "payload @ https://example.test/payload.tar.gz",
+        ]
 
     @pytest.mark.asyncio
     async def test_dependency_fingerprint_delegates_to_session(self):

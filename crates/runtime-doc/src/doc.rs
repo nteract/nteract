@@ -38,6 +38,7 @@
 //!   trust/
 //!     status: Str          ("trusted" | "untrusted" | "no_dependencies")
 //!     needs_approval: bool
+//!     pep723_dependencies: List[Str]
 //!     approved_uv_dependencies: List[Str]
 //!     approved_conda_dependencies: List[Str]
 //!     approved_conda_channels: List[Str]
@@ -321,6 +322,9 @@ pub struct TrustRuntimeState {
     pub status: String,
     /// Whether the frontend should show the trust approval dialog
     pub needs_approval: bool,
+    /// Python dependencies extracted from PEP 723 cell source.
+    #[serde(default)]
+    pub pep723_dependencies: Vec<String>,
     /// UV dependency specs already present in the local trusted package allowlist.
     pub approved_uv_dependencies: Vec<String>,
     /// Conda dependency specs already present in the local trusted package allowlist.
@@ -1190,8 +1194,14 @@ impl RuntimeStateDoc {
 
     pub fn set_trust_state(&mut self, state: &TrustRuntimeState) -> Result<(), RuntimeStateError> {
         let trust = self.scaffold_map("trust")?;
+        // PEP 723 trust data is additive to the frozen v2 genesis scaffold.
+        if self.scaffold_list(&trust, "pep723_dependencies").is_err() {
+            self.doc
+                .put_object(&trust, "pep723_dependencies", ObjType::List)?;
+        }
         let cur_status = self.read_str(&trust, "status");
         let cur_needs = self.read_bool(&trust, "needs_approval");
+        let cur_pep723 = self.read_str_list(&trust, "pep723_dependencies");
         let cur_uv = self.read_str_list(&trust, "approved_uv_dependencies");
         let cur_conda = self.read_str_list(&trust, "approved_conda_dependencies");
         let cur_conda_channels = self.read_str_list(&trust, "approved_conda_channels");
@@ -1201,6 +1211,7 @@ impl RuntimeStateDoc {
 
         if cur_status == state.status
             && cur_needs == state.needs_approval
+            && cur_pep723 == state.pep723_dependencies
             && cur_uv == state.approved_uv_dependencies
             && cur_conda == state.approved_conda_dependencies
             && cur_conda_channels == state.approved_conda_channels
@@ -1214,6 +1225,7 @@ impl RuntimeStateDoc {
         self.doc.put(&trust, "status", state.status.as_str())?;
         self.doc
             .put(&trust, "needs_approval", state.needs_approval)?;
+        self.replace_str_list(&trust, "pep723_dependencies", &state.pep723_dependencies)?;
         self.replace_str_list(
             &trust,
             "approved_uv_dependencies",
@@ -3572,6 +3584,7 @@ impl RuntimeStateDoc {
             .map(|t| TrustRuntimeState {
                 status: self.read_str(t, "status"),
                 needs_approval: self.read_bool(t, "needs_approval"),
+                pep723_dependencies: self.read_str_list(t, "pep723_dependencies"),
                 approved_uv_dependencies: self.read_str_list(t, "approved_uv_dependencies"),
                 approved_conda_dependencies: self.read_str_list(t, "approved_conda_dependencies"),
                 approved_conda_channels: self.read_str_list(t, "approved_conda_channels"),
@@ -4946,6 +4959,7 @@ mod tests {
         doc.set_trust_state(&TrustRuntimeState {
             status: "trusted".to_string(),
             needs_approval: false,
+            pep723_dependencies: vec!["requests".to_string()],
             approved_uv_dependencies: vec!["pandas".to_string()],
             approved_conda_dependencies: vec!["numpy".to_string()],
             approved_conda_channels: vec!["conda-forge".to_string()],
@@ -4957,6 +4971,7 @@ mod tests {
         let state = doc.read_state();
         assert_eq!(state.trust.status, "trusted");
         assert!(!state.trust.needs_approval);
+        assert_eq!(state.trust.pep723_dependencies, vec!["requests"]);
         assert_eq!(state.trust.approved_uv_dependencies, vec!["pandas"]);
         assert_eq!(state.trust.approved_conda_dependencies, vec!["numpy"]);
         assert_eq!(state.trust.approved_conda_channels, vec!["conda-forge"]);

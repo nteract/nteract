@@ -38,6 +38,37 @@ pub(crate) async fn ensure_trusted(room: &NotebookRoom) -> GuardResult {
     }
 }
 
+/// Authorize the exact PEP 723 dependency list captured for this launch.
+///
+/// A current trust verdict alone cannot authorize an older install vector:
+/// source may change while environment resolution awaits other work. Compare
+/// and verify the same document snapshot before consuming the captured inputs.
+pub(crate) async fn ensure_trusted_pep723(
+    room: &NotebookRoom,
+    expected_dependencies: &[String],
+) -> GuardResult {
+    let doc = room.doc.read().await;
+    let current_dependencies =
+        crate::notebook_sync_server::pep723_dependencies_from_cells(&doc.get_cells())
+            .map_err(|_| rejected("Invalid PEP 723 metadata. Review the notebook again."))?;
+    if current_dependencies.as_slice() != expected_dependencies {
+        return Err(rejected(
+            "PEP 723 dependencies changed before launch. Review the notebook again.",
+        ));
+    }
+    let trust = crate::notebook_sync_server::verify_trust_from_doc(&doc, &room.trusted_packages);
+    if matches!(
+        trust.status,
+        runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
+    ) {
+        Ok(())
+    } else {
+        Err(rejected(
+            "Trust changed before the action could run. Review the notebook again.",
+        ))
+    }
+}
+
 pub(crate) fn validate_execute_cell(
     doc: &mut NotebookDoc,
     cell_id: &str,
@@ -86,9 +117,7 @@ pub(crate) fn validate_sync_environment(
 ) -> GuardResult {
     let observed = parse_heads(observed_heads)?;
     let reviewed = dependency_fingerprint_at_observed_heads(doc, &observed)?;
-    let current = doc
-        .get_dependency_fingerprint()
-        .unwrap_or_else(|| serde_json::json!({}).to_string());
+    let current = current_dependency_fingerprint(doc);
     if current != reviewed {
         return Err(rejected(
             "Dependencies changed while the trust dialog was open. Review before syncing.",
@@ -103,9 +132,7 @@ pub(crate) fn validate_dependencies_unchanged_since_observed(
 ) -> GuardResult {
     let observed = parse_heads(observed_heads)?;
     let reviewed = dependency_fingerprint_at_observed_heads(doc, &observed)?;
-    let current = doc
-        .get_dependency_fingerprint()
-        .unwrap_or_else(|| serde_json::json!({}).to_string());
+    let current = current_dependency_fingerprint(doc);
     if current != reviewed {
         return Err(rejected(
             "Dependencies changed while the trust dialog was open. Review before approving.",
@@ -123,9 +150,27 @@ fn dependency_fingerprint_at_observed_heads(
             "Notebook state was not ready. Review before running again.",
         ));
     }
-    Ok(doc
-        .get_dependency_fingerprint_at_heads(observed)
-        .unwrap_or_else(|| serde_json::json!({}).to_string()))
+    Ok(dependency_fingerprint(
+        doc.get_dependency_fingerprint_at_heads(observed),
+        crate::notebook_sync_server::pep723_dependencies_from_cells(
+            &doc.get_cells_at_heads(observed),
+        ),
+    ))
+}
+
+fn current_dependency_fingerprint(doc: &NotebookDoc) -> String {
+    dependency_fingerprint(
+        doc.get_dependency_fingerprint(),
+        crate::notebook_sync_server::pep723_dependencies_from_cells(&doc.get_cells()),
+    )
+}
+
+fn dependency_fingerprint(
+    metadata: Option<String>,
+    pep723: Result<Vec<String>, notebook_doc::pep723::Pep723Error>,
+) -> String {
+    let pep723 = pep723.map_err(|error| error.to_string());
+    serde_json::to_string(&(metadata, pep723)).unwrap_or_default()
 }
 
 fn diff_from_observed(

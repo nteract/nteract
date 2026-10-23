@@ -106,10 +106,8 @@ fn commit_apply_delivery(
         if metadata.detect_runtime().unwrap_or_else(|| "python".into()) != expected_runtime {
             anyhow::bail!("Notebook runtime changed during environment preflight");
         }
-        let trust = crate::notebook_sync_server::verify_trust_from_snapshot(
-            &metadata,
-            &room.trusted_packages,
-        );
+        let trust =
+            crate::notebook_sync_server::verify_trust_from_doc(&doc, &room.trusted_packages);
         if !matches!(
             trust.status,
             runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
@@ -1023,6 +1021,7 @@ async fn handle_attempt(
     let feature_flags_for_inline = daemon.feature_flags().await;
     let bootstrap_dx = feature_flags_for_inline.bootstrap_dx;
 
+    let mut pep723_dependencies_for_launch = Vec::new();
     let (pooled_env, inline_deps) = if matches!(
         parsed_resolved,
         EnvSource::Pep723(PackageManager::Uv)
@@ -1050,6 +1049,11 @@ async fn handle_attempt(
         };
 
         if let Some(deps) = pep723_deps {
+            pep723_dependencies_for_launch = deps.clone();
+            if let Err(rejection) = guarded::ensure_trusted_pep723(room, &deps).await {
+                reset_starting_state(room, None).await;
+                return rejection.into_response();
+            }
             info!(
                 "[notebook-sync] LaunchKernel: Preparing cached UV env for PEP 723 deps: {:?}",
                 deps
@@ -1668,6 +1672,7 @@ async fn handle_attempt(
         let cells = room.doc.read().await.get_cells();
         match notebook_doc::pep723::find_pep723_in_cells(&cells) {
             Ok(Some(meta)) if !meta.dependencies.is_empty() => {
+                pep723_dependencies_for_launch = meta.dependencies.clone();
                 let deps =
                     crate::inline_env::inline_deps_with_conda_required_packages(&meta.dependencies);
                 info!("[notebook-sync] LaunchKernel: pixi:pep723 deps: {:?}", deps);
@@ -1898,6 +1903,15 @@ async fn handle_attempt(
             }
         }
         if let Some(rejection) = rejection {
+            return rejection.into_response();
+        }
+    }
+
+    if parsed_resolved.as_str().ends_with(":pep723") {
+        if let Err(rejection) =
+            guarded::ensure_trusted_pep723(room, &pep723_dependencies_for_launch).await
+        {
+            reset_starting_state(room, None).await;
             return rejection.into_response();
         }
     }

@@ -454,7 +454,7 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon compatibility probe", () 
     // Keep this supported fixture aligned with notebook-wire and
     // runtimed-client/src/protocol.rs when their compatibility versions change.
     protocol_version: 4,
-    daemon_api_version: 1,
+    daemon_api_version: 2,
     daemon_version: "0.0.0+different-build",
     pid: 123,
     started_at: "2026-01-01T00:00:00Z",
@@ -521,7 +521,7 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon compatibility probe", () 
     expect(result).toMatchObject({
       version: compatible.daemon_version,
       protocolVersion: 4,
-      daemonApiVersion: 1,
+      daemonApiVersion: 2,
       socketPath,
       isDevMode: false,
       blobPort: 12345,
@@ -533,6 +533,11 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon compatibility probe", () 
     ["older wire", { protocol_version: 0 }, /wire protocol 0/],
     ["newer wire", { protocol_version: 99 }, /wire protocol 99/],
     ["missing semantic API", { daemon_api_version: undefined }, /daemon API 0 is older/],
+    [
+      "before PEP 723 trust",
+      { daemon_api_version: 1 },
+      /daemon API 1 is older than required API 2/,
+    ],
     ["newer semantic API", { daemon_api_version: 99 }, /daemon API 99 is newer/],
   ])("reports %s without hiding the responding daemon", async (_name, overrides, diagnostic) => {
     const { result } = await probe({ ...compatible, ...overrides });

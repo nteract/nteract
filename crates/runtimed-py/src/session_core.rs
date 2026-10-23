@@ -1950,6 +1950,22 @@ pub(crate) async fn get_notebook_metadata(
     Ok(handle.get_notebook_metadata().unwrap_or_default())
 }
 
+/// Read PEP 723 dependencies from the synced code cells.
+pub(crate) async fn get_pep723_dependencies(
+    state: &Arc<Mutex<SessionState>>,
+) -> PyResult<Vec<String>> {
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
+    let dependencies = notebook_doc::pep723::find_pep723_in_cells(&handle.get_cells())
+        .map_err(|error| to_py_err(error.to_string()))?
+        .map(|pep| pep.dependencies)
+        .unwrap_or_default();
+    Ok(dependencies)
+}
+
 /// Set the notebook metadata snapshot.
 pub(crate) async fn set_notebook_metadata(
     state: &Arc<Mutex<SessionState>>,
@@ -1966,18 +1982,32 @@ pub(crate) async fn set_notebook_metadata(
     Ok(())
 }
 
-/// Return the current dependency fingerprint, if notebook metadata exists.
+/// Return the current dependency fingerprint, including PEP 723 cell source.
 pub(crate) async fn dependency_fingerprint(
     state: &Arc<Mutex<SessionState>>,
 ) -> PyResult<Option<String>> {
-    let snapshot = get_notebook_metadata(state).await?;
-    Ok(Some(snapshot.dependency_fingerprint()))
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
+    let metadata = handle
+        .get_notebook_metadata()
+        .map(|snapshot| snapshot.dependency_fingerprint());
+    let pep723 = notebook_doc::pep723::find_pep723_in_cells(&handle.get_cells())
+        .map(|pep| {
+            pep.map(|metadata| metadata.dependencies)
+                .unwrap_or_default()
+        })
+        .map_err(|error| error.to_string());
+    Ok(serde_json::to_string(&(metadata, pep723)).ok())
 }
 
 /// Ask the daemon to approve/sign the current dependency metadata.
 pub(crate) async fn approve_trust(
     state: &Arc<Mutex<SessionState>>,
     observed_heads: Option<Vec<String>>,
+    include_pep723: bool,
 ) -> PyResult<()> {
     let handle = {
         let st = state.lock().await;
@@ -1989,7 +2019,11 @@ pub(crate) async fn approve_trust(
 
     handle.confirm_sync().await.map_err(to_py_err)?;
     let response = handle
-        .send_request(NotebookRequest::ApproveTrust { observed_heads })
+        .send_request(NotebookRequest::ApproveTrust {
+            observed_heads,
+            include_pep723,
+            reviewed_pep723_dependencies: None,
+        })
         .await
         .map_err(to_py_err)?;
 
@@ -2007,7 +2041,7 @@ pub(crate) async fn set_notebook_metadata_and_approve(
     snapshot: &NotebookMetadataSnapshot,
 ) -> PyResult<()> {
     set_notebook_metadata(state, snapshot).await?;
-    approve_trust(state, None).await
+    approve_trust(state, None, false).await
 }
 
 /// Sync environment with current metadata and poll for completion.

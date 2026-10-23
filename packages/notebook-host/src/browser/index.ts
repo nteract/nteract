@@ -551,8 +551,12 @@ export async function createBrowserHost(
       async approve(options) {
         const response = (await transport.sendRequest({
           type: "approve_trust",
+          include_pep723: true,
           ...(options?.observedHeads !== undefined
             ? { observed_heads: options.observedHeads }
+            : {}),
+          ...(options?.reviewedPep723Dependencies !== undefined
+            ? { reviewed_pep723_dependencies: options.reviewedPep723Dependencies }
             : {}),
         })) as NotebookResponse;
         if (response.result === "ok") return;

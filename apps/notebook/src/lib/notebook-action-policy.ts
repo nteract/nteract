@@ -192,6 +192,7 @@ export function useNotebookActionPolicy({
   const [environmentApplyPending, setEnvironmentApplyPending] = useState(false);
   const environmentApplyInFlightRef = useRef(false);
   const pendingKernelStartRef = useRef(false);
+  const plainTrustObservedHeadsRef = useRef<string[] | null>(null);
   const runAllInFlightRef = useRef(false);
   const executingCellsRef = useRef(new Set<string>());
 
@@ -276,12 +277,21 @@ export function useNotebookActionPolicy({
         return true;
       }
 
+      plainTrustObservedHeadsRef.current = blockedAction ? null : getObservedHeads();
       pendingKernelStartRef.current = true;
       setBlockedTrustAction(blockedAction);
       setTrustDialogOpen(true);
       return false;
     },
-    [canExecute, checkTrust, launchKernel, resetEnvProgress, sessionReady, setBlockedTrustAction],
+    [
+      canExecute,
+      checkTrust,
+      getObservedHeads,
+      launchKernel,
+      resetEnvProgress,
+      sessionReady,
+      setBlockedTrustAction,
+    ],
   );
 
   const performTrustedSyncDeps = useCallback(
@@ -620,9 +630,9 @@ export function useNotebookActionPolicy({
       );
       return false;
     }
-    const success = await approveTrust(
-      action ? { observedHeads: action.provenance.observed_heads } : undefined,
-    );
+    const observedHeads = action?.provenance.observed_heads ?? plainTrustObservedHeadsRef.current;
+    const success = await approveTrust({ observedHeads: observedHeads ?? [] });
+    if (success) plainTrustObservedHeadsRef.current = null;
     if (success && pendingKernelStartRef.current) {
       pendingKernelStartRef.current = false;
       setTrustApprovalHandoffPending(action?.kind !== "apply_environment");
@@ -655,9 +665,9 @@ export function useNotebookActionPolicy({
       );
       return false;
     }
-    const success = await approveTrust(
-      action ? { observedHeads: action.provenance.observed_heads } : undefined,
-    );
+    const observedHeads = action?.provenance.observed_heads ?? plainTrustObservedHeadsRef.current;
+    const success = await approveTrust({ observedHeads: observedHeads ?? [] });
+    if (success) plainTrustObservedHeadsRef.current = null;
     if (success && pendingKernelStartRef.current) {
       pendingKernelStartRef.current = false;
       setTrustApprovalHandoffPending(action?.kind !== "apply_environment");
@@ -676,6 +686,7 @@ export function useNotebookActionPolicy({
 
   const handleTrustDecline = useCallback(() => {
     pendingKernelStartRef.current = false;
+    plainTrustObservedHeadsRef.current = null;
     setTrustApprovalHandoffPending(false);
     setBlockedTrustAction(null);
   }, [setBlockedTrustAction]);
@@ -685,6 +696,7 @@ export function useNotebookActionPolicy({
       setTrustDialogOpen(open);
       if (!open) {
         pendingKernelStartRef.current = false;
+        plainTrustObservedHeadsRef.current = null;
         setBlockedTrustAction(null);
       }
     },
@@ -693,9 +705,10 @@ export function useNotebookActionPolicy({
 
   const openTrustDialogForKernelStart = useCallback(() => {
     pendingKernelStartRef.current = true;
+    plainTrustObservedHeadsRef.current = getObservedHeads();
     setBlockedTrustAction(null);
     setTrustDialogOpen(true);
-  }, [setBlockedTrustAction]);
+  }, [getObservedHeads, setBlockedTrustAction]);
 
   const handleEnvBuildCreate = useCallback(async () => {
     resetDismissedEnvBuildDetails();

@@ -15,10 +15,11 @@ use serde::{Deserialize, Serialize};
 /// version changes when framing or serialization becomes incompatible;
 /// this version changes when clients require newer daemon behavior while the
 /// existing wire format remains readable.
-pub const DAEMON_API_VERSION: u32 = 1;
+/// API 2 requires dependency approval to cover PEP 723 code-cell metadata.
+pub const DAEMON_API_VERSION: u32 = 2;
 
 /// Oldest semantic daemon API this client can safely use.
-pub const MIN_DAEMON_API_VERSION: u32 = 1;
+pub const MIN_DAEMON_API_VERSION: u32 = 2;
 use std::path::PathBuf;
 
 use notebook_doc::pool_state::PoolState;

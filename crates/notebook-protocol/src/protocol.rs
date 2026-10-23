@@ -842,16 +842,23 @@ pub enum NotebookRequest {
         guard: Option<DependencyGuard>,
     },
 
-    /// Approve the current dependency metadata for this notebook.
+    /// Approve the current dependencies for this notebook.
     ///
-    /// The daemon signs the current runt metadata and writes the trust fields
-    /// into the Automerge document. `observed_heads` is supplied when approval
-    /// is tied to an already-open trust dialog; the daemon reconstructs the
-    /// dependency metadata at those heads and refuses to sign if the current
-    /// dependency metadata no longer matches what the user reviewed.
+    /// The daemon records reviewed dependency identities in the local trusted
+    /// package allowlist without mutating NotebookDoc. `observed_heads` is
+    /// supplied when approval is tied to an already-open trust dialog; the
+    /// daemon reconstructs dependencies at those heads and refuses approval if
+    /// the current dependencies no longer match what the user reviewed.
     ApproveTrust {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         observed_heads: Option<Vec<String>>,
+        /// Explicit notebook review also covers PEP 723 cell source. Metadata
+        /// edit APIs leave this false so their consent remains metadata-scoped.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        include_pep723: bool,
+        /// PEP 723 dependencies rendered when an explicit reviewer approved.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reviewed_pep723_dependencies: Option<Vec<String>>,
     },
 
     /// Approve creating/syncing a project-file environment for the current
@@ -1558,6 +1565,8 @@ mod tests {
             },
             NotebookRequest::ApproveTrust {
                 observed_heads: Some(observed_heads),
+                include_pep723: true,
+                reviewed_pep723_dependencies: None,
             },
             NotebookRequest::ApproveProjectEnvironment {
                 project_file_path: Some("/tmp/project/environment.yml".into()),

@@ -218,6 +218,58 @@ describe("useNotebookActionPolicy", () => {
     },
   );
 
+  it("guards plain trust approval with the heads shown when the dialog opened", async () => {
+    const options = createPolicyOptions();
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    act(() => result.current.openTrustDialogForKernelStart());
+    await act(async () => {
+      await result.current.handleTrustApproveOnly();
+    });
+
+    expect(options.approveTrust).toHaveBeenCalledWith({ observedHeads: ["head-1"] });
+  });
+
+  it("guards direct kernel-start trust dialogs with the displayed heads", async () => {
+    const options = createPolicyOptions({
+      checkTrust: vi.fn().mockResolvedValue({ status: "untrusted" }),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      await result.current.tryStartKernel();
+    });
+    await act(async () => {
+      await result.current.handleTrustApproveOnly();
+    });
+
+    expect(options.approveTrust).toHaveBeenCalledWith({ observedHeads: ["head-1"] });
+  });
+
+  it.each(["handleTrustApprove", "handleTrustApproveOnly"] as const)(
+    "keeps missing review provenance guarded in %s",
+    async (approve) => {
+      let heads: string[] = [];
+      const options = createPolicyOptions({
+        getObservedHeads: () => heads,
+        approveTrust: vi.fn().mockResolvedValue(false),
+      });
+      const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+      act(() => result.current.openTrustDialogForKernelStart());
+      heads = ["head-arrived-after-dialog-opened"];
+      await act(async () => {
+        expect(await result.current[approve]()).toBe(false);
+      });
+
+      // The daemon rejects empty heads. Omitting them would instead approve
+      // current dependencies without verifying the reviewed snapshot.
+      expect(options.approveTrust).toHaveBeenCalledWith({ observedHeads: [] });
+      expect(options.launchKernel).not.toHaveBeenCalled();
+      expect(result.current.trustApprovalHandoffPending).toBe(false);
+    },
+  );
+
   it.each(["start_kernel", "run_cell", "run_all", "approve_only"] as const)(
     "reports a rejected environment and stops the trust-approved %s launch handoff",
     async (action) => {

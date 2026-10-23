@@ -2672,6 +2672,7 @@ fn test_room_with_path_and_store(
         blob_store,
         trust_state: Arc::new(RwLock::new(TrustState {
             status: runt_trust::TrustStatus::Untrusted,
+            pep723_dependencies: vec![],
             info: runt_trust::TrustInfo {
                 status: runt_trust::TrustStatus::Untrusted,
                 uv_dependencies: vec![],
@@ -8870,6 +8871,191 @@ fn test_verify_trust_from_snapshot_no_deps() {
 }
 
 #[test]
+fn test_verify_trust_from_file_pep723_requires_approval() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("pep723.ipynb");
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "cells": [{
+                "cell_type": "code",
+                "source": [
+                    "# /// script\n",
+                    "# dependencies = [\"payload @ https://example.test/payload.tar.gz\"]\n",
+                    "# ///\n"
+                ]
+            }],
+            "metadata": {},
+            "nbformat": 4,
+            "nbformat_minor": 5
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let result = verify_trust_from_file(&path, &unavailable_test_store());
+
+    assert_eq!(result.status, runt_trust::TrustStatus::Untrusted);
+    assert_eq!(
+        result.info.uv_dependencies,
+        vec!["payload @ https://example.test/payload.tar.gz"]
+    );
+}
+
+#[tokio::test]
+async fn test_pep723_approval_covers_live_doc_dependencies() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = open_test_store(&tmp);
+    let (room, _path) = test_room_with_path_and_store(&tmp, "pep723.ipynb", store);
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source(
+            "cell-1",
+            "# /// script\n# dependencies = [\"payload @ https://example.test/payload.tar.gz\"]\n# ///\n",
+        )
+        .unwrap();
+    }
+
+    check_and_update_trust_state(&room).await;
+    assert_eq!(
+        room.trust_state.read().await.status,
+        runt_trust::TrustStatus::Untrusted
+    );
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
+    assert_eq!(
+        state.trust.pep723_dependencies,
+        vec!["payload @ https://example.test/payload.tar.gz"]
+    );
+
+    let metadata_response =
+        crate::requests::approve_trust::handle_with_pep723(&room, None, false).await;
+    assert!(matches!(metadata_response, NotebookResponse::Ok {}));
+    assert_eq!(
+        room.trust_state.read().await.status,
+        runt_trust::TrustStatus::Untrusted,
+        "metadata edit consent must not approve PEP 723 dependencies"
+    );
+
+    let response = crate::requests::approve_trust::handle(&room, None).await;
+    assert!(matches!(response, NotebookResponse::Ok {}));
+    assert_eq!(
+        room.trust_state.read().await.status,
+        runt_trust::TrustStatus::Trusted
+    );
+}
+
+fn pep723_guard_source(dependencies: &[&str]) -> String {
+    format!(
+        "# /// script\n# dependencies = {}\n# ///\n",
+        serde_json::to_string(dependencies).unwrap()
+    )
+}
+
+#[tokio::test]
+async fn test_pep723_install_guard_rejects_removed_or_replaced_inputs() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = open_test_store(&tmp);
+    store.seed_defaults("pypi", &["approved"]).unwrap();
+    let (room, _path) = test_room_with_path_and_store(&tmp, "pep723.ipynb", store);
+    let captured = {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source(
+            "cell-1",
+            &pep723_guard_source(&["payload @ https://example.test/payload.tar.gz"]),
+        )
+        .unwrap();
+        pep723_dependencies_from_cells(&doc.get_cells()).unwrap()
+    };
+
+    // Model an edit during environment resolution, after the installer inputs
+    // were captured. Both live states pass a generic current-room trust check.
+    for replacement in [
+        "print('removed')".to_string(),
+        pep723_guard_source(&["approved"]),
+    ] {
+        {
+            let mut doc = room.doc.write().await;
+            doc.update_source("cell-1", &replacement).unwrap();
+        }
+        assert!(crate::requests::guarded::ensure_trusted(&room)
+            .await
+            .is_ok());
+        assert!(
+            crate::requests::guarded::ensure_trusted_pep723(&room, &captured)
+                .await
+                .is_err(),
+            "current trust must not authorize the captured unapproved install vector"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_pep723_install_guard_requires_approval_of_matching_inputs() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = open_test_store(&tmp);
+    let (room, _path) = test_room_with_path_and_store(&tmp, "pep723.ipynb", store);
+    let captured = {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source(
+            "cell-1",
+            &pep723_guard_source(&["payload @ https://example.test/payload.tar.gz"]),
+        )
+        .unwrap();
+        pep723_dependencies_from_cells(&doc.get_cells()).unwrap()
+    };
+    assert!(
+        crate::requests::guarded::ensure_trusted_pep723(&room, &captured)
+            .await
+            .is_err()
+    );
+    {
+        let doc = room.doc.read().await;
+        room.trusted_packages
+            .add_from_info(&trust_info_from_doc(&doc), "test")
+            .unwrap();
+    }
+    // Read the allowlist directly, without relying on a cached room verdict.
+    assert!(
+        crate::requests::guarded::ensure_trusted_pep723(&room, &captured)
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn test_pep723_install_guard_rejects_malformed_source() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = open_test_store(&tmp);
+    store.seed_defaults("pypi", &["approved"]).unwrap();
+    let (room, _path) = test_room_with_path_and_store(&tmp, "pep723.ipynb", store);
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+    }
+    let captured = vec!["approved".to_string()];
+    for malformed in [
+        "# /// script\n# dependencies = \"approved\"\n# ///\n".to_string(),
+        pep723_guard_source(&["approved"]) + &pep723_guard_source(&["approved"]),
+    ] {
+        {
+            let mut doc = room.doc.write().await;
+            doc.update_source("cell-1", &malformed).unwrap();
+        }
+        for expected in [captured.as_slice(), &[]] {
+            assert!(
+                crate::requests::guarded::ensure_trusted_pep723(&room, expected)
+                    .await
+                    .is_err(),
+                "parser errors must not become an empty, trusted dependency list"
+            );
+        }
+    }
+}
+
+#[test]
 fn test_verify_trust_from_snapshot_uv_unapproved() {
     let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
     let result = verify_trust_from_snapshot(&snapshot, &unavailable_test_store());
@@ -11434,6 +11620,46 @@ async fn test_new_fresh_promotes_untrusted_when_project_file_deps_match() {
     assert!(
         store.all_dependencies_approved(&info_check).unwrap(),
         "project-file reconciliation should write approvals to the allowlist"
+    );
+}
+
+#[tokio::test]
+async fn test_new_fresh_does_not_promote_pep723_from_project_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dependency = "payload @ https://example.test/payload.tar.gz";
+    write_pyproject_with_deps(tmp.path(), &[dependency]);
+    let nb_path = tmp.path().join("pep723.ipynb");
+    std::fs::write(
+        &nb_path,
+        serde_json::json!({
+            "cells": [{
+                "cell_type": "code",
+                "source": format!(
+                    "# /// script\n# dependencies = [\"{dependency}\"]\n# ///\n"
+                )
+            }],
+            "metadata": {},
+            "nbformat": 4,
+            "nbformat_minor": 5
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let room = NotebookRoom::new_fresh_with_trusted_packages(
+        uuid::Uuid::new_v4(),
+        Some(nb_path),
+        tmp.path(),
+        test_blob_store(&tmp),
+        false,
+        open_test_store(&tmp),
+    )
+    .expect("create test notebook room");
+
+    assert_eq!(
+        room.trust_state.read().await.status,
+        runt_trust::TrustStatus::Untrusted,
+        "project dependency reconciliation must not approve PEP 723 cell source"
     );
 }
 

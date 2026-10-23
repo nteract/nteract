@@ -308,7 +308,7 @@ impl AsyncSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
         future_into_py(py, async move {
-            session_core::approve_trust(&state, observed_heads).await
+            session_core::approve_trust(&state, observed_heads, true).await
         })
     }
 
@@ -928,6 +928,14 @@ impl AsyncSession {
     // =========================================================================
     // Dependencies (uv / conda / pixi)
     // =========================================================================
+
+    /// Get dependencies declared by PEP 723 code-cell metadata.
+    fn get_pep723_dependencies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move {
+            session_core::get_pep723_dependencies(&state).await
+        })
+    }
 
     /// Get current UV dependencies.
     fn get_uv_dependencies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {

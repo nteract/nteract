@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   uvDependencies: {
     dependencies: ["requests"],
   },
+  pep723Dependencies: [] as string[],
   condaDependencies: {
     dependencies: [],
     channels: [],
@@ -43,6 +44,7 @@ vi.mock("../../lib/runtime-state", () => ({
     trust: {
       status: "untrusted",
       needs_approval: true,
+      pep723_dependencies: mocks.pep723Dependencies,
       approved_uv_dependencies: [],
       approved_conda_dependencies: [],
       approved_conda_channels: [],
@@ -94,5 +96,18 @@ describe("useTrust", () => {
       await expect(result.current.approveTrust({ observedHeads: ["head-v2"] })).resolves.toBe(true);
     });
     expect(result.current.approvalError).toBeNull();
+  });
+
+  it("includes PEP 723 dependencies in the approval package list", () => {
+    mocks.uvDependencies.dependencies = [];
+    mocks.pep723Dependencies = ["payload @ https://example.test/payload.tar.gz"];
+
+    const { result } = renderHook(() => useTrust());
+
+    expect(result.current.trustInfo?.uv_dependencies).toEqual(mocks.pep723Dependencies);
+    expect(result.current.totalDependencies).toBe(1);
+
+    mocks.uvDependencies.dependencies = ["requests"];
+    mocks.pep723Dependencies = [];
   });
 });

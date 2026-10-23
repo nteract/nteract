@@ -5,38 +5,12 @@ use runtime_doc::{KernelActivity, KernelErrorReason, RuntimeLifecycle, TrustRunt
 
 pub struct TrustState {
     pub status: runt_trust::TrustStatus,
+    pub pep723_dependencies: Vec<String>,
     #[allow(dead_code)]
     pub info: runt_trust::TrustInfo,
     /// If true, kernel launch is pending user trust approval
     #[allow(dead_code)]
     pub pending_launch: bool,
-}
-
-impl TrustState {
-    /// Trust state for a notebook that declares no dependency metadata:
-    /// nothing needs approval and kernel launch is not gated. This is a
-    /// deliberate verdict, not a default; construct other states explicitly.
-    pub(crate) fn no_dependencies() -> Self {
-        TrustState {
-            status: runt_trust::TrustStatus::NoDependencies,
-            info: runt_trust::TrustInfo {
-                status: runt_trust::TrustStatus::NoDependencies,
-                uv_dependencies: vec![],
-                approved_uv_dependencies: vec![],
-                conda_dependencies: vec![],
-                approved_conda_dependencies: vec![],
-                conda_channels: vec![],
-                approved_conda_channels: vec![],
-                pixi_dependencies: vec![],
-                approved_pixi_dependencies: vec![],
-                pixi_pypi_dependencies: vec![],
-                approved_pixi_pypi_dependencies: vec![],
-                pixi_channels: vec![],
-                approved_pixi_channels: vec![],
-            },
-            pending_launch: false,
-        }
-    }
 }
 
 fn enrich_trust_info(room: &NotebookRoom, trust: &mut TrustState) {
@@ -110,6 +84,7 @@ fn runtime_trust_state(trust: &TrustState) -> TrustRuntimeState {
     TrustRuntimeState {
         status: trust_status_str(&trust.status).to_string(),
         needs_approval: trust_needs_approval(&trust.status),
+        pep723_dependencies: trust.pep723_dependencies.clone(),
         approved_uv_dependencies: trust.info.approved_uv_dependencies.clone(),
         approved_conda_dependencies: trust.info.approved_conda_dependencies.clone(),
         approved_conda_channels: trust.info.approved_conda_channels.clone(),
@@ -1052,24 +1027,28 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
         let doc = room.doc.read().await;
         doc.get_metadata_snapshot()
     };
-    let current_metadata = if current_metadata.is_some() {
-        current_metadata
-    } else {
+    let has_metadata = current_metadata.is_some();
+    if !has_metadata {
         let mut doc = room.doc.write().await;
         match doc.get_metadata_snapshot() {
-            Some(snapshot) => Some(snapshot),
+            Some(_) => {}
             // A pristine file-backed room may still be waiting for notebook
             // metadata to seed from disk/client sync. Preserve its initial
             // disk-derived trust state until the document has real history.
             None if doc.is_pristine() => return,
-            None => None,
+            None => {}
         }
-    };
+    }
 
-    let mut new_trust = if let Some(current_metadata) = current_metadata {
-        verify_trust_from_snapshot(&current_metadata, &room.trusted_packages)
-    } else {
-        trust_state_from_metadata(&std::collections::HashMap::new(), &room.trusted_packages)
+    let mut new_trust = {
+        let doc = room.doc.read().await;
+        // A streamed source can have metadata and early cells before its PEP
+        // 723 block arrives. Keep the disk-derived verdict until the source
+        // task reaches Ready, then verify the complete document.
+        if room.initial_load.state().is_loading() {
+            return;
+        }
+        verify_trust_from_doc(&doc, &room.trusted_packages)
     };
     enrich_trust_info(room, &mut new_trust);
 
@@ -1326,19 +1305,95 @@ pub(crate) fn verify_trust_from_file(
     notebook_path: &Path,
     store: &crate::trusted_packages::TrustedPackageStore,
 ) -> TrustState {
-    let metadata = match std::fs::read_to_string(notebook_path) {
+    let (metadata, pep723_dependencies) = match std::fs::read_to_string(notebook_path) {
         Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
-            Ok(nb) => nb
-                .get("metadata")
-                .and_then(|m| m.as_object())
-                .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-                .unwrap_or_default(),
-            Err(_) => std::collections::HashMap::new(),
+            Ok(nb) => {
+                let metadata = nb
+                    .get("metadata")
+                    .and_then(|m| m.as_object())
+                    .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                    .unwrap_or_default();
+                let sources: Vec<String> = nb
+                    .get("cells")
+                    .and_then(|cells| cells.as_array())
+                    .map(|cells| {
+                        cells
+                            .iter()
+                            .filter(|cell| {
+                                cell.get("cell_type").and_then(|kind| kind.as_str()) == Some("code")
+                            })
+                            .filter_map(|cell| match cell.get("source") {
+                                Some(serde_json::Value::String(source)) => Some(source.clone()),
+                                Some(serde_json::Value::Array(lines)) => Some(
+                                    lines
+                                        .iter()
+                                        .filter_map(|line| line.as_str())
+                                        .collect::<String>(),
+                                ),
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let source_refs: Vec<&str> = sources.iter().map(String::as_str).collect();
+                let dependencies = notebook_doc::pep723::find_pep723_in_sources(&source_refs)
+                    .ok()
+                    .flatten()
+                    .map(|pep| pep.dependencies)
+                    .unwrap_or_default();
+                (metadata, dependencies)
+            }
+            Err(_) => (std::collections::HashMap::new(), Vec::new()),
         },
-        Err(_) => std::collections::HashMap::new(),
+        Err(_) => (std::collections::HashMap::new(), Vec::new()),
     };
 
-    trust_state_from_metadata(&metadata, store)
+    let mut info = runt_trust::extract_trust_info(&metadata);
+    include_pep723_dependencies(&mut info, pep723_dependencies.clone());
+    trust_state_from_info(info, pep723_dependencies, store)
+}
+
+/// Extract every dependency covered by notebook approval from canonical doc state.
+pub(crate) fn trust_info_from_doc(doc: &NotebookDoc) -> runt_trust::TrustInfo {
+    let snapshot = doc.get_metadata_snapshot().unwrap_or_default();
+    let mut metadata = std::collections::HashMap::new();
+    if let Ok(runt_value) = serde_json::to_value(&snapshot.runt) {
+        metadata.insert("runt".to_string(), runt_value);
+    }
+    let mut info = runt_trust::extract_trust_info(&metadata);
+    let pep723_dependencies = pep723_dependencies_from_cells(&doc.get_cells()).unwrap_or_default();
+    include_pep723_dependencies(&mut info, pep723_dependencies);
+    info
+}
+
+pub(crate) fn verify_trust_from_doc(
+    doc: &NotebookDoc,
+    store: &crate::trusted_packages::TrustedPackageStore,
+) -> TrustState {
+    let pep723_dependencies = pep723_dependencies_from_cells(&doc.get_cells()).unwrap_or_default();
+    trust_state_from_info(trust_info_from_doc(doc), pep723_dependencies, store)
+}
+
+pub(crate) fn pep723_dependencies_from_cells(
+    cells: &[CellSnapshot],
+) -> Result<Vec<String>, notebook_doc::pep723::Pep723Error> {
+    Ok(notebook_doc::pep723::find_pep723_in_cells(cells)?
+        .map(|pep| pep.dependencies)
+        .unwrap_or_default())
+}
+
+fn include_pep723_dependencies(info: &mut runt_trust::TrustInfo, dependencies: Vec<String>) {
+    for dependency in dependencies {
+        // PEP 723 uses one Python-package identity regardless of the UV or Pixi installer.
+        if !info.uv_dependencies.contains(&dependency) {
+            info.uv_dependencies.push(dependency);
+        }
+    }
+    if !info.uv_dependencies.is_empty()
+        && matches!(info.status, runt_trust::TrustStatus::NoDependencies)
+    {
+        info.status = runt_trust::TrustStatus::Untrusted;
+    }
 }
 
 /// Verify trust status from a `NotebookMetadataSnapshot` (from the Automerge doc).
@@ -1346,6 +1401,7 @@ pub(crate) fn verify_trust_from_file(
 /// Same model as `verify_trust_from_file` but starts from the in-memory doc
 /// snapshot. Used by `check_and_update_trust_state` and the various sync
 /// paths that already have a snapshot in hand.
+#[cfg(test)]
 pub(crate) fn verify_trust_from_snapshot(
     snapshot: &NotebookMetadataSnapshot,
     store: &crate::trusted_packages::TrustedPackageStore,
@@ -1359,14 +1415,23 @@ pub(crate) fn verify_trust_from_snapshot(
 
 /// Shared finalization: extract dep info from raw metadata, then ask the
 /// allowlist whether every name is approved.
+#[cfg(test)]
 fn trust_state_from_metadata(
     metadata: &std::collections::HashMap<String, serde_json::Value>,
     store: &crate::trusted_packages::TrustedPackageStore,
 ) -> TrustState {
-    let mut info = runt_trust::extract_trust_info(metadata);
+    trust_state_from_info(runt_trust::extract_trust_info(metadata), Vec::new(), store)
+}
+
+fn trust_state_from_info(
+    mut info: runt_trust::TrustInfo,
+    pep723_dependencies: Vec<String>,
+    store: &crate::trusted_packages::TrustedPackageStore,
+) -> TrustState {
     info.status = finalize_trust_status(&info, store);
     TrustState {
         status: info.status.clone(),
+        pep723_dependencies,
         info,
         pending_launch: false,
     }
@@ -3643,6 +3708,13 @@ async fn auto_launch_kernel_attempt(
     let (pooled_env, inline_deps) = if matches!(env_source, EnvSource::Pep723(PackageManager::Uv)) {
         // PEP 723 deps were extracted from cell source in step 2b
         if let Some(ref deps) = pep723_deps {
+            if crate::requests::guarded::ensure_trusted_pep723(room, deps)
+                .await
+                .is_err()
+            {
+                reset_starting_state(room, None).await;
+                return None;
+            }
             info!(
                 "[notebook-sync] Preparing cached UV env for PEP 723 deps: {:?}",
                 deps
@@ -4432,6 +4504,18 @@ async fn auto_launch_kernel_attempt(
 
     if attempt.is_cancelled() {
         debug!("[notebook-sync] Auto-launch cancelled before runtime agent spawn");
+        return None;
+    }
+
+    if env_source.as_str().ends_with(":pep723")
+        && crate::requests::guarded::ensure_trusted_pep723(
+            room,
+            pep723_deps.as_deref().unwrap_or_default(),
+        )
+        .await
+        .is_err()
+    {
+        reset_starting_state(room, None).await;
         return None;
     }
 

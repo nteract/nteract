@@ -2106,14 +2106,8 @@ impl NotebookRoom {
         let trust_state = match &path {
             // Untitled notebooks have no .ipynb on disk — trust signature lives
             // in the persisted Automerge doc we just loaded.
-            None => match doc.get_metadata_snapshot() {
-                Some(snapshot) => verify_trust_from_snapshot(&snapshot, &trusted_packages),
-                None => TrustState::no_dependencies(),
-            },
-            Some(_) if recovered_record.is_some() => match doc.get_metadata_snapshot() {
-                Some(snapshot) => verify_trust_from_snapshot(&snapshot, &trusted_packages),
-                None => TrustState::no_dependencies(),
-            },
+            None => verify_trust_from_doc(&doc, &trusted_packages),
+            Some(_) if recovered_record.is_some() => verify_trust_from_doc(&doc, &trusted_packages),
             Some(p) => {
                 let mut initial = verify_trust_from_file(p, &trusted_packages);
                 // #2150 reconciliation: a notebook whose inline deps exactly
@@ -2123,7 +2117,10 @@ impl NotebookRoom {
                 // allowlist - the single trust gate - reflects that. If the
                 // store write fails, leave the room Untrusted (fail-closed:
                 // approval can't bypass the allowlist).
+                // Project reconciliation covers metadata dependencies only. PEP 723
+                // cell source needs its own explicit notebook approval.
                 if matches!(initial.status, runt_trust::TrustStatus::Untrusted)
+                    && initial.pep723_dependencies.is_empty()
                     && project_file_deps_match_trust_info(p, &initial.info)
                 {
                     match trusted_packages.add_from_info(&initial.info, "project_file") {
