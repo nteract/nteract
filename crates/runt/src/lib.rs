@@ -1910,7 +1910,7 @@ async fn daemon_command(command: DaemonCommands, entrypoint: EntryPoint) -> Resu
                     "paths": {
                         "base_dir": base_dir,
                         "log_path": base_dir.join("runtimed.log"),
-                        "envs_dir": base_dir.join("envs"),
+                        "envs_dir": runtimed_client::default_cache_dir(),
                         "blobs_dir": base_dir.join("blobs"),
                         "notebooks_dir": runt_workspace::default_notebooks_dir().ok(),
                     },

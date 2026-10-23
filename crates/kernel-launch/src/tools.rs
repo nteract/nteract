@@ -1,7 +1,8 @@
 //! Tool bootstrapping via direct GitHub downloads.
 //!
 //! This module provides a way to automatically install CLI tools (like `ruff`, `deno`, `uv`, `pixi`)
-//! on demand. Tools are downloaded from GitHub releases and cached in `~/.cache/runt/tools/`.
+//! on demand. Tools use the channel's nteract managed cache, reusing existing
+//! legacy tool caches in place.
 
 use anyhow::{anyhow, Result};
 use log::{info, warn};
@@ -58,13 +59,13 @@ impl GithubPlatform {
 
 /// Cache directory for bootstrapped tools.
 ///
-/// Channel-aware via [`runt_workspace::daemon_base_dir`]: stable uses
-/// `runt/tools/`, nightly uses `runt-nightly/tools/`, dev worktrees nest
-/// under `worktrees/{hash}/tools/`. This keeps a nightly install from
+/// Channel-aware via [`runt_workspace::managed_cache_dir`]: stable uses
+/// `nteract/tools/`, nightly uses `nteract-nightly/tools/`, and dev worktrees use
+/// `runt[-nightly]/worktrees/{hash}/tools/`. This keeps a nightly install from
 /// sharing a bootstrapped deno/uv/ruff with stable, same rationale as
-/// #2244 for envs.
+/// #2244 for envs. Existing legacy tool caches are reused in place.
 fn tools_cache_dir() -> PathBuf {
-    runt_workspace::daemon_base_dir().join("tools")
+    runt_workspace::managed_cache_dir("tools")
 }
 
 /// Compute a hash for tool caching.
@@ -1841,9 +1842,7 @@ mod tests {
     fn test_tools_cache_dir() {
         let dir = tools_cache_dir();
         let s = dir.to_string_lossy();
-        // Channel-namespaced: stable is "runt", nightly is "runt-nightly".
-        // Either is fine — what matters is the dir ends at `.../tools`.
-        assert!(s.contains("runt"));
+        assert_eq!(dir, runt_workspace::managed_cache_dir("tools"));
         assert!(s.ends_with("tools"));
     }
 

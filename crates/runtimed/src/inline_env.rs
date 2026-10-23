@@ -175,10 +175,10 @@ fn env_progress_phase_name(phase: &EnvProgressPhase) -> &'static str {
 
 /// Get the cache directory for inline dependency environments.
 ///
-/// Channel-aware: shares `runt_workspace::daemon_base_dir` with the other
-/// kernel-env caches so nightly and stable stay on their own trees.
+/// Channel-aware via `runt_workspace::managed_cache_dir`, including in-place
+/// legacy reuse, so nightly and stable stay on their own trees.
 pub(crate) fn inline_cache_dir() -> std::path::PathBuf {
-    runt_workspace::daemon_base_dir().join("inline-envs")
+    runt_workspace::managed_cache_dir("inline-envs")
 }
 
 fn has_dep_named(deps: &[String], name: &str) -> bool {

@@ -14,9 +14,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
+mod cache_paths;
 pub mod cli;
 pub mod file_claims;
 pub mod recent;
+
+pub use cache_paths::managed_cache_dir;
 
 #[cfg(any(target_os = "macos", test))]
 mod macos_desktop;
@@ -132,7 +135,8 @@ pub fn desktop_display_name() -> &'static str {
     desktop_display_name_for(build_channel())
 }
 
-/// Channel-specific cache root directory name.
+/// Legacy daemon state/coordination namespace. Retained for compatibility.
+/// Use [`managed_cache_dir`] for rebuildable environment and tool caches.
 pub fn cache_namespace() -> &'static str {
     cache_namespace_for(build_channel())
 }

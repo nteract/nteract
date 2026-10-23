@@ -232,7 +232,10 @@ Each open notebook has a room (`NotebookRoom`), keyed by UUID. A `PathIndex` map
 
 **Daemon lock held:** Inspect the selected endpoint with `nteract daemon status` and check its `daemon.lock` with `lsof`. The OS releases the advisory lock when its owner exits; an existing file is not proof of a live owner. Do not delete the lock file to bypass contention, since replacing its inode can allow two owners. Filesystem failures are separate errors, and live socket metadata is the discovery source.
 
-**Pool not replenishing:** Verify `uv --version` and check `~/.cache/runt/envs/`.
+**Pool not replenishing:** Verify `uv --version` works and inspect the environment
+cache reported by `nteract daemon status --json`. New production caches use
+`nteract` / `nteract-nightly`; existing legacy caches are reused in place, and
+dev-worktree paths retain their legacy layout.
 
 **Wrong daemon (Python):** If outputs return parse errors with hashes, the bindings connect to the wrong daemon (blob store is per-daemon). Set `RUNTIMED_SOCKET_PATH`.
 

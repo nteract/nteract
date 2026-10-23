@@ -177,9 +177,9 @@ pub fn is_within_cache_dir(path: &Path, cache_dir: &Path) -> bool {
     path.starts_with(cache_dir)
 }
 
-/// Get the default cache directory for environments.
+/// Get the managed environment cache, reusing existing legacy environments.
 pub fn default_cache_dir() -> PathBuf {
-    daemon_base_dir().join("envs")
+    runt_workspace::managed_cache_dir("envs")
 }
 
 /// Get the default directory for the content-addressed blob store.
