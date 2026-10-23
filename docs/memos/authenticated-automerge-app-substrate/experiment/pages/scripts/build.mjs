@@ -47,6 +47,14 @@ await build({
 });
 await build({
   entryPoints: [path.join(app, "viewer/main.jsx")],
+  // Shared UI source lives outside this npm workspace. Resolve one React
+  // instance for both the Page shell and shared components.
+  alias: Object.fromEntries(
+    ["react", "react-dom", "lucide-react"].map((name) => [
+      name,
+      path.dirname(require.resolve(`${name}/package.json`)),
+    ]),
+  ),
   bundle: true,
   format: "esm",
   platform: "browser",

@@ -1,16 +1,20 @@
-/** A host-owned, last-observed title projection. Listing never opens a document. */
+/** A host-owned, last-observed title projection. Owned listings avoid opening documents; shared references are checked by the host. */
 export function catalogTitle(title) {
   return typeof title === "string" ? title.slice(0, 500) : "Untitled";
 }
 export async function listCatalog(storage) {
-  const entries = await storage.list({ prefix: "page/", limit: 100 });
-  return [...entries.values()]
+  const [entries, shared] = await Promise.all([
+    storage.list({ prefix: "page/", limit: 100 }),
+    storage.list({ prefix: "shared/", limit: 100 }),
+  ]);
+  return [...entries.values(), ...shared.values()]
     .filter((entry) => !entry.pending)
-    .map(({ page_id, title, created_at, updated_at }) => ({
+    .map(({ page_id, title, created_at, updated_at, shared }) => ({
       page_id,
       title: catalogTitle(title),
       created_at,
       updated_at,
+      ...(shared ? { shared: true } : {}),
     }));
 }
 export async function refreshCatalogTitle(storage, { page_id, title, observed_at }) {

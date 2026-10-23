@@ -252,6 +252,8 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
       ["/mermaid.js/private", "http_status:404"],
       ["/mermaidXjs", "http_status:404"],
       ["/api/sync", plan.listen],
+      ["/api/access", target === "page5" ? plan.listen : "http_status:404"],
+      ["/api/access/private", "http_status:404"],
       ["/llms.txt", plan.listen],
       ["/oidc", plan.listen],
       ["/state", "http_status:404"],

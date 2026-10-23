@@ -568,14 +568,16 @@ test("native catch-up cannot publish a stale receipt after either asynchronous b
   }
 });
 
-test("a forbidden receipt pauses authentication without scheduling a retry", async (t) => {
+test("a forbidden receipt pauses page access without requesting sign-in or scheduling a retry", async (t) => {
   const session = receiptSession();
   t.mock.method(globalThis, "fetch", async () =>
     Response.json({ error: "Forbidden" }, { status: 403 }),
   );
   await session.saveReceipt();
-  assert.equal(session.authRequired, true);
-  assert.equal(session.status, "Sign in to sync");
+  assert.equal(session.authRequired, false);
+  assert.equal(session.accessDenied, true);
+  assert.equal(session.canWrite, false);
+  assert.equal(session.status, "Access removed");
   assert.equal(session.receiptRetryTimer, undefined);
   await session.close();
 });

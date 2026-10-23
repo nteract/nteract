@@ -1166,3 +1166,48 @@ dialog::backdrop {
     font-size: 0.7rem;
   }
 }
+
+.page-sharing {
+  position: relative;
+}
+.page-sharing > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.page-sharing-popover {
+  position: absolute;
+  z-index: 80;
+  right: 0;
+  top: calc(100% + 10px);
+  width: min(520px, calc(100vw - 24px));
+  max-height: calc(100dvh - 100px);
+  overflow: auto;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px #0002;
+}
+@media (max-width: 640px) {
+  .page-sharing-popover {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    top: 70px;
+    width: auto;
+  }
+}
+
+.access-notice {
+  margin: 12px 0 24px;
+  padding: 12px;
+  background: #faf8ef;
+  border: 1px solid #e6dfc2;
+  border-radius: 8px;
+}
+.access-notice p {
+  margin: 0 0 8px;
+}
+.access-notice button {
+  margin: 0 8px 0 0;
+}

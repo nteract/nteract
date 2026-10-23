@@ -64,6 +64,10 @@ export async function authenticate(request, env) {
       driver,
       canWrite: identity.scope === "editor",
       credentialKind: "api-key",
+      namespace: identity.metadata.principalNamespace,
+      // Same trust contract as notebook invite resolution: the authenticated
+      // Anaconda whoami endpoint returns server-verified account email.
+      verifiedEmail: identity.metadata.emailVerified === true ? identity.metadata.email : undefined,
       expiresAt: Date.now() + 60_000,
     });
   }
@@ -75,6 +79,14 @@ export async function authenticate(request, env) {
     driver,
     canWrite: true,
     credentialKind: "oidc",
+    namespace: session.principalNamespace,
+    // Kept inside the host; publicIdentity never forwards this proof.
+    emailProof: {
+      provider: "app-session",
+      principalNamespace: session.principalNamespace,
+      identityVerifiedAt: session.identityVerifiedAt,
+      verifiedEmailBinding: session.verifiedEmailBinding,
+    },
     expiresAt: session.expiresAt * 1000,
   });
 }

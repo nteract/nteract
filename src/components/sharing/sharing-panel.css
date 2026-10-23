@@ -1,0 +1,223 @@
+/* Standalone host styling. Notebook hosts keep their existing shadcn primitives
+   and Tailwind appearance; these rules only apply to the native adapter. */
+.sharing-panel[data-appearance="native"] {
+  --sharing-line: var(--line, #e8e8e8);
+  --sharing-muted: var(--muted, #737373);
+  --sharing-surface: var(--surface, #fff);
+  font:
+    14px/1.45 ui-sans-serif,
+    system-ui,
+    sans-serif;
+  color: inherit;
+  background: var(--sharing-surface);
+  min-width: 0;
+}
+.sharing-panel[data-appearance="native"] * {
+  box-sizing: border-box;
+}
+.sharing-panel[data-appearance="native"] :is(h2, h3, p, ul) {
+  margin: 0;
+}
+.sharing-panel[data-appearance="native"] :is(h2, h3) {
+  font-size: 14px;
+  font-weight: 600;
+}
+.sharing-panel[data-appearance="native"] :is(p, label) {
+  color: var(--sharing-muted);
+  font-size: 12px;
+}
+.sharing-panel[data-appearance="native"] svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+.sharing-panel[data-appearance="native"] :is(header, section, form, [data-sharing-message]) {
+  padding: 12px 16px;
+}
+.sharing-panel[data-appearance="native"] header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--sharing-line);
+}
+.sharing-panel[data-appearance="native"] header > div {
+  min-width: 0;
+}
+.sharing-panel[data-appearance="native"] header p {
+  margin-top: 2px;
+}
+.sharing-panel[data-appearance="native"] button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-shrink: 0;
+  font: inherit;
+  color: inherit;
+  background: var(--sharing-surface);
+  border: 1px solid var(--sharing-line);
+  border-radius: 6px;
+  padding: 6px 10px;
+  min-height: 34px;
+  cursor: pointer;
+}
+.sharing-panel[data-appearance="native"] button[data-variant="ghost"] {
+  border-color: transparent;
+  background: transparent;
+}
+.sharing-panel[data-appearance="native"] button[data-size="icon"] {
+  width: 32px;
+  padding: 6px;
+}
+.sharing-panel[data-appearance="native"] button:hover:not(:disabled) {
+  background: var(--accent-soft, #f5f5f5);
+}
+.sharing-panel[data-appearance="native"] button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.sharing-panel[data-appearance="native"] :is(button, input, select):focus-visible {
+  outline: 2px solid var(--focus, #707070);
+  outline-offset: 2px;
+}
+.sharing-panel[data-appearance="native"] [data-sharing-copy-compact] {
+  display: none;
+}
+.sharing-panel[data-appearance="native"] [data-sharing-public] {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--sharing-line);
+}
+.sharing-panel[data-appearance="native"] [data-sharing-public] > div {
+  display: flex;
+  gap: 10px;
+}
+.sharing-panel[data-appearance="native"] [data-sharing-public] :is(strong, span) {
+  display: block;
+}
+.sharing-panel[data-appearance="native"] [data-sharing-public] span {
+  font-size: 12px;
+  color: var(--sharing-muted);
+}
+.sharing-panel[data-appearance="native"] form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 100px auto;
+  gap: 8px;
+  align-items: end;
+}
+.sharing-panel[data-appearance="native"] form > div {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.sharing-panel[data-appearance="native"] :is(input, select) {
+  font: inherit;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  border: 1px solid var(--sharing-line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: inherit;
+  background: var(--sharing-surface);
+}
+.sharing-panel[data-appearance="native"] hr {
+  border: 0;
+  border-top: 1px solid var(--sharing-line);
+  margin: 0;
+}
+.sharing-panel[data-appearance="native"] section > div:first-child {
+  margin-bottom: 8px;
+}
+.sharing-panel[data-appearance="native"] section > div:first-child > span {
+  color: var(--sharing-muted);
+  font-size: 12px;
+}
+.sharing-panel[data-appearance="native"] ul {
+  list-style: none;
+  padding: 0;
+}
+.sharing-panel[data-appearance="native"] [data-sharing-row] {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 10px;
+  padding: 10px 0;
+}
+.sharing-panel[data-appearance="native"] [data-sharing-row] + [data-sharing-row] {
+  border-top: 1px solid var(--sharing-line);
+}
+.sharing-panel[data-appearance="native"] [data-sharing-person] {
+  min-width: 0;
+}
+.sharing-panel[data-appearance="native"] [data-sharing-person] :is(strong, span) {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sharing-panel[data-appearance="native"] [data-sharing-person] strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+.sharing-panel[data-appearance="native"] [data-sharing-person] span {
+  color: var(--sharing-muted);
+  font-size: 12px;
+}
+.sharing-panel[data-appearance="native"] [data-sharing-badges] {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--sharing-muted);
+}
+.sharing-panel[data-appearance="native"] [data-sharing-actions] {
+  display: flex;
+  min-width: 32px;
+  justify-content: flex-end;
+}
+.sharing-panel[data-appearance="native"] :is([role="alert"], [data-kind]) {
+  padding: 8px;
+  border: 1px solid var(--sharing-line);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.sharing-panel[data-appearance="native"] [role="alert"] {
+  grid-column: 1 / -1;
+}
+.sharing-panel[data-appearance="native"] :is([role="alert"], [data-kind="error"]) {
+  color: #a1261c;
+  background: #fff5f3;
+}
+.sharing-panel[data-appearance="native"] [data-tone="success"] {
+  color: #22734a;
+}
+.sharing-panel[data-appearance="native"] [data-tone="pending"] {
+  color: #936116;
+}
+@media (max-width: 520px) {
+  .sharing-panel[data-appearance="native"] [data-sharing-copy-full] {
+    display: none;
+  }
+  .sharing-panel[data-appearance="native"] [data-sharing-copy-compact] {
+    display: inline;
+  }
+  .sharing-panel[data-appearance="native"] form {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .sharing-panel[data-appearance="native"] form > div:first-child {
+    grid-column: 1 / -1;
+  }
+  .sharing-panel[data-appearance="native"] :is(button, input, select) {
+    min-height: 40px;
+  }
+  .sharing-panel[data-appearance="native"] [data-sharing-row] {
+    column-gap: 6px;
+  }
+  .sharing-panel[data-appearance="native"] [data-sharing-badges] {
+    flex-wrap: wrap;
+    max-width: 80px;
+  }
+}

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { authenticate, requireSameOrigin, readJson, errorResponse, logFailure } from "./auth.mjs";
+import worker from "./index.mjs";
 
 test("API keys use production scope checks and ignore claimed account/operator headers", async (t) => {
   const fixture = await createAuthFixture();
@@ -31,6 +32,86 @@ test("API keys use production scope checks and ignore claimed account/operator h
     authenticate(request(fixture.apiKey({ scopes: [] })), fixture.env),
     /scopes do not allow/,
   );
+});
+
+test("API-key invitation identity comes from provider whoami and configured namespace, never caller claims", async (t) => {
+  const fixture = await createAuthFixture();
+  const verified = fixture.apiKey({ claimedSubject: "spoofed-subject" });
+  const noEmail = fixture.apiKey();
+  const rejected = fixture.apiKey({ status: 401 });
+  const forwarded = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    const headers = new Headers(options?.headers);
+    forwarded.push(headers);
+    const response = await fixture.fetch(url, options);
+    if (!response.ok) return response;
+    const body = await response.json();
+    if (headers.get("authorization") === `Bearer ${noEmail}`) delete body.passport.profile.email;
+    else body.passport.profile.email = "  provider@example.invalid  ";
+    // Namespace is deployment configuration, even if the provider response
+    // contains an extra field with that name.
+    body.passport.principalNamespace = "untrusted-response-namespace";
+    return Response.json(body);
+  });
+  const request = (token) =>
+    new Request(
+      "https://pages.invalid/api/auth/session?principal=spoofed:subject&namespace=spoofed&email=attacker@example.invalid",
+      {
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-pages-driver": "ChatGPT",
+          "x-principal": "spoofed:subject",
+          "x-principal-namespace": "spoofed",
+          "x-notebook-cloud-principal": "spoofed:subject",
+          "x-notebook-cloud-principal-namespace": "spoofed",
+          "x-notebook-cloud-email": "attacker@example.invalid",
+          "x-pages-verified-email": "attacker@example.invalid",
+          "x-email-verified": "true",
+          "x-email-proof": "attacker-proof",
+        },
+      },
+    );
+  const identity = await authenticate(request(verified), fixture.env);
+  assert.equal(identity.principal, `user:anaconda-fixture:${fixture.subject}`);
+  assert.equal(identity.namespace, "user:anaconda-fixture");
+  assert.equal(identity.verifiedEmail, "provider@example.invalid");
+  assert.equal(identity.emailProof, undefined);
+  assert.equal(identity.credentialKind, "api-key");
+  const missingEmail = await authenticate(request(noEmail), fixture.env);
+  assert.equal(missingEmail.namespace, "user:anaconda-fixture");
+  assert.equal(
+    missingEmail.verifiedEmail,
+    undefined,
+    "caller claims cannot supply a missing provider email",
+  );
+  await assert.rejects(authenticate(request(rejected), fixture.env), /validation failed/);
+  assert.equal(forwarded.length, 3, "each key is checked with the provider");
+  for (const headers of forwarded) {
+    assert.deepEqual([...headers.keys()].sort(), ["authorization", "user-agent"]);
+    assert.ok(
+      [verified, noEmail, rejected].some(
+        (token) => headers.get("authorization") === `Bearer ${token}`,
+      ),
+    );
+  }
+  const response = await worker.fetch(request(verified), fixture.env);
+  assert.equal(response.status, 200);
+  const projection = await response.json();
+  assert.deepEqual(projection.identity, {
+    principal: identity.principal,
+    displayName: identity.displayName,
+    driver: "ChatGPT",
+  });
+  for (const privateField of [
+    "verifiedEmail",
+    "email",
+    "emailProof",
+    "verifiedEmailBinding",
+    "namespace",
+  ])
+    assert.equal(Object.hasOwn(projection.identity, privateField), false);
+  assert.equal(JSON.stringify(projection).includes("provider@example.invalid"), false);
+  assert.equal(JSON.stringify(projection).includes("attacker-proof"), false);
 });
 
 test("cookie writes and WebSocket upgrades require same-origin, API keys never permit foreign Origin", () => {

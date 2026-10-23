@@ -129,7 +129,7 @@ else if (mode === "upload" && stage && !flag) {
   stagePattern(target).test(stage ?? "") &&
   flag === "--apply"
 ) {
-  // Serialize operator commands across the two isolated deployment profiles.
+  // Serialize operator commands across the isolated deployment profiles.
   console.log(
     ssh(
       `sudo flock -n /run/nteract-pages-next-deploy.lock node ${quote(stage + "/" + mode + ".mjs")} ${quote(stage)} --apply`,
@@ -137,5 +137,5 @@ else if (mode === "upload" && stage && !flag) {
   );
 } else
   throw new Error(
-    "Usage: deploy.mjs [--target pages-next|page3|page4] [plan | prepare | upload LOCAL_STAGE | install REMOTE_STAGE --apply | publish REMOTE_STAGE --apply]",
+    "Usage: deploy.mjs [--target pages-next|page3|page4|page5] [plan | prepare | upload LOCAL_STAGE | install REMOTE_STAGE --apply | publish REMOTE_STAGE --apply]",
   );
