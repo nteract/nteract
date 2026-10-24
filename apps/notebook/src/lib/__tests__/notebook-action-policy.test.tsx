@@ -682,6 +682,31 @@ describe("useNotebookActionPolicy", () => {
     expect(options.runAllCells).not.toHaveBeenCalled();
   });
 
+  it("reopens unchanged project review for each fresh Start, Run Cell, and Run All intent", async () => {
+    const options = createPolicyOptions({ kernelStatus: KERNEL_STATUS.AWAITING_PROJECT_TRUST });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      await result.current.handleStartKernel("python");
+      result.current.clearProjectTrustError();
+      await result.current.handleStartKernel("python");
+      result.current.clearProjectTrustError();
+      await result.current.handleExecuteCell("cell-1");
+      result.current.clearProjectTrustError();
+      await result.current.handleRunAllCells();
+    });
+
+    expect(options.showProjectTrustDialog).toHaveBeenCalledTimes(4);
+    expect(options.launchKernel).not.toHaveBeenCalled();
+    expect(options.executeCell).not.toHaveBeenCalled();
+    expect(options.runAllCells).not.toHaveBeenCalled();
+    await act(async () => {
+      await result.current.handleProjectTrustApprove("/work/current-project");
+    });
+    expect(options.runAllCellsGuarded).toHaveBeenCalledExactlyOnceWith({ observed_heads: ["head-1"] });
+    expect(options.executeCellGuarded).not.toHaveBeenCalled();
+  });
+
   it("opens project trust review instead of launching or executing a cell", async () => {
     const options = createPolicyOptions({ kernelStatus: KERNEL_STATUS.AWAITING_PROJECT_TRUST });
     const { result } = renderHook(() => useNotebookActionPolicy(options));

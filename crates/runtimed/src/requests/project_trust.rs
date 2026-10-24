@@ -289,6 +289,275 @@ mod tests {
             .unwrap());
     }
 
+    fn assert_no_project_package_approval(room: &NotebookRoom) {
+        let mut info = runt_trust::extract_trust_info(&std::collections::HashMap::from([(
+            "runt".to_string(),
+            json!({"uv":{"dependencies":["pandas", "unreviewed"]}}),
+        )]));
+        room.trusted_packages.enrich_info(&mut info).unwrap();
+        assert!(info.approved_uv_dependencies.is_empty());
+    }
+
+    async fn finish_rebind_watchers(room: &Arc<NotebookRoom>, path: &Path) {
+        room.file_binding.shutdown_project_file_watcher().await;
+        room.file_binding.shutdown_notebook_watcher().await;
+        crate::notebook_sync_server::shutdown_autosave_debouncer(
+            room,
+            &path.to_string_lossy(),
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn save_as_refreshes_the_parked_prompt_without_approving_either_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        pyproject(&first, "pandas");
+        pyproject(&second, "unreviewed");
+        let room = room(temp.path(), &first, json!({}), "");
+        let original = crate::project_file::detect_project_file(&first).unwrap();
+        crate::project_trust::require_for_launch(&room, Some(&original));
+        let new_path = second.join("moved.ipynb");
+        std::fs::copy(first.join("test.ipynb"), &new_path).unwrap();
+        crate::notebook_sync_server::NotebookFileBinding::rebind_after_save_as(
+            &room,
+            new_path.clone(),
+        )
+        .await;
+        finish_rebind_watchers(&room, &new_path).await;
+
+        let state = room.state.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(
+            state.kernel.lifecycle,
+            RuntimeLifecycle::AwaitingProjectTrust
+        );
+        assert_eq!(
+            Path::new(&state.project_trust.manifest_path),
+            second.join("pyproject.toml").canonicalize().unwrap()
+        );
+        assert!(state.project_trust.needs_approval);
+        assert!(matches!(
+            approve(&room, first.to_string_lossy().into_owned()).await,
+            NotebookResponse::Error { .. }
+        ));
+        // The old native prompt can still submit its captured A path. Its
+        // rejection must leave every peer's shared prompt pointing at B.
+        let state = room.state.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(
+            Path::new(&state.project_trust.manifest_path),
+            second.join("pyproject.toml").canonicalize().unwrap()
+        );
+        for directory in [&first, &second] {
+            assert!(room
+                .trusted_packages
+                .directory_decision_for(directory)
+                .unwrap()
+                .is_none());
+        }
+        assert_no_project_package_approval(&room);
+
+        assert!(matches!(
+            approve(&room, second.to_string_lossy().into_owned()).await,
+            NotebookResponse::Ok {}
+        ));
+        let state = room.state.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::NotStarted);
+        assert!(!state.project_trust.needs_approval);
+    }
+
+    #[tokio::test]
+    async fn save_as_releases_a_project_prompt_when_the_new_context_needs_no_approval() {
+        use notebook_protocol::connection::CreateNotebookEnvironmentMode;
+        for case in [
+            "no-manifest",
+            "trusted",
+            "notebook-mode",
+            "deno",
+            "declined",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let first = temp.path().join("first");
+            let second = temp.path().join("second");
+            pyproject(&first, "pandas");
+            std::fs::create_dir_all(&second).unwrap();
+            if case != "no-manifest" {
+                pyproject(&second, "unreviewed");
+            }
+            let room = room(temp.path(), &first, json!({}), "");
+            let original = crate::project_file::detect_project_file(&first).unwrap();
+            crate::project_trust::require_for_launch(&room, Some(&original));
+            if case == "trusted" || case == "declined" {
+                room.trusted_packages
+                    .set_directory_decision(
+                        &second,
+                        if case == "trusted" {
+                            DirectoryDecision::Trusted
+                        } else {
+                            DirectoryDecision::NotebookEnv
+                        },
+                        "test",
+                    )
+                    .unwrap();
+            }
+            if case == "notebook-mode" {
+                *room.identity.environment_mode.write().await =
+                    CreateNotebookEnvironmentMode::Notebook;
+            }
+            let new_path = second.join("moved.ipynb");
+            let metadata = if case == "deno" {
+                json!({"kernelspec":{"name":"deno","display_name":"Deno","language":"typescript"}})
+            } else {
+                json!({})
+            };
+            if case == "deno" {
+                let mut doc = room.doc.write().await;
+                doc.set_metadata_value("kernelspec", &metadata["kernelspec"])
+                    .unwrap();
+                assert_eq!(doc.detect_runtime().as_deref(), Some("deno"));
+            }
+            std::fs::write(
+                &new_path,
+                json!({"nbformat":4,"nbformat_minor":5,"metadata":metadata,"cells":[]}).to_string(),
+            )
+            .unwrap();
+            crate::notebook_sync_server::NotebookFileBinding::rebind_after_save_as(
+                &room,
+                new_path.clone(),
+            )
+            .await;
+            finish_rebind_watchers(&room, &new_path).await;
+            let state = room.state.read(|sd| sd.read_state()).unwrap();
+            assert_eq!(
+                state.kernel.lifecycle,
+                RuntimeLifecycle::NotStarted,
+                "{case}"
+            );
+            assert!(!state.project_trust.needs_approval, "{case}");
+            if matches!(case, "no-manifest" | "notebook-mode" | "deno") {
+                assert!(state.project_trust.manifest_path.is_empty(), "{case}");
+            }
+            assert_no_project_package_approval(&room);
+        }
+    }
+
+    #[tokio::test]
+    async fn path_refresh_does_not_reset_a_running_or_starting_kernel() {
+        for lifecycle in [
+            RuntimeLifecycle::Running(runtime_doc::KernelActivity::Idle),
+            RuntimeLifecycle::Resolving,
+            RuntimeLifecycle::PreparingEnv,
+            RuntimeLifecycle::Launching,
+            RuntimeLifecycle::Connecting,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let first = temp.path().join("first");
+            let second = temp.path().join("second");
+            pyproject(&first, "pandas");
+            pyproject(&second, "unreviewed");
+            let room = room(temp.path(), &first, json!({}), "");
+            let original = crate::project_file::detect_project_file(&first).unwrap();
+            crate::project_trust::require_for_launch(&room, Some(&original));
+            room.state
+                .with_doc(|sd| sd.set_lifecycle(&lifecycle))
+                .unwrap();
+            let new_path = second.join("moved.ipynb");
+            crate::notebook_sync_server::NotebookFileBinding::set_runtime_path(&room, &new_path)
+                .await;
+            let state = room.state.read(|sd| sd.read_state()).unwrap();
+            assert_eq!(state.kernel.lifecycle, lifecycle);
+            assert_eq!(
+                Path::new(&state.project_trust.manifest_path),
+                first.join("pyproject.toml").canonicalize().unwrap()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn path_refresh_does_not_reset_a_launch_that_advanced_during_metadata_read() {
+        use std::future::Future;
+        use std::task::{Context, Waker};
+
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        pyproject(&project, "pandas");
+        let room = room(temp.path(), &project, json!({}), "");
+        let original = crate::project_file::detect_project_file(&project).unwrap();
+        crate::project_trust::require_for_launch(&room, Some(&original));
+        let old_prompt = room.state.read(|sd| sd.read_state().project_trust).unwrap();
+        let new_path = temp.path().join("without-project.ipynb");
+        room.file_binding
+            .set_path_for_test(Some(new_path.clone()))
+            .await;
+        let mut refresh = std::pin::pin!(
+            crate::notebook_sync_server::NotebookFileBinding::set_runtime_path(&room, &new_path)
+        );
+        {
+            let _metadata_guard = room.doc.write().await;
+            assert!(refresh
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending());
+            room.state
+                .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Launching))
+                .unwrap();
+        }
+        assert!(refresh.await);
+        let state = room.state.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::Launching);
+        assert_eq!(state.project_trust, old_prompt);
+    }
+
+    #[tokio::test]
+    async fn older_save_as_metadata_read_cannot_overwrite_a_newer_binding() {
+        use crate::notebook_sync_server::NotebookFileBinding;
+        use std::future::Future;
+        use std::task::{Context, Waker};
+
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        let third = temp.path().join("third");
+        pyproject(&first, "pandas");
+        pyproject(&second, "unreviewed");
+        pyproject(&third, "third-package");
+        let room = room(temp.path(), &first, json!({}), "");
+        let original = crate::project_file::detect_project_file(&first).unwrap();
+        crate::project_trust::require_for_launch(&room, Some(&original));
+        let second_path = second.join("moved.ipynb");
+        let third_path = third.join("moved.ipynb");
+        for path in [&second_path, &third_path] {
+            std::fs::copy(first.join("test.ipynb"), path).unwrap();
+        }
+        let mut older_rebind = std::pin::pin!(NotebookFileBinding::rebind_after_save_as(
+            &room,
+            second_path
+        ));
+        {
+            let _metadata_guard = room.doc.write().await;
+            assert!(older_rebind
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending());
+        }
+        NotebookFileBinding::rebind_after_save_as(&room, third_path.clone()).await;
+        older_rebind.await;
+        finish_rebind_watchers(&room, &third_path).await;
+        let state = room.state.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(
+            state.path.as_deref(),
+            Some(third_path.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            Path::new(&state.project_trust.manifest_path),
+            third.join("pyproject.toml").canonicalize().unwrap()
+        );
+        assert_eq!(room.file_binding.path().await.as_ref(), Some(&third_path));
+        assert!(state.project_trust.needs_approval);
+        assert_no_project_package_approval(&room);
+    }
+
     #[tokio::test]
     async fn approved_current_folder_reconciles_matching_metadata() {
         let temp = tempfile::tempdir().unwrap();
