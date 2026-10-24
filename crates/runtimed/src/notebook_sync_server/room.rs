@@ -140,19 +140,80 @@ impl NotebookFileBinding {
         }
     }
 
-    pub async fn set_runtime_path(room: &NotebookRoom, canonical: &Path) {
+    /// Refresh a parked project prompt with the file binding, without starting
+    /// a kernel or granting trust. Returns false if another binding superseded
+    /// this one while metadata was being read.
+    pub async fn set_runtime_path(room: &NotebookRoom, canonical: &Path) -> bool {
+        use runtime_doc::RuntimeLifecycle;
+
+        let parked = room
+            .state
+            .read(|sd| sd.read_state().kernel.lifecycle == RuntimeLifecycle::AwaitingProjectTrust)
+            .unwrap_or(false);
+        let project_trust = if parked {
+            let allows_project_files = room
+                .identity
+                .environment_mode
+                .read()
+                .await
+                .allows_project_files();
+            let runtime = resolve_metadata_snapshot(room, Some(canonical))
+                .await
+                .and_then(|metadata| metadata.detect_runtime());
+            let manifest = if allows_project_files && runtime.as_deref() != Some("deno") {
+                crate::project_file::detect_project_file(canonical)
+            } else {
+                None
+            };
+            Some(
+                manifest
+                    .as_ref()
+                    .map_or_else(crate::project_trust::no_project_state, |manifest| {
+                        crate::project_trust::evaluate_for_room(room, manifest).state
+                    }),
+            )
+        } else {
+            None
+        };
+        // Only the parked branch yields above. Keep its binding stable through
+        // the synchronous projection update, so a newer Save As cannot be
+        // overwritten by an older metadata read completing late.
+        let _binding_guard = if parked {
+            let binding = room.file_binding.path.read().await;
+            if binding.as_deref() != Some(canonical) {
+                return false;
+            }
+            Some(binding)
+        } else {
+            None
+        };
         let path_str = canonical.to_string_lossy().into_owned();
-        if let Err(e) = room.state.with_doc(|sd| sd.set_path(Some(&path_str))) {
+        if let Err(e) = room.state.with_doc(|sd| {
+            sd.set_path(Some(&path_str))?;
+            if let Some(project_trust) = project_trust {
+                // A launch or shutdown may have advanced while we read metadata.
+                if sd.read_state().kernel.lifecycle == RuntimeLifecycle::AwaitingProjectTrust {
+                    sd.set_project_trust(&project_trust)?;
+                    if !project_trust.needs_approval {
+                        sd.set_lifecycle(&RuntimeLifecycle::NotStarted)?;
+                    }
+                }
+            }
+            Ok(())
+        }) {
             warn!("[notebook-sync] set_path failed for {:?}: {}", canonical, e);
         }
         super::workstation_attachment::publish_local_workstation_attachment_for_notebook_path(
             &room.state,
             Some(canonical),
         );
+        true
     }
 
     pub async fn bind_existing(room: &Arc<NotebookRoom>, canonical: &Path) {
-        Self::set_runtime_path(room, canonical).await;
+        if !Self::set_runtime_path(room, canonical).await {
+            return;
+        }
         room.file_binding
             .start_file_lifecycle(room, canonical)
             .await;
@@ -182,7 +243,9 @@ impl NotebookFileBinding {
     pub async fn promote_after_save(room: &Arc<NotebookRoom>, canonical: PathBuf) {
         room.file_binding.set_bound_path(canonical.clone()).await;
         room.file_binding.mark_file_backed();
-        Self::set_runtime_path(room, &canonical).await;
+        if !Self::set_runtime_path(room, &canonical).await {
+            return;
+        }
         room.file_binding
             .start_file_lifecycle(room, &canonical)
             .await;
@@ -192,7 +255,9 @@ impl NotebookFileBinding {
 
     pub async fn rebind_after_save_as(room: &Arc<NotebookRoom>, canonical: PathBuf) {
         room.file_binding.set_bound_path(canonical.clone()).await;
-        Self::set_runtime_path(room, &canonical).await;
+        if !Self::set_runtime_path(room, &canonical).await {
+            return;
+        }
         room.file_binding
             .start_file_lifecycle(room, &canonical)
             .await;
@@ -1672,6 +1737,10 @@ pub struct NotebookRoom {
     /// allow the lint here rather than widen the store's surface.
     #[allow(private_interfaces)]
     pub trusted_packages: crate::trusted_packages::TrustedPackageStore,
+    /// Canonical directory the user chose "use the notebook environment"
+    /// for without remembering it. Room-scoped; persisted choices live in
+    /// the trusted-directories table.
+    pub(crate) project_trust_session_decline: std::sync::Mutex<Option<std::path::PathBuf>>,
     /// Per-notebook RuntimeStateDoc handle — daemon-authoritative ephemeral state
     /// (kernel status, queue, env sync). Clients sync read-only.
     /// Uses `std::sync::Mutex` internally (no `.await` needed).
@@ -2119,11 +2188,13 @@ impl NotebookRoom {
                 // approval can't bypass the allowlist).
                 // Project reconciliation covers metadata dependencies only. PEP 723
                 // cell source needs its own explicit notebook approval.
-                if matches!(initial.status, runt_trust::TrustStatus::Untrusted)
-                    && initial.pep723_dependencies.is_empty()
-                    && project_file_deps_match_trust_info(p, &initial.info)
-                {
-                    match trusted_packages.add_from_info(&initial.info, "project_file") {
+                if let Some(covered) = crate::project_trust::reconcilable_trust_info(
+                    &trusted_packages,
+                    p,
+                    None,
+                    &initial,
+                ) {
+                    match trusted_packages.add_from_info(&covered, "project_file") {
                         Ok(()) => {
                             initial = verify_trust_from_file(p, &trusted_packages);
                             info!(
@@ -2383,6 +2454,7 @@ impl NotebookRoom {
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
             trusted_packages,
+            project_trust_session_decline: std::sync::Mutex::new(None),
             state,
             comms,
             comments,

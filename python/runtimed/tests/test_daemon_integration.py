@@ -45,6 +45,10 @@ import runtimed._internals
 # Test utilities
 # ============================================================================
 
+# Substring of the daemon's LaunchKernel error when a project file's folder
+# has no trust decision on this machine.
+PROJECT_NOT_TRUSTED = "project folder is not trusted"
+
 KERNEL_LAUNCH_LIFECYCLES = {
     "Resolving",
     "PreparingEnv",
@@ -205,6 +209,7 @@ async def async_shutdown_and_start_kernel(
     expected_env_source=None,
     retries=5,
     delay=1.0,
+    trust_project_dir=None,
     **kwargs,
 ):
     """Shut down any auto-launched kernel, then start with a specific env source.
@@ -220,6 +225,9 @@ async def async_shutdown_and_start_kernel(
     2. Starts the kernel with the desired env_source
     3. Verifies the resolved env_source matches the expected value; if not,
        shuts down and retries
+
+    With ``trust_project_dir``, a launch the daemon parks on project folder
+    trust is approved for that folder and retried.
     """
     expected_env_source = expected_env_source or env_source
 
@@ -238,6 +246,9 @@ async def async_shutdown_and_start_kernel(
             await session.start_kernel(env_source=env_source, **kwargs)
         except runtimed.RuntimedError as e:
             last_err = e
+            if trust_project_dir is not None and PROJECT_NOT_TRUSTED in str(e):
+                await session.approve_project_trust(str(trust_project_dir))
+                continue
             if attempt < retries - 1:
                 await asyncio.sleep(delay)
             continue
@@ -354,95 +365,63 @@ async def async_use_auto_kernel_or_start(
         await async_start_kernel_with_retry(session)
 
 
-async def async_wait_for_conda_env_yml_missing(
+async def async_wait_for_project_trust_park(
     session,
-    expected_env_name,
     *,
-    expected_path_fragment=None,
+    expected_kind,
+    expected_manifest_fragment,
+    expected_env_name=None,
     timeout=20.0,
     stable_after_seen=0.5,
 ):
-    """Wait until RuntimeState reports a stable missing named environment.yml env."""
-    from runtimed import KERNEL_ERROR_REASON
+    """Wait until the daemon parks the room on project folder trust.
+
+    A project file in an untrusted folder must stop before uv, pixi, or conda
+    reads it: lifecycle ``AwaitingProjectTrust``, ``project_trust`` asking for
+    approval, and no launch state afterwards.
+    """
     from runtimed._notebook import Notebook
-
-    def lifecycle_tag_for(kernel_state):
-        lifecycle = kernel_state.lifecycle
-        return getattr(lifecycle, "lifecycle", None) or str(lifecycle)
-
-    def record_state(kernel_state):
-        lifecycle_tag = lifecycle_tag_for(kernel_state)
-        reason = kernel_state.error_reason
-        details = kernel_state.error_details or ""
-        entry = (
-            loop.time() - started_at,
-            lifecycle_tag,
-            str(reason),
-            details,
-        )
-        if not timeline or timeline[-1][2:] != entry[1:]:
-            timeline.append((entry[0], entry[0], *entry[1:]))
-        else:
-            first_seen, _, *state = timeline[-1]
-            timeline[-1] = (first_seen, entry[0], *state)
-        return lifecycle_tag
-
-    def format_timeline():
-        return "\n".join(
-            f"  +{first_seen:.3f}..+{last_seen:.3f}s "
-            f"lifecycle={lifecycle!r} reason={reason!r} details={details!r}"
-            for first_seen, last_seen, lifecycle, reason, details in timeline
-        )
 
     notebook = Notebook(session)
     loop = asyncio.get_event_loop()
-    started_at = loop.time()
-    deadline = started_at + timeout
+    deadline = loop.time() + timeout
     timeline = []
-    kernel_state = None
-    awaiting_state = None
-    awaiting_seen_at = None
-    overwritten_state = None
+    parked_at = None
+    overwritten = None
 
     while loop.time() < deadline:
-        kernel_state = notebook.runtime.kernel
-        lifecycle_tag = record_state(kernel_state)
-        if lifecycle_tag == "AwaitingEnvBuild":
-            if awaiting_state is None:
-                awaiting_state = kernel_state
-                awaiting_seen_at = loop.time()
-            elif (
-                awaiting_seen_at is not None and loop.time() - awaiting_seen_at >= stable_after_seen
-            ):
+        runtime = notebook.runtime
+        lifecycle = runtime.kernel.lifecycle
+        if not timeline or timeline[-1] != lifecycle:
+            timeline.append(lifecycle)
+        if lifecycle == "AwaitingProjectTrust":
+            if parked_at is None:
+                parked_at = loop.time()
+            elif loop.time() - parked_at >= stable_after_seen:
                 break
-        elif awaiting_state is not None and lifecycle_tag in KERNEL_LAUNCH_LIFECYCLES:
-            overwritten_state = kernel_state
+        elif parked_at is not None and lifecycle in KERNEL_LAUNCH_LIFECYCLES:
+            overwritten = lifecycle
             break
         await asyncio.sleep(0.1)
 
-    assert kernel_state is not None
-    assert awaiting_state is not None, (
-        "expected lifecycle=AwaitingEnvBuild after env.yml miss; observed timeline:\n"
-        f"{format_timeline()}"
+    assert parked_at is not None, (
+        f"expected lifecycle=AwaitingProjectTrust; observed lifecycles: {timeline}"
     )
-    assert overwritten_state is None, (
-        "lifecycle=AwaitingEnvBuild was overwritten by a launch state; "
-        "observed timeline:\n"
-        f"{format_timeline()}"
+    assert overwritten is None, (
+        f"AwaitingProjectTrust was overwritten by {overwritten}; observed: {timeline}"
     )
-    kernel_state = awaiting_state
-    assert kernel_state.error_reason == KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING
-    details = kernel_state.error_details or ""
-    assert expected_env_name in details, (
-        f"error_details should name {expected_env_name!r}; got {details!r}"
-    )
-    assert "conda env create -f" in details, (
-        f"error_details should suggest the remediation; got {details!r}"
-    )
-    if expected_path_fragment is not None:
-        assert expected_path_fragment in details, (
-            f"error_details should include {expected_path_fragment!r}; got {details!r}"
+    project_trust = notebook.runtime.project_trust
+    assert project_trust["status"] == "untrusted", project_trust
+    assert project_trust["needs_approval"] is True, project_trust
+    assert project_trust["kind"] == expected_kind, project_trust
+    assert expected_manifest_fragment in project_trust["manifest_path"], project_trust
+    assert project_trust["project_dir"], project_trust
+    if expected_env_name is not None:
+        to_build = project_trust["summary"].get("environment_to_build") or ""
+        assert expected_env_name in to_build, (
+            f"summary.environment_to_build should name {expected_env_name!r}; got {to_build!r}"
         )
+    return project_trust
 
 
 async def async_create_cell_and_wait_for_sync(
@@ -1877,6 +1856,7 @@ class TestProjectFileDetection:
             env_source="auto",
             expected_env_source="uv:pyproject",
             notebook_path=notebook_path,
+            trust_project_dir=isolated_fixtures / "pyproject-project",
         )
 
         assert await session.env_source() == "uv:pyproject"
@@ -1905,6 +1885,7 @@ class TestProjectFileDetection:
             env_source="auto",
             expected_env_source="pixi:toml",
             notebook_path=notebook_path,
+            trust_project_dir=isolated_fixtures / "pixi-project",
             retries=8,
             delay=2.0,
         )
@@ -1918,11 +1899,11 @@ class TestProjectFileDetection:
         assert result.success, f"Kernel failed in pixi env: {result.stderr}"
 
     async def test_environment_yml_auto_detection(self, session, isolated_fixtures):
-        """notebook_path near environment.yml reports a missing named env.
+        """notebook_path near environment.yml parks on project folder trust.
 
-        The daemon should still detect the environment.yml, but named conda
-        envs are not built implicitly. Until the user creates that env, launch
-        fails closed and RuntimeState explains the remediation.
+        The daemon detects the environment.yml but will not hand it to conda
+        until its folder is trusted. Launch fails closed and RuntimeState
+        names the environment approval would build.
         """
         import uuid
 
@@ -1961,14 +1942,15 @@ class TestProjectFileDetection:
                         raise
                     await asyncio.sleep(0.1)
         except runtimed.RuntimedError as e:
-            assert env_name in str(e)
-            await async_wait_for_conda_env_yml_missing(
+            assert PROJECT_NOT_TRUSTED in str(e), str(e)
+            await async_wait_for_project_trust_park(
                 session,
-                env_name,
-                expected_path_fragment="environment.yaml",
+                expected_kind="environment_yml",
+                expected_manifest_fragment="environment.yaml",
+                expected_env_name=env_name,
             )
         else:
-            assert await session.env_source() == "conda:env_yml"
+            pytest.fail("environment.yml in an untrusted folder must not launch")
 
     async def test_no_project_file_falls_back_to_prewarmed(self, session):
         """When no project file is found, auto falls back to uv:prewarmed."""
@@ -3158,8 +3140,8 @@ class TestCreateNotebook:
         """create_notebook() with working_dir containing environment.yml fails closed.
 
         When working_dir points to a directory with an environment.yml file,
-        the daemon should detect it via project file search and report the
-        missing named env instead of falling back to a prewarmed env.
+        the daemon should detect it via project file search and park on
+        project folder trust instead of falling back to a prewarmed env.
 
         Regression test for nteract/nteract#1643.
         """
@@ -3182,10 +3164,11 @@ class TestCreateNotebook:
         session = await client.create_notebook(runtime="python", working_dir=str(tmp_path))
         assert await session.is_connected()
 
-        await async_wait_for_conda_env_yml_missing(
+        await async_wait_for_project_trust_park(
             session,
-            env_name,
-            expected_path_fragment="environment.yml",
+            expected_kind="environment_yml",
+            expected_manifest_fragment="environment.yml",
+            expected_env_name=env_name,
         )
 
 
@@ -3261,16 +3244,19 @@ class TestTrustApproval:
 
     async def test_pyproject_trust_heal_at_room_init(self, client, tmp_path):
         """A notebook saved by a pre-fix build has pyproject-matching deps
-        but no trust signature. On reopen, room-init reconciliation should
-        promote it to Trusted so `needs_trust_approval` is False and the
-        auto-launch gate does not block.
+        but no trust signature. The project file can vouch for them only
+        once its folder is trusted; then reconciliation promotes the
+        notebook to Trusted so `needs_trust_approval` is False.
 
         Regression for nteract/nteract#2150.
         """
         import json
+        import uuid
 
+        # Names nobody has approved, so only the project file can vouch.
+        deps = [f"nteract-heal-probe-{uuid.uuid4().hex}", f"nteract-heal-probe-{uuid.uuid4().hex}"]
         (tmp_path / "pyproject.toml").write_text(
-            '[project]\nname = "test"\nversion = "0.0.1"\ndependencies = ["pandas", "numpy"]\n'
+            f'[project]\nname = "test"\nversion = "0.0.1"\ndependencies = {json.dumps(deps)}\n'
         )
 
         nb_path = tmp_path / "notebook.ipynb"
@@ -3282,7 +3268,7 @@ class TestTrustApproval:
                     "metadata": {
                         "runt": {
                             "schema_version": "1",
-                            "uv": {"dependencies": ["pandas", "numpy"]},
+                            "uv": {"dependencies": deps},
                             # No trust_signature - simulates pre-fix daemon write
                         }
                     },
@@ -3291,12 +3277,21 @@ class TestTrustApproval:
             )
         )
 
+        # The pyproject's folder is untrusted, so it cannot vouch for the
+        # notebook's dependencies yet.
         session = await client.open_notebook(str(nb_path))
         info = await session.connection_info()
         assert info is not None
+        assert info.needs_trust_approval is True
+
+        # Trusting the folder heals pyproject-matching deps.
+        await session.approve_project_trust(str(tmp_path))
+        reopened = await client.open_notebook(str(nb_path))
+        info = await reopened.connection_info()
+        assert info is not None
         assert info.needs_trust_approval is False, (
-            "pyproject-matching deps without a signature must heal at room init, "
-            "not block auto-launch"
+            "pyproject-matching deps without a signature must heal once the "
+            "project folder is trusted"
         )
 
     async def test_pyproject_mismatch_stays_untrusted(self, client, tmp_path):
@@ -3328,7 +3323,9 @@ class TestTrustApproval:
         )
 
         session = await client.open_notebook(str(nb_path))
-        info = await session.connection_info()
+        await session.approve_project_trust(str(tmp_path))
+        reopened = await client.open_notebook(str(nb_path))
+        info = await reopened.connection_info()
         assert info is not None
         assert info.needs_trust_approval is True
 
@@ -3363,14 +3360,16 @@ class TestTrustApproval:
         )
 
         session = await client.open_notebook(str(nb_path))
-        info = await session.connection_info()
+        await session.approve_project_trust(str(tmp_path))
+        reopened = await client.open_notebook(str(nb_path))
+        info = await reopened.connection_info()
         assert info is not None
         assert info.needs_trust_approval is False
 
     async def test_envyml_missing_env_surfaces_error_state(self, client, tmp_path):
         """#2157: when environment.yml declares a conda env that isn't built
-        on this machine, the daemon must set RuntimeStateDoc lifecycle to
-        AwaitingEnvBuild with a typed reason and descriptive details — NOT
+        on this machine and its folder is untrusted, the daemon must park in
+        AwaitingProjectTrust and name the env approval would build — NOT
         silently fall back to a pool env, and NOT leave the kernel stuck in
         `initializing` forever.
         """
@@ -3404,10 +3403,11 @@ class TestTrustApproval:
         )
 
         session = await client.open_notebook(str(nb_path))
-        await async_wait_for_conda_env_yml_missing(
+        await async_wait_for_project_trust_park(
             session,
-            env_name,
-            expected_path_fragment="environment.yml",
+            expected_kind="environment_yml",
+            expected_manifest_fragment="environment.yml",
+            expected_env_name=env_name,
         )
 
     async def test_envyml_channel_mismatch_blocks_heal(self, client, tmp_path):
@@ -3443,7 +3443,9 @@ class TestTrustApproval:
         )
 
         session = await client.open_notebook(str(nb_path))
-        info = await session.connection_info()
+        await session.approve_project_trust(str(tmp_path))
+        reopened = await client.open_notebook(str(nb_path))
+        info = await reopened.connection_info()
         assert info is not None
         assert info.needs_trust_approval is True, (
             "channel mismatch must block reconciliation even when deps match"

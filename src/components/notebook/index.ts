@@ -136,6 +136,11 @@ export {
   type EnvBuildDecisionDialogProps,
 } from "./EnvBuildDecisionDialog";
 export {
+  PROJECT_TRUST_DEPENDENCY_LIMIT,
+  ProjectTrustDialog,
+  type ProjectTrustDialogProps,
+} from "./ProjectTrustDialog";
+export {
   DaemonStatusBanner,
   type DaemonStatus,
   type DaemonStatusBannerProps,

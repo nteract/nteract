@@ -164,7 +164,9 @@ type UnsupportedHostedRuntimeRequestAction =
   | "restart_kernel"
   | "shutdown_kernel"
   | "sync_environment"
-  | "get_history";
+  | "get_history"
+  | "approve_project_trust"
+  | "decline_project_trust";
 
 interface RequestEnvelopeMetadata {
   id: string | null;
@@ -227,6 +229,10 @@ const unsupportedHostedRuntimeRequestActions = new Set<UnsupportedHostedRuntimeR
   "shutdown_kernel",
   "sync_environment",
   "get_history",
+  // Project folder trust is a local-machine decision; hosted rooms have no
+  // daemon filesystem to trust.
+  "approve_project_trust",
+  "decline_project_trust",
 ]);
 
 const MAX_PENDING_RUNTIME_PEER_RESPONSES = 128;

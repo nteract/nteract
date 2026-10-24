@@ -295,6 +295,29 @@ export class NotebookClient {
     }
   }
 
+  /** Trust a project folder so uv, pixi, or conda may use its project files. */
+  async approveProjectTrust(directory: string): Promise<NotebookResponse> {
+    try {
+      return await this.sendRequest({ type: "approve_project_trust", directory });
+    } catch (e) {
+      this.log.error("[notebook-client] Approve project trust failed:", e);
+      throw e;
+    }
+  }
+
+  /**
+   * Use the notebook environment instead of the project folder's files.
+   * `remember` persists the choice for that folder on this machine.
+   */
+  async declineProjectTrust(directory: string, remember: boolean): Promise<NotebookResponse> {
+    try {
+      return await this.sendRequest({ type: "decline_project_trust", directory, remember });
+    } catch (e) {
+      this.log.error("[notebook-client] Decline project trust failed:", e);
+      throw e;
+    }
+  }
+
   /** Run all code cells (daemon reads from synced doc). */
   async runAllCells(options: RunAllCellsOptions = {}): Promise<NotebookResponse> {
     this.log.debug("[notebook-client] Running all cells");

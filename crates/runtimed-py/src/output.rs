@@ -927,7 +927,8 @@ impl ExecutionProgress {
 #[derive(Clone, Debug)]
 pub struct PyKernelState {
     /// Flat status string: "not_started", "starting", "idle", "busy",
-    /// "error", "shutdown", "awaiting_trust", "awaiting_env_build". Projected from
+    /// "error", "shutdown", "awaiting_trust", "awaiting_project_trust",
+    /// "awaiting_env_build". Projected from
     /// [`RuntimeLifecycle::to_legacy`] for callers that want a simple
     /// string bucket; use `lifecycle` for the full typed variant.
     pub status: String,
@@ -935,7 +936,7 @@ pub struct PyKernelState {
     /// "connecting". Only non-empty when `status == "starting"`.
     pub starting_phase: String,
     /// Typed lifecycle variant name: "NotStarted", "AwaitingTrust",
-    /// "AwaitingEnvBuild", "Resolving", "PreparingEnv", "Launching",
+    /// "AwaitingProjectTrust", "AwaitingEnvBuild", "Resolving", "PreparingEnv", "Launching",
     /// "Connecting", "Running", "Error", "Shutdown". Paired with
     /// `activity` when "Running".
     pub lifecycle: String,
@@ -1277,6 +1278,11 @@ pub struct PyRuntimeState {
     /// adding variants upstream doesn't require a bindings rev. Empty
     /// string when the field is missing from the doc (old peer).
     pub project_context_json: String,
+    /// Project-directory trust for the project file that would drive the
+    /// environment, serialised as a JSON string (see `project_trust` for a
+    /// dict). Fields: `status`, `needs_approval`, `manifest_path`, `kind`,
+    /// `project_dir`, `repo_root`, `trusted_dir`, `summary`.
+    pub project_trust_json: String,
 }
 
 #[pymethods]
@@ -1299,6 +1305,15 @@ impl PyRuntimeState {
             },
             self.comms.len(),
         )
+    }
+
+    /// Project-directory trust as a dict. Read `needs_approval` and
+    /// `project_dir` when `kernel.lifecycle == "AwaitingProjectTrust"`.
+    #[getter]
+    fn project_trust<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let value: serde_json::Value = serde_json::from_str(&self.project_trust_json)
+            .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
+        json_to_py(py, &value)
     }
 
     fn __await__(&self) -> PyResult<()> {
@@ -1392,6 +1407,8 @@ impl From<runtime_doc::RuntimeState> for PyRuntimeState {
                 })
                 .collect(),
             project_context_json: serde_json::to_string(&rs.project_context)
+                .unwrap_or_else(|_| String::new()),
+            project_trust_json: serde_json::to_string(&rs.project_trust)
                 .unwrap_or_else(|_| String::new()),
         }
     }
@@ -1537,6 +1554,16 @@ mod tests {
             project_context: ProjectContext::NotFound {
                 observed_at: "2026-04-27T12:01:00Z".to_string(),
             },
+            project_trust: runtime_doc::ProjectTrustRuntimeState {
+                status: "untrusted".to_string(),
+                needs_approval: true,
+                project_dir: "/work/proj".to_string(),
+                summary: runtime_doc::ProjectTrustSummary {
+                    environment_to_build: Some("analysis".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             ..RuntimeState::default()
         };
 
@@ -1587,5 +1614,27 @@ mod tests {
             serde_json::from_str(&py_state.project_context_json).unwrap();
         assert_eq!(project_context["state"], "NotFound");
         assert_eq!(project_context["observed_at"], "2026-04-27T12:01:00Z");
+
+        let project_trust: serde_json::Value =
+            serde_json::from_str(&py_state.project_trust_json).unwrap();
+        assert_eq!(project_trust["status"], "untrusted");
+        assert_eq!(project_trust["needs_approval"], true);
+        assert_eq!(project_trust["project_dir"], "/work/proj");
+        assert_eq!(project_trust["summary"]["environment_to_build"], "analysis");
+    }
+
+    #[test]
+    fn awaiting_project_trust_projects_lifecycle_and_legacy_status() {
+        let runtime = RuntimeState {
+            kernel: KernelState {
+                lifecycle: RuntimeLifecycle::AwaitingProjectTrust,
+                ..KernelState::default()
+            },
+            ..RuntimeState::default()
+        };
+        let py_state = PyRuntimeState::from(runtime);
+        assert_eq!(py_state.kernel.lifecycle, "AwaitingProjectTrust");
+        assert_eq!(py_state.kernel.status, "awaiting_project_trust");
+        assert_eq!(py_state.kernel.starting_phase, "");
     }
 }

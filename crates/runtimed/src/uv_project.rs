@@ -46,11 +46,18 @@ pub(crate) fn notebook_working_dir(notebook_path: Option<&Path>) -> PathBuf {
     }
 }
 
-fn uv_run_base_args(offline: bool) -> Vec<OsString> {
+/// `uv run` arguments shared by the prepare probe and the kernel launch.
+///
+/// `--project` pins uv to the trusted project directory. Without it uv
+/// rediscovers a project by walking up from the cwd, which can select a
+/// different `pyproject.toml` than the one the user trusted.
+fn uv_run_base_args(offline: bool, project_dir: &Path) -> Vec<OsString> {
     let mut args = vec!["run".into()];
     if offline {
         args.push("--offline".into());
     }
+    args.push("--project".into());
+    args.push(project_dir.as_os_str().to_owned());
     args.extend([
         OsString::from("--with"),
         OsString::from("ipykernel"),
@@ -60,8 +67,8 @@ fn uv_run_base_args(offline: bool) -> Vec<OsString> {
     args
 }
 
-pub(crate) fn uv_pyproject_prepare_args(offline: bool) -> Vec<OsString> {
-    let mut args = uv_run_base_args(offline);
+pub(crate) fn uv_pyproject_prepare_args(offline: bool, project_dir: &Path) -> Vec<OsString> {
+    let mut args = uv_run_base_args(offline, project_dir);
     args.extend([
         OsString::from("python"),
         OsString::from("-Xfrozen_modules=off"),
@@ -74,8 +81,9 @@ pub(crate) fn uv_pyproject_prepare_args(offline: bool) -> Vec<OsString> {
 pub(crate) fn uv_pyproject_kernel_args(
     bootstrap_dx: bool,
     connection_file: &Path,
+    project_dir: &Path,
 ) -> Vec<OsString> {
-    let mut args = uv_run_base_args(false);
+    let mut args = uv_run_base_args(false, project_dir);
     let launcher_module = if bootstrap_dx {
         "nteract_kernel_launcher"
     } else {
@@ -157,21 +165,14 @@ pub(crate) fn uv_offline_env_vars(offline: bool) -> std::collections::HashMap<St
 /// succeed, signaling the caller that the kernel launch must also run with
 /// `UV_OFFLINE=1` so `uv run` does not re-resolve against the index.
 pub(crate) async fn prepare_uv_pyproject_environment(
+    manifest: &crate::project_trust::TrustedProjectManifest,
     notebook_path: Option<&Path>,
     bootstrap_dx: bool,
     progress_handler: Arc<dyn ProgressHandler>,
 ) -> Result<bool> {
     let cwd = notebook_working_dir(notebook_path);
-    let project_path = notebook_path
-        .and_then(|path| {
-            crate::project_file::find_nearest_project_file(
-                path,
-                &[crate::project_file::ProjectFileKind::PyprojectToml],
-            )
-        })
-        .map(|detected| detected.path)
-        .unwrap_or_else(|| cwd.join("pyproject.toml"));
-    let project_path_label = project_path.display().to_string();
+    let project_dir = manifest.project_dir().to_path_buf();
+    let project_path_label = manifest.path().display().to_string();
 
     progress_handler.on_progress(
         "uv",
@@ -192,7 +193,7 @@ pub(crate) async fn prepare_uv_pyproject_environment(
         bootstrap_dx
     );
     let started = Instant::now();
-    let output = run_prepare_probe(&uv_path, &cwd, bootstrap_dx, false).await?;
+    let output = run_prepare_probe(&uv_path, &cwd, &project_dir, bootstrap_dx, false).await?;
 
     if output.status.success() {
         info!(
@@ -210,7 +211,7 @@ pub(crate) async fn prepare_uv_pyproject_environment(
             project_path_label,
             stderr.trim()
         );
-        let retry = run_prepare_probe(&uv_path, &cwd, bootstrap_dx, true).await?;
+        let retry = run_prepare_probe(&uv_path, &cwd, &project_dir, bootstrap_dx, true).await?;
         if retry.status.success() {
             info!(
                 "[uv-project] UV project environment ready from local cache (offline): project={} elapsed_ms={}",
@@ -233,11 +234,12 @@ pub(crate) async fn prepare_uv_pyproject_environment(
 async fn run_prepare_probe(
     uv_path: &Path,
     cwd: &Path,
+    project_dir: &Path,
     bootstrap_dx: bool,
     offline: bool,
 ) -> Result<std::process::Output> {
     let mut cmd = Command::new(uv_path);
-    cmd.args(uv_pyproject_prepare_args(offline));
+    cmd.args(uv_pyproject_prepare_args(offline, project_dir));
     cmd.current_dir(cwd);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -286,9 +288,11 @@ mod tests {
     #[test]
     fn prepare_args_include_base_uv_packages() {
         assert_eq!(
-            args_to_strings(uv_pyproject_prepare_args(false)),
+            args_to_strings(uv_pyproject_prepare_args(false, Path::new("/work/proj"))),
             vec![
                 "run",
+                "--project",
+                "/work/proj",
                 "--with",
                 "ipykernel",
                 "--with",
@@ -304,10 +308,12 @@ mod tests {
     #[test]
     fn prepare_args_with_offline_inserts_flag_after_run() {
         assert_eq!(
-            args_to_strings(uv_pyproject_prepare_args(true)),
+            args_to_strings(uv_pyproject_prepare_args(true, Path::new("/work/proj"))),
             vec![
                 "run",
                 "--offline",
+                "--project",
+                "/work/proj",
                 "--with",
                 "ipykernel",
                 "--with",
@@ -355,11 +361,14 @@ mod tests {
         let args = args_to_strings(uv_pyproject_kernel_args(
             false,
             Path::new("/tmp/kernel.json"),
+            Path::new("/work/proj"),
         ));
         assert_eq!(
             args,
             vec![
                 "run",
+                "--project",
+                "/work/proj",
                 "--with",
                 "ipykernel",
                 "--with",
@@ -379,11 +388,14 @@ mod tests {
         let args = args_to_strings(uv_pyproject_kernel_args(
             true,
             Path::new("/tmp/kernel.json"),
+            Path::new("/work/proj"),
         ));
         assert_eq!(
             args,
             vec![
                 "run",
+                "--project",
+                "/work/proj",
                 "--with",
                 "ipykernel",
                 "--with",

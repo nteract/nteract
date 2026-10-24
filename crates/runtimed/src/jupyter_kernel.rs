@@ -784,15 +784,30 @@ impl KernelConnection for JupyterKernel {
                         cmd
                     }
                     "uv:pyproject" => {
+                        // Launch from the manifest the daemon's trust gate
+                        // approved. Rediscovering from the cwd could pick a
+                        // different project.
+                        let project_dir = launched_config
+                            .pyproject_path
+                            .as_deref()
+                            .and_then(std::path::Path::parent)
+                            .map(std::path::Path::to_path_buf)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "uv:pyproject launch is missing the approved pyproject.toml path"
+                                )
+                            })?;
                         let uv_path = kernel_launch::tools::get_uv_path().await?;
                         info!(
-                            "[jupyter-kernel] Starting Python kernel with uv run (env_source: {})",
-                            env_source
+                            "[jupyter-kernel] Starting Python kernel with uv run (env_source: {}, project: {})",
+                            env_source,
+                            project_dir.display()
                         );
                         let mut cmd = tokio::process::Command::new(&uv_path);
                         cmd.args(crate::uv_project::uv_pyproject_kernel_args(
                             bootstrap_dx,
                             &connection_file_path,
+                            &project_dir,
                         ));
                         cmd.stdout(Stdio::null());
                         cmd.stderr(Stdio::piped());
@@ -858,16 +873,12 @@ impl KernelConnection for JupyterKernel {
                         // lookup or creation via rattler) and passed as the pooled_env.
                         let conda_prefix =
                             env.as_ref().map(|e| e.venv_path.clone()).or_else(|| {
-                                // Fallback: look up the named env from environment.yml
-                                notebook_path.as_deref().and_then(|p| {
-                                    crate::project_file::find_nearest_project_file(
-                                        p,
-                                        &[crate::project_file::ProjectFileKind::EnvironmentYml],
-                                    )
-                                    .and_then(|d| {
-                                        crate::project_file::resolve_conda_env_prefix(&d.path)
-                                    })
-                                })
+                                // Fallback: the named env from the approved
+                                // environment.yml.
+                                launched_config
+                                    .environment_yml_path
+                                    .as_deref()
+                                    .and_then(crate::project_file::resolve_conda_env_prefix)
                             });
 
                         if let Some(ref prefix) = conda_prefix {
@@ -919,13 +930,14 @@ impl KernelConnection for JupyterKernel {
                         }
                     }
                     "pixi:toml" => {
-                        let manifest_path = notebook_path.as_deref().and_then(|p| {
-                            crate::project_file::detect_project_file(p)
-                                .filter(|d| {
-                                    d.kind == crate::project_file::ProjectFileKind::PixiToml
-                                })
-                                .map(|d| d.path)
-                        });
+                        // Launch from the manifest the daemon's trust gate
+                        // approved. `pixi run` without `--manifest-path`
+                        // would discover a project from the cwd instead.
+                        let manifest = launched_config.pixi_toml_path.clone().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "pixi:toml launch is missing the approved manifest path"
+                            )
+                        })?;
 
                         let launcher_module = if bootstrap_dx {
                             "nteract_kernel_launcher"
@@ -940,105 +952,79 @@ impl KernelConnection for JupyterKernel {
                         // otherwise hit the network without them.
                         let shell_hook_env: std::collections::HashMap<String, String> =
                             config.env_vars.iter().cloned().collect();
-                        if let Some(ref manifest) = manifest_path {
-                            match kernel_launch::tools::pixi_shell_hook(
-                                manifest,
-                                None,
-                                &shell_hook_env,
-                            )
-                            .await
-                            {
-                                Ok(env_vars) => {
-                                    let python = env_vars
-                                        .get("CONDA_PREFIX")
-                                        .map(|p| {
-                                            let prefix = std::path::PathBuf::from(p);
-                                            if cfg!(windows) {
-                                                prefix.join("python.exe")
-                                            } else {
-                                                prefix.join("bin").join("python")
-                                            }
-                                        })
-                                        .unwrap_or_else(|| std::path::PathBuf::from("python"));
-                                    info!(
+                        match kernel_launch::tools::pixi_shell_hook(
+                            &manifest,
+                            None,
+                            &shell_hook_env,
+                        )
+                        .await
+                        {
+                            Ok(env_vars) => {
+                                let python = env_vars
+                                    .get("CONDA_PREFIX")
+                                    .map(|p| {
+                                        let prefix = std::path::PathBuf::from(p);
+                                        if cfg!(windows) {
+                                            prefix.join("python.exe")
+                                        } else {
+                                            prefix.join("bin").join("python")
+                                        }
+                                    })
+                                    .unwrap_or_else(|| std::path::PathBuf::from("python"));
+                                info!(
                                         "[jupyter-kernel] Starting Python kernel via pixi shell-hook ({})",
                                         python.display()
                                     );
-                                    let mut cmd = tokio::process::Command::new(&python);
-                                    cmd.envs(&env_vars);
-                                    if let Some(parent) = manifest.parent() {
-                                        cmd.current_dir(parent);
-                                    }
-                                    cmd.args(["-Xfrozen_modules=off", "-m", launcher_module, "-f"]);
-                                    cmd.arg(&connection_file_path);
-                                    cmd.stdout(Stdio::null());
-                                    cmd.stderr(Stdio::piped());
-                                    if bootstrap_dx {
-                                        // pixi.toml envs belong to the user.
-                                        // Installing nteract_kernel_launcher
-                                        // into their env is a cleanup hazard,
-                                        // so inject via PYTHONPATH — same
-                                        // pattern as uv:pyproject,
-                                        // conda:env_yml, and pixi exec.
-                                        let dir =
-                                            crate::launcher_cache::launcher_cache_dir().await?;
-                                        cmd.env("PYTHONPATH", &dir);
-                                    }
-                                    cmd
+                                let mut cmd = tokio::process::Command::new(&python);
+                                cmd.envs(&env_vars);
+                                if let Some(parent) = manifest.parent() {
+                                    cmd.current_dir(parent);
                                 }
-                                Err(e) => {
-                                    warn!(
+                                cmd.args(["-Xfrozen_modules=off", "-m", launcher_module, "-f"]);
+                                cmd.arg(&connection_file_path);
+                                cmd.stdout(Stdio::null());
+                                cmd.stderr(Stdio::piped());
+                                if bootstrap_dx {
+                                    // pixi.toml envs belong to the user.
+                                    // Installing nteract_kernel_launcher
+                                    // into their env is a cleanup hazard,
+                                    // so inject via PYTHONPATH — same
+                                    // pattern as uv:pyproject,
+                                    // conda:env_yml, and pixi exec.
+                                    let dir = crate::launcher_cache::launcher_cache_dir().await?;
+                                    cmd.env("PYTHONPATH", &dir);
+                                }
+                                cmd
+                            }
+                            Err(e) => {
+                                warn!(
                                         "[jupyter-kernel] pixi shell-hook failed ({}), falling back to pixi run",
                                         e
                                     );
-                                    let pixi_path = kernel_launch::tools::get_pixi_path().await?;
-                                    let mut cmd = tokio::process::Command::new(&pixi_path);
-                                    cmd.args([
-                                        "run",
-                                        "python",
-                                        "-Xfrozen_modules=off",
-                                        "-m",
-                                        launcher_module,
-                                        "-f",
-                                    ]);
-                                    cmd.arg(&connection_file_path);
-                                    cmd.stdout(Stdio::null());
-                                    cmd.stderr(Stdio::piped());
-                                    if let Some(parent) = manifest.parent() {
-                                        cmd.current_dir(parent);
-                                    }
-                                    if bootstrap_dx {
-                                        let dir =
-                                            crate::launcher_cache::launcher_cache_dir().await?;
-                                        cmd.env("PYTHONPATH", &dir);
-                                    }
-                                    cmd
-                                }
-                            }
-                        } else {
-                            let pixi_path = kernel_launch::tools::get_pixi_path().await?;
-                            let mut cmd = tokio::process::Command::new(&pixi_path);
-                            cmd.args([
-                                "run",
-                                "python",
-                                "-Xfrozen_modules=off",
-                                "-m",
-                                launcher_module,
-                                "-f",
-                            ]);
-                            cmd.arg(&connection_file_path);
-                            cmd.stdout(Stdio::null());
-                            cmd.stderr(Stdio::piped());
-                            if let Some(ref nb_path) = notebook_path {
-                                if let Some(parent) = nb_path.parent() {
+                                let pixi_path = kernel_launch::tools::get_pixi_path().await?;
+                                let mut cmd = tokio::process::Command::new(&pixi_path);
+                                cmd.arg("run");
+                                cmd.arg("--manifest-path");
+                                cmd.arg(&manifest);
+                                cmd.args([
+                                    "python",
+                                    "-Xfrozen_modules=off",
+                                    "-m",
+                                    launcher_module,
+                                    "-f",
+                                ]);
+                                cmd.arg(&connection_file_path);
+                                cmd.stdout(Stdio::null());
+                                cmd.stderr(Stdio::piped());
+                                if let Some(parent) = manifest.parent() {
                                     cmd.current_dir(parent);
                                 }
+                                if bootstrap_dx {
+                                    let dir = crate::launcher_cache::launcher_cache_dir().await?;
+                                    cmd.env("PYTHONPATH", &dir);
+                                }
+                                cmd
                             }
-                            if bootstrap_dx {
-                                let dir = crate::launcher_cache::launcher_cache_dir().await?;
-                                cmd.env("PYTHONPATH", &dir);
-                            }
-                            cmd
                         }
                     }
                     "pixi:inline" | "pixi:prewarmed" | "pixi:pep723" => {

@@ -12,7 +12,7 @@ use notebook_sync::handle::DocHandle;
 
 use crate::NteractMcp;
 
-use super::{arg_str, arg_string_array, reject_unknown_args, tool_error, tool_success};
+use super::{arg_bool, arg_str, arg_string_array, reject_unknown_args, tool_error, tool_success};
 
 type DependencyEditOutcome = (Vec<String>, Vec<String>, Vec<String>);
 
@@ -94,6 +94,37 @@ pub struct ApproveTrustParams {
     /// If supplied and dependencies changed since review, approval is rejected.
     #[serde(default)]
     pub dependency_fingerprint: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+pub struct ApproveProjectTrustParams {
+    /// Folder to trust. Must be the project file's folder or an ancestor of
+    /// it. Defaults to `project_trust.project_dir` from the runtime state.
+    #[serde(default)]
+    pub directory: Option<String>,
+    /// Use the notebook's own environment instead of the project file.
+    #[serde(default)]
+    pub use_notebook_environment: bool,
+    /// With `use_notebook_environment`, remember the choice for this folder
+    /// on this machine instead of only for this notebook session.
+    #[serde(default)]
+    pub remember: bool,
+}
+
+/// Tolerant parse: booleans may arrive as strings (claude-code#32524), and
+/// notebook target selectors share the argument map.
+fn parse_approve_project_trust_params(
+    request: &CallToolRequestParams,
+) -> ApproveProjectTrustParams {
+    ApproveProjectTrustParams {
+        directory: arg_str(request, "directory")
+            .map(str::trim)
+            .filter(|directory| !directory.is_empty())
+            .map(str::to_string),
+        use_notebook_environment: arg_bool(request, "use_notebook_environment").unwrap_or(false),
+        remember: arg_bool(request, "remember").unwrap_or(false),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -999,6 +1030,123 @@ pub async fn approve_trust(
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }
 
+/// Record a project-folder trust decision for headless clients, then launch
+/// the kernel the daemon parked at `AwaitingProjectTrust`.
+///
+/// The daemon resets the parked lifecycle to `NotStarted` after either
+/// decision and leaves the launch to the client, so this tool sends
+/// `LaunchKernel` with auto environment resolution once the decision lands.
+pub async fn approve_project_trust(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    let params = parse_approve_project_trust_params(request);
+    let access = require_session_access!(server, KernelControl);
+    let handle = access.handle.clone();
+    let notebook_id = access.notebook_id.clone();
+
+    let before = handle.get_runtime_state().ok();
+    let pending_dir = before
+        .as_ref()
+        .map(|state| state.project_trust.project_dir.clone())
+        .filter(|dir| !dir.is_empty());
+    let Some(directory) = params.directory.clone().or(pending_dir) else {
+        return tool_error(
+            "No project folder is waiting for trust. Pass directory with the folder that contains the project file.",
+        );
+    };
+
+    let (decision_request, decision) = if params.use_notebook_environment {
+        (
+            NotebookRequest::DeclineProjectTrust {
+                directory: directory.clone(),
+                remember: params.remember,
+            },
+            "notebook_env",
+        )
+    } else {
+        (
+            NotebookRequest::ApproveProjectTrust {
+                directory: directory.clone(),
+            },
+            "trusted",
+        )
+    };
+    match handle.send_request(decision_request).await {
+        Ok(NotebookResponse::Ok {}) => {}
+        Ok(NotebookResponse::Error { error }) => return tool_error(&error),
+        Ok(other) => return tool_error(&format!("Unexpected project trust response: {other:?}")),
+        Err(e) => return tool_error(&format!("Failed to record project trust decision: {e}")),
+    }
+    if let Err(error) = server.ensure_session_access_current(&access).await {
+        return super::session_access_error(error);
+    }
+
+    let kernel_type = before
+        .as_ref()
+        .map(|state| state.kernel.name.clone())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "python".to_string());
+    let notebook_path = if notebook_id.contains('/') || notebook_id.contains('\\') {
+        Some(notebook_id.clone())
+    } else {
+        None
+    };
+    let launch = match handle
+        .send_request(NotebookRequest::LaunchKernel {
+            kernel_type,
+            env_source: notebook_protocol::connection::LaunchSpec::parse("auto"),
+            notebook_path,
+        })
+        .await
+    {
+        Ok(NotebookResponse::KernelLaunched { env_source, .. }) => serde_json::json!({
+            "success": true,
+            "env_source": env_source,
+        }),
+        Ok(NotebookResponse::KernelAlreadyRunning { env_source, .. }) => serde_json::json!({
+            "success": true,
+            "already_running": true,
+            "env_source": env_source,
+        }),
+        Ok(NotebookResponse::Error { error })
+        | Ok(NotebookResponse::EnvironmentSelectionRejected { error }) => serde_json::json!({
+            "success": false,
+            "error": error,
+        }),
+        Ok(NotebookResponse::GuardRejected { reason }) => serde_json::json!({
+            "success": false,
+            "error": reason,
+        }),
+        Ok(other) => serde_json::json!({
+            "success": false,
+            "error": format!("Unexpected launch response: {other:?}"),
+        }),
+        Err(e) => serde_json::json!({
+            "success": false,
+            "error": format!("Failed to launch kernel: {e}"),
+        }),
+    };
+
+    let mut result = serde_json::json!({
+        "decision": decision,
+        "directory": directory,
+        "launch": launch,
+    });
+    if params.use_notebook_environment {
+        result["remember"] = serde_json::json!(params.remember);
+    }
+    if let Ok(state) = handle.get_runtime_state() {
+        let (kernel_status, _phase) = state.kernel.lifecycle.to_legacy();
+        result["kernel_status"] = serde_json::json!(kernel_status);
+        if !state.project_trust.status.is_empty() {
+            result["project_trust"] = super::session::project_trust_json(&state.project_trust);
+        }
+    }
+
+    tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
+}
+
 /// Hot-install new dependencies without restarting.
 pub async fn sync_environment(
     server: &NteractMcp,
@@ -1338,6 +1486,139 @@ mod tests {
         let params: ApproveTrustParams = serde_json::from_value(serde_json::json!({})).unwrap();
 
         assert_eq!(params.dependency_fingerprint, None);
+    }
+
+    #[test]
+    fn approve_project_trust_params_accept_empty() {
+        let params: ApproveProjectTrustParams =
+            serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(params, ApproveProjectTrustParams::default());
+
+        let parsed = parse_approve_project_trust_params(&make_request(serde_json::json!({
+            "notebook_id": "nb-1",
+        })));
+        assert_eq!(parsed, ApproveProjectTrustParams::default());
+    }
+
+    #[test]
+    fn approve_project_trust_params_accept_directory_and_decline_flags() {
+        let params: ApproveProjectTrustParams = serde_json::from_value(serde_json::json!({
+            "directory": "/work",
+            "use_notebook_environment": true,
+            "remember": true,
+        }))
+        .unwrap();
+        assert_eq!(params.directory.as_deref(), Some("/work"));
+        assert!(params.use_notebook_environment);
+        assert!(params.remember);
+
+        // Booleans as strings (claude-code#32524) and blank directories.
+        let parsed = parse_approve_project_trust_params(&make_request(serde_json::json!({
+            "directory": "  ",
+            "use_notebook_environment": "true",
+            "remember": "false",
+        })));
+        assert_eq!(parsed.directory, None);
+        assert!(parsed.use_notebook_environment);
+        assert!(!parsed.remember);
+    }
+
+    fn parked_project_trust() -> runtime_doc::ProjectTrustRuntimeState {
+        runtime_doc::ProjectTrustRuntimeState {
+            status: "untrusted".into(),
+            needs_approval: true,
+            manifest_path: "/work/proj/pyproject.toml".into(),
+            kind: "pyproject_toml".into(),
+            project_dir: "/work/proj".into(),
+            repo_root: Some("/work".into()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn approve_project_trust_defaults_to_project_dir_and_launches() {
+        let fixture = RestartFixture::new(RestartFixture::launched()).await;
+        fixture.park_on_project_trust(parked_project_trust()).await;
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            approve_project_trust(
+                &fixture.server,
+                &request("approve_project_trust", serde_json::json!({})),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        let value = result_json(&result);
+        assert_eq!(value["decision"], "trusted");
+        assert_eq!(value["directory"], "/work/proj");
+        assert_eq!(value["launch"]["success"], true);
+        assert!(value.get("remember").is_none());
+        let requests = fixture.requests();
+        assert_eq!(requests.len(), 2, "{requests:?}");
+        assert!(matches!(
+            &requests[0],
+            NotebookRequest::ApproveProjectTrust { directory } if directory == "/work/proj"
+        ));
+        assert!(matches!(
+            &requests[1],
+            NotebookRequest::LaunchKernel { kernel_type, env_source, .. }
+                if kernel_type == "python"
+                    && *env_source == notebook_protocol::connection::LaunchSpec::Auto
+        ));
+    }
+
+    #[tokio::test]
+    async fn approve_project_trust_can_choose_notebook_environment() {
+        let fixture = RestartFixture::new(RestartFixture::launched()).await;
+        fixture.park_on_project_trust(parked_project_trust()).await;
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            approve_project_trust(
+                &fixture.server,
+                &request(
+                    "approve_project_trust",
+                    serde_json::json!({
+                        "directory": "/work",
+                        "use_notebook_environment": true,
+                        "remember": "true",
+                    }),
+                ),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        let value = result_json(&result);
+        assert_eq!(value["decision"], "notebook_env");
+        assert_eq!(value["remember"], true);
+        let requests = fixture.requests();
+        assert!(matches!(
+            &requests[0],
+            NotebookRequest::DeclineProjectTrust { directory, remember: true } if directory == "/work"
+        ));
+        assert!(matches!(&requests[1], NotebookRequest::LaunchKernel { .. }));
+    }
+
+    #[tokio::test]
+    async fn approve_project_trust_without_pending_folder_requires_directory() {
+        let fixture = RestartFixture::new(RestartFixture::launched()).await;
+
+        let result = approve_project_trust(
+            &fixture.server,
+            &request("approve_project_trust", serde_json::json!({})),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.is_error, Some(true));
+        assert!(fixture.requests().is_empty());
     }
 
     #[test]

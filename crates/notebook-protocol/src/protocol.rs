@@ -870,6 +870,23 @@ pub enum NotebookRequest {
         project_file_path: Option<String>,
     },
 
+    /// Trust a directory so project files at or below it may drive uv, pixi,
+    /// or conda on this machine. `directory` must contain the project file
+    /// the room would launch from; the daemon rejects unrelated paths. Trust
+    /// is recorded locally and never written into the notebook.
+    ApproveProjectTrust {
+        directory: String,
+    },
+
+    /// Use the notebook-owned environment instead of the project file in
+    /// `directory`. With `remember`, the choice persists for that directory
+    /// on this machine; otherwise it lasts for this room.
+    DeclineProjectTrust {
+        directory: String,
+        #[serde(default)]
+        remember: bool,
+    },
+
     /// Get the full Automerge document bytes from the daemon's canonical doc.
     /// Used by the frontend to bootstrap its WASM Automerge peer.
     GetDocBytes {},
@@ -1571,6 +1588,13 @@ mod tests {
             NotebookRequest::ApproveProjectEnvironment {
                 project_file_path: Some("/tmp/project/environment.yml".into()),
             },
+            NotebookRequest::ApproveProjectTrust {
+                directory: "/tmp/project".into(),
+            },
+            NotebookRequest::DeclineProjectTrust {
+                directory: "/tmp/project".into(),
+                remember: true,
+            },
         ];
 
         for request in cases {
@@ -1823,6 +1847,21 @@ mod tests {
                 serde_json::json!({
                     "action": "approve_project_environment",
                     "project_file_path": "/tmp/project/environment.yml",
+                }),
+            ),
+            (
+                "approve_project_trust",
+                serde_json::json!({
+                    "action": "approve_project_trust",
+                    "directory": "/tmp/project",
+                }),
+            ),
+            (
+                "decline_project_trust",
+                serde_json::json!({
+                    "action": "decline_project_trust",
+                    "directory": "/tmp/project",
+                    "remember": false,
                 }),
             ),
             (

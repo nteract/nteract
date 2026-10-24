@@ -77,6 +77,9 @@ async def _start_workspace_kernel(notebook_session):
         kernel_type="python",
         env_source="uv:pyproject",
         notebook_path=str(_WORKSPACE_ROOT),
+        # The workspace pyproject drives this launch, so its folder must be
+        # trusted on the test daemon first.
+        trust_project_dir=_WORKSPACE_ROOT,
     )
 
 

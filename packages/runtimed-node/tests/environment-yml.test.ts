@@ -258,4 +258,74 @@ describe.skipIf(!nativeEnabled)("explicit environment.yml initialization", () =>
     },
     300000,
   );
+
+  it("parks an untrusted project folder and records decisions through the session", async () => {
+    // No notebook dependencies, so the only gate is project folder trust and
+    // neither decision launches anything on its own.
+    const project = fs.mkdtempSync(path.join(directory, "trust-"));
+    const notebookPath = path.join(project, "analysis.ipynb");
+    fs.writeFileSync(
+      notebookPath,
+      JSON.stringify({
+        nbformat: 4,
+        nbformat_minor: 5,
+        cells: [],
+        metadata: {
+          kernelspec: { name: "python3", language: "python", display_name: "Python 3" },
+          runt: { schema_version: "1" },
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(project, "environment.yml"),
+      `name: runt-trust-${path.basename(project)}\nchannels:\n  - conda-forge\ndependencies:\n  - python=3.12\n`,
+    );
+    const canonicalProject = fs.realpathSync.native(project);
+    const session = await rt.openNotebookPath(notebookPath, { socketPath });
+    try {
+      await vi.waitFor(
+        async () => {
+          const status = await session.getRuntimeStatus();
+          expect(status.lifecycle).toBe("AwaitingProjectTrust");
+          expect(status.projectTrust).toMatchObject({
+            status: "untrusted",
+            needsApproval: true,
+            kind: "environment_yml",
+            projectDir: canonicalProject,
+          });
+        },
+        { timeout: 15000 },
+      );
+      expect((await session.getDependencyStatus()).projectTrust.status).toBe("untrusted");
+
+      const outside = fs.mkdtempSync(path.join(directory, "outside-"));
+      await expect(session.approveProjectTrust(outside)).rejects.toThrow(
+        /does not contain the project file/,
+      );
+
+      await session.declineProjectTrust(project);
+      await vi.waitFor(async () => {
+        const status = await session.getRuntimeStatus();
+        expect(status.lifecycle).toBe("NotStarted");
+        expect(status.projectTrust).toMatchObject({ status: "notebook_env", needsApproval: false });
+      });
+
+      await session.approveProjectTrust(project);
+      await vi.waitFor(async () =>
+        expect((await session.getRuntimeStatus()).projectTrust).toMatchObject({
+          status: "trusted",
+          needsApproval: false,
+          trustedDir: canonicalProject,
+        }),
+      );
+    } catch (error) {
+      throw new Error(
+        `${error}\nRuntime: ${JSON.stringify(await session.getRuntimeStatus())}\nDaemon logs:\n${logs}`,
+        { cause: error },
+      );
+    } finally {
+      await session.shutdownNotebook();
+      await session.close();
+    }
+  }, 30000);
 });

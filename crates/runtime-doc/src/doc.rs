@@ -9,7 +9,8 @@
 //! ```text
 //! ROOT/
 //!   kernel/
-//!     lifecycle: Str       ("NotStarted" | "AwaitingTrust" | "AwaitingEnvBuild" | "Resolving" | "PreparingEnv"
+//!     lifecycle: Str       ("NotStarted" | "AwaitingTrust" | "AwaitingProjectTrust" | "AwaitingEnvBuild"
+//!                           | "Resolving" | "PreparingEnv"
 //!                           | "Launching" | "Connecting" | "Running" | "Error" | "Shutdown")
 //!     activity: Str        ("" | "Unknown" | "Idle" | "Busy") — only meaningful when lifecycle == "Running"
 //!     error_reason: Str    ("" unless lifecycle == "Error")
@@ -99,6 +100,7 @@
 //!       checkpoint: Map|null (blob-backed full document checkpoint)
 //!       patch_tail: List[Map] (bounded blob-backed transactions after checkpoint)
 //!   file_checkpoint/       Map (additive; absent in frozen schema v2 genesis)
+//!   project_trust/         Map (additive; absent in frozen schema v2 genesis)
 //!     exported_heads: List[Str] (NotebookDoc Automerge heads in hex)
 //!     save_sequence: Uint|null  (monotonic committed file replacement sequence)
 //!     source_issue_kind: Str    ("" | "conflict" | "degraded")
@@ -471,6 +473,73 @@ pub struct FileCheckpointState {
     pub source_issue: Option<FileSourceIssue>,
 }
 
+/// Project-directory trust projected to RuntimeStateDoc readers.
+///
+/// A project file (`pyproject.toml`, `pixi.toml`, `environment.yml`) is a
+/// program: build backends, source overrides, index URLs, and activation
+/// scripts run when uv, pixi, or conda prepares it. The daemon will not
+/// hand a project file to those tools until its directory is trusted on
+/// this machine. This map tells clients what is waiting for approval.
+///
+/// Additive and absent from the frozen v2 genesis. Missing data reads as
+/// the default (`status == ""`, nothing to approve).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectTrustRuntimeState {
+    /// `""` (not evaluated), `"no_project"`, `"trusted"`, `"untrusted"`,
+    /// or `"notebook_env"` (the user chose the notebook environment).
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub needs_approval: bool,
+    /// Canonical path of the manifest that would drive the environment.
+    #[serde(default)]
+    pub manifest_path: String,
+    /// `"pyproject_toml"`, `"pixi_toml"`, or `"environment_yml"`.
+    #[serde(default)]
+    pub kind: String,
+    /// Default trust target: the manifest's directory.
+    #[serde(default)]
+    pub project_dir: String,
+    /// Wider trust target: the enclosing repository root, when one exists
+    /// and differs from `project_dir`.
+    #[serde(default)]
+    pub repo_root: Option<String>,
+    /// Directory whose trust row produced `status`, when one matched.
+    #[serde(default)]
+    pub trusted_dir: Option<String>,
+    /// Parse-only summary of what trusting the project allows.
+    #[serde(default)]
+    pub summary: ProjectTrustSummary,
+}
+
+/// What a project file asks uv, pixi, or conda to do. Built by parsing the
+/// manifest only; no tool runs to produce it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectTrustSummary {
+    /// Declared registry dependencies.
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    /// Git, path, URL, or archive sources.
+    #[serde(default)]
+    pub non_registry_sources: Vec<String>,
+    /// Package indexes, find-links, and channels.
+    #[serde(default)]
+    pub indexes_and_channels: Vec<String>,
+    /// `[build-system] build-backend`, when the project builds itself.
+    #[serde(default)]
+    pub build_backend: Option<String>,
+    /// Scripts the tool runs on activation.
+    #[serde(default)]
+    pub activation_scripts: Vec<String>,
+    /// Sources that point outside the directory being trusted.
+    #[serde(default)]
+    pub outside_directory: Vec<String>,
+    /// Environment the daemon will create on approval, when none exists yet.
+    /// Includes the environment name and the create command.
+    #[serde(default)]
+    pub environment_to_build: Option<String>,
+}
+
 /// Full runtime state snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeState {
@@ -487,6 +556,10 @@ pub struct RuntimeState {
     /// Missing fields in older RuntimeStateDocs project to the default state.
     #[serde(default)]
     pub file_checkpoint: FileCheckpointState,
+    /// Project-directory trust for the project file that would drive the
+    /// environment. Missing in older RuntimeStateDocs; reads as default.
+    #[serde(default)]
+    pub project_trust: ProjectTrustRuntimeState,
     /// Path to the notebook's `.ipynb` on the daemon's disk.
     /// `None` for untitled notebooks; daemon writes this on save / save-as.
     pub path: Option<String>,
@@ -2682,6 +2755,28 @@ impl RuntimeStateDoc {
         Ok(())
     }
 
+    /// Read project-directory trust. Absent in frozen v2 genesis documents
+    /// and older snapshots, which project to the default state.
+    pub fn project_trust(&self) -> ProjectTrustRuntimeState {
+        automunge::read_json_value(&self.doc, &ROOT, "project_trust")
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default()
+    }
+
+    /// Write project-directory trust. Returns `false` when nothing changed.
+    pub fn set_project_trust(
+        &mut self,
+        state: &ProjectTrustRuntimeState,
+    ) -> Result<bool, RuntimeStateError> {
+        if &self.project_trust() == state {
+            return Ok(false);
+        }
+        let value = serde_json::to_value(state)
+            .map_err(|e| RuntimeStateError::InvalidProjectTrust(e.to_string()))?;
+        automunge::update_json_at_key(&mut self.doc, &ROOT, "project_trust", &value)?;
+        Ok(true)
+    }
+
     /// Read the last causally committed file checkpoint and source health.
     ///
     /// Frozen v2 genesis documents and older persisted snapshots do not have
@@ -3606,6 +3701,7 @@ impl RuntimeStateDoc {
             trust: trust_state,
             last_saved,
             file_checkpoint,
+            project_trust: self.project_trust(),
             path,
             executions,
             comms,
@@ -4715,6 +4811,54 @@ mod tests {
             FileCheckpointState::default()
         );
         assert!(doc.doc().get(ROOT, "file_checkpoint").unwrap().is_none());
+    }
+
+    #[test]
+    fn project_trust_defaults_for_frozen_v2_genesis() {
+        let doc = RuntimeStateDoc::new();
+
+        assert_eq!(doc.project_trust(), ProjectTrustRuntimeState::default());
+        assert_eq!(
+            doc.read_state().project_trust,
+            ProjectTrustRuntimeState::default()
+        );
+        assert!(doc.doc().get(ROOT, "project_trust").unwrap().is_none());
+    }
+
+    #[test]
+    fn project_trust_round_trips_and_shrinks_lists() -> Result<(), RuntimeStateError> {
+        let mut doc = RuntimeStateDoc::new();
+        let mut state = ProjectTrustRuntimeState {
+            status: "untrusted".to_string(),
+            needs_approval: true,
+            manifest_path: "/work/proj/pyproject.toml".to_string(),
+            kind: "pyproject_toml".to_string(),
+            project_dir: "/work/proj".to_string(),
+            repo_root: Some("/work".to_string()),
+            trusted_dir: None,
+            summary: ProjectTrustSummary {
+                dependencies: vec!["pandas".to_string(), "numpy".to_string()],
+                build_backend: Some("hatchling.build".to_string()),
+                ..Default::default()
+            },
+        };
+        assert!(doc.set_project_trust(&state)?);
+        assert!(
+            !doc.set_project_trust(&state)?,
+            "unchanged write is a no-op"
+        );
+        assert_eq!(doc.project_trust(), state);
+
+        state.status = "trusted".to_string();
+        state.needs_approval = false;
+        state.repo_root = None;
+        state.trusted_dir = Some("/work/proj".to_string());
+        state.summary.dependencies = vec!["pandas".to_string()];
+        state.summary.build_backend = None;
+        assert!(doc.set_project_trust(&state)?);
+        assert_eq!(doc.project_trust(), state);
+        assert_eq!(doc.read_state().project_trust, state);
+        Ok(())
     }
 
     #[test]
@@ -8172,6 +8316,7 @@ mod tests {
         let variants = [
             RuntimeLifecycle::NotStarted,
             RuntimeLifecycle::AwaitingTrust,
+            RuntimeLifecycle::AwaitingProjectTrust,
             RuntimeLifecycle::AwaitingEnvBuild,
             RuntimeLifecycle::Resolving,
             RuntimeLifecycle::PreparingEnv,

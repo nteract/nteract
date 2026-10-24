@@ -339,6 +339,11 @@ pub enum RuntimeLifecycle {
     #[default]
     NotStarted,
     AwaitingTrust,
+    /// A project file (`pyproject.toml`, `pixi.toml`, `environment.yml`)
+    /// would drive the environment, and its directory is not trusted on
+    /// this machine. Nothing reads or runs the project until the user
+    /// trusts the directory or picks the notebook environment instead.
+    AwaitingProjectTrust,
     AwaitingEnvBuild,
     Resolving,
     PreparingEnv,
@@ -374,6 +379,7 @@ impl RuntimeLifecycle {
         match self {
             Self::NotStarted => "NotStarted",
             Self::AwaitingTrust => "AwaitingTrust",
+            Self::AwaitingProjectTrust => "AwaitingProjectTrust",
             Self::AwaitingEnvBuild => "AwaitingEnvBuild",
             Self::Resolving => "Resolving",
             Self::PreparingEnv => "PreparingEnv",
@@ -394,6 +400,7 @@ impl RuntimeLifecycle {
         match lifecycle {
             "NotStarted" => Some(Self::NotStarted),
             "AwaitingTrust" => Some(Self::AwaitingTrust),
+            "AwaitingProjectTrust" => Some(Self::AwaitingProjectTrust),
             "AwaitingEnvBuild" => Some(Self::AwaitingEnvBuild),
             "Resolving" => Some(Self::Resolving),
             "PreparingEnv" => Some(Self::PreparingEnv),
@@ -434,6 +441,7 @@ impl RuntimeLifecycle {
             "error" => Self::Error,
             "shutdown" => Self::Shutdown,
             "awaiting_trust" => Self::AwaitingTrust,
+            "awaiting_project_trust" => Self::AwaitingProjectTrust,
             "awaiting_env_build" => Self::AwaitingEnvBuild,
             _ => Self::NotStarted,
         }
@@ -451,6 +459,7 @@ impl RuntimeLifecycle {
         match self {
             Self::NotStarted => ("not_started", ""),
             Self::AwaitingTrust => ("awaiting_trust", ""),
+            Self::AwaitingProjectTrust => ("awaiting_project_trust", ""),
             Self::AwaitingEnvBuild => ("awaiting_env_build", ""),
             Self::Resolving => ("starting", "resolving"),
             Self::PreparingEnv => ("starting", "preparing_env"),
@@ -622,6 +631,7 @@ mod tests {
         use RuntimeLifecycle::*;
         assert_eq!(NotStarted.variant_str(), "NotStarted");
         assert_eq!(AwaitingTrust.variant_str(), "AwaitingTrust");
+        assert_eq!(AwaitingProjectTrust.variant_str(), "AwaitingProjectTrust");
         assert_eq!(AwaitingEnvBuild.variant_str(), "AwaitingEnvBuild");
         assert_eq!(Resolving.variant_str(), "Resolving");
         assert_eq!(PreparingEnv.variant_str(), "PreparingEnv");
@@ -639,6 +649,10 @@ mod tests {
         assert_eq!(
             RuntimeLifecycle::parse("AwaitingTrust", ""),
             Some(AwaitingTrust)
+        );
+        assert_eq!(
+            RuntimeLifecycle::parse("AwaitingProjectTrust", ""),
+            Some(AwaitingProjectTrust)
         );
         assert_eq!(
             RuntimeLifecycle::parse("AwaitingEnvBuild", ""),
@@ -704,6 +718,10 @@ mod tests {
         use RuntimeLifecycle::*;
         assert_eq!(NotStarted.to_legacy(), ("not_started", ""));
         assert_eq!(AwaitingTrust.to_legacy(), ("awaiting_trust", ""));
+        assert_eq!(
+            AwaitingProjectTrust.to_legacy(),
+            ("awaiting_project_trust", "")
+        );
         assert_eq!(AwaitingEnvBuild.to_legacy(), ("awaiting_env_build", ""));
         assert_eq!(Resolving.to_legacy(), ("starting", "resolving"));
         assert_eq!(PreparingEnv.to_legacy(), ("starting", "preparing_env"));

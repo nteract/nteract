@@ -472,10 +472,17 @@ pub(crate) fn build_launched_config(
     venv_path: Option<PathBuf>,
     python_path: Option<PathBuf>,
     prewarmed_packages: Option<&[String]>,
-    notebook_path: Option<&std::path::Path>,
+    trusted_project: Option<&crate::project_trust::TrustedProjectManifest>,
     feature_flags: notebook_protocol::protocol::FeatureFlags,
     captured_env: Option<&CapturedEnv>,
 ) -> LaunchedEnvConfig {
+    // Project-backed sources record the manifest the gate approved. The
+    // runtime agent launches from this path and never rediscovers one.
+    let trusted_of = |kind: crate::project_file::ProjectFileKind| {
+        trusted_project
+            .filter(|t| *t.kind() == kind)
+            .map(|t| t.path().to_path_buf())
+    };
     let mut config = LaunchedEnvConfig {
         feature_flags,
         ..LaunchedEnvConfig::default()
@@ -543,28 +550,17 @@ pub(crate) fn build_launched_config(
             // Store pyproject.toml path and env paths for project-aware dep management.
             config.venv_path = venv_path;
             config.python_path = python_path;
-            if let Some(nb_path) = notebook_path {
-                if let Some(detected) = crate::project_file::detect_project_file(nb_path) {
-                    if detected.kind == crate::project_file::ProjectFileKind::PyprojectToml {
-                        config.pyproject_path = Some(detected.path);
-                    }
-                }
-            }
+            config.pyproject_path = trusted_of(crate::project_file::ProjectFileKind::PyprojectToml);
         }
         "pixi:toml" => {
             // Store pixi.toml deps baseline for drift detection.
             // Parse section-aware: only collect entries from [dependencies],
             // [pypi-dependencies], [tool.pixi.dependencies], [tool.pixi.pypi-dependencies].
-            if let Some(nb_path) = notebook_path {
-                if let Some(detected) = crate::project_file::detect_project_file(nb_path) {
-                    if detected.kind == crate::project_file::ProjectFileKind::PixiToml {
-                        if let Ok(content) = std::fs::read_to_string(&detected.path) {
-                            let deps = extract_pixi_toml_deps(&content);
-                            config.pixi_toml_deps = Some(deps);
-                            config.pixi_toml_path = Some(detected.path);
-                        }
-                    }
+            if let Some(path) = trusted_of(crate::project_file::ProjectFileKind::PixiToml) {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    config.pixi_toml_deps = Some(extract_pixi_toml_deps(&content));
                 }
+                config.pixi_toml_path = Some(path);
             }
         }
         "conda:env_yml" => {
@@ -578,21 +574,14 @@ pub(crate) fn build_launched_config(
             if let Some(pkgs) = prewarmed_packages {
                 config.prewarmed_packages = pkgs.to_vec();
             }
-            if let Some(nb_path) = notebook_path {
-                if let Some(detected) = crate::project_file::find_nearest_project_file(
-                    nb_path,
-                    &[crate::project_file::ProjectFileKind::EnvironmentYml],
-                ) {
-                    // Parse environment.yml to snapshot deps at launch time
-                    if let Ok(env_config) =
-                        crate::project_file::parse_environment_yml(&detected.path)
-                    {
-                        let mut deps = env_config.dependencies.clone();
-                        deps.sort();
-                        config.environment_yml_deps = Some(deps);
-                    }
-                    config.environment_yml_path = Some(detected.path);
+            if let Some(path) = trusted_of(crate::project_file::ProjectFileKind::EnvironmentYml) {
+                // Parse environment.yml to snapshot deps at launch time
+                if let Ok(env_config) = crate::project_file::parse_environment_yml(&path) {
+                    let mut deps = env_config.dependencies.clone();
+                    deps.sort();
+                    config.environment_yml_deps = Some(deps);
                 }
+                config.environment_yml_path = Some(path);
             }
         }
         "pixi:inline" => {
@@ -1181,33 +1170,6 @@ pub(crate) fn missing_conda_env_yml_decision(
     })
 }
 
-pub(crate) fn format_conda_env_yml_build_details(decision: &CondaEnvYmlBuildDecision) -> String {
-    format!(
-        "environment.yml declares conda env '{}', which is not built on this machine. Run: {}",
-        decision.label, decision.create_command
-    )
-}
-
-pub(crate) fn project_environment_build_approved(
-    room: &NotebookRoom,
-    detected: &crate::project_file::DetectedProjectFile,
-) -> bool {
-    let Ok(config) = crate::project_file::parse_environment_yml(&detected.path) else {
-        return false;
-    };
-    let trust_info = environment_yml_trust_info(&config);
-    match room.trusted_packages.all_dependencies_approved(&trust_info) {
-        Ok(approved) => approved,
-        Err(error) => {
-            warn!(
-                "[trusted-packages] Failed to check project environment approval for {:?}: {}",
-                detected.path, error
-            );
-            false
-        }
-    }
-}
-
 pub(crate) fn environment_yml_trust_info(
     config: &crate::project_file::EnvironmentYmlConfig,
 ) -> runt_trust::TrustInfo {
@@ -1228,23 +1190,10 @@ pub(crate) fn environment_yml_trust_info(
     }
 }
 
-/// Check whether a notebook's inline dependency list exactly matches a
-/// project file's dependency list (pyproject.toml / environment.yml /
-/// pixi.toml) in the notebook's own directory.
-///
-/// When this is true, the notebook's deps are an exact mirror of a file
-/// the user already has on disk. Signing them is safe because the trust
-/// surface ("these deps came from this machine") is already satisfied by
-/// file ownership. Used by #2150's room-init and streaming-load
-/// reconciliation to heal notebooks saved by pre-fix builds whose
-/// daemon-written deps never got a signature.
-///
-/// Returns `false` when no project file is found, when no kind matches
-/// the notebook's populated dep section, or when the lists differ.
-///
-/// Side-effect-free: does not read the notebook itself, does not touch
-/// the trust key, does not write anywhere. Callers decide what to do
-/// with the match.
+/// Test helper for exact manifest/metadata dependency matching. A match
+/// alone is not approval: production reconciliation also requires explicit
+/// directory trust, the current notebook binding, and no PEP 723 cell deps.
+#[cfg(test)]
 pub(crate) fn project_file_deps_match_trust_info(
     notebook_path: &Path,
     info: &runt_trust::TrustInfo,
@@ -1255,6 +1204,20 @@ pub(crate) fn project_file_deps_match_trust_info(
     let Some(detected) = crate::project_file::detect_project_file(parent) else {
         return false;
     };
+    project_file_covered_trust_info(&detected, info).is_some()
+}
+
+/// The exact slice of notebook dependency metadata that `detected` covers.
+///
+/// Returns `Some` only when the notebook's declared dependencies for the
+/// manifest's ecosystem equal the manifest's dependencies. The returned
+/// `TrustInfo` holds that slice and nothing else, so seeding it into the
+/// allowlist cannot approve identities the manifest never declared (other
+/// ecosystems, PEP 723 cell dependencies merged into `uv_dependencies`).
+pub(crate) fn project_file_covered_trust_info(
+    detected: &crate::project_file::DetectedProjectFile,
+    info: &runt_trust::TrustInfo,
+) -> Option<runt_trust::TrustInfo> {
     // Order-insensitive compare: `extract_pyproject_deps` already sorts,
     // but a hand-edited .ipynb may hold deps in any order. Sort both
     // sides so the match is stable regardless of source ordering.
@@ -1265,34 +1228,60 @@ pub(crate) fn project_file_deps_match_trust_info(
     }
     match detected.kind {
         crate::project_file::ProjectFileKind::PyprojectToml => {
-            let Ok(content) = std::fs::read_to_string(&detected.path) else {
-                return false;
-            };
+            let content = std::fs::read_to_string(&detected.path).ok()?;
             let project_deps = extract_pyproject_deps(&content);
-            !project_deps.is_empty() && sorted(&project_deps) == sorted(&info.uv_dependencies)
+            if project_deps.is_empty() || sorted(&project_deps) != sorted(&info.uv_dependencies) {
+                return None;
+            }
+            let mut covered = empty_trust_info(info);
+            covered.uv_dependencies = info.uv_dependencies.clone();
+            Some(covered)
         }
         crate::project_file::ProjectFileKind::EnvironmentYml => {
-            let Ok(env_config) = crate::project_file::parse_environment_yml(&detected.path) else {
-                return false;
-            };
+            let env_config = crate::project_file::parse_environment_yml(&detected.path).ok()?;
             // Channels are part of the signed trust payload (runt_trust
             // extracts them into TrustInfo) and conda channel priority
             // affects package resolution, so channel order matters.
             // Compare exact, preserving order. A notebook with matching
             // deps but different channels stays Untrusted — that's a
             // real trust event, not a silent heal.
-            !env_config.dependencies.is_empty()
-                && sorted(&env_config.dependencies) == sorted(&info.conda_dependencies)
-                && env_config.channels == info.conda_channels
+            if env_config.dependencies.is_empty()
+                || sorted(&env_config.dependencies) != sorted(&info.conda_dependencies)
+                || env_config.channels != info.conda_channels
+            {
+                return None;
+            }
+            let mut covered = empty_trust_info(info);
+            covered.conda_dependencies = info.conda_dependencies.clone();
+            covered.conda_channels = info.conda_channels.clone();
+            Some(covered)
         }
         crate::project_file::ProjectFileKind::PixiToml => {
             // Keep pixi.toml reconciliation conservative: inline
             // `metadata.runt.pixi` is trust-checked, but auto-signing an
             // unsigned notebook from a project file needs an exact manifest
             // comparison that preserves version specs and PyPI/conda splits.
-            false
+            None
         }
     }
+}
+
+/// `info` with every dependency and channel list cleared.
+fn empty_trust_info(info: &runt_trust::TrustInfo) -> runt_trust::TrustInfo {
+    let mut empty = info.clone();
+    empty.uv_dependencies.clear();
+    empty.approved_uv_dependencies.clear();
+    empty.conda_dependencies.clear();
+    empty.approved_conda_dependencies.clear();
+    empty.conda_channels.clear();
+    empty.approved_conda_channels.clear();
+    empty.pixi_dependencies.clear();
+    empty.approved_pixi_dependencies.clear();
+    empty.pixi_pypi_dependencies.clear();
+    empty.approved_pixi_pypi_dependencies.clear();
+    empty.pixi_channels.clear();
+    empty.approved_pixi_channels.clear();
+    empty
 }
 
 /// Verify trust status of a notebook by reading its file from disk.
@@ -3432,6 +3421,23 @@ async fn auto_launch_kernel_attempt(
             detected.to_env_source().as_str()
         );
     }
+    // A directory the user chose the notebook environment for drops out of
+    // auto-selection. The trust decision itself happens once the env source
+    // is final, so a Deno notebook in a project directory is never parked.
+    let mut declined_project_state = None;
+    let detected_project_file = detected_project_file.filter(|detected| {
+        let eval = crate::project_trust::evaluate_for_room(room, detected);
+        if eval.verdict == crate::project_trust::ProjectTrustVerdict::UseNotebookEnv {
+            info!(
+                "[project-trust] {:?}: using the notebook environment by user choice",
+                detected.path
+            );
+            declined_project_state = Some(eval.state);
+            false
+        } else {
+            true
+        }
+    });
     if bound_path.is_none() && is_untitled_notebook(notebook_id) && detected_project_file.is_some()
     {
         if let Some(anchor) = detection_path {
@@ -3441,40 +3447,6 @@ async fn auto_launch_kernel_attempt(
     }
     let project_source: Option<notebook_protocol::connection::EnvSource> =
         detected_project_file.as_ref().map(|d| d.to_env_source());
-
-    // #2157/#2170: If the detected project file is an environment.yml whose
-    // declared conda env isn't built on this machine, surface an explicit
-    // awaiting-user-decision lifecycle instead of spawning a runtime agent that would die with
-    // "could not resolve conda environment prefix". Silent fallback to
-    // a pool env was rejected as user-hostile: env.yml users expect
-    // their declared deps to be installed, and a pool env lacks them.
-    // Writing AwaitingEnvBuild + details gives the frontend enough to
-    // render a cohesive decision dialog and MCP tools enough to report the miss.
-    if let Some(ref detected) = detected_project_file {
-        if let Some(decision) = missing_conda_env_yml_decision(detected) {
-            if project_environment_build_approved(room, detected) {
-                info!(
-                    "[notebook-sync] Approved environment.yml build for {:?}; continuing launch",
-                    detected.path
-                );
-            } else {
-                let details = format_conda_env_yml_build_details(&decision);
-                warn!("[notebook-sync] {}", details);
-                if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
-                    room.state.with_doc(|sd| {
-                        sd.set_lifecycle_with_error_details(
-                            &RuntimeLifecycle::AwaitingEnvBuild,
-                            Some(runtime_doc::KernelErrorReason::CondaEnvYmlMissing),
-                            Some(&details),
-                        )
-                    })
-                }) {
-                    warn!("[runtime-state] {}", e);
-                }
-                return None;
-            }
-        }
-    }
 
     // Determine kernel type and environment
     use notebook_protocol::connection::{EnvSource, PackageManager};
@@ -3644,6 +3616,47 @@ async fn auto_launch_kernel_attempt(
             }
         };
 
+    // Project trust gate. The env source is final here; a project-backed
+    // source needs a trusted directory before uv, pixi, or conda sees the
+    // manifest. Everything below that touches the project takes the
+    // `TrustedProjectManifest` this returns.
+    let project_manifest = crate::project_trust::manifest_for_env_source(
+        &env_source,
+        detected_project_file.as_ref(),
+        detection_path.map(PathBuf::as_path),
+    );
+    let trusted_project =
+        match crate::project_trust::require_for_launch(room, project_manifest.as_ref()) {
+            crate::project_trust::RoomProjectGate::NotProject
+                if crate::project_trust::is_project_env_source(&env_source) =>
+            {
+                // uv and pixi would otherwise discover a project from the cwd
+                // that the gate never saw.
+                let details = format!(
+                    "{} requested but no project file was found",
+                    env_source.as_str()
+                );
+                warn!("[notebook-sync] {}", details);
+                reset_and_publish_environment_launch_error(
+                    room,
+                    env_source.as_str(),
+                    Some(KernelErrorReason::EnvironmentPrepareFailed),
+                    &details,
+                )
+                .await;
+                return None;
+            }
+            crate::project_trust::RoomProjectGate::NotProject => {
+                let state = declined_project_state
+                    .take()
+                    .unwrap_or_else(crate::project_trust::no_project_state);
+                crate::project_trust::publish_state(room, &state);
+                None
+            }
+            crate::project_trust::RoomProjectGate::Trusted(trusted) => Some(trusted),
+            crate::project_trust::RoomProjectGate::Parked => return None,
+        };
+
     // For pixi:toml, verify ipykernel is in pixi.toml before launching.
     // Unlike uv (`uv run --with ipykernel`) and conda:env_yml (daemon
     // appends ipykernel into the dep set pre-sync), pixi does not
@@ -3651,7 +3664,7 @@ async fn auto_launch_kernel_attempt(
     // launching without ipykernel would spawn a Python process that
     // fails on `ipykernel_launcher` import.
     if matches!(env_source, EnvSource::PixiToml) {
-        if let Some(ref detected) = detected_project_file {
+        if let Some(detected) = trusted_project.as_ref().map(|t| t.detected()) {
             let has_ipykernel = match kernel_launch::tools::pixi_info(&detected.path).await {
                 Ok(info) => info.has_ipykernel(),
                 Err(e) => {
@@ -3980,19 +3993,10 @@ async fn auto_launch_kernel_attempt(
             (pooled_env, None)
         }
     } else if matches!(env_source, EnvSource::EnvYml) {
-        let yml_path = detected_project_file
+        let yml_path = trusted_project
             .as_ref()
-            .filter(|d| d.kind == crate::project_file::ProjectFileKind::EnvironmentYml)
-            .map(|d| d.path.clone())
-            .or_else(|| {
-                notebook_path_opt.as_ref().and_then(|p| {
-                    crate::project_file::find_nearest_project_file(
-                        p,
-                        &[crate::project_file::ProjectFileKind::EnvironmentYml],
-                    )
-                    .map(|d| d.path)
-                })
-            });
+            .filter(|t| *t.kind() == crate::project_file::ProjectFileKind::EnvironmentYml)
+            .map(|t| t.path().to_path_buf());
 
         let Some(yml_path) = yml_path else {
             let details = "conda:env_yml requested but no environment.yml was found";
@@ -4007,32 +4011,18 @@ async fn auto_launch_kernel_attempt(
             return None;
         };
 
+        // The directory is trusted, so a missing env is built here like uv
+        // and pixi build theirs. Trust is the consent; there is no second
+        // prompt for the build.
         let detected_yml = crate::project_file::DetectedProjectFile {
             path: yml_path.clone(),
             kind: crate::project_file::ProjectFileKind::EnvironmentYml,
         };
         if let Some(decision) = missing_conda_env_yml_decision(&detected_yml) {
-            if project_environment_build_approved(room, &detected_yml) {
-                info!(
-                    "[notebook-sync] Approved environment.yml build for {:?}; continuing launch",
-                    detected_yml.path
-                );
-            } else {
-                let details = format_conda_env_yml_build_details(&decision);
-                warn!("[notebook-sync] {}", details);
-                if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
-                    room.state.with_doc(|sd| {
-                        sd.set_lifecycle_with_error_details(
-                            &RuntimeLifecycle::AwaitingEnvBuild,
-                            Some(KernelErrorReason::CondaEnvYmlMissing),
-                            Some(&details),
-                        )
-                    })
-                }) {
-                    warn!("[runtime-state] {}", e);
-                }
-                return None;
-            }
+            info!(
+                "[notebook-sync] Building conda env '{}' from trusted {:?}",
+                decision.label, detected_yml.path
+            );
         }
 
         let env_config = match crate::project_file::parse_environment_yml(&yml_path) {
@@ -4328,8 +4318,9 @@ async fn auto_launch_kernel_attempt(
 
     let mut uv_pyproject_offline = false;
     let mut pixi_toml_frozen = false;
-    if matches!(env_source, EnvSource::Pyproject) {
+    if let (EnvSource::Pyproject, Some(trusted)) = (&env_source, trusted_project.as_ref()) {
         match crate::uv_project::prepare_uv_pyproject_environment(
+            trusted,
             notebook_path_opt.as_deref(),
             bootstrap_dx,
             progress_handler.clone(),
@@ -4355,12 +4346,10 @@ async fn auto_launch_kernel_attempt(
                 return None;
             }
         }
-    } else if matches!(env_source, EnvSource::PixiToml) {
-        let outcome = crate::pixi_project::prepare_pixi_toml_environment(
-            notebook_path_opt.as_deref(),
-            progress_handler.clone(),
-        )
-        .await;
+    } else if let (EnvSource::PixiToml, Some(trusted)) = (&env_source, trusted_project.as_ref()) {
+        let outcome =
+            crate::pixi_project::prepare_pixi_toml_environment(trusted, progress_handler.clone())
+                .await;
         // Always clear the `ProjectPreparing` env progress the probe may
         // have published; without this a successful fallback launch leaves
         // "preparing pixi" pinned in the UI after the kernel is idle.
@@ -4497,7 +4486,7 @@ async fn auto_launch_kernel_attempt(
         venv_path,
         python_path,
         prewarmed_pkgs.as_deref(),
-        notebook_path_opt.as_deref(),
+        trusted_project.as_ref(),
         feature_flags,
         captured_for_config,
     );

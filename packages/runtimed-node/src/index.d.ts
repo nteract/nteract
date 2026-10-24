@@ -210,6 +210,35 @@ export interface SetCellOptions {
   cellType?: "code" | "markdown" | "raw";
 }
 
+/** What trusting a project folder lets uv, pixi, or conda do. Parse-only. */
+export interface ProjectTrustSummary {
+  dependencies: string[];
+  nonRegistrySources: string[];
+  indexesAndChannels: string[];
+  buildBackend?: string;
+  activationScripts: string[];
+  outsideDirectory: string[];
+  environmentToBuild?: string;
+}
+
+/**
+ * Project-folder trust for the project file that would drive the environment.
+ * When `RuntimeStatus.lifecycle` is `"AwaitingProjectTrust"`, pass `projectDir`
+ * (or an ancestor such as `repoRoot`) to `approveProjectTrust()` or
+ * `declineProjectTrust()`, then launch the kernel.
+ */
+export interface ProjectTrustStatus {
+  /** Absent until the daemon evaluates the room. */
+  status?: "no_project" | "trusted" | "untrusted" | "notebook_env" | (string & {});
+  needsApproval: boolean;
+  manifestPath?: string;
+  kind?: "pyproject_toml" | "pixi_toml" | "environment_yml" | (string & {});
+  projectDir?: string;
+  repoRoot?: string;
+  trustedDir?: string;
+  summary: ProjectTrustSummary;
+}
+
 export interface RuntimeStatus {
   status: string;
   lifecycle: string;
@@ -221,6 +250,7 @@ export interface RuntimeStatus {
   runtimeAgentId: string;
   errorReason?: string;
   errorDetails?: string;
+  projectTrust: ProjectTrustStatus;
 }
 
 export interface DependencyStatus {
@@ -242,6 +272,7 @@ export interface DependencyStatus {
   pep723Dependencies: string[];
   fingerprint?: string;
   trust?: unknown;
+  projectTrust: ProjectTrustStatus;
 }
 
 export class Session {
@@ -289,6 +320,19 @@ export class Session {
   readonly executions: NotebookExecutionStore;
   dependencyFingerprint(): Promise<string | null>;
   approveTrust(observedHeads?: string[]): Promise<void>;
+  /**
+   * Trust a folder so project files at or below it may drive uv, pixi, or conda
+   * on this machine. `directory` must be the project file's folder or an
+   * ancestor; the daemon refuses folders that contain the home directory.
+   * Trust is local and never written into the notebook. Launch afterwards.
+   */
+  approveProjectTrust(directory: string): Promise<void>;
+  /**
+   * Use the notebook's own environment instead of the project file in
+   * `directory`. With `remember`, the choice persists for that folder on this
+   * machine; otherwise it lasts for this room. Launch afterwards.
+   */
+  declineProjectTrust(directory: string, remember?: boolean): Promise<void>;
   syncEnvironment(): Promise<void>;
   close(): Promise<void>;
 }

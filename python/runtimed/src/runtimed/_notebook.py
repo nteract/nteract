@@ -235,6 +235,24 @@ class Notebook:
         """Approve and sign the current dependency metadata."""
         await self._session.approve_trust(dependency_fingerprint)
 
+    async def approve_project_trust(self, directory: str) -> None:
+        """Trust a folder so its project file may drive the environment.
+
+        ``directory`` must be the project file's folder or an ancestor of it.
+        The daemon records trust on this machine only. Call ``start()``
+        afterwards to launch from the project.
+        """
+        await self._session.approve_project_trust(directory)
+
+    async def decline_project_trust(self, directory: str, remember: bool = False) -> None:
+        """Use the notebook's own environment instead of the project file.
+
+        With ``remember=True`` the choice persists for ``directory`` on this
+        machine; otherwise it lasts for this notebook session. Call
+        ``start()`` afterwards.
+        """
+        await self._session.decline_project_trust(directory, remember)
+
     async def sync_environment(self) -> SyncEnvironmentResult:
         """Install pending dependency changes into the running kernel."""
         return await self._session.sync_environment()

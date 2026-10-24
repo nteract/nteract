@@ -28,10 +28,9 @@ fn overlay_env_vars(overlay: &Arc<ShellEnvOverlay>) -> std::collections::HashMap
 use crate::notebook_sync_server::{
     acquire_prewarmed_env_with_capture, build_launched_config, captured_env_disk_state,
     captured_env_for_runtime, captured_env_source_override, check_and_broadcast_sync_state,
-    check_inline_deps, extract_pixi_toml_deps, format_conda_env_yml_build_details,
-    get_inline_conda_channels, get_inline_conda_deps, get_inline_conda_python, get_inline_uv_deps,
-    get_inline_uv_prerelease, get_inline_uv_requires_python, missing_conda_env_yml_decision,
-    project_environment_build_approved, promote_inline_deps_to_project,
+    check_inline_deps, extract_pixi_toml_deps, get_inline_conda_channels, get_inline_conda_deps,
+    get_inline_conda_python, get_inline_uv_deps, get_inline_uv_prerelease,
+    get_inline_uv_requires_python, missing_conda_env_yml_decision, promote_inline_deps_to_project,
     publish_environment_launch_error, reset_starting_state, reset_starting_state_with_outcome,
     resolve_metadata_snapshot, send_runtime_agent_request_with_captured_env_repair,
     try_conda_pool_for_inline_deps, try_uv_pool_for_inline_deps, update_kernel_presence_locked,
@@ -538,6 +537,9 @@ async fn handle_attempt(
 
     // Deno kernels don't use Python environments - always use "deno" regardless
     // of what env_source was requested. Log a warning if caller passed a Python env.
+    // A directory the user chose the notebook environment for drops out of
+    // auto-selection below.
+    let mut declined_project_state = None;
     let resolved_env_source = if resolved_kernel_type == "deno" {
         match &launch_spec {
             LaunchSpec::Auto | LaunchSpec::AutoScoped(_) => {
@@ -588,6 +590,15 @@ async fn handle_attempt(
         } else {
             None
         };
+        let detected_project = detected_project.filter(|detected| {
+            let eval = crate::project_trust::evaluate_for_room(room, detected);
+            if eval.verdict == crate::project_trust::ProjectTrustVerdict::UseNotebookEnv {
+                declined_project_state = Some(eval.state);
+                false
+            } else {
+                true
+            }
+        });
         let project_source = detected_project.as_ref().map(|detected| {
             info!(
                 "[notebook-sync] Auto-detected project file: {:?} -> {}",
@@ -740,6 +751,56 @@ async fn handle_attempt(
 
     let parsed_resolved = resolved_env_source.clone();
 
+    // Project trust gate. The env source is final here; a project-backed
+    // source needs a trusted directory before uv, pixi, or conda sees the
+    // manifest. Everything below that touches the project takes the
+    // `TrustedProjectManifest` this returns.
+    let project_manifest = crate::project_trust::manifest_for_env_source(
+        &parsed_resolved,
+        None,
+        notebook_path.as_deref(),
+    );
+    let trusted_project =
+        match crate::project_trust::require_for_launch(room, project_manifest.as_ref()) {
+            crate::project_trust::RoomProjectGate::NotProject
+                if crate::project_trust::is_project_env_source(&parsed_resolved) =>
+            {
+                let error = format!(
+                    "{} requested but no project file was found",
+                    parsed_resolved.as_str()
+                );
+                reset_starting_state(room, None).await;
+                publish_environment_launch_error(
+                    room,
+                    parsed_resolved.as_str(),
+                    Some(KernelErrorReason::EnvironmentPrepareFailed),
+                    &error,
+                );
+                return NotebookResponse::Error { error };
+            }
+            crate::project_trust::RoomProjectGate::NotProject => {
+                let state = declined_project_state
+                    .take()
+                    .unwrap_or_else(crate::project_trust::no_project_state);
+                crate::project_trust::publish_state(room, &state);
+                None
+            }
+            crate::project_trust::RoomProjectGate::Trusted(trusted) => Some(trusted),
+            crate::project_trust::RoomProjectGate::Parked => {
+                return NotebookResponse::Error {
+                    error: "The project folder is not trusted on this machine. \
+                            Trust it or use the notebook environment to launch."
+                        .to_string(),
+                };
+            }
+        };
+    let trusted_path_of = |kind: crate::project_file::ProjectFileKind| {
+        trusted_project
+            .as_ref()
+            .filter(|t| *t.kind() == kind)
+            .map(|t| t.path().to_path_buf())
+    };
+
     // For pixi:toml, verify ipykernel is declared before launching.
     // Unlike uv (`uv run --with ipykernel`) and conda:env_yml (daemon
     // injects ipykernel into deps pre-sync), pixi does not auto-inject.
@@ -750,11 +811,7 @@ async fn handle_attempt(
     // classify the spawn error generically but never rendered the
     // targeted remediation on the RPC path.
     if matches!(parsed_resolved, EnvSource::PixiToml) {
-        let pixi_path = notebook_path.as_ref().and_then(|nb| {
-            crate::project_file::detect_project_file(nb)
-                .filter(|d| d.kind == crate::project_file::ProjectFileKind::PixiToml)
-                .map(|d| d.path)
-        });
+        let pixi_path = trusted_path_of(crate::project_file::ProjectFileKind::PixiToml);
         if let Some(ref path) = pixi_path {
             let has_ipykernel = match kernel_launch::tools::pixi_info(path).await {
                 Ok(info) => info.has_ipykernel(),
@@ -823,11 +880,8 @@ async fn handle_attempt(
                 // Build a minimal launched config with project paths for promotion
                 let mut promo_config = notebook_protocol::protocol::LaunchedEnvConfig::default();
                 if matches!(parsed_resolved, EnvSource::PixiToml) {
-                    promo_config.pixi_toml_path = notebook_path.as_ref().and_then(|p| {
-                        crate::project_file::detect_project_file(p)
-                            .filter(|d| d.kind == crate::project_file::ProjectFileKind::PixiToml)
-                            .map(|d| d.path)
-                    });
+                    promo_config.pixi_toml_path =
+                        trusted_path_of(crate::project_file::ProjectFileKind::PixiToml);
                     // Launched baseline = current pixi.toml deps (before promotion)
                     if let Some(ref path) = promo_config.pixi_toml_path {
                         if let Ok(content) = std::fs::read_to_string(path) {
@@ -835,13 +889,8 @@ async fn handle_attempt(
                         }
                     }
                 } else if matches!(parsed_resolved, EnvSource::EnvYml) {
-                    promo_config.environment_yml_path = notebook_path.as_ref().and_then(|p| {
-                        crate::project_file::find_nearest_project_file(
-                            p,
-                            &[crate::project_file::ProjectFileKind::EnvironmentYml],
-                        )
-                        .map(|d| d.path)
-                    });
+                    promo_config.environment_yml_path =
+                        trusted_path_of(crate::project_file::ProjectFileKind::EnvironmentYml);
                     // Launched baseline = current env.yml deps (before promotion)
                     if let Some(ref path) = promo_config.environment_yml_path {
                         if let Ok(env_config) = crate::project_file::parse_environment_yml(path) {
@@ -851,13 +900,8 @@ async fn handle_attempt(
                         }
                     }
                 } else {
-                    promo_config.pyproject_path = notebook_path.as_ref().and_then(|p| {
-                        crate::project_file::detect_project_file(p)
-                            .filter(|d| {
-                                d.kind == crate::project_file::ProjectFileKind::PyprojectToml
-                            })
-                            .map(|d| d.path)
-                    });
+                    promo_config.pyproject_path =
+                        trusted_path_of(crate::project_file::ProjectFileKind::PyprojectToml);
                 }
                 match promote_inline_deps_to_project(
                     room,
@@ -1318,13 +1362,7 @@ async fn handle_attempt(
         // conda:env_yml: find or create a named conda env from environment.yml.
         // Uses standard conda env discovery: name: field → search conda env dirs,
         // prefix: field → use that path directly. Falls back to creating via rattler.
-        let yml_path = notebook_path.as_ref().and_then(|p| {
-            crate::project_file::find_nearest_project_file(
-                p,
-                &[crate::project_file::ProjectFileKind::EnvironmentYml],
-            )
-            .map(|d| d.path)
-        });
+        let yml_path = trusted_path_of(crate::project_file::ProjectFileKind::EnvironmentYml);
 
         if let Some(ref yml) = yml_path {
             match crate::project_file::parse_environment_yml(yml) {
@@ -1333,28 +1371,13 @@ async fn handle_attempt(
                         path: yml.clone(),
                         kind: crate::project_file::ProjectFileKind::EnvironmentYml,
                     };
+                    // The directory is trusted, so a missing env is built
+                    // here. Trust is the consent for the build.
                     if let Some(decision) = missing_conda_env_yml_decision(&detected_yml) {
-                        if project_environment_build_approved(room, &detected_yml) {
-                            info!(
-                                "[notebook-sync] Approved environment.yml build for {:?}; continuing launch",
-                                detected_yml.path
-                            );
-                        } else {
-                            let details = format_conda_env_yml_build_details(&decision);
-                            warn!("[notebook-sync] {}", details);
-                            if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
-                                room.state.with_doc(|sd| {
-                                    sd.set_lifecycle_with_error_details(
-                                        &RuntimeLifecycle::AwaitingEnvBuild,
-                                        Some(KernelErrorReason::CondaEnvYmlMissing),
-                                        Some(&details),
-                                    )
-                                })
-                            }) {
-                                warn!("[runtime-state] {}", e);
-                            }
-                            return NotebookResponse::Error { error: details };
-                        }
+                        info!(
+                            "[notebook-sync] Building conda env '{}' from trusted {:?}",
+                            decision.label, detected_yml.path
+                        );
                     }
 
                     // Resolve the conda prefix: prefix: → direct path,
@@ -1686,8 +1709,9 @@ async fn handle_attempt(
 
     let mut uv_pyproject_offline = false;
     let mut pixi_toml_frozen = false;
-    if matches!(parsed_resolved, EnvSource::Pyproject) {
+    if let (EnvSource::Pyproject, Some(trusted)) = (&parsed_resolved, trusted_project.as_ref()) {
         match crate::uv_project::prepare_uv_pyproject_environment(
+            trusted,
             notebook_path.as_deref(),
             bootstrap_dx,
             launch_progress_handler.clone(),
@@ -1713,9 +1737,11 @@ async fn handle_attempt(
                 return NotebookResponse::Error { error: details };
             }
         }
-    } else if matches!(parsed_resolved, EnvSource::PixiToml) {
+    } else if let (EnvSource::PixiToml, Some(trusted)) =
+        (&parsed_resolved, trusted_project.as_ref())
+    {
         let outcome = crate::pixi_project::prepare_pixi_toml_environment(
-            notebook_path.as_deref(),
+            trusted,
             launch_progress_handler.clone(),
         )
         .await;
@@ -1866,7 +1892,7 @@ async fn handle_attempt(
         venv_path,
         python_path,
         prewarmed_pkgs.as_deref(),
-        notebook_path.as_deref(),
+        trusted_project.as_ref(),
         feature_flags,
         captured_env_for_config.as_ref(),
     );

@@ -214,6 +214,7 @@ async fn finish_notebook_projection(
             kernel: runtime_state.kernel,
             env: runtime_state.env,
             trust: runtime_state.trust,
+            project_trust: runtime_state.project_trust,
             project_context: runtime_state.project_context,
         },
         source_state: NotebookSourceProjectionState::default(),

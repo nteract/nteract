@@ -609,12 +609,15 @@ test("cloud host notices sit in the shared shell above the rail and notebook sta
   );
   assert.match(sourceText, /const notebookHeaderChrome = projectCloudNotebookHeaderChrome\(\{/);
   assert.match(sourceText, /projectCloudNotebookViewSurface\(\{/);
-  // A signed-out gate blocks the stage like an access diagnostic, so both the
-  // header-chrome and view-surface projections consume the combined
-  // notebookStageGated flag.
+  // Sign-in recovery keeps readable cached content visible. Only an unreadable
+  // signed-out notebook gates the stage, alongside explicit access diagnostics.
   assert.match(
     sourceText,
-    /const notebookStageGated = notebookBodyAccessBlocked \|\| signedOutNotebookSignInRequired/,
+    /const signedOutNotebookStageGated =\s*signedOutNotebookSignInRequired && !notebookHasReadableSnapshot/,
+  );
+  assert.match(
+    sourceText,
+    /const notebookStageGated = notebookBodyAccessBlocked \|\| signedOutNotebookStageGated/,
   );
   assert.match(sourceText, /bodyAccessBlocked: notebookStageGated/);
   assert.match(

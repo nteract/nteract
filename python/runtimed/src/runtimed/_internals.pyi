@@ -348,8 +348,8 @@ class KernelState:
     @property
     def status(self) -> str:
         """Flat status bucket: "not_started", "awaiting_trust",
-        "awaiting_env_build", "starting", "idle", "busy", "error",
-        "shutdown". Projected from the typed lifecycle for callers that want
+        "awaiting_project_trust", "awaiting_env_build", "starting", "idle",
+        "busy", "error", "shutdown". Projected from the typed lifecycle for callers that want
         a simple string."""
         ...
     @property
@@ -360,7 +360,7 @@ class KernelState:
     @property
     def lifecycle(self) -> str:
         """Typed lifecycle variant name: "NotStarted", "AwaitingTrust",
-        "AwaitingEnvBuild", "Resolving", "PreparingEnv", "Launching",
+        "AwaitingProjectTrust", "AwaitingEnvBuild", "Resolving", "PreparingEnv", "Launching",
         "Connecting", "Running", "Error", "Shutdown". Paired with
         `activity` when "Running"."""
         ...
@@ -501,6 +501,18 @@ class RuntimeState:
     def comms(self) -> dict[str, CommDocEntry]:
         """Runtime comm entries keyed by comm_id."""
         ...
+    @property
+    def project_trust(self) -> dict[str, Any]:
+        """Project-folder trust for the project file that would drive the
+        environment: ``status`` ("" | "no_project" | "trusted" | "untrusted"
+        | "notebook_env"), ``needs_approval``, ``manifest_path``, ``kind``,
+        ``project_dir``, ``repo_root``, ``trusted_dir``, and ``summary``.
+        Read it when ``kernel.lifecycle == "AwaitingProjectTrust"``."""
+        ...
+    @property
+    def project_trust_json(self) -> str:
+        """``project_trust`` serialised as a JSON string."""
+        ...
 
 class HistoryEntry:
     """A single entry from kernel input history."""
@@ -602,6 +614,12 @@ class AsyncSession:
     def approve_trust(
         self,
         dependency_fingerprint: str | None = None,
+    ) -> Coroutine[Any, Any, None]: ...
+    def approve_project_trust(self, directory: str) -> Coroutine[Any, Any, None]: ...
+    def decline_project_trust(
+        self,
+        directory: str,
+        remember: bool = False,
     ) -> Coroutine[Any, Any, None]: ...
     def connect(self) -> Coroutine[Any, Any, None]: ...
 

@@ -198,6 +198,14 @@ class Session {
     return this._native.approveTrust(observedHeads);
   }
 
+  approveProjectTrust(directory) {
+    return this._native.approveProjectTrust(directory);
+  }
+
+  declineProjectTrust(directory, remember) {
+    return this._native.declineProjectTrust(directory, remember);
+  }
+
   syncEnvironment() {
     return this._native.syncEnvironment();
   }

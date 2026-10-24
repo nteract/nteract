@@ -874,8 +874,10 @@ impl ServerHandler for NteractMcp {
             }
         }
         let start = std::time::Instant::now();
-        let mut result =
-            progress::run(&context, &request.name, targets::dispatch(self, &request)).await;
+        // Keep the dispatch state machine out of the progress wrapper's inline
+        // storage: notebook connection futures can exhaust a default thread stack.
+        let operation = Box::pin(targets::dispatch(self, &request));
+        let mut result = progress::run(&context, &request.name, operation).await;
         // Also identify the current UI on the result, for hosts whose tool
         // catalog was loaded before a renderer rebuild.
         if let Ok(result) = &mut result {

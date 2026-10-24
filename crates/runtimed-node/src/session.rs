@@ -155,6 +155,64 @@ pub struct DependencyTrustStatus {
     pub approved_pixi_pypi_dependencies: Vec<String>,
 }
 
+/// What trusting a project folder lets uv, pixi, or conda do. Parsed from
+/// the manifest only; no tool runs to produce it.
+#[napi(object)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectTrustSummaryStatus {
+    pub dependencies: Vec<String>,
+    pub non_registry_sources: Vec<String>,
+    pub indexes_and_channels: Vec<String>,
+    pub build_backend: Option<String>,
+    pub activation_scripts: Vec<String>,
+    pub outside_directory: Vec<String>,
+    pub environment_to_build: Option<String>,
+}
+
+/// Project-folder trust for the project file that would drive the
+/// environment. When `lifecycle` is `"AwaitingProjectTrust"`, pass
+/// `projectDir` (or an ancestor such as `repoRoot`) to
+/// `approveProjectTrust()` or `declineProjectTrust()`.
+#[napi(object)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectTrustStatus {
+    /// `"no_project"`, `"trusted"`, `"untrusted"`, or `"notebook_env"`.
+    /// Absent until the daemon evaluates the room.
+    pub status: Option<String>,
+    pub needs_approval: bool,
+    pub manifest_path: Option<String>,
+    /// `"pyproject_toml"`, `"pixi_toml"`, or `"environment_yml"`.
+    pub kind: Option<String>,
+    pub project_dir: Option<String>,
+    pub repo_root: Option<String>,
+    pub trusted_dir: Option<String>,
+    pub summary: ProjectTrustSummaryStatus,
+}
+
+impl From<runtime_doc::ProjectTrustRuntimeState> for ProjectTrustStatus {
+    fn from(state: runtime_doc::ProjectTrustRuntimeState) -> Self {
+        let non_empty = |value: String| (!value.is_empty()).then_some(value);
+        Self {
+            status: non_empty(state.status),
+            needs_approval: state.needs_approval,
+            manifest_path: non_empty(state.manifest_path),
+            kind: non_empty(state.kind),
+            project_dir: non_empty(state.project_dir),
+            repo_root: state.repo_root,
+            trusted_dir: state.trusted_dir,
+            summary: ProjectTrustSummaryStatus {
+                dependencies: state.summary.dependencies,
+                non_registry_sources: state.summary.non_registry_sources,
+                indexes_and_channels: state.summary.indexes_and_channels,
+                build_backend: state.summary.build_backend,
+                activation_scripts: state.summary.activation_scripts,
+                outside_directory: state.summary.outside_directory,
+                environment_to_build: state.summary.environment_to_build,
+            },
+        }
+    }
+}
+
 /// Notebook dependency metadata and trust/runtime status.
 #[napi(object)]
 pub struct DependencyStatus {
@@ -164,6 +222,7 @@ pub struct DependencyStatus {
     pub pep723_dependencies: Vec<String>,
     pub fingerprint: Option<String>,
     pub trust: DependencyTrustStatus,
+    pub project_trust: ProjectTrustStatus,
 }
 
 /// Runtime/kernel status from RuntimeStateDoc.
@@ -179,6 +238,7 @@ pub struct RuntimeStatus {
     pub runtime_agent_id: String,
     pub error_reason: Option<String>,
     pub error_details: Option<String>,
+    pub project_trust: ProjectTrustStatus,
 }
 
 /// Options for `Session.runCell()`.
@@ -964,6 +1024,37 @@ impl Session {
                 .clone()
         };
         approve_current_trust(&handle, observed_heads, true).await
+    }
+
+    /// Trust a folder so project files at or below it may drive uv, pixi,
+    /// or conda on this machine. `directory` must be the project file's
+    /// folder or an ancestor of it. The daemon releases a room parked at
+    /// `AwaitingProjectTrust`; launch the kernel afterwards.
+    #[napi]
+    pub async fn approve_project_trust(&self, directory: String) -> Result<()> {
+        let handle = session_handle(&self.state).await?;
+        send_project_trust_decision(&handle, NotebookRequest::ApproveProjectTrust { directory })
+            .await
+    }
+
+    /// Use the notebook's own environment instead of the project file in
+    /// `directory`. With `remember`, the choice persists for that folder on
+    /// this machine; otherwise it lasts for this room. Launch afterwards.
+    #[napi]
+    pub async fn decline_project_trust(
+        &self,
+        directory: String,
+        remember: Option<bool>,
+    ) -> Result<()> {
+        let handle = session_handle(&self.state).await?;
+        send_project_trust_decision(
+            &handle,
+            NotebookRequest::DeclineProjectTrust {
+                directory,
+                remember: remember.unwrap_or(false),
+            },
+        )
+        .await
     }
 
     /// Ask the daemon to hot-install any pending dependency changes into
@@ -1827,11 +1918,11 @@ fn dependency_fingerprint_for_handle(handle: &DocHandle) -> Option<String> {
 }
 
 fn runtime_status_for_handle(handle: &DocHandle) -> RuntimeStatus {
-    let kernel = handle
-        .get_runtime_state()
-        .ok()
-        .map(|state| state.kernel)
-        .unwrap_or_default();
+    runtime_status_from_state(handle.get_runtime_state().ok().unwrap_or_default())
+}
+
+fn runtime_status_from_state(state: runtime_doc::RuntimeState) -> RuntimeStatus {
+    let kernel = state.kernel;
     let (lifecycle, activity) = match &kernel.lifecycle {
         runtime_doc::RuntimeLifecycle::Running(activity) => (
             kernel.lifecycle.variant_str().to_string(),
@@ -1850,6 +1941,7 @@ fn runtime_status_for_handle(handle: &DocHandle) -> RuntimeStatus {
         runtime_agent_id: kernel.runtime_agent_id,
         error_reason: kernel.error_reason.filter(|s| !s.is_empty()),
         error_details: kernel.error_details.filter(|s| !s.is_empty()),
+        project_trust: state.project_trust.into(),
     }
 }
 
@@ -1858,7 +1950,13 @@ fn dependency_status_for_handle(handle: &DocHandle) -> DependencyStatus {
     let uv = metadata.runt.uv.as_ref();
     let conda = metadata.runt.conda.as_ref();
     let pixi = metadata.runt.pixi.as_ref();
-    let trust = handle.get_runtime_state().ok().map(|state| state.trust);
+    let runtime_state = handle.get_runtime_state().ok();
+    let project_trust = runtime_state
+        .as_ref()
+        .map(|state| state.project_trust.clone())
+        .unwrap_or_default()
+        .into();
+    let trust = runtime_state.map(|state| state.trust);
     let pep723_dependencies = notebook_doc::pep723::find_pep723_in_cells(&handle.get_cells())
         .ok()
         .flatten()
@@ -1902,6 +2000,7 @@ fn dependency_status_for_handle(handle: &DocHandle) -> DependencyStatus {
                 .map(|trust| trust.approved_pixi_pypi_dependencies)
                 .unwrap_or_default(),
         },
+        project_trust,
     }
 }
 
@@ -1923,6 +2022,16 @@ async fn approve_current_trust(
     match response {
         NotebookResponse::Ok {} => Ok(()),
         NotebookResponse::GuardRejected { reason } => Err(Error::from_reason(reason)),
+        NotebookResponse::Error { error } => Err(Error::from_reason(error)),
+        other => Err(Error::from_reason(format!(
+            "Unexpected response: {other:?}"
+        ))),
+    }
+}
+
+async fn send_project_trust_decision(handle: &DocHandle, request: NotebookRequest) -> Result<()> {
+    match handle.send_request(request).await.map_err(to_napi_err)? {
+        NotebookResponse::Ok {} => Ok(()),
         NotebookResponse::Error { error } => Err(Error::from_reason(error)),
         other => Err(Error::from_reason(format!(
             "Unexpected response: {other:?}"
@@ -2276,6 +2385,62 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::path::Path;
+
+    #[test]
+    fn runtime_status_projects_parked_project_trust() {
+        let state = runtime_doc::RuntimeState {
+            kernel: runtime_doc::KernelState {
+                lifecycle: runtime_doc::RuntimeLifecycle::AwaitingProjectTrust,
+                ..Default::default()
+            },
+            project_trust: runtime_doc::ProjectTrustRuntimeState {
+                status: "untrusted".to_string(),
+                needs_approval: true,
+                manifest_path: "/work/proj/pixi.toml".to_string(),
+                kind: "pixi_toml".to_string(),
+                project_dir: "/work/proj".to_string(),
+                repo_root: Some("/work".to_string()),
+                trusted_dir: None,
+                summary: runtime_doc::ProjectTrustSummary {
+                    activation_scripts: vec!["scripts/activate.sh".to_string()],
+                    ..Default::default()
+                },
+            },
+            ..Default::default()
+        };
+
+        let status = runtime_status_from_state(state);
+        assert_eq!(status.lifecycle, "AwaitingProjectTrust");
+        assert_eq!(
+            status.project_trust,
+            ProjectTrustStatus {
+                status: Some("untrusted".to_string()),
+                needs_approval: true,
+                manifest_path: Some("/work/proj/pixi.toml".to_string()),
+                kind: Some("pixi_toml".to_string()),
+                project_dir: Some("/work/proj".to_string()),
+                repo_root: Some("/work".to_string()),
+                trusted_dir: None,
+                summary: ProjectTrustSummaryStatus {
+                    dependencies: vec![],
+                    non_registry_sources: vec![],
+                    indexes_and_channels: vec![],
+                    build_backend: None,
+                    activation_scripts: vec!["scripts/activate.sh".to_string()],
+                    outside_directory: vec![],
+                    environment_to_build: None,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn project_trust_status_reads_unevaluated_state_as_absent() {
+        let status = ProjectTrustStatus::from(runtime_doc::ProjectTrustRuntimeState::default());
+        assert_eq!(status.status, None);
+        assert!(!status.needs_approval);
+        assert_eq!(status.project_dir, None);
+    }
 
     #[test]
     fn resolve_socket_path_prefers_explicit_override() {

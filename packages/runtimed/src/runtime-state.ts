@@ -70,6 +70,7 @@ export const KERNEL_ERROR_REASON = {
 export type RuntimeLifecycle =
   | { lifecycle: "NotStarted" }
   | { lifecycle: "AwaitingTrust" }
+  | { lifecycle: "AwaitingProjectTrust" }
   | { lifecycle: "AwaitingEnvBuild" }
   | { lifecycle: "Resolving" }
   | { lifecycle: "PreparingEnv" }
@@ -383,6 +384,67 @@ export interface FileCheckpointState {
   source_issue: FileSourceIssue | null;
 }
 
+/**
+ * Project-directory trust status. Mirrors the string written by
+ * `runtime_doc::ProjectTrustRuntimeState::status`. Empty means the daemon
+ * has not evaluated project trust for this room yet.
+ */
+export type ProjectTrustStatus =
+  | ""
+  | "no_project"
+  | "trusted"
+  | "untrusted"
+  | "notebook_env"
+  | (string & {});
+
+/** Manifest kind that would drive the environment. */
+export type ProjectTrustManifestKind =
+  | "pyproject_toml"
+  | "pixi_toml"
+  | "environment_yml"
+  | (string & {});
+
+/**
+ * Parse-only summary of what trusting a project folder lets uv, pixi, or
+ * conda do. Mirrors `runtime_doc::ProjectTrustSummary`.
+ */
+export interface ProjectTrustSummary {
+  /** Declared registry dependencies. */
+  dependencies: string[];
+  /** Git, path, URL, or archive sources. */
+  non_registry_sources: string[];
+  /** Package indexes, find-links, and channels. */
+  indexes_and_channels: string[];
+  /** `[build-system] build-backend`; runs code when uv installs the project. */
+  build_backend: string | null;
+  /** Scripts the tool runs on activation. */
+  activation_scripts: string[];
+  /** Sources that point outside the directory being trusted. */
+  outside_directory: string[];
+  /** Environment the daemon will create on approval, when none exists yet. */
+  environment_to_build: string | null;
+}
+
+/**
+ * Project-directory trust projected by the daemon. Mirrors
+ * `runtime_doc::ProjectTrustRuntimeState`. Absent in older
+ * RuntimeStateDocs, which read as {@link DEFAULT_PROJECT_TRUST_STATE}.
+ */
+export interface ProjectTrustState {
+  status: ProjectTrustStatus;
+  needs_approval: boolean;
+  /** Canonical path of the manifest that would drive the environment. */
+  manifest_path: string;
+  kind: ProjectTrustManifestKind;
+  /** Default trust target: the manifest's directory. */
+  project_dir: string;
+  /** Wider trust target: the enclosing repository root, when it differs. */
+  repo_root: string | null;
+  /** Directory whose trust row produced `status`, when one matched. */
+  trusted_dir: string | null;
+  summary: ProjectTrustSummary;
+}
+
 export interface RuntimeState {
   /**
    * RuntimeStateDoc identity. Mirrors the NotebookDoc's runtime_state_doc_id
@@ -396,6 +458,11 @@ export interface RuntimeState {
   last_saved: string | null;
   /** Daemon-authored causal file checkpoint and source health. */
   file_checkpoint: FileCheckpointState;
+  /**
+   * Project-directory trust for the project file that would drive the
+   * environment. Older daemons omit it; reads as the default.
+   */
+  project_trust: ProjectTrustState;
   /**
    * Path to the notebook's `.ipynb` on the daemon's disk. `null` for
    * untitled notebooks; the daemon writes this on save / save-as.
@@ -416,6 +483,25 @@ export interface RuntimeState {
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────
+
+export const DEFAULT_PROJECT_TRUST_STATE: ProjectTrustState = {
+  status: "",
+  needs_approval: false,
+  manifest_path: "",
+  kind: "",
+  project_dir: "",
+  repo_root: null,
+  trusted_dir: null,
+  summary: {
+    dependencies: [],
+    non_registry_sources: [],
+    indexes_and_channels: [],
+    build_backend: null,
+    activation_scripts: [],
+    outside_directory: [],
+    environment_to_build: null,
+  },
+};
 
 export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   runtime_state_doc_id: null,
@@ -458,6 +544,7 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
     save_sequence: null,
     source_issue: null,
   },
+  project_trust: DEFAULT_PROJECT_TRUST_STATE,
   path: null,
   executions: {},
   comms: {},

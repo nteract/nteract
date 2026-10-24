@@ -124,6 +124,15 @@ async fn wait_until_ready(
                 }
                 let state = session.handle.get_runtime_state().ok()?;
                 match state.kernel.lifecycle {
+                    RuntimeLifecycle::AwaitingProjectTrust => Some(format!(
+                        "Kernel is {}: trust the project folder {} in the notebook dialog, or call approve_project_trust",
+                        state.kernel.lifecycle.variant_str(),
+                        if state.project_trust.project_dir.is_empty() {
+                            "containing the project file".to_string()
+                        } else {
+                            state.project_trust.project_dir.clone()
+                        }
+                    )),
                     RuntimeLifecycle::Error
                     | RuntimeLifecycle::AwaitingTrust
                     | RuntimeLifecycle::AwaitingEnvBuild
@@ -468,6 +477,7 @@ mod tests {
         let request = request("execute_cell", serde_json::json!({"cell_id":"live-cell"}));
         for lifecycle in [
             RuntimeLifecycle::AwaitingTrust,
+            RuntimeLifecycle::AwaitingProjectTrust,
             RuntimeLifecycle::AwaitingEnvBuild,
             RuntimeLifecycle::Error,
             RuntimeLifecycle::Shutdown,

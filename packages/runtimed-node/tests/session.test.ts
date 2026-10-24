@@ -18,6 +18,8 @@ const { Session } = require("../src/session.cjs") as {
     getExecutionView: () => unknown;
     runCell: (source: string, options?: Record<string, unknown>) => Promise<unknown>;
     exportSnapshotPair: () => Promise<unknown>;
+    approveProjectTrust: (directory: string) => Promise<void>;
+    declineProjectTrust: (directory: string, remember?: boolean) => Promise<void>;
     close: () => Promise<void>;
   };
 };
@@ -321,6 +323,24 @@ describe("@runtimed/node Session wrapper", () => {
 
     await expect(session.exportSnapshotPair()).resolves.toBe(snapshot);
     expect(native.exportSnapshotPair).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes project trust decisions through to the native session", async () => {
+    const native = {
+      notebookId: "nb-1",
+      approveProjectTrust: vi.fn(async () => {}),
+      declineProjectTrust: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    };
+    const session = new Session(native);
+
+    await session.approveProjectTrust("/work/proj");
+    await session.declineProjectTrust("/work", true);
+    await session.declineProjectTrust("/work/proj");
+
+    expect(native.approveProjectTrust).toHaveBeenCalledWith("/work/proj");
+    expect(native.declineProjectTrust).toHaveBeenNthCalledWith(1, "/work", true);
+    expect(native.declineProjectTrust).toHaveBeenNthCalledWith(2, "/work/proj", undefined);
   });
 });
 

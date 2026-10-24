@@ -68,7 +68,7 @@ describe.skipIf(!nativeEnabled)("native host telemetry registration", () => {
               host_telemetry: capability,
               host_telemetry_enabled: emissionEnabled,
               protocol_version: 4,
-              daemon_api_version: 2,
+              daemon_api_version: 3,
               daemon_version: "0.5.6+fixture",
               pid: 42,
               started_at: "2026-09-29T00:00:00Z",

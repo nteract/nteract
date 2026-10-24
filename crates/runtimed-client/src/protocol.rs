@@ -16,10 +16,11 @@ use serde::{Deserialize, Serialize};
 /// this version changes when clients require newer daemon behavior while the
 /// existing wire format remains readable.
 /// API 2 requires dependency approval to cover PEP 723 code-cell metadata.
-pub const DAEMON_API_VERSION: u32 = 2;
+/// API 3 additionally requires explicit trust before using project directories.
+pub const DAEMON_API_VERSION: u32 = 3;
 
 /// Oldest semantic daemon API this client can safely use.
-pub const MIN_DAEMON_API_VERSION: u32 = 2;
+pub const MIN_DAEMON_API_VERSION: u32 = 3;
 use std::path::PathBuf;
 
 use notebook_doc::pool_state::PoolState;
@@ -353,6 +354,8 @@ pub struct NotebookRuntimeProjection {
     pub kernel: runtime_doc::KernelState,
     pub env: runtime_doc::EnvState,
     pub trust: runtime_doc::TrustRuntimeState,
+    #[serde(default)]
+    pub project_trust: runtime_doc::ProjectTrustRuntimeState,
     pub project_context: runtime_doc::ProjectContext,
 }
 
@@ -836,7 +839,15 @@ mod tests {
                 execution_count: Some(1),
             }],
             dependencies: vec!["numpy".to_string()],
-            runtime: NotebookRuntimeProjection::default(),
+            runtime: NotebookRuntimeProjection {
+                project_trust: runtime_doc::ProjectTrustRuntimeState {
+                    status: "untrusted".to_string(),
+                    needs_approval: true,
+                    project_dir: "/tmp/example".to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             source_state: NotebookSourceProjectionState {
                 phase: NotebookSourcePhase::Publishing,
                 generation: 7,

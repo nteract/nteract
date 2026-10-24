@@ -92,6 +92,7 @@ const ERROR_REASON_LABELS: Record<string, string> = {
 export const RUNTIME_STATUS_LABELS: Record<RuntimeStatusKey, string> = {
   [RUNTIME_STATUS.NOT_STARTED]: "initializing",
   [RUNTIME_STATUS.AWAITING_TRUST]: "awaiting approval",
+  [RUNTIME_STATUS.AWAITING_PROJECT_TRUST]: "awaiting project trust",
   [RUNTIME_STATUS.AWAITING_ENV_BUILD]: "awaiting environment build",
   [RUNTIME_STATUS.RESOLVING]: "resolving environment",
   [RUNTIME_STATUS.PREPARING_ENV]: "preparing environment",
@@ -126,6 +127,7 @@ export function notebookCommandRuntimeStateForStatusKey(
   switch (statusKeyToLegacyStatus(statusKey)) {
     case KERNEL_STATUS.NOT_STARTED:
     case KERNEL_STATUS.AWAITING_TRUST:
+    case KERNEL_STATUS.AWAITING_PROJECT_TRUST:
     case KERNEL_STATUS.AWAITING_ENV_BUILD:
       return "not_started";
     case KERNEL_STATUS.STARTING:

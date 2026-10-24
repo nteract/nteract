@@ -105,6 +105,42 @@ describe("NotebookClient", () => {
     });
   });
 
+  it("emits project trust approval requests", async () => {
+    const { client, sendRequest } = stubClient();
+
+    await client.approveProjectTrust("/tmp/project");
+
+    expect(sendRequest).toHaveBeenCalledWith({
+      type: "approve_project_trust",
+      directory: "/tmp/project",
+    });
+  });
+
+  it("emits project trust decline requests with the remember flag", async () => {
+    const { client, sendRequest } = stubClient();
+
+    await client.declineProjectTrust("/tmp/repo", true);
+    await client.declineProjectTrust("/tmp/project", false);
+
+    expect(sendRequest).toHaveBeenNthCalledWith(1, {
+      type: "decline_project_trust",
+      directory: "/tmp/repo",
+      remember: true,
+    });
+    expect(sendRequest).toHaveBeenNthCalledWith(2, {
+      type: "decline_project_trust",
+      directory: "/tmp/project",
+      remember: false,
+    });
+  });
+
+  it("rethrows project trust request failures", async () => {
+    const { client, sendRequest } = stubClient();
+    sendRequest.mockRejectedValueOnce(new Error("transport closed"));
+
+    await expect(client.approveProjectTrust("/tmp/project")).rejects.toThrow("transport closed");
+  });
+
   it("clones a notebook as an ephemeral room", async () => {
     const { client, sendRequest } = stubClient();
     sendRequest.mockResolvedValueOnce({

@@ -35,6 +35,8 @@ pub const NOTEBOOK_REQUEST_TYPES: &[&str] = &[
     "sync_environment",
     "approve_trust",
     "approve_project_environment",
+    "approve_project_trust",
+    "decline_project_trust",
     "get_doc_bytes",
     "acknowledge_notebook_sync",
     "create_blob_upload",
@@ -380,6 +382,8 @@ export type NotebookRequest =
       reviewed_pep723_dependencies?: string[] | null;
     }}
   | {{ type: "approve_project_environment"; project_file_path?: string | null }}
+  | {{ type: "approve_project_trust"; directory: string }}
+  | {{ type: "decline_project_trust"; directory: string; remember?: boolean }}
   | {{ type: "get_doc_bytes" }}
   | {{ type: "acknowledge_notebook_sync" }}
   | {{

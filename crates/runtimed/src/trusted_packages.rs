@@ -325,6 +325,12 @@ impl TrustedPackageStore {
                 source TEXT NOT NULL,
                 PRIMARY KEY (ecosystem, normalized_name)
             );
+            CREATE TABLE IF NOT EXISTS trusted_directories (
+                canonical_path TEXT NOT NULL PRIMARY KEY,
+                decision TEXT NOT NULL,
+                approved_at TEXT NOT NULL,
+                source TEXT NOT NULL
+            );
             "#,
         )
         .with_context(|| format!("initialize trusted package store {}", path.display()))?;
@@ -563,6 +569,125 @@ impl TrustedPackageStore {
             }
         }
         Ok(approved)
+    }
+}
+
+/// Recorded decision for a directory of project files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirectoryDecision {
+    /// Project files at or below the directory may drive uv, pixi, or conda.
+    Trusted,
+    /// Use the notebook-owned environment; do not ask again.
+    NotebookEnv,
+}
+
+impl DirectoryDecision {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Trusted => "trusted",
+            Self::NotebookEnv => "notebook_env",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "trusted" => Some(Self::Trusted),
+            "notebook_env" => Some(Self::NotebookEnv),
+            _ => None,
+        }
+    }
+}
+
+/// The nearest directory row covering a path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DirectoryDecisionMatch {
+    pub directory: PathBuf,
+    pub decision: DirectoryDecision,
+}
+
+impl TrustedPackageStore {
+    /// Record a decision for `directory`. The path is canonicalized so a
+    /// symlinked checkout and its target share one row.
+    pub(crate) fn set_directory_decision(
+        &self,
+        directory: &Path,
+        decision: DirectoryDecision,
+        source: &str,
+    ) -> Result<PathBuf> {
+        let canonical = std::fs::canonicalize(directory)
+            .with_context(|| format!("resolve trusted directory {}", directory.display()))?;
+        if !canonical.is_dir() {
+            anyhow::bail!("{} is not a directory", canonical.display());
+        }
+        let conn = match self.inner.as_ref() {
+            StoreInner::Sqlite { conn } => conn,
+            StoreInner::Unavailable { reason } => {
+                return Err(anyhow::anyhow!(
+                    "trusted package store unavailable: {reason}"
+                ));
+            }
+        };
+        let approved_at = chrono::Utc::now().to_rfc3339();
+        let conn = conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("trusted package store mutex poisoned"))?;
+        conn.execute(
+            r#"
+            INSERT INTO trusted_directories (canonical_path, decision, approved_at, source)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(canonical_path) DO UPDATE SET
+                decision = excluded.decision,
+                approved_at = excluded.approved_at,
+                source = excluded.source
+            "#,
+            params![
+                canonical.to_string_lossy(),
+                decision.as_str(),
+                approved_at,
+                source
+            ],
+        )?;
+        Ok(canonical)
+    }
+
+    /// Find the nearest recorded decision at or above `path`.
+    ///
+    /// Fails closed: an unavailable store or a path that cannot be
+    /// canonicalized has no decision, so the caller asks the user.
+    pub(crate) fn directory_decision_for(
+        &self,
+        path: &Path,
+    ) -> Result<Option<DirectoryDecisionMatch>> {
+        let StoreInner::Sqlite { conn } = self.inner.as_ref() else {
+            return Ok(None);
+        };
+        let Ok(canonical) = std::fs::canonicalize(path) else {
+            return Ok(None);
+        };
+        let conn = conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("trusted package store mutex poisoned"))?;
+        let mut stmt =
+            conn.prepare("SELECT decision FROM trusted_directories WHERE canonical_path = ?1")?;
+        for ancestor in canonical.ancestors() {
+            let mut rows = stmt.query(params![ancestor.to_string_lossy()])?;
+            if let Some(row) = rows.next()? {
+                let decision: String = row.get(0)?;
+                let Some(decision) = DirectoryDecision::parse(&decision) else {
+                    warn!(
+                        "[trusted-directories] ignoring unknown decision {:?} for {}",
+                        decision,
+                        ancestor.display()
+                    );
+                    continue;
+                };
+                return Ok(Some(DirectoryDecisionMatch {
+                    directory: ancestor.to_path_buf(),
+                    decision,
+                }));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -1426,5 +1551,60 @@ mod tests {
             approved_pixi_channels: vec![],
         };
         store.add_from_info(&info, "test").unwrap();
+    }
+
+    #[test]
+    fn directory_decision_covers_descendants_and_nearest_row_wins() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = TrustedPackageStore::open(temp.path().join("trust.sqlite")).unwrap();
+        let repo = temp.path().join("repo");
+        let nested = repo.join("sub").join("deeper");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        assert_eq!(store.directory_decision_for(&nested).unwrap(), None);
+
+        store
+            .set_directory_decision(&repo, DirectoryDecision::Trusted, "test")
+            .unwrap();
+        let found = store.directory_decision_for(&nested).unwrap().unwrap();
+        assert_eq!(found.decision, DirectoryDecision::Trusted);
+        assert_eq!(found.directory, std::fs::canonicalize(&repo).unwrap());
+
+        store
+            .set_directory_decision(&repo.join("sub"), DirectoryDecision::NotebookEnv, "test")
+            .unwrap();
+        let found = store.directory_decision_for(&nested).unwrap().unwrap();
+        assert_eq!(found.decision, DirectoryDecision::NotebookEnv);
+
+        // A sibling of the trusted directory is not covered.
+        let sibling = temp.path().join("other");
+        std::fs::create_dir_all(&sibling).unwrap();
+        assert_eq!(store.directory_decision_for(&sibling).unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_decision_resolves_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = TrustedPackageStore::open(temp.path().join("trust.sqlite")).unwrap();
+        let real = temp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        store
+            .set_directory_decision(&link, DirectoryDecision::Trusted, "test")
+            .unwrap();
+        assert!(store.directory_decision_for(&real).unwrap().is_some());
+    }
+
+    #[test]
+    fn directory_decision_fails_closed_when_store_unavailable() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = TrustedPackageStore::unavailable("test");
+        assert_eq!(store.directory_decision_for(temp.path()).unwrap(), None);
+        assert!(store
+            .set_directory_decision(temp.path(), DirectoryDecision::Trusted, "test")
+            .is_err());
     }
 }

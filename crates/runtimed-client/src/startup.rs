@@ -337,22 +337,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pre_pep723_trust_runtime_is_rejected_without_replacement() {
-        let mut info = compatible_info();
-        info.daemon_api_version = 1;
-        let result = ensure_with(
-            Path::new("test-runtime"),
-            || std::future::ready(Ok(Some(info.clone()))),
-            || async { panic!("must not replace an incompatible live runtime") },
-            Duration::ZERO,
-            Duration::ZERO,
-        )
-        .await;
-        match result {
-            Err(RuntimeStartupError::Incompatible { reason, .. }) => {
-                assert!(reason.contains("daemon API 1 is older than required API 2"));
+    async fn pre_project_trust_runtime_is_rejected_without_replacement() {
+        for api in [1, 2] {
+            let mut info = compatible_info();
+            info.daemon_api_version = api;
+            let result = ensure_with(
+                Path::new("test-runtime"),
+                || std::future::ready(Ok(Some(info.clone()))),
+                || async { panic!("must not replace an incompatible live runtime") },
+                Duration::ZERO,
+                Duration::ZERO,
+            )
+            .await;
+            match result {
+                Err(RuntimeStartupError::Incompatible { reason, .. }) => {
+                    assert!(
+                        reason.contains(&format!("daemon API {api} is older than required API 3"))
+                    );
+                }
+                other => panic!("expected project trust compatibility rejection, got {other:?}"),
             }
-            other => panic!("expected PEP 723 trust compatibility rejection, got {other:?}"),
         }
     }
 
