@@ -2123,12 +2123,13 @@ impl NotebookRoom {
                 // approval can't bypass the allowlist).
                 // Project reconciliation covers metadata dependencies only. PEP 723
                 // cell source needs its own explicit notebook approval.
-                if matches!(initial.status, runt_trust::TrustStatus::Untrusted)
-                    && initial.pep723_dependencies.is_empty()
-                    && crate::project_trust::notebook_project_is_trusted(&trusted_packages, p)
-                    && project_file_deps_match_trust_info(p, &initial.info)
-                {
-                    match trusted_packages.add_from_info(&initial.info, "project_file") {
+                if let Some(covered) = crate::project_trust::reconcilable_trust_info(
+                    &trusted_packages,
+                    p,
+                    None,
+                    &initial,
+                ) {
+                    match trusted_packages.add_from_info(&covered, "project_file") {
                         Ok(()) => {
                             initial = verify_trust_from_file(p, &trusted_packages);
                             info!(

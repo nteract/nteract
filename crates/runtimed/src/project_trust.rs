@@ -185,23 +185,51 @@ pub(crate) fn evaluate(
     }
 }
 
-/// Whether the project file nearest `notebook_path` sits in a trusted
-/// directory. Room-open reconciliation only heals notebook dependency trust
-/// from a project file the user has trusted.
-pub(crate) fn notebook_project_is_trusted(
+/// The dependency slice a trusted project file vouches for in `trust`.
+///
+/// Returns `Some` only when all of these hold:
+/// - the notebook is `Untrusted` and declares no PEP 723 cell dependencies
+///   (those need their own notebook approval);
+/// - the project file nearest `notebook_path` is `approved`, when given, so a
+///   Save As into another folder cannot borrow an approval reviewed for the
+///   original project;
+/// - that project file's directory is trusted;
+/// - the notebook's metadata for the manifest's ecosystem equals the manifest.
+///
+/// The returned `TrustInfo` contains only that slice.
+pub(crate) fn reconcilable_trust_info(
     store: &TrustedPackageStore,
     notebook_path: &Path,
-) -> bool {
-    let Some(detected) = notebook_path
+    approved: Option<&DetectedProjectFile>,
+    trust: &crate::notebook_sync_server::TrustState,
+) -> Option<runt_trust::TrustInfo> {
+    if !matches!(trust.status, runt_trust::TrustStatus::Untrusted)
+        || !trust.pep723_dependencies.is_empty()
+    {
+        return None;
+    }
+    let detected = notebook_path
         .parent()
-        .and_then(crate::project_file::detect_project_file)
-    else {
-        return false;
-    };
-    matches!(
+        .and_then(crate::project_file::detect_project_file)?;
+    if let Some(approved) = approved {
+        let same_file = match (
+            std::fs::canonicalize(&detected.path),
+            std::fs::canonicalize(&approved.path),
+        ) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => detected.path == approved.path,
+        };
+        if !same_file || detected.kind != approved.kind {
+            return None;
+        }
+    }
+    if !matches!(
         evaluate(store, &detected, None).verdict,
         ProjectTrustVerdict::Trusted(_)
-    )
+    ) {
+        return None;
+    }
+    crate::notebook_sync_server::project_file_covered_trust_info(&detected, &trust.info)
 }
 
 /// Runtime state for a room whose environment does not come from a project.

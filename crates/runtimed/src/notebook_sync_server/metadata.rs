@@ -1190,23 +1190,10 @@ pub(crate) fn environment_yml_trust_info(
     }
 }
 
-/// Check whether a notebook's inline dependency list exactly matches a
-/// project file's dependency list (pyproject.toml / environment.yml /
-/// pixi.toml) in the notebook's own directory.
-///
-/// When this is true, the notebook's deps are an exact mirror of a file
-/// the user already has on disk. Signing them is safe because the trust
-/// surface ("these deps came from this machine") is already satisfied by
-/// file ownership. Used by #2150's room-init and streaming-load
-/// reconciliation to heal notebooks saved by pre-fix builds whose
-/// daemon-written deps never got a signature.
-///
-/// Returns `false` when no project file is found, when no kind matches
-/// the notebook's populated dep section, or when the lists differ.
-///
-/// Side-effect-free: does not read the notebook itself, does not touch
-/// the trust key, does not write anywhere. Callers decide what to do
-/// with the match.
+/// Test helper for exact manifest/metadata dependency matching. A match
+/// alone is not approval: production reconciliation also requires explicit
+/// directory trust, the current notebook binding, and no PEP 723 cell deps.
+#[cfg(test)]
 pub(crate) fn project_file_deps_match_trust_info(
     notebook_path: &Path,
     info: &runt_trust::TrustInfo,
@@ -1217,6 +1204,20 @@ pub(crate) fn project_file_deps_match_trust_info(
     let Some(detected) = crate::project_file::detect_project_file(parent) else {
         return false;
     };
+    project_file_covered_trust_info(&detected, info).is_some()
+}
+
+/// The exact slice of notebook dependency metadata that `detected` covers.
+///
+/// Returns `Some` only when the notebook's declared dependencies for the
+/// manifest's ecosystem equal the manifest's dependencies. The returned
+/// `TrustInfo` holds that slice and nothing else, so seeding it into the
+/// allowlist cannot approve identities the manifest never declared (other
+/// ecosystems, PEP 723 cell dependencies merged into `uv_dependencies`).
+pub(crate) fn project_file_covered_trust_info(
+    detected: &crate::project_file::DetectedProjectFile,
+    info: &runt_trust::TrustInfo,
+) -> Option<runt_trust::TrustInfo> {
     // Order-insensitive compare: `extract_pyproject_deps` already sorts,
     // but a hand-edited .ipynb may hold deps in any order. Sort both
     // sides so the match is stable regardless of source ordering.
@@ -1227,34 +1228,60 @@ pub(crate) fn project_file_deps_match_trust_info(
     }
     match detected.kind {
         crate::project_file::ProjectFileKind::PyprojectToml => {
-            let Ok(content) = std::fs::read_to_string(&detected.path) else {
-                return false;
-            };
+            let content = std::fs::read_to_string(&detected.path).ok()?;
             let project_deps = extract_pyproject_deps(&content);
-            !project_deps.is_empty() && sorted(&project_deps) == sorted(&info.uv_dependencies)
+            if project_deps.is_empty() || sorted(&project_deps) != sorted(&info.uv_dependencies) {
+                return None;
+            }
+            let mut covered = empty_trust_info(info);
+            covered.uv_dependencies = info.uv_dependencies.clone();
+            Some(covered)
         }
         crate::project_file::ProjectFileKind::EnvironmentYml => {
-            let Ok(env_config) = crate::project_file::parse_environment_yml(&detected.path) else {
-                return false;
-            };
+            let env_config = crate::project_file::parse_environment_yml(&detected.path).ok()?;
             // Channels are part of the signed trust payload (runt_trust
             // extracts them into TrustInfo) and conda channel priority
             // affects package resolution, so channel order matters.
             // Compare exact, preserving order. A notebook with matching
             // deps but different channels stays Untrusted — that's a
             // real trust event, not a silent heal.
-            !env_config.dependencies.is_empty()
-                && sorted(&env_config.dependencies) == sorted(&info.conda_dependencies)
-                && env_config.channels == info.conda_channels
+            if env_config.dependencies.is_empty()
+                || sorted(&env_config.dependencies) != sorted(&info.conda_dependencies)
+                || env_config.channels != info.conda_channels
+            {
+                return None;
+            }
+            let mut covered = empty_trust_info(info);
+            covered.conda_dependencies = info.conda_dependencies.clone();
+            covered.conda_channels = info.conda_channels.clone();
+            Some(covered)
         }
         crate::project_file::ProjectFileKind::PixiToml => {
             // Keep pixi.toml reconciliation conservative: inline
             // `metadata.runt.pixi` is trust-checked, but auto-signing an
             // unsigned notebook from a project file needs an exact manifest
             // comparison that preserves version specs and PyPI/conda splits.
-            false
+            None
         }
     }
+}
+
+/// `info` with every dependency and channel list cleared.
+fn empty_trust_info(info: &runt_trust::TrustInfo) -> runt_trust::TrustInfo {
+    let mut empty = info.clone();
+    empty.uv_dependencies.clear();
+    empty.approved_uv_dependencies.clear();
+    empty.conda_dependencies.clear();
+    empty.approved_conda_dependencies.clear();
+    empty.conda_channels.clear();
+    empty.approved_conda_channels.clear();
+    empty.pixi_dependencies.clear();
+    empty.approved_pixi_dependencies.clear();
+    empty.pixi_pypi_dependencies.clear();
+    empty.approved_pixi_pypi_dependencies.clear();
+    empty.pixi_channels.clear();
+    empty.approved_pixi_channels.clear();
+    empty
 }
 
 /// Verify trust status of a notebook by reading its file from disk.

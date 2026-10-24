@@ -199,6 +199,7 @@ export function useNotebookActionPolicy({
   const [justSynced, setJustSynced] = useState(false);
   const [environmentApplyPending, setEnvironmentApplyPending] = useState(false);
   const environmentApplyInFlightRef = useRef(false);
+  const projectTrustInFlightRef = useRef(false);
   const pendingKernelStartRef = useRef(false);
   const plainTrustObservedHeadsRef = useRef<string[] | null>(null);
   const runAllInFlightRef = useRef(false);
@@ -264,7 +265,9 @@ export function useNotebookActionPolicy({
       if (!info) return false;
 
       if (isTrustedForRuntimeAction(info)) {
-        setBlockedTrustAction(null);
+        // A launch can discover a project trust gate after notebook trust
+        // passes. Retain the original run and heads for that second dialog.
+        setBlockedTrustAction(blockedAction);
         const response = await launchKernel("auto", "auto");
         if (response.result === "error") {
           logger.error("[notebook-action-policy] tryStartKernel: daemon error", response.error);
@@ -281,6 +284,7 @@ export function useNotebookActionPolicy({
           );
           return false;
         }
+        setBlockedTrustAction(null);
         resetEnvProgress();
         return true;
       }
@@ -598,6 +602,7 @@ export function useNotebookActionPolicy({
             response.error,
           );
           setTrustApprovalHandoffPending(false);
+          setBlockedTrustAction(action);
           if (!isLaunchErrorHandledByRuntimeBanner(response.error)) {
             setTrustActionNotice(response.error);
           }
@@ -622,7 +627,7 @@ export function useNotebookActionPolicy({
         setTrustActionNotice(e instanceof Error ? e.message : String(e));
       }
     },
-    [launchKernel, runTrustApprovedAction, sessionReady],
+    [launchKernel, runTrustApprovedAction, sessionReady, setBlockedTrustAction],
   );
 
   const handleTrustApprove = useCallback(async () => {
@@ -747,6 +752,8 @@ export function useNotebookActionPolicy({
   // daemon lifecycle to NotStarted. The client launches the kernel after.
   const resolveProjectTrust = useCallback(
     async (request: () => Promise<NotebookResponse>, label: string): Promise<boolean> => {
+      if (projectTrustInFlightRef.current) return false;
+      projectTrustInFlightRef.current = true;
       setProjectTrustBusy(true);
       setProjectTrustError(null);
       try {
@@ -756,17 +763,20 @@ export function useNotebookActionPolicy({
           setProjectTrustError(response.error);
           return false;
         }
-        await tryStartKernel();
+        const action = pendingTrustActionRef.current;
+        const started = await tryStartKernel(action);
+        if (started) await runTrustApprovedAction(action);
         return true;
       } catch (error) {
         logger.error(`[notebook-action-policy] ${label} failed`, error);
         setProjectTrustError(error instanceof Error ? error.message : String(error));
         return false;
       } finally {
+        projectTrustInFlightRef.current = false;
         setProjectTrustBusy(false);
       }
     },
-    [tryStartKernel],
+    [runTrustApprovedAction, tryStartKernel],
   );
 
   const handleProjectTrustApprove = useCallback(
@@ -784,7 +794,12 @@ export function useNotebookActionPolicy({
     [declineProjectTrust, resolveProjectTrust],
   );
 
-  const clearProjectTrustError = useCallback(() => setProjectTrustError(null), []);
+  const clearProjectTrustError = useCallback(() => {
+    setProjectTrustError(null);
+    // Called when the user dismisses the project dialog. A later approval
+    // must not replay a run from a dismissed prompt.
+    setBlockedTrustAction(null);
+  }, [setBlockedTrustAction]);
 
   const handleStartKernelWithPyproject = useCallback(async () => {
     if (!canExecute) {
@@ -848,6 +863,7 @@ export function useNotebookActionPolicy({
 
       try {
         if (kernelStatus === KERNEL_STATUS.AWAITING_PROJECT_TRUST) {
+          setBlockedTrustAction(captureExecuteTrustAction(cellId));
           showProjectTrustDialog();
           return;
         }
@@ -891,6 +907,7 @@ export function useNotebookActionPolicy({
       getNotebookCellsSnapshot,
       kernelStatus,
       sessionReady,
+      setBlockedTrustAction,
       showProjectTrustDialog,
       tryStartKernel,
     ],
@@ -899,12 +916,13 @@ export function useNotebookActionPolicy({
   const handleStartKernel = useCallback(
     async (_name: string) => {
       if (kernelStatus === KERNEL_STATUS.AWAITING_PROJECT_TRUST) {
+        setBlockedTrustAction(null);
         showProjectTrustDialog();
         return;
       }
       await tryStartKernel();
     },
-    [kernelStatus, showProjectTrustDialog, tryStartKernel],
+    [kernelStatus, setBlockedTrustAction, showProjectTrustDialog, tryStartKernel],
   );
 
   const handleRestartKernel = useCallback(async () => {
@@ -943,6 +961,7 @@ export function useNotebookActionPolicy({
         kernelStatus === KERNEL_STATUS.AWAITING_ENV_BUILD
       ) {
         if (kernelStatus === KERNEL_STATUS.AWAITING_PROJECT_TRUST) {
+          setBlockedTrustAction(captureRunAllTrustAction());
           showProjectTrustDialog();
           return;
         }
@@ -972,6 +991,7 @@ export function useNotebookActionPolicy({
     kernelStatus,
     runAllCells,
     sessionReady,
+    setBlockedTrustAction,
     showEnvBuildDialog,
     showProjectTrustDialog,
     tryStartKernel,

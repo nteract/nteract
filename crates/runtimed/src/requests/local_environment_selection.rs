@@ -344,16 +344,13 @@ pub(crate) async fn apply(
     if let Err(error) = LocalEnvironmentSelection::validate(&snapshot, expected_revision) {
         return rejected(error);
     }
-    if snapshot.selected.is_some()
-        && room
-            .doc
-            .read()
-            .await
-            .get_metadata_snapshot()
-            .and_then(|metadata| metadata.detect_runtime())
-            .as_deref()
-            == Some("deno")
-    {
+    let runtime = crate::notebook_sync_server::resolve_metadata_snapshot(
+        room,
+        room.file_binding.path().await.as_deref(),
+    )
+    .await
+    .and_then(|metadata| metadata.detect_runtime());
+    if snapshot.selected.is_some() && runtime.as_deref() == Some("deno") {
         return rejected("Local Conda selection is only available for Python notebooks".into());
     }
     let chosen = match snapshot.selected {
@@ -372,9 +369,9 @@ pub(crate) async fn apply(
             };
             // Check before the old kernel stops: Automatic would park on an
             // untrusted project and leave the notebook without a kernel.
-            if let Some(detected) = path
-                .as_deref()
-                .and_then(crate::project_file::detect_project_file)
+            let environment_mode = *room.identity.environment_mode.read().await;
+            if let Some(detected) =
+                automatic_project_file(path.as_deref(), environment_mode, runtime.as_deref())
             {
                 if crate::project_trust::evaluate_for_room(room, &detected).verdict
                     == crate::project_trust::ProjectTrustVerdict::NeedsApproval
@@ -432,6 +429,18 @@ pub(crate) async fn apply(
     }
 }
 
+/// Match Automatic launch policy before disturbing the running kernel.
+fn automatic_project_file(
+    path: Option<&std::path::Path>,
+    mode: notebook_protocol::connection::CreateNotebookEnvironmentMode,
+    runtime: Option<&str>,
+) -> Option<crate::project_file::DetectedProjectFile> {
+    if !mode.allows_project_files() || runtime == Some("deno") {
+        return None;
+    }
+    path.and_then(crate::project_file::detect_project_file)
+}
+
 fn rejected(error: String) -> NotebookResponse {
     NotebookResponse::EnvironmentSelectionRejected { error }
 }
@@ -440,6 +449,23 @@ fn rejected(error: String) -> NotebookResponse {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn automatic_project_preflight_matches_runtime_and_environment_mode() {
+        use notebook_protocol::connection::CreateNotebookEnvironmentMode as Mode;
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("pyproject.toml"),
+            "[project]\ndependencies = []\n",
+        )
+        .unwrap();
+        let path = temp.path().join("notebook.ipynb");
+        assert!(automatic_project_file(Some(&path), Mode::Auto, Some("python")).is_some());
+        assert!(automatic_project_file(Some(&path), Mode::Project, Some("python")).is_some());
+        assert!(automatic_project_file(Some(&path), Mode::Notebook, Some("python")).is_none());
+        assert!(automatic_project_file(Some(&path), Mode::Auto, Some("deno")).is_none());
+        assert!(automatic_project_file(Some(&path), Mode::Auto, None).is_some());
+    }
 
     #[tokio::test]
     async fn installed_inventory_requires_actual_borrowed_running_config() {

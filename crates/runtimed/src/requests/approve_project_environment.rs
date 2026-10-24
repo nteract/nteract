@@ -1,9 +1,10 @@
 //! `NotebookRequest::ApproveProjectEnvironment` handler.
 //!
 //! Clients that predate project-directory trust send this from the
-//! environment.yml build dialog. It trusts the environment.yml's directory,
-//! which is the consent the launch gate checks, and records the file's
-//! packages in the local allowlist.
+//! environment.yml build dialog. This approves the file's packages only;
+//! persistent folder trust must already have been granted through the
+//! explicit project-folder dialog. Building one environment is not consent
+//! to trust every future project file in its directory.
 
 use std::path::PathBuf;
 
@@ -38,16 +39,26 @@ pub(crate) async fn handle(
         }
     };
 
-    if let Some(dir) = detected.path.parent() {
-        if let Err(error) = room.trusted_packages.set_directory_decision(
-            dir,
-            crate::trusted_packages::DirectoryDecision::Trusted,
-            "project_env_dialog",
-        ) {
-            return NotebookResponse::Error {
-                error: format!("Failed to trust project folder: {error}"),
-            };
-        }
+    let target = match detected
+        .path
+        .parent()
+        .ok_or_else(|| "Project file has no directory".to_string())
+        .and_then(|directory| {
+            crate::project_trust::validate_trust_target(directory, &detected.path)
+        }) {
+        Ok(target) => target,
+        Err(error) => return NotebookResponse::Error { error },
+    };
+    if !matches!(
+        crate::project_trust::require_for_launch(room, Some(&detected)),
+        crate::project_trust::RoomProjectGate::Trusted(_),
+    ) {
+        return NotebookResponse::Error {
+            error: format!(
+                "Trust the project folder {} before building its environment",
+                target.display()
+            ),
+        };
     }
 
     if let Err(error) = room
@@ -77,26 +88,6 @@ async fn resolve_project_file(
     room: &NotebookRoom,
     project_file_path: Option<String>,
 ) -> Result<crate::project_file::DetectedProjectFile, String> {
-    if let Some(path) = project_file_path {
-        let path = PathBuf::from(path);
-        let filename = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("");
-        let kind = match filename {
-            "environment.yml" | "environment.yaml" => {
-                crate::project_file::ProjectFileKind::EnvironmentYml
-            }
-            _ => {
-                return Err(format!(
-                    "Unsupported project environment file '{}'",
-                    path.to_string_lossy()
-                ));
-            }
-        };
-        return Ok(crate::project_file::DetectedProjectFile { path, kind });
-    }
-
     let notebook_path = room.file_binding.path().await;
     let working_dir = room.identity.working_dir.read().await.clone();
     let detection_path = notebook_path.as_ref().or(working_dir.as_ref());
@@ -105,9 +96,21 @@ async fn resolve_project_file(
             "No notebook path or working directory for project environment approval".into(),
         );
     };
-    crate::project_file::find_nearest_project_file(
+    let detected = crate::project_file::find_nearest_project_file(
         path,
         &[crate::project_file::ProjectFileKind::EnvironmentYml],
     )
-    .ok_or_else(|| "No environment.yml found for project environment approval".to_string())
+    .ok_or_else(|| "No environment.yml found for project environment approval".to_string())?;
+    if let Some(requested) = project_file_path {
+        let requested = std::fs::canonicalize(PathBuf::from(requested))
+            .map_err(|error| format!("Cannot resolve project environment: {error}"))?;
+        let current = std::fs::canonicalize(&detected.path)
+            .map_err(|error| format!("Cannot resolve current project environment: {error}"))?;
+        if requested != current {
+            return Err(
+                "Project environment changed; review the current notebook folder again".into(),
+            );
+        }
+    }
+    Ok(detected)
 }
