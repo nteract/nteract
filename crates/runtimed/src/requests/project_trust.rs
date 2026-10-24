@@ -3,7 +3,7 @@
 //! Both record a decision for a directory of project files and return. The
 //! client launches afterwards, the same way it does after `ApproveTrust`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use runtime_doc::RuntimeLifecycle;
@@ -11,38 +11,31 @@ use tracing::{info, warn};
 
 use crate::notebook_sync_server::{check_and_update_trust_state, NotebookRoom};
 use crate::project_file::DetectedProjectFile;
-use crate::project_trust::{evaluate_for_room, publish_state, validate_trust_target};
+use crate::project_trust::{evaluate_for_room, validate_trust_target};
 use crate::protocol::NotebookResponse;
 use crate::trusted_packages::DirectoryDecision;
 
 pub(crate) async fn approve(room: &Arc<NotebookRoom>, directory: String) -> NotebookResponse {
-    let manifest = match room_manifest(room).await {
-        Ok(manifest) => manifest,
+    let target_context = match room_manifest(room).await {
+        Ok(context) => context,
         Err(error) => return NotebookResponse::Error { error },
     };
-    let target = match validate_trust_target(Path::new(&directory), &manifest.path) {
+    let manifest = &target_context.manifest;
+    let target = match with_current_context(room, &target_context, || {
+        let target = validate_trust_target(Path::new(&directory), &manifest.path)?;
+        room.trusted_packages
+            .set_directory_decision(&target, DirectoryDecision::Trusted, "project_trust_dialog")
+            .map_err(|error| format!("Could not record trusted folder: {error}"))?;
+        clear_session_decline(room, &target);
+        Ok(target)
+    }) {
         Ok(target) => target,
         Err(error) => return NotebookResponse::Error { error },
     };
-    if let Err(error) = room.trusted_packages.set_directory_decision(
-        &target,
-        DirectoryDecision::Trusted,
-        "project_trust_dialog",
-    ) {
-        warn!(
-            "[project-trust] failed to trust {}: {}",
-            target.display(),
-            error
-        );
-        return NotebookResponse::Error {
-            error: format!("Could not record trusted folder: {error}"),
-        };
-    }
     info!("[project-trust] trusted {}", target.display());
-    clear_session_decline(room, &target);
 
-    reconcile_notebook_trust(room, &manifest).await;
-    refresh_after_decision(room, &manifest);
+    reconcile_notebook_trust(room, manifest).await;
+    refresh_after_decision(room, &target_context);
     NotebookResponse::Ok {}
 }
 
@@ -51,79 +44,106 @@ pub(crate) async fn decline(
     directory: String,
     remember: bool,
 ) -> NotebookResponse {
-    let manifest = match room_manifest(room).await {
-        Ok(manifest) => manifest,
+    let target_context = match room_manifest(room).await {
+        Ok(context) => context,
         Err(error) => return NotebookResponse::Error { error },
     };
-    let target = match validate_trust_target(Path::new(&directory), &manifest.path) {
+    let manifest = &target_context.manifest;
+    let target = match with_current_context(room, &target_context, || {
+        let target = validate_trust_target(Path::new(&directory), &manifest.path)?;
+        if remember {
+            room.trusted_packages
+                .set_directory_decision(
+                    &target,
+                    DirectoryDecision::NotebookEnv,
+                    "project_trust_dialog",
+                )
+                .map_err(|error| format!("Could not record folder choice: {error}"))?;
+        } else if let Ok(mut guard) = room.project_trust_session_decline.lock() {
+            *guard = Some(target.clone());
+        }
+        Ok(target)
+    }) {
         Ok(target) => target,
         Err(error) => return NotebookResponse::Error { error },
     };
-    if remember {
-        if let Err(error) = room.trusted_packages.set_directory_decision(
-            &target,
-            DirectoryDecision::NotebookEnv,
-            "project_trust_dialog",
-        ) {
-            return NotebookResponse::Error {
-                error: format!("Could not record folder choice: {error}"),
-            };
-        }
-    } else if let Ok(mut guard) = room.project_trust_session_decline.lock() {
-        *guard = Some(target.clone());
-    }
     info!(
         "[project-trust] using notebook environment for {} (remember: {})",
         target.display(),
         remember
     );
-    refresh_after_decision(room, &manifest);
+    refresh_after_decision(room, &target_context);
     NotebookResponse::Ok {}
 }
 
-/// The project file the room's trust prompt is about.
-///
-/// Detection runs from the room's current binding (or working directory),
-/// so a notebook saved into another folder after the prompt was parked is
-/// judged against the folder it lives in now. The parked manifest is used
-/// only when it is still that file; a stale prompt for another folder fails
-/// `validate_trust_target` and the client re-prompts on the next launch.
-async fn room_manifest(room: &NotebookRoom) -> Result<DetectedProjectFile, String> {
+struct ProjectTrustApprovalContext {
+    manifest: DetectedProjectFile,
+    revision: u64,
+    identity_revision: u64,
+}
+
+/// Serialize the decision with binding changes and replacement prompts. The
+/// store write is synchronous; reconciliation below may yield and is guarded
+/// separately before it republishes the projection.
+fn with_current_context<T>(
+    room: &NotebookRoom,
+    context: &ProjectTrustApprovalContext,
+    action: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let prompt = room
+        .project_trust_prompt
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if prompt.revision != context.revision || prompt.identity_revision != context.identity_revision
+    {
+        return Err("Notebook context changed; review project trust again".to_string());
+    }
+    action()
+}
+
+/// Resolve from the current room or the still-current explicit launch input.
+/// The caller's approval directory is never a project-discovery input.
+async fn room_manifest(room: &NotebookRoom) -> Result<ProjectTrustApprovalContext, String> {
+    let identity_revision = room
+        .project_trust_prompt
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .identity_revision;
     let notebook_path = room.file_binding.path().await;
     let working_dir = room.identity.working_dir.read().await.clone();
-    let current = notebook_path
-        .as_ref()
-        .or(working_dir.as_ref())
-        .and_then(|path| crate::project_file::detect_project_file(path))
-        .ok_or_else(|| "No project file found for this notebook".to_string())?;
-
-    let parked = room
+    let prompt = room
+        .project_trust_prompt
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if prompt.identity_revision != identity_revision {
+        return Err("Notebook context changed; review project trust again".to_string());
+    }
+    let state = room
         .state
-        .with_doc(|sd| Ok(sd.project_trust()))
-        .unwrap_or_default();
-    if parked.manifest_path.is_empty() {
-        return Ok(current);
+        .read(|sd| sd.read_state())
+        .map_err(|error| error.to_string())?;
+    let launch_context = prompt.launch_context.as_ref().filter(|context| {
+        state.kernel.lifecycle == RuntimeLifecycle::AwaitingProjectTrust
+            && context.identity_revision == identity_revision
+    });
+    let current = if let Some(context) = launch_context {
+        crate::project_trust::manifest_for_env_source(
+            &context.env_source,
+            None,
+            Some(&context.anchor),
+        )
+    } else {
+        notebook_path
+            .as_ref()
+            .or(working_dir.as_ref())
+            .and_then(|path| crate::project_file::detect_project_file(path))
     }
-    let parked_path = PathBuf::from(&parked.manifest_path);
-    let same = match (
-        std::fs::canonicalize(&parked_path),
-        std::fs::canonicalize(&current.path),
-    ) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    };
-    if same {
-        return Ok(DetectedProjectFile {
-            path: parked_path,
-            kind: current.kind,
-        });
-    }
-    warn!(
-        "[project-trust] parked prompt was for {} but the notebook now resolves to {}",
-        parked.manifest_path,
-        current.path.display()
-    );
-    Ok(current)
+    .ok_or_else(|| "No project file found for this notebook".to_string())?;
+    Ok(ProjectTrustApprovalContext {
+        manifest: current,
+        revision: prompt.revision,
+        identity_revision,
+    })
 }
 
 fn clear_session_decline(room: &NotebookRoom, trusted: &Path) {
@@ -172,16 +192,27 @@ async fn reconcile_notebook_trust(room: &NotebookRoom, approved: &DetectedProjec
 
 /// Republish project trust and release a parked lifecycle so the client can
 /// launch.
-fn refresh_after_decision(room: &NotebookRoom, manifest: &DetectedProjectFile) {
-    let eval = evaluate_for_room(room, manifest);
-    publish_state(room, &eval.state);
+fn refresh_after_decision(room: &NotebookRoom, context: &ProjectTrustApprovalContext) {
+    // A newer prompt or room move does not belong to this approval.
+    let mut prompt = room
+        .project_trust_prompt
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if prompt.revision != context.revision || prompt.identity_revision != context.identity_revision
+    {
+        return;
+    }
+    let eval = evaluate_for_room(room, &context.manifest);
     if let Err(error) = room.state.with_doc(|sd| {
+        sd.set_project_trust(&eval.state)?;
         if sd.read_state().kernel.lifecycle == RuntimeLifecycle::AwaitingProjectTrust {
             sd.set_lifecycle(&RuntimeLifecycle::NotStarted)?;
         }
         Ok(())
     }) {
         warn!("[runtime-state] {}", error);
+    } else {
+        prompt.replace(None);
     }
 }
 
@@ -236,6 +267,298 @@ mod tests {
         .unwrap();
     }
 
+    fn launch_context(
+        room: &NotebookRoom,
+        anchor: &Path,
+    ) -> crate::project_trust::ProjectTrustLaunchContext {
+        crate::project_trust::ProjectTrustLaunchContext {
+            anchor: anchor.to_path_buf(),
+            env_source: notebook_protocol::connection::EnvSource::Pyproject,
+            identity_revision: room.project_trust_prompt.lock().unwrap().identity_revision,
+        }
+    }
+
+    fn park_override(room: &NotebookRoom, anchor: &Path) {
+        let manifest = crate::project_file::detect_project_file(anchor).unwrap();
+        assert!(matches!(
+            crate::project_trust::require_for_launch_in_context(
+                room,
+                Some(&manifest),
+                Some(launch_context(room, anchor)),
+            ),
+            crate::project_trust::RoomProjectGate::Parked
+        ));
+    }
+
+    #[tokio::test]
+    async fn explicit_launch_path_approval_preserves_notebook_binding_and_package_trust() {
+        for untitled in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let bound = temp.path().join("bound");
+            let project = temp.path().join("override");
+            pyproject(&bound, "pandas");
+            pyproject(&project, "pandas");
+            let room = room(
+                temp.path(),
+                &bound,
+                json!({"runt":{"uv":{"dependencies":["pandas"]}}}),
+                "# /// script\n# dependencies = ['pandas']\n# ///\n",
+            );
+            if untitled {
+                crate::notebook_sync_server::NotebookFileBinding::set_path_for_test(&room, None)
+                    .await;
+            }
+            let binding = room.file_binding.path().await;
+            park_override(&room, &project);
+            assert!(matches!(
+                approve(&room, project.to_string_lossy().into_owned()).await,
+                NotebookResponse::Ok {}
+            ));
+            assert_eq!(room.file_binding.path().await, binding);
+            assert!(room
+                .trusted_packages
+                .directory_decision_for(&project)
+                .unwrap()
+                .is_some());
+            assert!(room
+                .trusted_packages
+                .directory_decision_for(&bound)
+                .unwrap()
+                .is_none());
+            assert_no_project_package_approval(&room);
+            assert_eq!(
+                room.state
+                    .read(|sd| sd.read_state().kernel.lifecycle)
+                    .unwrap(),
+                RuntimeLifecycle::NotStarted
+            );
+            let manifest = crate::project_file::detect_project_file(&project).unwrap();
+            assert!(matches!(
+                crate::project_trust::require_for_launch_in_context(
+                    &room,
+                    Some(&manifest),
+                    Some(launch_context(&room, &project))
+                ),
+                crate::project_trust::RoomProjectGate::Trusted(_)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_launch_path_decline_uses_the_requested_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let bound = temp.path().join("bound");
+        let project = temp.path().join("override");
+        pyproject(&bound, "pandas");
+        pyproject(&project, "other");
+        let room = room(temp.path(), &bound, json!({}), "");
+        park_override(&room, &project);
+        assert!(matches!(
+            decline(&room, project.to_string_lossy().into_owned(), true).await,
+            NotebookResponse::Ok {}
+        ));
+        assert_eq!(
+            room.trusted_packages
+                .directory_decision_for(&project)
+                .unwrap()
+                .unwrap()
+                .decision,
+            DirectoryDecision::NotebookEnv
+        );
+        assert!(room
+            .trusted_packages
+            .directory_decision_for(&bound)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            room.state
+                .read(|sd| sd.read_state().kernel.lifecycle)
+                .unwrap(),
+            RuntimeLifecycle::NotStarted
+        );
+    }
+
+    #[tokio::test]
+    async fn room_identity_changes_invalidate_explicit_launch_approval() {
+        for change_binding in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let first = temp.path().join("first");
+            let second = temp.path().join("second");
+            pyproject(&first, "pandas");
+            pyproject(&second, "other");
+            let room = room(temp.path(), &first, json!({}), "");
+            if !change_binding {
+                crate::notebook_sync_server::NotebookFileBinding::set_path_for_test(&room, None)
+                    .await;
+                room.set_working_dir(Some(first.clone())).await;
+            }
+            park_override(&room, &first);
+            if change_binding {
+                crate::notebook_sync_server::NotebookFileBinding::set_path_for_test(
+                    &room,
+                    Some(second.join("moved.ipynb")),
+                )
+                .await;
+            } else {
+                room.set_working_dir(Some(second.clone())).await;
+            }
+            assert!(matches!(
+                approve(&room, first.to_string_lossy().into_owned()).await,
+                NotebookResponse::Error { .. }
+            ));
+            for directory in [&first, &second] {
+                assert!(room
+                    .trusted_packages
+                    .directory_decision_for(directory)
+                    .unwrap()
+                    .is_none());
+            }
+            assert_no_project_package_approval(&room);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_replacement_launch_replaces_the_explicit_approval_context() {
+        for explicit in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let first = temp.path().join("first");
+            let second = temp.path().join("second");
+            pyproject(&first, "pandas");
+            pyproject(&second, "other");
+            let room = room(temp.path(), &second, json!({}), "");
+            park_override(&room, &first);
+            if explicit {
+                park_override(&room, &second);
+            } else {
+                // Auto-launch and the legacy environment-build gate must not
+                // inherit a preceding manual override.
+                let manifest = crate::project_file::detect_project_file(&second).unwrap();
+                crate::project_trust::require_for_launch(&room, Some(&manifest));
+            }
+            assert!(matches!(
+                approve(&room, first.to_string_lossy().into_owned()).await,
+                NotebookResponse::Error { .. }
+            ));
+            assert!(matches!(
+                approve(&room, second.to_string_lossy().into_owned()).await,
+                NotebookResponse::Ok {}
+            ));
+            assert!(room
+                .trusted_packages
+                .directory_decision_for(&first)
+                .unwrap()
+                .is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_launch_cannot_park_after_its_captured_room_identity_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        pyproject(&first, "pandas");
+        pyproject(&second, "other");
+        let room = room(temp.path(), &first, json!({}), "");
+        let context = launch_context(&room, &first);
+        let manifest = crate::project_file::detect_project_file(&first).unwrap();
+        // Deterministically order the otherwise concurrent Save As ahead of
+        // publication. Both identity change and park share the prompt mutex.
+        crate::notebook_sync_server::NotebookFileBinding::set_path_for_test(
+            &room,
+            Some(second.join("moved.ipynb")),
+        )
+        .await;
+        park_override(&room, &second);
+        let state = room.state.read(|sd| sd.read_state().project_trust).unwrap();
+        assert!(matches!(
+            crate::project_trust::require_for_launch_in_context(
+                &room,
+                Some(&manifest),
+                Some(context)
+            ),
+            crate::project_trust::RoomProjectGate::ContextChanged
+        ));
+        assert_eq!(
+            room.state.read(|sd| sd.read_state().project_trust).unwrap(),
+            state
+        );
+        assert_eq!(
+            room_manifest(&room)
+                .await
+                .unwrap()
+                .manifest
+                .path
+                .canonicalize()
+                .unwrap(),
+            second.join("pyproject.toml").canonicalize().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_launch_cannot_install_an_approval_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        pyproject(&project, "pandas");
+        let room = room(temp.path(), &project, json!({}), "");
+        let crate::notebook_sync_server::ManualLaunchAdmission::Admitted(attempt) =
+            room.try_begin_manual_launch()
+        else {
+            panic!("launch was not admitted")
+        };
+        room.cancel_in_flight_launch().unwrap();
+        room.state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Shutdown))
+            .unwrap();
+        park_override(&room, &project);
+        assert!(room
+            .project_trust_prompt
+            .lock()
+            .unwrap()
+            .launch_context
+            .is_none());
+        assert_eq!(
+            room.state
+                .read(|sd| sd.read_state().kernel.lifecycle)
+                .unwrap(),
+            RuntimeLifecycle::Shutdown
+        );
+        attempt.finish_cancelled();
+    }
+
+    #[tokio::test]
+    async fn late_approval_refresh_cannot_replace_a_newer_prompt() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        pyproject(&first, "pandas");
+        pyproject(&second, "other");
+        let room = room(temp.path(), &first, json!({}), "");
+        park_override(&room, &first);
+        let old_context = room_manifest(&room).await.unwrap();
+        park_override(&room, &second);
+        assert!(with_current_context::<()>(&room, &old_context, || {
+            panic!("a superseded approval must not record a directory decision")
+        })
+        .is_err());
+        refresh_after_decision(&room, &old_context);
+        assert_eq!(
+            room.state
+                .read(|sd| sd.read_state().kernel.lifecycle)
+                .unwrap(),
+            RuntimeLifecycle::AwaitingProjectTrust
+        );
+        assert_eq!(
+            room_manifest(&room)
+                .await
+                .unwrap()
+                .manifest
+                .path
+                .canonicalize()
+                .unwrap(),
+            second.join("pyproject.toml").canonicalize().unwrap()
+        );
+    }
+
     #[tokio::test]
     async fn stale_folder_prompt_after_save_as_cannot_approve_new_folder_dependencies() {
         let temp = tempfile::tempdir().unwrap();
@@ -253,9 +576,11 @@ mod tests {
         crate::project_trust::require_for_launch(&room, Some(&original));
         let new_path = second.join("saved.ipynb");
         std::fs::write(&new_path, json!({"nbformat":4,"nbformat_minor":5,"cells":[],"metadata":{"runt":{"uv":{"dependencies":["unreviewed"]}}}}).to_string()).unwrap();
-        room.file_binding
-            .set_path_for_test(Some(new_path.clone()))
-            .await;
+        crate::notebook_sync_server::NotebookFileBinding::set_path_for_test(
+            room.as_ref(),
+            Some(new_path.clone()),
+        )
+        .await;
         *room.trust_state.write().await = verify_trust_from_file(&new_path, &room.trusted_packages);
 
         assert!(matches!(
@@ -487,9 +812,11 @@ mod tests {
         crate::project_trust::require_for_launch(&room, Some(&original));
         let old_prompt = room.state.read(|sd| sd.read_state().project_trust).unwrap();
         let new_path = temp.path().join("without-project.ipynb");
-        room.file_binding
-            .set_path_for_test(Some(new_path.clone()))
-            .await;
+        crate::notebook_sync_server::NotebookFileBinding::set_path_for_test(
+            room.as_ref(),
+            Some(new_path.clone()),
+        )
+        .await;
         let mut refresh = std::pin::pin!(
             crate::notebook_sync_server::NotebookFileBinding::set_runtime_path(&room, &new_path)
         );

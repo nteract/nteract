@@ -268,7 +268,7 @@ Detection and the dialog summary are parse-only. Project-backed launches do not 
 
 Both release `AwaitingProjectTrust` to `NotStarted`; the client launches afterwards, as with `ApproveTrust`. Daemon-bridged hosted rooms reject both.
 
-Requests resolve the manifest from the notebook's current path. After Save As, an old prompt cannot approve dependencies outside the chosen directory scope; approving an ancestor intentionally covers its descendants. Reconciliation also checks that the current manifest is the one evaluated for approval.
+Requests resolve the manifest from the current room context, or from the detection path captured by the daemon for its pending launch. This preserves the `LaunchKernel.notebook_path` override without changing the notebook's file binding. The approval request's `directory` never drives project discovery. Save As, a working-directory change, or a replacement launch invalidates the previous launch context. An old prompt cannot approve dependencies outside the chosen directory scope; approving an ancestor intentionally covers its descendants. Package reconciliation still uses the actual notebook binding and checks that its current manifest is the one evaluated for approval.
 
 The client retains pending Run Cell or Run All actions across approval and replays them with their original observed-head guards. Changed content is rejected. Dismissing the prompt cancels the pending action, including while approval, trust checking, or startup is in flight. A kernel that has already started need not be stopped, but the cancelled action is not replayed.
 

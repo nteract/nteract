@@ -95,8 +95,16 @@ impl NotebookFileBinding {
         }
     }
 
-    async fn set_bound_path(&self, canonical: PathBuf) {
-        *self.path.write().await = Some(canonical);
+    async fn set_bound_path(room: &NotebookRoom, path: Option<PathBuf>) {
+        let mut binding = room.file_binding.path.write().await;
+        let mut prompt = room
+            .project_trust_prompt
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if *binding != path {
+            *binding = path;
+            prompt.identity_changed();
+        }
     }
 
     fn mark_file_backed(&self) {
@@ -104,8 +112,8 @@ impl NotebookFileBinding {
     }
 
     #[cfg(test)]
-    pub async fn set_path_for_test(&self, path: Option<PathBuf>) {
-        *self.path.write().await = path;
+    pub async fn set_path_for_test(room: &NotebookRoom, path: Option<PathBuf>) {
+        Self::set_bound_path(room, path).await;
     }
 
     #[cfg(test)]
@@ -146,10 +154,20 @@ impl NotebookFileBinding {
     pub async fn set_runtime_path(room: &NotebookRoom, canonical: &Path) -> bool {
         use runtime_doc::RuntimeLifecycle;
 
-        let parked = room
-            .state
-            .read(|sd| sd.read_state().kernel.lifecycle == RuntimeLifecycle::AwaitingProjectTrust)
-            .unwrap_or(false);
+        let (parked, prompt_revision) = {
+            let prompt = room
+                .project_trust_prompt
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            (
+                room.state
+                    .read(|sd| {
+                        sd.read_state().kernel.lifecycle == RuntimeLifecycle::AwaitingProjectTrust
+                    })
+                    .unwrap_or(false),
+                prompt.revision,
+            )
+        };
         let project_trust = if parked {
             let allows_project_files = room
                 .identity
@@ -187,16 +205,23 @@ impl NotebookFileBinding {
         } else {
             None
         };
+        let mut prompt = room
+            .project_trust_prompt
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let path_str = canonical.to_string_lossy().into_owned();
         if let Err(e) = room.state.with_doc(|sd| {
             sd.set_path(Some(&path_str))?;
             if let Some(project_trust) = project_trust {
                 // A launch or shutdown may have advanced while we read metadata.
-                if sd.read_state().kernel.lifecycle == RuntimeLifecycle::AwaitingProjectTrust {
+                if prompt.revision == prompt_revision
+                    && sd.read_state().kernel.lifecycle == RuntimeLifecycle::AwaitingProjectTrust
+                {
                     sd.set_project_trust(&project_trust)?;
                     if !project_trust.needs_approval {
                         sd.set_lifecycle(&RuntimeLifecycle::NotStarted)?;
                     }
+                    prompt.replace(None);
                 }
             }
             Ok(())
@@ -241,7 +266,7 @@ impl NotebookFileBinding {
     }
 
     pub async fn promote_after_save(room: &Arc<NotebookRoom>, canonical: PathBuf) {
-        room.file_binding.set_bound_path(canonical.clone()).await;
+        Self::set_bound_path(room, Some(canonical.clone())).await;
         room.file_binding.mark_file_backed();
         if !Self::set_runtime_path(room, &canonical).await {
             return;
@@ -254,7 +279,7 @@ impl NotebookFileBinding {
     }
 
     pub async fn rebind_after_save_as(room: &Arc<NotebookRoom>, canonical: PathBuf) {
-        room.file_binding.set_bound_path(canonical.clone()).await;
+        Self::set_bound_path(room, Some(canonical.clone())).await;
         if !Self::set_runtime_path(room, &canonical).await {
             return;
         }
@@ -1741,6 +1766,10 @@ pub struct NotebookRoom {
     /// for without remembering it. Room-scoped; persisted choices live in
     /// the trusted-directories table.
     pub(crate) project_trust_session_decline: std::sync::Mutex<Option<std::path::PathBuf>>,
+    /// Provenance of the pending project prompt, including a manual launch's
+    /// explicit detection path. RuntimeStateDoc remains the shared projection.
+    pub(crate) project_trust_prompt:
+        std::sync::Mutex<crate::project_trust::ProjectTrustPromptState>,
     /// Per-notebook RuntimeStateDoc handle — daemon-authoritative ephemeral state
     /// (kernel status, queue, env sync). Clients sync read-only.
     /// Uses `std::sync::Mutex` internally (no `.await` needed).
@@ -1793,6 +1822,19 @@ pub struct NotebookRoom {
 }
 
 impl NotebookRoom {
+    /// Serialize room-context changes with project prompt admission/publication.
+    pub(crate) async fn set_working_dir(&self, path: Option<PathBuf>) {
+        let mut working_dir = self.identity.working_dir.write().await;
+        let mut prompt = self
+            .project_trust_prompt
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if *working_dir != path {
+            *working_dir = path;
+            prompt.identity_changed();
+        }
+    }
+
     /// Linearize a client-facing launch projection with shutdown and agent
     /// disconnect cancellation. The launch token remains owned by the caller,
     /// so a different generation cannot legitimately publish from that task;
@@ -2455,6 +2497,7 @@ impl NotebookRoom {
             trust_state: Arc::new(RwLock::new(trust_state)),
             trusted_packages,
             project_trust_session_decline: std::sync::Mutex::new(None),
+            project_trust_prompt: Default::default(),
             state,
             comms,
             comments,

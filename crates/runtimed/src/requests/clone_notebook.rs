@@ -88,7 +88,7 @@ pub(crate) async fn handle_inner(
     // 5. Seed the room's working_dir so project-file resolution finds the
     //    same pyproject.toml / environment.yml / pixi.toml the source uses.
     if let Some(ref wd) = working_dir_path {
-        *clone_room.identity.working_dir.write().await = Some(wd.clone());
+        clone_room.set_working_dir(Some(wd.clone())).await;
         crate::notebook_sync_server::publish_local_workstation_attachment_for_working_dir(
             &clone_room.state,
             Some(wd.as_path()),

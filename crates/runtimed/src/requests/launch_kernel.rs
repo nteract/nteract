@@ -456,12 +456,17 @@ async fn handle_attempt(
     // path; without this fallback, notebook-relative working dirs
     // and auto-detection of `pyproject.toml` / `environment.yml` /
     // `pixi.toml` silently stop working for saved notebooks.
+    let identity_revision = room
+        .project_trust_prompt
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .identity_revision;
+    let bound_path = room.file_binding.path().await;
+    let working_dir = room.identity.working_dir.read().await.clone();
     let notebook_path = match notebook_path {
         Some(p) => Some(p),
-        None => room
-            .file_binding
-            .path()
-            .await
+        None => bound_path
+            .as_ref()
             .map(|p| p.to_string_lossy().into_owned()),
     };
     // The room-local launch gate above owns serialization. RuntimeStateDoc is
@@ -492,8 +497,7 @@ async fn handle_attempt(
     let notebook_path = match notebook_path {
         some @ Some(_) => some,
         None => {
-            let wd = room.identity.working_dir.read().await;
-            wd.clone().inspect(|p| {
+            working_dir.clone().inspect(|p| {
                 info!(
                     "[notebook-sync] LaunchKernel: using room working_dir for project file detection: {}",
                     p.display()
@@ -760,40 +764,63 @@ async fn handle_attempt(
         None,
         notebook_path.as_deref(),
     );
-    let trusted_project =
-        match crate::project_trust::require_for_launch(room, project_manifest.as_ref()) {
-            crate::project_trust::RoomProjectGate::NotProject
-                if crate::project_trust::is_project_env_source(&parsed_resolved) =>
-            {
-                let error = format!(
-                    "{} requested but no project file was found",
-                    parsed_resolved.as_str()
-                );
-                reset_starting_state(room, None).await;
-                publish_environment_launch_error(
-                    room,
-                    parsed_resolved.as_str(),
-                    Some(KernelErrorReason::EnvironmentPrepareFailed),
-                    &error,
-                );
-                return NotebookResponse::Error { error };
-            }
-            crate::project_trust::RoomProjectGate::NotProject => {
-                let state = declined_project_state
-                    .take()
-                    .unwrap_or_else(crate::project_trust::no_project_state);
-                crate::project_trust::publish_state(room, &state);
-                None
-            }
-            crate::project_trust::RoomProjectGate::Trusted(trusted) => Some(trusted),
-            crate::project_trust::RoomProjectGate::Parked => {
-                return NotebookResponse::Error {
-                    error: "The project folder is not trusted on this machine. \
+    let project_context =
+        notebook_path
+            .clone()
+            .map(|anchor| crate::project_trust::ProjectTrustLaunchContext {
+                anchor,
+                env_source: parsed_resolved.clone(),
+                identity_revision,
+            });
+    let trusted_project = match crate::project_trust::require_for_launch_in_context(
+        room,
+        project_manifest.as_ref(),
+        project_context,
+    ) {
+        crate::project_trust::RoomProjectGate::NotProject
+            if crate::project_trust::is_project_env_source(&parsed_resolved) =>
+        {
+            let error = format!(
+                "{} requested but no project file was found",
+                parsed_resolved.as_str()
+            );
+            reset_starting_state(room, None).await;
+            publish_environment_launch_error(
+                room,
+                parsed_resolved.as_str(),
+                Some(KernelErrorReason::EnvironmentPrepareFailed),
+                &error,
+            );
+            return NotebookResponse::Error { error };
+        }
+        crate::project_trust::RoomProjectGate::NotProject => {
+            let state = declined_project_state
+                .take()
+                .unwrap_or_else(crate::project_trust::no_project_state);
+            crate::project_trust::publish_state(room, &state);
+            None
+        }
+        crate::project_trust::RoomProjectGate::Trusted(trusted) => Some(trusted),
+        crate::project_trust::RoomProjectGate::ContextChanged => {
+            let error = "Notebook context changed during project detection; start the kernel again"
+                .to_string();
+            reset_starting_state(room, None).await;
+            publish_environment_launch_error(
+                room,
+                parsed_resolved.as_str(),
+                Some(KernelErrorReason::EnvironmentPrepareFailed),
+                &error,
+            );
+            return NotebookResponse::Error { error };
+        }
+        crate::project_trust::RoomProjectGate::Parked => {
+            return NotebookResponse::Error {
+                error: "The project folder is not trusted on this machine. \
                             Trust it or use the notebook environment to launch."
-                        .to_string(),
-                };
-            }
-        };
+                    .to_string(),
+            };
+        }
+    };
     let trusted_path_of = |kind: crate::project_file::ProjectFileKind| {
         trusted_project
             .as_ref()
