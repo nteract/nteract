@@ -236,10 +236,7 @@ where
     // Set working_dir on the room if provided (for untitled notebook project detection)
     if let Some(wd) = &ctx.working_dir {
         let update_workstation_directory = room.file_binding.path().await.is_none();
-        {
-            let mut room_wd = room.identity.working_dir.write().await;
-            *room_wd = Some(wd.clone());
-        }
+        room.set_working_dir(Some(wd.clone())).await;
 
         if update_workstation_directory && !room.is_hosted() {
             // Hosted rooms must not write local workstation state into the

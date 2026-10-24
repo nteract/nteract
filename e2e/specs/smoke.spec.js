@@ -3,8 +3,9 @@
  *
  * Minimal test that verifies the full stack works:
  * 1. App loads and shows toolbar
- * 2. Kernel auto-launches and reaches idle state
- * 3. Code can be executed and output appears
+ * 2. Choose the notebook environment if project-folder review appears
+ * 3. Kernel reaches idle state
+ * 4. Code can be executed and output appears
  *
  * This test requires the daemon to be running (e2e/dev.sh handles this).
  */
@@ -27,7 +28,36 @@ describe("E2E Smoke Test", () => {
     expect(await toolbar.isExisting()).toBe(true);
   });
 
-  it("should auto-launch kernel and reach idle", async () => {
+  it("should start a kernel with the notebook environment", async () => {
+    // CI launches from the repo, whose pyproject.toml now requires review.
+    // Keep smoke on the notebook environment; Untitled Pyproject separately
+    // exercises trusting a project and installing its dependencies.
+    const projectTrustDialog = await $('[data-testid="project-trust-dialog"]');
+    await browser.waitUntil(
+      async () =>
+        (await projectTrustDialog.isExisting()) ||
+        ["idle", "busy"].includes(await getKernelStatus()),
+      {
+        timeout: 300000,
+        interval: 200,
+        timeoutMsg: "Neither project-folder review nor a ready kernel appeared",
+      },
+    );
+    // A spec retry can reuse the already-started kernel.
+    if (await projectTrustDialog.isExisting()) {
+      expect(await getKernelStatus()).toBe("not_started");
+      const notebookEnvButton = await projectTrustDialog.$(
+        '[data-testid="project-trust-notebook-env-button"]',
+      );
+      await notebookEnvButton.waitForClickable({ timeout: 10000 });
+      await notebookEnvButton.click();
+      await browser.waitUntil(async () => !(await projectTrustDialog.isExisting()), {
+        timeout: 60000,
+        interval: 300,
+        timeoutMsg: "Project-folder review did not close after choosing the notebook environment",
+      });
+    }
+
     // 300s timeout: CI runners start cold and UV pool warming can take 3+ minutes
     await waitForKernelReady(300000);
     const status = await getKernelStatus();

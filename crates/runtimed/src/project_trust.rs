@@ -32,6 +32,41 @@ pub(crate) const STATUS_TRUSTED: &str = "trusted";
 pub(crate) const STATUS_UNTRUSTED: &str = "untrusted";
 pub(crate) const STATUS_NOTEBOOK_ENV: &str = "notebook_env";
 
+/// The resolved detection input of a manual launch waiting for folder consent.
+/// It is valid only for the room identity captured before launch resolution.
+#[derive(Debug, Clone)]
+pub(crate) struct ProjectTrustLaunchContext {
+    pub anchor: PathBuf,
+    pub env_source: notebook_protocol::connection::EnvSource,
+    pub identity_revision: u64,
+}
+
+/// Local provenance for the current project-trust projection. The revision
+/// prevents an approval completing after an await from replacing a newer prompt.
+/// Binding and working-directory setters hold this mutex while changing their
+/// canonical value and incrementing identity_revision. Park and decision commits
+/// check that revision under the same mutex, so a room move either invalidates
+/// an already-published prompt or wins before a stale launch can publish one.
+/// Never acquire an async lock while holding this synchronous mutex.
+#[derive(Default)]
+pub(crate) struct ProjectTrustPromptState {
+    pub revision: u64,
+    pub identity_revision: u64,
+    pub launch_context: Option<ProjectTrustLaunchContext>,
+}
+
+impl ProjectTrustPromptState {
+    pub(crate) fn identity_changed(&mut self) {
+        self.identity_revision += 1;
+        self.replace(None);
+    }
+
+    pub(crate) fn replace(&mut self, context: Option<ProjectTrustLaunchContext>) {
+        self.revision += 1;
+        self.launch_context = context;
+    }
+}
+
 /// A project manifest whose directory is trusted on this machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TrustedProjectManifest {
@@ -300,6 +335,8 @@ pub(crate) enum RoomProjectGate {
     Trusted(TrustedProjectManifest),
     /// The room is parked in `AwaitingProjectTrust`. The launch must stop.
     Parked,
+    /// The room moved while a manual launch path was being resolved.
+    ContextChanged,
 }
 
 /// Whether `env_source` hands a project file to uv, pixi, or conda.
@@ -361,7 +398,19 @@ pub(crate) fn require_for_launch(
     room: &crate::notebook_sync_server::NotebookRoom,
     manifest: Option<&DetectedProjectFile>,
 ) -> RoomProjectGate {
+    require_for_launch_in_context(room, manifest, None)
+}
+
+pub(crate) fn require_for_launch_in_context(
+    room: &crate::notebook_sync_server::NotebookRoom,
+    manifest: Option<&DetectedProjectFile>,
+    context: Option<ProjectTrustLaunchContext>,
+) -> RoomProjectGate {
     let Some(manifest) = manifest else {
+        room.project_trust_prompt
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(None);
         return RoomProjectGate::NotProject;
     };
     let mut eval = evaluate_for_room(room, manifest);
@@ -382,8 +431,11 @@ pub(crate) fn require_for_launch(
                 };
                 eval.state.summary = summarize(&detected, &project_dir);
             }
-            park(room, &eval.state);
-            RoomProjectGate::Parked
+            if park(room, &eval.state, context) {
+                RoomProjectGate::Parked
+            } else {
+                RoomProjectGate::ContextChanged
+            }
         }
     }
 }
@@ -393,25 +445,52 @@ pub(crate) fn publish_state(
     room: &crate::notebook_sync_server::NotebookRoom,
     state: &ProjectTrustRuntimeState,
 ) {
+    let mut prompt = room
+        .project_trust_prompt
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     if let Err(error) = room.state.with_doc(|sd| sd.set_project_trust(state)) {
         warn!("[runtime-state] {}", error);
+    } else {
+        prompt.replace(None);
     }
 }
 
 /// Write project trust state and park the room in `AwaitingProjectTrust`.
-fn park(room: &crate::notebook_sync_server::NotebookRoom, state: &ProjectTrustRuntimeState) {
+fn park(
+    room: &crate::notebook_sync_server::NotebookRoom,
+    state: &ProjectTrustRuntimeState,
+    context: Option<ProjectTrustLaunchContext>,
+) -> bool {
     tracing::info!(
         "[project-trust] {} is not trusted; waiting for approval",
         state.project_dir
     );
+    let mut context_current = true;
     if let Some(Err(error)) = room.commit_unless_launch_cancelled(|| {
-        room.state.with_doc(|sd| {
+        let mut prompt = room
+            .project_trust_prompt
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if context
+            .as_ref()
+            .is_some_and(|context| context.identity_revision != prompt.identity_revision)
+        {
+            context_current = false;
+            return Ok(());
+        }
+        let result = room.state.with_doc(|sd| {
             sd.set_project_trust(state)?;
             sd.set_lifecycle(&runtime_doc::RuntimeLifecycle::AwaitingProjectTrust)
-        })
+        });
+        if result.is_ok() {
+            prompt.replace(context);
+        }
+        result
     }) {
         warn!("[runtime-state] {}", error);
     }
+    context_current
 }
 
 // ── Parse-only summary ──────────────────────────────────────────────

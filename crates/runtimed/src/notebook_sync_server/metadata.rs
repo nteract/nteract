@@ -3654,7 +3654,8 @@ async fn auto_launch_kernel_attempt(
                 None
             }
             crate::project_trust::RoomProjectGate::Trusted(trusted) => Some(trusted),
-            crate::project_trust::RoomProjectGate::Parked => return None,
+            crate::project_trust::RoomProjectGate::Parked
+            | crate::project_trust::RoomProjectGate::ContextChanged => return None,
         };
 
     // For pixi:toml, verify ipykernel is in pixi.toml before launching.

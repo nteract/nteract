@@ -2692,6 +2692,7 @@ fn test_room_with_path_and_store(
         })),
         trusted_packages,
         project_trust_session_decline: std::sync::Mutex::new(None),
+        project_trust_prompt: Default::default(),
         state,
         comms,
         comments,
@@ -7626,9 +7627,7 @@ async fn saving_untitled_notebook_updates_path_index_and_keeps_uuid() {
         .unwrap_or_else(|_| PathBuf::from(written.path()));
 
     rooms.bind_path(room.id, canonical.clone()).await.unwrap();
-    room.file_binding
-        .set_path_for_test(Some(canonical.clone()))
-        .await;
+    NotebookFileBinding::set_path_for_test(&room, Some(canonical.clone())).await;
 
     // UUID key unchanged, path index populated, room.file_binding.path set.
     assert!(rooms.peek_uuid(uuid).await.is_some());
@@ -13088,9 +13087,7 @@ async fn test_autosave_shutdown_during_loading_returns_false_without_write() {
     let canonical = tokio::fs::canonicalize(&written)
         .await
         .unwrap_or_else(|_| PathBuf::from(written.path()));
-    room.file_binding
-        .set_path_for_test(Some(canonical.clone()))
-        .await;
+    NotebookFileBinding::set_path_for_test(&room, Some(canonical.clone())).await;
     let shutdown_tx =
         spawn_autosave_debouncer(canonical.to_string_lossy().into_owned(), Arc::clone(&room));
     room.file_binding

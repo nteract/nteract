@@ -1867,6 +1867,46 @@ class TestProjectFileDetection:
         )
         assert result.success, f"Failed to import httpx from pyproject env: {result.stderr}"
 
+    async def test_bound_notebook_explicit_project_path(self, client, tmp_path):
+        """A launch override may select another project without rebinding the notebook."""
+        bound = tmp_path / "bound" / "note.ipynb"
+        bound.parent.mkdir()
+        bound.write_text(
+            json.dumps(
+                {
+                    "nbformat": 4,
+                    "nbformat_minor": 5,
+                    "metadata": {"kernelspec": {"name": "python3", "display_name": "Python 3"}},
+                    "cells": [],
+                }
+            )
+        )
+        project = tmp_path / "launch-project"
+        project.mkdir()
+        (project / "pyproject.toml").write_text(
+            "[project]\nname = 'launch-context-test'\nversion = '0.1.0'\ndependencies = ['httpx']\n"
+        )
+        session = await client.open_notebook(str(bound))
+        try:
+            await async_shutdown_and_start_kernel(
+                session,
+                kernel_type="python",
+                env_source="uv:pyproject",
+                expected_env_source="uv:pyproject",
+                notebook_path=str(project),
+                trust_project_dir=project,
+            )
+            cell_id = await async_create_cell_and_wait_for_sync(
+                session, "import httpx; print(httpx.__version__)"
+            )
+            result = await session.execute_cell(cell_id)
+            assert result.success, result.stderr
+            assert result.stdout.strip()
+            # Approval must not turn a detection override into a Save As.
+            assert Path(await session.save()).resolve() == bound.resolve()
+        finally:
+            await async_cleanup_session(session)
+
     async def test_pixi_auto_detection(self, session, isolated_fixtures):
         """notebook_path near pixi.toml auto-detects pixi:toml.
 
