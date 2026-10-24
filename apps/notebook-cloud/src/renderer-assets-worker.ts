@@ -4,7 +4,19 @@ type RendererAssetsEnv = Pick<Env, "ASSETS">;
 
 export function createRendererAssetsWorker({
   fallbackToOrigin = true,
-}: { fallbackToOrigin?: boolean } = {}): ExportedHandler<RendererAssetsEnv> {
+  assetAliases = {},
+}: {
+  fallbackToOrigin?: boolean;
+  assetAliases?: Readonly<Record<string, string>>;
+} = {}): ExportedHandler<RendererAssetsEnv> {
+  const aliases = new Map<string, string>();
+  for (const [stable, hashed] of Object.entries(assetAliases)) {
+    const match = /^([A-Za-z0-9_-]+)\.[a-f0-9]{12,64}\.(js|css|wasm)$/.exec(hashed);
+    if (!match || stable !== `${match[1]}.${match[2]}`) {
+      throw new Error("Invalid renderer asset alias");
+    }
+    aliases.set(`/${stable}`, `/${hashed}`);
+  }
   // Cloudflare path Routes can fall through to the main Custom Domain Worker.
   // A standalone celld service has no downstream origin; fetching itself would
   // recurse on a miss, so its generated entrypoint disables this fallback.
@@ -34,7 +46,7 @@ export function createRendererAssetsWorker({
       }
 
       const assetUrl = new URL(request.url);
-      assetUrl.pathname = assetPathname;
+      assetUrl.pathname = aliases.get(assetPathname) ?? assetPathname;
       let response: Response;
       try {
         response = await env.ASSETS.fetch(new Request(assetUrl, request));
@@ -109,7 +121,7 @@ function withRendererAssetCors(
   response.headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
   response.headers.set("Access-Control-Allow-Headers", "Content-Type");
   response.headers.set("Timing-Allow-Origin", "*");
-  if (options.assetPathname && response.ok) {
+  if (options.assetPathname && (response.ok || response.status === 304)) {
     response.headers.set(
       "Cache-Control",
       isContentHashedAssetPathname(options.assetPathname)

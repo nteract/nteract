@@ -257,8 +257,11 @@ async function prepare() {
   for (const worker of WORKERS) {
     const projectDir = path.join(rootDir, worker.name);
     await mkdir(projectDir, { recursive: true });
-    await writeFile(path.join(projectDir, "worker.ts"), entryShim(worker, projectDir));
-    await copyProjectFiles(worker, projectDir);
+    const assetAliases = await copyProjectFiles(worker, projectDir);
+    await writeFile(
+      path.join(projectDir, "worker.ts"),
+      entryShim(worker, projectDir, assetAliases),
+    );
     await writeWorkerConfig(worker, projectDir, "worker.ts", sessionSecret);
   }
 
@@ -306,13 +309,14 @@ async function exportProjects(outDir) {
     const stageDir = path.join(exportRoot, worker.name);
     await rm(stageDir, { recursive: true, force: true });
     await mkdir(stageDir, { recursive: true });
+    const assetAliases = await copyProjectFiles(worker, stageDir);
 
     // The shim lives at the same depth as the prepare() projects so its
     // relative imports resolve identically.
     const buildDir = path.join(buildRoot, worker.name);
     await mkdir(buildDir, { recursive: true });
     const shimPath = path.join(buildDir, "worker.ts");
-    await writeFile(shimPath, entryShim(worker, buildDir));
+    await writeFile(shimPath, entryShim(worker, buildDir, assetAliases));
 
     const result = await esbuild.build({
       entryPoints: [shimPath],
@@ -336,7 +340,6 @@ async function exportProjects(outDir) {
       .map((output) => output.bytes)
       .reduce((total, bytes) => total + bytes, 0);
 
-    await copyProjectFiles(worker, stageDir);
     await writeWorkerConfig(worker, stageDir, "index.js", sessionSecret);
     console.error(
       `[celld-local] exported ${worker.name} -> ${stageDir} (${(bundledBytes / 1024).toFixed(0)} KiB bundled)`,
@@ -395,7 +398,7 @@ function assertBuildOutputs() {
 
 // Entry shim: the only file celld's `main` may point at when bundling from
 // source, and the esbuild entry for `export`.
-function entryShim(worker, projectDir) {
+function entryShim(worker, projectDir, assetAliases) {
   const relativeEntry = path
     .relative(projectDir, path.join(appDir, worker.entry))
     .split(path.sep)
@@ -441,7 +444,7 @@ function entryShim(worker, projectDir) {
   if (worker.name === "renderer-assets") {
     shimLines.push(
       `import { createRendererAssetsWorker } from "${relativeEntry}";`,
-      `export default createRendererAssetsWorker({ fallbackToOrigin: false });`,
+      `export default createRendererAssetsWorker({ fallbackToOrigin: false, assetAliases: ${JSON.stringify(assetAliases)} });`,
     );
   } else {
     shimLines.push(`export { default } from "${relativeEntry}";`);
@@ -457,7 +460,7 @@ function entryShim(worker, projectDir) {
 async function copyProjectFiles(worker, projectDir) {
   const assetsDir = path.join(projectDir, "assets");
   await rm(assetsDir, { recursive: true, force: true });
-  await copyCelldProjectAssets(worker, appDir, assetsDir);
+  const assetAliases = await copyCelldProjectAssets(worker, appDir, assetsDir);
   if (worker.name === "main" && process.env.NOTEBOOK_CLOUD_CELLD_PYTHON === "1") {
     const runtimeLock = JSON.parse(
       await readFile(path.join(appDir, "../preview-python/dist/runtime-lock.json"), "utf8"),
@@ -490,6 +493,7 @@ async function copyProjectFiles(worker, projectDir) {
     await rm(migrationsDir, { recursive: true, force: true });
     await cp(path.join(appDir, "migrations"), migrationsDir, { recursive: true });
   }
+  return assetAliases;
 }
 
 async function writeWorkerConfig(worker, projectDir, main, sessionSecret) {

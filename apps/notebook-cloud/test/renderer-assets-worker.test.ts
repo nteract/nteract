@@ -4,6 +4,101 @@ import rendererAssetsWorker, { createRendererAssetsWorker } from "../src/rendere
 import type { Env, ExecutionContext } from "../src/cloudflare-types.ts";
 
 describe("renderer assets Worker", () => {
+  it("serves stable and hashed aliases with their original request and cache semantics", async () => {
+    const hashed = "sift_wasm.0123456789abcdef.wasm";
+    const worker = createRendererAssetsWorker({
+      fallbackToOrigin: false,
+      assetAliases: { "sift_wasm.wasm": hashed },
+    });
+    for (const prefix of ["/renderer-assets/", "/plugins/"]) {
+      for (const method of ["GET", "HEAD"]) {
+        for (const status of [200, 304]) {
+          for (const name of ["sift_wasm.wasm", hashed]) {
+            const response = await worker.fetch(
+              new Request(`https://assets.test${prefix}${name}?v=build`, {
+                method,
+                headers: { "If-None-Match": '"previous"' },
+              }),
+              fakeEnv({
+                ASSETS: {
+                  fetch: async (request: Request) => {
+                    assert.equal(request.url, `https://assets.test/${hashed}?v=build`);
+                    assert.equal(request.method, method);
+                    assert.equal(request.headers.get("If-None-Match"), '"previous"');
+                    return new Response(status === 200 && method === "GET" ? "wasm" : null, {
+                      status,
+                      headers: {
+                        "Content-Type": "application/wasm",
+                        ETag: '"content-hash"',
+                        "Cache-Control": "public, max-age=31536000, immutable",
+                      },
+                    });
+                  },
+                },
+              }),
+              fakeContext(),
+            );
+            assert.equal(response.status, status);
+            assert.equal(await response.text(), status === 200 && method === "GET" ? "wasm" : "");
+            assert.equal(response.headers.get("Content-Type"), "application/wasm");
+            assert.equal(response.headers.get("ETag"), '"content-hash"');
+            assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+            assert.equal(response.headers.get("Timing-Allow-Origin"), "*");
+            assert.equal(
+              response.headers.get("Cache-Control"),
+              name === hashed
+                ? "public, max-age=31536000, immutable"
+                : "public, max-age=0, must-revalidate",
+            );
+          }
+        }
+      }
+    }
+  });
+
+  it("rejects aliases outside the same renderer basename and content-hashed target", () => {
+    const invalidAliases: Array<Record<string, string>> = [
+      { "sift_wasm.wasm": "../sift_wasm.0123456789abcdef.wasm" },
+      { "sift_wasm.wasm": "sift_wasm%2f.0123456789abcdef.wasm" },
+      { "../sift_wasm.wasm": "sift_wasm.0123456789abcdef.wasm" },
+      { "sift_wasm.wasm": "different.0123456789abcdef.wasm" },
+      { "sift_wasm.wasm": "sift_wasm.wasm" },
+    ];
+    for (const assetAliases of invalidAliases) {
+      assert.throws(
+        () => createRendererAssetsWorker({ assetAliases }),
+        /Invalid renderer asset alias/,
+      );
+    }
+  });
+
+  it("keeps alias failures local on celld and falls through with the original request on Cloudflare", async (t) => {
+    const url = "https://assets.test/plugins/sift_wasm.wasm?v=build";
+    const originFetch = t.mock.method(globalThis, "fetch", async (request: RequestInfo | URL) => {
+      assert.equal(new Request(request).url, url);
+      return new Response("origin");
+    });
+    const assetAliases = { "sift_wasm.wasm": "sift_wasm.0123456789abcdef.wasm" };
+    const env = fakeEnv({
+      ASSETS: { fetch: async () => new Response("missing", { status: 404 }) },
+    });
+    const local = await createRendererAssetsWorker({ fallbackToOrigin: false, assetAliases }).fetch(
+      new Request(url),
+      env,
+      fakeContext(),
+    );
+    assert.equal(local.status, 404);
+    assert.equal(local.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(originFetch.mock.callCount(), 0);
+    const fallback = await createRendererAssetsWorker({ assetAliases }).fetch(
+      new Request(url),
+      env,
+      fakeContext(),
+    );
+    assert.equal(await fallback.text(), "origin");
+    assert.equal(originFetch.mock.callCount(), 1);
+  });
+
   it("returns celld asset misses and binding failures without fetching its own origin", async (t) => {
     const originFetch = t.mock.method(globalThis, "fetch", async () =>
       assert.fail("celld must not fall through to itself"),
