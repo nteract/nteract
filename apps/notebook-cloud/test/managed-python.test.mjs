@@ -204,6 +204,7 @@ for (const scope of ["owner", "editor", "viewer"])
 test("managed startup, failure and resume charge the attach-job owner rather than notebook creator", async () => {
   await initializeTestRuntimedWasm();
   const storage = new Map();
+  const snapshotObjects = new Map();
   const tasks = new Set();
   const state = {
     id: { toString: () => "coowner" },
@@ -221,6 +222,24 @@ test("managed startup, failure and resume charge the attach-job owner rather tha
   const calls = [];
   const env = {
     DB: database(sqlite),
+    NOTEBOOK_SNAPSHOTS: {
+      async put(key, value, options) {
+        if (options?.onlyIf?.etagDoesNotMatch === "*" && snapshotObjects.has(key)) return null;
+        const bytes = await new Response(value).arrayBuffer();
+        snapshotObjects.set(key, bytes);
+        return { size: bytes.byteLength };
+      },
+      async get(key) {
+        const bytes = snapshotObjects.get(key);
+        return bytes
+          ? {
+              size: bytes.byteLength,
+              arrayBuffer: async () => bytes.slice(0),
+              text: async () => new TextDecoder().decode(bytes),
+            }
+          : null;
+      },
+    },
     NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
     PREVIEW_PYTHON_SESSIONS: {
       idFromName: (name) => name,
@@ -285,6 +304,17 @@ test("managed startup, failure and resume charge the attach-job owner rather tha
     "failed",
   );
   const selected = await materializer.getWorkstationAttachment();
+  const checkpoint = storage.get("room-host:checkpoint");
+  assert.ok(checkpoint?.documents?.runtime_state);
+  for (const reference of Object.values(checkpoint.documents)) {
+    const bytes = snapshotObjects.get(`n/coowner/room-checkpoints/${reference.sha256}.am`);
+    assert.ok(bytes && bytes.byteLength > 0);
+    assert.equal(bytes.byteLength, reference.byte_length);
+  }
+  // A fresh materializer must recover the failed session from the stored
+  // objects, not just from the original materializer's in-memory state.
+  const restored = new RoomMaterializer("coowner", state, env);
+  assert.deepEqual(await restored.getWorkstationAttachment(), selected);
   assert.equal(
     await room.requestRuntimeResumeForExecution(
       "coowner",
