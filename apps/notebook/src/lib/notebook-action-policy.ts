@@ -199,7 +199,8 @@ export function useNotebookActionPolicy({
   const [justSynced, setJustSynced] = useState(false);
   const [environmentApplyPending, setEnvironmentApplyPending] = useState(false);
   const environmentApplyInFlightRef = useRef(false);
-  const projectTrustInFlightRef = useRef(false);
+  const projectTrustInFlightRef = useRef<number | null>(null);
+  const projectTrustAttemptRef = useRef(0);
   const pendingKernelStartRef = useRef(false);
   const plainTrustObservedHeadsRef = useRef<string[] | null>(null);
   const runAllInFlightRef = useRef(false);
@@ -251,7 +252,10 @@ export function useNotebookActionPolicy({
   );
 
   const tryStartKernel = useCallback(
-    async (blockedAction: PendingTrustAction | null = null): Promise<boolean> => {
+    async (
+      blockedAction: PendingTrustAction | null = null,
+      isCurrentApproval?: () => boolean,
+    ): Promise<boolean> => {
       if (!canExecute) {
         logger.debug("[notebook-action-policy] tryStartKernel: execute unavailable, skipping");
         return false;
@@ -262,6 +266,7 @@ export function useNotebookActionPolicy({
       }
 
       const info = await checkTrust();
+      if (isCurrentApproval && !isCurrentApproval()) return false;
       if (!info) return false;
 
       if (isTrustedForRuntimeAction(info)) {
@@ -269,6 +274,7 @@ export function useNotebookActionPolicy({
         // passes. Retain the original run and heads for that second dialog.
         setBlockedTrustAction(blockedAction);
         const response = await launchKernel("auto", "auto");
+        if (isCurrentApproval && !isCurrentApproval()) return false;
         if (response.result === "error") {
           logger.error("[notebook-action-policy] tryStartKernel: daemon error", response.error);
           return false;
@@ -284,7 +290,9 @@ export function useNotebookActionPolicy({
           );
           return false;
         }
-        setBlockedTrustAction(null);
+        // A project approval owns its pending action until the final replay
+        // check. Ordinary starts can consume it immediately.
+        if (!isCurrentApproval) setBlockedTrustAction(null);
         resetEnvProgress();
         return true;
       }
@@ -752,31 +760,43 @@ export function useNotebookActionPolicy({
   // daemon lifecycle to NotStarted. The client launches the kernel after.
   const resolveProjectTrust = useCallback(
     async (request: () => Promise<NotebookResponse>, label: string): Promise<boolean> => {
-      if (projectTrustInFlightRef.current) return false;
-      projectTrustInFlightRef.current = true;
+      if (projectTrustInFlightRef.current !== null) return false;
+      const attempt = ++projectTrustAttemptRef.current;
+      projectTrustInFlightRef.current = attempt;
+      const action = pendingTrustActionRef.current;
+      const isCurrent = () =>
+        projectTrustInFlightRef.current === attempt &&
+        pendingTrustActionRef.current === action;
       setProjectTrustBusy(true);
       setProjectTrustError(null);
       try {
         const response = await request();
+        if (!isCurrent()) return false;
         if (response.result === "error") {
           logger.error(`[notebook-action-policy] ${label} failed`, response.error);
           setProjectTrustError(response.error);
           return false;
         }
-        const action = pendingTrustActionRef.current;
-        const started = await tryStartKernel(action);
-        if (started) await runTrustApprovedAction(action);
+        const started = await tryStartKernel(action, isCurrent);
+        if (!isCurrent()) return false;
+        if (started) {
+          await runTrustApprovedAction(action);
+          if (isCurrent()) setBlockedTrustAction(null);
+        }
         return true;
       } catch (error) {
+        if (!isCurrent()) return false;
         logger.error(`[notebook-action-policy] ${label} failed`, error);
         setProjectTrustError(error instanceof Error ? error.message : String(error));
         return false;
       } finally {
-        projectTrustInFlightRef.current = false;
-        setProjectTrustBusy(false);
+        if (projectTrustInFlightRef.current === attempt) {
+          projectTrustInFlightRef.current = null;
+          setProjectTrustBusy(false);
+        }
       }
     },
-    [runTrustApprovedAction, tryStartKernel],
+    [runTrustApprovedAction, setBlockedTrustAction, tryStartKernel],
   );
 
   const handleProjectTrustApprove = useCallback(
@@ -798,6 +818,8 @@ export function useNotebookActionPolicy({
     setProjectTrustError(null);
     // Called when the user dismisses the project dialog. A later approval
     // must not replay a run from a dismissed prompt.
+    projectTrustInFlightRef.current = null;
+    setProjectTrustBusy(false);
     setBlockedTrustAction(null);
   }, [setBlockedTrustAction]);
 

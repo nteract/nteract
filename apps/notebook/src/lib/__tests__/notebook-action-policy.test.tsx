@@ -9,6 +9,12 @@ import {
   useNotebookActionPolicy,
 } from "../notebook-action-policy";
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((finish) => { resolve = finish; });
+  return { promise, resolve };
+}
+
 function response(result: NotebookResponse["result"]): NotebookResponse {
   return { result } as NotebookResponse;
 }
@@ -784,6 +790,131 @@ describe("useNotebookActionPolicy", () => {
     await act(async () => { await result.current.handleProjectTrustApprove("/work/proj"); });
     expect(options.executeCellGuarded).not.toHaveBeenCalled();
     expect(options.executeCell).not.toHaveBeenCalled();
+  });
+
+  it.each(
+    (["approve", "notebook"] as const).flatMap((decision) =>
+      (["request", "check", "launch"] as const).flatMap((stage) =>
+        (["cell", "all"] as const).map((kind) => ({ decision, stage, kind })),
+      ),
+    ),
+  )("does not resume dismissed $decision $kind intent during $stage", async ({ decision, stage, kind }) => {
+    const reached = deferred<void>();
+    const request = deferred<NotebookResponse>();
+    const check = deferred<{ status: string }>();
+    const launch = deferred<NotebookResponse>();
+    let heads = ["cancelled-head"];
+    const options = createPolicyOptions({
+      kernelStatus: KERNEL_STATUS.AWAITING_PROJECT_TRUST,
+      getObservedHeads: () => heads,
+    });
+    const requestMock = vi.mocked(decision === "approve" ? options.approveProjectTrust : options.declineProjectTrust);
+    if (stage === "request") requestMock.mockImplementationOnce(() => { reached.resolve(); return request.promise; });
+    if (stage === "check") vi.mocked(options.checkTrust).mockImplementationOnce(() => { reached.resolve(); return check.promise; });
+    if (stage === "launch") vi.mocked(options.launchKernel).mockImplementationOnce(() => { reached.resolve(); return launch.promise; });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+    const run = () => kind === "cell" ? result.current.handleExecuteCell("cell-1") : result.current.handleRunAllCells();
+    const decide = () => decision === "approve"
+      ? result.current.handleProjectTrustApprove("/work/proj")
+      : result.current.handleProjectTrustUseNotebookEnv("/work/proj", false);
+    await act(async () => { await run(); });
+    let operation!: Promise<boolean>;
+    await act(async () => { operation = decide(); await reached.promise; });
+    act(() => result.current.clearProjectTrustError());
+    await act(async () => {
+      request.resolve(response("ok"));
+      check.resolve({ status: "trusted" });
+      launch.resolve(response("kernel_launched"));
+      expect(await operation).toBe(false);
+    });
+    expect(result.current.pendingTrustAction).toBeNull();
+    expect(result.current.trustDialogOpen).toBe(false);
+    expect(options.executeCellGuarded).not.toHaveBeenCalled();
+    expect(options.runAllCellsGuarded).not.toHaveBeenCalled();
+    expect(options.launchKernel).toHaveBeenCalledTimes(stage === "launch" ? 1 : 0);
+
+    heads = ["fresh-head"];
+    await act(async () => { await run(); await decide(); });
+    if (kind === "cell") expect(options.executeCellGuarded).toHaveBeenCalledExactlyOnceWith("cell-1", { observed_heads: ["fresh-head"] });
+    else expect(options.runAllCellsGuarded).toHaveBeenCalledExactlyOnceWith({ observed_heads: ["fresh-head"] });
+    expect(options.executeCell).not.toHaveBeenCalled();
+    expect(options.runAllCells).not.toHaveBeenCalled();
+  });
+
+  it("does not open package approval when a dismissed project trust check returns untrusted", async () => {
+    const check = deferred<{ status: string }>();
+    const reached = deferred<void>();
+    const options = createPolicyOptions({
+      kernelStatus: KERNEL_STATUS.AWAITING_PROJECT_TRUST,
+      checkTrust: vi.fn(() => { reached.resolve(); return check.promise; }),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+    await act(async () => { await result.current.handleExecuteCell("cell-1"); });
+    let operation!: Promise<boolean>;
+    await act(async () => { operation = result.current.handleProjectTrustApprove("/work/proj"); await reached.promise; });
+    act(() => result.current.clearProjectTrustError());
+    await act(async () => { check.resolve({ status: "untrusted" }); await operation; });
+    expect(result.current.pendingTrustAction).toBeNull();
+    expect(result.current.trustDialogOpen).toBe(false);
+    expect(options.launchKernel).not.toHaveBeenCalled();
+  });
+
+  it("a stale project completion cannot clear or replay a newer pending approval", async () => {
+    const oldLaunch = deferred<NotebookResponse>();
+    const launchReached = deferred<void>();
+    const newApproval = deferred<NotebookResponse>();
+    const approvalReached = deferred<void>();
+    let heads = ["old-head"];
+    const options = createPolicyOptions({
+      kernelStatus: KERNEL_STATUS.AWAITING_PROJECT_TRUST,
+      getObservedHeads: () => heads,
+      launchKernel: vi.fn().mockImplementationOnce(() => { launchReached.resolve(); return oldLaunch.promise; }).mockResolvedValue(response("kernel_launched")),
+      approveProjectTrust: vi.fn().mockResolvedValueOnce(response("ok")).mockImplementationOnce(() => { approvalReached.resolve(); return newApproval.promise; }),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+    await act(async () => { await result.current.handleExecuteCell("cell-1"); });
+    let oldOperation!: Promise<boolean>;
+    await act(async () => { oldOperation = result.current.handleProjectTrustApprove("/work/proj"); await launchReached.promise; });
+    act(() => result.current.clearProjectTrustError());
+    heads = ["new-head"];
+    await act(async () => { await result.current.handleRunAllCells(); });
+    let newOperation!: Promise<boolean>;
+    await act(async () => {
+      newOperation = result.current.handleProjectTrustApprove("/work/proj");
+      // If an old in-flight request blocks fresh consent, fail instead of hanging.
+      await Promise.race([approvalReached.promise, newOperation]);
+    });
+    expect(options.approveProjectTrust).toHaveBeenCalledTimes(2);
+    await act(async () => { oldLaunch.resolve(response("kernel_launched")); expect(await oldOperation).toBe(false); });
+    expect(result.current.projectTrustBusy).toBe(true);
+    expect(result.current.pendingTrustAction).toMatchObject({ kind: "run_all", provenance: { observed_heads: ["new-head"] } });
+    expect(options.executeCellGuarded).not.toHaveBeenCalled();
+    expect(options.runAllCellsGuarded).not.toHaveBeenCalled();
+    await act(async () => { newApproval.resolve(response("ok")); expect(await newOperation).toBe(true); });
+    expect(options.runAllCellsGuarded).toHaveBeenCalledExactlyOnceWith({ observed_heads: ["new-head"] });
+  });
+
+  it("preserves a replacement run intent when the previous project startup finishes", async () => {
+    const launch = deferred<NotebookResponse>();
+    const reached = deferred<void>();
+    let heads = ["old-head"];
+    const options = createPolicyOptions({
+      kernelStatus: KERNEL_STATUS.AWAITING_PROJECT_TRUST,
+      getObservedHeads: () => heads,
+      launchKernel: vi.fn().mockImplementationOnce(() => { reached.resolve(); return launch.promise; }).mockResolvedValue(response("kernel_launched")),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+    await act(async () => { await result.current.handleExecuteCell("cell-1"); });
+    let operation!: Promise<boolean>;
+    await act(async () => { operation = result.current.handleProjectTrustApprove("/work/proj"); await reached.promise; });
+    heads = ["new-head"];
+    await act(async () => { await result.current.handleRunAllCells(); });
+    await act(async () => { launch.resolve(response("kernel_launched")); expect(await operation).toBe(false); });
+    expect(result.current.pendingTrustAction).toMatchObject({ kind: "run_all", provenance: { observed_heads: ["new-head"] } });
+    expect(options.executeCellGuarded).not.toHaveBeenCalled();
+    expect(options.runAllCellsGuarded).not.toHaveBeenCalled();
+    await act(async () => { await result.current.handleProjectTrustApprove("/work/proj"); });
+    expect(options.runAllCellsGuarded).toHaveBeenCalledExactlyOnceWith({ observed_heads: ["new-head"] });
   });
 
   it("shuts down before switching a running kernel to the project environment", async () => {
