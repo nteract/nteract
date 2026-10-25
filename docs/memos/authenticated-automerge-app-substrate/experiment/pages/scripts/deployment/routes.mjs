@@ -3,9 +3,11 @@ import { deploymentProfile } from "./profiles.mjs";
 export function routesFor(target = "pages-next", legacy = false) {
   const { hostname, listen } = deploymentProfile(target).deployment;
   const renderer = deploymentProfile(target).tunnelService ? "mermaid[.]js|" : "";
-  // Frozen deployments retain their exact route receipts. New public setup and sharing stay on page5.
-  const connect = target === "page5" ? "connect|connect[.]js|" : "";
-  const access = target === "page5" ? "access|" : "";
+  // Frozen deployments retain their exact route receipts. Sharing targets expose
+  // only the public setup page, its script, and the authenticated access API.
+  const sharing = target === "page5" || target === "page6";
+  const connect = sharing ? "connect|connect[.]js|" : "";
+  const access = sharing ? "access|" : "";
   const paths = legacy
     ? "index[.]html|app[.](js|css)|(automerge|subduction)[.]wasm|health|mcp|api/(tools|connect|sync|saved|auth/(login|logout|session))|oidc"
     : "index[.]html|app[.](js|css)|" +

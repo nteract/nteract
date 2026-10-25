@@ -256,12 +256,13 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
     } else filesystem.writeFileSync(file, contents, { mode, flag: "wx" });
   }
   function validateRoutes(file) {
+    const sharing = target === "page5" || target === "page6";
     run("/usr/bin/cloudflared", ["--config", file, "tunnel", "ingress", "validate"]);
     for (const [pathname, expected] of [
       ["/", plan.listen],
       ["/mcp", plan.listen],
-      ["/connect", target === "page5" ? plan.listen : "http_status:404"],
-      ["/connect.js", target === "page5" ? plan.listen : "http_status:404"],
+      ["/connect", sharing ? plan.listen : "http_status:404"],
+      ["/connect.js", sharing ? plan.listen : "http_status:404"],
       ["/connect/private", "http_status:404"],
       ["/connect.js/private", "http_status:404"],
       ["/connectXjs", "http_status:404"],
@@ -269,7 +270,7 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
       ["/mermaid.js/private", "http_status:404"],
       ["/mermaidXjs", "http_status:404"],
       ["/api/sync", plan.listen],
-      ["/api/access", target === "page5" ? plan.listen : "http_status:404"],
+      ["/api/access", sharing ? plan.listen : "http_status:404"],
       ["/api/access/private", "http_status:404"],
       ["/llms.txt", plan.listen],
       ["/oidc", plan.listen],

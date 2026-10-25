@@ -470,7 +470,7 @@ test("page3 DNS is independently owned and never adopts pages-next records", asy
   assert.ok(foreign.calls.every(({ method }) => method === "GET"));
 });
 
-for (const target of ["pages-next", "page3", "page4", "page5"])
+for (const target of ["pages-next", "page3", "page4", "page5", "page6"])
   test(`${target} installation retains auth, bindings, and bucket durability with isolated service state`, (t) => {
     const fixture = installFixture(t, { target });
     fixture.execute();
@@ -493,7 +493,7 @@ for (const target of ["pages-next", "page3", "page4", "page5"])
     assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, target === "pages-next" ? undefined : "true");
     assert.equal(
       config.vars.PAGES_EDITOR,
-      ["page4", "page5"].includes(target) ? "wordgard" : undefined,
+      ["page4", "page5", "page6"].includes(target) ? "wordgard" : undefined,
     );
     assert.deepEqual(config.durable_objects.bindings, [
       { name: "PAGE_RECORDS", class_name: "PageRecords" },
@@ -508,7 +508,7 @@ for (const target of ["pages-next", "page3", "page4", "page5"])
     );
     assert.ok(unit.includes("firewall.mjs --target " + target));
     assert.ok(unit.includes("s3://" + deployment.bucket + "/" + deployment.prefix));
-    for (const otherTarget of ["pages-next", "page3", "page4", "page5"].filter(
+    for (const otherTarget of ["pages-next", "page3", "page4", "page5", "page6"].filter(
       (value) => value !== target,
     )) {
       const other = profiles.deploymentProfile(otherTarget).deployment.service;
@@ -820,5 +820,136 @@ test("new page5 setup tolerates frozen namespaces but rejects its own ports, mar
       rejected.calls.some(({ command }) => command === "useradd"),
       false,
     );
+  }
+});
+
+test("page6 requires its own manifest and stage and freezes every prior deployment", () => {
+  const target = "page6",
+    profile = profiles.deploymentProfile(target);
+  assert.deepEqual(profiles.selectTarget(["--target", target, "plan"]), { target, args: ["plan"] });
+  assert.equal(profile.deployment.hostname, "page6.runtimed.run");
+  assert.equal(profile.deployment.listen, "127.0.0.1:9476");
+  assert.equal(profile.deployment.internalListen, "127.0.0.1:19476");
+  assert.equal(profile.deployment.prefix, "standalone/page6");
+  assert.equal(profile.editor, "wordgard");
+  assert.equal(profile.asyncPersistence, true);
+  assert.equal(profile.tunnelService, "cloudflared-page6.service");
+  assert.deepEqual(profile.frozenTargets, ["pages-next", "page3", "page4", "page5"]);
+  assert.equal(profiles.stageTarget("/tmp/nteract-page6-stage-abcd1234"), target);
+  assert.throws(
+    () =>
+      insertRoutes(
+        'tunnel: test\ningress:\n  - hostname: "*.runtimed.run"\n    service: http_status:404\n',
+        target,
+      ),
+    /dedicated tunnel publisher/,
+  );
+  for (const other of profile.frozenTargets) {
+    const previous = profiles.deploymentProfile(other);
+    for (const key of ["hostname", "service", "prefix", "listen", "internalListen"])
+      assert.notEqual(profile.deployment[key], previous.deployment[key], `${other}: ${key}`);
+    for (const key of ["firewallTable", "firewallMark"])
+      assert.notEqual(profile[key], previous[key], `${other}: ${key}`);
+    assert.equal(profiles.stagePattern(other).test("/tmp/nteract-page6-stage-abcd1234"), false);
+    assert.throws(() =>
+      profiles.verifyDeployment(
+        { source_sha: "a".repeat(40), deployment: previous.deployment },
+        target,
+      ),
+    );
+    assert.throws(() =>
+      profiles.verifyDeployment(
+        { source_sha: "a".repeat(40), deployment: profile.deployment },
+        other,
+      ),
+    );
+  }
+});
+
+test("page6 firewall and DNS cannot adopt any frozen namespace", async () => {
+  const profile = profiles.deploymentProfile("page6");
+  const rules = pagesFirewall(999, true, "page6");
+  assert.match(rules, /^delete table inet nteract_page6\n/);
+  assert.match(rules, /system.slice\/nteract-page6.service/);
+  assert.match(rules, /0x02000000/);
+  for (const target of profile.frozenTargets) {
+    const frozen = profiles.deploymentProfile(target);
+    assert.ok(!rules.includes(frozen.firewallTable));
+    assert.ok(!rules.includes(frozen.firewallMark));
+    assert.ok(!rules.includes(frozen.deployment.service));
+  }
+  const fixture = dnsFixture();
+  const args = { token: "fixture", tunnelId, target: "page6", fetchImpl: fixture.fetchImpl };
+  assert.equal((await configureDns(args)).present, false);
+  assert.ok(fixture.calls.every(({ method }) => method === "GET"));
+  assert.equal((await configureDns({ ...args, apply: true })).name, "page6.runtimed.run");
+  assert.equal((await configureDns({ ...args, apply: true })).changed, false);
+  for (const other of profile.frozenTargets) {
+    const foreign = dnsFixture([
+      {
+        id: "b".repeat(32),
+        name: "page6.runtimed.run",
+        type: "CNAME",
+        content: `${tunnelId}.cfargotunnel.com`,
+        proxied: true,
+        ttl: 1,
+        comment: "nteract/pages:experiment:" + other,
+      },
+    ]);
+    await assert.rejects(
+      configureDns({ ...args, apply: true, fetchImpl: foreign.fetchImpl }),
+      /conflicts/,
+    );
+    assert.ok(foreign.calls.every(({ method }) => method === "GET"));
+  }
+});
+
+test("new page6 setup tolerates frozen resources but rejects its own ports and firewall collisions", (t) => {
+  const target = "page6",
+    profile = profiles.deploymentProfile(target);
+  const frozen = profile.frozenTargets.map((name) => profiles.deploymentProfile(name));
+  const existing = frozen
+    .flatMap((p) => [p.deployment.listen, p.deployment.internalListen])
+    .map((listen) => `LISTEN 0 4096 ${listen} 0.0.0.0:*`)
+    .join("\n");
+  const fixture = installFixture(t, {
+    target,
+    fresh: true,
+    listeners: existing,
+    rules: JSON.stringify(
+      frozen.map((p) => ({ name: p.firewallTable, mark: Number(p.firewallMark) })),
+    ),
+  });
+  fixture.execute();
+  assert.equal(
+    JSON.parse(fixture.read(fixture.configDir + "/ownership.json")).hostname,
+    "page6.runtimed.run",
+  );
+  const prefixCheck = fixture.calls.find(({ command }) => command === "/usr/local/bin/aws");
+  assert.equal(prefixCheck.args[prefixCheck.args.indexOf("--prefix") + 1], "standalone/page6/");
+  for (const collision of [
+    { listeners: existing + "\nLISTEN 0 4096 127.0.0.1:9476 0.0.0.0:*" },
+    { listeners: existing + "\nLISTEN 0 4096 127.0.0.1:19476 0.0.0.0:*" },
+    { rules: '{"mark":33554432}' },
+    { rules: '{"table":"nteract_page6"}' },
+  ]) {
+    const rejected = installFixture(t, { target, fresh: true, ...collision });
+    assert.throws(rejected.execute, /port is occupied|firewall namespace or mark is occupied/);
+    assert.equal(
+      rejected.calls.some(({ command }) => command === "useradd"),
+      false,
+    );
+  }
+  for (const other of profile.frozenTargets) {
+    const rejected = installFixture(t, { target });
+    rejected.write(
+      rejected.stage + "/manifest.json",
+      JSON.stringify({
+        ...rejected.manifest,
+        deployment: profiles.deploymentProfile(other).deployment,
+      }),
+    );
+    assert.throws(rejected.execute, /Unexpected deployment target/);
+    assert.equal(rejected.calls.length, 0);
   }
 });

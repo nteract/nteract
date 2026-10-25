@@ -599,6 +599,7 @@ test("sharing and setup routes leave all frozen deployment ingress byte-identica
     "pages-next": "2dbfabe3e649e0f79afc9df766e0a19c52177b76667d89ad8e45acaaf523e5f3",
     page3: "db474e430d27227ee9bf407beee948ad6cf7f601fafd55c60bbf34effa38200a",
     page4: "9c5872feed6898ee236a96dc70226c625d5c3a299c3c3866b351b0f4b41f47de",
+    page5: "4bda4497169b48213638b5085f4ce5e2b9c335cf483d501f965e1c7f8fd8321c",
   };
   for (const [target, hash] of Object.entries(expected)) {
     assert.equal(digest(routesFor(target)), hash, target);
@@ -627,4 +628,130 @@ test("page5 setup permits only the exact public page and script paths", () => {
     "73203575cae1d3374a984e901f23258e7a2f2ffc5c30b8b314a619604ff3d233",
     "the admitted predecessor is the exact existing page5 ingress",
   );
+});
+
+test("page6 owns its connector and exact sharing routes without reusing frozen tunnels", () => {
+  const value = inputFor("page6"),
+    plan = isolatedPublicationPlan(value);
+  assert.equal(plan.service, "cloudflared-page6.service");
+  assert.equal(plan.configPath, "/etc/nteract-page6/tunnel.yml");
+  assert.equal(plan.unitPath, "/etc/systemd/system/cloudflared-page6.service");
+  assert.match(plan.config, /hostname: page6[.]runtimed[.]run/);
+  assert.match(plan.config, /http:\/\/127[.]0[.]0[.]1:9476/);
+  assert.doesNotMatch(plan.config + plan.unit, /page[345]|pages-next|947[345]|1947[345]/);
+  assert.throws(
+    () =>
+      isolatedPublicationPlan({ ...value, frozenTunnelConfigs: ["tunnel: " + tunnelId + "\n"] }),
+    /different tunnel/,
+  );
+  assert.throws(
+    () => isolatedPublicationPlan({ ...value, target: "page5" }),
+    /Unexpected deployment target/,
+  );
+  const route = new RegExp(/^    path: (.+)$/m.exec(routesFor("page6"))[1]);
+  for (const pathname of [
+    "/",
+    "/connect",
+    "/connect.js",
+    "/api/access",
+    "/mermaid.js",
+    "/mcp",
+    "/llms.txt",
+    "/oidc",
+    "/api/sync",
+    "/api/auth/login",
+  ])
+    assert.equal(route.test(pathname), true, pathname);
+  for (const pathname of [
+    "/state",
+    "/internal/create",
+    "/api/config",
+    "/api/access/private",
+    "/connect/private",
+    "/connect.js/private",
+    "/connectXjs",
+    "/connect.js/",
+    "/connections",
+    "/mermaid.js/private",
+    "/dev/oidc/authorize",
+  ])
+    assert.equal(route.test(pathname), false, pathname);
+});
+
+test("page6 startup failure and retry preserve every frozen app and connector", (t) => {
+  const f = fixture(t, { target: "page6", failStart: true });
+  assert.throws(f.execute, /injected connector startup failure/);
+  const installation = "/etc/nteract-page6/tunnel-installation.json";
+  const receipt = fs.readFileSync(f.local(installation), "utf8");
+  for (let i = 0; i < 2; i++) {
+    const result = f.execute();
+    assert.deepEqual(result.frozenTargetsUnchanged, ["pages-next", "page3", "page4", "page5"]);
+    assert.equal(result.sharedTunnelUnchanged, true);
+    assert.equal(result.routesUpdated, false);
+    assert.equal(fs.readFileSync(f.local(installation), "utf8"), receipt);
+  }
+  assert.ok(
+    f.writes.every(
+      (file) =>
+        file.startsWith("/etc/nteract-page6/") ||
+        file === "/etc/systemd/system/cloudflared-page6.service",
+    ),
+  );
+  assert.ok(
+    f.calls
+      .filter(
+        ({ command, args }) =>
+          command === "systemctl" && ["start", "restart", "stop", "enable"].includes(args[0]),
+      )
+      .every(({ args }) => args[1] === "cloudflared-page6.service"),
+  );
+  assert.equal(
+    f.calls.some(({ command, args }) => command === "systemctl" && args[0] === "restart"),
+    false,
+  );
+  assert.equal(fs.readFileSync(f.local("/etc/cloudflared/config.yml"), "utf8"), sharedConfig);
+});
+
+for (const mutation of ["config", "pid"])
+  test(`page6 publication detects changed frozen page5 ${mutation}`, (t) => {
+    const f = fixture(t, { target: "page6" });
+    assert.throws(
+      () =>
+        f.executeWith(() =>
+          mutation === "config"
+            ? f.write("/etc/nteract-page5/tunnel.yml", "foreign change")
+            : f.changeFrozenPid(),
+        ),
+      /Frozen Pages (configuration|service) changed/,
+    );
+  });
+
+test("page6 cannot adopt other targets' historical or pending route receipts", (t) => {
+  for (const predecessor of ["page3", "page5"]) {
+    for (const pending of [false, true]) {
+      const f = fixture(t, { target: "page6" });
+      const plan = isolatedPublicationPlan(inputFor("page6"));
+      const previous = priorConfig(plan.config, predecessor);
+      f.write(plan.configPath, pending ? plan.config : previous);
+      f.write(plan.unitPath, plan.unit);
+      f.write(
+        "/etc/nteract-page6/tunnel-installation.json",
+        JSON.stringify({
+          schema: 1,
+          tunnel_id: plan.tunnelId,
+          config_sha256: digest(pending ? plan.config : previous),
+          unit_sha256: digest(plan.unit),
+          ...(pending ? { previous_config_sha256: digest(previous) } : {}),
+        }) + "\n",
+      );
+      assert.throws(f.execute, /Dedicated tunnel installation differs/);
+      assert.equal(f.writes.length, 0);
+      assert.equal(
+        f.calls.some(
+          ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
+        ),
+        false,
+      );
+    }
+  }
 });

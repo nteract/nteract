@@ -62,7 +62,7 @@ with `npx playwright install --with-deps chromium` on a fresh Linux runner.
 
 ## Wordgard comparison on page4
 
-`page4.runtimed.run` and the page5 sharing release select Wordgard with
+`page4.runtimed.run`, page5, and page6 select Wordgard with
 `PAGES_EDITOR=wordgard`. Earlier targets keep the ProseMirror editor. Both views use the same PageSession, authenticated
 Repo/Subduction connections, IndexedDB recovery, MCP operations, comments and
 host persistence. The Wordgard binding adapts the native-editor spike at
@@ -669,3 +669,11 @@ Page5 uses a fourth dedicated tunnel, `cloudflared-page5.service`, and its own
 with the page5 service name and target. Its publisher also freezes page4's app
 and tunnel alongside page3 and pages-next. Copying a document to a newer deployment
 is explicit; deployment never migrates or modifies another target's data.
+
+Page6 is the next isolated experiment target. It uses `nteract-page6`, ports
+9476/19476, `standalone/page6`, and `cloudflared-page6.service`. Use the same
+commands and provisioning procedure with `--target page6` and page6-owned files.
+Its publisher freezes page5 as well as page4, page3, and pages-next; the existing
+page5 release remains available for demos. Page6 starts with its own empty catalog
+and document storage. Public setup and sharing routes are identical to page5,
+with no historical ingress-migration allowance.
