@@ -7,7 +7,9 @@
     "dev": "node scripts/dev.mjs",
     "test": "tsx --tsconfig tsconfig.json --test worker/*.test.mjs model/*.test.mjs viewer/*.test.mjs test/*.test.mjs scripts/*.test.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "smoke:editor": "node scripts/editor-smoke.mjs"
+    "smoke:editor": "node scripts/editor-smoke.mjs",
+    "smoke:tables": "node scripts/editable-table-smoke.mjs",
+    "test:e2e:sharing": "node scripts/local-sharing-e2e.mjs"
   },
   "dependencies": {
     "@automerge/automerge": "3.5.0",

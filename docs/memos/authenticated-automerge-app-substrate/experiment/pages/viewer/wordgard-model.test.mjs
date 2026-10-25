@@ -48,8 +48,8 @@ test("Pages headings, nested lists, quotes, hard breaks, code params and links r
     assert.equal(blockMarkdown(rewritten.blocks.one), blockMarkdown(native.blocks.one), source);
   }
 });
-test("preserved table and instruction nodes retain exact source and kind", () => {
-  const source = "| A | B |\n| --- | ---: |\n| one | 2 |\n";
+test("preserved unsupported Markdown and instruction nodes retain exact source and kind", () => {
+  const source = "<div>preserved unsupported markup</div>";
   const doc = fixture(source),
     tree = decode(A.spans(doc, textPath("one"))).doc;
   assert.equal(tree.content[0].type, OpaqueBlock);
@@ -69,7 +69,7 @@ test("native positions preserve paragraph ends and opaque leaf endpoints", () =>
     assert.equal(map.amToWg[map.wgToAm[end]], end);
     pos += block.length;
   }
-  const table = decode(A.spans(fixture("| A |\n| --- |\n| x |"), textPath("one")));
+  const table = decode(A.spans(fixture("<div>preserved markup</div>"), textPath("one")));
   assert.deepEqual(table.map.wgToAm, [0, 1]);
   assert.deepEqual(table.map.amToWg, [0, 1]);
 });

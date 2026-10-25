@@ -14,6 +14,9 @@ import {
   canAddMarkInRange,
 } from "wordgard/command";
 import { history, undo, redo, undoDepth, redoDepth } from "wordgard/history";
+import { tables } from "wordgard/table";
+import { tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
+import { TableMenu } from "./TableMenu.jsx";
 import {
   blockDoc,
   paragraph,
@@ -251,6 +254,9 @@ export function WordgardEditor(props) {
         orderedList(),
         blockquote(),
         codeBlock(),
+        tables({ cellContent: "inline", cellSpanning: false }),
+        tablePresentation,
+        tableKeys,
         GardState.schemaElement.of(elements),
         Decoration.Mark.shape(PagesLink, {
           element: "a",
@@ -436,6 +442,7 @@ export function WordgardEditor(props) {
       }
       const block = state.sel.head.textblockParent?.node;
       const snapshot = {
+        table: !!selectedTable(state),
         style:
           block?.type === Heading
             ? `h${block.tag.param}`
@@ -722,7 +729,7 @@ export function WordgardEditor(props) {
             <select
               className="toolbar-select"
               aria-label="Text style"
-              disabled={!editable}
+              disabled={!editable || format?.table}
               value={format?.style ?? "p"}
               onChange={(event) =>
                 run(event.target.value === "code" ? "code-block" : event.target.value)
@@ -735,6 +742,12 @@ export function WordgardEditor(props) {
               ))}
             </select>
             <span className="toolbar-separator" role="separator" />
+            <TableMenu
+              editor={view.current}
+              inTable={!!format?.table}
+              editable={editable}
+              onError={report}
+            />
             {controls.slice(2).map(([name, label, Icon]) => (
               <button
                 key={name}

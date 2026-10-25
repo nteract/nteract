@@ -1,7 +1,8 @@
 import { Decoration, Widget, KeyBinding } from "wordgard/editor";
 import { GardState, GardSelection, Transaction } from "wordgard/state";
 import { Elt } from "wordgard/doc";
-import { OpaqueBlock, CodeBlock, CodeBlockLanguage } from "./wordgard-model.mjs";
+import { OpaqueBlock, CodeBlock, CodeBlockLanguage, decode } from "./wordgard-model.mjs";
+import { nativeTableSpans } from "../model/richtext.mjs";
 import { tablePreviewFragment } from "./table-preview.mjs";
 import "./table-preview.css";
 
@@ -9,8 +10,8 @@ const loadMermaid = () => import("../../../../../../src/components/markdown/merm
 const mounted = new WeakMap();
 let diagramId = 0;
 const table = Widget.define({
-  eq: (a, b) => a.source === b.source && a.kind === b.kind,
-  render(value) {
+  eq: (a, b) => a.source === b.source && a.kind === b.kind && a.editable === b.editable,
+  render(value, editor) {
     const dom = document.createElement("section");
     dom.className = "wordgard-widget preserved-table";
     // A click on rendered content must not focus an insertion point in the
@@ -26,6 +27,30 @@ const table = Widget.define({
       return dom;
     }
     dom.append(fragment);
+    if (value.editable && nativeTableSpans(value.source)) {
+      const edit = dom.appendChild(document.createElement("button"));
+      edit.type = "button";
+      edit.className = "wordgard-table-convert";
+      edit.textContent = "Edit table";
+      edit.onclick = () => {
+        if (!editor.editable) return;
+        const current = editor.nodeFromDOM(dom);
+        if (!current || current.node.type !== OpaqueBlock) return;
+        const spans = nativeTableSpans(current.node.param.source);
+        if (!spans) return;
+        const next = decode(spans).doc;
+        editor.dispatch({
+          changes: {
+            from: current.pos,
+            to: current.pos + current.node.length,
+            insert: next.content,
+          },
+          selection: (cx) => GardSelection.near(cx, current.pos + 3, 1),
+          userEvent: "input.table",
+        });
+        editor.focus();
+      };
+    }
     return dom;
   },
   propagateEvent: false,
@@ -229,7 +254,10 @@ export function wordgardWidgets() {
   return [
     editingDiagrams,
     visibleDiagramSelection,
-    Decoration.Tag.shape(OpaqueBlock, (node) => table.of(node.param)),
+    Decoration.Tag.shape.derived(OpaqueBlock, (state) => {
+      const editable = !state.readOnly;
+      return (node) => table.of({ ...node.param, editable });
+    }),
     Decoration.Point.source.of((state) => {
       const entries = [];
       state.doc.iterate((node, pos) => {

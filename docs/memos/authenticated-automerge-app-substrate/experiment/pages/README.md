@@ -27,6 +27,39 @@ The experiment shares its parent's pinned upstream packages and one Automerge
 instance. Its browser and Worker entry points initialize the corresponding
 upstream WASM packaging; document objects never cross independent WASM instances.
 
+## Headless local sharing qualification
+
+After `npm run setup`, install the pinned Playwright Chromium browser and run:
+
+```sh
+npx playwright install chromium
+npm run test:e2e:sharing --workspace @nteract/pages-native-experiment
+```
+
+This command builds Pages, starts its own loopback celld 0.6.1 process on an
+available port, and tests three separate browser profiles using the real local
+OIDC authorization-code/PKCE flow. It covers private defaults, invitations,
+viewer/editor permissions, native edits reaching other browsers, reload,
+promotion, downgrade, regrant, revocation, and rejected reconnects. The same
+trial makes MCP requests with generated API keys, checks that OIDC and API-key
+identities agree, exercises edits arriving in the browser, and verifies that
+credential scopes and Page roles both constrain access.
+
+The API-key provider response is synthetic: a **test-only Worker entry** replaces
+whoami responses for generated keys. The normal API-key validator, MCP handlers,
+Page permissions, Durable Objects, and native WebSocket connections still run.
+The fixture rejects external fetches and is never imported by the production
+entry. This tests our integration boundary; it does not qualify Anaconda's live
+key issuance, provider availability, or multi-machine network behavior.
+
+Runtime state and keys live in a temporary directory and are removed when the
+command finishes. Existing `dist/.dev.vars` and `dist/.celld` are never reused.
+Screenshots, the completed-check report, and celld logs remain under
+`pages/test-results/sharing-<timestamp>`; set `PAGES_E2E_OUTPUT` to choose a result
+directory, or `CELLD_BIN` to select the runtime executable. `--skip-build` reuses
+an already built viewer for local iteration. Install Chromium system dependencies
+with `npx playwright install --with-deps chromium` on a fresh Linux runner.
+
 ## Wordgard comparison on page4
 
 `page4.runtimed.run` and the page5 sharing release select Wordgard with
@@ -49,9 +82,10 @@ Within a changed block, projection still decodes and diffs the spans; this is no
 a demonstrated large-document performance improvement.
 
 Each Pages block has its own continuous Wordgard editor, retaining stable public
-IDs and fractional ordering. Cross-Pages-block selections and native editable
-table cells remain future work. Markdown tables display a safe preview without
-raw-source controls. Nonempty Mermaid blocks open as diagrams; **Edit diagram**
+IDs and fractional ordering. Cross-Pages-block selections remain future work.
+Wordgard tables now use native editable cells, with row and column controls.
+Preserved imports offer **Edit table** to convert supported Markdown explicitly;
+reading a Page never changes its content. Nonempty Mermaid blocks open as diagrams; **Edit diagram**
 opens native code editing and **Preview** returns to the diagram. This view mode
 is local to each editor and does not change the shared document. Wordgard handles
 incoming composition transactions directly;
@@ -130,21 +164,25 @@ Automerge content and round-trip through Markdown. The preview reuses nteract's
 Mermaid renderer and SVG sanitizer, with its existing source and output limits;
 rendered SVG is never stored in the document. This does not add code execution.
 
-Tables in preserved Markdown blocks render with header cells, alignment, inline
-formatting, and safe links. Use leading and trailing pipes in each row for new
-tables; existing rich imports keep their previous interpretation. Wide tables
-scroll within the document on narrow screens. Wordgard shows the rendered table
-without raw-source controls; ProseMirror retains its **Source** toggle. Neither
-preview replaces the preserved Markdown in Automerge. This first step supports
-reading and tool-driven table
-updates, not editing table cells directly. A block imported with a table remains
-an opaque source block, including any prose around it; use separate Pages blocks
-for prose that should remain WYSIWYG-editable. HTML remains text and images show
-their alt text without loading remote resources. Instruction blocks retain their
-existing display.
+Markdown tables now import as native table, row, and cell markers in the same
+Automerge `richText` field as prose. Wordgard edits cell text and marks directly;
+row and column operations reconcile structural spans through the existing
+binding. No separately mutable table state or Markdown source editor is added.
+The first row is the header. Formatting, links, comments, presence, attribution,
+undo, and surgical agent edits use the same paths as ordinary text.
 
-`node scripts/table-smoke.mjs` verifies two-peer table updates, source round trips,
-link opening, and desktop/mobile layouts against the local OIDC fixture.
+Use the toolbar's **Insert table** control to choose dimensions, or **Table
+options** while in a cell to insert/delete rows and columns. Tab and Shift+Tab
+move between cells; Tab from the last cell appends a row. Cells wrap on narrow
+screens. Column resizing/moving and merged cells remain outside this first pass.
+Existing preserved table blocks keep their exact source until **Edit table**
+converts supported Markdown through an undoable editor transaction. Unsupported
+syntax stays preserved; there is no automatic document migration.
+
+`npm run smoke:tables` exercises two-peer cell editing/formatting, structural
+operations, undo, agent patches, reload, and desktop/mobile layout against the
+local OIDC fixture. `node scripts/table-smoke.mjs` remains the earlier preserved
+preview qualification; it is not the native editable-table test.
 
 For agents, `patch_page` accepts `replace_match` to replace exactly one literal
 visible-text range, with optional context to disambiguate it. This preserves

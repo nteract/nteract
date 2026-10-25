@@ -2,7 +2,7 @@
 // Pages owns the native spans. This module projects them without a Markdown or
 // ProseMirror round trip, including render-only wrappers with no native offset.
 import * as A from "@automerge/automerge/slim";
-import { Schema, Leaf, Plot, Mark, Node, Elt } from "wordgard/doc";
+import { Schema, Leaf, Plot, Mark, Node, Elt, parse } from "wordgard/doc";
 import {
   Doc,
   Paragraph,
@@ -17,6 +17,10 @@ import {
   ListItem,
   OrderedList,
   BulletList,
+  Table,
+  TableRow,
+  Cell,
+  HeaderCell,
 } from "wordgard/types";
 
 const safeUrl = (value) =>
@@ -25,6 +29,32 @@ const safeUrl = (value) =>
   // eslint-disable-next-line no-control-regex
   !/[\u0000-\u0020\u007f]/.test(value) &&
   !/^[a-z][a-z0-9+.-]*:/i.test(value.replace(/^(https?|mailto|tel):/i, ""));
+// The Pages table format stores physical alignment. Wordgard's stock mark
+// uses logical values and does not round-trip a physical `right` clipboard style.
+const validCellAlignment = (value) => ["left", "center", "right"].includes(value);
+export const Alignment = Mark.Type.define("PagesCellAlignment", {
+  target: [Cell, HeaderCell],
+  keepOnSplit: true,
+  keepOnTypeChange: true,
+  validate(value) {
+    if (!validCellAlignment(value)) throw Error("Invalid table alignment");
+  },
+  shape: { attribute: "style", value: (value) => `text-align: ${value}` },
+  parseRules: [
+    {
+      attribute: "style/text-align",
+      readAttribute(value) {
+        // Pages currently has an LTR table schema (no shared direction mark).
+        const physical = value === "start" ? "left" : value === "end" ? "right" : value;
+        return validCellAlignment(physical) ? physical : parse.Reject;
+      },
+    },
+    {
+      attribute: "data-align",
+      readAttribute: (value) => (validCellAlignment(value) ? value : parse.Reject),
+    },
+  ],
+});
 export const PagesLink = Mark.Type.define("PagesLink", {
   inclusive: false,
   validate(value) {
@@ -94,6 +124,11 @@ export const elements = [
   OpaqueBlock,
   PagesImage,
   Aside,
+  Table,
+  TableRow,
+  Cell,
+  HeaderCell,
+  Alignment,
   ...[Strong, Emphasis, Code, PagesLink].map((mark) => Schema.Override.markTarget(mark, Leaf.Text)),
 ];
 export const schema = Schema.define(elements);
@@ -110,6 +145,10 @@ export {
   ListItem,
   OrderedList,
   BulletList,
+  Table,
+  TableRow,
+  Cell,
+  HeaderCell,
 };
 export const expand = { defaultExpand: "both", perMarkExpand: { link: "none", code: "none" } };
 const markTypes = { strong: Strong, em: Emphasis, code: Code };
@@ -150,6 +189,17 @@ const strings = (attrs = {}) =>
   );
 function descriptor(type, attrs = {}) {
   switch (type) {
+    case "table":
+      return { tag: Table };
+    case "table-row":
+      return { tag: TableRow };
+    case "table-cell":
+    case "table-header": {
+      if (attrs.align != null && !["left", "center", "right"].includes(attrs.align))
+        throw Error("Invalid table alignment");
+      const tag = type === "table-cell" ? Cell : HeaderCell;
+      return { tag: attrs.align ? tag.withMarks([Alignment.of(attrs.align)]) : tag };
+    }
     case "paragraph":
       return { tag: Paragraph };
     case "heading": {
@@ -323,7 +373,16 @@ export function encode(doc) {
     }
     let type,
       attrs = {};
-    if (node.type === Paragraph.type) type = "paragraph";
+    if (node.type === Table.type) type = "table";
+    else if (node.type === TableRow.type) type = "table-row";
+    else if (node.type === Cell.type || node.type === HeaderCell.type) {
+      type = node.type === Cell.type ? "table-cell" : "table-header";
+      const alignment = Alignment.isInSet(node.tag.marks);
+      if (alignment) {
+        Alignment.spec.validate(alignment.value);
+        attrs.align = alignment.value;
+      }
+    } else if (node.type === Paragraph.type) type = "paragraph";
     else if (node.type === Heading) {
       type = "heading";
       attrs.level = Number(node.tag.param);

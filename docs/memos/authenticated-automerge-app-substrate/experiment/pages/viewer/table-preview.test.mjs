@@ -9,7 +9,6 @@ import {
   blockMarkdown,
   parseMarkdown,
   richDoc,
-  setRichMarkdown,
   RICH_FORMAT,
   schema,
   textPath,
@@ -22,6 +21,7 @@ import {
 } from "./table-preview.mjs";
 
 const table = `Before the table.\n\n| **Choice** | Value | Notes |\n| :--- | ---: | :---: |\n| *Pages* | 12 | [Details](/llms.txt) and \`code\` |\n| Notebook | 7 | Escaped \\| pipe |\n\nAfter the table.\n`;
+const rawTable = (source) => schema.nodes.raw.create({ source, importId: "", kind: "markdown" });
 function fixture(t) {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", {
     url: "https://pages.example/p/one",
@@ -32,13 +32,13 @@ function fixture(t) {
 
 test("preserved pipe tables keep exact source through Automerge save/load", () => {
   for (const source of [table, "| Only |\n| --- |\n| Cell |\n"]) {
-    const parsed = parseMarkdown(source);
+    const parsed = schema.node("doc", null, [rawTable(source)]);
     assert.equal(parsed.firstChild.type.name, "raw");
     assert.equal(parsed.firstChild.attrs.source, source);
     let doc = A.from({
       blocks: { one: { kind: "markdown", format: RICH_FORMAT, richText: "", markdown: source } },
     });
-    doc = A.change(doc, (d) => setRichMarkdown(d, "one", source));
+    doc = A.change(doc, (d) => A.updateSpans(d, textPath("one"), pmNodeToSpans(adapter, parsed)));
     const reloaded = A.load(A.save(doc));
     assert.equal(blockMarkdown(reloaded.blocks.one), source);
     assert.equal(richDoc(reloaded.blocks.one).firstChild.attrs.source, source);
@@ -63,8 +63,10 @@ test("existing rich imports without outer pipes keep their Markdown projection",
       adapter.updateSpansConfig(),
     ),
   );
-  assert.equal(parseMarkdown(source).firstChild.type.name, "paragraph");
-  assert.equal(blockMarkdown(A.load(A.save(doc)).blocks.one), source);
+  assert.equal(parseMarkdown(source).firstChild.type.name, "table");
+  const reloaded = A.load(A.save(doc));
+  assert.equal(richDoc(reloaded.blocks.one).firstChild.type.name, "paragraph");
+  assert.equal(blockMarkdown(reloaded.blocks.one), source);
   doc = A.change(doc, (d) =>
     A.updateSpans(
       d,
@@ -130,7 +132,7 @@ test("non-tables and instruction blocks keep the conservative preserved-source r
 
 test("Source is exact, incoming updates keep the selected view, and listeners clean up", (t) => {
   const doc = fixture(t);
-  const node = parseMarkdown(table).firstChild;
+  const node = rawTable(table);
   const view = new PreservedTableView(node, doc);
   doc.body.append(view.dom);
   assert.equal(view.source.hidden, true);
@@ -141,7 +143,7 @@ test("Source is exact, incoming updates keep the selected view, and listeners cl
   assert.equal(view.preview.hidden, true);
   assert.equal(view.toggle.getAttribute("aria-expanded"), "true");
   const updated = table.replace("12", "123");
-  assert.equal(view.update(parseMarkdown(updated).firstChild), true);
+  assert.equal(view.update(rawTable(updated)), true);
   assert.equal(view.source.textContent, updated);
   assert.equal(view.source.hidden, false);
   assert.equal(view.preview.querySelectorAll("tbody tr")[0].children[1].textContent, "123");
@@ -166,7 +168,7 @@ test("Source is exact, incoming updates keep the selected view, and listeners cl
 
 test("preview links keep native navigation without reaching editor click handlers", (t) => {
   const doc = fixture(t);
-  const view = new PreservedTableView(parseMarkdown(table).firstChild, doc);
+  const view = new PreservedTableView(rawTable(table), doc);
   doc.body.append(view.dom);
   let editorClicks = 0;
   const onEditorClick = () => editorClicks++;

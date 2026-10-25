@@ -22,7 +22,8 @@ const diagram = `graph TD
   F --> G[Dashboard]
   E --> G`;
 const table =
-  "| Name | Status |\n| --- | --- |\n| Pages | **Ready** |\n| Notes | [Guide](/llms.txt) |";
+  // Unsupported inline syntax intentionally keeps this a preserved-preview fixture.
+  "| Name | Status |\n| --- | --- |\n| Pages | **Ready** |\n| Notes | [Guide](/llms.txt) |\n\n~~Preserved extension~~";
 const content = (page) => page.locator("wg-content");
 const saved = (page) =>
   expect(page.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible({ timeout: 20000 });
