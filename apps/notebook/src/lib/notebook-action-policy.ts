@@ -63,6 +63,11 @@ interface PendingTrustActionDialogCopy {
   description?: string;
 }
 
+type TrustActionNotice = string | {
+  message: string;
+  blockedLaunchAction: PendingTrustAction | null;
+};
+
 export function isTrustedForRuntimeAction(info: TrustGateInfo | null): boolean {
   return info?.status === "trusted" || info?.status === "no_dependencies";
 }
@@ -191,7 +196,7 @@ export function useNotebookActionPolicy({
   const [trustDialogOpen, setTrustDialogOpen] = useState(false);
   const [pendingTrustAction, setPendingTrustAction] = useState<PendingTrustAction | null>(null);
   const pendingTrustActionRef = useRef<PendingTrustAction | null>(null);
-  const [trustActionNotice, setTrustActionNotice] = useState<string | null>(null);
+  const [trustActionNotice, setTrustActionNotice] = useState<TrustActionNotice | null>(null);
   const [trustApprovalHandoffPending, setTrustApprovalHandoffPending] = useState(false);
   const [envBuildCreating, setEnvBuildCreating] = useState(false);
   const [projectTrustBusy, setProjectTrustBusy] = useState(false);
@@ -612,7 +617,7 @@ export function useNotebookActionPolicy({
           setTrustApprovalHandoffPending(false);
           setBlockedTrustAction(action);
           if (!isLaunchErrorHandledByRuntimeBanner(response.error)) {
-            setTrustActionNotice(response.error);
+            setTrustActionNotice({ message: response.error, blockedLaunchAction: action });
           }
           return;
         }
@@ -764,6 +769,7 @@ export function useNotebookActionPolicy({
       const attempt = ++projectTrustAttemptRef.current;
       projectTrustInFlightRef.current = attempt;
       const action = pendingTrustActionRef.current;
+      const launchNotice = trustActionNotice;
       const isCurrent = () =>
         projectTrustInFlightRef.current === attempt &&
         pendingTrustActionRef.current === action;
@@ -780,6 +786,11 @@ export function useNotebookActionPolicy({
         const started = await tryStartKernel(action, isCurrent);
         if (!isCurrent()) return false;
         if (started) {
+          // Clear only the notice from this recovered launch. A newer notice,
+          // even with identical text, or a failure from guarded replay must stay.
+          if (launchNotice && typeof launchNotice !== "string" && launchNotice.blockedLaunchAction === action) {
+            setTrustActionNotice((current) => current === launchNotice ? null : current);
+          }
           await runTrustApprovedAction(action);
           if (isCurrent()) setBlockedTrustAction(null);
         }
@@ -796,7 +807,7 @@ export function useNotebookActionPolicy({
         }
       }
     },
-    [runTrustApprovedAction, setBlockedTrustAction, tryStartKernel],
+    [runTrustApprovedAction, setBlockedTrustAction, trustActionNotice, tryStartKernel],
   );
 
   const handleProjectTrustApprove = useCallback(
@@ -1060,7 +1071,7 @@ export function useNotebookActionPolicy({
     projectTrustBusy,
     projectTrustError,
     setTrustActionNotice,
-    trustActionNotice,
+    trustActionNotice: typeof trustActionNotice === "string" ? trustActionNotice : trustActionNotice?.message ?? null,
     trustApprovalHandoffPending,
     trustApproveLabel: trustDialogCopy.approveLabel,
     trustApproveOnlyLabel: trustDialogCopy.approveOnlyLabel,
