@@ -5,7 +5,7 @@ export function routesFor(target = "pages-next", legacy = false) {
   const renderer = deploymentProfile(target).tunnelService ? "mermaid[.]js|" : "";
   // Frozen deployments retain their exact route receipts. Sharing targets expose
   // only the public setup page, its script, and the authenticated access API.
-  const sharing = target === "page5" || target === "page6";
+  const sharing = target === "page5" || target === "page6" || target === "page7";
   const connect = sharing ? "connect|connect[.]js|" : "";
   const access = sharing ? "access|" : "";
   const paths = legacy

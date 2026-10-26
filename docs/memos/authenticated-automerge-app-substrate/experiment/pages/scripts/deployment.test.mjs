@@ -1098,3 +1098,67 @@ test("new page6 setup tolerates frozen resources but rejects its own ports and f
     assert.equal(rejected.calls.length, 0);
   }
 });
+
+test("page7 rejects frozen manifests, DNS ownership and occupied resources", async (t) => {
+  const target = "page7",
+    profile = profiles.deploymentProfile(target);
+  assert.deepEqual(profile.frozenTargets, ["pages-next", "page3", "page4", "page5", "page6"]);
+  const stage = "/tmp/nteract-page7-stage-abcd1234";
+  assert.equal(profiles.stageTarget(stage), target);
+  for (const other of profile.frozenTargets) {
+    const previous = profiles.deploymentProfile(other);
+    for (const key of ["hostname", "service", "prefix", "listen", "internalListen"])
+      assert.notEqual(profile.deployment[key], previous.deployment[key], `${other}: ${key}`);
+    for (const key of ["firewallTable", "firewallMark", "tunnelService"])
+      assert.notEqual(profile[key], previous[key], `${other}: ${key}`);
+    assert.equal(profiles.stagePattern(other).test(stage), false);
+    const rejected = installFixture(t, { target });
+    rejected.write(
+      rejected.stage + "/manifest.json",
+      JSON.stringify({
+        ...rejected.manifest,
+        deployment: previous.deployment,
+      }),
+    );
+    assert.throws(rejected.execute, /Unexpected deployment target/);
+    assert.deepEqual(rejected.calls, []);
+    const foreign = dnsFixture([
+      {
+        id: "b".repeat(32),
+        name: "page7.runtimed.run",
+        type: "CNAME",
+        content: `${tunnelId}.cfargotunnel.com`,
+        proxied: true,
+        ttl: 1,
+        comment: "nteract/pages:experiment:" + other,
+      },
+    ]);
+    await assert.rejects(
+      configureDns({
+        token: "fixture",
+        tunnelId,
+        target,
+        apply: true,
+        fetchImpl: foreign.fetchImpl,
+      }),
+      /conflicts/,
+    );
+    assert.ok(foreign.calls.every(({ method }) => method === "GET"));
+    const rules = pagesFirewall(999, true, target);
+    assert.ok(!rules.includes(previous.firewallTable));
+    assert.ok(!rules.includes(previous.firewallMark));
+  }
+  for (const collision of [
+    { listeners: `LISTEN 0 4096 ${profile.deployment.listen} 0.0.0.0:*` },
+    { listeners: `LISTEN 0 4096 ${profile.deployment.internalListen} 0.0.0.0:*` },
+    { rules: JSON.stringify({ mark: Number(profile.firewallMark) }) },
+    { rules: JSON.stringify({ table: profile.firewallTable }) },
+  ]) {
+    const rejected = installFixture(t, { target, fresh: true, ...collision });
+    assert.throws(rejected.execute, /port is occupied|firewall namespace or mark is occupied/);
+    assert.equal(
+      rejected.calls.some(({ command }) => command === "useradd"),
+      false,
+    );
+  }
+});

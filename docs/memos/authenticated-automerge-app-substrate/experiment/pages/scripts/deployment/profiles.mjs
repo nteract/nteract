@@ -157,6 +157,27 @@ const targets = Object.freeze({
     tunnelService: "cloudflared-page6.service",
     frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5"]),
   }),
+  page7: Object.freeze({
+    deployment: Object.freeze({
+      host: shared.host,
+      hostname: "page7.runtimed.run",
+      service: "nteract-page7",
+      bucket: shared.bucket,
+      prefix: "standalone/page7",
+      region: shared.region,
+      listen: "127.0.0.1:9477",
+      internalListen: "127.0.0.1:19477",
+      runtime: shared.runtime,
+      requiredVersion: shared.requiredVersion,
+    }),
+    firewallTable: "nteract_page7",
+    firewallMark: "0x01000000",
+    firewallComment: "nteract/preview-infra standalone-page7",
+    asyncPersistence: true,
+    editor: "wordgard",
+    tunnelService: "cloudflared-page7.service",
+    frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5", "page6"]),
+  }),
 });
 export function deploymentProfile(target = "pages-next") {
   if (!Object.hasOwn(targets, target)) throw new Error("Unknown Pages deployment target");

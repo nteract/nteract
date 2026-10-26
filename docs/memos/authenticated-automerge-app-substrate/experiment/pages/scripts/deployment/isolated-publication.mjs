@@ -256,7 +256,7 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
     } else filesystem.writeFileSync(file, contents, { mode, flag: "wx" });
   }
   function validateRoutes(file) {
-    const sharing = target === "page5" || target === "page6";
+    const sharing = target === "page5" || target === "page6" || target === "page7";
     run("/usr/bin/cloudflared", ["--config", file, "tunnel", "ingress", "validate"]);
     for (const [pathname, expected] of [
       ["/", plan.listen],

@@ -755,3 +755,85 @@ test("page6 cannot adopt other targets' historical or pending route receipts", (
     }
   }
 });
+
+test("page7 publication retries preserve all five earlier deployments", (t) => {
+  const f = fixture(t, { target: "page7", failStart: true });
+  assert.throws(f.execute, /injected connector startup failure/);
+  const installation = "/etc/nteract-page7/tunnel-installation.json";
+  const receipt = fs.readFileSync(f.local(installation), "utf8");
+  for (let i = 0; i < 2; i++) {
+    const result = f.execute();
+    assert.deepEqual(result.frozenTargetsUnchanged, [
+      "pages-next",
+      "page3",
+      "page4",
+      "page5",
+      "page6",
+    ]);
+    assert.equal(result.sharedTunnelUnchanged, true);
+    assert.equal(result.routesUpdated, false);
+    assert.equal(fs.readFileSync(f.local(installation), "utf8"), receipt);
+  }
+  assert.ok(
+    f.writes.every(
+      (file) =>
+        file.startsWith("/etc/nteract-page7/") ||
+        file === "/etc/systemd/system/cloudflared-page7.service",
+    ),
+  );
+  assert.ok(
+    f.calls
+      .filter(
+        ({ command, args }) =>
+          command === "systemctl" && ["start", "restart", "stop", "enable"].includes(args[0]),
+      )
+      .every(({ args }) => args[1] === "cloudflared-page7.service"),
+  );
+  const route = new RegExp(/^    path: (.+)$/m.exec(routesFor("page7"))[1]);
+  for (const pathname of [
+    "/",
+    "/connect",
+    "/connect.js",
+    "/api/access",
+    "/mcp",
+    "/llms.txt",
+    "/api/sync",
+    "/oidc",
+  ])
+    assert.equal(route.test(pathname), true, pathname);
+  for (const pathname of [
+    "/state",
+    "/internal/create",
+    "/api/access/private",
+    "/connect/private",
+    "/connect.js/private",
+    "/dev/oidc/authorize",
+  ])
+    assert.equal(route.test(pathname), false, pathname);
+});
+
+test("page7 refuses page6 manifests and foreign tunnel receipts", (t) => {
+  const value = inputFor("page7");
+  assert.throws(
+    () => isolatedPublicationPlan({ ...value, target: "page6" }),
+    /Unexpected deployment target/,
+  );
+  assert.throws(
+    () =>
+      isolatedPublicationPlan({ ...value, frozenTunnelConfigs: ["tunnel: " + tunnelId + "\n"] }),
+    /different tunnel/,
+  );
+  const f = fixture(t, { target: "page7" });
+  const foreign = isolatedPublicationPlan(inputFor("page6"));
+  f.write(
+    "/etc/nteract-page7/tunnel-installation.json",
+    JSON.stringify({
+      schema: 1,
+      tunnel_id: tunnelId,
+      config_sha256: digest(foreign.config),
+      unit_sha256: digest(foreign.unit),
+    }),
+  );
+  assert.throws(f.execute, /Dedicated tunnel installation differs/);
+  assert.equal(f.writes.length, 0);
+});
