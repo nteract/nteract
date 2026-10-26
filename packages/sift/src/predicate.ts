@@ -65,13 +65,19 @@ type PredicateModule = {
     max_rows: number,
     max_columns: number,
     max_decoded_bytes: number,
+    truncate: boolean,
   ): number;
   parquet_file_info(file: number): ParquetFileInfo;
+  /** Budget state of a truncating load. Both flags stay false in error mode. */
+  parquet_file_budget(file: number): { exhausted: boolean; truncated: boolean };
   parquet_file_column_hints(file: number): ParquetColumnHint[];
   parquet_create_store(file: number): number;
   /** Flat `[offset, length, ...]` per column chunk of one row group. */
   parquet_row_group_ranges(file: number, row_group: number): Float64Array;
-  /** Decode one row group from `data`, the concatenation of `ranges`. Returns rows appended. */
+  /**
+   * Decode one row group from `data`, the concatenation of `ranges`. Returns
+   * rows appended; a truncating load may append only part of the group.
+   */
   parquet_append_row_group(
     file: number,
     store: number,

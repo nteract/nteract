@@ -46,7 +46,9 @@ Every source ends as a `TableData` the engine reads by `(row, col)`:
    React source → `openParquetFile` (`parquet-file.ts`) → `parquet_open` from
    the footer, then `parquet_append_row_group` per row group over host-fetched
    ranges (`crates/sift-wasm/src/parquet_file.rs`). The `url` source's Parquet
-   branch uses the same loader over the buffered response.
+   branch uses the same loader over the buffered response. `overflow:
+   "truncate"` turns rows and decoded bytes into a budget: loading stops at
+   the first batch that does not fit and the table shows that prefix.
 3. **CSV/TSV**: `@nteract/sift-csv` (`crates/sift-csv-wasm`) converts text to Arrow IPC
    bytes, which take path 1. Sift itself has no CSV parser.
 4. **Hosted URLs and Arrow manifests**: the `url` and `manifest` sources in

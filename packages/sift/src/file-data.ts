@@ -10,6 +10,22 @@ import type { TableData } from "./table";
 import { updateWasmSummaries } from "./wasm-summaries";
 import { createWasmTableData } from "./wasm-table-data";
 
+/**
+ * What a streaming load does when the rows or decoded-bytes budget runs out.
+ *
+ * - `"error"`: reject the file, or fail the load at the chunk that overflows.
+ * - `"truncate"`: keep the rows that fit and stop loading. The table shows a
+ *   bounded prefix of the file; column limits still reject.
+ *
+ * Honored by byte-source Parquet loads. Other loads fail on overflow.
+ *
+ * Either way the limits are loading guardrails, not isolation from hostile
+ * files: page decompression and one decoder batch allocate before a batch is
+ * measured against the budget. Load untrusted files in a Worker you can
+ * terminate.
+ */
+export type TableLimitOverflow = "error" | "truncate";
+
 export type TableFileOptions = {
   /**
    * Auto-detected from magic bytes when omitted. Arrow support is
@@ -34,6 +50,13 @@ export type TableFileOptions = {
    * before the check runs, and summaries and copies add memory on top.
    */
   maxDecodedBytes?: number;
+  /**
+   * What to do when the `maxRows` or `maxDecodedBytes` budget runs out.
+   * Default: `"error"`. With `"truncate"`, a Parquet `ByteSource` resolves
+   * with the leading rows that fit instead of failing. Ignored for in-memory
+   * buffers and Arrow IPC, which always fail on overflow.
+   */
+  overflow?: TableLimitOverflow;
 };
 
 function limit(value: number | undefined, fallback: number, name: string): number {
@@ -63,11 +86,14 @@ function isByteSource(input: Uint8Array | ByteSource): input is ByteSource {
  * configuration. Parquet and uncompressed Arrow IPC streams are supported.
  *
  * Pass a `Uint8Array` for a file already in memory, or a `ByteSource` to let
- * Sift read only the Parquet footer and column chunks it needs. Both resolve
- * only once every row is decoded, so the result is complete or an error.
+ * Sift read only the Parquet footer and column chunks it needs. The promise
+ * settles once loading stops.
  *
- * Files exceeding the limits fail; this API never samples or truncates rows.
- * Sorting, filtering, and summaries therefore operate on the entire loaded file.
+ * By default (`overflow: "error"`) the result is the complete file or an
+ * error: files exceeding the limits fail. A Parquet `ByteSource` with
+ * `overflow: "truncate"` resolves with the leading rows that fit the row and
+ * decoded-bytes budget instead; the result does not say whether rows were
+ * cut. Sorting, filtering, and summaries operate on every loaded row.
  * Numeric raw values, summaries, and range filters use f64/JavaScript numbers;
  * integers beyond the safe-integer range are approximate in those operations.
  *
@@ -86,7 +112,7 @@ export async function loadTableFile(
   const { maxRows, maxColumns, maxDecodedBytes } = limits;
   if (isByteSource(input)) {
     const format = options.format ?? "parquet";
-    if (format === "parquet") return loadParquetFromByteSource(input, limits);
+    if (format === "parquet") return loadParquetFromByteSource(input, limits, options.overflow);
     if (format !== "arrow-ipc") throw new Error(`Unsupported table file format: ${format}`);
     // Arrow IPC streams have no footer to seek into; read them whole.
     if (input.byteLength > maxBytes) {
@@ -142,11 +168,13 @@ export async function loadTableFile(
 async function loadParquetFromByteSource(
   source: ByteSource,
   limits: ParquetFileLimits,
+  overflow: TableLimitOverflow | undefined,
 ): Promise<TableData> {
-  const file = await openParquetFile(source, { limits });
+  const file = await openParquetFile(source, { limits, overflow });
   try {
     for (let group = 0; group < file.rowGroupCount; group++) {
-      await file.appendRowGroup(group);
+      const { exhausted } = await file.appendRowGroup(group);
+      if (exhausted) break;
     }
     file.finish();
     return file.tableData;

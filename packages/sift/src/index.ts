@@ -20,7 +20,7 @@
 // for loadTableFile. Keeping the parser out of this package keeps its WASM
 // to Parquet and Arrow.
 export { loadTableFile } from "./file-data";
-export type { TableFileOptions } from "./file-data";
+export type { TableFileOptions, TableLimitOverflow } from "./file-data";
 // Byte-range Parquet: hosts implement ByteSource over a file, IPC call, or
 // Range-capable URL and pass it to loadTableFile or a `byte-source` SiftSource.
 export type { ByteSource } from "./parquet-file";

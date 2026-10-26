@@ -6,7 +6,12 @@
  * never buffered in JS or WASM memory. Decoded row groups append to one WASM
  * store, so the table can mount after the first group and grow as the rest
  * arrive.
+ *
+ * With `overflow: "truncate"`, rows and decoded bytes are a budget: loading
+ * stops at the first batch that does not fit, and the store holds a bounded
+ * prefix of the file.
  */
+import type { TableLimitOverflow } from "./file-data";
 import {
   applyColumnOverrides,
   applyParquetColumnHints,
@@ -48,6 +53,8 @@ export type ParquetFileLimits = {
 
 export type OpenParquetFileOptions = {
   limits: ParquetFileLimits;
+  /** What to do when the rows or decoded-bytes budget runs out. Default `"error"`. */
+  overflow?: TableLimitOverflow;
   columnOverrides?: Record<string, Partial<Column>>;
   signal?: AbortSignal;
 };
@@ -64,6 +71,15 @@ export type ParquetAppendResult = {
   replaced: TableData | null;
 };
 
+/** Result of appending one row group. */
+export type ParquetRowGroupResult = ParquetAppendResult & {
+  /**
+   * The budget is spent, possibly partway through this row group. Stop
+   * appending and call `finish()`. Always false with `overflow: "error"`.
+   */
+  exhausted: boolean;
+};
+
 export type OpenParquetFile = {
   /** Row count from the footer. */
   readonly rowCount: number;
@@ -75,12 +91,15 @@ export type OpenParquetFile = {
   readonly columns: Column[];
   /** Rows resident in the store so far. */
   readonly loadedRows: number;
+  /** True once the budget stopped loading before the last row in the file. */
+  readonly truncated: boolean;
   /**
    * Fetch the row group's column chunks and decode them into the store.
    * Append row groups in file order, one at a time. Updates `tableData`'s
-   * row count and summaries before resolving.
+   * row count and summaries before resolving. Stop once a result reports
+   * `exhausted`; later calls reject.
    */
-  appendRowGroup(index: number): Promise<ParquetAppendResult>;
+  appendRowGroup(index: number): Promise<ParquetRowGroupResult>;
   /** Mark the store complete and release footer metadata. Call after the last append. */
   finish(): ParquetAppendResult;
   /** Release footer metadata only. The store and its leases stay valid. */
@@ -143,18 +162,33 @@ export async function readExact(
 
 type Range = { offset: number; length: number };
 
-/** Merge column chunk ranges that touch or sit within `COALESCE_GAP_BYTES`. */
-export function coalesceRanges(flat: ArrayLike<number>, gap = COALESCE_GAP_BYTES): Range[] {
+/**
+ * Merge column chunk ranges that touch or sit within `gap` bytes. Bridging a
+ * gap fetches its bytes too, so a gap is bridged only while the total bytes
+ * requested stay within `maxBytes`. Touching and overlapping chunks always
+ * merge; they add nothing to the request.
+ */
+export function coalesceRanges(
+  flat: ArrayLike<number>,
+  gap = COALESCE_GAP_BYTES,
+  maxBytes = Number.POSITIVE_INFINITY,
+): Range[] {
   const ranges: Range[] = [];
   for (let i = 0; i + 1 < flat.length; i += 2) {
     ranges.push({ offset: flat[i], length: flat[i + 1] });
   }
   ranges.sort((a, b) => a.offset - b.offset);
+  // Chunk bytes plus every bridged gap. Overlaps are counted twice, which
+  // only errs toward bridging fewer gaps.
+  let requested = ranges.reduce((sum, range) => sum + range.length, 0);
   const merged: Range[] = [];
   for (const range of ranges) {
     const last = merged[merged.length - 1];
-    if (last && range.offset <= last.offset + last.length + gap) {
-      const end = Math.max(last.offset + last.length, range.offset + range.length);
+    const lastEnd = last ? last.offset + last.length : 0;
+    const gapBytes = range.offset - lastEnd;
+    if (last && (gapBytes <= 0 || (gapBytes <= gap && requested + gapBytes <= maxBytes))) {
+      const end = Math.max(lastEnd, range.offset + range.length);
+      if (gapBytes > 0) requested += gapBytes;
       last.length = end - last.offset;
     } else {
       merged.push({ ...range });
@@ -166,13 +200,19 @@ export function coalesceRanges(flat: ArrayLike<number>, gap = COALESCE_GAP_BYTES
 /**
  * Read the footer, validate it, and prepare an empty store with the file's
  * schema. Rejects on bad magic before any other read. Admission limits are
- * checked from the footer here and again as each row group is appended.
+ * checked from the footer here and again as each row group is appended. With
+ * `overflow: "truncate"` the footer is checked only for columns and footer
+ * size, and appends stop when the rows or decoded-bytes budget runs out.
  */
 export async function openParquetFile(
   source: ByteSource,
   options: OpenParquetFileOptions,
 ): Promise<OpenParquetFile> {
   const { limits, columnOverrides, signal } = options;
+  const overflow = options.overflow ?? "error";
+  if (overflow !== "error" && overflow !== "truncate") {
+    throw new Error(`overflow must be "error" or "truncate", got ${String(overflow)}`);
+  }
   const byteLength = source.byteLength;
   if (!Number.isInteger(byteLength) || byteLength < 0) {
     throw new Error("ByteSource.byteLength must be a non-negative integer");
@@ -212,6 +252,7 @@ export async function openParquetFile(
     limits.maxRows,
     limits.maxColumns,
     limits.maxDecodedBytes,
+    overflow === "truncate",
   );
   let fileOpen = true;
   const closeFile = () => {
@@ -242,7 +283,12 @@ export async function openParquetFile(
     };
     installSummaries(tableData, columns);
 
+    // A truncating load admits a row group whose chunks fit `maxDecodedBytes`;
+    // bridged gaps must not take the fetch past what was admitted.
+    const fetchBudget = overflow === "truncate" ? limits.maxDecodedBytes : Number.POSITIVE_INFINITY;
     let loadedRows = 0;
+    let exhausted = false;
+    let truncated = false;
     let finished = false;
     let appending = false;
 
@@ -285,12 +331,22 @@ export async function openParquetFile(
       get loadedRows() {
         return loadedRows;
       },
+      get truncated() {
+        return truncated;
+      },
       async appendRowGroup(index) {
         if (!fileOpen || finished) throw new Error("Parquet file is closed");
         if (appending) throw new Error("Append one Parquet row group at a time");
+        if (exhausted) {
+          throw new Error("Parquet preview budget is exhausted; no more row groups can be loaded");
+        }
         appending = true;
         try {
-          const ranges = coalesceRanges(mod.parquet_row_group_ranges(file, index));
+          const ranges = coalesceRanges(
+            mod.parquet_row_group_ranges(file, index),
+            COALESCE_GAP_BYTES,
+            fetchBudget,
+          );
           const parts = await Promise.all(
             ranges.map((range) => readExact(source, range.offset, range.length, signal)),
           );
@@ -307,8 +363,9 @@ export async function openParquetFile(
           });
           const rowsAppended = mod.parquet_append_row_group(file, storeHandle, index, flat, data);
           loadedRows += rowsAppended;
+          ({ exhausted, truncated } = mod.parquet_file_budget(file));
           const replaced = refresh();
-          return { rowsAppended, replaced };
+          return { rowsAppended, replaced, exhausted };
         } finally {
           appending = false;
         }

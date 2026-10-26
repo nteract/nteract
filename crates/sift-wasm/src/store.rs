@@ -455,6 +455,17 @@ where
     f(stores)
 }
 
+/// The batches a store holds, for tests that inspect retained buffers.
+#[cfg(test)]
+pub(crate) fn batches_snapshot(handle: u32) -> Vec<RecordBatch> {
+    with_stores(|stores| {
+        stores
+            .get(&handle)
+            .map(|store| store.batches.clone())
+            .unwrap_or_default()
+    })
+}
+
 fn with_store<F, R>(handle: u32, f: F) -> Result<R, String>
 where
     F: FnOnce(&DataStore) -> R,
@@ -629,8 +640,12 @@ pub(crate) struct FileMemory {
     pub(crate) bytes: u64,
 }
 
+/// Allocation sizes as they were before a tentative batch touched them, in
+/// touch order. `None` marks an allocation the batch introduced.
+type AllocationUndo = Vec<(usize, Option<usize>)>;
+
 impl FileMemory {
-    fn add_buffer(&mut self, buffer: &arrow::buffer::Buffer) {
+    fn add_buffer(&mut self, buffer: &arrow::buffer::Buffer, undo: Option<&mut AllocationUndo>) {
         // data_ptr identifies the allocation before any slice offset. IPC
         // columns often share one message body, and dictionaries may share
         // values across batches. Counting each slice's capacity multiplies
@@ -642,6 +657,9 @@ impl FileMemory {
         let size = buffer
             .capacity()
             .max(buffer.ptr_offset().saturating_add(buffer.len()));
+        if let Some(undo) = undo {
+            undo.push((key, self.allocations.get(&key).copied()));
+        }
         let previous = self.allocations.entry(key).or_default();
         self.bytes = self
             .bytes
@@ -650,6 +668,14 @@ impl FileMemory {
     }
 
     fn add_array(&mut self, data: &arrow::array::ArrayData) {
+        self.add_array_logged(data, None);
+    }
+
+    fn add_array_logged(
+        &mut self,
+        data: &arrow::array::ArrayData,
+        mut undo: Option<&mut AllocationUndo>,
+    ) {
         // Keep a conservative allowance for array metadata, in addition to
         // unique backing buffers. Visit children for nested/dictionary arrays.
         self.bytes = self
@@ -659,14 +685,41 @@ impl FileMemory {
             self.bytes = self
                 .bytes
                 .saturating_add(std::mem::size_of_val(buffer) as u64);
-            self.add_buffer(buffer);
+            self.add_buffer(buffer, undo.as_deref_mut());
         }
         if let Some(nulls) = data.nulls() {
-            self.add_buffer(nulls.buffer());
+            self.add_buffer(nulls.buffer(), undo.as_deref_mut());
         }
         for child in data.child_data() {
-            self.add_array(child);
+            self.add_array_logged(child, undo.as_deref_mut());
         }
+    }
+
+    /// Count `batch` only if retained bytes stay within `limit`. A refused
+    /// batch leaves the ledger exactly as it was, so the totals describe the
+    /// batches a caller actually keeps. Returns whether the batch was counted.
+    pub(crate) fn try_add_batch(&mut self, batch: &RecordBatch, limit: u64) -> bool {
+        let bytes_before = self.bytes;
+        let mut undo = AllocationUndo::new();
+        for column in batch.columns() {
+            self.add_array_logged(&column.to_data(), Some(&mut undo));
+        }
+        if self.bytes <= limit {
+            return true;
+        }
+        // Reverse order restores each allocation to its first recorded size.
+        for (key, previous) in undo.into_iter().rev() {
+            match previous {
+                Some(size) => {
+                    self.allocations.insert(key, size);
+                }
+                None => {
+                    self.allocations.remove(&key);
+                }
+            }
+        }
+        self.bytes = bytes_before;
+        false
     }
 }
 
@@ -729,18 +782,43 @@ pub(crate) fn minimum_parquet_bytes(
 ) -> Result<u64, String> {
     let rows = u64::try_from(metadata.file_metadata().num_rows())
         .map_err(|_| "Invalid negative Parquet row count")?;
-    let mut bytes = 0u64;
-    for field in schema.fields() {
-        let bits = match field.data_type() {
-            DataType::Boolean => 1,
-            DataType::FixedSizeBinary(width) => {
-                u64::try_from(*width).unwrap_or(0).saturating_mul(8)
-            }
-            data_type => data_type.primitive_width().unwrap_or(0) as u64 * 8,
-        };
-        bytes = bytes.saturating_add(rows.saturating_mul(bits).div_ceil(8));
+    Ok(minimum_fixed_width_bytes(schema, rows))
+}
+
+fn fixed_width_bits(data_type: &DataType) -> u64 {
+    match data_type {
+        DataType::Boolean => 1,
+        DataType::FixedSizeBinary(width) => u64::try_from(*width).unwrap_or(0).saturating_mul(8),
+        data_type => data_type.primitive_width().unwrap_or(0) as u64 * 8,
     }
-    Ok(bytes)
+}
+
+/// The fixed-width floor of `minimum_parquet_bytes` for `rows` rows. The
+/// decoder allocates at least this much for those rows, nulls included, so
+/// it bounds the allocation a decode of `rows` rows can request.
+pub(crate) fn minimum_fixed_width_bytes(schema: &arrow::datatypes::Schema, rows: u64) -> u64 {
+    schema.fields().iter().fold(0u64, |bytes, field| {
+        let bits = fixed_width_bits(field.data_type());
+        bytes.saturating_add(rows.saturating_mul(bits).div_ceil(8))
+    })
+}
+
+/// Most rows whose fixed-width floor fits in `budget` bytes. `u64::MAX` when
+/// the schema has no top-level fixed-width columns.
+pub(crate) fn fixed_width_rows_within(schema: &arrow::datatypes::Schema, budget: u64) -> u64 {
+    let row_bits = schema.fields().iter().fold(0u64, |bits, field| {
+        bits.saturating_add(fixed_width_bits(field.data_type()))
+    });
+    if row_bits == 0 {
+        return u64::MAX;
+    }
+    // Per-column rounding makes the floor at least `rows * row_bits / 8`, so
+    // this estimate is an upper bound; step down until the floor fits.
+    let mut rows = budget.saturating_mul(8) / row_bits;
+    while rows > 0 && minimum_fixed_width_bytes(schema, rows) > budget {
+        rows -= 1;
+    }
+    rows
 }
 
 /// Footer-only admission: row count, top-level and leaf column counts, and the
@@ -751,22 +829,40 @@ pub(crate) fn admit_parquet_footer(
     metadata: &parquet::file::metadata::ParquetMetaData,
     limits: FileLimits,
 ) -> Result<u64, String> {
-    let rows = u64::try_from(metadata.file_metadata().num_rows())
-        .map_err(|_| "Invalid negative Parquet row count")?;
+    let rows = parquet_footer_rows(metadata)?;
     check_file_limit(rows, limits.rows, "row")?;
-    check_file_limit(schema.fields().len() as u64, limits.columns, "column")?;
-    // Bound leaf columns too: one top-level struct may contain many fields.
-    check_file_limit(
-        metadata.file_metadata().schema_descr().num_columns() as u64,
-        limits.columns,
-        "leaf column",
-    )?;
+    admit_parquet_footer_columns(schema, metadata, limits)?;
     check_file_limit(
         minimum_parquet_bytes(schema, metadata)?,
         limits.decoded_bytes,
         "minimum decoded bytes",
     )?;
     Ok(rows)
+}
+
+/// Footer row count, rejecting a negative value.
+pub(crate) fn parquet_footer_rows(
+    metadata: &parquet::file::metadata::ParquetMetaData,
+) -> Result<u64, String> {
+    u64::try_from(metadata.file_metadata().num_rows())
+        .map_err(|_| "Invalid negative Parquet row count".to_string())
+}
+
+/// Top-level and leaf column counts. These stay hard admission checks even
+/// when rows and decoded bytes are a budget: a table with only some of its
+/// columns is not a meaningful preview.
+pub(crate) fn admit_parquet_footer_columns(
+    schema: &arrow::datatypes::Schema,
+    metadata: &parquet::file::metadata::ParquetMetaData,
+    limits: FileLimits,
+) -> Result<(), String> {
+    check_file_limit(schema.fields().len() as u64, limits.columns, "column")?;
+    // Bound leaf columns too: one top-level struct may contain many fields.
+    check_file_limit(
+        metadata.file_metadata().schema_descr().num_columns() as u64,
+        limits.columns,
+        "leaf column",
+    )
 }
 
 fn bounded_parquet_batches(

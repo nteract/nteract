@@ -1039,6 +1039,12 @@
   opacity: 0.6;
 }
 
+.sift-status-ready.sift-status-stopped {
+  color: var(--sift-bool-false);
+  font-weight: 700;
+  opacity: 1;
+}
+
 @keyframes sift-status-pulse {
   0%,
   100% {
@@ -1134,6 +1140,10 @@
   color: var(--sift-muted);
   font: 500 11px/1.2 var(--sift-font);
   white-space: nowrap;
+}
+
+.sift-load-failure {
+  color: var(--sift-ink);
 }
 
 @media (max-width: 700px) {

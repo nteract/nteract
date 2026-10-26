@@ -23,7 +23,11 @@ import {
   applyParquetColumnHints,
   pandasIndexColumnsFromHints,
 } from "./parquet-features";
-import { resolveTableFileLimits, type TableFileOptions } from "./file-data";
+import {
+  resolveTableFileLimits,
+  type TableFileOptions,
+  type TableLimitOverflow,
+} from "./file-data";
 import {
   type ByteSource,
   byteSourceFromBytes,
@@ -82,6 +86,12 @@ export type SiftSource =
       kind: "byte-source";
       source: ByteSource;
       limits?: Pick<TableFileOptions, "maxRows" | "maxColumns" | "maxDecodedBytes">;
+      /**
+       * What to do when the rows or decoded-bytes budget runs out. Default
+       * `"error"`. With `"truncate"`, Sift shows the leading rows that fit
+       * and notes the preview in its footer.
+       */
+      overflow?: TableLimitOverflow;
     };
 
 export type SiftLoadMilestone = {
@@ -90,7 +100,12 @@ export type SiftLoadMilestone = {
   elapsedMs: number;
   chunkIndex?: number;
   chunkCount?: number;
+  /** Rows loaded so far (resident rows, not the file total). */
   rowCount?: number;
+  /** Footer row count of a Parquet file. Set on Parquet `streaming-complete`. */
+  totalRowCount?: number;
+  /** Whether the budget stopped loading early. Set on Parquet `streaming-complete`. */
+  truncated?: boolean;
   byteLength?: number;
   format?: "arrow-ipc" | "parquet";
 };
@@ -112,8 +127,14 @@ export type SiftTableProps = {
   onLoadMilestone?: (milestone: SiftLoadMilestone) => void;
   /**
    * Called when a `loader`, `url`, `byte-source` or manifest source fails to
-   * load. Sift still renders its own error state; this lets the host log or
-   * surface the failure without wrapping the loader.
+   * load; this lets the host log or surface the failure without wrapping the
+   * loader. Sift shows its own error state too.
+   *
+   * A streaming Parquet source (`byte-source`, or a Parquet `url`) can fail
+   * after rows have mounted. Sift then keeps those rows, notes the failure in
+   * its footer instead of the blocking error box, and still calls this. A host
+   * can tell the two cases apart by whether it saw the `engine-mounted`
+   * milestone for this load.
    */
   onLoadError?: (error: Error) => void;
   /** Optional control rendered in Sift's footer before built-in buttons. */
@@ -158,6 +179,14 @@ type ArrowStreamPreviewNotice = {
   label: string;
   title: string;
 };
+
+function parquetPreviewNotice(preview: ParquetPreview | null): ArrowStreamPreviewNotice | null {
+  if (!preview) return null;
+  return {
+    label: `Showing first ${preview.loadedRows.toLocaleString()} of ${preview.totalRows.toLocaleString()} rows`,
+    title: "Sorting, filtering, and column summaries use only the rows shown in this preview.",
+  };
+}
 
 function arrowStreamPreviewNotice(
   manifest: ArrowStreamManifest | undefined,
@@ -302,6 +331,7 @@ const UNBOUNDED_LIMITS: ParquetFileLimits = {
 type ProgressiveParquetArgs = {
   source: ByteSource;
   limits: ParquetFileLimits;
+  overflow?: TableLimitOverflow;
   columnOverrides?: Record<string, Partial<Column>>;
   signal: AbortSignal;
   emit: (milestone: Omit<SiftLoadMilestone, "elapsedMs" | "source">) => void;
@@ -315,16 +345,23 @@ type ProgressiveParquetArgs = {
   engine: () => TableEngine | null;
 };
 
+/** Rows a finished Parquet stream holds against the file's footer total. */
+type ParquetPreview = { loadedRows: number; totalRows: number };
+
 /**
  * Open a Parquet file by byte range, mount the table after the first row
  * group, then append the remaining groups one at a time, yielding to the
- * event loop between them. Resolves when the store is complete. Rejects with
- * the loader error; an aborted signal rejects with its reason.
+ * event loop between them. A truncating load stops at the row group that
+ * spends the budget. Resolves when the store is complete, with the loaded
+ * and total rows when the budget cut the file short and null otherwise.
+ * Rejects with the loader error; an aborted signal rejects with its reason.
  */
-async function streamParquetIntoEngine(args: ProgressiveParquetArgs): Promise<void> {
-  const { source, limits, columnOverrides, signal, emit, onOpen, mount, engine } = args;
+async function streamParquetIntoEngine(
+  args: ProgressiveParquetArgs,
+): Promise<ParquetPreview | null> {
+  const { source, limits, overflow, columnOverrides, signal, emit, onOpen, mount, engine } = args;
   const format = "parquet";
-  const file = await openParquetFile(source, { limits, columnOverrides, signal });
+  const file = await openParquetFile(source, { limits, overflow, columnOverrides, signal });
   onOpen(file);
   emit({ phase: "wasm-ready", format, byteLength: source.byteLength });
   emit({
@@ -334,19 +371,22 @@ async function streamParquetIntoEngine(args: ProgressiveParquetArgs): Promise<vo
     chunkCount: file.rowGroupCount,
   });
 
+  let exhausted = false;
   if (file.rowGroupCount > 0) {
-    await file.appendRowGroup(0);
+    ({ exhausted } = await file.appendRowGroup(0));
     emit({ phase: "first-chunk-fetched", format, chunkIndex: 0, chunkCount: file.rowGroupCount });
   }
   emit({ phase: "summaries-ready", format, rowCount: file.tableData.rowCount });
   signal.throwIfAborted();
-  mount(file.tableData, file.rowGroupCount > 1);
+  mount(file.tableData, file.rowGroupCount > 1 && !exhausted);
   emit({ phase: "engine-mounted", format, rowCount: file.tableData.rowCount });
 
-  for (let group = 1; group < file.rowGroupCount; group++) {
+  for (let group = 1; group < file.rowGroupCount && !exhausted; group++) {
     await new Promise((resolve) => setTimeout(resolve, 0));
     signal.throwIfAborted();
-    const { replaced } = await file.appendRowGroup(group);
+    const appended = await file.appendRowGroup(group);
+    const { replaced } = appended;
+    exhausted = appended.exhausted;
     signal.throwIfAborted();
     if (replaced) {
       engine()?.replaceData(replaced, { streaming: true });
@@ -369,7 +409,14 @@ async function streamParquetIntoEngine(args: ProgressiveParquetArgs): Promise<vo
   } else {
     engine()?.setStreamingDone();
   }
-  emit({ phase: "streaming-complete", format, rowCount: file.tableData.rowCount });
+  emit({
+    phase: "streaming-complete",
+    format,
+    rowCount: file.tableData.rowCount,
+    totalRowCount: file.rowCount,
+    truncated: file.truncated,
+  });
+  return file.truncated ? { loadedRows: file.loadedRows, totalRows: file.rowCount } : null;
 }
 
 // --- Component ---
@@ -397,7 +444,18 @@ export function SiftTable({
   const byteSourceMaxRows = byteSourceLimits?.maxRows;
   const byteSourceMaxColumns = byteSourceLimits?.maxColumns;
   const byteSourceMaxDecodedBytes = byteSourceLimits?.maxDecodedBytes;
-  const previewNotice = useMemo(() => arrowStreamPreviewNotice(manifestSource), [manifestSource]);
+  const byteSourceOverflow = source?.kind === "byte-source" ? source.overflow : undefined;
+  // Keyed by source so a preview never outlives the byte source that produced it.
+  const [parquetPreview, setParquetPreview] = useState<{
+    source: ByteSource;
+    preview: ParquetPreview;
+  } | null>(null);
+  const currentParquetPreview =
+    byteSource && parquetPreview?.source === byteSource ? parquetPreview.preview : null;
+  const previewNotice = useMemo(
+    () => arrowStreamPreviewNotice(manifestSource) ?? parquetPreviewNotice(currentParquetPreview),
+    [manifestSource, currentParquetPreview],
+  );
   const isBoundedPreview = previewNotice !== null;
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<TableEngine | null>(null);
@@ -408,7 +466,14 @@ export function SiftTable({
   const footerControlRootRef = useRef<Root | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
-  const hasFooterControl = footerControl != null || manifestSource != null;
+  /** Message of a streaming failure after rows mounted. Shown in the footer. */
+  const [loadFailure, setLoadFailure] = useState<string | null>(null);
+  // The footer slot is created with the engine, so a source that may report a
+  // preview later needs it from the start.
+  const hasFooterControl =
+    footerControl != null ||
+    manifestSource != null ||
+    (byteSource != null && byteSourceOverflow === "truncate");
 
   // Stable callback ref to avoid re-mounting engine when onChange identity changes
   const onChangeRef = useRef(onChange);
@@ -422,13 +487,40 @@ export function SiftTable({
     onChangeRef.current?.(state);
   }, []);
 
-  /** Switch to the error state and tell the host. */
-  const reportLoadError = useCallback((cause: unknown) => {
-    const error = cause instanceof Error ? cause : new Error(String(cause));
-    setError(error.message);
-    setStatus("error");
-    onLoadErrorRef.current?.(error);
+  /**
+   * The footer slot element, created on first use. Stable, so code that needs
+   * the slot for a one-off notice does not re-run the source effects, which
+   * list `getFooterControlElement` as a dependency.
+   */
+  const ensureFooterSlot = useCallback(() => {
+    if (!footerControlRef.current) {
+      footerControlRef.current = document.createElement("div");
+      footerControlRef.current.className = "sift-footer-slot";
+      footerControlRootRef.current = createRoot(footerControlRef.current);
+    }
+    return footerControlRef.current;
   }, []);
+
+  /**
+   * Tell the host about a load failure. Before mount, switch to the blocking
+   * error state. After mount the loaded rows stay usable, so the failure is a
+   * footer notice instead; the slot is attached for it even when this source
+   * has no footer otherwise.
+   */
+  const reportLoadError = useCallback(
+    (cause: unknown, afterMount = false) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      if (afterMount && engineRef.current) {
+        engineRef.current.setFooterControl(ensureFooterSlot());
+        setLoadFailure(error.message);
+      } else {
+        setError(error.message);
+        setStatus("error");
+      }
+      onLoadErrorRef.current?.(error);
+    },
+    [ensureFooterSlot],
+  );
 
   const emitLoadMilestone = useCallback(
     (startedAt: number, milestone: Omit<SiftLoadMilestone, "elapsedMs">) => {
@@ -440,15 +532,10 @@ export function SiftTable({
     [],
   );
 
-  const getFooterControlElement = useCallback(() => {
-    if (!hasFooterControl) return undefined;
-    if (!footerControlRef.current) {
-      footerControlRef.current = document.createElement("div");
-      footerControlRef.current.className = "sift-footer-slot";
-      footerControlRootRef.current = createRoot(footerControlRef.current);
-    }
-    return footerControlRef.current;
-  }, [hasFooterControl]);
+  const getFooterControlElement = useCallback(
+    () => (hasFooterControl ? ensureFooterSlot() : undefined),
+    [ensureFooterSlot, hasFooterControl],
+  );
 
   const getEngineElement = useCallback(() => {
     const container = containerRef.current;
@@ -462,11 +549,37 @@ export function SiftTable({
     return engineDivRef.current;
   }, []);
 
-  const markPreviewLoaded = useCallback(() => {
-    if (!isBoundedPreview) return;
+  const isBoundedPreviewRef = useRef(isBoundedPreview);
+  isBoundedPreviewRef.current = isBoundedPreview;
+  const loadFailureRef = useRef(loadFailure);
+  loadFailureRef.current = loadFailure;
+
+  /**
+   * Bring the engine's status indicator in line with what SiftTable knows and
+   * the engine does not: a bounded preview, or a failure after mount. Acts
+   * only once the engine has settled (`sift-status-ready`); while streaming,
+   * the engine's own state is the truth.
+   */
+  const syncStatusIndicator = useCallback(() => {
     const indicator = engineDivRef.current?.querySelector<HTMLElement>(".sift-status-indicator");
-    if (indicator) indicator.title = "Preview loaded";
-  }, [isBoundedPreview]);
+    if (!indicator || !indicator.classList.contains("sift-status-ready")) return;
+    const failure = loadFailureRef.current;
+    if (failure) {
+      indicator.classList.add("sift-status-stopped");
+      indicator.textContent = "!";
+      indicator.title = `Stopped loading: ${failure}`;
+      return;
+    }
+    if (indicator.classList.contains("sift-status-stopped")) {
+      indicator.classList.remove("sift-status-stopped");
+      indicator.textContent = "✓";
+    }
+    indicator.title = isBoundedPreviewRef.current ? "Preview loaded" : "All data loaded";
+  }, []);
+
+  useEffect(() => {
+    syncStatusIndicator();
+  }, [isBoundedPreview, loadFailure, status, syncStatusIndicator]);
 
   useEffect(() => {
     if (hasFooterControl) {
@@ -474,6 +587,11 @@ export function SiftTable({
     }
     footerControlRootRef.current?.render(
       <>
+        {loadFailure && (
+          <span className="sift-preview-hint sift-load-failure" role="status" title={loadFailure}>
+            {`Stopped loading: ${loadFailure} · Showing loaded rows`}
+          </span>
+        )}
         {previewNotice && (
           <span
             className="sift-preview-hint"
@@ -490,7 +608,7 @@ export function SiftTable({
         {footerControl}
       </>,
     );
-  }, [footerControl, getFooterControlElement, hasFooterControl, previewNotice]);
+  }, [footerControl, getFooterControlElement, hasFooterControl, loadFailure, previewNotice]);
 
   useEffect(() => {
     return () => {
@@ -520,6 +638,7 @@ export function SiftTable({
     storeRef.current = null;
     setStatus("loading");
     setError(null);
+    setLoadFailure(null);
     emitLoadMilestone(startedAt, { source: "loader", phase: "load-start" });
 
     Promise.resolve()
@@ -589,6 +708,8 @@ export function SiftTable({
 
     setStatus("loading");
     setError(null);
+    setLoadFailure(null);
+    setParquetPreview(null);
     emitLoadMilestone(startedAt, { source: "byte-source", phase: "load-start" });
 
     let limits: ParquetFileLimits;
@@ -606,6 +727,7 @@ export function SiftTable({
     streamParquetIntoEngine({
       source: byteSource,
       limits,
+      overflow: byteSourceOverflow,
       columnOverrides,
       signal: controller.signal,
       emit: (milestone) => emitLoadMilestone(startedAt, { ...milestone, source: "byte-source" }),
@@ -614,7 +736,10 @@ export function SiftTable({
       },
       mount: (tableData, streaming) => {
         if (engineRef.current) {
-          engineRef.current.replaceData(tableData, { streaming });
+          engineRef.current.replaceData(tableData, {
+            streaming,
+            footerControl: getFooterControlElement() ?? null,
+          });
         } else {
           const engineDiv = getEngineElement();
           if (!engineDiv) return;
@@ -627,16 +752,21 @@ export function SiftTable({
         setStatus("ready");
       },
       engine: () => engineRef.current,
-    }).catch((cause: unknown) => {
-      if (cancelled) return;
-      if (openFile && !mounted) openFile.dispose();
-      else openFile?.close();
-      openFile = null;
-      // A failure after mount leaves the rows already loaded in place. End the
-      // streaming state so the status dot and cast guard do not wait forever.
-      if (mounted) engineRef.current?.setStreamingDone();
-      reportLoadError(cause);
-    });
+    }).then(
+      (preview) => {
+        if (!cancelled) setParquetPreview(preview ? { source: byteSource, preview } : null);
+      },
+      (cause: unknown) => {
+        if (cancelled) return;
+        if (openFile && !mounted) openFile.dispose();
+        else openFile?.close();
+        openFile = null;
+        // A failure after mount leaves the rows already loaded in place. End the
+        // streaming state so the status dot and cast guard do not wait forever.
+        if (mounted) engineRef.current?.setStreamingDone();
+        reportLoadError(cause, mounted);
+      },
+    );
 
     return () => {
       cancelled = true;
@@ -651,6 +781,7 @@ export function SiftTable({
     byteSourceMaxRows,
     byteSourceMaxColumns,
     byteSourceMaxDecodedBytes,
+    byteSourceOverflow,
     columnOverrides,
     stableOnChange,
     getEngineElement,
@@ -668,9 +799,13 @@ export function SiftTable({
     // it supersedes, so the ref must not outlive it: a later manifest that
     // looked like an extension would otherwise append to a freed handle.
     storeRef.current = null;
+    setLoadFailure(null);
 
     if (engineRef.current) {
-      engineRef.current.replaceData(dataSource, { streaming: false });
+      engineRef.current.replaceData(dataSource, {
+        streaming: false,
+        footerControl: getFooterControlElement() ?? null,
+      });
       emitLoadMilestone(startedAt, {
         source: "table-data",
         phase: "engine-data-replaced",
@@ -712,6 +847,7 @@ export function SiftTable({
         // manifest settled on, so an open stream re-arms the guard here.
         engineRef.current.replaceData(tableData, {
           streaming: manifest.complete === false,
+          footerControl: getFooterControlElement() ?? null,
         });
         disposePendingStore = null;
         return;
@@ -825,7 +961,7 @@ export function SiftTable({
         } else {
           engineRef.current?.setStreamingDone();
         }
-        markPreviewLoaded();
+        syncStatusIndicator();
         emitLoadMilestone(startedAt, {
           source: "arrow-stream-manifest",
           phase: "streaming-complete",
@@ -838,6 +974,7 @@ export function SiftTable({
     async function loadFromManifest() {
       setStatus("loading");
       setError(null);
+      setLoadFailure(null);
 
       const chunks = manifest.chunks;
       if (chunks.length === 0) {
@@ -948,6 +1085,7 @@ export function SiftTable({
           // A previous run may have failed a chunk fetch and left the error
           // showing. This attempt supersedes it; a fresh failure re-sets it.
           setError(null);
+          setLoadFailure(null);
           setStatus("ready");
           return appendRemainingChunks(existing);
         })()
@@ -981,7 +1119,7 @@ export function SiftTable({
     getFooterControlElement,
     getEngineElement,
     emitLoadMilestone,
-    markPreviewLoaded,
+    syncStatusIndicator,
     reportLoadError,
   ]);
 
@@ -1008,7 +1146,10 @@ export function SiftTable({
 
     function mountEngine(tableData: TableData, streaming?: boolean) {
       if (engineRef.current) {
-        engineRef.current.replaceData(tableData, { streaming });
+        engineRef.current.replaceData(tableData, {
+          streaming,
+          footerControl: getFooterControlElement() ?? null,
+        });
         disposePendingStore = null;
         return;
       }
@@ -1131,6 +1272,7 @@ export function SiftTable({
     async function loadFromUrl() {
       setStatus("loading");
       setError(null);
+      setLoadFailure(null);
       emitLoadMilestone(startedAt, { source: "url", phase: "load-start" });
 
       const response = await tableResponse(sourceUrl);
@@ -1163,7 +1305,7 @@ export function SiftTable({
           // Rows already mounted stay; end the streaming state so the status
           // dot and cast guard do not wait for groups that will never come.
           if (parquetMounted) engineRef.current?.setStreamingDone();
-          reportLoadError(err);
+          reportLoadError(err, parquetMounted);
         }
       })
       .finally(() => {

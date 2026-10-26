@@ -144,6 +144,11 @@ export type ReplaceDataOptions = {
    * data settled on. Omit to leave the current state alone.
    */
   streaming?: boolean;
+  /**
+   * Footer control to show from now on, as `TableEngineOptions.footerControl`.
+   * `null` removes the current one; omit to keep it.
+   */
+  footerControl?: HTMLElement | null;
 };
 
 export type TableEngine = {
@@ -151,6 +156,12 @@ export type TableEngine = {
   /** Signal that all batches have been loaded and streaming is complete. */
   setStreamingDone(): void;
   replaceData(newData: TableData, options?: ReplaceDataOptions): void;
+  /**
+   * Show `control` in the footer from now on, as
+   * `TableEngineOptions.footerControl`; `null` removes the current one. Rows,
+   * scroll position, sort, and filters are left alone.
+   */
+  setFooterControl(control: HTMLElement | null): void;
   destroy(): void;
   setFilter(colIndex: number, filter: ColumnFilter): void;
   clearFilter(colIndex: number): void;
@@ -280,6 +291,7 @@ export function createTable(
 ): TableEngine {
   let data = initialData;
   let columns = data.columns;
+  let footerControl = options?.footerControl;
 
   // Mutable row count — grows as batches arrive
   let rowCount = data.rowCount;
@@ -1076,7 +1088,7 @@ export function createTable(
     debugGroup,
     filterPillsEl,
     statsSpacer,
-    ...(options?.footerControl ? [options.footerControl] : []),
+    ...(footerControl ? [footerControl] : []),
     debugBtn,
     fullscreenBtn,
   );
@@ -2104,6 +2116,14 @@ export function createTable(
     // re-armed stream shows the indicator without it.
   }
 
+  function setFooterControl(control: HTMLElement | null) {
+    const next = control ?? undefined;
+    if (next === footerControl) return;
+    footerControl?.remove();
+    if (next) statsEl.insertBefore(next, debugBtn);
+    footerControl = next;
+  }
+
   function setStreamingDone() {
     if (!streaming) return;
     streaming = false;
@@ -2195,10 +2215,17 @@ export function createTable(
   function replaceData(newData: TableData, replaceOptions?: ReplaceDataOptions) {
     const replacementStreaming = replaceOptions?.streaming ?? streaming;
     const preserved = preserveStateFor(newData.columns, replaceOptions);
+    const nextFooterControl =
+      replaceOptions?.footerControl === undefined
+        ? footerControl
+        : (replaceOptions.footerControl ?? undefined);
 
     if (!sameColumnShape(newData.columns)) {
       destroy();
-      const replacement = createTable(container, newData, options);
+      const replacement = createTable(container, newData, {
+        ...options,
+        footerControl: nextFooterControl,
+      });
       if (!replacementStreaming) {
         replacement.setStreamingDone();
       }
@@ -2218,6 +2245,8 @@ export function createTable(
     if (replaceOptions?.streaming !== undefined) {
       setStreamingState(replaceOptions.streaming);
     }
+
+    setFooterControl(nextFooterControl ?? null);
 
     const oldData = data;
     data = newData;
@@ -2893,6 +2922,7 @@ export function createTable(
     onBatchAppended,
     setStreamingDone,
     replaceData,
+    setFooterControl,
     destroy,
     setFilter,
     clearFilter,

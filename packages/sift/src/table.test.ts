@@ -190,6 +190,64 @@ describe("createTable", () => {
     });
   });
 
+  describe("footer control across data swaps", () => {
+    function slot(text: string): HTMLElement {
+      const el = document.createElement("span");
+      el.className = "test-footer-slot";
+      el.textContent = text;
+      return el;
+    }
+
+    it("adds, keeps, and removes the footer control on replaceData", () => {
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      const local = createTable(root, makeTableData(makeRows(4)));
+      expect(root.querySelector(".test-footer-slot")).toBeNull();
+
+      local.replaceData(makeTableData(makeRows(4)), { footerControl: slot("first") });
+      expect(root.querySelector(".sift-stats .test-footer-slot")?.textContent).toBe("first");
+
+      local.replaceData(makeTableData(makeRows(4)));
+      expect(root.querySelectorAll(".test-footer-slot")).toHaveLength(1);
+
+      local.replaceData(makeTableData(makeRows(4)), { footerControl: null });
+      expect(root.querySelector(".test-footer-slot")).toBeNull();
+
+      local.destroy();
+      root.remove();
+    });
+
+    it("swaps the footer control in place without touching the data", () => {
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      const data = makeTableData(makeRows(4));
+      const dispose = vi.fn();
+      data.dispose = dispose;
+      const local = createTable(root, data);
+      local.setFooterControl(slot("notice"));
+      expect(root.querySelector(".sift-stats .test-footer-slot")?.textContent).toBe("notice");
+      local.setFooterControl(null);
+      expect(root.querySelector(".test-footer-slot")).toBeNull();
+      expect(dispose).not.toHaveBeenCalled();
+
+      local.destroy();
+      root.remove();
+    });
+
+    it("carries a new footer control through a rebuild for a new column shape", () => {
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      const local = createTable(root, makeTableData(makeRows(4)));
+      local.replaceData(makeTableDataWithColumns([[1, "Alice"]], makeColumns().slice(0, 2)), {
+        footerControl: slot("rebuilt"),
+      });
+      expect(root.querySelector(".test-footer-slot")?.textContent).toBe("rebuilt");
+
+      local.destroy();
+      root.remove();
+    });
+  });
+
   afterEach(() => {
     engine.destroy();
     container.remove();

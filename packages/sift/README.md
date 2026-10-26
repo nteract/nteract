@@ -53,8 +53,9 @@ const load = useCallback(() => loadTableFile(bytes), [bytes]) // Parquet or Arro
 
 Files load whole or fail; defaults are 16 MiB, 100,000 rows, and 256 columns.
 Parquet can also be read by byte range through a `ByteSource` (footer first,
-then one row group at a time), which drops the 16 MiB input cap; see the
-embedding guide.
+then one row group at a time), which drops the 16 MiB input cap. With
+`overflow: 'truncate'` it shows the leading rows that fit the row and memory
+budget instead of failing; see the embedding guide.
 CSV and TSV go through [`@nteract/sift-csv`](https://www.npmjs.com/package/@nteract/sift-csv), a separate WASM
 module that returns Arrow IPC bytes for `loadTableFile`, so apps that only open
 Parquet or Arrow do not carry the CSV parser.

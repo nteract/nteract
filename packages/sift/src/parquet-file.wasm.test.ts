@@ -65,6 +65,26 @@ describe("coalesceRanges", () => {
     ]);
     expect(coalesceRanges([], 64)).toEqual([]);
   });
+
+  it("keeps the bytes it requests within a fetch budget", () => {
+    // Four 100-byte chunks with 50-byte gaps: 400 bytes of chunks, 550 merged.
+    const flat = [0, 100, 150, 100, 300, 100, 450, 100];
+    const requested = (ranges: { length: number }[]) =>
+      ranges.reduce((sum, range) => sum + range.length, 0);
+    expect(requested(coalesceRanges(flat, 64))).toBe(550);
+    // A 500-byte budget pays for two of the three gaps.
+    const bounded = coalesceRanges(flat, 64, 500);
+    expect(requested(bounded)).toBeLessThanOrEqual(500);
+    expect(bounded).toEqual([
+      { offset: 0, length: 400 },
+      { offset: 450, length: 100 },
+    ]);
+    // With no room for any gap, every chunk is fetched on its own.
+    expect(requested(coalesceRanges(flat, 64, 400))).toBe(400);
+    expect(coalesceRanges(flat, 64, 400)).toHaveLength(4);
+    // Touching chunks cost nothing extra and still merge.
+    expect(coalesceRanges([0, 100, 100, 100], 64, 200)).toEqual([{ offset: 0, length: 200 }]);
+  });
 });
 
 // The workspace's normal WASM build supplies these artifacts. Unit tests still
@@ -229,7 +249,7 @@ describe.skipIf(!existsSync(wasmPath))("byte-range Parquet with real WASM", () =
       expect(file.tableData.columns.map((c) => c.key)).toEqual(["id", "text"]);
 
       const first = await file.appendRowGroup(0);
-      expect(first).toEqual({ rowsAppended: ROWS_PER_GROUP, replaced: null });
+      expect(first).toEqual({ rowsAppended: ROWS_PER_GROUP, replaced: null, exhausted: false });
       expect(file.loadedRows).toBe(ROWS_PER_GROUP);
       expect(file.tableData.rowCount).toBe(ROWS_PER_GROUP);
       expect(file.tableData.columnSummaries[0]).toMatchObject({ max: ROWS_PER_GROUP - 1 });
@@ -278,6 +298,9 @@ describe.skipIf(!existsSync(wasmPath))("byte-range Parquet with real WASM", () =
         rowCount: ROWS_PER_GROUP * GROUPS,
       });
       expect(view.container.querySelector(".sift-cell")?.textContent).toBe("0");
+      expect(view.container.querySelector(".sift-status-indicator")?.getAttribute("title")).toBe(
+        "All data loaded",
+      );
       expect(onLoadError).not.toHaveBeenCalled();
       expect(view.container.textContent).not.toContain("Invalid handle");
     } finally {
@@ -421,37 +444,78 @@ describe.skipIf(!existsSync(wasmPath))("byte-range Parquet with real WASM", () =
     expect(source.reads).toHaveLength(1);
   });
 
-  it("keeps mounted rows and ends streaming when a later row group fails", async () => {
+  /** A ByteSource that serves the tail and row group 0, then fails. */
+  function failingAfterFirstGroup(): ByteSource {
     let reads = 0;
-    const source: ByteSource = {
+    return {
       byteLength: parquet.byteLength,
       async read(offset, length) {
         reads += 1;
-        // Tail, row group 0, then the host loses the file.
         if (reads > 2) throw new Error("disk went away");
         return parquet.subarray(offset, offset + length);
       },
     };
+  }
+
+  it("keeps mounted rows and notes a later row group failure in the footer", async () => {
     const onLoadError = vi.fn();
     const onChange = vi.fn();
     const view = render(
       createElement(SiftTable, {
-        source: { kind: "byte-source", source },
+        source: { kind: "byte-source", source: failingAfterFirstGroup() },
         onLoadError,
         onChange,
       }),
     );
     try {
+      await waitFor(() => expect(onLoadError).toHaveBeenCalledTimes(1));
+      expect(onLoadError.mock.calls[0][0].message).toContain("disk went away");
       await waitFor(() => {
-        expect(view.container.querySelector('[role="alert"]')?.textContent).toContain(
-          "disk went away",
-        );
-        // The first row group stays on screen and the stream is marked done.
+        // The first row group stays on screen, with the failure in the footer.
         expect(view.container.querySelector(".sift-cell")?.textContent).toBe("0");
+        expect(view.container.querySelector(".sift-load-failure")?.textContent).toBe(
+          "Stopped loading: disk went away · Showing loaded rows",
+        );
       });
-      expect(onLoadError).toHaveBeenCalledTimes(1);
-      expect(view.container.querySelector(".sift-status-ready")).not.toBeNull();
+      expect(view.container.querySelector('[role="alert"]')).toBeNull();
       expect(view.container.querySelector(".sift-status-streaming")).toBeNull();
+      const indicator = view.container.querySelector(".sift-status-indicator");
+      expect(indicator?.classList.contains("sift-status-stopped")).toBe(true);
+      expect(indicator?.getAttribute("title")).toBe("Stopped loading: disk went away");
+      expect(onLoadError).toHaveBeenCalledTimes(1);
+    } finally {
+      view.unmount();
+    }
+  });
+
+  it("clears a mid-stream failure notice when a later source loads", async () => {
+    const onLoadError = vi.fn();
+    const view = render(
+      createElement(SiftTable, {
+        source: { kind: "byte-source", source: failingAfterFirstGroup() },
+        onLoadError,
+      }),
+    );
+    try {
+      await waitFor(() => {
+        expect(view.container.querySelector(".sift-load-failure")).not.toBeNull();
+      });
+      view.rerender(
+        createElement(SiftTable, {
+          source: { kind: "byte-source", source: recordingSource(parquet) },
+          onLoadError,
+        }),
+      );
+      await waitFor(() => {
+        expect(view.container.querySelector(".sift-load-failure")).toBeNull();
+        expect(view.container.querySelector(".sift-status-indicator")?.getAttribute("title")).toBe(
+          "All data loaded",
+        );
+      });
+      expect(view.container.querySelector(".sift-status-stopped")).toBeNull();
+      expect(view.container.querySelector(".sift-footer-slot")).toBeNull();
+      expect(view.container.querySelector('[role="alert"]')).toBeNull();
+      expect(onLoadError).toHaveBeenCalledTimes(1);
     } finally {
       view.unmount();
     }
@@ -481,6 +545,247 @@ describe.skipIf(!existsSync(wasmPath))("byte-range Parquet with real WASM", () =
     } finally {
       view.unmount();
     }
+  });
+
+  describe('overflow: "truncate"', () => {
+    it("loads a bounded prefix and stops reading once the row budget is spent", async () => {
+      const source = recordingSource(parquet);
+      const maxRows = ROWS_PER_GROUP + 100;
+      await expect(
+        openParquetFile(source, { limits: { ...DEFAULT_LIMITS, maxRows } }),
+      ).rejects.toThrow("row limit");
+
+      const counted = recordingSource(parquet);
+      const file = await openParquetFile(counted, {
+        limits: { ...DEFAULT_LIMITS, maxRows },
+        overflow: "truncate",
+      });
+      try {
+        expect(file.rowCount).toBe(ROWS_PER_GROUP * GROUPS);
+        expect(file.truncated).toBe(false);
+        const first = await file.appendRowGroup(0);
+        expect(first).toMatchObject({ rowsAppended: ROWS_PER_GROUP, exhausted: false });
+        const second = await file.appendRowGroup(1);
+        expect(second).toMatchObject({ rowsAppended: 100, exhausted: true });
+        expect(file.loadedRows).toBe(maxRows);
+        expect(file.truncated).toBe(true);
+        const reads = counted.reads.length;
+        await expect(file.appendRowGroup(2)).rejects.toThrow("budget is exhausted");
+        expect(counted.reads).toHaveLength(reads);
+        file.finish();
+        expect(file.truncated).toBe(true);
+        expect(file.tableData.rowCount).toBe(maxRows);
+        expect(file.tableData.getCellRaw(maxRows - 1, 0)).toBe(maxRows - 1);
+      } finally {
+        file.dispose();
+      }
+    });
+
+    it("stops loadTableFile at the budget instead of failing", async () => {
+      const source = recordingSource(parquet);
+      const data = await loadTableFile(source, { maxRows: 100, overflow: "truncate" });
+      try {
+        expect(data.rowCount).toBe(100);
+        // Tail plus row group 0 only.
+        expect(source.reads).toHaveLength(2);
+      } finally {
+        data.dispose?.();
+      }
+      await expect(loadTableFile(parquet, { maxRows: 100, overflow: "truncate" })).rejects.toThrow(
+        "row limit",
+      );
+    });
+
+    it("finishes a file that fits with truncated false", async () => {
+      const file = await openParquetFile(recordingSource(parquet), {
+        limits: DEFAULT_LIMITS,
+        overflow: "truncate",
+      });
+      try {
+        for (let group = 0; group < GROUPS; group++) {
+          expect((await file.appendRowGroup(group)).exhausted).toBe(false);
+        }
+        file.finish();
+        expect(file.truncated).toBe(false);
+        expect(file.loadedRows).toBe(ROWS_PER_GROUP * GROUPS);
+      } finally {
+        file.dispose();
+      }
+    });
+
+    it("rejects an unknown overflow policy", async () => {
+      await expect(
+        openParquetFile(recordingSource(parquet), {
+          limits: DEFAULT_LIMITS,
+          overflow: "sample" as never,
+        }),
+      ).rejects.toThrow("overflow");
+    });
+
+    it("mounts a preview through SiftTable without reporting an error", async () => {
+      const source = recordingSource(parquet);
+      const milestones: SiftLoadMilestone[] = [];
+      const onLoadError = vi.fn();
+      const onChange = vi.fn();
+      const maxRows = ROWS_PER_GROUP + 100;
+      const siftSource: SiftSource = {
+        kind: "byte-source",
+        source,
+        limits: { maxRows },
+        overflow: "truncate",
+      };
+      const view = render(
+        createElement(SiftTable, {
+          source: siftSource,
+          onLoadError,
+          onChange,
+          onLoadMilestone: (m) => milestones.push(m),
+        }),
+      );
+      try {
+        await waitFor(() => {
+          expect(milestones.at(-1)?.phase).toBe("streaming-complete");
+        });
+        expect(milestones.at(-1)).toMatchObject({
+          source: "byte-source",
+          rowCount: maxRows,
+          totalRowCount: ROWS_PER_GROUP * GROUPS,
+          truncated: true,
+        });
+        // Tail, row group 0, row group 1. Row group 2 is never read.
+        expect(source.reads).toHaveLength(3);
+        expect(onLoadError).not.toHaveBeenCalled();
+        expect(view.container.querySelector('[role="alert"]')).toBeNull();
+        await waitFor(() => {
+          expect(view.container.querySelector(".sift-status-ready")).not.toBeNull();
+          expect(view.container.querySelector(".sift-cell")?.textContent).toBe("0");
+          expect(view.container.querySelector(".sift-preview-hint")?.textContent).toContain(
+            `Showing first ${maxRows.toLocaleString()} of ${(ROWS_PER_GROUP * GROUPS).toLocaleString()} rows`,
+          );
+          expect(
+            view.container.querySelector(".sift-status-indicator")?.getAttribute("title"),
+          ).toBe("Preview loaded");
+        });
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it("finishes without streaming when the first row group spends the budget", async () => {
+      const source = recordingSource(parquet);
+      const milestones: SiftLoadMilestone[] = [];
+      const onLoadError = vi.fn();
+      const view = render(
+        createElement(SiftTable, {
+          source: { kind: "byte-source", source, limits: { maxRows: 10 }, overflow: "truncate" },
+          onLoadError,
+          onLoadMilestone: (m) => milestones.push(m),
+        }),
+      );
+      try {
+        await waitFor(() => {
+          expect(milestones.at(-1)?.phase).toBe("streaming-complete");
+        });
+        expect(milestones.map((m) => m.phase)).not.toContain("chunk-appended");
+        expect(milestones.at(-1)).toMatchObject({ rowCount: 10, truncated: true });
+        expect(source.reads).toHaveLength(2);
+        expect(view.container.querySelector(".sift-status-streaming")).toBeNull();
+        expect(onLoadError).not.toHaveBeenCalled();
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it("adds the preview footer to a table that mounted without one", async () => {
+      const onLoadError = vi.fn();
+      const view = render(
+        createElement(SiftTable, {
+          source: { kind: "byte-source", source: recordingSource(parquet) },
+          onLoadError,
+        }),
+      );
+      try {
+        await waitFor(() => {
+          expect(view.container.querySelector(".sift-status-ready")).not.toBeNull();
+          expect(view.container.querySelector(".sift-cell")?.textContent).toBe("0");
+        });
+        expect(view.container.querySelector(".sift-footer-slot")).toBeNull();
+        view.rerender(
+          createElement(SiftTable, {
+            source: {
+              kind: "byte-source",
+              source: recordingSource(parquet),
+              limits: { maxRows: 100 },
+              overflow: "truncate",
+            },
+            onLoadError,
+          }),
+        );
+        await waitFor(() => {
+          expect(view.container.querySelector(".sift-preview-hint")?.textContent).toContain(
+            `Showing first 100 of ${(ROWS_PER_GROUP * GROUPS).toLocaleString()} rows`,
+          );
+        });
+        expect(view.container.querySelectorAll(".sift-footer-slot")).toHaveLength(1);
+        expect(onLoadError).not.toHaveBeenCalled();
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it("drops the footer slot when a source without one replaces a preview", async () => {
+      const view = render(
+        createElement(SiftTable, {
+          source: {
+            kind: "byte-source",
+            source: recordingSource(parquet),
+            limits: { maxRows: 100 },
+            overflow: "truncate",
+          },
+        }),
+      );
+      try {
+        await waitFor(() => {
+          expect(view.container.querySelector(".sift-preview-hint")).not.toBeNull();
+        });
+        view.rerender(
+          createElement(SiftTable, {
+            source: { kind: "byte-source", source: recordingSource(parquet) },
+          }),
+        );
+        await waitFor(() => {
+          expect(view.container.querySelector(".sift-footer-slot")).toBeNull();
+          expect(
+            view.container.querySelector(".sift-status-indicator")?.getAttribute("title"),
+          ).toBe("All data loaded");
+        });
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it("reloads when only the overflow policy changes", async () => {
+      const source = recordingSource(parquet);
+      const onLoadError = vi.fn();
+      const milestones: SiftLoadMilestone[] = [];
+      const props = (overflow: "error" | "truncate") => ({
+        source: { kind: "byte-source" as const, source, limits: { maxRows: 10 }, overflow },
+        onLoadError,
+        onLoadMilestone: (m: SiftLoadMilestone) => milestones.push(m),
+      });
+      const view = render(createElement(SiftTable, props("error")));
+      try {
+        await waitFor(() => expect(onLoadError).toHaveBeenCalledTimes(1));
+        expect(onLoadError.mock.calls[0][0].message).toContain("row limit");
+        view.rerender(createElement(SiftTable, props("truncate")));
+        await waitFor(() => {
+          expect(milestones.at(-1)).toMatchObject({ phase: "streaming-complete", truncated: true });
+        });
+        expect(view.container.querySelector('[role="alert"]')).toBeNull();
+      } finally {
+        view.unmount();
+      }
+    });
   });
 
   it("aborts in-flight reads on unmount without reporting an error", async () => {

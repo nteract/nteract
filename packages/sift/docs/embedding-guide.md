@@ -106,7 +106,8 @@ large. If you load untrusted files, do it in a Worker you can terminate.
 
 This API loads a complete file. Virtual scrolling bounds rendered DOM, not the
 dataset: sorting, filtering, and summaries cover every accepted row. There is no
-paging or sampled preview.
+paging or sampled preview. Byte-range Parquet can load a bounded leading
+prefix instead; see [Bounded previews](#bounded-previews).
 
 Lists, structs, and maps display as text. Known image structures have dedicated
 rendering.
@@ -163,14 +164,72 @@ memory while it decodes. Files with column chunks past 4 GiB are rejected at
 open; the WASM reader cannot address them.
 
 If a row group fails after the table has mounted (a read error, the decoded
-limit), the rows already loaded stay on screen, the streaming indicator
-settles, Sift shows the error, and `onLoadError` fires.
+limit), the rows already loaded stay on screen and usable. Sift does not show
+its blocking error box. Instead its footer reads "Stopped loading: <message> ·
+Showing loaded rows" and the status indicator turns to a warning mark whose
+tooltip names the failure. `onLoadError` still fires, so the host can log it.
+A failure before mount shows the error box as usual. To tell the two apart,
+check whether the `engine-mounted` milestone arrived for this load. The next
+source to load clears the notice. A Parquet `url` streams through the same
+loader and behaves the same way.
+
+### Bounded previews
+
+To open files of any size and show the leading rows, set `overflow: 'truncate'`.
+Rows and decoded bytes become a budget instead of an admission check:
+
+```tsx
+<SiftTable
+  source={{
+    kind: 'byte-source',
+    source,
+    limits: { maxRows: 1_000_000, maxDecodedBytes: 512 * 1024 * 1024 },
+    overflow: 'truncate',
+  }}
+  onLoadMilestone={(m) => {
+    if (m.phase === 'streaming-complete' && m.truncated) {
+      console.log(`Showing first ${m.rowCount} of ${m.totalRowCount} rows`)
+    }
+  }}
+/>
+
+// loadTableFile accepts the same option for a ByteSource.
+const data = await loadTableFile(source, { maxRows: 100_000, overflow: 'truncate' })
+```
+
+- The footer is not rejected for its total row count. `maxColumns` and the
+  footer-size check still reject, and so does a file where one row's
+  fixed-width columns alone exceed `maxDecodedBytes`.
+- Row groups decode in 256-row batches. Loading stops at exactly `maxRows`,
+  at the rows whose fixed-width values fit what is left of the budget, or
+  before the first batch that would take retained memory past
+  `maxDecodedBytes`. Once the budget is spent, later row groups are never
+  read.
+- A row group whose compressed column chunks exceed `maxDecodedBytes` fails
+  before it is fetched, and gaps between chunks are fetched only while the
+  request stays within that size. If the budget cannot hold even the first
+  batch, the load fails: there is nothing to preview.
+- String and binary view columns are copied out of the decoded pages, so
+  retained memory is what the budget counts.
+- The `streaming-complete` milestone carries `rowCount` (loaded rows),
+  `totalRowCount` (footer rows), and `truncated`. When truncated, Sift's footer
+  shows "Showing first N of M rows" and the status tooltip reads "Preview
+  loaded". Sorting, filtering, and summaries cover only the loaded rows.
+
+The default, `overflow: 'error'`, keeps the behavior described above. Only
+byte-source Parquet honors `overflow`; in-memory buffers and Arrow IPC still
+fail on overflow.
+
+The budget is a loading guardrail, like the other limits, not isolation from
+hostile files. Page decompression and one decoder batch allocate before a
+batch is measured. Load untrusted files in a Worker you can terminate.
 
 Only Parquet can be read this way. A `ByteSource` with `format: 'arrow-ipc'` is
 read whole and goes through the bytes path with its `maxBytes` check.
 
 `onLoadError` fires for `loader`, `url`, `byte-source`, and manifest sources
-when a load fails, with the same `Error` Sift renders in its error state.
+when a load fails, with the same `Error` Sift shows. For streaming Parquet it
+may arrive after rows mounted; see above.
 
 ## Lifecycle and host controls
 
