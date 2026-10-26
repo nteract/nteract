@@ -323,12 +323,19 @@ credential-authenticated account and driver. Native storage and ephemeral
 policies enforce access; UI read-only state is not the security boundary.
 
 The browser renews its OIDC session while the app is open and when returning to
-the tab. Native connections have bounded credential leases: API-key connections
-reconnect after 60 seconds, and browser connections at the expiry observed on
-upgrade. Reauthentication checks during that lease can revoke access early;
-they do not extend the socket lifetime. Reconnect obtains current credentials
-and resumes the same native document. This keeps lease handling explicit, at the
-cost of periodic reconnects for programmatic native clients.
+the tab. Its native socket keeps the absolute expiry observed on upgrade, then
+reconnects with current credentials. API-key sockets instead renew their
+60-second leases after successful periodic reauthentication. Renewal preserves
+the account, namespace, driver, credential write scope, and Page grant generation;
+it cannot upgrade a durable signing-key binding. It updates only the live lease
+and its disconnect timer, without a storage write.
+
+The last confirmed expiry stays armed while verification is pending. Failure,
+expiry, disconnect, or a changed Page grant prevents a late verification result
+from reviving the connection. Connection checks are scheduled every 15 seconds while the
+socket is active, but the shared Anaconda verifier may reuse its 60-second
+userinfo cache; provider revocation is therefore not instantaneous. Browser
+session expiry and Page ACL enforcement remain independent of API-key renewal.
 
 The resident socket holds its admission request context through disconnection.
 Native callbacks retain that context for later authentication and storage I/O;

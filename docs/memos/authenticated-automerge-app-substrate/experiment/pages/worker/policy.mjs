@@ -113,7 +113,7 @@ export class DocumentPolicy {
       );
   }
 
-  async bind(key, senderId, identity, { reauthenticate, disconnect }) {
+  async bind(key, senderId, identity, { reauthenticate, disconnect, onRenewal = () => {} }) {
     const access = this.account(identity);
     if (this.metadata()?.aclCommitting)
       throw new PermissionDenied("Page access is being updated; reconnect");
@@ -166,6 +166,7 @@ export class DocumentPolicy {
       canWrite: access.canWrite && binding.writer && !binding.retired,
       reauthenticate,
       disconnect,
+      onRenewal,
       checkedAt: this.now(),
       checking: undefined,
     };
@@ -202,14 +203,41 @@ export class DocumentPolicy {
       this.account(session.identity, write);
       if (this.now() - session.checkedAt >= 15_000) {
         session.checking ??= (async () => {
+          // Count cadence from the start so verifier latency cannot cause the
+          // next fixed-interval tick to skip its check.
+          const checkedAt = this.now();
+          const previous = session.identity;
           const renewed = await session.reauthenticate();
           if (
-            renewed.principal !== session.identity.principal ||
-            renewed.canWrite !== session.identity.canWrite
+            renewed.principal !== previous.principal ||
+            renewed.canWrite !== previous.canWrite ||
+            renewed.namespace !== previous.namespace ||
+            renewed.driver !== previous.driver ||
+            renewed.credentialKind !== previous.credentialKind
           )
             throw new PermissionDenied("Credential changed");
-          this.account(renewed, write);
-          session.checkedAt = this.now();
+          // A verifier completing after expiry, disconnect, or an ACL change
+          // cannot revive this lease or update a replacement connection.
+          if (
+            this.sessions.get(key) !== session ||
+            this.bindings.get(key) !== binding ||
+            binding.revoked
+          )
+            throw new PermissionDenied("Connection ended");
+          for (const access of [this.account(previous, write), this.account(renewed, write)]) {
+            if (
+              access.generation !== session.generation ||
+              access.role !== session.role ||
+              (access.canWrite && this.authorAllowed(binding)) !== session.canWrite
+            )
+              throw new PermissionDenied("Page access changed during renewal");
+          }
+          if (previous.credentialKind === "api-key") {
+            session.identity = renewed;
+            session.onRenewal(renewed.expiresAt);
+          }
+          // OIDC retains the original absolute session deadline.
+          session.checkedAt = checkedAt;
         })().finally(() => {
           session.checking = undefined;
         });

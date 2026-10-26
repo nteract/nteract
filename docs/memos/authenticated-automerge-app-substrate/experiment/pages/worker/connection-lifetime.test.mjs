@@ -2,19 +2,25 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as N from "@automerge/subduction";
 import { Page } from "./index.mjs";
+import { DocumentPolicy } from "./policy.mjs";
 
 const drain = () => new Promise(setImmediate);
 
-function fixture(t, failure) {
+function fixture(t, failure, { credentialKind = "session", reauthenticate } = {}) {
   t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 1000 });
   const events = [],
     background = [],
-    broadcasts = [];
+    broadcasts = [],
+    writes = [],
+    bindings = [],
+    records = new Map();
   let socket,
     released = false;
   class Socket extends EventTarget {
+    closeCalls = 0;
     accept() {}
     close() {
+      this.closeCalls++;
       this.dispatchEvent(new Event("close"));
     }
   }
@@ -54,15 +60,34 @@ function fixture(t, failure) {
   });
   t.mock.method(console, "error", () => {});
   const page = Object.assign(Object.create(Page.prototype), {
-    ctx: { waitUntil: (promise) => background.push(promise) },
+    ctx: {
+      waitUntil: (promise) => background.push(promise),
+      storage: {
+        async get(key) {
+          return structuredClone(records.get(key));
+        },
+        async put(key, value) {
+          writes.push("put");
+          records.set(key, structuredClone(value));
+        },
+        async delete(key) {
+          writes.push("delete");
+          records.delete(key);
+        },
+        async sync() {
+          writes.push("sync");
+        },
+      },
+    },
     env: {},
     signer: {},
     wires: new Set(),
     wirePrincipals: new Map(),
     metadata: { owner: "user:owner" },
     policy: {
-      async bind() {
+      async bind(_key, _senderId, _identity, options) {
         events.push("bind");
+        bindings.push(options);
         if (failure === "binding") throw Error("Fixture binding failed");
         return () => {
           released = true;
@@ -86,6 +111,21 @@ function fixture(t, failure) {
     },
     profiles: () => ({}),
   });
+  if (reauthenticate) {
+    page.policy = new DocumentPolicy({
+      storage: page.ctx.storage,
+      metadata: () => page.metadata,
+      serverKey: "f".repeat(64),
+      now: () => Date.now(),
+    });
+    const bind = page.policy.bind.bind(page.policy);
+    t.mock.method(page.policy, "bind", (key, senderId, identity, options) =>
+      bind(key, senderId, identity, {
+        ...options,
+        reauthenticate: () => reauthenticate(identity),
+      }),
+    );
+  }
   t.after(async () => {
     for (const wire of page.wires) await wire.disconnect();
   });
@@ -94,7 +134,14 @@ function fixture(t, failure) {
       new Request("http://localhost/api/sync?page=fixture", {
         headers: { upgrade: "websocket" },
       }),
-      { principal, expiresAt: 61000 },
+      {
+        principal,
+        credentialKind,
+        driver: "fixture-browser",
+        namespace: "fixture-provider",
+        canWrite: true,
+        expiresAt: 61000,
+      },
     );
     assert.equal(response.status, 101);
     return { socket, background: background.at(-1) };
@@ -105,6 +152,15 @@ function fixture(t, failure) {
     page,
     events,
     broadcasts,
+    writes,
+    renewal: (expiresAt) => {
+      assert.equal(
+        typeof bindings[0]?.onRenewal,
+        "function",
+        "socket admission subscribes to validated lease renewal",
+      );
+      bindings[0].onRenewal(expiresAt);
+    },
     background: initial.background,
     backgrounds: background,
     socket: initial.socket,
@@ -211,4 +267,146 @@ test("disconnect broadcasts the remaining presence roster after releasing its le
     kind: "identity-profiles",
     peerProfiles: { server: { principal: "service:pages" } },
   });
+});
+
+test("validated API-key renewals retain a socket past its original deadline without runtime writes", async (t) => {
+  const f = fixture(t, undefined, { credentialKind: "api-key" });
+  await drain();
+  t.mock.method(f.page.policy, "active", async () => {
+    f.events.push("active");
+    f.renewal(Date.now() + 60000);
+  });
+  for (let check = 0; check < 4; check++) {
+    t.mock.timers.tick(15000);
+    await drain();
+    assert.equal(f.events.filter((event) => event === "active").length, check + 1);
+    assert.equal(f.page.wires.size, 1);
+  }
+  t.mock.timers.tick(1);
+  await drain();
+  assert.equal(Date.now(), 61001, "the initial 60-second credential lease has elapsed");
+  assert.equal(f.page.wires.size, 1);
+  assert.equal(f.socket.closeCalls, 0);
+  assert.deepEqual(f.writes, [], "lease extension changes only connection-local timers");
+  f.socket.close();
+  await f.background;
+});
+
+test("a hanging API-key recheck closes the socket at its last validated renewal deadline", async (t) => {
+  const f = fixture(t, undefined, { credentialKind: "api-key" });
+  await drain();
+  let checks = 0;
+  t.mock.method(f.page.policy, "active", async () => {
+    f.events.push("active");
+    if (++checks === 1) f.renewal(Date.now() + 60000);
+    else await new Promise(() => {});
+  });
+  t.mock.timers.tick(15000);
+  await drain();
+  // The accepted renewal at t=16s expires at t=76s. Later authorization calls
+  // intentionally never settle; they cannot extend that confirmed deadline.
+  for (let check = 0; check < 3; check++) {
+    t.mock.timers.tick(15000);
+    await drain();
+  }
+  assert.equal(Date.now(), 61000);
+  assert.equal(f.page.wires.size, 1, "initial expiry must have been replaced");
+  t.mock.timers.tick(14999);
+  await drain();
+  assert.equal(f.page.wires.size, 1);
+  t.mock.timers.tick(1);
+  await f.background;
+  assert.equal(Date.now(), 76000);
+  assert.equal(f.page.wires.size, 0);
+  assert.equal(f.socket.closeCalls, 1);
+  assert.equal(f.released(), true);
+  const priorChecks = checks;
+  t.mock.timers.tick(120000);
+  await drain();
+  assert.equal(checks, priorChecks, "expiry cancels authorization polling even when a check hangs");
+  assert.deepEqual(f.writes, []);
+});
+
+test("OIDC sessions retain their original hard expiry despite successful periodic checks", async (t) => {
+  const f = fixture(t, undefined, { credentialKind: "session" });
+  await drain();
+  for (let check = 0; check < 3; check++) {
+    t.mock.timers.tick(15000);
+    await drain();
+    // A fixed OIDC credential deadline cannot be extended by a lease callback.
+    if (check === 0) f.renewal(Date.now() + 60000);
+  }
+  assert.equal(f.events.filter((event) => event === "active").length, 3);
+  t.mock.timers.tick(14999);
+  await drain();
+  assert.equal(f.page.wires.size, 1);
+  t.mock.timers.tick(1);
+  await f.background;
+  assert.equal(Date.now(), 61000);
+  assert.equal(f.page.wires.size, 0);
+  assert.equal(f.socket.closeCalls, 1);
+  assert.deepEqual(f.writes, []);
+});
+
+for (const ending of ["disconnect", "expiry"]) {
+  test(`a late validated renewal after ${ending} cannot resurrect a socket timer`, async (t) => {
+    const f = fixture(t, undefined, { credentialKind: "api-key" });
+    await drain();
+    if (ending === "disconnect") f.socket.close();
+    else t.mock.timers.tick(60000);
+    await f.background;
+    const schedule = t.mock.method(globalThis, "setTimeout");
+    f.renewal(Date.now() + 60000);
+    assert.equal(
+      schedule.mock.callCount(),
+      0,
+      "ended connections must ignore late renewal callbacks",
+    );
+    assert.equal(f.page.wires.size, 0);
+    assert.equal(f.socket.closeCalls, 1);
+    const priorChecks = f.events.filter((event) => event === "active").length;
+    t.mock.timers.tick(120000);
+    await drain();
+    assert.equal(f.socket.closeCalls, 1);
+    assert.equal(f.events.filter((event) => event === "active").length, priorChecks);
+    assert.deepEqual(f.writes, []);
+  });
+}
+
+test("real policy rechecks delayed API verification every timer period and promptly rejects revocation", async (t) => {
+  const checks = [];
+  const f = fixture(t, undefined, {
+    credentialKind: "api-key",
+    reauthenticate: async (identity) => {
+      checks.push(Date.now());
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      if (checks.length === 4) throw Error("Fixture API key revoked");
+      return { ...identity, expiresAt: Date.now() + 60000 };
+    },
+  });
+  await drain();
+  assert.equal(f.page.wires.size, 1);
+  assert.deepEqual(f.writes, ["put"], "admission persists the author binding once");
+  const persisted = await f.page.ctx.storage.get(`host/binding/${"0".repeat(64)}`);
+  f.writes.length = 0;
+  for (let check = 0; check < 4; check++) {
+    // Complete each check 1ms after the fixed 15s socket timer fires. The next
+    // timer must still verify the key, rather than skip because only 14999ms
+    // have elapsed since the prior verifier finished.
+    t.mock.timers.tick(check === 0 ? 15000 : 14999);
+    await drain();
+    assert.deepEqual(
+      checks,
+      Array.from({ length: check + 1 }, (_, i) => 16000 + i * 15000),
+    );
+    assert.equal(f.page.wires.size, 1);
+    t.mock.timers.tick(1);
+    await drain();
+    assert.equal(f.page.wires.size, check === 3 ? 0 : 1);
+  }
+  await f.background;
+  assert.equal(Date.now(), 61001);
+  assert.equal(f.page.policy.sessions.size, 0, "revocation terminates the real policy lease");
+  assert.deepEqual(f.writes, [], "rechecks do not rewrite durable author bindings");
+  assert.deepEqual(await f.page.ctx.storage.get(`host/binding/${"0".repeat(64)}`), persisted);
 });

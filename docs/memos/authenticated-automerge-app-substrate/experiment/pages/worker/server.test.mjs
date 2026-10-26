@@ -703,3 +703,156 @@ test("presence profiles include only live authorized bindings without discarding
   f.advance(62_000);
   assert.deepEqual(f.policy.profiles(), {}, "expired live leases are excluded immediately");
 });
+
+const apiLeaseIdentity = (f, extra = {}) => ({
+  ...f.identity,
+  credentialKind: "api-key",
+  namespace: "pages-test",
+  ...extra,
+});
+
+test("API-key renewal survives two lifetimes without changing durable author authority", async () => {
+  const f = fixture(),
+    identity = apiLeaseIdentity(f),
+    deadlines = [];
+  await f.policy.bind(key, key, identity, {
+    reauthenticate: async () => ({ ...identity, expiresAt: f.policy.now() + 60000 }),
+    disconnect: async () => assert.fail("valid renewed lease must stay connected"),
+    onRenewal: (deadline) => deadlines.push(deadline),
+  });
+  const author = structuredClone(f.policy.bindings.get(key));
+  const persisted = await f.storage.get(`host/binding/${key}`);
+  for (let now = 16000; now <= 136000; now += 15000) {
+    f.advance(now);
+    await f.policy.put(key, key, f.metadata.tree);
+    assert.equal(f.policy.sessions.get(key).identity.expiresAt, now + 60000);
+    assert.ok(f.policy.profiles()[key]);
+  }
+  assert.equal(deadlines.length, 9);
+  assert.deepEqual(f.policy.bindings.get(key), author);
+  assert.deepEqual(await f.storage.get(`host/binding/${key}`), persisted);
+});
+
+test("OIDC rechecks retain the admitted absolute expiry", async () => {
+  const f = fixture(),
+    identity = { ...f.identity, credentialKind: "session", namespace: "pages-test" };
+  let closed = false;
+  await f.policy.bind(key, key, identity, {
+    reauthenticate: async () => ({ ...identity, expiresAt: 121000 }),
+    disconnect: async () => {
+      closed = true;
+    },
+    onRenewal: () => assert.fail("OIDC cannot extend the admitted session"),
+  });
+  f.advance(16000);
+  await f.policy.active(key);
+  assert.equal(f.policy.sessions.get(key).identity, identity);
+  f.advance(61000);
+  await assert.rejects(f.policy.active(key), /access denied/);
+  assert.equal(closed, true);
+});
+
+for (const [field, value] of [
+  ["principal", "user:other"],
+  ["canWrite", false],
+  ["namespace", "another-provider"],
+  ["driver", "another-driver"],
+  ["credentialKind", "session"],
+  ["expiresAt", 16000],
+  ["expiresAt", NaN],
+  ["expiresAt", Infinity],
+]) {
+  test(`API-key renewal rejects changed or invalid ${field}=${String(value)}`, async () => {
+    const f = fixture(),
+      identity = apiLeaseIdentity(f);
+    let closed = false;
+    await f.policy.bind(key, key, identity, {
+      reauthenticate: async () => ({ ...identity, expiresAt: 76000, [field]: value }),
+      disconnect: async () => {
+        closed = true;
+      },
+      onRenewal: () => assert.fail("rejected verification cannot extend a socket"),
+    });
+    f.advance(16000);
+    await assert.rejects(f.policy.active(key), /Credential changed|access denied/);
+    assert.equal(closed, true);
+    assert.equal(f.policy.sessions.has(key), false);
+  });
+}
+
+test("late verification cannot renew an expired API-key lease", async () => {
+  const f = fixture(),
+    identity = apiLeaseIdentity(f);
+  let resolveCheck,
+    closed = false;
+  await f.policy.bind(key, key, identity, {
+    reauthenticate: () =>
+      new Promise((resolve) => {
+        resolveCheck = resolve;
+      }),
+    disconnect: async () => {
+      closed = true;
+    },
+    onRenewal: () => assert.fail("expired authority cannot revive"),
+  });
+  f.advance(16000);
+  const pending = f.policy.active(key);
+  f.advance(61000);
+  resolveCheck({ ...identity, expiresAt: 121000 });
+  await assert.rejects(pending, /access denied/);
+  assert.equal(closed, true);
+  assert.equal(f.policy.sessions.has(key), false);
+});
+
+test("successful old renewal cannot change a replacement connection or timer", async () => {
+  const f = fixture(),
+    identity = apiLeaseIdentity(f);
+  let resolveCheck;
+  const release = await f.policy.bind(key, key, identity, {
+    reauthenticate: () =>
+      new Promise((resolve) => {
+        resolveCheck = resolve;
+      }),
+    disconnect: async () => {},
+    onRenewal: () => assert.fail("released socket cannot renew"),
+  });
+  f.advance(16000);
+  const pending = f.policy.active(key);
+  release();
+  const replacement = { ...identity, expiresAt: 136000 };
+  await f.bind(key, replacement);
+  const session = f.policy.sessions.get(key);
+  resolveCheck({ ...identity, expiresAt: 76000 });
+  await assert.rejects(pending, /Connection ended/);
+  assert.equal(f.policy.sessions.get(key), session);
+  assert.equal(session.identity, replacement);
+  await f.policy.active(key);
+});
+
+for (const roles of [["viewer"], ["none"], ["none", "editor"]]) {
+  test(`pending renewal cannot restore authority after ACL ${roles.join(" then ")}`, async () => {
+    const f = fixture();
+    f.metadata.acl = { revision: 1, members: { "user:editor": { role: "editor", generation: 1 } } };
+    const identity = apiLeaseIdentity(f, { principal: "user:editor" });
+    let resolveCheck,
+      closed = false;
+    await f.policy.bind(key, key, identity, {
+      reauthenticate: () =>
+        new Promise((resolve) => {
+          resolveCheck = resolve;
+        }),
+      disconnect: async () => {
+        closed = true;
+      },
+      onRenewal: () => assert.fail("old grant cannot renew"),
+    });
+    f.advance(16000);
+    const pending = f.policy.active(key);
+    for (const role of roles) grant(f, identity.principal, role === "none" ? null : role);
+    resolveCheck({ ...identity, expiresAt: 76000 });
+    await assert.rejects(pending, /Page access changed|access denied/);
+    assert.equal(closed, true);
+    assert.equal(f.policy.sessions.has(key), false);
+    await assert.rejects(f.policy.put(key, key, f.metadata.tree));
+  });
+}

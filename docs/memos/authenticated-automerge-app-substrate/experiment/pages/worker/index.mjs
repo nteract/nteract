@@ -965,6 +965,11 @@ export class Page {
     let release = noop;
     let leaseTimer;
     let expiryTimer;
+    const armExpiry = (expiresAt) => {
+      clearTimeout(expiryTimer);
+      if (this.wires.has(wire))
+        expiryTimer = setTimeout(() => void wire.disconnect(), Math.max(1, expiresAt - Date.now()));
+    };
     const handshakeTimer = setTimeout(() => {
       void wire.disconnect();
     }, 10_000);
@@ -994,15 +999,13 @@ export class Page {
           release = await this.policy.bind(key, senderId, identity, {
             reauthenticate: () => authenticate(request, this.env),
             disconnect: () => wire.disconnect(),
+            onRenewal: (expiresAt) => {
+              if (identity.credentialKind === "api-key") armExpiry(expiresAt);
+            },
           });
           wire.onDisconnect(release);
           clearTimeout(handshakeTimer);
-          expiryTimer = setTimeout(
-            () => {
-              void wire.disconnect();
-            },
-            Math.max(1, identity.expiresAt - Date.now()),
-          );
+          armExpiry(identity.expiresAt);
           leaseTimer = setInterval(
             () => {
               void this.policy.active(key).catch(() => wire.disconnect());
