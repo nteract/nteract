@@ -38,6 +38,11 @@ export class DocumentPolicy {
   account(identity, write = false) {
     const access = pageAccess(this.metadata(), identity, { now: this.now() });
     if (!access.canRead) throw new PermissionDenied();
+    if (write && this.metadata()?.recoveryBlocked)
+      throw Object.assign(
+        new Error("Page recovery is blocked; accepted content is available read-only"),
+        { status: 409, code: "page_recovery_blocked" },
+      );
     if (write && !identity.canWrite) throw new PermissionDenied("Credential is read-only");
     if (write && !access.canWrite) throw new PermissionDenied("Page is read-only");
     return access;

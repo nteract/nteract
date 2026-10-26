@@ -6,11 +6,23 @@
   "patch": {
     "path": "packages/automerge-repo-subduction/src/index.ts",
     "before": "1a870be50a4a447a91038034cb5ec227568b34afc844d4f5e19d787fd58a0bd3",
-    "after": "a4a66198ed646497f2831483300a3a7279880a02170cbb957bc3b2828be1d5b3",
+    "after": "84077f9440ca9a3d90000596e1da9dea0ac6cd6912c84f9c5f99bb60a798a312",
     "storageIndex": {
       "path": "packages/automerge-repo-subduction/src/storage.ts",
       "before": "00169b3a71473e01c00cd37298ffcf4bc2b7c8d6f8f7f8bcce90ada9c23d4029",
       "after": "bb66b237dcfb10bcd0a56340e13137b658d8812acb0c582b2855c38c962389f1"
-    }
+    },
+    "admission": [
+      {
+        "path": "packages/automerge-repo-subduction/src/storage.ts",
+        "before": "bb66b237dcfb10bcd0a56340e13137b658d8812acb0c582b2855c38c962389f1",
+        "after": "5e39c87bd46818ea836e9e6fd64ef61bc43ac038ced2741d07bcccf1ee1a1b79"
+      },
+      {
+        "path": "packages/automerge-repo-subduction/src/index.ts",
+        "before": "a4a66198ed646497f2831483300a3a7279880a02170cbb957bc3b2828be1d5b3",
+        "after": "84077f9440ca9a3d90000596e1da9dea0ac6cd6912c84f9c5f99bb60a798a312"
+      }
+    ]
   }
 }

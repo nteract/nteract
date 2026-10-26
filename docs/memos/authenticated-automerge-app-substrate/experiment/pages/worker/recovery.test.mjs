@@ -4,7 +4,7 @@ import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { Catalog, Page } from "./index.mjs";
-import { documentMutation } from "./mutations.mjs";
+import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
 
 class Storage {
   values = new Map();
@@ -20,8 +20,13 @@ class Storage {
   async delete(key) {
     return this.values.delete(key);
   }
-  async list({ prefix = "", limit = Infinity } = {}) {
-    return new Map([...this.values].filter(([key]) => key.startsWith(prefix)).slice(0, limit));
+  async list({ prefix = "", startAfter = "", limit = 1000 } = {}) {
+    return new Map(
+      [...this.values]
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .filter(([key]) => key.startsWith(prefix) && key > startAfter)
+        .slice(0, limit),
+    );
   }
   async sync() {
     this.syncs++;
@@ -359,21 +364,26 @@ test("cached tool receipts retry a failed final durability barrier", async () =>
   };
   let failing = true;
   let durableReceipt;
+  let terminalSyncs = 0;
   storage.sync = async () => {
     storage.syncs++;
-    if (failing) throw Error("receipt sync failed");
-    durableReceipt = await storage.get("host/operation/recoverable-edit");
+    const entry = await storage.get("host/operation/recoverable-edit");
+    if (entry?.pending === false) {
+      terminalSyncs++;
+      if (failing) throw Error("receipt sync failed");
+      durableReceipt = entry;
+    }
   };
   const context = mutationContext(storage, handle, async () => {});
   await assert.rejects(documentMutation(context), /receipt sync failed/);
   const recorded = await storage.get("host/operation/recoverable-edit");
   assert.equal(recorded.pending, false);
   await assert.rejects(documentMutation(context), /receipt sync failed/);
-  assert.equal(storage.syncs, 2);
+  assert.equal(terminalSyncs, 2);
   assert.equal(durableReceipt, undefined);
   failing = false;
   assert.deepEqual(await documentMutation(context), recorded.receipt);
-  assert.equal(storage.syncs, 3);
+  assert.equal(terminalSyncs, 3);
   assert.equal(updates, 1);
   assert.deepEqual(durableReceipt, recorded);
 });
@@ -446,3 +456,39 @@ for (const fault of ["signer-read", "signer-write", "policy-load"]) {
     assert.equal(page.initializing, undefined);
   });
 }
+
+test("startup recovery finds pending edits beyond a full default storage page", async () => {
+  const storage = new Storage();
+  for (let i = 0; i < 1001; i++)
+    await storage.put(`host/operation/a-${i}`, {
+      fingerprint: `done-${i}`,
+      pending: false,
+      receipt: { result: i },
+    });
+  let doc = A.from({ page_id: pageId, text: "accepted", stable: { name: "same object" } });
+  const object = A.getObjectId(doc.stable);
+  const edited = A.change(A.clone(doc), (draft) => {
+    draft.text = "recovered";
+  });
+  const pending = {
+    fingerprint: "pending",
+    pending: true,
+    changes: A.getChanges(doc, edited),
+    receipt: { page_id: pageId, heads: A.getHeads(edited) },
+  };
+  await storage.put("host/operation/z-pending", pending);
+  await recoverDocumentMutations(
+    storage,
+    {
+      doc: () => doc,
+      async update(fn) {
+        doc = fn(doc);
+      },
+    },
+    async () => {},
+  );
+  assert.equal(doc.text, "recovered");
+  assert.equal(A.getObjectId(doc.stable), object);
+  assert.equal((await storage.get("host/operation/z-pending")).pending, false);
+  assert.deepEqual(A.getHeads(doc), pending.receipt.heads);
+});

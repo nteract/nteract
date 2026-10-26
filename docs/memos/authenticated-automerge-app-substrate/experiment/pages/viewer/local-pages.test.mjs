@@ -97,3 +97,60 @@ test("deleting before a local checkpoint exists prevents a delayed initial write
   await forgetLocalPage(identity, page.page_id);
   assert.equal(await readLocalPage(identity, page.page_id), null);
 });
+
+test("independent tabs retain the first prepared registration across stale checkpoints", async () => {
+  const { identity, page } = fixture();
+  const original = {
+    ...page,
+    registered: false,
+    registrationProtocol: 1,
+    registration: { idempotency_key: `v1_${crypto.randomUUID()}`, page_id: page.page_id },
+  };
+  await writeLocalPage(identity, original);
+  const stale = await readLocalPage(identity, page.page_id);
+  const first = await writeLocalPage(identity, {
+    ...original,
+    registration: { ...original.registration, retry_token: "first-issued-token" },
+  });
+  const second = await writeLocalPage(identity, {
+    ...stale,
+    registration: { ...stale.registration, retry_token: "other-tab-token" },
+  });
+  assert.deepEqual(second.registration, first.registration);
+  const checkpoint = await writeLocalPage(identity, stale);
+  assert.deepEqual(checkpoint.registration, first.registration);
+  assert.deepEqual((await readLocalPage(identity, page.page_id)).registration, first.registration);
+});
+
+test("expired registration replacement is atomic across competing tabs and stale checkpoints", async () => {
+  const { identity, page } = fixture();
+  const original = {
+    ...page,
+    registered: false,
+    registration: { idempotency_key: "expired-registration", retry_token: "expired" },
+  };
+  await writeLocalPage(identity, original);
+  const first = await writeLocalPage(identity, {
+    ...original,
+    registrationSupersedes: "expired-registration",
+    registration: { idempotency_key: "first-replacement", retry_token: "first" },
+  });
+  assert.equal(first.registration.idempotency_key, "first-replacement");
+  assert.equal(first.registrationSupersedes, undefined);
+  const competing = await writeLocalPage(identity, {
+    ...original,
+    registrationSupersedes: "expired-registration",
+    registration: { idempotency_key: "second-replacement", retry_token: "second" },
+  });
+  assert.deepEqual(competing.registration, first.registration);
+  const stale = await writeLocalPage(identity, original);
+  assert.deepEqual(stale.registration, first.registration);
+  const completed = await writeLocalPage(identity, { ...first, registered: true });
+  const late = await writeLocalPage(identity, {
+    ...first,
+    registrationSupersedes: "first-replacement",
+    registration: { idempotency_key: "late-replacement", retry_token: "late" },
+  });
+  assert.equal(late.registered, true);
+  assert.deepEqual(late.registration, completed.registration);
+});

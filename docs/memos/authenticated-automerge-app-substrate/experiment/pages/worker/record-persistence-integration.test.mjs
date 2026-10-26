@@ -13,6 +13,9 @@ function deferred() {
 
 class Storage {
   values = new Map();
+  async get(key) {
+    return this.values.get(key);
+  }
   barrier;
   entered = deferred();
   async put(values) {

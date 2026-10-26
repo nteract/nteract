@@ -77,6 +77,37 @@ upstream `Repo.import()` still routes large imports and its conflict-merge fallb
 through ordinary batch admission; it remains unsuitable for this prototype's
 large checkpoints without an equivalent explicit snapshot path.
 
+The admission patch in `patch-admission.mjs` adds exact-record reservations to
+that same storage writer. Before journaling an API edit, Pages validates the
+union of stored records, existing reservations, and the candidate's exact
+records. It holds native admission while the immutable intent crosses its host
+storage barrier. Incoming native records count reserved identities exactly once;
+ambiguous journal or record failures retain the reservation. A live retry reuses
+its cached intent bytes, and startup restores pending reservations before opening
+connections. Successful receipts release reservations only after record and
+receipt durability barriers. Browser edits without a pending reservation retain
+the indexed admission path. Capacity errors have a distinct typed marker, so
+corruption or storage failures cannot accidentally become a read-only recovery.
+
+For buffered persistence, the Page remains the single admission owner and
+PageRecords is an ordered sink. A new Page incarnation acquires a durable
+generation before taking its snapshot. Every later record read/write includes
+that generation; late writes from an older incarnation are fenced out. A sink
+never silently reacquires its generation while retrying. This closes the gap
+between a restarted Page's loaded history and delayed requests from the previous
+Page. Local and buffered tests cover native interleaving, journal failures before
+and after their storage effect, partial record persistence, exact replay, and
+preservation of CRDT identities. Existing over-capacity intents remain pending;
+Pages serves accepted history read-only instead of applying the rejected edit to
+its serving handle or retrying forever during initialization.
+
+`admission.test.mjs` tests the shared bridge directly with native signed records;
+`pages/worker/history-admission.test.mjs` additionally runs real Repo/native peers
+and the buffered persistence protocol. The two original 16 MiB scenarios in
+`pages/worker/capacity-race.test.mjs` now require readable recovery of stranded
+legacy intents. In-process fault injection is not a proof of host power-loss or
+object-store failover behavior.
+
 ## Runtime evidence
 
 `upstream.test.mjs` runs real upstream Repo handles, Automerge WASM, Subduction

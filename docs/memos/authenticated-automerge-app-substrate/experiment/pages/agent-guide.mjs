@@ -117,8 +117,9 @@ Start by listing and reading:
 {"operation":"read_page","arguments":{"page_id":"<page_id from list_pages>"}}
 \`\`\`
 
-read_page returns title, ordered blocks, comments, and heads. Keep the returned
-page_id and block IDs. Browser link: ${origin}/p/<page_id>.
+read_page returns title, ordered blocks, comments, heads, retry_token, retry_key_prefix, and
+retry_until. Keep the returned page_id and block IDs. list_pages also returns a
+retry_token for catalog operations (create_page and delete_page). Browser link: ${origin}/p/<page_id>.
 
 - create_page: title, optional markdown, and idempotency_key.
 - read_page: page_id.
@@ -129,7 +130,9 @@ page_id and block IDs. Browser link: ${origin}/p/<page_id>.
 - delete_page: delete the Page and comments. There is no restore operation.
 
 Read before editing. All mutations of an existing Page require page_id,
-base_heads from the latest read_page, and idempotency_key. Use a new UUID for
+base_heads from the latest read_page, and idempotency_key. Include retry_token
+from read_page for edits/comments; use the list_pages token for create/delete.
+Append a new UUID to retry_key_prefix from the same result for
 each new request (keys accept 8–128 letters, digits, underscores, or hyphens).
 
 A targeted edit:
@@ -140,7 +143,8 @@ A targeted edit:
   "arguments": {
     "page_id": "<page_id>",
     "base_heads": ["<head from read_page>"],
-    "idempotency_key": "<new UUID>",
+    "idempotency_key": "<retry_key_prefix><new UUID>",
+    "retry_token": "<retry_token from read_page>",
     "operations": [{
       "op": "replace_match",
       "block_id": "<block ID from read_page>",
@@ -168,7 +172,16 @@ For formatting or structural edits, use patch_block_markdown with replacements
 occur exactly once in that block's Markdown. Regex replacement is not supported.
 Copy the whole heads array, even when it has more than one entry. On a stale-revision error,
 read again, reconsider the edit, and use a new key. After a timeout or unknown
-outcome, retry the exact request body, key, account, and driver label.
+outcome, retry the exact request body, key, token, account, and driver label.
+
+Retry tokens keep completed-operation receipts bounded without making old retries
+execute again. The server returns retry_until when issuing a token. An expired
+request returns HTTP 410 with code retry_expired and does not execute. Read the
+current Page/catalog to reconcile its outcome; never automatically replace an
+expired token or key and resend an uncertain operation. Pending admitted edits
+remain recoverable with their original request. Keys bind to their exact token: replacing or stripping that token cannot reuse an expired key. Legacy
+requests without a token retain their receipts, with a separate lifetime cap of 1,000 operations. Use the
+token protocol for ongoing work.
 
 For insert_markdown and move_block, after_block_id is the preceding block's ID;
 null places the block first, and omission appends it. For a comment, use action

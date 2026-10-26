@@ -206,7 +206,11 @@ test("foreign account registration cannot claim a Page or consume its own catalo
   );
   assert.equal(response.status, 403);
   assert.deepEqual(f.page().page.metadata, before);
-  assert.equal(f.catalog("another-user").storage.values.size, 0);
+  assert.equal((await f.catalog("another-user").storage.list({ prefix: "page/" })).size, 0);
+  assert.equal(
+    (await f.catalog("another-user").storage.list({ prefix: "host/operation/" })).size,
+    0,
+  );
 });
 
 test("altered ID, snapshot, title, or request key cannot overwrite an already registered Page", async (t) => {
@@ -436,7 +440,11 @@ test("an account changed after local creation cannot register the draft under th
   // verified credential, as when another tab signs into a different account.
   const changed = await f.send(args, { key: f.auth.apiKey({ userId: "another-user" }) });
   assert.equal(changed.status, 403);
-  assert.equal(f.catalog("another-user").storage.values.size, 0);
+  assert.equal((await f.catalog("another-user").storage.list({ prefix: "page/" })).size, 0);
+  assert.equal(
+    (await f.catalog("another-user").storage.list({ prefix: "host/operation/" })).size,
+    0,
+  );
   assert.equal(f.pages.size, 0);
   assert.equal((await f.send(args)).status, 200);
   assert.equal(f.page().page.metadata.owner, args.expected_principal);
@@ -476,9 +484,17 @@ test("a changed account cannot cancel an unknown local draft in the wrong catalo
     key: f.auth.apiKey({ userId: "another-user" }),
   });
   assert.equal(changed.status, 403);
-  assert.equal(f.catalog("another-user").storage.values.size, 0);
+  assert.equal((await f.catalog("another-user").storage.list({ prefix: "page/" })).size, 0);
+  assert.equal(
+    (await f.catalog("another-user").storage.list({ prefix: "host/operation/" })).size,
+    0,
+  );
   assert.equal(f.pages.size, 0);
   assert.equal((await f.send(removal, { path: "/api/tools" })).status, 200);
   assert.equal(await f.catalog().storage.get(`host/deleted/${pageId}`), true);
-  assert.equal(f.catalog("another-user").storage.values.size, 0);
+  assert.equal((await f.catalog("another-user").storage.list({ prefix: "page/" })).size, 0);
+  assert.equal(
+    (await f.catalog("another-user").storage.list({ prefix: "host/operation/" })).size,
+    0,
+  );
 });

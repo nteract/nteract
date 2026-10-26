@@ -106,7 +106,7 @@ export async function writeLocalPage(identity, page) {
     const request = records.get(key(identity, page.page_id));
     request.onsuccess = () => {
       try {
-        let next = page;
+        let next = { ...page };
         if (request.result) {
           const previous = JSON.parse(decoder.decode(request.result));
           // A deletion occupies this same key permanently. IndexedDB serializes
@@ -135,6 +135,13 @@ export async function writeLocalPage(identity, page) {
           next = {
             ...page,
             registered: previous.registered || page.registered,
+            // Independent tabs may prepare different tokens concurrently. The
+            // first stored registration wins; every tab sends that exact body.
+            ...(previous.registration?.retry_token &&
+              (previous.registered ||
+                page.registrationSupersedes !== previous.registration.idempotency_key) && {
+                registration: previous.registration,
+              }),
             recovery_sequence: previous.recovery_sequence ?? 0,
           };
           if (
@@ -157,6 +164,9 @@ export async function writeLocalPage(identity, page) {
             }
           }
         }
+        // The compare-and-swap authority is only for this checkpoint write;
+        // stale tabs must explicitly reconcile before replacing another token.
+        delete next.registrationSupersedes;
         records.put(encoder.encode(JSON.stringify(next)), key(identity, page.page_id));
         done(next);
       } catch (error) {

@@ -101,7 +101,18 @@ export class PageRecords {
   async run(request) {
     try {
       const url = new URL(request.url);
+      if (url.pathname === "/lease" && request.method === "POST") {
+        // A newly restored Page fences any late persistence request from its
+        // previous incarnation before taking a snapshot or admitting records.
+        this.generation = crypto.randomUUID();
+        await this.storage.put({ "host/generation": this.generation });
+        await this.storage.sync();
+        return new Response(this.generation);
+      }
       if (url.pathname !== "/records") return new Response(null, { status: 404 });
+      this.generation ??= await this.storage.get("host/generation");
+      if (!this.generation || request.headers.get("x-pages-record-generation") !== this.generation)
+        throw Object.assign(Error("Record owner was superseded"), { status: 409 });
       if (request.method === "GET") {
         const after = url.searchParams.get("after");
         if (after !== null) keyBytes(after);
@@ -157,12 +168,32 @@ export class RemoteRecordSink {
   constructor(stub) {
     this.stub = stub;
   }
+  generation() {
+    // One lease per sink incarnation. A superseded writer must never silently
+    // reacquire ownership while retrying its stale queued batches.
+    return (this.lease ??= (async () => {
+      const response = await this.stub.fetch(
+        new Request("https://records.internal/lease", {
+          method: "POST",
+        }),
+      );
+      if (!response.ok) throw Error("Could not establish record owner");
+      const generation = await response.text();
+      if (!/^[a-f0-9-]{36}$/.test(generation)) throw Error("Invalid record owner generation");
+      return generation;
+    })());
+  }
   async *snapshot() {
+    const generation = await this.generation();
     let after;
     do {
       const url = new URL("https://records.internal/records");
       if (after !== undefined) url.searchParams.set("after", after);
-      const response = await this.stub.fetch(new Request(url));
+      const response = await this.stub.fetch(
+        new Request(url, {
+          headers: { "x-pages-record-generation": generation },
+        }),
+      );
       if (!response.ok) throw Error("Could not load persisted records");
       const entries = decodeRecordBatch(new Uint8Array(await response.arrayBuffer()));
       for (const entry of entries) yield entry;
@@ -174,11 +205,15 @@ export class RemoteRecordSink {
     } while (after !== undefined);
   }
   async commit(entries) {
+    const generation = await this.generation();
     const response = await this.stub.fetch(
       new Request("https://records.internal/records", {
         method: "POST",
         body: encodeRecordBatch(entries),
-        headers: { "content-type": "application/octet-stream" },
+        headers: {
+          "content-type": "application/octet-stream",
+          "x-pages-record-generation": generation,
+        },
       }),
     );
     if (!response.ok) throw Error("Could not persist records");

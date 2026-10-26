@@ -107,7 +107,8 @@ New Page allocates its ID and Automerge history in the browser and waits only fo
 local IndexedDB persistence before opening the editor. The immutable initial
 history registers through the authenticated host in the background; subsequent
 edits arrive through native sync. Registration retries reuse the same ID,
-bootstrap, and idempotency key. Local recovery metadata is scoped by principal,
+bootstrap, idempotency key, and server-issued retry token. Token preparation runs
+in the background and is persisted before the first registration attempt. Local recovery metadata is scoped by principal,
 and concurrent tabs merge their recovery checkpoints. Saved locally does not
 claim remote durability: Saved still requires the host receipt. A rejected draft
 can be deleted through the host; local tombstones prevent stale tabs from
@@ -419,10 +420,28 @@ request with the identical key and payload. The host records a bounded write
 intent with encoded incremental changes, so replay applies the same CRDT change
 IDs rather than repeating the semantic operation. It first flushes the captured
 causal base, including newly received native edits, so a durable intent cannot
-outlive the history needed to replay it. Retry receipts are retained
-for the document lifetime. At 1,000 receipts the prototype refuses further API
-mutations instead of silently forgetting retry keys. Browser edits do not consume
-this API limit.
+outlive the history needed to replay it. Its exact records are reserved through
+that same native storage writer, so browser ingress cannot spend promised capacity.
+Ambiguous intent writes keep the original bytes for live retries as well as restart.
+
+`read_page` issues a principal/Page-bound `retry_token`; `list_pages` issues the
+catalog token for create/delete. Each result includes `retry_key_prefix`, which
+binds the key to its token. Append a UUID to that prefix for new work and retain
+the exact token/key/payload on retry. Tokens last seven days. A durable monotonic
+clock floor precedes completed-receipt collection; expired requests return
+`410 retry_expired` without executing, even if their old receipt was removed.
+Pending intents never expire and may resume with their original request. A client
+must reconcile an expired outcome before deliberately submitting a new operation.
+The reserved `v1_` prefix prevents stripping a token to retry as a legacy request;
+the token hash in the key prevents replacing an expired token with a fresh one.
+Reads do not collect receipts or advance the retirement clock.
+
+The versioned journal bounds its active window at 1,000 entries/8 MiB and pending
+work at 64 entries/4 MiB. A full window applies explicit backpressure; collection
+removes expired completed receipts rather than ending a document's API lifetime.
+Legacy unversioned receipts remain exact-replayable, with their separate 1,000
+entry cap. Browser edits do not consume the API receipt budget. Catalog deletion
+tombstones remain permanent; this is not arbitrary history or tombstone GC.
 
 ## API
 
@@ -517,14 +536,20 @@ derived records and retry intents before persisting them, so an oversized
 individual record or intent returns 413 before that intent is recorded. These
 limits also apply on celld to keep both deployments compatible.
 
-Aggregate capacity admission is not atomic with concurrent native writes. A
-bounded probe confirmed that a native edit can consume the remaining history
-capacity after an API candidate passes validation but before its recorded intent
-is applied. The backend then rejects the API write while its intent remains
-pending. Restart restores the accepted native edit, but replaying the pending
-API intent fails again and blocks Page initialization. This predates the
-Cloudflare adapter; it needs a coordinated admission/recovery design before
-using the prototype for large histories near its 16 MiB cap.
+The adapter now reserves exact record identities at the writer shared with
+native ingress before durably recording an API intent. Admission charges stored
+records plus reservations once and preserves partial-write retries. Recovery
+validates all pending changes on a clone before changing the serving handle.
+An older over-capacity intent leaves accepted history readable with an explicit
+recovery-blocked state; HTTP and native writes are denied while the intent remains
+available. It is not silently discarded, completed, or rebuilt from JSON.
+
+Buffered storage acquires a durable generation lease before loading its record
+snapshot. Record writes from a superseded live Page are rejected, so a late
+pre-crash batch cannot alter the restored admission budget. Tests cover the real
+16 MiB boundary, native authenticated ingress, local and buffered storage,
+partial persistence, ambiguous intent puts, exact retries, and restart. Local
+fault injection does not establish power-loss/failover durability of S3 or R2.
 
 ## Cloudflare preview deployment
 

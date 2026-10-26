@@ -33,6 +33,8 @@ import {
   readJson,
 } from "./auth.mjs";
 import { DurableByteStore, persistentSeed } from "./storage.mjs";
+import { DocumentAdmission, isHistoryCapacityError } from "./history-admission.mjs";
+import { issueRetryToken, inspectOperation, reserveOperation } from "./operation-journal.mjs";
 import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
 export { PageRecords } from "./record-persistence.mjs";
 import { DocumentPolicy, hex, logicalId } from "./policy.mjs";
@@ -41,8 +43,6 @@ import {
   recoverDocumentMutations,
   mutationKey,
   fingerprint,
-  existingIntent,
-  reserveCapacity,
   requireHeads,
 } from "./mutations.mjs";
 
@@ -280,7 +280,14 @@ export class Catalog {
             await this.ctx.storage.delete(`shared/${entry.page_id}`);
           else throw new HttpError(503, "Shared Pages are temporarily unavailable");
         }
-        return json({ pages, limit: 100 });
+        return json({
+          pages,
+          limit: 100,
+          ...(await issueRetryToken(this.ctx.storage, {
+            scope: `catalog:${identity.principal}`,
+            principal: identity.principal,
+          })),
+        });
       }
       requireWrite(identity);
       if (!["create_page", "register_page", "delete_page"].includes(body.operation))
@@ -305,7 +312,14 @@ export class Catalog {
       }
       const key = mutationKey(args);
       const digest = await fingerprint(body.operation, args, identity);
-      let intent = await existingIntent(this.ctx.storage, key, digest);
+      const inspected = await inspectOperation(this.ctx.storage, {
+        key,
+        digest,
+        retryToken: args.retry_token,
+        scope: `catalog:${identity.principal}`,
+        principal: identity.principal,
+      });
+      let intent = inspected.entry;
       if (intent && !intent.pending) {
         if (body.operation === "delete_page")
           await this.ctx.storage.put(`host/deleted/${intent.pageId}`, true);
@@ -314,7 +328,6 @@ export class Catalog {
         return json(intent.receipt);
       }
       if (!intent) {
-        await reserveCapacity(this.ctx.storage);
         if (body.operation === "delete_page" && !validPageId(args.page_id))
           throw new HttpError(400, "Invalid page_id");
         if (creating && (await this.ctx.storage.list({ prefix: "page/", limit: 100 })).size >= 100)
@@ -327,6 +340,11 @@ export class Catalog {
           pageId: body.operation === "create_page" ? crypto.randomUUID() : args.page_id,
           createdAt: new Date().toISOString(),
         };
+        intent = await reserveOperation(this.ctx.storage, {
+          key,
+          entry: intent,
+          retry: inspected.retry,
+        });
         await this.ctx.storage.put(key, intent);
       }
       const pageId = intent.pageId;
@@ -396,7 +414,24 @@ export class Page {
       if (creation && !this.metadata?.deleted) await this.finishCreation(creation);
       if (!this.handle && this.metadata?.documentId && !this.metadata.deleted) {
         this.handle = await this.repo.find(this.metadata.documentId);
-        await recoverDocumentMutations(ctx.storage, this.handle, () => this.flush());
+        try {
+          await recoverDocumentMutations(
+            ctx.storage,
+            this.handle,
+            () => this.flush(),
+            this.admission,
+          );
+        } catch (error) {
+          if (!isHistoryCapacityError(error)) throw error;
+          // Capacity is checked on a clone before any pending edit reaches the
+          // serving handle. Preserve accepted history and the unresolved intent.
+          this.recoveryBlocked = {
+            code: "page_recovery_blocked",
+            pending: true,
+            message:
+              "A pending edit exceeds this Page's history capacity. Accepted content is available read-only.",
+          };
+        }
       }
     });
   }
@@ -422,7 +457,10 @@ export class Page {
         }
         const policy = new DocumentPolicy({
           storage: ctx.storage,
-          metadata: () => this.policyMetadata ?? this.metadata,
+          metadata: () =>
+            this.recoveryBlocked
+              ? { ...(this.policyMetadata ?? this.metadata), recoveryBlocked: true }
+              : (this.policyMetadata ?? this.metadata),
           serverKey,
         });
         await policy.load();
@@ -448,6 +486,9 @@ export class Page {
           serverSenderId,
           policy,
           backend,
+          ...(metadata?.documentId && {
+            admission: new DocumentAdmission(backend, documentIdToBinary(metadata.documentId)),
+          }),
           repo,
           recordStore,
         });
@@ -479,6 +520,10 @@ export class Page {
   async finishCreation(intent) {
     this.handle = await this.repo.import(intent.bytes, { docId: intent.metadata.documentId });
     this.metadata = intent.metadata;
+    this.admission ??= new DocumentAdmission(
+      this.backend,
+      documentIdToBinary(this.metadata.documentId),
+    );
     await this.ctx.storage.put("host/document", this.metadata);
     await this.flush();
     await this.ctx.storage.delete("host/creation");
@@ -734,8 +779,12 @@ export class Page {
           serverPeerId: this.serverKey,
           serverSenderId: this.serverSenderId,
           identity: publicIdentity(identity),
-          canWrite: pageAccess(this.metadata, identity).canWrite,
-          access: pageAccess(this.metadata, identity),
+          canWrite: !this.recoveryBlocked && pageAccess(this.metadata, identity).canWrite,
+          access: {
+            ...pageAccess(this.metadata, identity),
+            ...(this.recoveryBlocked && { canWrite: false, canComment: false }),
+          },
+          ...(this.recoveryBlocked && { recovery: this.recoveryBlocked }),
           peerProfiles: this.profiles(),
         });
       }
@@ -754,7 +803,15 @@ export class Page {
         const body = await readJson(request);
         if (body.operation === "read_page") {
           this.cacheTitle(request);
-          return json({ ...projectPage(this.handle.doc()), heads: A.getHeads(this.handle.doc()) });
+          return json({
+            ...projectPage(this.handle.doc()),
+            heads: A.getHeads(this.handle.doc()),
+            ...(this.recoveryBlocked && { recovery: this.recoveryBlocked }),
+            ...(await issueRetryToken(this.ctx.storage, {
+              scope: `page:${this.metadata.pageId}`,
+              principal: identity.principal,
+            })),
+          });
         }
         this.policy.account(identity, true);
         if (
@@ -765,6 +822,7 @@ export class Page {
           throw new HttpError(400, "Unknown document operation");
         const receipt = await documentMutation({
           storage: this.ctx.storage,
+          admission: this.admission,
           handle: this.handle,
           operation: body.operation,
           args: body.arguments,

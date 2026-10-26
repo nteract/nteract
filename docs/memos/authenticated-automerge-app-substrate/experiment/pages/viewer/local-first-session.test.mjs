@@ -12,6 +12,7 @@ import {
   interpretAsDocumentId,
 } from "@automerge/automerge-repo";
 import { readRegistration } from "../worker/registration.mjs";
+import { retryKey, retryKeyPrefix } from "../model/retry-key.mjs";
 
 function browser(t) {
   const values = new Map();
@@ -116,6 +117,7 @@ test("a pending Page survives reload and retries the exact original registration
   const requests = [];
   const previous = globalThis.fetch;
   globalThis.fetch = async (url, options) => {
+    if (url === "/api/tools") return Response.json({ retry_token: "fixture-retry-token" });
     if (url === "/api/pages/register") {
       requests.push(JSON.parse(options.body));
       if (requests.length === 1)
@@ -154,10 +156,240 @@ test("a pending Page survives reload and retries the exact original registration
   clearTimeout(restored.retryTimer);
   assert.equal(requests.length, 2);
   assert.deepEqual(requests[0], requests[1]);
+  assert.equal(requests[0].retry_token, "fixture-retry-token");
   assert.equal(restored.localPage.registered, true);
   assert.equal(restored.localPage.pending, true);
   assert.notEqual(restored.status, "Saved", "registration is not a receipt for later edits");
   assert.equal(A.load(decodeSnapshot(requests[0].initial_snapshot_base64)).title, "Original title");
+});
+
+async function expiredRegistrationFixture(t) {
+  browser(t);
+  t.mock.method(PageSession.prototype, "retryConnection", async () => {});
+  const auth = authentication();
+  const session = await PageSession.create(
+    { title: "Original bootstrap" },
+    { authentication: auth, refreshSession: async () => auth },
+  );
+  t.after(() => session.close());
+  await session.persistLocal({
+    registration: {
+      ...session.localPage.registration,
+      retry_token: "expired-registration-token",
+      idempotency_key: await retryKey("expired-registration-token"),
+    },
+  });
+  await session.change((doc) => A.updateText(doc, ["title"], "Kept offline edits"));
+  clearTimeout(session.savedTimer);
+  await session.persistLocal({ pending: true });
+  return { auth, session, original: structuredClone(session.localPage.registration) };
+}
+const expiredRegistration = () =>
+  Response.json({ error: "Retry window expired", code: "retry_expired" }, { status: 410 });
+const connectionFor = (session, auth) => ({
+  page_id: session.pageId,
+  documentId: session.localPage.document_id,
+  identity: auth.identity,
+  access: { canRead: true },
+});
+
+test("an expired lost registration response reconciles the same authorized document", async (t) => {
+  const { auth, session, original } = await expiredRegistrationFixture(t);
+  const heads = A.getHeads(session.doc);
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    requests.push(url);
+    if (url === "/api/pages/register") {
+      assert.deepEqual(JSON.parse(options.body), original);
+      return expiredRegistration();
+    }
+    assert.equal(url, `/api/connect?page=${session.pageId}`);
+    return Response.json(connectionFor(session, auth));
+  });
+  await session.registerDraft();
+  assert.deepEqual(requests, ["/api/pages/register", `/api/connect?page=${session.pageId}`]);
+  assert.equal(session.localPage.registered, true);
+  assert.equal(session.localPage.pending, true, "reconciliation is not a receipt for local edits");
+  assert.deepEqual(session.localPage.registration, original);
+  assert.deepEqual(A.getHeads(session.doc), heads);
+  assert.equal(session.doc.title, "Kept offline edits");
+  const stored = await readLocalPage(auth.identity, session.pageId);
+  assert.equal(stored.registered, true);
+  assert.equal(A.load(decodeSnapshot(stored.snapshot)).title, "Kept offline edits");
+});
+
+test("an expired never-registered draft renews only retry authority after an authenticated absence", async (t) => {
+  const { auth, session, original } = await expiredRegistrationFixture(t);
+  const heads = A.getHeads(session.doc);
+  const registrations = [];
+  let probes = 0;
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    if (url === "/api/pages/register") {
+      const input = JSON.parse(options.body);
+      registrations.push(input);
+      if (registrations.length === 1) return expiredRegistration();
+      const persisted = await readLocalPage(auth.identity, session.pageId);
+      assert.deepEqual(persisted.registration, input, "persist replacement before publishing");
+      return Response.json({ page_id: input.page_id, document_id: input.document_id });
+    }
+    if (url === "/api/tools") {
+      assert.equal(probes, 1);
+      assert.deepEqual(JSON.parse(options.body), { operation: "list_pages", arguments: {} });
+      return Response.json({ retry_token: "replacement-token" });
+    }
+    assert.equal(url, `/api/connect?page=${session.pageId}`);
+    probes++;
+    return Response.json({ error: "Page not found" }, { status: 404 });
+  });
+  await session.registerDraft();
+  assert.equal(registrations.length, 2);
+  assert.deepEqual(registrations[0], original);
+  const replacement = registrations[1];
+  assert.equal(replacement.retry_token, "replacement-token");
+  assert.ok(replacement.idempotency_key.startsWith(await retryKeyPrefix(replacement.retry_token)));
+  assert.notEqual(replacement.idempotency_key, original.idempotency_key);
+  assert.deepEqual(
+    {
+      ...replacement,
+      retry_token: original.retry_token,
+      idempotency_key: original.idempotency_key,
+    },
+    original,
+    "page ID, document ID, principal and original bootstrap remain identical",
+  );
+  assert.equal(session.localPage.registered, true);
+  assert.equal(session.localPage.registrationSupersedes, undefined);
+  assert.equal(session.localPage.pending, true);
+  assert.deepEqual(A.getHeads(session.doc), heads);
+  assert.equal(session.doc.title, "Kept offline edits");
+});
+
+test("ambiguous or unauthorized expiry reconciliation preserves the draft and original request", async (t) => {
+  for (const failure of [
+    "offline",
+    "unavailable",
+    "forbidden",
+    "unrelated-missing",
+    "other-document",
+    "other-account",
+    "cannot-read",
+  ]) {
+    await t.test(failure, async (t) => {
+      const { auth, session, original } = await expiredRegistrationFixture(t);
+      const requests = [];
+      t.mock.method(globalThis, "fetch", async (url) => {
+        requests.push(url);
+        if (url === "/api/pages/register") return expiredRegistration();
+        assert.equal(url, `/api/connect?page=${session.pageId}`);
+        if (failure === "offline") throw new TypeError("Network unavailable");
+        if (failure === "unavailable")
+          return Response.json({ error: "Recovering registration" }, { status: 503 });
+        if (failure === "forbidden") return Response.json({ error: "Forbidden" }, { status: 403 });
+        if (failure === "unrelated-missing")
+          return Response.json({ error: "Route not found" }, { status: 404 });
+        const connection = connectionFor(session, auth);
+        if (failure === "other-document")
+          connection.documentId = interpretAsDocumentId(generateAutomergeUrl());
+        if (failure === "other-account") connection.identity = authentication().identity;
+        if (failure === "cannot-read") connection.access.canRead = false;
+        return Response.json(connection);
+      });
+      await assert.rejects(session.registerDraft());
+      assert.deepEqual(requests, ["/api/pages/register", `/api/connect?page=${session.pageId}`]);
+      assert.equal(session.localPage.registered, false);
+      assert.deepEqual(session.localPage.registration, original);
+      assert.equal(session.doc.title, "Kept offline edits");
+      const stored = await readLocalPage(auth.identity, session.pageId);
+      assert.equal(stored.registered, false);
+      assert.deepEqual(stored.registration, original);
+      assert.equal(A.load(decodeSnapshot(stored.snapshot)).title, "Kept offline edits");
+    });
+  }
+});
+
+test("expiry reconciliation does not resume a closed or signed-out session", async (t) => {
+  for (const phase of ["connect", "prepare", "register"]) {
+    for (const invalidation of ["close", "account"]) {
+      await t.test(`${phase}: ${invalidation}`, async (t) => {
+        const { auth, session } = await expiredRegistrationFixture(t);
+        let complete, arrived;
+        const waiting = new Promise((resolve) => {
+          complete = resolve;
+        });
+        const started = new Promise((resolve) => {
+          arrived = resolve;
+        });
+        const requests = [];
+        let attempts = 0;
+        t.mock.method(globalThis, "fetch", async (url) => {
+          requests.push(url);
+          if (url === "/api/pages/register") {
+            if (++attempts === 1) return expiredRegistration();
+            assert.equal(phase, "register");
+            arrived();
+            await waiting;
+            return Response.json({
+              page_id: session.pageId,
+              document_id: session.localPage.document_id,
+            });
+          }
+          if (url === "/api/tools") {
+            if (phase === "prepare") {
+              arrived();
+              await waiting;
+            }
+            return Response.json({ retry_token: "replacement-token" });
+          }
+          assert.equal(url, `/api/connect?page=${session.pageId}`);
+          if (phase === "connect") {
+            arrived();
+            await waiting;
+            return Response.json(connectionFor(session, auth));
+          }
+          return Response.json({ error: "Page not found" }, { status: 404 });
+        });
+        const registering = session.registerDraft();
+        await started;
+        const before = requests.length;
+        if (invalidation === "close") await session.close();
+        else session.acceptAuthentication(authentication());
+        complete();
+        await registering;
+        assert.equal(requests.length, before, "no later requests from invalidated reconciliation");
+        assert.equal((await readLocalPage(auth.identity, session.pageId)).registered, false);
+      });
+    }
+  }
+});
+
+test("simultaneous expiry reconciliation adopts one persisted replacement request", async (t) => {
+  const { auth, session: first, original } = await expiredRegistrationFixture(t);
+  const second = await PageSession.open(first.pageId, {
+    authentication: auth,
+    refreshSession: async () => auth,
+  });
+  t.after(() => second.close());
+  const replacements = [];
+  let preparations = 0;
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    if (url === "/api/pages/register") {
+      const input = JSON.parse(options.body);
+      if (input.idempotency_key === original.idempotency_key) return expiredRegistration();
+      replacements.push(input);
+      return Response.json({ page_id: input.page_id, document_id: input.document_id });
+    }
+    if (url === "/api/tools")
+      return Response.json({ retry_token: `replacement-token-${++preparations}` });
+    assert.equal(url, `/api/connect?page=${first.pageId}`);
+    return Response.json({ error: "Page not found" }, { status: 404 });
+  });
+  await Promise.all([first.registerDraft(), second.registerDraft()]);
+  assert.ok(preparations >= 1);
+  assert.ok(replacements.length >= 1);
+  for (const replacement of replacements) assert.deepEqual(replacement, replacements[0]);
+  assert.deepEqual(first.localPage.registration, second.localPage.registration);
+  assert.equal(first.localPage.registered, true);
+  assert.equal(second.localPage.registered, true);
 });
 
 test("local drafts retain their original account boundary before registration", async (t) => {
@@ -592,6 +824,7 @@ test("authenticated missing Pages and deleted registrations terminate local edit
         authenticate = resolve;
       });
       t.mock.method(globalThis, "fetch", async (url, options) => {
+        if (url === "/api/tools") return Response.json({ retry_token: "fixture-retry-token" });
         if (url === "/api/pages/register") {
           if (failure.startsWith("registration"))
             return Response.json(

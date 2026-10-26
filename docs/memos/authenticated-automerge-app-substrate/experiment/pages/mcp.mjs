@@ -18,11 +18,17 @@ const guard = {
     description:
       "Exact heads from the latest read_page result. Read again after a stale-revision error.",
   },
+  retry_token: {
+    ...string,
+    description:
+      "Server-issued retry token from read_page for edits, or list_pages for create/delete. Keep the same token, key and payload on retries. Expired requests must be reconciled, never automatically resubmitted.",
+  },
   idempotency_key: {
     ...string,
     minLength: 8,
     maxLength: 128,
-    description: "Unique request key. Reuse the same key and payload after an uncertain result.",
+    description:
+      "Append a new UUID to retry_key_prefix returned with retry_token. Reuse the same key, token and payload after an uncertain result.",
   },
 };
 const matchProperties = {
@@ -65,18 +71,29 @@ const tool = (name, description, properties, required = [], annotations) => ({
   ...(annotations ? { annotations } : {}),
 });
 export const tools = [
-  tool("list_pages", "List private Pages accessible to this account.", {}, [], {
-    readOnlyHint: true,
-  }),
+  tool(
+    "list_pages",
+    "List Pages accessible to this account and a retry_token for catalog create/delete operations.",
+    {},
+    [],
+    {
+      readOnlyHint: true,
+    },
+  ),
   tool(
     "create_page",
     "Create an editable rich-text Page and return its browser URL. Human and API edits sync into the same document.",
-    { title: string, markdown: string, idempotency_key: guard.idempotency_key },
+    {
+      title: string,
+      markdown: string,
+      idempotency_key: guard.idempotency_key,
+      retry_token: guard.retry_token,
+    },
     ["title", "idempotency_key"],
   ),
   tool(
     "read_page",
-    "Read a Page as Markdown blocks, comments, and its current heads. Read before editing.",
+    "Read a Page as Markdown blocks, comments, current heads, and a retry_token for edits. Read before editing.",
     { page_id: page },
     ["page_id"],
     { readOnlyHint: true },

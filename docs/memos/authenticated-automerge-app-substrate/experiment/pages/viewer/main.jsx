@@ -32,6 +32,7 @@ import { SharingControls } from "./SharingControls.jsx";
 import { CommentsPanel } from "./CommentsPanel.jsx";
 import { captureCommentDraft } from "./comment-draft.mjs";
 import { applyPageOperation } from "../model/page.mjs";
+import { retryKey } from "../model/retry-key.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
 import "./style.css";
 
@@ -365,11 +366,15 @@ function App() {
     }
     if (!confirm("Delete this Page?")) return;
     try {
+      const prepared = await tool("list_pages");
+      if (deleting.identity.principal !== authentication.current?.identity?.principal)
+        throw Error("Sign in with this Page's original account to delete it.");
       await tool("delete_page", {
         page_id: deleting.pageId,
         expected_principal: deleting.identity.principal,
+        retry_token: prepared.retry_token,
         base_heads: A.getHeads(deleting.doc),
-        idempotency_key: crypto.randomUUID(),
+        idempotency_key: await retryKey(prepared.retry_token),
       });
       const activeDeletion = current.current?.pageId === deleting.pageId ? current.current : null;
       if (activeDeletion || readPageRoute(location.href).pageId === deleting.pageId) {

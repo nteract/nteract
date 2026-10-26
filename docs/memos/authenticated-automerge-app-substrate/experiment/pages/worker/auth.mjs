@@ -122,7 +122,17 @@ export function errorResponse(error, stage = "request") {
   const status = error.status ?? (error.name === "AuthError" ? 401 : 500);
   if (status >= 500) logFailure(error, stage);
   return Response.json(
-    { error: status < 500 ? error.message : "Pages request failed" },
+    {
+      error: status < 500 ? error.message : "Pages request failed",
+      ...([
+        "retry_expired",
+        "invalid_retry_token",
+        "idempotency_conflict",
+        "operation_receipt_capacity",
+        "pending_operation_capacity",
+        "page_recovery_blocked",
+      ].includes(error.code) && { code: error.code }),
+    },
     { status, headers: { "cache-control": "no-store" } },
   );
 }

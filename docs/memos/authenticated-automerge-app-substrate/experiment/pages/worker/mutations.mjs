@@ -1,5 +1,6 @@
 import * as A from "@automerge/automerge";
 import { assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
+import { inspectOperation, reserveOperation, listOperationEntries } from "./operation-journal.mjs";
 
 function reject(status, message) {
   const error = new Error(message);
@@ -22,16 +23,6 @@ export async function fingerprint(operation, args, identity) {
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
 }
-export async function existingIntent(storage, key, digest) {
-  const entry = await storage.get(key);
-  if (entry && entry.fingerprint !== digest)
-    reject(409, "idempotency_key was used for a different request");
-  return entry;
-}
-export async function reserveCapacity(storage) {
-  if ((await storage.list({ prefix: "host/operation/", limit: 1000 })).size >= 1000)
-    reject(409, "This prototype retains at most 1000 operation receipts per document or catalog");
-}
 export function requireHeads(doc, heads) {
   if (
     !Array.isArray(heads) ||
@@ -47,9 +38,8 @@ export function requireHeads(doc, heads) {
     reject(409, "Page changed; read_page again before editing");
 }
 
-/** Record exact CRDT changes before applying them. Retrying or recovering this
- * intent reuses the same operation IDs instead of repeating a text replacement.
- * Receipts remain until document deletion; the cap refuses new operations.
+/** Journal the exact CRDT edit under shared native history admission. Retrying
+ * never repeats the semantic operation; terminal receipts retain retry metadata.
  */
 export async function documentMutation({
   storage,
@@ -59,75 +49,114 @@ export async function documentMutation({
   identity,
   apply,
   flush,
+  admission,
 }) {
   const key = mutationKey(args);
   const digest = await fingerprint(operation, args, identity);
-  let entry = await existingIntent(storage, key, digest);
+  const inspected = await inspectOperation(storage, {
+    key,
+    digest,
+    retryToken: args.retry_token,
+    scope: `page:${handle.doc().page_id}`,
+    principal: identity.principal,
+    pendingEntry: admission?.pending(key),
+  });
+  let entry = inspected.entry;
+  let recorded = false;
   if (!entry) {
-    await reserveCapacity(storage);
+    if (admission?.hasPending)
+      throw Object.assign(Error("Finish the pending operation before starting another edit"), {
+        status: 429,
+        code: "pending_operation_capacity",
+      });
     const before = handle.doc();
     requireHeads(before, args.base_heads);
     let result;
-    // No await between the head guard and construction of the immutable edit.
-    // Later concurrent WebSocket changes merge when this recorded edit applies.
+    // No await between the head guard and immutable edit construction.
     const after = A.change(A.clone(before), (doc) => {
       result = apply(doc);
     });
-    assertDocumentLimits(after);
-    entry = {
-      fingerprint: digest,
-      pending: true,
-      changes: A.getChanges(before, after),
-      receipt: { page_id: before.page_id, heads: A.getHeads(after), result: result ?? null },
-    };
-    assertIntentSize(key, entry.changes, {
-      fingerprint: entry.fingerprint,
-      pending: entry.pending,
-      receipt: entry.receipt,
-    });
-    // The immutable edit may depend on freshly received WebSocket changes.
-    // Persist that captured base before its replayable intent can survive a crash.
-    // Concurrent changes may advance the handle; they cannot remove this base.
-    await flush();
-    await storage.put(key, entry);
+    try {
+      assertDocumentLimits(after);
+      entry = {
+        fingerprint: digest,
+        pending: true,
+        changes: A.getChanges(before, after),
+        receipt: { page_id: before.page_id, heads: A.getHeads(after), result: result ?? null },
+      };
+      assertIntentSize(key, entry.changes, {
+        fingerprint: entry.fingerprint,
+        pending: entry.pending,
+        receipt: entry.receipt,
+        retry: inspected.retry,
+      });
+      // Persist the captured dependency base before the journal can survive a
+      // crash. Native admission may advance meanwhile; reserve checks its union.
+      await flush();
+      entry = await reserveOperation(storage, { key, entry, retry: inspected.retry });
+      const persist = async () => {
+        await storage.put(key, entry);
+        await storage.sync();
+      };
+      if (admission) await admission.reserve(key, entry, after, persist);
+      else await persist();
+      recorded = true;
+    } finally {
+      A.free(after);
+    }
   }
   if (entry.pending) {
-    await handle.update((doc) => A.applyChanges(doc, entry.changes)[0]);
+    // Also retries an ambiguous intent put from the admission cache. Do not
+    // replace these bytes with a newly authored edit if storage.get was empty.
+    if (!recorded) {
+      await storage.put(key, entry);
+      await storage.sync();
+    }
+    if (admission) await admission.replay(key, entry, handle);
+    else await handle.update((doc) => A.applyChanges(doc, entry.changes)[0]);
     if (!A.hasHeads(handle.doc(), entry.receipt.heads))
       throw new Error("Recorded edit dependencies are unavailable");
     await flush();
-    entry = { fingerprint: digest, pending: false, receipt: entry.receipt };
+    entry = { ...entry, pending: false };
+    delete entry.changes;
     await storage.put(key, entry);
     await storage.sync();
   } else {
     // A prior attempt may have written the receipt before its barrier failed.
     await storage.sync();
   }
+  await admission?.release(key);
   return entry.receipt;
 }
 
-export async function recoverDocumentMutations(storage, handle, flush) {
-  const pending = [...(await storage.list({ prefix: "host/operation/" }))].filter(
+export async function recoverDocumentMutations(storage, handle, flush, admission) {
+  const pending = [...(await listOperationEntries(storage))].filter(
     ([, entry]) => entry.pending && entry.changes,
   );
   if (!pending.length) return;
-  // Storage key ordering is unrelated to causal order. Apply the whole set so
-  // dependencies can resolve before any receipt is declared durable.
-  await handle.update(
-    (doc) =>
-      A.applyChanges(
-        doc,
-        pending.flatMap(([, entry]) => entry.changes),
-      )[0],
-  );
-  if (pending.some(([, entry]) => !A.hasHeads(handle.doc(), entry.receipt.heads)))
-    throw new Error("Recorded edit dependencies are unavailable");
+  // Journal order is not causal order. Validate the entire dependency closure
+  // on a disposable clone before exposing any pending edit in the live handle.
+  const changes = pending.flatMap(([, entry]) => entry.changes);
+  const candidate = A.applyChanges(A.clone(handle.doc()), changes)[0];
+  try {
+    if (pending.some(([, entry]) => !A.hasHeads(candidate, entry.receipt.heads)))
+      throw new Error("Recorded edit dependencies are unavailable");
+    if (admission) {
+      // Every reservation is restored before native connections can open. The
+      // union is checked at the same boundary as incoming browser records.
+      for (const [key, entry] of pending)
+        await admission.reserve(key, entry, candidate, async () => {});
+      await admission.apply(candidate, changes, handle);
+    } else await handle.update((doc) => A.applyChanges(doc, changes)[0]);
+  } finally {
+    A.free(candidate);
+  }
   await flush();
-  for (const [key, entry] of pending)
-    await storage.put(key, {
-      fingerprint: entry.fingerprint,
-      pending: false,
-      receipt: entry.receipt,
-    });
+  for (const [key, entry] of pending) {
+    const completed = { ...entry, pending: false };
+    delete completed.changes;
+    await storage.put(key, completed);
+  }
   await storage.sync();
+  for (const [key] of pending) await admission?.release(key);
 }

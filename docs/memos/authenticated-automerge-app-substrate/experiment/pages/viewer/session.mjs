@@ -16,6 +16,7 @@ import {
 } from "./local-pages.mjs";
 export { listLocalPages, forgetLocalPage } from "./local-pages.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
+import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const ownerAccess = () => ({
@@ -41,7 +42,7 @@ export async function request(url, options = {}) {
   if (!response.ok)
     throw Object.assign(
       Error(body.error?.message ?? body.error ?? `Request failed (${response.status})`),
-      { status: response.status },
+      { status: response.status, code: body.code },
     );
   return body;
 }
@@ -410,13 +411,14 @@ export class PageSession {
         registered: false,
         pending: true,
         snapshot,
+        registrationProtocol: 1,
         registration: {
           expected_principal: this.identity.principal,
           page_id: this.pageId,
           document_id: this.handle.documentId,
           initial_snapshot_base64: snapshot,
           title: this.doc.title,
-          idempotency_key: crypto.randomUUID(),
+          idempotency_key: `v1_${crypto.randomUUID()}`,
         },
       };
       await writeLocalPage(this.identity, this.localPage);
@@ -533,19 +535,111 @@ export class PageSession {
     if (!this.localPage?.registration || this.localPage.registered) return;
     let result;
     try {
+      // New drafts prepare once in the background. Persist the token before
+      // sending registration, so a lost response/reload retries identical bytes.
+      // Old drafts stay on their original protocol: they may already be accepted.
+      if (this.localPage.registrationProtocol === 1 && !this.localPage.registration.retry_token) {
+        const prepared = await this.requestWithRenewal("/api/tools", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ operation: "list_pages", arguments: {} }),
+        });
+        if (!this.alive) return;
+        if (typeof prepared.retry_token !== "string")
+          throw Error("Could not prepare Page registration");
+        const key = await retryKey(prepared.retry_token);
+        if (!this.alive || this.authRequired) return;
+        await this.persistLocal({
+          registration: {
+            ...this.localPage.registration,
+            retry_token: prepared.retry_token,
+            idempotency_key: key,
+          },
+        });
+        if (!this.alive) return;
+      }
       result = await this.requestWithRenewal("/api/pages/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(this.localPage.registration),
       });
     } catch (error) {
-      if (error.status === 409 && error.message === "Page was deleted") await this.markDeleted();
-      throw error;
+      if (error.status === 410 && error.code === "retry_expired") {
+        result = await this.reconcileExpiredRegistration();
+      } else {
+        if (error.status === 409 && error.message === "Page was deleted") await this.markDeleted();
+        throw error;
+      }
     }
-    if (!this.alive) return;
+    if (!this.alive || this.authRequired || !result) return;
     if (result.page_id !== this.pageId || result.document_id !== this.localPage.document_id)
       throw Error("Registered Page identity does not match its local document");
     await this.persistLocal({ registered: true });
+  }
+  async reconcileExpiredRegistration() {
+    const registration = this.localPage.registration;
+    const principal = this.identity.principal;
+    const current = () =>
+      this.alive &&
+      !this.deleted &&
+      !this.authRequired &&
+      !this.accessDenied &&
+      !this.accessReloadRequired &&
+      this.identity?.principal === principal &&
+      this.localPage?.document_id === registration.document_id;
+    let connection;
+    try {
+      // A lost registration response can outlive its retry receipt. Reconcile
+      // the exact Page/document identity before considering another request.
+      connection = await this.requestWithRenewal(
+        `/api/connect?page=${encodeURIComponent(this.pageId)}`,
+      );
+    } catch (error) {
+      if (!current()) return;
+      // A denied/failed lookup is not evidence that this Page never existed.
+      // Keep its local history and original request for a later attempt.
+      if (error.status !== 404 || error.message !== "Page not found") throw error;
+      const prepared = await this.requestWithRenewal("/api/tools", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operation: "list_pages", arguments: {} }),
+      });
+      if (!current()) return;
+      if (typeof prepared.retry_token !== "string")
+        throw Error("Could not prepare Page registration");
+      const key = await retryKey(prepared.retry_token);
+      if (!current()) return;
+      // The expired token cannot execute again. Keep the original bootstrap and
+      // UUID, and replace only its retry authority. IndexedDB compare-and-swap
+      // makes simultaneous tabs adopt the first replacement rather than race.
+      await this.persistLocal({
+        registrationSupersedes: registration.idempotency_key,
+        registration: { ...registration, retry_token: prepared.retry_token, idempotency_key: key },
+      });
+      if (!current()) return;
+      if (this.localPage.registered)
+        return { page_id: this.pageId, document_id: registration.document_id };
+      // Server-side registration still checks ownership, exact document ID,
+      // pending creation and deletion tombstones; a 404 never clears them.
+      return this.requestWithRenewal("/api/pages/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(this.localPage.registration),
+      });
+    }
+    if (!current()) return;
+    if (connection.identity?.principal !== principal)
+      throw Object.assign(
+        Error("Sign in with this Page's original account to recover its registration"),
+        { status: 401 },
+      );
+    if (connection.page_id !== this.pageId || connection.documentId !== registration.document_id)
+      throw Error("Connected Page identity does not match its local document");
+    if (!connection.access?.canRead)
+      throw Object.assign(Error("This Page is not accessible; your draft is kept locally"), {
+        status: 403,
+      });
+    return { page_id: this.pageId, document_id: connection.documentId };
   }
   async markDeleted() {
     if (this.deleted) return;
@@ -580,7 +674,7 @@ export class PageSession {
     await this.disconnectSockets();
     if (!this.alive) return;
     await this.registerDraft();
-    if (!this.alive) return;
+    if (!this.alive || this.authRequired || this.accessDenied || this.accessReloadRequired) return;
     try {
       const connection = await request(`/api/connect?page=${encodeURIComponent(this.pageId)}`);
       if (!this.alive) return;
@@ -596,6 +690,8 @@ export class PageSession {
       await this.acceptPageAccess(connection.access);
       if (!this.alive) return;
       this.connection = connection;
+      if (connection.recovery?.code === "page_recovery_blocked")
+        this.problem = connection.recovery.message;
       if (this.localPage && !this.localPage.resetReplica)
         await this.persistLocal({ canWrite: this.canWrite });
       if (this.accessDenied || this.accessReloadRequired) return;

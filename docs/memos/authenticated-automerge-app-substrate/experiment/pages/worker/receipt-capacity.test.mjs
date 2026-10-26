@@ -3,7 +3,8 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { Catalog } from "./index.mjs";
-import { documentMutation, reserveCapacity } from "./mutations.mjs";
+import { documentMutation } from "./mutations.mjs";
+import { reserveOperation } from "./operation-journal.mjs";
 
 class Storage {
   values = new Map();
@@ -16,8 +17,13 @@ class Storage {
   async delete(key) {
     this.values.delete(key);
   }
-  async list({ prefix = "", limit = Infinity } = {}) {
-    return new Map([...this.values].filter(([key]) => key.startsWith(prefix)).slice(0, limit));
+  async list({ prefix = "", limit = Infinity, startAfter } = {}) {
+    return new Map(
+      [...this.values]
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .filter(([key]) => key.startsWith(prefix) && (!startAfter || key > startAfter))
+        .slice(0, limit),
+    );
   }
   async sync() {}
 }
@@ -31,7 +37,7 @@ function fill(storage, count, pending = false) {
     });
 }
 
-test("the 1000th document receipt succeeds; exact retries work but fresh operations stop", async () => {
+test("the 1000th legacy document receipt succeeds; exact retries work but new legacy operations stop", async () => {
   const storage = new Storage();
   fill(storage, 999);
   let doc = A.from({ page_id: "fixture-page", text: "base" });
@@ -41,6 +47,7 @@ test("the 1000th document receipt succeeds; exact retries work but fresh operati
     handle: {
       doc: () => doc,
       async update(fn) {
+        applications++;
         doc = fn(doc);
       },
     },
@@ -48,13 +55,12 @@ test("the 1000th document receipt succeeds; exact retries work but fresh operati
     args: { idempotency_key: "last-receipt", base_heads: A.getHeads(doc) },
     identity: { principal: "fixture:owner", driver: "test" },
     apply(draft) {
-      applications++;
       draft.text = "accepted exactly once";
     },
     flush: async () => {},
   };
   const receipt = await documentMutation(context);
-  assert.equal(storage.values.size, 1000);
+  assert.equal((await storage.list({ prefix: "host/operation/" })).size, 1000);
   assert.deepEqual(await documentMutation(context), receipt);
   await assert.rejects(documentMutation({ ...context, args: { ...context.args, extra: true } }), {
     status: 409,
@@ -65,23 +71,33 @@ test("the 1000th document receipt succeeds; exact retries work but fresh operati
       ...context,
       args: { idempotency_key: "next-receipt", base_heads: A.getHeads(doc) },
     }),
-    { status: 409, message: /1000 operation receipts/ },
+    {
+      status: 429,
+      code: "operation_receipt_capacity",
+      message: /use the retry_token from read_page or list_pages/,
+    },
   );
   assert.equal(applications, 1);
   assert.deepEqual(A.getHeads(doc), receipt.heads);
 });
 
 for (const pending of [false, true]) {
-  test(`receipt age does not release capacity (pending=${pending})`, async () => {
+  test(`legacy receipt age does not release capacity (pending=${pending})`, async () => {
     const storage = new Storage();
     fill(storage, 1000, pending);
-    await assert.rejects(reserveCapacity(storage), { status: 409 });
-    assert.equal(storage.values.size, 1000);
+    await assert.rejects(
+      reserveOperation(storage, {
+        key: "host/operation/new-legacy-request",
+        entry: { fingerprint: "new", pending: true },
+      }),
+      { status: 429, code: pending ? "pending_operation_capacity" : "operation_receipt_capacity" },
+    );
+    assert.equal((await storage.list({ prefix: "host/operation/" })).size, 1000);
   });
 }
 
 for (const operation of ["create_page", "delete_page"]) {
-  test(`a catalog full of completed deletion receipts blocks ${operation}`, async (t) => {
+  test(`a catalog full of legacy deletion receipts rejects new legacy ${operation}`, async (t) => {
     const auth = await createAuthFixture();
     t.mock.method(globalThis, "fetch", auth.fetch);
     const storage = new Storage();
@@ -113,9 +129,11 @@ for (const operation of ["create_page", "delete_page"]) {
         }),
       }),
     );
-    assert.equal(response.status, 409);
-    assert.match((await response.json()).error, /1000 operation receipts/);
+    assert.equal(response.status, 429);
+    const failure = await response.json();
+    assert.equal(failure.code, "operation_receipt_capacity");
+    assert.match(failure.error, /use the retry_token from read_page or list_pages/);
     assert.equal(pageRequests, 0);
-    assert.equal(storage.values.size, 1000);
+    assert.equal((await storage.list({ prefix: "host/operation/" })).size, 1000);
   });
 }

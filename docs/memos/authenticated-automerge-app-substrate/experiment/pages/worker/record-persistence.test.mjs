@@ -17,10 +17,13 @@ function deferred() {
 }
 class Storage {
   values = new Map();
+  async get(key) {
+    return this.values.get(key);
+  }
   barrier;
   puts = 0;
   async put(values) {
-    this.puts++;
+    if (Object.keys(values).some((key) => key.startsWith("repo/"))) this.puts++;
     for (const [key, value] of Object.entries(values)) this.values.set(key, value.slice());
   }
   async delete(keys) {
@@ -50,7 +53,7 @@ const bytes = (value) => new TextEncoder().encode(value);
 test("live reads and edits proceed while remote persistence is held; flush waits for durability", async () => {
   const f = fixture();
   await f.live.save("tree/first", bytes("one"));
-  assert.equal(f.storage.values.size, 0);
+  assert.deepEqual([...f.storage.values.keys()], ["host/generation"]);
   f.storage.barrier = deferred();
   const saving = f.live.flush();
   let saved = false;
@@ -135,8 +138,13 @@ test("capacity rejects before replacing accepted data; failed restore never expo
 
 test("malformed and conflicting batches never reach storage", async () => {
   const f = fixture();
+  const generation = await f.sink.generation();
   const request = (body) =>
-    new Request("https://records.internal/records", { method: "POST", body });
+    new Request("https://records.internal/records", {
+      method: "POST",
+      body,
+      headers: { "x-pages-record-generation": generation },
+    });
   assert.equal((await f.owner.fetch(request(new Uint8Array([0, 0, 0])))).status, 400);
   const duplicate = encodeRecordBatch([
     ["key", bytes("a")],
@@ -149,4 +157,57 @@ test("malformed and conflicting batches never reach storage", async () => {
     ["gone", undefined],
   ];
   assert.deepEqual(decodeRecordBatch(encodeRecordBatch(entries)), entries);
+});
+
+test("a restored Page fences late writes from an older incarnation before its snapshot", async () => {
+  const f = fixture();
+  await f.live.save("tree/accepted", bytes("base"));
+  await f.live.flush();
+  const oldGeneration = await f.sink.generation();
+  await f.live.save("tree/late", bytes("stale pending batch"));
+  const fresh = new RemoteRecordSink({ fetch: (request) => f.owner.fetch(request) });
+  const reopened = new BufferedRecordStore(fresh);
+  assert.deepEqual(await reopened.load("tree/accepted"), bytes("base"));
+  assert.notEqual(await fresh.generation(), oldGeneration);
+  await assert.rejects(f.live.flush(), /Could not persist records/);
+  assert.equal(f.live.dirty, true, "superseded writer retains its unacknowledged changes");
+  assert.equal(await reopened.load("tree/late"), undefined);
+  await reopened.save("tree/new", bytes("current generation"));
+  await reopened.flush();
+  // Even after PageRecords itself restarts, the durable generation rejects the old writer.
+  const restartedOwner = new PageRecords({ storage: f.storage });
+  const stale = await restartedOwner.fetch(
+    new Request("https://records.internal/records", {
+      method: "POST",
+      body: encodeRecordBatch([["tree/stale", bytes("not admitted")]]),
+      headers: { "x-pages-record-generation": oldGeneration },
+    }),
+  );
+  assert.equal(stale.status, 409);
+  assert.equal(f.storage.values.has("repo/tree/stale"), false);
+  assert.equal(
+    await f.sink.generation(),
+    oldGeneration,
+    "old sink cannot silently retake its lease",
+  );
+});
+
+test("new owner snapshots include a previous write that reached the record owner first", async () => {
+  const f = fixture();
+  await f.live.save("tree/prior", bytes("accepted before handoff"));
+  f.storage.barrier = deferred();
+  const entered = deferred();
+  const sync = f.storage.sync.bind(f.storage);
+  f.storage.sync = async () => {
+    entered.resolve();
+    await sync();
+  };
+  const saving = f.live.flush();
+  await entered.promise;
+  // The existing owner processes requests in order, including its sync barrier.
+  const fresh = new RemoteRecordSink({ fetch: (request) => f.owner.fetch(request) });
+  const restored = new BufferedRecordStore(fresh);
+  f.storage.barrier.resolve();
+  await saving;
+  assert.deepEqual(await restored.load("tree/prior"), bytes("accepted before handoff"));
 });
