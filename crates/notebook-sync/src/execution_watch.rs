@@ -7,6 +7,7 @@ use runtime_doc::{ExecutionState, RuntimeLifecycle, RuntimeState};
 use tokio::sync::watch;
 use tokio::time::{Duration, Instant};
 
+use crate::execution_wait::DEFAULT_OUTPUT_SYNC_GRACE;
 use crate::handle::DocHandle;
 
 const TERMINAL_STREAM_OUTPUT_QUIET_PERIOD: Duration = Duration::from_millis(100);
@@ -94,7 +95,7 @@ impl ExecutionWatcher {
             let state = self.rx.borrow_and_update().clone();
             if let Some(progress) = self.progress_from_state(&state) {
                 if progress.terminal {
-                    let progress = self.settle_terminal_stream_output(progress).await;
+                    let progress = self.settle_terminal_output(progress).await;
                     self.finished = true;
                     return Some(progress);
                 }
@@ -123,6 +124,14 @@ impl ExecutionWatcher {
             return None;
         }
         self.finished = true;
+        // A caller's deadline can expire while terminal output is settling.
+        // Preserve completion already observed in RuntimeStateDoc; the deadline
+        // bounds output collection, not the execution's known terminal status.
+        let terminal_reason = self
+            .prev
+            .as_ref()
+            .and_then(terminal_reason_for)
+            .unwrap_or(ExecutionTerminalReason::Timeout);
         let (status, success, outputs, count) = self
             .prev
             .as_ref()
@@ -143,7 +152,7 @@ impl ExecutionWatcher {
             execution_count: count,
             output_manifests: outputs,
             terminal: true,
-            terminal_reason: Some(ExecutionTerminalReason::Timeout),
+            terminal_reason: Some(terminal_reason),
         })
     }
 
@@ -198,13 +207,11 @@ impl ExecutionWatcher {
         }
     }
 
-    async fn settle_terminal_stream_output(
+    async fn settle_terminal_output(
         &mut self,
         mut progress: ExecutionProgressState,
     ) -> ExecutionProgressState {
-        let Some((mut quiet_period, max_grace)) =
-            stream_output_settle_window(&progress.output_manifests)
-        else {
+        let Some((mut quiet_period, max_grace)) = terminal_output_settle_window(&progress) else {
             return progress;
         };
 
@@ -225,7 +232,7 @@ impl ExecutionWatcher {
                         if next.terminal {
                             progress = next;
                             let Some((next_quiet_period, _)) =
-                                stream_output_settle_window(&progress.output_manifests)
+                                terminal_output_settle_window(&progress)
                             else {
                                 return progress;
                             };
@@ -238,6 +245,21 @@ impl ExecutionWatcher {
             }
         }
     }
+}
+
+fn terminal_output_settle_window(
+    progress: &ExecutionProgressState,
+) -> Option<(Duration, Duration)> {
+    if progress.terminal_reason == Some(ExecutionTerminalReason::Done)
+        && progress.output_manifests.is_empty()
+    {
+        // Deno can emit stdout after idle. As in await_execution_terminal,
+        // allow the first output to arrive before finishing the watcher. A
+        // genuinely silent execution still completes within the bounded grace;
+        // cancelled and interrupted executions do not wait for absent outputs.
+        return Some((DEFAULT_OUTPUT_SYNC_GRACE, DEFAULT_OUTPUT_SYNC_GRACE));
+    }
+    stream_output_settle_window(&progress.output_manifests)
 }
 
 fn terminal_reason_for(entry: &ExecutionState) -> Option<ExecutionTerminalReason> {
@@ -381,6 +403,129 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn watcher_waits_for_first_output_after_done() {
+        // Deno can publish idle before its stdout message. The first terminal
+        // snapshot then has no outputs, followed by the stream in a later sync.
+        let (handle, tx) = make_handle();
+        let mut watcher = ExecutionWatcher::new(&handle, "cell-1", "exec-1");
+        set_execution(&tx, "exec-1", "cell-1", "done", Vec::new());
+
+        let (terminal, ()) = tokio::join!(watcher.next(), async {
+            // An unrelated execution update must not end the empty-output wait.
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            set_execution(&tx, "exec-2", "cell-2", "running", Vec::new());
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            set_execution(
+                &tx,
+                "exec-1",
+                "cell-1",
+                "done",
+                vec![serde_json::json!({
+                    "output_type": "stream",
+                    "name": "stdout",
+                    "text": {"inline": "42\n"},
+                })],
+            );
+        });
+
+        let terminal = terminal.expect("terminal progress");
+        assert_eq!(
+            terminal.terminal_reason,
+            Some(ExecutionTerminalReason::Done)
+        );
+        assert_eq!(terminal.output_manifests.len(), 1);
+        assert_eq!(terminal.output_manifests[0]["text"]["inline"], "42\n");
+        assert!(watcher.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn watcher_returns_when_first_rich_output_arrives() {
+        let (handle, tx) = make_handle();
+        let mut watcher = ExecutionWatcher::new(&handle, "cell-1", "exec-1");
+        set_execution(&tx, "exec-1", "cell-1", "done", Vec::new());
+
+        let (terminal, ()) = tokio::join!(
+            tokio::time::timeout(Duration::from_millis(250), watcher.next()),
+            async {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                set_execution(
+                    &tx,
+                    "exec-1",
+                    "cell-1",
+                    "done",
+                    vec![serde_json::json!({
+                        "output_type": "display_data",
+                        "data": {"text/plain": {"inline": "42"}},
+                    })],
+                );
+            }
+        );
+
+        let terminal = terminal
+            .expect("rich output should not wait out the grace")
+            .expect("terminal progress");
+        assert_eq!(
+            terminal.output_manifests[0]["data"]["text/plain"]["inline"],
+            "42"
+        );
+    }
+
+    #[tokio::test]
+    async fn watcher_finishes_silent_execution_after_bounded_grace() {
+        let (handle, tx) = make_handle();
+        let mut watcher = ExecutionWatcher::new(&handle, "cell-1", "exec-1");
+        set_execution(&tx, "exec-1", "cell-1", "done", Vec::new());
+
+        let started = Instant::now();
+        let terminal = tokio::time::timeout(Duration::from_secs(2), watcher.next())
+            .await
+            .expect("silent execution must finish")
+            .expect("terminal progress");
+        assert!(started.elapsed() >= DEFAULT_OUTPUT_SYNC_GRACE);
+        assert_eq!(
+            terminal.terminal_reason,
+            Some(ExecutionTerminalReason::Done)
+        );
+        assert!(terminal.output_manifests.is_empty());
+    }
+
+    #[tokio::test]
+    async fn watcher_keeps_done_when_deadline_expires_during_output_grace() {
+        let (handle, tx) = make_handle();
+        let mut watcher = ExecutionWatcher::new(&handle, "cell-1", "exec-1");
+        set_execution(&tx, "exec-1", "cell-1", "done", Vec::new());
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), watcher.next())
+                .await
+                .is_err()
+        );
+        let terminal = watcher.timeout().expect("observed terminal progress");
+        assert_eq!(
+            terminal.terminal_reason,
+            Some(ExecutionTerminalReason::Done)
+        );
+        assert_eq!(terminal.success, Some(true));
+        assert!(watcher.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn watcher_does_not_wait_for_cancelled_output() {
+        let (handle, tx) = make_handle();
+        let mut watcher = ExecutionWatcher::new(&handle, "cell-1", "exec-1");
+        set_execution(&tx, "exec-1", "cell-1", "cancelled", Vec::new());
+
+        let terminal = tokio::time::timeout(Duration::from_millis(50), watcher.next())
+            .await
+            .expect("cancelled execution must not wait for output")
+            .expect("terminal progress");
+        assert_eq!(
+            terminal.terminal_reason,
+            Some(ExecutionTerminalReason::Cancelled)
+        );
+    }
+
+    #[tokio::test]
     async fn watcher_waits_for_terminal_stream_output_to_settle() {
         let (handle, tx) = make_handle();
         let mut watcher = ExecutionWatcher::new(&handle, "cell-1", "exec-1");
@@ -477,7 +622,10 @@ mod tests {
         let _ = watcher.next().await.expect("first progress");
 
         set_execution(&tx, "exec-1", "cell-1", "error", Vec::new());
-        let progress = watcher.next().await.expect("interrupted progress");
+        let progress = tokio::time::timeout(Duration::from_millis(50), watcher.next())
+            .await
+            .expect("interrupted execution must not wait for output")
+            .expect("interrupted progress");
         assert_eq!(
             progress.terminal_reason,
             Some(ExecutionTerminalReason::Interrupted)
