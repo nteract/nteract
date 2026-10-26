@@ -67,9 +67,7 @@ function App() {
     catalogRevision = useRef(0),
     creationPending = useRef(false),
     generation = useRef(0),
-    activeBlock = useRef(null),
     composerId = useRef(null),
-    selection = useRef(null),
     article = useRef(null),
     commentsButton = useRef(null),
     reloadingAccess = useRef(null);
@@ -95,13 +93,9 @@ function App() {
     return result;
   };
   function activateBlock(id) {
-    if (activeBlock.current !== id) selection.current = null;
-    activeBlock.current = id;
     setActive(id);
   }
   function resetDocumentUI() {
-    activeBlock.current = null;
-    selection.current = null;
     setActive(null);
     composerId.current = null;
     setComposer(null);
@@ -402,15 +396,8 @@ function App() {
       setError(error.message);
     }
   }
-  function startComment(
-    id = activeBlock.current,
-    selected = id === activeBlock.current ? selection.current : null,
-  ) {
-    if (!session) return;
-    if (!id) {
-      setCommentsOpen(true);
-      return;
-    }
+  function startComment(id, selected) {
+    if (!session || !id || !selected) return;
     activateBlock(id);
     if (session.canWrite) {
       try {
@@ -432,8 +419,7 @@ function App() {
   }
   function toggleComments() {
     if (commentsOpen) closeComments();
-    else if (composer) setCommentsOpen(true);
-    else startComment();
+    else setCommentsOpen(true);
   }
   function selectComment(id) {
     setTarget({ id, request: performance.now(), source: "passage" });
@@ -683,9 +669,6 @@ function App() {
                         id={block.id}
                         editable={session.canWrite}
                         onError={setError}
-                        onSelection={(value) => {
-                          if (activeBlock.current === block.id) selection.current = value;
-                        }}
                         onComment={(selected) => startComment(block.id, selected)}
                         onRevealComment={selectComment}
                         toolbarHost={active === block.id ? toolbar : null}
@@ -696,15 +679,6 @@ function App() {
                     ) : (
                       <pre>{block.markdown ?? "Unsupported block"}</pre>
                     )}
-                    <button
-                      className="comment-block icon-button"
-                      disabled={!session.canComment}
-                      onClick={() => startComment(block.id, null)}
-                      aria-label="Comment on this block"
-                      title="Comment on this block"
-                    >
-                      <MessageSquare size={17} aria-hidden="true" />
-                    </button>
                   </section>
                 ))}
                 {session.canWrite && (

@@ -465,11 +465,6 @@ details.document-actions > div button {
   overflow-wrap: anywhere;
   caret-color: #262626;
 }
-.ProseMirror:focus-visible {
-  outline: 2px solid #f0f0f0;
-  outline-offset: 9px;
-  border-radius: 3px;
-}
 .ProseMirror p {
   margin: 0.75em 0;
 }
@@ -539,26 +534,6 @@ details.document-actions > div button {
 }
 .page-block {
   position: relative;
-  padding-right: 0.2rem;
-}
-.comment-block {
-  position: absolute;
-  top: 0.65rem;
-  right: -2.6rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  color: #737373;
-  opacity: 0;
-}
-.page-block:hover .comment-block,
-.page-block:focus-within .comment-block,
-.comment-block:focus-visible,
-.comment-block.has-comments {
-  opacity: 1;
 }
 .add-block {
   display: inline-flex;
@@ -909,16 +884,6 @@ dialog::backdrop {
     font-size: 17px;
     line-height: 1.7;
   }
-  .page-block {
-    padding-right: 1.6rem;
-  }
-  .comment-block {
-    top: 0.55rem;
-    right: -1rem;
-    width: 44px;
-    height: 44px;
-    opacity: 1;
-  }
   .comments,
   .comments.comments-sheet {
     inset: auto 0 0;
@@ -965,7 +930,6 @@ dialog::backdrop {
   }
 }
 @media (hover: none) and (min-width: 901px) {
-  .comment-block,
   .page-row-action {
     opacity: 1;
   }
@@ -974,7 +938,6 @@ dialog::backdrop {
   .app-header,
   .toolbar-host,
   .document-meta,
-  .comment-block,
   .add-block,
   .comments {
     display: none !important;

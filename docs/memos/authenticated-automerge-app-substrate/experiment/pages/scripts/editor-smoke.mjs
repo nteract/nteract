@@ -27,6 +27,65 @@ async function edge(editor, end = false) {
   }, end);
   await editor.page().waitForTimeout(30);
 }
+async function selectText(editor, text) {
+  await editor.focus();
+  await editor.evaluate((element, text) => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) =>
+        node.parentElement.closest(".peer-caret")
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_ACCEPT,
+    });
+    const nodes = [];
+    let source = "",
+      node;
+    while ((node = walker.nextNode())) {
+      nodes.push({ node, start: source.length });
+      source += node.textContent;
+    }
+    const start = source.indexOf(text);
+    if (start < 0) throw Error("Missing selection text");
+    const at = (offset, startBoundary = false) => {
+      const entry = nodes.find(
+        ({ node, start }) =>
+          offset >= start &&
+          (startBoundary
+            ? offset < start + node.textContent.length
+            : offset <= start + node.textContent.length),
+      );
+      return [entry.node, offset - entry.start];
+    };
+    const range = document.createRange();
+    // At adjacent text-node boundaries, start in the following node so a
+    // paragraph separator is not accidentally included in the passage.
+    range.setStart(...at(start, true));
+    range.setEnd(...at(start + text.length));
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+  }, text);
+  await expect.poll(() => editor.page().evaluate(() => getSelection().toString())).toBe(text);
+  await expect(
+    editor.page().getByRole("button", { name: "Comment on selection", exact: true }),
+  ).toBeEnabled();
+}
+async function assertQuietBlock(page, editor) {
+  await expect(
+    page.getByRole("button", { name: "Comment on this block", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator(".comment-block")).toHaveCount(0);
+  await editor.focus();
+  await expect(editor).toBeFocused();
+  const outlines = await editor.evaluate((element) =>
+    [element, element.closest(".page-block")].map((node) => {
+      const style = getComputedStyle(node);
+      return { width: style.outlineWidth, style: style.outlineStyle };
+    }),
+  );
+  assert.ok(
+    outlines.every(({ width, style }) => width === "0px" || ["none", "hidden"].includes(style)),
+    `focused editor has no rendered surrounding outline: ${JSON.stringify(outlines)}`,
+  );
+}
 async function assertStableToolbarGeometry(page) {
   // Use the real controls and CSS, without moving the focused editor's toolbar.
   const boxes = await page.locator(".rich-toolbar").evaluate((toolbar) => {
@@ -70,7 +129,42 @@ async function assertStableToolbarGeometry(page) {
     "placement settles without a resize feedback loop",
   );
 }
-async function call(page, operation, args, driver) {
+// Keep the exact token, key and payload for a fixture retry, including its driver.
+// No retry authority is silently regenerated after an uncertain mutation.
+const requestsByPage = new WeakMap();
+async function call(page, operation, args = {}, driver) {
+  if (args.idempotency_key && !args.retry_token) {
+    let requests = requestsByPage.get(page);
+    if (!requests) requestsByPage.set(page, (requests = new Map()));
+    const requestKey = JSON.stringify([operation, args.idempotency_key, driver]);
+    const fingerprint = JSON.stringify(args);
+    let request = requests.get(requestKey);
+    if (!request) {
+      const catalog = ["create_page", "delete_page"].includes(operation);
+      const authority = await rawCall(
+        page,
+        catalog ? "list_pages" : "read_page",
+        catalog ? {} : { page_id: args.page_id },
+        driver,
+      );
+      assert.equal(typeof authority.retry_token, "string");
+      assert.match(authority.retry_key_prefix, /^v1_[a-f0-9]{64}_$/);
+      request = {
+        fingerprint,
+        args: structuredClone({
+          ...args,
+          retry_token: authority.retry_token,
+          idempotency_key: authority.retry_key_prefix + args.idempotency_key,
+        }),
+      };
+      requests.set(requestKey, request);
+    }
+    assert.equal(request.fingerprint, fingerprint, "fixture retry preserves its original payload");
+    args = request.args;
+  }
+  return rawCall(page, operation, args, driver);
+}
+async function rawCall(page, operation, args, driver) {
   return page.evaluate(
     async ({ operation, args, driver }) => {
       const response = await fetch("/api/tools", {
@@ -137,14 +231,22 @@ try {
   const duplicate = await popupPromise;
   await expect(duplicate.getByRole("status")).toHaveText("Saved", { timeout: 20000 });
   const fingerprint = (p) =>
-    p.evaluate(async () => {
-      const key = Object.keys(sessionStorage).find((k) => k.startsWith("pages-native:"));
-      const digest = await crypto.subtle.digest(
-        "SHA-256",
-        new TextEncoder().encode(sessionStorage.getItem(key)),
-      );
-      return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
-    });
+    p.evaluate(async (pageId) => {
+      const response = await fetch("/api/auth/session");
+      if (!response.ok) throw Error("Fixture authentication unavailable");
+      const { identity } = await response.json();
+      const digest = async (value) =>
+        Array.from(
+          new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))),
+          (byte) => byte.toString(16).padStart(2, "0"),
+        ).join("");
+      // Login can open a different Page first. Compare this fixture's owner/writer
+      // scope, not whichever old document happens to be first in sessionStorage.
+      const scope = await digest(`${identity.principal}\0${pageId}`);
+      const seed = sessionStorage.getItem(`pages-native:${scope}`);
+      if (!seed) throw Error("Active fixture signer identity is missing after Saved");
+      return digest(seed);
+    }, result.page_id);
   assert.notEqual(
     await fingerprint(a),
     await fingerprint(duplicate),
@@ -358,8 +460,11 @@ try {
   await expect(ea.locator("ol")).toHaveCount(0);
   await expect.poll(() => text(eb)).toBe(await text(ea));
   await assertStableToolbarGeometry(a);
+  await assertQuietBlock(a, ea);
+  await a.screenshot({ path: output + "/quiet-editor-desktop.png", fullPage: true });
   const commentsToggle = a.getByRole("button", { name: "Comments", exact: true });
   if ((await commentsToggle.getAttribute("aria-expanded")) !== "true") await commentsToggle.click();
+  await expect(a.locator(".comment-composer")).toHaveCount(0);
   await a.screenshot({ path: output + "/desktop.png", fullPage: true });
   await a.setViewportSize({ width: 390, height: 844 });
   await expect(commentsToggle).toHaveAttribute("aria-expanded", "true");
@@ -369,6 +474,7 @@ try {
   await a.keyboard.press("Escape");
   await expect(commentsToggle).toHaveAttribute("aria-expanded", "false");
   await expect(commentsToggle).toBeFocused();
+  await assertQuietBlock(a, ea);
   await a.screenshot({ path: output + "/mobile.png", fullPage: true });
   assert.equal(
     await a.evaluate(() => document.documentElement.scrollWidth > innerWidth),
@@ -383,16 +489,27 @@ try {
   const second = a.locator(".ProseMirror").nth(1);
   await expect(second).toBeFocused();
   await a.keyboard.type("A second block");
-  await a.getByRole("button", { name: "Comment on this block" }).nth(1).click();
-  await expect(a.getByRole("textbox", { name: "Comment on block", exact: true })).toBeVisible();
-  await expect(a.locator(".composer-context")).toHaveCount(0);
-  await a
-    .getByRole("textbox", { name: "Comment on block", exact: true })
-    .fill("Unsent block draft");
-  await a.getByRole("button", { name: "Comment on this block" }).first().click();
-  await expect(a.getByRole("textbox", { name: "Comment on block", exact: true })).toHaveValue(
-    "Unsent block draft",
-  );
+  // Opening the thread list never turns the stale first-block selection into a draft.
+  await commentsToggle.click();
+  await expect(a.locator(".comment-composer")).toHaveCount(0);
+  await commentsToggle.click();
+  await selectText(second, "second block");
+  await a.getByRole("button", { name: "Comment on selection", exact: true }).click();
+  const composer = a.getByRole("textbox", { name: "Comment on selection", exact: true });
+  await expect(a.locator(".composer-context")).toHaveText("second block");
+  await composer.fill("Unsent passage draft");
+  // Closing/reopening the list preserves an explicitly started draft and its passage.
+  await commentsToggle.click();
+  await commentsToggle.click();
+  await expect(composer).toHaveValue("Unsent passage draft");
+  await expect(a.locator(".composer-context")).toHaveText("second block");
+  // Explicitly choosing a different passage retargets while preserving the unsent body.
+  await commentsToggle.click();
+  const firstPassage = (await text(ea.first())).trim().slice(0, 4);
+  await selectText(ea.first(), firstPassage);
+  await a.getByRole("button", { name: "Comment on selection", exact: true }).click();
+  await expect(composer).toHaveValue("Unsent passage draft");
+  await expect(a.locator(".composer-context")).toHaveText(firstPassage);
   await a.getByLabel("Account", { exact: true }).click();
   await expect(a.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
   await a.keyboard.press("Escape");
@@ -431,7 +548,8 @@ try {
     "false",
   );
   await a.getByRole("button", { name: "Comments", exact: true }).click();
-  await expect(a.getByRole("textbox", { name: "Comment on block", exact: true })).toHaveValue("");
+  await expect(a.locator(".comment-composer")).toHaveCount(0);
+  await expect(a.locator(".comments-empty")).toContainText("No comments yet.");
   // Replacing a list with different block markers must update already mounted
   // rich-text projections, then leave both human and tool edits working.
   const structuralBefore = "Intro.\n\n1. First item.\n\n2. Second item.\n\nAfter.";
@@ -553,7 +671,9 @@ try {
         "stable floating-toolbar geometry at viewport boundaries",
         "text style and list commands",
         "desktop and 390px layout with modal comments",
-        "comment target isolation, draft retargeting and detached block navigation",
+        "comment list does not start a draft; passage drafts survive toggle and retargeting",
+        "quiet focused blocks without outlines or gutter comment buttons",
+        "comment target isolation and detached block navigation",
         "menu dismissal and local new-page focus",
         "structural tool replacement and bidirectional follow-up without reload",
         "sign out revokes HTTP access",

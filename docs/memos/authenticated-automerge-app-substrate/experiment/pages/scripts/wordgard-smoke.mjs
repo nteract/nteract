@@ -31,7 +31,41 @@ function checkpoint(name) {
   report.completed.push(name);
   console.log("PASS " + name);
 }
-async function call(page, operation, args) {
+// Keep the exact token, key and payload for a fixture retry, including its driver.
+// No retry authority is silently regenerated after an uncertain mutation.
+const requestsByPage = new WeakMap();
+async function call(page, operation, args = {}) {
+  if (args.idempotency_key && !args.retry_token) {
+    let requests = requestsByPage.get(page);
+    if (!requests) requestsByPage.set(page, (requests = new Map()));
+    const requestKey = JSON.stringify([operation, args.idempotency_key]);
+    const fingerprint = JSON.stringify(args);
+    let request = requests.get(requestKey);
+    if (!request) {
+      const catalog = ["create_page", "delete_page"].includes(operation);
+      const authority = await rawCall(
+        page,
+        catalog ? "list_pages" : "read_page",
+        catalog ? {} : { page_id: args.page_id },
+      );
+      assert.equal(typeof authority.retry_token, "string");
+      assert.match(authority.retry_key_prefix, /^v1_[a-f0-9]{64}_$/);
+      request = {
+        fingerprint,
+        args: structuredClone({
+          ...args,
+          retry_token: authority.retry_token,
+          idempotency_key: authority.retry_key_prefix + args.idempotency_key,
+        }),
+      };
+      requests.set(requestKey, request);
+    }
+    assert.equal(request.fingerprint, fingerprint, "fixture retry preserves its original payload");
+    args = request.args;
+  }
+  return rawCall(page, operation, args);
+}
+async function rawCall(page, operation, args) {
   return page.evaluate(
     async ({ operation, args }) => {
       const response = await fetch("/api/tools", {
@@ -70,15 +104,21 @@ async function selectText(page, text, collapse = false, block = 0) {
       }
       const start = joined.indexOf(text);
       if (start < 0) throw Error("Missing selection text: " + text + "; found " + joined);
-      const at = (offset) => {
+      const at = (offset, startBoundary = false) => {
         const entry = nodes.find(
-          ({ node, start }) => offset >= start && offset <= start + node.textContent.length,
+          ({ node, start }) =>
+            offset >= start &&
+            (startBoundary
+              ? offset < start + node.textContent.length
+              : offset <= start + node.textContent.length),
         );
         if (!entry) throw Error("Missing selection offset " + offset);
         return [entry.node, offset - entry.start];
       };
       const range = document.createRange();
-      range.setStart(...at(start));
+      // At adjacent text-node boundaries, start in the following node so a
+      // paragraph separator is not accidentally included in the passage.
+      range.setStart(...at(start, true));
       range.setEnd(...at(start + text.length));
       if (collapse) range.collapse(false);
       getSelection().removeAllRanges();
@@ -91,6 +131,25 @@ async function selectText(page, text, collapse = false, block = 0) {
     .toBe(collapse ? "" : text);
   // Let the editor observe the browser's asynchronous selectionchange event.
   await page.waitForTimeout(50);
+}
+async function assertQuietBlock(page) {
+  await expect(
+    page.getByRole("button", { name: "Comment on this block", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator(".comment-block")).toHaveCount(0);
+  const editor = content(page).first();
+  await editor.focus();
+  await expect(editor).toBeFocused();
+  const outlines = await editor.evaluate((element) =>
+    [element, element.closest(".wordgard-document"), element.closest(".page-block")].map((node) => {
+      const style = getComputedStyle(node);
+      return { width: style.outlineWidth, style: style.outlineStyle };
+    }),
+  );
+  assert.ok(
+    outlines.every(({ width, style }) => width === "0px" || ["none", "hidden"].includes(style)),
+    `focused editor has no rendered surrounding outline: ${JSON.stringify(outlines)}`,
+  );
 }
 async function insertAfter(page, anchor, text, block = 0) {
   await selectText(page, anchor, true, block);
@@ -218,6 +277,29 @@ try {
   await expect(content(a)).toContainText("The fox crossed the garden");
   checkpoint("Wordgard boot with local OIDC and two contexts");
 
+  stage = "quiet editor and comments list without automatic composition";
+  await selectText(a, "fox");
+  await assertQuietBlock(a);
+  await a.screenshot({ path: output + "/quiet-editor-desktop.png", fullPage: true });
+  const commentsToggle = a.getByRole("button", { name: "Comments", exact: true });
+  await commentsToggle.click();
+  await expect(a.locator("#page-comments")).toBeVisible();
+  await expect(a.locator(".comment-composer")).toHaveCount(0);
+  await expect(a.locator(".comments-empty")).toContainText("No comments yet.");
+  await a.getByRole("button", { name: "Close comments", exact: true }).click();
+  await expect(commentsToggle).toBeFocused();
+  await a.setViewportSize({ width: 390, height: 844 });
+  await selectText(a, "fox");
+  await assertQuietBlock(a);
+  await a.screenshot({ path: output + "/quiet-editor-mobile.png", fullPage: true });
+  await commentsToggle.click();
+  await expect(a.locator(".comment-composer")).toHaveCount(0);
+  await a.keyboard.press("Escape");
+  await expect(commentsToggle).toBeFocused();
+  assert.equal(await a.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await a.setViewportSize({ width: 1280, height: 900 });
+  checkpoint(stage);
+
   stage = "toolbar keyboard state";
   await selectText(a, "fox");
   const bold = a.getByRole("button", { name: "Bold", exact: true });
@@ -258,6 +340,33 @@ try {
   }
   checkpoint(stage);
 
+  stage = "selection draft survives thread-list toggles and explicit retargeting";
+  await selectText(a, "fox");
+  await a.getByRole("button", { name: "Comment on selection", exact: true }).click();
+  const draft = a.getByRole("textbox", { name: "Comment on selection", exact: true });
+  await draft.fill("Keep this unsent passage draft.");
+  await commentsToggle.click();
+  await commentsToggle.click();
+  await expect(draft).toHaveValue("Keep this unsent passage draft.");
+  await expect(a.locator(".composer-context")).toHaveText("fox");
+  await commentsToggle.click();
+  // Let the panel's scheduled focus restoration finish before selecting elsewhere.
+  await a.evaluate(() => new Promise(requestAnimationFrame));
+  await expect(commentsToggle).toBeFocused();
+  await selectText(a, "Second writer");
+  await expect(content(a)).toBeFocused();
+  await a.getByRole("button", { name: "Comment on selection", exact: true }).click();
+  await expect(draft).toHaveValue("Keep this unsent passage draft.");
+  await expect(a.locator(".composer-context")).toHaveText("Second writer");
+  await a.locator(".comment-composer").getByRole("button", { name: "Cancel", exact: true }).click();
+  await a.getByRole("button", { name: "Close comments", exact: true }).click();
+  await commentsToggle.click();
+  await expect(a.locator(".comment-composer")).toHaveCount(0);
+  await a.getByRole("button", { name: "Close comments", exact: true }).click();
+  await a.evaluate(() => new Promise(requestAnimationFrame));
+  await expect(commentsToggle).toBeFocused();
+  checkpoint(stage);
+
   stage = "selection comment and passage navigation";
   await selectText(a, "fox");
   await a.getByRole("button", { name: "Comment on selection", exact: true }).click();
@@ -267,6 +376,7 @@ try {
   await a.getByRole("button", { name: "Send", exact: true }).first().click();
   await expect(b.locator(".comment-passage")).toHaveText("fox");
   await b.getByRole("button", { name: "Comments", exact: true }).click();
+  await expect(b.locator(".comment-composer")).toHaveCount(0);
   await expect(b.locator(".thread .message")).toContainText("Discuss this shared passage.");
   await b.locator(".thread .quote").click();
   await expect(b.locator(".comment-passage-active")).toHaveText("fox");

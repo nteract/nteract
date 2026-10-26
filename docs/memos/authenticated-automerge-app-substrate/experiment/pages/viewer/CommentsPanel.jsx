@@ -237,7 +237,11 @@ export function CommentsPanel({
         )}
         {!unresolved.length && (
           <p className="muted comments-empty">
-            {threads.length ? "All caught up." : "No comments yet."}
+            {threads.length
+              ? "All caught up."
+              : session.canWrite
+                ? "No comments yet. Select text to add one."
+                : "No comments yet."}
           </p>
         )}
         {unresolved.map(renderThread)}

@@ -9,10 +9,9 @@
   color: inherit;
   line-height: 1.7;
 }
-.wordgard-editor .wordgard-document:has(> wg-scroller > wg-content:focus-visible) {
-  outline: 2px solid #f0f0f0;
-  outline-offset: 9px;
-  border-radius: 3px;
+.wordgard-editor .wordgard-document:has(> wg-scroller > wg-content:focus) {
+  /* Wordgard's base theme adds its own whole-editor focus outline. */
+  outline: none;
 }
 .wordgard-document wg-content {
   display: block;

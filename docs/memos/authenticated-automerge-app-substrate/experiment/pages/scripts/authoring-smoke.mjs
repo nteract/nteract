@@ -17,7 +17,41 @@ const diagram = `graph TD
   C --> F[Metrics]
   F --> G[Dashboard]
   E --> G`;
-async function call(page, operation, args) {
+// Keep the exact token, key and payload for a fixture retry, including its driver.
+// No retry authority is silently regenerated after an uncertain mutation.
+const requestsByPage = new WeakMap();
+async function call(page, operation, args = {}) {
+  if (args.idempotency_key && !args.retry_token) {
+    let requests = requestsByPage.get(page);
+    if (!requests) requestsByPage.set(page, (requests = new Map()));
+    const requestKey = JSON.stringify([operation, args.idempotency_key]);
+    const fingerprint = JSON.stringify(args);
+    let request = requests.get(requestKey);
+    if (!request) {
+      const catalog = ["create_page", "delete_page"].includes(operation);
+      const authority = await rawCall(
+        page,
+        catalog ? "list_pages" : "read_page",
+        catalog ? {} : { page_id: args.page_id },
+      );
+      assert.equal(typeof authority.retry_token, "string");
+      assert.match(authority.retry_key_prefix, /^v1_[a-f0-9]{64}_$/);
+      request = {
+        fingerprint,
+        args: structuredClone({
+          ...args,
+          retry_token: authority.retry_token,
+          idempotency_key: authority.retry_key_prefix + args.idempotency_key,
+        }),
+      };
+      requests.set(requestKey, request);
+    }
+    assert.equal(request.fingerprint, fingerprint, "fixture retry preserves its original payload");
+    args = request.args;
+  }
+  return rawCall(page, operation, args);
+}
+async function rawCall(page, operation, args) {
   return page.evaluate(
     async ({ operation, args }) => {
       const response = await fetch("/api/tools", {
@@ -93,9 +127,14 @@ try {
   await b.getByRole("button", { name: "Comments", exact: true }).click();
   await expect(b.locator(".thread .quote")).toHaveText("these words");
   await expect(b.locator(".thread .message")).toContainText("A comment from the selection toolbar");
-  // The block affordance deliberately creates a block comment even after selection.
-  await a.getByRole("button", { name: "Comment on this block" }).click();
-  await expect(a.getByRole("textbox", { name: "Comment on block" })).toBeVisible();
+  // New comments are explicitly anchored to a passage through the selection toolbar.
+  await expect(a.getByRole("button", { name: "Comment on this block" })).toHaveCount(0);
+  await expect(a.locator(".comment-composer")).toHaveCount(0);
+  await selectText(a, "Select");
+  await comment.click();
+  await expect(a.getByRole("textbox", { name: "Comment on selection" })).toBeVisible();
+  await expect(a.locator(".composer-context")).toHaveText("Select");
+  await a.locator(".comment-composer").getByRole("button", { name: "Cancel", exact: true }).click();
   // Close the sidebar before checking link and mobile geometry.
   await a.getByRole("button", { name: "Comments", exact: true }).click();
   const link = a.locator(".ProseMirror a");
