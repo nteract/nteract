@@ -1360,6 +1360,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_results_short_wait_keeps_done_while_outputs_may_be_pending() {
+        let fixture = crate::observation::tests::fixture();
+        let metadata = NteractMcp::new("unused.sock".into(), None, None)
+            .local_runtime_metadata()
+            .await;
+        fixture.runtime.send_modify(|state| {
+            let mut run = execution_state(Some("silent or late output"));
+            run.outputs.clear();
+            state.executions.insert("done-run".into(), run);
+        });
+
+        let result = wait_existing_result(
+            &metadata,
+            &fixture.owner.reader(),
+            "done-run",
+            tokio::time::Instant::now() + Duration::from_millis(25),
+            false,
+        )
+        .await
+        .unwrap();
+        let data = result.structured_content.unwrap();
+        // This is the bounded result-read deadline, not an execution failure.
+        // The caller can read again without re-submitting the completed cell.
+        assert_eq!(data["outcome"], "timed_out");
+        assert_eq!(data["execution_status"], "done");
+        assert_eq!(data["outputs_pending"], true);
+        assert_eq!(data["output_count"], 0);
+    }
+
+    #[tokio::test]
     async fn get_results_wait_timeout_and_observer_release_never_submit_or_interrupt() {
         let fixture = crate::observation::tests::fixture();
         let metadata = NteractMcp::new("unused.sock".into(), None, None)
