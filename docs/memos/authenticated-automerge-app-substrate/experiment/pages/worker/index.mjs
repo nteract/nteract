@@ -36,6 +36,7 @@ import { DurableByteStore, persistentSeed } from "./storage.mjs";
 import { DocumentAdmission, isHistoryCapacityError } from "./history-admission.mjs";
 import { issueRetryToken, inspectOperation, reserveOperation } from "./operation-journal.mjs";
 import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
+import { RecordMaintenance } from "./record-maintenance.mjs";
 export { PageRecords } from "./record-persistence.mjs";
 import { DocumentPolicy, hex, logicalId } from "./policy.mjs";
 import {
@@ -468,7 +469,12 @@ export class Page {
           metadata?.recordStorage === "buffered"
             ? new BufferedRecordStore(
                 new RemoteRecordSink(this.env.PAGE_RECORDS.getByName(metadata.pageId)),
-                { onDirty: () => this.schedulePersistence() },
+                {
+                  onDirty: (record) => {
+                    this.recordMaintenance?.recordWrite(record);
+                    this.schedulePersistence();
+                  },
+                },
               )
             : new DurableByteStore(ctx.storage);
         if (recordStore.ready) await recordStore.ready;
@@ -491,6 +497,21 @@ export class Page {
           }),
           repo,
           recordStore,
+        });
+        this.recordMaintenance = new RecordMaintenance({
+          enabled:
+            this.env.PAGES_COMPACT_RECORDS === "true" && metadata?.recordStorage === "buffered",
+          compact: () => {
+            if (!this.metadata?.documentId || this.metadata.deleted || this.recoveryBlocked)
+              return { skipped: "unavailable" };
+            return backend.compact(documentIdToBinary(this.metadata.documentId), {
+              // Both compaction barriers drain the remote record sink. Calling
+              // repo/backend.flush here would recurse into its held owner queue.
+              durable: () => recordStore.flush(),
+            });
+          },
+          waitUntil: (work) => ctx.waitUntil(work),
+          onError: (error) => logFailure(error, "record-maintenance"),
         });
       } catch (error) {
         const failures = [error];
@@ -616,6 +637,7 @@ export class Page {
         try {
           await this.recordStore.flush();
           this.persistenceDelay = 1000;
+          this.recordMaintenance?.flushed();
         } catch (error) {
           logFailure(error, "record-persistence");
           this.persistenceDelay = Math.min((this.persistenceDelay ?? 1000) * 2, 30_000);
@@ -739,6 +761,7 @@ export class Page {
             },
           };
         }
+        this.recordMaintenance?.stop();
         // Persist again on retry: a previous storage failure may have occurred
         // after admission stopped, but before the tombstone reached storage.
         await this.ctx.storage.put("host/document", this.metadata);

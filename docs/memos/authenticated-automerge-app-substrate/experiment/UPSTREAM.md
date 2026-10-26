@@ -2,7 +2,7 @@
 
 This disposable experiment builds the two packages at Repo revision
 `afec0444191a5a662e065f24193bef58ab07122a`, with Automerge `3.5.0` and
-Subduction `0.23.0`. It requires Node >=22.13, Git, and npm.
+Subduction `0.26.0`. It requires Node >=22.13, Git, and npm.
 
 ```sh
 npm run setup
@@ -22,6 +22,26 @@ identity module's `runtimed` capability re-export directly to the real
 `packages/runtimed/src/scope-capabilities.ts`. This avoids loading the unrelated
 package barrel or relying on a root dependency installation; it does not replace
 credential verification. The focused CI job uses the same standalone setup.
+
+The published native version is pinned by `native-version.mjs` in the experiment,
+Pages, and the generated Repo adapter manifest; setup overrides the pinned Repo
+source's older 0.23.0 dependency before installing. The lockfile contains one
+Subduction runtime. Its npm tarball integrity and release WASM SHA-256 are checked
+in `native-version.test.mjs` and recorded in setup provenance. The npm SLSA
+attestation binds 0.26.0 to upstream tag `subduction-js-v0.26.0`, commit
+`dce952aac6d85506eeb0235facbb8132b39bb95c`.
+
+That published build includes upstream fixes for
+[fragment ancestry coverage](https://github.com/inkandswitch/subduction/pull/319),
+[branch-local minimization and fragment boundaries](https://github.com/inkandswitch/subduction/pull/325),
+and [boundary fingerprint advertisement](https://github.com/inkandswitch/subduction/pull/326).
+On 0.23.0, a four-commit diamond plus a fragment covering its root incorrectly
+omits an uncovered sibling from the native sync set. Real mixed-actor Automerge
+histories reproduce missing dependencies without running our compactor. The
+regression tests exercise both the minimal graph and a complete multi-actor cold
+sync. This is a published upstream repair, not a private WASM fork. The Page7
+qualification uses a fresh namespace and does not upgrade existing deployments;
+mixed-version peers and migration of old deployed data are not qualified here.
 
 The authorization patch forwards `policy` and `ephemeralPolicy`
 from `SubductionBackend` into the existing native constructor. Published
@@ -90,6 +110,24 @@ Pages uses this capability for cached checkpoints before `repo.find()`. Generic
 upstream `Repo.import()` still routes large imports and its conflict-merge fallback
 through ordinary batch admission; it remains unsuitable for this prototype's
 large checkpoints without an equivalent explicit snapshot path.
+
+The opt-in `patch-compaction.mjs` adds `backend.compact(tree, { durable })`.
+It reclaims only stored records omitted from the native minimal tree whose full
+Automerge change-hash sets occur in a retained fragment. It reads bundles directly
+and recomputes change hashes; it does not infer payload coverage from boundary
+metadata, rebuild a document from JSON, or remove CRDT history. Retained signed
+records remain byte-for-byte unchanged.
+
+The caller supplies the real persistence barrier. The bridge freezes the proof,
+releases its writer while awaiting durable publication, then rechecks exact
+records and pending intent reservations before removing anything. A second
+barrier acknowledges cleanup. Native ingress remains available during both
+remote barriers; local backend operations are ordered with compaction. Removal
+orders covered ancestors before descendants so an interrupted cleanup can still
+make progress after native tree reconstruction. `compaction.test.mjs` covers
+partial deletion, buffered crash cuts, stale peers, false coverage, and competing
+reservations. This is storage reclamation of existing fragments, not a new
+fragment builder or an arbitrary history-expiry facility.
 
 The admission patch in `patch-admission.mjs` adds exact-record reservations to
 that same storage writer. Before journaling an API edit, Pages validates the

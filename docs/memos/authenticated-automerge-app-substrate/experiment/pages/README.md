@@ -519,6 +519,51 @@ restore latency, and durable-receipt latency should be compared with `apps/pages
 using the same workload. Fewer lines or smaller incremental records alone do
 not establish lower S3/R2 request cost or faster recovery.
 
+## Page7: binary persistence and conservative cleanup
+
+Page7 keeps the same authenticated document, WebSocket, and durability boundaries.
+It writes versioned binary records instead of hex inside JSON; existing hex
+records remain readable. Signed native envelopes and Automerge changes are
+preserved byte for byte. This changes storage encoding, not CRDT identities or
+history retention. The isolated profile uses `standalone/page7` and leaves
+all earlier deployments and their records unchanged.
+
+The native dependency is uniformly pinned to published Subduction 0.26.0. Our
+0.23.0 control reproduces an upstream graph-minimization bug: a cold peer can
+miss required changes after mixed-author branches. The published fix repairs
+that traversal. The regression requires automatic convergence from an empty
+peer, not just a successful handshake or the first ready Repo handle. See
+[the exact upstream provenance](../UPSTREAM.md).
+
+Only page7 enables `PAGES_COMPACT_RECORDS=true`. After successful background
+persistence, at least 64 record writes and 256 KiB of record bytes can schedule
+one cleanup attempt, with at least 60 seconds between attempts. These are
+initial scheduling thresholds, not document limits. Cleanup removes a record
+only when native minimization omits it and a retained fragment demonstrably
+contains all its changes. The covering fragment must be durable before any
+removal. No history is erased, and an offline peer retains its merge history.
+
+The native writer is released while cleanup waits for remote durability.
+Foreground Saved requests do not trigger cleanup, although backend queue order
+can put a request behind an already-running attempt. Reservations prevent
+cleanup while an API operation needs exact records for recovery. Failures retain
+retryable state; no timer keeps scanning an idle document.
+
+The independent fixtures distinguish encoding savings from cleanup savings.
+For the deterministic 320-round prose history, binary values occupy 191,950
+bytes versus 395,972 bytes with hex framing. With native 0.26.0, cleanup removes
+only nine records, leaving 184,642 bytes. The 18 MiB high-entropy typed-history
+stress still retains roughly 19.1 MB after cleanup: genuine historical content
+cannot be removed by lossless packing. These are local adapter measurements,
+not object-store request bills or Cloudflare memory qualification.
+
+`persistence-*.test.mjs` checks cold sync, dormant-peer merges, interrupted
+publication/deletion, concurrent edits and presence during blocked durability,
+and explicit corruption failure. `persistence-benchmark.mjs` supports fresh
+process reopen measurements and a test-only history budget. That budget does
+not change the application's limits. Real runtime and live deployment checks
+remain separate evidence.
+
 ## Runtime compatibility found by this prototype
 
 On celld 0.6.1, `cbor-x` 1.6.4 detects the global Buffer shim and attempts to
@@ -535,10 +580,12 @@ On current workerd, accepted WebSockets default to Blob delivery. The byte
 transport explicitly requests ArrayBuffer delivery before installing listeners;
 otherwise the native handshake cannot decode incoming frames.
 
-SQLite Durable Objects limit a stored key and value to 2 MB. Subduction encodes
-native records as hex inside its storage frame, so the shared browser/host limit
-is 900 KiB per record, with a 1,900,000-byte guard on the stored frame plus key.
-Aggregate document history remains bounded at 16 MiB. API operations validate
+SQLite Durable Objects limit a stored key and value to 2 MB. The shared
+browser/host limit remains 900 KiB per record, with a 1,900,000-byte guard on the
+stored frame plus key. The record limit originally allowed for legacy hex
+framing; binary encoding alone does not qualify a larger native record or
+runtime memory budget. Aggregate document history remains bounded at 16 MiB.
+API operations validate
 derived records and retry intents before persisting them, so an oversized
 individual record or intent returns 413 before that intent is recorded. These
 limits also apply on celld to keep both deployments compatible.

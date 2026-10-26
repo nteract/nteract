@@ -9,7 +9,7 @@ import { SubductionBackend } from "@automerge/automerge-repo-subduction";
 import { connectPeers, closePeers, createPeer, eventually, treeId } from "../../backend.mjs";
 import { BACKEND_LIMITS, assertDocumentLimits } from "../model/limits.mjs";
 import { Page } from "./index.mjs";
-import { documentMutation } from "./mutations.mjs";
+import { documentMutation, fingerprint } from "./mutations.mjs";
 import { DurableByteStore } from "./storage.mjs";
 import { DocumentAdmission, isHistoryCapacityError } from "./history-admission.mjs";
 
@@ -35,8 +35,8 @@ class Storage {
   }
 }
 
-// Stable incompressible bytes keep this at the real 16 MiB budget, without
-// depending on randomness, wall-clock timing, or a test-only production limit.
+// Stable payload bytes AND change actors/times keep the fixture hashes and
+// fragment boundaries deterministic at the real 16 MiB production budget.
 function bytes(length, seed) {
   const output = new Uint8Array(length);
   let state = seed;
@@ -49,6 +49,16 @@ function bytes(length, seed) {
   return output;
 }
 const size = (doc) => extractRecords(doc).reduce((sum, record) => sum + recordBytes(record), 0);
+const actors = { genesis: "11".repeat(16), api: "22".repeat(16), native: "33".repeat(16) };
+function assertFixtureRecords(doc, count) {
+  const records = extractRecords(doc);
+  assert.equal(records.length, count, "review fixture if fragment grouping changes");
+  assert.ok(
+    records.every((record) => record.kind === "commit"),
+    "fixture uses bounded loose commits",
+  );
+  assert.ok(records.every((record) => recordBytes(record) + 512 <= BACKEND_LIMITS.maxRecordBytes));
+}
 const pageId = "33333333-3333-4333-8333-333333333333";
 const key = "host/operation/capacity-race";
 const limitsError = (error) => /snapshot.*limit/i.test(error.message);
@@ -74,8 +84,10 @@ async function flush(peer) {
   await peer.backend.flush();
 }
 
-// Seed legacy stranded intents through the former unreserved mutation path.
-// Recovery must now preserve accepted history and expose an explicit write block.
+// Construct exact historical pending intents, then resume their unreserved apply
+// path while a real native peer consumes remaining capacity. This targets legacy
+// apply/restart recovery; admission/journal tests cover first-call construction.
+// Recovery must preserve accepted history and expose an explicit write block.
 // Real Repo, WASM, signed native records and native incoming writes; only the
 // transport/storage are in process. No claim about celld's durability gate.
 for (const interruption of ["apply-rejected", "crash-before-apply"]) {
@@ -85,16 +97,21 @@ for (const interruption of ["apply-rejected", "crash-before-apply"]) {
     async (t) => {
       const storage = new Storage();
       const server = host(storage);
-      const author = createPeer();
+      const author = createPeer({ seed: new Uint8Array(32).fill(24) });
       const peers = [server, author];
       const wires = [];
       try {
-        let base = A.from({ page_id: pageId, stable: { text: "preserve my identity" } });
+        let base = A.change(A.init({ actor: actors.genesis }), { time: 0 }, (doc) => {
+          doc.page_id = pageId;
+          doc.stable = { text: "preserve my identity" };
+        });
         for (let n = 1; n <= 31; n++) {
-          base = A.change(base, (doc) => {
+          base = A.change(base, { time: 0 }, (doc) => {
             doc.payload = bytes(512 * 1024, n);
           });
         }
+        assertFixtureRecords(base, 32);
+        assertDocumentLimits(base);
         const stableId = A.getObjectId(base.stable);
         const a = await author.repo.import(A.save(base));
         const h = await server.repo.import(A.save(base), { docId: a.documentId });
@@ -111,27 +128,63 @@ for (const interruption of ["apply-rejected", "crash-before-apply"]) {
         const apply = (doc) => {
           doc.api = bytes(300 * 1024, 101);
         };
-        const candidate = A.change(A.clone(before), apply);
+        const candidate = A.change(A.clone(before, { actor: actors.api }), { time: 0 }, apply);
+        assertFixtureRecords(candidate, 33);
         assertDocumentLimits(candidate);
+        const apiChanges = A.getChanges(before, candidate);
+        const native = A.change(A.clone(before, { actor: actors.native }), { time: 0 }, (doc) => {
+          doc.native = bytes(300 * 1024, 102);
+        });
+        assertFixtureRecords(native, 33);
+        assertDocumentLimits(native);
+        const nativeChanges = A.getChanges(before, native);
+        A.free(native);
+        assert.equal(apiChanges.length, 1);
+        assert.equal(nativeChanges.length, 1);
+        for (const [changes, actor] of [
+          [apiChanges, actors.api],
+          [nativeChanges, actors.native],
+        ]) {
+          assert.equal(A.decodeChange(changes[0]).actor, actor);
+          assert.equal(A.decodeChange(changes[0]).time, 0);
+        }
         const args = { idempotency_key: "capacity-race", base_heads: A.getHeads(before) };
+        const identity = { principal: "fixture:owner", driver: "test" };
+        const historicalIntent = {
+          fingerprint: await fingerprint("edit_page", args, identity),
+          pending: true,
+          changes: apiChanges,
+          receipt: { page_id: pageId, heads: A.getHeads(candidate), result: null },
+        };
+        await storage.put(key, historicalIntent);
         const originalPut = storage.put.bind(storage);
         let nativeHeads, nativeBytes;
         storage.put = async (path, value) => {
           await originalPut(path, value);
           if (path !== key || !value.pending) return;
-          // Pause exactly after the intent write; the native wire remains live.
-          await a.change((doc) => {
-            doc.native = bytes(300 * 1024, 102);
-          });
+          assert.equal(value.fingerprint, historicalIntent.fingerprint);
+          assert.deepEqual(value.receipt.heads, historicalIntent.receipt.heads);
+          assert.deepEqual(
+            value.changes,
+            apiChanges,
+            "pending retry preserves exact authored bytes",
+          );
+          // Pause exactly after the pending-intent rewrite; the native wire
+          // carries a real signed edit with deterministic actor/time metadata.
+          await a.update((doc) => A.applyChanges(doc, nativeChanges)[0]);
           await eventually(() => assert.ok(h.doc().native), 10000);
           await flush(server);
           nativeHeads = A.getHeads(h.doc());
           nativeBytes = size(h.doc());
+          assertFixtureRecords(h.doc(), 33);
           assertDocumentLimits(h.doc());
-          assert.ok(
-            size(A.applyChanges(A.clone(h.doc()), value.changes)[0]) >
-              BACKEND_LIMITS.maxSnapshotBytes,
-          );
+          const combined = A.applyChanges(A.clone(h.doc()), value.changes)[0];
+          try {
+            assertFixtureRecords(combined, 34);
+            assert.ok(size(combined) > BACKEND_LIMITS.maxSnapshotBytes);
+          } finally {
+            A.free(combined);
+          }
           if (interruption === "crash-before-apply") throw Error("injected crash after intent");
         };
         await assert.rejects(
@@ -140,8 +193,8 @@ for (const interruption of ["apply-rejected", "crash-before-apply"]) {
             handle: h,
             operation: "edit_page",
             args,
-            identity: { principal: "fixture:owner", driver: "test" },
-            apply,
+            identity,
+            apply: () => assert.fail("historical pending intent must not be reauthored"),
             flush: () => flush(server),
           }),
           interruption === "crash-before-apply" ? /injected crash/ : limitsError,
@@ -149,6 +202,9 @@ for (const interruption of ["apply-rejected", "crash-before-apply"]) {
         storage.put = originalPut;
         const intent = await storage.get(key);
         assert.equal(intent.pending, true);
+        assert.deepEqual(intent.changes, apiChanges);
+        assert.equal(intent.fingerprint, historicalIntent.fingerprint);
+        assert.deepEqual(intent.receipt.heads, historicalIntent.receipt.heads);
         assert.equal(
           !!h.doc().api,
           interruption === "apply-rejected",
@@ -218,7 +274,7 @@ for (const interruption of ["apply-rejected", "crash-before-apply"]) {
             handle: recovered.handle,
             operation: "edit_page",
             args,
-            identity: { principal: "fixture:owner", driver: "test" },
+            identity,
             apply: () => assert.fail("recovered retry must not reauthor the edit"),
             flush: () => recovered.flush(),
           }),

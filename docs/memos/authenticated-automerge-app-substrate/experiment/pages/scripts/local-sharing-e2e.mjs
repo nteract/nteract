@@ -120,6 +120,7 @@ try {
       PAGES_E2E_ONLY: "true",
       PAGES_EDITOR: "wordgard",
       PAGES_ASYNC_PERSISTENCE: "true",
+      PAGES_COMPACT_RECORDS: "true",
       NOTEBOOK_CLOUD_APP_SESSION_SECRET: randomBytes(32).toString("hex"),
       NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
       NOTEBOOK_CLOUD_OIDC_FLOW: "server",

@@ -270,7 +270,7 @@ export class BufferedRecordStore {
     await this.ready;
     this.install(key, value);
     this.pending.set(key, this.values.get(key));
-    this.onDirty();
+    this.onDirty({ key, byteLength: value.byteLength });
   }
   async remove(key) {
     await this.ready;

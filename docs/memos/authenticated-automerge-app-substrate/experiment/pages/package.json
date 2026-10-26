@@ -16,7 +16,7 @@
     "@automerge/automerge-repo": "3.0.0-experimental.1",
     "@automerge/automerge-repo-subduction": "3.0.0-experimental.1",
     "@automerge/prosemirror": "0.2.0",
-    "@automerge/subduction": "0.23.0",
+    "@automerge/subduction": "0.26.0",
     "@modelcontextprotocol/sdk": "1.29.0",
     "diff": "8.0.2",
     "dompurify": "3.4.17",

@@ -1,12 +1,21 @@
 {
   "repository": "https://github.com/automerge/automerge-repo",
   "revision": "afec0444191a5a662e065f24193bef58ab07122a",
-  "subduction": "0.23.0",
+  "subduction": "0.26.0",
+  "nativeRelease": {
+    "version": "0.26.0",
+    "repository": "https://github.com/inkandswitch/subduction",
+    "revision": "dce952aac6d85506eeb0235facbb8132b39bb95c",
+    "tag": "subduction-js-v0.26.0",
+    "minimizationFix": "239c5fc125619d345be4015d186b91ac587306ad",
+    "tarballIntegrity": "sha512-uycgMB6A60wfY2+wE3P2M/vwcELsGnVLezX2SMNdo90qFkhueLoHN5IAB/asAXgHzAof8NREvKYdwSrNWBoJwQ==",
+    "wasmSha256": "c769ae1fa385d73159af94331886201a4cfd5e23d6c5110dd1676ab17da9c8cb"
+  },
   "automerge": "3.5.0",
   "patch": {
     "path": "packages/automerge-repo-subduction/src/index.ts",
     "before": "1a870be50a4a447a91038034cb5ec227568b34afc844d4f5e19d787fd58a0bd3",
-    "after": "84077f9440ca9a3d90000596e1da9dea0ac6cd6912c84f9c5f99bb60a798a312",
+    "after": "2797c8191d7b0bea2992f75e8da27b952591b38310b7f44f4dea69b2341dc107",
     "storageIndex": {
       "path": "packages/automerge-repo-subduction/src/storage.ts",
       "before": "00169b3a71473e01c00cd37298ffcf4bc2b7c8d6f8f7f8bcce90ada9c23d4029",
@@ -24,10 +33,26 @@
         "after": "84077f9440ca9a3d90000596e1da9dea0ac6cd6912c84f9c5f99bb60a798a312"
       }
     ],
+    "compaction": [
+      {
+        "path": "packages/automerge-repo-subduction/src/compaction.ts",
+        "after": "001365fbf78e1d9ccb4f35ed15e497a196135b7b3b6ce669d881cbd932652292"
+      },
+      {
+        "path": "packages/automerge-repo-subduction/src/storage.ts",
+        "before": "5e39c87bd46818ea836e9e6fd64ef61bc43ac038ced2741d07bcccf1ee1a1b79",
+        "after": "f586a5d51ab0ce106add0847ecbe84c5e8ae623145a14b7809a213fe525d7f33"
+      },
+      {
+        "path": "packages/automerge-repo-subduction/src/index.ts",
+        "before": "84077f9440ca9a3d90000596e1da9dea0ac6cd6912c84f9c5f99bb60a798a312",
+        "after": "2797c8191d7b0bea2992f75e8da27b952591b38310b7f44f4dea69b2341dc107"
+      }
+    ],
     "recordCodec": {
       "path": "packages/automerge-repo-subduction/src/storage.ts",
-      "before": "5e39c87bd46818ea836e9e6fd64ef61bc43ac038ced2741d07bcccf1ee1a1b79",
-      "after": "0d6b0d7590cbc0c2f6748b376c1a32b6cf56c7f93ff543e9fb5c6f169eb8eedb",
+      "before": "f586a5d51ab0ce106add0847ecbe84c5e8ae623145a14b7809a213fe525d7f33",
+      "after": "9c0d9b63efb620f839a3d4ad53388510a80f670272aa3e8782c717eadc35caaf",
       "codec": {
         "path": "packages/automerge-repo-subduction/src/record-codec.ts",
         "sha256": "fad0c5dcddd327f1ac07f8cac0c3b3b156aeaabd8a9bf1283266b5f391c212cb"
