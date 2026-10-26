@@ -1162,3 +1162,13 @@ test("page7 rejects frozen manifests, DNS ownership and occupied resources", asy
     );
   }
 });
+
+test("compaction maintenance is enabled only for the new page7 deployment", (t) => {
+  for (const target of ["page6", "page7"]) {
+    const f = installFixture(t, { target });
+    f.execute();
+    const config = JSON.parse(f.read(f.release + "/wrangler.json"));
+    assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, "true");
+    assert.equal(config.vars.PAGES_COMPACT_RECORDS, target === "page7" ? "true" : undefined);
+  }
+});

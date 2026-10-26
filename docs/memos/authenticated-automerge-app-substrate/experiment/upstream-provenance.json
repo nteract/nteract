@@ -23,6 +23,15 @@
         "before": "a4a66198ed646497f2831483300a3a7279880a02170cbb957bc3b2828be1d5b3",
         "after": "84077f9440ca9a3d90000596e1da9dea0ac6cd6912c84f9c5f99bb60a798a312"
       }
-    ]
+    ],
+    "recordCodec": {
+      "path": "packages/automerge-repo-subduction/src/storage.ts",
+      "before": "5e39c87bd46818ea836e9e6fd64ef61bc43ac038ced2741d07bcccf1ee1a1b79",
+      "after": "0d6b0d7590cbc0c2f6748b376c1a32b6cf56c7f93ff543e9fb5c6f169eb8eedb",
+      "codec": {
+        "path": "packages/automerge-repo-subduction/src/record-codec.ts",
+        "sha256": "fad0c5dcddd327f1ac07f8cac0c3b3b156aeaabd8a9bf1283266b5f391c212cb"
+      }
+    }
   }
 }

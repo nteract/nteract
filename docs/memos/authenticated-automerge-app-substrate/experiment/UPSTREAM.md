@@ -43,7 +43,7 @@ still validate stored envelopes, native identities, checksums and limits. Resolv
 writes update the index; failed operations and deletes invalidate it before reuse.
 Conflict checks, aggregate caps, persisted history and failure/flush receipts are
 unchanged. Returned records are copied. Native reads construct fresh wrappers
-from the validated envelope bytes; owning WASM wrappers and full hex-encoded
+from the validated envelope bytes; owning WASM wrappers and full encoded
 storage frames are never cached. Startup and reset validate both record kinds.
 This adds a bounded-by-document-history memory copy for each accessed tree; it is
 not safe to share its storage namespace with an independent writer. The pinned
@@ -61,6 +61,20 @@ also need an aggregate cache budget.
 conflicting/duplicate saves, concurrent caps, ambiguous partial batches, deletion,
 returned-byte ownership and corruption detection on reopening. Read counts show
 less storage work; live propagation latency still needs separate measurement.
+
+The record-codec patch in `patch-record-codec.mjs` writes a versioned binary
+compound record: a fixed 112-byte header followed by the unchanged native signed
+envelope and blob. Tree, record kind/key, and the signed-envelope checksum remain
+in the header; lengths, version, reserved bytes, and record limits are checked
+before slicing payloads. Existing hexadecimal JSON v1 records remain readable,
+including mixed stores, with no eager rewrite. The source template is embedded
+in the patch module so the build fingerprint covers it, and provenance records
+its generated hash. Existing admission limits and atomic single-value writes
+are unchanged. This changes stored framing, not native signatures, history,
+wire messages, or authentication. Stored-envelope checks detect corruption;
+native authenticated ingress remains responsible for signer verification.
+`record-codec.test.mjs` covers native commit/fragment round trips, legacy reads,
+malformed lengths, binding/digest failures, ownership, and uncertain atomic saves.
 
 The snapshot-store patch in `patch-snapshot-store.mjs` adds an explicit local
 checkpoint import path. It validates the incoming records and their full union

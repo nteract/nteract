@@ -1,6 +1,7 @@
 import test, { before } from "node:test";
 import assert from "node:assert/strict";
 import * as N from "@automerge/subduction";
+import { decodeRecordFrame } from "./upstream/packages/automerge-repo-subduction/src/record-codec.ts";
 import { commitId, recordBytes, sedimentreeId } from "@automerge/automerge-repo/sedimentree";
 import {
   StorageBridge,
@@ -74,10 +75,7 @@ before(async () => {
           const frame = [...store.values.entries()].find(([path]) =>
             path.endsWith(`/${record.kind === "commit" ? "commits" : "fragments"}/${key}`),
           )[1];
-          signed.set(
-            record,
-            Uint8Array.from(Buffer.from(JSON.parse(new TextDecoder().decode(frame)).signed, "hex")),
-          );
+          signed.set(record, decodeRecordFrame(frame, limits.maxRecordBytes).signed);
         }
       } finally {
         await engine.disconnectAll();

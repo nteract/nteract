@@ -1,9 +1,9 @@
 import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
 import { recordBytes } from "@automerge/automerge-repo/sedimentree";
 
-// The native adapter stores each record as hex inside a JSON frame. Keeping
-// signed record bytes below 900 KiB leaves room under SQLite DO's 2 MB value
-// limit for that doubling, the frame, its key, and structured-clone overhead.
+// Binary v2 stores signed metadata and payload without hex expansion, plus a
+// 112-byte header. Keep the existing admission budgets until page7 workload
+// qualification sets resource limits; legacy hex records remain readable.
 export const BACKEND_LIMITS = Object.freeze({
   maxRecordBytes: 900 * 1024,
   maxSnapshotBytes: 16 * 1024 * 1024,

@@ -1,6 +1,10 @@
 import test, { before } from "node:test";
 import assert from "node:assert/strict";
 import * as N from "@automerge/subduction";
+import {
+  decodeRecordFrame,
+  encodeRecordFrame,
+} from "./upstream/packages/automerge-repo-subduction/src/record-codec.ts";
 import { commitId, recordBytes, sedimentreeId } from "@automerge/automerge-repo/sedimentree";
 import {
   StorageBridge,
@@ -73,10 +77,7 @@ before(async () => {
           const frame = [...store.values.entries()].find(([path]) =>
             path.endsWith(`/${record.kind === "commit" ? "commits" : "fragments"}/${key}`),
           )[1];
-          signed.set(
-            record,
-            Uint8Array.from(Buffer.from(JSON.parse(new TextDecoder().decode(frame)).signed, "hex")),
-          );
+          signed.set(record, decodeRecordFrame(frame, limits.maxRecordBytes).signed);
         }
       } finally {
         await engine.disconnectAll();
@@ -384,9 +385,9 @@ for (const corruptKind of ["commit", "fragment"])
     const path = [...store.values.keys()].find((key) =>
       key.includes(corruptKind === "commit" ? "/commits/" : "/fragments/"),
     );
-    const frame = JSON.parse(new TextDecoder().decode(store.values.get(path)));
-    frame.signed = `${frame.signed.slice(0, -2)}${frame.signed.endsWith("00") ? "ff" : "00"}`;
-    store.values.set(path, new TextEncoder().encode(JSON.stringify(frame)));
+    const frame = decodeRecordFrame(store.values.get(path), limits.maxRecordBytes);
+    frame.signed[frame.signed.length - 1] ^= 255;
+    store.values.set(path, encodeRecordFrame(frame, limits.maxRecordBytes));
     const reopened = new StorageBridge(store, limits, () => {});
     await assert.rejects(
       nativeRead(reopened, corruptKind === "commit" ? "fragment" : "commit"),

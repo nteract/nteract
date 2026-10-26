@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
+import {
+  decodeRecordFrame,
+  RECORD_HEADER_BYTES,
+} from "../../upstream/packages/automerge-repo-subduction/src/record-codec.ts";
 import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
 import { Repo } from "@automerge/automerge-repo";
@@ -36,7 +40,7 @@ class Storage {
   }
 }
 
-test("near-limit native records fit their real signed hex storage frame", async () => {
+test("near-limit native records fit their real signed binary storage frame", async () => {
   const storage = new Storage();
   const signer = N.MemorySigner.fromBytes(randomBytes(32));
   const backend = new SubductionBackend({
@@ -55,10 +59,15 @@ test("near-limit native records fit their real signed hex storage frame", async 
     await backend.flush();
     const frames = [...storage.values].filter(([key]) => /\/(commits|fragments)\//.test(key));
     assert.ok(frames.length > 0);
-    assert.ok(frames.some(([, value]) => value.byteLength > 1_800_000));
+    assert.ok(frames.some(([, value]) => value.byteLength > 900_000));
+    assert.ok(
+      frames.every(
+        ([, value]) => value.byteLength <= BACKEND_LIMITS.maxRecordBytes + RECORD_HEADER_BYTES,
+      ),
+    );
     for (const [key, value] of frames) {
       assert.ok(new TextEncoder().encode(key).length + value.byteLength <= MAX_STORED_BYTES);
-      const frame = JSON.parse(new TextDecoder().decode(value));
+      const frame = decodeRecordFrame(value, BACKEND_LIMITS.maxRecordBytes);
       assert.ok(frame.signed.length > 0 && frame.blob.length > 0);
     }
   } finally {

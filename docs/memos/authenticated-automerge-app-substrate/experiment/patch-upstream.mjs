@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { patchStorageIndex } from "./patch-storage-index.mjs";
 import { patchSnapshotStore } from "./patch-snapshot-store.mjs";
 import { patchAdmission } from "./patch-admission.mjs";
+import { patchRecordCodec } from "./patch-record-codec.mjs";
 
 // Source-hash-checked alterations to pinned Repo3. No wire or WASM changes.
 export function patchUpstream(root) {
@@ -41,6 +42,7 @@ export function patchUpstream(root) {
   writeFileSync(path, source);
   const storageIndex = patchStorageIndex(root);
   const admission = patchAdmission(root);
+  const recordCodec = patchRecordCodec(root);
   const after = createHash("sha256").update(readFileSync(path)).digest("hex");
   return {
     path: "packages/automerge-repo-subduction/src/index.ts",
@@ -48,5 +50,6 @@ export function patchUpstream(root) {
     after,
     storageIndex,
     admission,
+    recordCodec,
   };
 }
