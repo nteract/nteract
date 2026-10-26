@@ -1,10 +1,60 @@
 // Allowlisted isolated lab targets. Never accept arbitrary host, port or storage overrides.
+// Official v0.6.3 Linux x86_64 executable (decompressed release asset).
+// https://github.com/denoland/celld/releases/tag/v0.6.3
+export const CELLD_RELEASE = Object.freeze({
+  path: "/usr/local/bin/celld-v0.6.3",
+  version: "celld 0.6.3",
+  sha256: "eb0a8158421b69d68dd5d28f2298a7d411dde498295833deeb1cc5ce53b7eb75",
+});
+
+// Allocator diagnostics can precede --version on stdout. Require one complete
+// release line rather than accepting a debug suffix or conflicting versions.
+export function parseRuntimeVersion(output) {
+  const lines =
+    typeof output === "string"
+      ? output.split(/\r?\n/).filter((line) => line.startsWith("celld "))
+      : [];
+  if (lines.length !== 1 || !/^celld (0|[1-9]\d*)[.](0|[1-9]\d*)[.](0|[1-9]\d*)$/.test(lines[0]))
+    throw new Error("Expected exactly one canonical celld release version line");
+  return lines[0];
+}
+
+// Inspect both the staged source and a service's private binary before writing
+// anything. A later host rollout or same-version custom build needs an explicit
+// new qualification rather than being silently replaced by an app deployment.
+export function verifyRuntime(candidate, installed) {
+  if (candidate?.version !== CELLD_RELEASE.version || candidate?.sha256 !== CELLD_RELEASE.sha256)
+    throw new Error(`Expected the official ${CELLD_RELEASE.version} Linux x86_64 executable`);
+  if (installed === undefined) return;
+  if (installed.version === candidate.version) {
+    if (installed.sha256 !== candidate.sha256)
+      throw new Error(
+        "Installed celld has the same version but a different build; qualify it before replacement",
+      );
+    return;
+  }
+  const parse = (version) => {
+    const match = /^celld (0|[1-9]\d*)[.](0|[1-9]\d*)[.](0|[1-9]\d*)$/.exec(version ?? "");
+    const parts = match?.slice(1).map(Number);
+    return parts?.every(Number.isSafeInteger) ? parts : undefined;
+  };
+  const current = parse(installed.version);
+  const next = parse(candidate.version);
+  if (current) {
+    for (let i = 0; i < next.length; i++) {
+      if (current[i] < next[i]) return;
+      if (current[i] > next[i]) break;
+    }
+  }
+  throw new Error("Refusing to replace a newer or unrecognized celld runtime");
+}
+
 const shared = {
   host: "lab1",
   bucket: "nteract-celld-lab-621741996708",
   region: "us-east-1",
-  runtime: "/usr/local/bin/celld-v0.6.1",
-  requiredVersion: "celld 0.6.1",
+  runtime: CELLD_RELEASE.path,
+  requiredVersion: CELLD_RELEASE.version,
 };
 const targets = Object.freeze({
   "pages-next": Object.freeze({

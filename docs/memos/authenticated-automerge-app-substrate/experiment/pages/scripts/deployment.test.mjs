@@ -224,6 +224,8 @@ function installFixture(
     fresh = false,
     listeners = "",
     rules = "{}",
+    installedRuntime,
+    candidateVersion,
   } = {},
 ) {
   const root = mkdtempSync(path.join(tmpdir(), "pages-install-retry-"));
@@ -265,11 +267,13 @@ function installFixture(
     source_sha: "a".repeat(40),
     source_tree: "b".repeat(40),
     deployment,
-    runtime: { sha256: digest("qualified runtime") },
+    runtime: { version: profiles.CELLD_RELEASE.version, sha256: profiles.CELLD_RELEASE.sha256 },
     files: Object.fromEntries(Object.entries(files).map(([file, value]) => [file, digest(value)])),
   };
   write(stage + "/manifest.json", JSON.stringify(manifest));
   write(deployment.runtime, "qualified runtime");
+  if (installedRuntime)
+    write("/opt/" + deployment.service + "/celld", installedRuntime.bytes ?? "previous runtime");
   if (!fresh) {
     write(
       configDir + "/ownership.json",
@@ -296,6 +300,11 @@ function installFixture(
   filesystem.chmodSync = filesystem.chownSync = () => {};
   filesystem.renameSync = (from, to) => fs.renameSync(local(from), local(to));
   filesystem.cpSync = (from, to, ...args) => {
+    if (pendingFailure === "runtime-copy" && to.endsWith("/celld.next")) {
+      pendingFailure = undefined;
+      fs.writeFileSync(local(to), "changed during copy");
+      return;
+    }
     if (pendingFailure === "copy" && to.endsWith("/public/app.js")) {
       pendingFailure = undefined;
       throw Error("injected copy failure");
@@ -312,7 +321,11 @@ function installFixture(
         pendingFailure = undefined;
         throw Object.assign(Error("injected command failure"), { status: 1 });
       }
-      if (command === deployment.runtime) return deployment.requiredVersion;
+      if (command === deployment.runtime) return candidateVersion ?? deployment.requiredVersion;
+      if (command === "/opt/" + deployment.service + "/celld")
+        return fs.readFileSync(local(command), "utf8") === "qualified runtime"
+          ? deployment.requiredVersion
+          : installedRuntime.version;
       if (command === "id") {
         if (fresh && args.length === 1) throw Object.assign(Error("missing user"), { status: 1 });
         return "998";
@@ -328,7 +341,18 @@ function installFixture(
   };
   const modules = {
     "node:child_process": childProcess,
-    "node:crypto": { createHash, randomBytes: (size) => Buffer.alloc(size, 42) },
+    "node:crypto": {
+      // Stand in for the large official executable only; every other artifact
+      // and tampered runtime still uses real SHA256 hashing.
+      createHash: (algorithm) => ({
+        update(value) {
+          if (Buffer.from(value).equals(Buffer.from("qualified runtime")))
+            return { digest: () => profiles.CELLD_RELEASE.sha256 };
+          return createHash(algorithm).update(value);
+        },
+      }),
+      randomBytes: (size) => Buffer.alloc(size, 42),
+    },
     "node:fs": filesystem,
     "node:path": path,
     "./profiles.mjs": profiles,
@@ -356,6 +380,124 @@ function installFixture(
     read: (file) => fs.readFileSync(local(file), "utf8"),
   };
 }
+
+test("version parsing tolerates allocator diagnostics without accepting ambiguous builds", () => {
+  assert.equal(profiles.parseRuntimeVersion("celld 0.6.3\n"), "celld 0.6.3");
+  assert.equal(
+    profiles.parseRuntimeVersion("WARN allocator background thread unavailable\r\ncelld 0.6.3\r\n"),
+    "celld 0.6.3",
+  );
+  for (const value of [
+    undefined,
+    "",
+    "celld 0.6.3 (debug)",
+    "celld 0.6.3\ncelld 0.6.4",
+    "celld 0.6.3\ncelld custom",
+    "celld 0.6.3\ncelld 0.6.3",
+  ])
+    assert.throws(() => profiles.parseRuntimeVersion(value), /canonical celld release/);
+});
+
+test("installer accepts an official runtime with allocator warning stdout", (t) => {
+  const fixture = installFixture(t, {
+    candidateVersion: "WARN allocator background thread unavailable\ncelld 0.6.3\n",
+    installedRuntime: { version: "WARN allocator background thread unavailable\ncelld 0.6.1\n" },
+  });
+  fixture.execute();
+  assert.equal(fixture.read("/opt/nteract-pages-next/celld"), "qualified runtime");
+});
+
+test("all Pages targets require the verified 0.6.3 Linux executable", () => {
+  const release = profiles.CELLD_RELEASE;
+  assert.equal(release.version, "celld 0.6.3");
+  assert.equal(release.path, "/usr/local/bin/celld-v0.6.3");
+  assert.equal(release.sha256, "eb0a8158421b69d68dd5d28f2298a7d411dde498295833deeb1cc5ce53b7eb75");
+  for (const target of ["pages-next", "page3", "page4", "page5", "page6"]) {
+    const config = profiles.deploymentProfile(target).deployment;
+    assert.equal(config.runtime, release.path);
+    assert.equal(config.requiredVersion, release.version);
+  }
+  profiles.verifyRuntime(release);
+  for (const candidate of [
+    undefined,
+    { ...release, version: "celld 0.6.1" },
+    { ...release, sha256: "0".repeat(64) },
+  ])
+    assert.throws(() => profiles.verifyRuntime(candidate), /official celld 0.6.3/);
+});
+
+for (const installed of ["celld 0.6.1", "celld 0.6.2", "celld 0.6.3"])
+  test(`installation permits ${installed} to the pinned release and keeps telemetry on retry`, (t) => {
+    const fixture = installFixture(t, {
+      target: "page6",
+      installedRuntime: {
+        version: installed,
+        ...(installed === "celld 0.6.3" && { bytes: "qualified runtime" }),
+      },
+    });
+    fixture.execute();
+    fixture.execute();
+    assert.equal(fixture.read("/opt/nteract-page6/celld"), "qualified runtime");
+    const unit = fixture.read("/etc/systemd/system/nteract-page6.service");
+    assert.match(unit, /Environment=CELLD_OTEL=1\n/);
+    assert.match(unit, /Environment=CELLD_OTEL_RETENTION=30d\n/);
+    assert.doesNotMatch(unit, /CELLD_OTEL_(?:FLUSH_MS|FLUSH_BYTES|SINK)=/);
+  });
+
+for (const installed of [
+  "celld 0.6.4",
+  "celld 0.7.0",
+  "celld 1.0.0",
+  "celld 0.6.3",
+  "celld 0.6.3-custom",
+  "unknown",
+])
+  test(`installation refuses to replace an existing ${installed} build before mutation`, (t) => {
+    const fixture = installFixture(t, {
+      target: "page6",
+      installedRuntime: { version: installed },
+    });
+    assert.throws(
+      fixture.execute,
+      /newer or unrecognized|same version but a different build|canonical celld release/,
+    );
+    assert.equal(fixture.read("/opt/nteract-page6/celld"), "previous runtime");
+    assert.equal(fs.existsSync(fixture.local(fixture.release)), false);
+    assert.ok(fixture.calls.every(({ args }) => args[0] === "--version"));
+  });
+
+test("runtime copy mismatch preserves the active executable and can be retried", (t) => {
+  const fixture = installFixture(t, {
+    target: "page6",
+    failure: "runtime-copy",
+    installedRuntime: { version: "celld 0.6.1" },
+  });
+  assert.throws(fixture.execute, /Copied celld differs/);
+  assert.equal(fixture.read("/opt/nteract-page6/celld"), "previous runtime");
+  assert.ok(fixture.calls.every(({ command }) => command !== "runuser"));
+  fixture.execute();
+  assert.equal(fixture.read("/opt/nteract-page6/celld"), "qualified runtime");
+});
+
+test("installer rejects unqualified staged or changed source runtimes before mutation", (t) => {
+  const badManifest = installFixture(t);
+  badManifest.write(
+    badManifest.stage + "/manifest.json",
+    JSON.stringify({
+      ...badManifest.manifest,
+      runtime: { version: "celld 0.6.3", sha256: "0".repeat(64) },
+    }),
+  );
+  assert.throws(badManifest.execute, /official celld 0.6.3/);
+  assert.deepEqual(badManifest.calls, []);
+  const badVersion = installFixture(t, { candidateVersion: "celld 0.6.1" });
+  assert.throws(badVersion.execute, /official celld 0.6.3/);
+  const badBytes = installFixture(t);
+  badBytes.write(profiles.CELLD_RELEASE.path, "unexpected runtime");
+  assert.throws(badBytes.execute, /official celld 0.6.3/);
+  for (const fixture of [badVersion, badBytes])
+    assert.equal(fs.existsSync(fixture.local(fixture.release)), false);
+});
 
 for (const failure of ["deploy", "restart"])
   for (const previous of [true, false])
@@ -501,6 +643,9 @@ for (const target of ["pages-next", "page3", "page4", "page5", "page6"])
     assert.deepEqual(config.migrations, [{ tag: "fixture", new_sqlite_classes: ["PageRecords"] }]);
     const unit = fixture.read("/etc/systemd/system/" + deployment.service + ".service");
     assert.match(unit, /Environment=CELLD_DURABILITY=bucket/);
+    assert.match(unit, /Environment=CELLD_OTEL=1\n/);
+    assert.match(unit, /Environment=CELLD_OTEL_RETENTION=30d\n/);
+    assert.doesNotMatch(unit, /CELLD_OTEL_(?:FLUSH_MS|FLUSH_BYTES|SINK)=/);
     assert.ok(
       unit.includes(
         "--listen " + deployment.listen + " --internal-listen " + deployment.internalListen,

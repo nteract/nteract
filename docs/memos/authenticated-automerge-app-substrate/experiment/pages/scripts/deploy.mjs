@@ -20,6 +20,8 @@ import {
   selectTarget,
   stagePattern,
   verifyDeployment,
+  verifyRuntime,
+  parseRuntimeVersion,
 } from "./deployment/profiles.mjs";
 
 const scripts = path.dirname(fileURLToPath(import.meta.url));
@@ -69,10 +71,8 @@ function prepare() {
         ),
     ),
   );
-  if (runtime.version !== deployment.requiredVersion)
-    throw new Error(
-      "lab1 runtime differs from the qualified celld 0.6.1; qualify it before deploying",
-    );
+  runtime.version = parseRuntimeVersion(runtime.version);
+  verifyRuntime(runtime);
   const output = path.join(repo, ".context", target + "-deploy", source);
   if (existsSync(output))
     throw new Error("Prepared release already exists; inspect it instead of replacing it");

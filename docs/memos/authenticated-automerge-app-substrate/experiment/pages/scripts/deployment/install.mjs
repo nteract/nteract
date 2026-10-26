@@ -14,7 +14,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
+import {
+  deploymentProfile,
+  stageTarget,
+  verifyDeployment,
+  verifyRuntime,
+  parseRuntimeVersion,
+} from "./profiles.mjs";
 const [stage, apply, extra] = process.argv.slice(2);
 if (process.getuid() !== 0 || apply !== "--apply" || extra)
   throw new Error("Explicit root installation with a prepared stage is required");
@@ -67,16 +73,22 @@ for (const [file, digest] of Object.entries(manifest.files)) {
   if (!lstatSync(actual).isFile() || hash(readFileSync(actual)) !== digest)
     throw new Error("Artifact checksum mismatch");
 }
-if (
-  run(expected.runtime, ["--version"]) !== expected.requiredVersion ||
-  hash(readFileSync(expected.runtime)) !== manifest.runtime.sha256
-)
-  throw new Error("Installed celld changed after preparation");
+verifyRuntime(manifest.runtime);
+const runtime = {
+  version: parseRuntimeVersion(run(expected.runtime, ["--version"])),
+  sha256: hash(readFileSync(expected.runtime)),
+};
+verifyRuntime(runtime);
 const base = "/opt/" + expected.service,
   configDir = "/etc/" + expected.service,
   state = "/var/lib/" + expected.service;
 const unit = "/etc/systemd/system/" + expected.service + ".service";
 const owned = existsSync(configDir + "/ownership.json");
+if (owned && existsSync(base + "/celld"))
+  verifyRuntime(runtime, {
+    version: parseRuntimeVersion(run(base + "/celld", ["--version"])),
+    sha256: hash(readFileSync(base + "/celld")),
+  });
 if (owned) {
   const ownership = JSON.parse(readFileSync(configDir + "/ownership.json"));
   if (ownership.prefix !== expected.prefix || ownership.hostname !== expected.hostname)
@@ -243,6 +255,8 @@ function permissions(directory) {
 }
 permissions(base + "/releases");
 cpSync(expected.runtime, base + "/celld.next");
+if (hash(readFileSync(base + "/celld.next")) !== runtime.sha256)
+  throw new Error("Copied celld differs from the verified release");
 chmodSync(base + "/celld.next", 0o755);
 renameSync(base + "/celld.next", base + "/celld");
 for (const helper of ["firewall.mjs", "profiles.mjs"]) {
@@ -283,7 +297,7 @@ writeFileSync(
 );
 writeFileSync(
   unit,
-  `[Unit]\nDescription=Isolated native Pages experiment on celld\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=${expected.service}\nGroup=${expected.service}\nWorkingDirectory=${state}\nEnvironment=AWS_REGION=us-east-1\nEnvironment=CELLD_DURABILITY=bucket\nEnvironment=CELLD_TOKIO_THREADS=2\nEnvironment=CELLD_V8_HEAP_LIMIT_MB=256\nEnvironment=CELLD_MAX_REQUEST_BODY_BYTES=2097152\nEnvironment=CELLD_MAX_RSS_MB=768\nEnvironment=CELLD_LOCAL_CACHE_MAX_BYTES=536870912\nEnvironment=CELLD_TEST_DATA_DIR=${state}/cache\nExecStartPre=+/usr/bin/node ${base}/firewall.mjs --target ${target}\nExecStart=${base}/celld --bucket s3://${expected.bucket}/${expected.prefix} --region ${expected.region} --listen ${expected.listen} --internal-listen ${expected.internalListen}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=60\nLimitNOFILE=65536\nMemoryMax=1G\nCPUQuota=100%\nTasksMax=256\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nProtectSystem=strict\nReadWritePaths=${state}\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n`,
+  `[Unit]\nDescription=Isolated native Pages experiment on celld\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=${expected.service}\nGroup=${expected.service}\nWorkingDirectory=${state}\nEnvironment=AWS_REGION=us-east-1\nEnvironment=CELLD_DURABILITY=bucket\nEnvironment=CELLD_OTEL=1\nEnvironment=CELLD_OTEL_RETENTION=30d\nEnvironment=CELLD_TOKIO_THREADS=2\nEnvironment=CELLD_V8_HEAP_LIMIT_MB=256\nEnvironment=CELLD_MAX_REQUEST_BODY_BYTES=2097152\nEnvironment=CELLD_MAX_RSS_MB=768\nEnvironment=CELLD_LOCAL_CACHE_MAX_BYTES=536870912\nEnvironment=CELLD_TEST_DATA_DIR=${state}/cache\nExecStartPre=+/usr/bin/node ${base}/firewall.mjs --target ${target}\nExecStart=${base}/celld --bucket s3://${expected.bucket}/${expected.prefix} --region ${expected.region} --listen ${expected.listen} --internal-listen ${expected.internalListen}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=60\nLimitNOFILE=65536\nMemoryMax=1G\nCPUQuota=100%\nTasksMax=256\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nProtectSystem=strict\nReadWritePaths=${state}\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n`,
   { mode: 0o644 },
 );
 run("systemd-analyze", ["verify", unit]);

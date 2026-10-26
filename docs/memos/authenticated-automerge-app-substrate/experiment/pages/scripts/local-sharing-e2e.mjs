@@ -10,6 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { celldCborPlugin } from "./celld-cbor.mjs";
+import { CELLD_RELEASE, parseRuntimeVersion } from "./deployment/profiles.mjs";
 import { fixtureWhoamiUrl, generateFixtureKeys } from "./fixtures/local-api-keys.mjs";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -141,17 +142,16 @@ try {
       .filter((key) => process.env[key] !== undefined)
       .map((key) => [key, process.env[key]]),
   );
-  const version = execFileSync(process.env.CELLD_BIN || "celld", ["--version"], {
-    encoding: "utf8",
-    timeout: 5000,
-    env: hostEnv,
-    stdio: ["ignore", "pipe", "pipe"],
-  })
-    .trim()
-    .split(/\r?\n/)
-    .find((line) => line.startsWith("celld "));
-  if (version !== "celld 0.6.1")
-    throw new Error(`Sharing fixture requires celld 0.6.1; found ${version}`);
+  const version = parseRuntimeVersion(
+    execFileSync(process.env.CELLD_BIN || "celld", ["--version"], {
+      encoding: "utf8",
+      timeout: 5000,
+      env: hostEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    }),
+  );
+  if (version !== CELLD_RELEASE.version)
+    throw new Error(`Sharing fixture requires ${CELLD_RELEASE.version}; found ${version}`);
   host = start(
     process.env.CELLD_BIN || "celld",
     ["dev", runtime, "--host", "127.0.0.1", "--port", String(port), "--no-watch", "--logs"],

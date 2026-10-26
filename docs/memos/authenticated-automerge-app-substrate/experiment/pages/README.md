@@ -36,7 +36,7 @@ npx playwright install chromium
 npm run test:e2e:sharing --workspace @nteract/pages-native-experiment
 ```
 
-This command builds Pages, starts its own loopback celld 0.6.1 process on an
+This command builds Pages, starts its own loopback celld 0.6.3 process on an
 available port, and tests three separate browser profiles using the real local
 OIDC authorization-code/PKCE flow. It covers private defaults, invitations,
 viewer/editor permissions, native edits reaching other browsers, reload,
@@ -624,10 +624,26 @@ existing tunnel ID.
 `node scripts/deploy.mjs plan` is read-only. After inspecting the current lab1
 runtime, ports, prefix, tunnel and firewall ownership, use `prepare`,
 `upload LOCAL_STAGE`, `install REMOTE_STAGE --apply`, then
-`publish REMOTE_STAGE --apply`. The installer requires the qualified celld 0.6.1
-binary at `/usr/local/bin/celld-v0.6.1` and a clean committed source tree whose
-fingerprint matches the bundle. Install that version beside the shared runtime;
-the deployment never upgrades `/usr/local/bin/celld` used by other services.
+`publish REMOTE_STAGE --apply`. The installer requires the official celld 0.6.3
+Linux x86_64 binary at `/usr/local/bin/celld-v0.6.3`, checks its executable SHA256
+against `CELLD_RELEASE` in `scripts/deployment/profiles.mjs`, and requires a clean
+committed source tree whose fingerprint matches the bundle. Install that version
+beside the shared runtime; the deployment never upgrades `/usr/local/bin/celld`
+used by other services. Each service runs a private copy. Installation refuses to
+replace a newer version or a different build reporting the same version.
+
+Generated service units enable `CELLD_OTEL=1` with `CELLD_OTEL_RETENTION=30d`.
+Batching overrides are omitted, retaining celld 0.6.3's five-minute/5 MiB defaults.
+Telemetry uses the fleet bucket under its telemetry prefix. The 30-day retention
+policy collects older dated partitions; it is not an exact rolling-hour cutoff.
+The removed `CELLD_OTEL_SINK` variable must not be set. See the
+[pinned telemetry configuration](https://github.com/denoland/celld/blob/8702f6d186c77698dbfb30cf29e3b1922a88f008/docs/telemetry.md).
+For runtime-only rollouts, preserve the deployed app, prior versioned executable,
+and runtime receipt, and qualify rollback against the on-disk state. This app
+installer intentionally refuses runtime downgrades; it also deploys app artifacts
+and rewrites the unit. After a runtime rollout, verify health, native collaboration,
+and actual Parquet delivery beneath `<fleet-prefix>/telemetry/{traces,logs}`.
+A generated unit or successful restart alone does not establish telemetry delivery.
 It creates the session secret on the host. Only the explicit release-file
 allowlist is staged; local dev credentials and databases are excluded.
 
