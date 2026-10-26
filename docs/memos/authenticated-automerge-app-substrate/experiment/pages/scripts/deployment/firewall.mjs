@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { realpathSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { deploymentProfile, selectTarget } from "./profiles.mjs";
+import { deploymentProfile, selectTarget, assertQualifiedDeploymentTarget } from "./profiles.mjs";
 
 export function pagesFirewall(uid, existing = false, target = "pages-next") {
   const profile = deploymentProfile(target);
@@ -44,8 +44,9 @@ export function applyPagesFirewall(
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(new URL(import.meta.url))) {
-  if (process.getuid() !== 0) throw new Error("Pages firewall setup requires root");
   const { target, args } = selectTarget(process.argv.slice(2));
+  assertQualifiedDeploymentTarget(target);
+  if (process.getuid() !== 0) throw new Error("Pages firewall setup requires root");
   if (args.length) throw new Error("Unexpected firewall argument");
   const profile = deploymentProfile(target);
   const uid = Number(

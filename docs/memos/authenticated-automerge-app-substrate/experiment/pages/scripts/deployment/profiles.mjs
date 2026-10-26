@@ -184,6 +184,14 @@ export function deploymentProfile(target = "pages-next") {
   if (!Object.hasOwn(targets, target)) throw new Error("Unknown Pages deployment target");
   return targets[target];
 }
+// This binary-v2 release is qualified only for its fresh Page7 storage prefix.
+// Historical profiles remain readable for comparison and frozen-release checks.
+export function assertQualifiedDeploymentTarget(target) {
+  deploymentProfile(target);
+  if (target !== "page7")
+    throw new Error("This build is qualified only for page7; earlier deployments are frozen");
+}
+
 export function selectTarget(argv) {
   const args = [...argv];
   const target = args[0] === "--target" ? (args.splice(0, 2)[1] ?? "") : "pages-next";

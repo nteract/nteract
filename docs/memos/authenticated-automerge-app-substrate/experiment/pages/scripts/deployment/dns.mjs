@@ -1,6 +1,6 @@
 // Exact owned CNAME only. Default is inspection; no adoption, updates or deletion.
 import { pathToFileURL } from "node:url";
-import { deploymentProfile, selectTarget } from "./profiles.mjs";
+import { deploymentProfile, selectTarget, assertQualifiedDeploymentTarget } from "./profiles.mjs";
 const zone = "7de7c86232f80c97a7aabfc880186b63";
 export async function configureDns({
   token,
@@ -101,9 +101,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [tunnelId, mode, extra] = args;
   if (extra || (mode && mode !== "--apply"))
     throw new Error(
-      "Usage: dns.mjs [--target pages-next|page3|page4|page5|page6] VERIFIED_TUNNEL_UUID [--apply]",
+      "Usage: dns.mjs [--target pages-next|page3|page4|page5|page6|page7] VERIFIED_TUNNEL_UUID [--apply]",
     );
   try {
+    if (mode === "--apply") assertQualifiedDeploymentTarget(target);
     console.log(
       JSON.stringify(
         await configureDns({

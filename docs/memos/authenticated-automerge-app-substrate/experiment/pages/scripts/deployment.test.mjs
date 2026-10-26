@@ -226,6 +226,7 @@ function installFixture(
     rules = "{}",
     installedRuntime,
     candidateVersion,
+    qualify = profiles.assertQualifiedDeploymentTarget,
   } = {},
 ) {
   const root = mkdtempSync(path.join(tmpdir(), "pages-install-retry-"));
@@ -355,7 +356,7 @@ function installFixture(
     },
     "node:fs": filesystem,
     "node:path": path,
-    "./profiles.mjs": profiles,
+    "./profiles.mjs": { ...profiles, assertQualifiedDeploymentTarget: qualify },
   };
   const execute = () =>
     runInNewContext(compiled, {
@@ -381,6 +382,27 @@ function installFixture(
   };
 }
 
+// Historical installer fixtures model the release that qualified that target.
+// They retain recovery/collision coverage without weakening the real CLI guard.
+function historicalInstallFixture(t, options = {}) {
+  return installFixture(t, {
+    ...options,
+    ...(options.target !== "page7" && { qualify: profiles.deploymentProfile }),
+  });
+}
+
+for (const target of ["pages-next", "page3", "page4", "page5", "page6"])
+  test(`current installer refuses frozen ${target} before host commands or release writes`, (t) => {
+    const fixture = installFixture(t, { target });
+    assert.throws(fixture.execute, /qualified only for page7/);
+    assert.deepEqual(fixture.calls, []);
+    assert.equal(fs.existsSync(fixture.local(fixture.release)), false);
+    assert.equal(fs.existsSync(fixture.local(fixture.audit)), false);
+    assert.deepEqual(JSON.parse(fixture.read(fixture.configDir + "/deployment.json")), {
+      id: "previous",
+    });
+  });
+
 test("version parsing tolerates allocator diagnostics without accepting ambiguous builds", () => {
   assert.equal(profiles.parseRuntimeVersion("celld 0.6.3\n"), "celld 0.6.3");
   assert.equal(
@@ -399,7 +421,7 @@ test("version parsing tolerates allocator diagnostics without accepting ambiguou
 });
 
 test("installer accepts an official runtime with allocator warning stdout", (t) => {
-  const fixture = installFixture(t, {
+  const fixture = historicalInstallFixture(t, {
     candidateVersion: "WARN allocator background thread unavailable\ncelld 0.6.3\n",
     installedRuntime: { version: "WARN allocator background thread unavailable\ncelld 0.6.1\n" },
   });
@@ -428,7 +450,7 @@ test("all Pages targets require the verified 0.6.3 Linux executable", () => {
 
 for (const installed of ["celld 0.6.1", "celld 0.6.2", "celld 0.6.3"])
   test(`installation permits ${installed} to the pinned release and keeps telemetry on retry`, (t) => {
-    const fixture = installFixture(t, {
+    const fixture = historicalInstallFixture(t, {
       target: "page6",
       installedRuntime: {
         version: installed,
@@ -453,7 +475,7 @@ for (const installed of [
   "unknown",
 ])
   test(`installation refuses to replace an existing ${installed} build before mutation`, (t) => {
-    const fixture = installFixture(t, {
+    const fixture = historicalInstallFixture(t, {
       target: "page6",
       installedRuntime: { version: installed },
     });
@@ -467,7 +489,7 @@ for (const installed of [
   });
 
 test("runtime copy mismatch preserves the active executable and can be retried", (t) => {
-  const fixture = installFixture(t, {
+  const fixture = historicalInstallFixture(t, {
     target: "page6",
     failure: "runtime-copy",
     installedRuntime: { version: "celld 0.6.1" },
@@ -480,7 +502,7 @@ test("runtime copy mismatch preserves the active executable and can be retried",
 });
 
 test("installer rejects unqualified staged or changed source runtimes before mutation", (t) => {
-  const badManifest = installFixture(t);
+  const badManifest = historicalInstallFixture(t);
   badManifest.write(
     badManifest.stage + "/manifest.json",
     JSON.stringify({
@@ -490,9 +512,9 @@ test("installer rejects unqualified staged or changed source runtimes before mut
   );
   assert.throws(badManifest.execute, /official celld 0.6.3/);
   assert.deepEqual(badManifest.calls, []);
-  const badVersion = installFixture(t, { candidateVersion: "celld 0.6.1" });
+  const badVersion = historicalInstallFixture(t, { candidateVersion: "celld 0.6.1" });
   assert.throws(badVersion.execute, /official celld 0.6.3/);
-  const badBytes = installFixture(t);
+  const badBytes = historicalInstallFixture(t);
   badBytes.write(profiles.CELLD_RELEASE.path, "unexpected runtime");
   assert.throws(badBytes.execute, /official celld 0.6.3/);
   for (const fixture of [badVersion, badBytes])
@@ -502,7 +524,7 @@ test("installer rejects unqualified staged or changed source runtimes before mut
 for (const failure of ["deploy", "restart"])
   for (const previous of [true, false])
     test(`installation retries ${failure} failure with previous deployment ${previous}`, (t) => {
-      const fixture = installFixture(t, { failure, previous });
+      const fixture = historicalInstallFixture(t, { failure, previous });
       assert.throws(fixture.execute, /failed \(status 1\)/);
       const before = fixture.read(fixture.audit + "/previous-deployment.json");
       assert.deepEqual(JSON.parse(before), previous ? { id: "previous" } : null);
@@ -515,7 +537,7 @@ for (const failure of ["deploy", "restart"])
     });
 
 test("installation fills only missing verified artifacts after a partial copy", (t) => {
-  const fixture = installFixture(t, { failure: "copy" });
+  const fixture = historicalInstallFixture(t, { failure: "copy" });
   assert.throws(fixture.execute, /injected copy failure/);
   assert.equal(fs.existsSync(fixture.local(fixture.release + "/public/app.js")), false);
   fixture.execute();
@@ -525,7 +547,7 @@ test("installation fills only missing verified artifacts after a partial copy", 
 
 for (const tampering of ["artifact", "extra-file", "symlink", "audit-manifest"])
   test(`installation retry rejects changed ${tampering}`, (t) => {
-    const fixture = installFixture(t, { failure: "deploy" });
+    const fixture = historicalInstallFixture(t, { failure: "deploy" });
     assert.throws(fixture.execute, /failed \(status 1\)/);
     if (tampering === "artifact") fixture.write(fixture.release + "/index.js", "modified");
     if (tampering === "extra-file") fixture.write(fixture.release + "/unexpected.js", "extra");
@@ -614,7 +636,7 @@ test("page3 DNS is independently owned and never adopts pages-next records", asy
 
 for (const target of ["pages-next", "page3", "page4", "page5", "page6"])
   test(`${target} installation retains auth, bindings, and bucket durability with isolated service state`, (t) => {
-    const fixture = installFixture(t, { target });
+    const fixture = historicalInstallFixture(t, { target });
     fixture.execute();
     const deployment = profiles.deploymentProfile(target).deployment;
     const config = JSON.parse(fixture.read(fixture.release + "/wrangler.json"));
@@ -668,7 +690,7 @@ for (const target of ["pages-next", "page3", "page4", "page5", "page6"])
   });
 
 test("page3 installation rejects a pages-next manifest before running any host command", (t) => {
-  const fixture = installFixture(t, { target: "page3" });
+  const fixture = historicalInstallFixture(t, { target: "page3" });
   fixture.write(
     fixture.stage + "/manifest.json",
     JSON.stringify({ ...fixture.manifest, deployment: profiles.deploymentProfile().deployment }),
@@ -680,7 +702,7 @@ test("page3 installation rejects a pages-next manifest before running any host c
 test("new page3 setup tolerates pages-next resources but rejects its own port or mark collisions", (t) => {
   const existing =
     "LISTEN 0 4096 127.0.0.1:9472 0.0.0.0:*\nLISTEN 0 4096 127.0.0.1:19472 0.0.0.0:*";
-  const fixture = installFixture(t, {
+  const fixture = historicalInstallFixture(t, {
     target: "page3",
     fresh: true,
     listeners: existing,
@@ -697,7 +719,7 @@ test("new page3 setup tolerates pages-next resources but rejects its own port or
     { listeners: existing + "\nLISTEN 0 4096 127.0.0.1:19473 0.0.0.0:*" },
     { rules: '{"mark":268435456}' },
   ]) {
-    const rejected = installFixture(t, { target: "page3", fresh: true, ...collision });
+    const rejected = historicalInstallFixture(t, { target: "page3", fresh: true, ...collision });
     assert.throws(rejected.execute, /port is occupied|firewall namespace or mark is occupied/);
     assert.equal(
       rejected.calls.some(({ command }) => command === "useradd"),
@@ -788,7 +810,7 @@ test("page4 DNS creates only its independently owned hostname and rejects foreig
 
 for (const other of ["pages-next", "page3"])
   test(`page4 installation rejects ${other} manifest before running host commands`, (t) => {
-    const fixture = installFixture(t, { target: "page4" });
+    const fixture = historicalInstallFixture(t, { target: "page4" });
     fixture.write(
       fixture.stage + "/manifest.json",
       JSON.stringify({
@@ -804,7 +826,7 @@ test("new page4 setup tolerates frozen namespaces but rejects its own ports, mar
   const existing = [9472, 19472, 9473, 19473]
     .map((port) => `LISTEN 0 4096 127.0.0.1:${port} 0.0.0.0:*`)
     .join("\n");
-  const fixture = installFixture(t, {
+  const fixture = historicalInstallFixture(t, {
     target: "page4",
     fresh: true,
     listeners: existing,
@@ -824,7 +846,7 @@ test("new page4 setup tolerates frozen namespaces but rejects its own ports, mar
     { rules: '{"mark":134217728}' },
     { rules: '{"table":"nteract_page4"}' },
   ]) {
-    const rejected = installFixture(t, { target: "page4", fresh: true, ...collision });
+    const rejected = historicalInstallFixture(t, { target: "page4", fresh: true, ...collision });
     assert.throws(rejected.execute, /port is occupied|firewall namespace or mark is occupied/);
     assert.equal(
       rejected.calls.some(({ command }) => command === "useradd"),
@@ -923,7 +945,7 @@ test("page5 DNS creates only its independently owned hostname and rejects foreig
 
 for (const other of ["pages-next", "page3", "page4"])
   test(`page5 installation rejects ${other} manifest before running host commands`, (t) => {
-    const fixture = installFixture(t, { target: "page5" });
+    const fixture = historicalInstallFixture(t, { target: "page5" });
     fixture.write(
       fixture.stage + "/manifest.json",
       JSON.stringify({
@@ -939,7 +961,7 @@ test("new page5 setup tolerates frozen namespaces but rejects its own ports, mar
   const existing = [9472, 19472, 9473, 19473, 9474, 19474]
     .map((port) => `LISTEN 0 4096 127.0.0.1:${port} 0.0.0.0:*`)
     .join("\n");
-  const fixture = installFixture(t, {
+  const fixture = historicalInstallFixture(t, {
     target: "page5",
     fresh: true,
     listeners: existing,
@@ -959,7 +981,7 @@ test("new page5 setup tolerates frozen namespaces but rejects its own ports, mar
     { rules: '{"mark":67108864}' },
     { rules: '{"table":"nteract_page5"}' },
   ]) {
-    const rejected = installFixture(t, { target: "page5", fresh: true, ...collision });
+    const rejected = historicalInstallFixture(t, { target: "page5", fresh: true, ...collision });
     assert.throws(rejected.execute, /port is occupied|firewall namespace or mark is occupied/);
     assert.equal(
       rejected.calls.some(({ command }) => command === "useradd"),
@@ -1057,7 +1079,7 @@ test("new page6 setup tolerates frozen resources but rejects its own ports and f
     .flatMap((p) => [p.deployment.listen, p.deployment.internalListen])
     .map((listen) => `LISTEN 0 4096 ${listen} 0.0.0.0:*`)
     .join("\n");
-  const fixture = installFixture(t, {
+  const fixture = historicalInstallFixture(t, {
     target,
     fresh: true,
     listeners: existing,
@@ -1078,7 +1100,7 @@ test("new page6 setup tolerates frozen resources but rejects its own ports and f
     { rules: '{"mark":33554432}' },
     { rules: '{"table":"nteract_page6"}' },
   ]) {
-    const rejected = installFixture(t, { target, fresh: true, ...collision });
+    const rejected = historicalInstallFixture(t, { target, fresh: true, ...collision });
     assert.throws(rejected.execute, /port is occupied|firewall namespace or mark is occupied/);
     assert.equal(
       rejected.calls.some(({ command }) => command === "useradd"),
@@ -1086,7 +1108,7 @@ test("new page6 setup tolerates frozen resources but rejects its own ports and f
     );
   }
   for (const other of profile.frozenTargets) {
-    const rejected = installFixture(t, { target });
+    const rejected = historicalInstallFixture(t, { target });
     rejected.write(
       rejected.stage + "/manifest.json",
       JSON.stringify({
@@ -1112,7 +1134,7 @@ test("page7 rejects frozen manifests, DNS ownership and occupied resources", asy
     for (const key of ["firewallTable", "firewallMark", "tunnelService"])
       assert.notEqual(profile[key], previous[key], `${other}: ${key}`);
     assert.equal(profiles.stagePattern(other).test(stage), false);
-    const rejected = installFixture(t, { target });
+    const rejected = historicalInstallFixture(t, { target });
     rejected.write(
       rejected.stage + "/manifest.json",
       JSON.stringify({
@@ -1154,7 +1176,7 @@ test("page7 rejects frozen manifests, DNS ownership and occupied resources", asy
     { rules: JSON.stringify({ mark: Number(profile.firewallMark) }) },
     { rules: JSON.stringify({ table: profile.firewallTable }) },
   ]) {
-    const rejected = installFixture(t, { target, fresh: true, ...collision });
+    const rejected = historicalInstallFixture(t, { target, fresh: true, ...collision });
     assert.throws(rejected.execute, /port is occupied|firewall namespace or mark is occupied/);
     assert.equal(
       rejected.calls.some(({ command }) => command === "useradd"),
@@ -1165,7 +1187,7 @@ test("page7 rejects frozen manifests, DNS ownership and occupied resources", asy
 
 test("compaction maintenance is enabled only for the new page7 deployment", (t) => {
   for (const target of ["page6", "page7"]) {
-    const f = installFixture(t, { target });
+    const f = historicalInstallFixture(t, { target });
     f.execute();
     const config = JSON.parse(f.read(f.release + "/wrangler.json"));
     assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, "true");

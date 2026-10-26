@@ -235,3 +235,55 @@ Policy denial leaves optimistic edits on the client. The user-facing rollback,
 export, or reauthorization workflow remains to be designed. Repo3's deprecated
 `handle.isReady()` does not indicate lookup admission; the negative lookup test
 uses query progress, cancellation, policy evidence, and stored records instead.
+
+
+## Page7 measured persistence boundaries
+
+The deterministic fixtures in `persistence-workload.mjs` separate ordinary prose
+from an intentionally incompressible typed-value history. The latter overwrites
+72 versions of a 256 KiB field; it is a stress control, not a model for storing
+Parquet bulk data inside a CRDT. `persistence-amplification.mjs` counts actual
+PageRecords HTTP bodies and JavaScript storage calls under identical native
+0.26.0 histories:
+
+| 18 MiB typed-history fixture | Legacy hex | Binary v2 | Binary + cleanup |
+| --- | ---: | ---: | ---: |
+| Owner stored value bytes, including generation | 38,223,544 | 19,104,422 | 19,097,114 |
+| Record POSTs under the fixture's flush cadence | 28 | 15 | 16 |
+| Cold record GETs | 24 | 11 | 11 |
+| Bytes returned by storage list calls | 152,198,379 | 33,934,618 | 34,978,356 |
+
+Each cold open also acquires its generation lease. Cleanup adds one deletion
+batch for nine records. Snapshot retries preserve exact signed records and write
+only the backend ID marker. These are logical calls and value bytes, not physical
+S3/R2 requests, SQLite pages, billing units, or provider durability evidence.
+PageRecords currently lists up to 64 values before trimming a response to 2 MB;
+subsequent pages re-list values that did not fit. That explains the read
+amplification and remains a distinct optimization opportunity.
+
+A separate loopback celld 0.6.3 control with an explicit test-only 32 MiB history
+budget persisted and reopened the 18 MiB fixture with exact identities. Initial
+native catch-up produced a **19,054,445-byte BatchSyncResponse**. The original
+Pages 4 MiB transport guard rejected it. Raising only the diagnostic frame/queue
+allowance to 32 MiB on both peers allowed exact cold convergence, bidirectional
+edits and presence, and another process restart retaining both edits. This
+isolates the observed failure to our transport allowance rather than storage or
+an inherent 16 MiB Automerge limit.
+
+The control measured roughly 3.1 seconds to ingest, 0.4 seconds to acknowledge
+local durable storage, 2.0 seconds to reopen and 5.2 seconds for initial native
+catch-up. Celld dev and its server together peaked around 554 MiB RSS during
+ingest; that includes multiple workers, native memory and runtime overhead. It
+is not per-document heap or Cloudflare memory qualification. Timing is a single
+local sample; the small edit request also included a full-history diagnostic
+summary and durable response, so it is not a live-fanout latency benchmark.
+
+Native 0.26.0 has no response-chunking option: its handler constructs one full
+sync diff, and the pending request resolves once. Sending several responses
+with the same ID would need new completion semantics. Cloudflare documents a
+[32 MiB WebSocket message ceiling](https://developers.cloudflare.com/workers/runtime-apis/websockets/).
+A long-term larger-document design needs bounded catch-up, not repeated increases
+to guards or silent CRDT history truncation. The Pages 16 MiB admission budget is
+retained while broader resource qualification is pending; it is an application
+budget, not an Automerge or object-store limit. Test-only overrides never change
+the deployed admission contract.

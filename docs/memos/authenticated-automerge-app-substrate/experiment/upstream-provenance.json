@@ -36,12 +36,12 @@
     "compaction": [
       {
         "path": "packages/automerge-repo-subduction/src/compaction.ts",
-        "after": "001365fbf78e1d9ccb4f35ed15e497a196135b7b3b6ce669d881cbd932652292"
+        "after": "cf9615f941409d55198082faaa73b72ae44940e5f60f4fa53a033e6f1462052f"
       },
       {
         "path": "packages/automerge-repo-subduction/src/storage.ts",
         "before": "5e39c87bd46818ea836e9e6fd64ef61bc43ac038ced2741d07bcccf1ee1a1b79",
-        "after": "f586a5d51ab0ce106add0847ecbe84c5e8ae623145a14b7809a213fe525d7f33"
+        "after": "0a2fadb9fafdfd56a6f48ebda0053157c685afdbd3e14769d6ee6e79b04a97f4"
       },
       {
         "path": "packages/automerge-repo-subduction/src/index.ts",
@@ -51,8 +51,8 @@
     ],
     "recordCodec": {
       "path": "packages/automerge-repo-subduction/src/storage.ts",
-      "before": "f586a5d51ab0ce106add0847ecbe84c5e8ae623145a14b7809a213fe525d7f33",
-      "after": "9c0d9b63efb620f839a3d4ad53388510a80f670272aa3e8782c717eadc35caaf",
+      "before": "0a2fadb9fafdfd56a6f48ebda0053157c685afdbd3e14769d6ee6e79b04a97f4",
+      "after": "070bf534188442d664b7e5066d9a4490fa8c998b257d7a700909059bd9b9a951",
       "codec": {
         "path": "packages/automerge-repo-subduction/src/record-codec.ts",
         "sha256": "fad0c5dcddd327f1ac07f8cac0c3b3b156aeaabd8a9bf1283266b5f391c212cb"

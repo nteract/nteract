@@ -580,6 +580,25 @@ On current workerd, accepted WebSockets default to Blob delivery. The byte
 transport explicitly requests ArrayBuffer delivery before installing listeners;
 otherwise the native handshake cannot decode incoming frames.
 
+The host byte transport allows messages up to 32 MiB, matching
+[Cloudflare's message ceiling](https://developers.cloudflare.com/workers/runtime-apis/websockets/).
+Native Subduction currently encodes a whole cold-sync response in one message,
+including signed-record and protocol overhead; the earlier 4 MiB guard could
+reject documents within the 16 MiB history budget. The receive queue is bounded
+at 32 MiB and 256 messages. On sockets exposing `bufferedAmount`, outgoing
+admission includes both the already queued bytes and the next frame in the
+32 MiB budget. celld/workerd server sockets may not expose that counter, so their
+runtime owns the unobservable outgoing queue; only the individual message bound
+is enforced there. The production viewer uses native `SubductionWebSocket`
+directly, so its queue is outside this wrapper's accounting.
+
+These per-connection guards do not bound decoded native/WASM state, temporary
+message copies, the number of connections, or total isolate memory. Local celld
+qualification covers the measured 19,054,445-byte response and subsequent edits
+and presence. It does not qualify Cloudflare memory use or a larger document
+budget. The aggregate history limit remains 16 MiB; larger histories still need
+separate resource qualification and upstream bounded sync responses.
+
 SQLite Durable Objects limit a stored key and value to 2 MB. The shared
 browser/host limit remains 900 KiB per record, with a 1,900,000-byte guard on the
 stored frame plus key. The record limit originally allowed for legacy hex
@@ -639,136 +658,92 @@ verification from local workerd fixtures.
 
 ## Isolated lab deployment
 
-The sharing experiment uses explicit `--target page5`. The `page4`, `page3` and
-`pages-next` deployments remain frozen for existing users. The historical
-default is still `pages-next`, so always pass the intended target.
+This persistence build is qualified for explicit `--target page7`. Earlier
+profiles remain available for inspection; mutating deployment commands reject
+those targets. Binary v2 records require the new reader, so rolling an updated
+store back to a legacy hex-only build is unsupported. New page7 storage avoids
+migrating any demo or existing user's document.
 
 | Target | Hostname | Service | Listener / internal port | S3 prefix |
 | --- | --- | --- | --- | --- |
-| `pages-next` (default) | `pages-next.runtimed.run` | `nteract-pages-next` | `9472` / `19472` | `standalone/pages-next` |
-| `page3` | `page3.runtimed.run` | `nteract-page3` | `9473` / `19473` | `standalone/page3` |
-| `page4` | `page4.runtimed.run` | `nteract-page4` | `9474` / `19474` | `standalone/page4` |
-| `page5` | `page5.runtimed.run` | `nteract-page5` | `9475` / `19475` | `standalone/page5` |
+| `pages-next` (frozen) | `pages-next.runtimed.run` | `nteract-pages-next` | `9472` / `19472` | `standalone/pages-next` |
+| `page3` (frozen) | `page3.runtimed.run` | `nteract-page3` | `9473` / `19473` | `standalone/page3` |
+| `page4` (frozen) | `page4.runtimed.run` | `nteract-page4` | `9474` / `19474` | `standalone/page4` |
+| `page5` (frozen) | `page5.runtimed.run` | `nteract-page5` | `9475` / `19475` | `standalone/page5` |
+| `page6` (frozen) | `page6.runtimed.run` | `nteract-page6` | `9476` / `19476` | `standalone/page6` |
+| `page7` | `page7.runtimed.run` | `nteract-page7` | `9477` / `19477` | `standalone/page7` |
 
-All four use lab1, bucket `nteract-celld-lab-621741996708` in `us-east-1`, and the same
-production Anaconda OIDC client and API-key verifier. Each has separate `/opt`,
-`/etc`, and `/var/lib` directories named after its service, a host-generated
-session secret, service account, firewall table/mark, and prepared release stage.
-The new profile checks that its ports, prefix, and firewall resources are unused
-before creating them. `m.runtimed.run` keeps its existing service and prefix.
-These scripts do not move or reuse existing documents or session secrets.
+These targets use lab1, bucket `nteract-celld-lab-621741996708` in `us-east-1`,
+and production Anaconda OIDC/API-key verification. Each owns its service,
+`/opt`, `/etc`, and `/var/lib` directories, session secret, service account,
+firewall table/mark, and release stage. Page7's mark is `0x01000000`. Its profile
+checks that resources are unused before creating them. It uses Wordgard,
+buffered record persistence and opt-in cleanup, retaining `CELLD_DURABILITY=bucket`.
+The installer preserves the build's Durable Object bindings and migrations.
 
-`page3`, `page4`, and `page5` enable `PAGES_ASYNC_PERSISTENCE=true`; all services keep
-`CELLD_DURABILITY=bucket`. Page4 and page5 set `PAGES_EDITOR=wordgard`; the other
-profiles retain their existing editor configuration. The installer preserves the build's Durable Object
-bindings and migrations, including `PAGE_RECORDS`, while supplying the selected
-public origin and its OIDC callback.
-
-The default `pages-next` publisher retains its existing shared-tunnel behavior.
-Do not publish that target while its users need uninterrupted connections.
-`page3` publication uses a **different tunnel and dedicated
-`cloudflared-page3.service`**. It neither writes the shared
-`/etc/cloudflared/config.yml` nor restarts `cloudflared.service`, and verifies
-that the shared configuration and process ID stayed unchanged. Page4 uses its
-own `cloudflared-page4.service` and a third tunnel. Its publisher additionally
-checks both frozen application PIDs, their service units, and page3's connector
-PID/configuration before and after publication. It refuses to reuse either
-existing tunnel ID.
-
-`node scripts/deploy.mjs plan` is read-only. After inspecting the current lab1
-runtime, ports, prefix, tunnel and firewall ownership, use `prepare`,
-`upload LOCAL_STAGE`, `install REMOTE_STAGE --apply`, then
-`publish REMOTE_STAGE --apply`. The installer requires the official celld 0.6.3
-Linux x86_64 binary at `/usr/local/bin/celld-v0.6.3`, checks its executable SHA256
-against `CELLD_RELEASE` in `scripts/deployment/profiles.mjs`, and requires a clean
-committed source tree whose fingerprint matches the bundle. Install that version
-beside the shared runtime; the deployment never upgrades `/usr/local/bin/celld`
-used by other services. Each service runs a private copy. Installation refuses to
-replace a newer version or a different build reporting the same version.
-
-Generated service units enable `CELLD_OTEL=1` with `CELLD_OTEL_RETENTION=30d`.
-Batching overrides are omitted, retaining celld 0.6.3's five-minute/5 MiB defaults.
-Telemetry uses the fleet bucket under its telemetry prefix. The 30-day retention
-policy collects older dated partitions; it is not an exact rolling-hour cutoff.
-The removed `CELLD_OTEL_SINK` variable must not be set. See the
-[pinned telemetry configuration](https://github.com/denoland/celld/blob/8702f6d186c77698dbfb30cf29e3b1922a88f008/docs/telemetry.md).
-For runtime-only rollouts, preserve the deployed app, prior versioned executable,
-and runtime receipt, and qualify rollback against the on-disk state. This app
-installer intentionally refuses runtime downgrades; it also deploys app artifacts
-and rewrites the unit. After a runtime rollout, verify health, native collaboration,
-and actual Parquet delivery beneath `<fleet-prefix>/telemetry/{traces,logs}`.
-A generated unit or successful restart alone does not establish telemetry delivery.
-It creates the session secret on the host. Only the explicit release-file
-allowlist is staged; local dev credentials and databases are excluded.
-
-For page5, run from this directory after the source is reviewed and committed:
+From this directory, after review and commit:
 
 ```bash
-node scripts/deploy.mjs --target page5 plan
-node scripts/deploy.mjs --target page5 prepare
-node scripts/deploy.mjs --target page5 upload LOCAL_STAGE
-node scripts/deploy.mjs --target page5 install REMOTE_STAGE --apply
-node scripts/deploy.mjs --target page5 publish REMOTE_STAGE --apply
+node scripts/deploy.mjs --target page7 plan
+node scripts/deploy.mjs --target page7 prepare
+node scripts/deploy.mjs --target page7 upload LOCAL_STAGE
+node scripts/deploy.mjs --target page7 install REMOTE_STAGE --apply
+node scripts/deploy.mjs --target page7 publish REMOTE_STAGE --apply
 ```
 
-Prepared manifests and remote stage names must match the selected target;
-a stage from another target is rejected. The existing deployment lock still
-serializes these operator commands. Page3 and page4 use dedicated publishers;
-page4 also refuses the shared route-editing path. Each ingress allows only its public
-routes and ends in a catch-all 404. The public routes include `/mcp`, `/llms.txt`,
-`/p/<page_id>`, sync, and OIDC; internal Durable Object routes are not exposed.
+`plan` is read-only. Use only returned stage paths. Prepared manifests and remote
+stages must match the selected target. The deployment lock serializes operator
+commands. Preparation requires clean committed source and a matching bundle
+fingerprint. Only allowlisted release files are staged; dev credentials and
+local databases are excluded.
 
-Before first page4 publication, provision a new locally managed Cloudflare Tunnel named
-`nteract-page4` in account `1cfb529b94b3d6cde3aaf49d1d6ed5e6`; this is a separate,
-explicit operator action, never performed by `prepare` or `publish`. It requires
-Cloudflare Tunnel Edit permission. Store its returned credentials as root-owned
-mode 0600 `/etc/nteract-page4/tunnel.json` (`AccountTag`, `TunnelID`,
-`TunnelSecret`), and save the nonsecret creation receipt at
-`/etc/nteract-page4/tunnel-provisioning.json`:
+The installer requires the official celld 0.6.3 Linux x86_64 executable at
+`/usr/local/bin/celld-v0.6.3`, matching `CELLD_RELEASE` in
+`scripts/deployment/profiles.mjs`. Each service runs its own copy; deployment
+does not change the shared executable. It refuses newer-runtime downgrades and
+same-version custom-build replacement. Session secrets are generated on the host.
+
+Service units enable `CELLD_OTEL=1` and `CELLD_OTEL_RETENTION=30d`, using celld's
+five-minute/5 MiB batching defaults. Verify actual Parquet delivery beneath
+`<fleet-prefix>/telemetry/{traces,logs}`; configuration alone is not evidence of
+delivery. Retention collects dated partitions rather than enforcing an exact
+rolling-hour cutoff. See the [pinned telemetry contract](https://github.com/denoland/celld/blob/8702f6d186c77698dbfb30cf29e3b1922a88f008/docs/telemetry.md).
+
+Before first publication, provision a separate locally managed Cloudflare Tunnel
+named `nteract-page7` in account `1cfb529b94b3d6cde3aaf49d1d6ed5e6`. This explicit
+operator action requires Tunnel Edit permission and is not performed by
+`prepare` or `publish`. After installation creates the owned directory, place
+credentials (`AccountTag`, `TunnelID`, `TunnelSecret`) in root-owned mode 0600
+`/etc/nteract-page7/tunnel.json`. Save this nonsecret creation receipt in
+`/etc/nteract-page7/tunnel-provisioning.json`:
 
 ```json
 {
   "schema": 1,
   "account_id": "1cfb529b94b3d6cde3aaf49d1d6ed5e6",
   "tunnel_id": "NEW_TUNNEL_UUID",
-  "name": "nteract-page4",
+  "name": "nteract-page7",
   "config_src": "local"
 }
 ```
 
-Keep these files in a private temporary provisioning directory until `install`
-creates the owned `/etc/nteract-page4` directory, then copy only the credentials
-and receipt into it. Do not precreate that installation directory.
+Keep provisioning files private and outside the release artifact. Do not
+precreate the installation directory. Publication rejects a reused tunnel ID,
+missing credentials, or conflicting configuration. It installs only page7's
+connector and verifies that frozen services, connector PIDs, and configuration
+remain unchanged. Do not use `cloudflared service install`, which targets the
+shared connector.
 
-The publisher rejects either frozen tunnel ID, missing credentials, or an unowned
-existing connector configuration. It installs `/etc/nteract-page4/tunnel.yml`
-and starts only `cloudflared-page4.service`, resuming partial installs only when
-the existing files match exactly. Do not run `cloudflared service install`, which
-targets the existing default service. Tunnel credentials never enter the source
-checkout or prepared release.
+DNS is separate. Inspect with
+`node scripts/deployment/dns.mjs --target page7 VERIFIED_TUNNEL_UUID`, then append
+`--apply` to create only the absent owned CNAME. Conflicts are rejected. This
+uses `CLOUDFLARE_API_TOKEN` with DNS read/edit access to `runtimed.run`; deployment
+also requires lab1 SSH and sudo. Ingress allows the public app, authentication,
+sharing, MCP and sync routes and ends in a catch-all 404; internal Durable Object
+routes remain private.
 
-DNS is separate: `scripts/deployment/dns.mjs` takes the verified tunnel UUID and
-checks the exact hostname without changes by default. Its `--apply` creates only
-an absent, owned CNAME and refuses conflicts. For page4, use
-`node scripts/deployment/dns.mjs --target page4 VERIFIED_TUNNEL_UUID` to inspect,
-then append `--apply` to create the proxied CNAME pointing to
-`VERIFIED_TUNNEL_UUID.cfargotunnel.com`. This requires a Cloudflare API token with
-DNS read/edit access to the `runtimed.run` zone in `CLOUDFLARE_API_TOKEN`; the
-deploy commands separately require lab1 SSH and sudo access. No OIDC client
-secret is copied to the stage. Verify anonymous denial, real OIDC, API-key editing,
-WebSockets and bucket recovery after publication. A prepared
-script is not evidence that those live checks passed.
-
-Page5 uses a fourth dedicated tunnel, `cloudflared-page5.service`, and its own
-`/etc/nteract-page5` provisioning files. Follow the page4 provisioning procedure
-with the page5 service name and target. Its publisher also freezes page4's app
-and tunnel alongside page3 and pages-next. Copying a document to a newer deployment
-is explicit; deployment never migrates or modifies another target's data.
-
-Page6 is the next isolated experiment target. It uses `nteract-page6`, ports
-9476/19476, `standalone/page6`, and `cloudflared-page6.service`. Use the same
-commands and provisioning procedure with `--target page6` and page6-owned files.
-Its publisher freezes page5 as well as page4, page3, and pages-next; the existing
-page5 release remains available for demos. Page6 starts with its own empty catalog
-and document storage. Public setup and sharing routes are identical to page5,
-with no historical ingress-migration allowance.
+Verify exact deployed hashes, anonymous denial, real OIDC, API-key operations,
+live peers, Saved receipts, restart recovery and frozen-service fingerprints
+after publication. These are distinct from local fixtures, and a process restart
+is not power-loss or bucket-failover proof. Copying a document between deployments
+remains explicit; deployment does not migrate another target's data.

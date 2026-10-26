@@ -52,14 +52,17 @@ export function reclaimableRecords(
   captured: readonly SedimentreeRecord[],
   keep: ReadonlySet<string>
 ): SedimentreeRecord[] {
+  const candidates = captured.filter(record => !keep.has(recordKey(record)))
+  // Native kept every captured record: no coverage proof or payload copies are
+  // needed. In particular, do not decode retained fragments on this no-op path.
+  if (!candidates.length) return []
   const present = new Map(current.map(record => [recordKey(record), record]))
   const retained = current.filter(record => record.kind === "fragment" && keep.has(recordKey(record)))
   if (!retained.length) return []
   const coverage = retained.map(changeHashes)
   const remove: SedimentreeRecord[] = []
-  for (const original of captured) {
+  for (const original of candidates) {
     const key = recordKey(original)
-    if (keep.has(key)) continue
     const record = present.get(key)
     if (!record || !equalRecords(original, record)) continue
     const members = changeHashes(record)
@@ -135,7 +138,10 @@ export function patchCompaction(root) {
    * deletion proof. The durable callback must not call back into this bridge.
    */
   async compact(id: N.SedimentreeId, captured: readonly SedimentreeRecord[], keep: readonly string[], durable: () => Promise<void>): Promise<CompactionResult> {
-    const snapshot = captured.map(copyRecord)
+    // backend.compact exclusively owns the copied bytes returned by records().
+    // Borrow that snapshot here; freeze only the selected proof before awaiting
+    // durability below, rather than copying the entire history a second time.
+    const snapshot = captured
     const retained = new Set(keep)
     const tree = treeHex(id)
     const base = (count: number): CompactionResult => ({ beforeRecords: count, afterRecords: count, removedRecords: 0, removedBytes: 0 })

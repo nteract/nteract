@@ -17,6 +17,7 @@ import { sourceFingerprint } from "./source-fingerprint.mjs";
 import { stageArtifacts } from "./stage-artifacts.mjs";
 import {
   deploymentProfile,
+  assertQualifiedDeploymentTarget,
   selectTarget,
   stagePattern,
   verifyDeployment,
@@ -114,6 +115,8 @@ function prepare() {
 }
 const [mode = "plan", stage, flag, extra] = args;
 if (extra) throw new Error("Unexpected deployment argument");
+if (["prepare", "upload", "install", "publish"].includes(mode))
+  assertQualifiedDeploymentTarget(target);
 if (mode === "plan" && !stage) console.log(JSON.stringify(deployment, null, 2));
 else if (mode === "prepare" && !stage) prepare();
 else if (mode === "upload" && stage && !flag) {

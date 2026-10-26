@@ -11,7 +11,12 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
+import {
+  deploymentProfile,
+  stageTarget,
+  verifyDeployment,
+  assertQualifiedDeploymentTarget,
+} from "./profiles.mjs";
 import { routesFor } from "./routes.mjs";
 export { routesFor } from "./routes.mjs";
 export const legacyRoutes = routesFor("pages-next", true);
@@ -158,9 +163,10 @@ export function applyPublication({
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [stage, apply, extra] = process.argv.slice(2);
+  const target = stageTarget(stage);
+  assertQualifiedDeploymentTarget(target);
   if (process.getuid() !== 0 || apply !== "--apply" || extra)
     throw new Error("Explicit root publication with prepared stage required");
-  const target = stageTarget(stage);
   if (deploymentProfile(target).tunnelService) {
     const { publishIsolated } = await import("./isolated-publication.mjs");
     console.log(JSON.stringify(publishIsolated(stage)));

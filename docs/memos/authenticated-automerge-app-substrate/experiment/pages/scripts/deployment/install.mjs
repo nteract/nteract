@@ -16,15 +16,17 @@ import {
 import path from "node:path";
 import {
   deploymentProfile,
+  assertQualifiedDeploymentTarget,
   stageTarget,
   verifyDeployment,
   verifyRuntime,
   parseRuntimeVersion,
 } from "./profiles.mjs";
 const [stage, apply, extra] = process.argv.slice(2);
+const target = stageTarget(stage);
+assertQualifiedDeploymentTarget(target);
 if (process.getuid() !== 0 || apply !== "--apply" || extra)
   throw new Error("Explicit root installation with a prepared stage is required");
-const target = stageTarget(stage);
 const profile = deploymentProfile(target);
 const run = (command, args) => {
   try {

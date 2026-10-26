@@ -1,4 +1,8 @@
 // Byte transport only. Subduction owns the authenticated handshake and protocol.
+// Native cold sync sends a whole signed record batch. Keep room above the
+// 16 MiB history budget while staying within Cloudflare's message ceiling.
+export const MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024;
+
 export class WebSocketByteTransport {
   #queue = [];
   #waiters = [];
@@ -6,7 +10,18 @@ export class WebSocketByteTransport {
   #bytes = 0;
   #closed = false;
 
-  constructor(socket, { maxQueuedBytes = 8 * 1024 * 1024, maxFrameBytes = 4 * 1024 * 1024 } = {}) {
+  constructor(
+    socket,
+    {
+      maxQueuedBytes = MAX_WEBSOCKET_MESSAGE_BYTES,
+      maxFrameBytes = MAX_WEBSOCKET_MESSAGE_BYTES,
+    } = {},
+  ) {
+    for (const [name, limit] of Object.entries({ maxQueuedBytes, maxFrameBytes })) {
+      if (!Number.isSafeInteger(limit) || limit <= 0 || limit > MAX_WEBSOCKET_MESSAGE_BYTES) {
+        throw new RangeError(`${name} must be an integer between 1 byte and 32 MiB`);
+      }
+    }
     this.socket = socket;
     // Newer workerd follows the WebSocket Blob default. Native Subduction
     // expects byte frames; request ArrayBuffer delivery before receiving any.
@@ -45,9 +60,15 @@ export class WebSocketByteTransport {
 
   async sendBytes(bytes) {
     if (this.#closed) throw new Error("WebSocket closed");
+    // Browser sockets expose pending outgoing bytes. celld/workerd sockets may
+    // not; their runtime owns that queue. The individual frame bound still
+    // applies, but this is not a bound on native/WASM or total process memory.
+    const buffered = this.socket.bufferedAmount ?? 0;
     if (
       bytes.byteLength > this.maxFrameBytes ||
-      (this.socket.bufferedAmount ?? 0) > this.maxQueuedBytes
+      !Number.isSafeInteger(buffered) ||
+      buffered < 0 ||
+      bytes.byteLength > this.maxQueuedBytes - buffered
     ) {
       await this.disconnect();
       throw new Error("WebSocket buffer limit exceeded");
