@@ -232,14 +232,51 @@ there is no immediate deletion when an image is removed, since undo and offline
 peers may still reference it. Asset retention/garbage collection and cross-Page or
 cross-deployment asset copying need a separate lifecycle implementation.
 
-Browser/API-key image transport uses the existing auth and Page ACL. MCP OAuth
-tokens are still scoped to `/mcp`; the existing JSON tools expose image references,
-not a hosted attachment upload or image-reading tool. Do not claim pixel access
-from a Markdown reference alone.
+Browser/API-key image transport uses the existing auth and Page ACL. For ChatGPT,
+`import_page_image({ page_id, file })` accepts the client's file handoff through
+`_meta["openai/fileParams"]: ["file"]`. The file schema declares `download_url`,
+`file_id`, `mime_type`, and `file_name`; only the first two are required. The
+descriptor must come from the client, not from constructing a URL around a file
+ID. See the [OpenAI file-input contract](https://developers.openai.com/plugins/reference#define-file-inputs).
+
+The importer requires the existing `pages:read pages:write` OAuth scopes and Page
+edit access. It accepts HTTPS downloads from `files.oaiusercontent.com` only,
+rejects redirects, bounds transfer time and size, and reuses the private image
+validation/storage path outside the Page mutation queue. Temporary download URLs
+are neither document references nor stored asset metadata. The result contains
+`asset_id`, `asset_url`, MIME type, dimensions, and byte size. The caller then
+reads the current Page and inserts the returned `asset_id` through the guarded
+`edit_page` operation `insert_image`. API-key clients can upload raw bytes through
+the existing endpoint and use the same operation. Import itself does not change
+the document; identical image bytes reuse the same Page-scoped asset.
+
+`insert_image` accepts `asset_id`, `alt`, and optional `after_block_id` (omitted
+appends; `null` prepends). It checks that the asset exists in this Page's private
+storage and creates a dedicated rich-text block using the existing image embed.
+It does not fetch a remote URL or write bytes into the document. The normal
+head guard, current write permission, and operation journal apply. Its receipt
+returns `result.inserted_images` entries with the actual `block_id`, `asset_id`,
+`asset_url`, and `alt`, alongside updated `heads` and the Page `url`. MCP returns
+the same receipt as structured content and text. Exact retries reuse the original
+block and receipt without reimporting the file, including after its temporary
+source URL expires. Read the Page back to verify the inserted block; successful
+upload alone is not document insertion.
+
+OAuth tokens remain scoped to `/mcp` and cannot call the raw-image HTTP route.
+No additional API key, public bucket, base64 tool argument, or browser widget is
+required for ChatGPT file import. Clients must refresh their tool catalog to see
+the new operation. Uploaded-file handoff is documented by OpenAI; a newly
+generated ChatGPT image still requires a separate live trial to establish that
+the client exposes it as a transferable file. The importer does not add an
+image-reading tool: do not claim pixel access from a Markdown reference alone.
 
 Run `node scripts/local-sharing-e2e.mjs --images` with the qualified celld binary
-for real local object-storage, browser, and permission checks. Live fleet storage
-and provider auth require separate deployment verification.
+for real local object-storage, browser, and permission checks. The `--mcp-images`
+variant exercises local OIDC/OAuth, the real MCP SDK and private bucket, byte
+upload/import equality, guarded insertion and exact retries, Page isolation,
+revocation, source-link expiry, and browser rendering. Only the external ChatGPT
+file response is synthetic; actual ChatGPT file handoff and live fleet storage
+require separate verification.
 
 ## What owns what
 

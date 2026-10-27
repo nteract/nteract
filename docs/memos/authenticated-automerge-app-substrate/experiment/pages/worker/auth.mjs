@@ -69,6 +69,7 @@ export async function authenticate(request, env) {
           "/internal/tool",
           "/internal/create",
           "/internal/delete",
+          "/internal/assets/authorize",
         ].includes(new URL(request.url).pathname)
       )
         throw new HttpError(403, "This credential is limited to Pages MCP");

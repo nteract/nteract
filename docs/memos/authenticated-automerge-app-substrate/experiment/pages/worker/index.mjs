@@ -14,7 +14,13 @@ import {
   serverOidcSessionStatus,
 } from "@cloud/server-oidc.ts";
 import { handleLocalOidcRequest } from "@cloud/dev-oidc.ts";
-import { createPageData, initializePage, projectPage, applyPageOperation } from "../model/page.mjs";
+import {
+  createPageData,
+  initializePage,
+  projectPage,
+  applyPageOperation,
+  validateImageInsertion,
+} from "../model/page.mjs";
 import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
 import { agentGuideResponse } from "../agent-guide.mjs";
@@ -53,12 +59,14 @@ import { pageAccess, restrictAccessDuringCommit } from "./access.mjs";
 
 import { catalogTitle, listCatalog, refreshCatalogTitle } from "./catalog.mjs";
 import { readRegistration, requireRegistrationAccount, validPageId } from "./registration.mjs";
-import { handleImageAssets } from "./image-assets.mjs";
+import { handleImageAssets, requireStoredImageAsset } from "./image-assets.mjs";
+import { handleImportPageImage } from "./import-image.mjs";
 
 const operations = new Set([
   "list_pages",
   "create_page",
   "read_page",
+  "import_page_image",
   "edit_page",
   "patch_page",
   "manage_page_comment",
@@ -92,6 +100,15 @@ function forwarded(request, path, body) {
   return new Request(url, { method: "POST", headers, body: JSON.stringify(body) });
 }
 
+function authorizeImage(request, env, pageId, write) {
+  const internal = forwarded(request, "/internal/assets/authorize", { page_id: pageId, write });
+  // Only the host creates this request. Reauthenticate on every call so a grant
+  // or Page permission revoked during a transfer cannot authorize its result.
+  if (!internal.headers.has("origin"))
+    internal.headers.set("origin", new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin);
+  return env.PAGES.getByName(pageId).fetch(internal);
+}
+
 async function invoke(request, env, operation, args = {}) {
   if (!operations.has(operation) || !args || typeof args !== "object" || Array.isArray(args))
     throw new HttpError(400, "Unknown operation or invalid arguments");
@@ -103,6 +120,16 @@ async function invoke(request, env, operation, args = {}) {
     );
   }
   if (!validPageId(args.page_id)) throw new HttpError(400, "Invalid page_id");
+  if (operation === "import_page_image") {
+    if (Object.keys(args).some((key) => !["page_id", "file"].includes(key)))
+      throw new HttpError(400, "Invalid image import arguments");
+    // Transfer bytes at the Worker edge; only short access checks enter the DO.
+    return handleImportPageImage(request, env, {
+      pageId: args.page_id,
+      file: args.file,
+      authorize: (write) => authorizeImage(request, env, args.page_id, write),
+    });
+  }
   return env.PAGES.getByName(args.page_id).fetch(
     forwarded(request, "/internal/tool", { operation, arguments: args }),
   );
@@ -191,19 +218,7 @@ export default {
         return handleImageAssets(request, env, {
           pageId,
           assetId,
-          authorize(write) {
-            const internal = forwarded(request, "/internal/assets/authorize", {
-              page_id: pageId,
-              write,
-            });
-            // The original image request is authenticated before this callback.
-            if (!internal.headers.has("origin"))
-              internal.headers.set(
-                "origin",
-                new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin,
-              );
-            return env.PAGES.getByName(pageId).fetch(internal);
-          },
+          authorize: (write) => authorizeImage(request, env, pageId, write),
         });
       }
       if (url.pathname === "/api/access") {
@@ -900,6 +915,9 @@ export class Page {
           )
         )
           throw new HttpError(400, "Unknown document operation");
+        const images = Array.isArray(body.arguments?.operations)
+          ? body.arguments.operations.filter((op) => (op?.op ?? op?.type) === "insert_image")
+          : [];
         const receipt = await documentMutation({
           storage: this.ctx.storage,
           admission: this.admission,
@@ -907,6 +925,27 @@ export class Page {
           operation: body.operation,
           args: body.arguments,
           identity,
+          prepare: images.length
+            ? async () => {
+                if (images.length > 100) throw new HttpError(400, "Provide up to 100 operations");
+                for (const image of images) {
+                  try {
+                    validateImageInsertion(image);
+                  } catch (error) {
+                    throw new HttpError(400, error.message);
+                  }
+                }
+                for (const assetId of new Set(images.map((image) => image.asset_id))) {
+                  await requireStoredImageAsset(this.env.PAGES_ASSETS, {
+                    pageId: this.metadata.pageId,
+                    assetId,
+                  });
+                }
+                // The Page queue orders ACL changes; OAuth/key expiry and revocation
+                // can still happen while immutable object metadata is being read.
+                this.policy.account(await authenticate(request, this.env), true);
+              }
+            : undefined,
           apply: (doc) => {
             try {
               return applyPageOperation(doc, {

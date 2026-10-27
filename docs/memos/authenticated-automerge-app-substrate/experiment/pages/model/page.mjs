@@ -1,5 +1,12 @@
 import * as A from "@automerge/automerge/slim";
-import { RICH_FORMAT, setRichMarkdown, projectedBlock, blockMarkdown } from "./richtext.mjs";
+import {
+  RICH_FORMAT,
+  setRichMarkdown,
+  setRichImage,
+  projectedBlock,
+  blockMarkdown,
+} from "./richtext.mjs";
+import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
 import { applyComment, projectComments } from "./comments.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
 import { replaceMatch } from "./replace-match.mjs";
@@ -33,6 +40,22 @@ export function projectPage(doc) {
     comments: projectComments(doc),
   };
 }
+export function validateImageInsertion(op) {
+  if (
+    !validAssetId(op.asset_id) ||
+    typeof op.alt !== "string" ||
+    op.alt.length > 2048 ||
+    (op.after_block_id !== undefined &&
+      op.after_block_id !== null &&
+      (typeof op.after_block_id !== "string" || !op.after_block_id)) ||
+    Object.keys(op).some(
+      (key) => !["op", "type", "asset_id", "alt", "after_block_id"].includes(key),
+    )
+  )
+    throw Error(
+      "insert_image requires an uploaded asset_id, alt text (up to 2048 characters), and optional after_block_id",
+    );
+}
 function applyEdit(doc, op) {
   const id = op.block_id ?? op.id;
   if (op.op === "set_title") {
@@ -44,6 +67,20 @@ function applyEdit(doc, op) {
     doc.blocks[value.id] = value;
     setRichMarkdown(doc, value.id, String(op.markdown ?? ""));
     return;
+  }
+  if (op.op === "insert_image") {
+    validateImageInsertion(op);
+    const value = block(crypto.randomUUID(), positionForInsertion(doc, op.after_block_id));
+    const asset_url = imageAssetUrl(doc.page_id, op.asset_id);
+    doc.blocks[value.id] = value;
+    setRichImage(doc, value.id, { src: asset_url, alt: op.alt });
+    return {
+      op: "insert_image",
+      block_id: value.id,
+      asset_id: op.asset_id,
+      asset_url,
+      alt: op.alt,
+    };
   }
   if (!Object.hasOwn(doc.blocks, id)) throw Error("Block not found");
   if (op.op === "move_block") {
@@ -83,10 +120,18 @@ export function applyPageOperation(doc, { operation, arguments: args = {}, ident
     throw Error("Unsupported Page operation");
   if (!Array.isArray(args.operations) || args.operations.length > 100)
     throw Error("Provide up to 100 operations");
-  const edits = [];
+  const edits = [],
+    inserted_images = [];
   for (const op of args.operations) {
     const edit = applyEdit(doc, { ...op, op: op.op ?? op.type });
-    if (edit) edits.push(edit);
+    if (edit?.op === "insert_image") {
+      const { op: _op, ...image } = edit;
+      inserted_images.push(image);
+    } else if (edit) edits.push(edit);
   }
-  return { page_id: doc.page_id, ...(edits.length ? { edits } : {}) };
+  return {
+    page_id: doc.page_id,
+    ...(edits.length ? { edits } : {}),
+    ...(inserted_images.length ? { inserted_images } : {}),
+  };
 }

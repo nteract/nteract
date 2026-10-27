@@ -105,9 +105,32 @@ export const tools = [
     ["page_id"],
     { readOnlyHint: true },
   ),
+  {
+    ...tool(
+      "import_page_image",
+      "Import an attached image into a Page's private image storage. Pass the ChatGPT file input, not a local path or invented URL. Supports PNG, JPEG and static WebP up to 5 MiB. Returns asset_id and asset_url; then read_page and use edit_page with insert_image, asset_id, alt and optional after_block_id. This tool does not edit the document. Reimporting identical bytes into the same Page returns the same asset reference.",
+      {
+        page_id: page,
+        file: {
+          type: "object",
+          properties: {
+            download_url: string,
+            file_id: string,
+            mime_type: string,
+            file_name: string,
+          },
+          required: ["download_url", "file_id"],
+          additionalProperties: false,
+        },
+      },
+      ["page_id", "file"],
+      { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    ),
+    _meta: { "openai/fileParams": ["file"] },
+  },
   tool(
     "edit_page",
-    "Apply an atomic structural edit batch at the observed heads. Unknown document fields are preserved. Prefer patch_page for targeted prose edits.",
+    "Apply an atomic structural edit batch at the observed heads. insert_image places an already uploaded Page-local asset in its own rich-text block and returns result.inserted_images with the actual block_id, asset_id, asset_url and alt; heads is the updated revision and url opens the Page. Unknown document fields are preserved. Prefer patch_page for targeted prose edits.",
     {
       ...guard,
       operations: {
@@ -115,27 +138,55 @@ export const tools = [
         minItems: 1,
         maxItems: 100,
         items: {
-          type: "object",
-          properties: {
-            op: {
-              enum: [
-                "set_title",
-                "replace_block_markdown",
-                "insert_markdown",
-                "move_block",
-                "delete_block",
-              ],
+          oneOf: [
+            {
+              type: "object",
+              properties: {
+                op: {
+                  enum: [
+                    "set_title",
+                    "replace_block_markdown",
+                    "insert_markdown",
+                    "move_block",
+                    "delete_block",
+                  ],
+                },
+                block_id: string,
+                title: string,
+                markdown: string,
+                after_block_id: {
+                  type: ["string", "null"],
+                  description:
+                    "For insert or move: put after this block ID; null puts it first; omitted appends.",
+                },
+              },
+              required: ["op"],
             },
-            block_id: string,
-            title: string,
-            markdown: string,
-            after_block_id: {
-              type: ["string", "null"],
-              description:
-                "For insert or move: put after this block ID; null puts it first; omitted appends.",
+            {
+              type: "object",
+              properties: {
+                op: { const: "insert_image" },
+                asset_id: {
+                  type: "string",
+                  pattern: "^[a-f0-9]{64}$",
+                  description:
+                    "Asset ID returned by import_page_image or a byte upload to this same Page.",
+                },
+                alt: {
+                  type: "string",
+                  maxLength: 2048,
+                  description:
+                    "Literal alternative text; use an empty string for a decorative image.",
+                },
+                after_block_id: {
+                  type: ["string", "null"],
+                  description: "Insert after this block; null prepends, omitted appends.",
+                },
+              },
+              required: ["op", "asset_id", "alt"],
+              additionalProperties: false,
             },
-          },
-          required: ["op"],
+          ],
         },
       },
     },
@@ -247,6 +298,7 @@ export async function handleMcp(request, invoke, env) {
       return {
         ...(result.ok ? {} : { isError: true }),
         ...(authMeta && { _meta: authMeta }),
+        ...(result.ok ? { structuredContent: body } : {}),
         content: [{ type: "text", text: JSON.stringify(body) }],
       };
     } catch {
@@ -255,7 +307,10 @@ export async function handleMcp(request, invoke, env) {
         content: [
           {
             type: "text",
-            text: "Request failed; outcome may be unknown. Retry the same key and payload.",
+            text:
+              params.name === "import_page_image"
+                ? "Image import failed; storage may have completed, but the document was not edited. Reimporting the same image returns the same asset reference."
+                : "Request failed; outcome may be unknown. Retry the same key and payload.",
           },
         ],
       };

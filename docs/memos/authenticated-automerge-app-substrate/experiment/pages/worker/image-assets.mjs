@@ -211,26 +211,44 @@ export function inspectImage(bytes) {
   return { mime_type, width, height };
 }
 
-async function readImageBody(request) {
-  const length = request.headers.get("content-length");
-  if (length !== null && (!/^\d+$/.test(length) || Number(length) > IMAGE_MAX_BYTES))
-    throw new HttpError(413, "Images must be 5 MiB or smaller");
-  const reader = request.body?.getReader();
-  if (!reader) throw new HttpError(400, "Image bytes required");
+export async function readImageBody(source, { signal } = {}) {
+  const length = source.headers.get("content-length");
+  const invalidLength =
+    length !== null && (!/^\d+$/.test(length) || Number(length) > IMAGE_MAX_BYTES);
+  const reader = source.body?.getReader();
+  if (!reader)
+    throw invalidLength
+      ? new HttpError(413, "Images must be 5 MiB or smaller")
+      : new HttpError(400, "Image bytes required");
   let size = 0;
   const chunks = [];
+  let onAbort;
+  const aborted = signal
+    ? new Promise((_, reject) => {
+        onAbort = () => reject(signal.reason ?? new HttpError(408, "Image transfer canceled"));
+        signal.addEventListener("abort", onAbort, { once: true });
+      })
+    : undefined;
   try {
+    signal?.throwIfAborted();
+    if (invalidLength) throw new HttpError(413, "Images must be 5 MiB or smaller");
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done, value } = await (aborted
+        ? Promise.race([reader.read(), aborted])
+        : reader.read());
       if (done) break;
       size += value.byteLength;
       if (size > IMAGE_MAX_BYTES) {
-        await reader.cancel();
         throw new HttpError(413, "Images must be 5 MiB or smaller");
       }
       chunks.push(value);
     }
+  } catch (error) {
+    // Cancellation must not hold the request open if an upstream stream stalls.
+    void reader.cancel().catch(() => {});
+    throw error;
   } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
     reader.releaseLock();
   }
   const bytes = new Uint8Array(size);
@@ -242,11 +260,103 @@ async function readImageBody(request) {
   return bytes;
 }
 
-function privateResponse(response) {
+export function privateImageResponse(response) {
   response.headers.set("Cache-Control", "private, no-store");
   response.headers.set("X-Content-Type-Options", "nosniff");
   response.headers.set("Cross-Origin-Resource-Policy", "same-origin");
   return response;
+}
+
+function storedImageMetadata(object, pageId, assetId) {
+  const metadata = object?.customMetadata;
+  const width = Number(metadata?.width),
+    height = Number(metadata?.height);
+  if (
+    !object ||
+    !IMAGE_MEDIA_TYPES.includes(object.httpMetadata?.contentType) ||
+    !Number.isInteger(object.size) ||
+    object.size < 12 ||
+    object.size > IMAGE_MAX_BYTES ||
+    metadata?.page_id !== pageId ||
+    metadata?.hash !== assetId ||
+    !/^[1-9]\d*$/.test(metadata?.width ?? "") ||
+    !/^[1-9]\d*$/.test(metadata?.height ?? "") ||
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(height) ||
+    width > IMAGE_MAX_DIMENSION ||
+    height > IMAGE_MAX_DIMENSION ||
+    width * height > IMAGE_MAX_PIXELS
+  )
+    throw new HttpError(500, "Invalid stored image metadata");
+  return {
+    asset_id: assetId,
+    asset_url: imageAssetUrl(pageId, assetId),
+    mime_type: object.httpMetadata.contentType,
+    width,
+    height,
+    size: object.size,
+  };
+}
+
+/**
+ * Resolve only a validated immutable asset in this Page. The caller must enforce
+ * current Page access; this helper never grants access or reads another Page.
+ * Images are retained for undo/offline peers, so HEAD is enough to preflight
+ * insertion without downloading their bytes through the document queue.
+ */
+export async function requireStoredImageAsset(bucket, { pageId, assetId }) {
+  if (!validPageId(pageId) || !validAssetId(assetId))
+    throw new HttpError(400, "Invalid image reference");
+  if (!bucket) throw new HttpError(503, "Image storage is unavailable");
+  const stored = await bucket.head(imageAssetKey(pageId, assetId));
+  if (!stored) throw new HttpError(404, "Image not found in this Page");
+  return storedImageMetadata(stored, pageId, assetId);
+}
+
+/** Store only validated original bytes; authorization belongs to the caller. */
+export async function persistImageAsset(bucket, { pageId, bytes, contentTypes = [] }) {
+  if (!validPageId(pageId)) throw new HttpError(400, "Invalid image reference");
+  if (bytes.byteLength > IMAGE_MAX_BYTES)
+    throw new HttpError(413, "Images must be 5 MiB or smaller");
+  const image = inspectImage(bytes);
+  for (const contentType of contentTypes) {
+    const claimed = contentType?.split(";")[0].trim().toLowerCase();
+    if (claimed && claimed !== "application/octet-stream" && claimed !== image.mime_type)
+      throw new HttpError(415, "Image bytes do not match Content-Type");
+  }
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  const hash = Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("");
+  const key = imageAssetKey(pageId, hash);
+  let stored = await bucket.head(key),
+    duplicate = stored !== null;
+  if (!stored) {
+    stored = await bucket.put(key, bytes, {
+      onlyIf: { etagDoesNotMatch: "*" },
+      httpMetadata: { contentType: image.mime_type, cacheControl: "private, no-store" },
+      customMetadata: {
+        page_id: pageId,
+        hash,
+        width: String(image.width),
+        height: String(image.height),
+      },
+    });
+    if (!stored) {
+      duplicate = true;
+      stored = await bucket.head(key);
+    }
+  }
+  const confirmed = storedImageMetadata(stored, pageId, hash);
+  if (
+    confirmed.size !== bytes.byteLength ||
+    confirmed.mime_type !== image.mime_type ||
+    confirmed.width !== image.width ||
+    confirmed.height !== image.height
+  )
+    throw new Error("Image storage did not confirm the immutable object");
+  return {
+    asset: { asset_id: hash, url: imageAssetUrl(pageId, hash), ...image, size: bytes.byteLength },
+    duplicate,
+  };
 }
 
 /** The authorize callback is a short Page-DO request; byte transfer stays outside its queue. */
@@ -260,49 +370,20 @@ export async function handleImageAssets(request, env, { pageId, assetId, authori
     // In particular this does not widen the MCP-only OAuth token audience.
     await authenticate(request, env);
     const access = await authorize(upload);
-    if (!access.ok) return privateResponse(access);
+    if (!access.ok) return privateImageResponse(access);
     const bucket = env.PAGES_ASSETS;
     if (!bucket) throw new HttpError(503, "Image storage is unavailable");
     if (upload) {
       const bytes = await readImageBody(request);
-      const image = inspectImage(bytes);
-      const claimed = request.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
-      if (claimed && claimed !== "application/octet-stream" && claimed !== image.mime_type)
-        throw new HttpError(415, "Image bytes do not match Content-Type");
-      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-      const hash = Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("");
-      const key = imageAssetKey(pageId, hash);
-      let stored = await bucket.head(key),
-        duplicate = stored !== null;
-      if (!stored) {
-        stored = await bucket.put(key, bytes, {
-          onlyIf: { etagDoesNotMatch: "*" },
-          httpMetadata: { contentType: image.mime_type, cacheControl: "private, no-store" },
-          customMetadata: {
-            page_id: pageId,
-            hash,
-            width: String(image.width),
-            height: String(image.height),
-          },
-        });
-        if (!stored) {
-          duplicate = true;
-          stored = await bucket.head(key);
-        }
-      }
-      if (
-        !stored ||
-        stored.size !== bytes.byteLength ||
-        stored.httpMetadata?.contentType !== image.mime_type
-      )
-        throw new Error("Image storage did not confirm the immutable object");
+      const { asset, duplicate } = await persistImageAsset(bucket, {
+        pageId,
+        bytes,
+        contentTypes: [request.headers.get("content-type")],
+      });
       const current = await authorize(true);
-      if (!current.ok) return privateResponse(current);
-      return privateResponse(
-        Response.json(
-          { asset_id: hash, url: imageAssetUrl(pageId, hash), ...image, size: bytes.byteLength },
-          { status: duplicate ? 200 : 201 },
-        ),
+      if (!current.ok) return privateImageResponse(current);
+      return privateImageResponse(
+        Response.json({ ...asset, asset_url: asset.url }, { status: duplicate ? 200 : 201 }),
       );
     }
     const key = imageAssetKey(pageId, assetId);
@@ -310,7 +391,7 @@ export async function handleImageAssets(request, env, { pageId, assetId, authori
     if (!object) throw new HttpError(404, "Image not found");
     if (!IMAGE_MEDIA_TYPES.includes(object.httpMetadata?.contentType))
       throw new Error("Invalid stored image type");
-    return privateResponse(
+    return privateImageResponse(
       new Response(request.method === "HEAD" ? null : object.body, {
         headers: {
           "Content-Type": object.httpMetadata.contentType,
@@ -321,6 +402,6 @@ export async function handleImageAssets(request, env, { pageId, assetId, authori
       }),
     );
   } catch (error) {
-    return privateResponse(errorResponse(error, "image-assets"));
+    return privateImageResponse(errorResponse(error, "image-assets"));
   }
 }

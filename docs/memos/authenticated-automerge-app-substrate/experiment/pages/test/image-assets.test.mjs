@@ -12,7 +12,7 @@ import {
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import worker, { Page } from "../worker/index.mjs";
 import { DocumentPolicy } from "../worker/policy.mjs";
-import { inspectImage, imageAssetKey } from "../worker/image-assets.mjs";
+import { inspectImage, imageAssetKey, requireStoredImageAsset } from "../worker/image-assets.mjs";
 import { IMAGE_MAX_BYTES } from "../shared/image-assets.mjs";
 
 // Actual 3x2 raster images encoded by Pillow, not hand-built header-only fixtures.
@@ -244,10 +244,12 @@ test("uploads raw bytes and serves a stable, immutable, Page-scoped private imag
     image = await upload(f);
   assert.match(image.asset_id, /^[0-9a-f]{64}$/);
   assert.equal(image.url, `/api/pages/${pageId}/assets/${image.asset_id}`);
+  assert.equal(image.asset_url, image.url);
   assert.deepEqual(
-    { ...image, asset_id: "id", url: "url" },
+    { ...image, asset_id: "id", asset_url: "url", url: "url" },
     {
       asset_id: "id",
+      asset_url: "url",
       url: "url",
       mime_type: "image/png",
       size: bytesFor().length,
@@ -447,4 +449,77 @@ test("ambiguous completed PUT retries the same object instead of losing or dupli
   assert.equal(retry.status, 200);
   assert.equal(f.env.PAGES_ASSETS.objects.size, 1);
   assert.equal((await retry.json()).mime_type, "image/png");
+});
+
+test("image insertion preflight resolves the Page-local immutable asset without reading its bytes", async (t) => {
+  const f = await fixture(t),
+    image = await upload(f);
+  f.env.PAGES_ASSETS.calls.length = 0;
+  const metadata = await requireStoredImageAsset(f.env.PAGES_ASSETS, {
+    pageId,
+    assetId: image.asset_id,
+  });
+  const { url, ...expected } = image;
+  assert.deepEqual(metadata, expected);
+  assert.equal(metadata.asset_url, url);
+  assert.deepEqual(f.env.PAGES_ASSETS.calls, [["head", imageAssetKey(pageId, image.asset_id)]]);
+  await assert.rejects(
+    requireStoredImageAsset(f.env.PAGES_ASSETS, { pageId: otherId, assetId: image.asset_id }),
+    { status: 404 },
+  );
+  await assert.rejects(
+    requireStoredImageAsset(f.env.PAGES_ASSETS, { pageId, assetId: "0".repeat(64) }),
+    { status: 404 },
+  );
+  await assert.rejects(requireStoredImageAsset(undefined, { pageId, assetId: image.asset_id }), {
+    status: 503,
+  });
+});
+
+test("image insertion preflight rejects malformed references before accessing storage", async () => {
+  const bucket = new Bucket();
+  for (const reference of [
+    { pageId: "../other", assetId: "0".repeat(64) },
+    { pageId, assetId: "https://example.com/image.png" },
+    { pageId, assetId: "../other" },
+    { pageId, assetId: "A".repeat(64) },
+    { pageId },
+  ])
+    await assert.rejects(requireStoredImageAsset(bucket, reference), { status: 400 });
+  assert.deepEqual(bucket.calls, []);
+});
+
+test("image insertion and duplicate upload reject inconsistent stored object metadata", async (t) => {
+  const f = await fixture(t),
+    image = await upload(f);
+  const key = imageAssetKey(pageId, image.asset_id),
+    stored = f.env.PAGES_ASSETS.objects.get(key);
+  const corruptions = [
+    { size: IMAGE_MAX_BYTES + 1 },
+    { size: 0 },
+    { size: 12.5 },
+    { httpMetadata: { contentType: "image/svg+xml" } },
+    ...[
+      { page_id: otherId },
+      { hash: "0".repeat(64) },
+      { width: "0" },
+      { width: "3.0" },
+      { width: "Infinity" },
+      { width: "9000" },
+      { width: "8192", height: "8192" },
+      { height: "-2" },
+      { height: undefined },
+    ].map((changes) => ({ customMetadata: { ...stored.customMetadata, ...changes } })),
+  ];
+  for (const corruption of corruptions) {
+    f.env.PAGES_ASSETS.objects.set(key, { ...stored, ...corruption });
+    await assert.rejects(
+      requireStoredImageAsset(f.env.PAGES_ASSETS, { pageId, assetId: image.asset_id }),
+      { status: 500 },
+    );
+    const response = await run(f);
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), { error: "Pages request failed" });
+  }
+  assert.equal(f.env.PAGES_ASSETS.calls.filter(([method]) => method === "put").length, 1);
 });

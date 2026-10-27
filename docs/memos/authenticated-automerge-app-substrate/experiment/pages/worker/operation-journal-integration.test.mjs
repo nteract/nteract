@@ -102,6 +102,62 @@ test("documentMutation preserves exact versioned retries and rejects changed pay
   assert.equal(f.applications(), 1);
 });
 
+test("new-intent preparation cannot bypass a concurrently changed head guard", async () => {
+  const f = fixture();
+  const { retry_token } = await f.token();
+  const args = await argsFor(f, retry_token, "preflight-race");
+  await assert.rejects(
+    documentMutation({
+      ...f.context,
+      args,
+      prepare: async () => {
+        await f.handle.update((doc) =>
+          A.change(doc, (draft) => {
+            draft.concurrent = true;
+          }),
+        );
+      },
+    }),
+    { status: 409 },
+  );
+  assert.equal(f.applications(), 0);
+  assert.equal(f.handle.doc().concurrent, true);
+  assert.equal(await f.storage.get(`host/operation/${args.idempotency_key}`), undefined);
+});
+
+test("pending and completed retries preserve receipts without repeating external preparation", async () => {
+  const f = fixture();
+  const { retry_token } = await f.token();
+  const args = await argsFor(f, retry_token, "preflight-retry");
+  let prepared = 0,
+    flushes = 0;
+  await assert.rejects(
+    documentMutation({
+      ...f.context,
+      args,
+      prepare: async () => {
+        prepared++;
+      },
+      flush: async () => {
+        if (++flushes === 2) throw Error("Interrupted durability");
+        await f.context.flush();
+      },
+    }),
+    /Interrupted durability/,
+  );
+  const entry = await f.storage.get(`host/operation/${args.idempotency_key}`);
+  assert.equal(entry.pending, true);
+  const retry = {
+    ...f.context,
+    args,
+    prepare: async () => assert.fail("External asset/source rechecked on retry"),
+  };
+  assert.deepEqual(await documentMutation(retry), entry.receipt);
+  assert.deepEqual(await documentMutation(retry), entry.receipt);
+  assert.equal(prepared, 1);
+  assert.equal(f.applications(), 1);
+});
+
 test("expired document retries never execute after retirement or token stripping", async (t) => {
   let now = start;
   t.mock.method(Date, "now", () => now);
@@ -434,6 +490,97 @@ test("actual Page read_page issues a token usable by its guarded edit path", asy
   assert.equal(expired.status, 410);
   assert.equal((await expired.json()).code, "retry_expired");
   assert.equal(f.updates(), 1);
+});
+
+test("Page image insertion validates storage once and journals actual block identity across retries", async (t) => {
+  const f = await pageFixture(t);
+  const assetId = "a".repeat(64);
+  let heads = 0;
+  f.page.env = {
+    ...f.page.env,
+    PAGES_ASSETS: {
+      async head(key) {
+        heads++;
+        assert.ok(key.includes(pageId) && key.includes(assetId));
+        return {
+          size: 74,
+          httpMetadata: { contentType: "image/png" },
+          customMetadata: { page_id: pageId, hash: assetId, width: "3", height: "2" },
+        };
+      },
+    },
+  };
+  const before = await (await f.request("read_page")).json();
+  const args = {
+    page_id: pageId,
+    base_heads: before.heads,
+    retry_token: before.retry_token,
+    idempotency_key: await retryKey(before.retry_token, "insert-image-once"),
+    operations: [{ op: "insert_image", asset_id: assetId, alt: "A cat" }],
+  };
+  const response = await f.request("edit_page", args);
+  assert.equal(response.status, 200);
+  const receipt = await response.json();
+  const [image] = receipt.result.inserted_images;
+  assert.ok(f.page.handle.doc().blocks[image.block_id]);
+  assert.equal(image.asset_id, assetId);
+  assert.equal(heads, 1);
+  // Receipt remains a record of the original operation, not a claim about the
+  // latest document: a peer can remove the block before the requester retries.
+  await f.page.handle.update((doc) =>
+    A.change(doc, (draft) => {
+      delete draft.blocks[image.block_id];
+    }),
+  );
+  f.page.env.PAGES_ASSETS.head = async () => assert.fail("Retry depends on blob storage");
+  assert.deepEqual(await (await f.request("edit_page", args)).json(), receipt);
+  assert.equal(f.page.handle.doc().blocks[image.block_id], undefined);
+  assert.equal(
+    (
+      await f.request("edit_page", {
+        ...args,
+        operations: [{ ...args.operations[0], alt: "Different" }],
+      })
+    ).status,
+    409,
+  );
+});
+
+test("Page image preflight rejects missing assets and lost write access before editing", async (t) => {
+  for (const denied of ["missing", "permission"]) {
+    const f = await pageFixture(t);
+    const assetId = "a".repeat(64);
+    f.page.env = {
+      ...f.page.env,
+      PAGES_ASSETS: {
+        async head() {
+          if (denied === "missing") return null;
+          f.page.metadata.owner = "user:other";
+          return {
+            size: 74,
+            httpMetadata: { contentType: "image/png" },
+            customMetadata: { page_id: pageId, hash: assetId, width: "3", height: "2" },
+          };
+        },
+      },
+    };
+    const before = await (await f.request("read_page")).json();
+    const args = {
+      page_id: pageId,
+      base_heads: before.heads,
+      retry_token: before.retry_token,
+      idempotency_key: await retryKey(before.retry_token, `image-${denied}`),
+      operations: [
+        { op: "set_title", title: "Must not apply" },
+        { op: "insert_image", asset_id: assetId, alt: "cat" },
+      ],
+    };
+    const response = await f.request("edit_page", args);
+    assert.equal(response.status, denied === "missing" ? 404 : 403);
+    assert.equal(f.updates(), 0);
+    assert.equal(f.page.handle.doc().title, "Accepted content");
+    assert.equal(await f.storage.get(`host/operation/${args.idempotency_key}`), undefined);
+  }
 });
 
 test("recovery-blocked Page keeps accepted content readable and rejects tool and native writes", async (t) => {

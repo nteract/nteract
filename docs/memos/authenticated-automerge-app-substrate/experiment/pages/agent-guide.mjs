@@ -314,18 +314,68 @@ replace these URLs with public hosting or put base64 image data in Markdown.
 
 An API-key client can POST raw image bytes to
 ${origin}/api/pages/<page_id>/assets with its configured bearer header and image
-Content-Type. The response contains asset_id, url, mime_type, size, width, and
-height. Repeating the same upload to that Page returns the same asset reference.
-Insert the returned url using normal guarded Markdown edits, with descriptive
-alt text: ![Description](<returned url>). GET or HEAD of the returned path also
+Content-Type. The response contains asset_id, asset_url (also url for existing
+clients), mime_type, size, width, and height. Repeating the same upload to that
+Page returns the same asset reference. GET or HEAD of the returned path also
 requires this Page's current read permission.
 
-OAuth MCP credentials remain restricted to /mcp. The current MCP tools can read
-and preserve image references but do not upload or return the image pixels.
-Use the browser to add screenshots; do not ask an OAuth user for an API key just
-to bypass that transport boundary. A reference from read_page is not evidence
-that an agent has seen the image. Copying a document to another deployment also
-requires transferring its private assets; copying Markdown alone is insufficient.
+ChatGPT can transfer an attached image through import_page_image. Pass page_id
+and the file descriptor supplied by ChatGPT: file has download_url and file_id,
+with optional mime_type and file_name. The tool advertises openai/fileParams so
+ChatGPT can supply the file; do not invent a download URL from its file ID.
+The current importer accepts only HTTPS files.oaiusercontent.com downloads and
+does not follow redirects or accept arbitrary remote URLs. Do not pass base64
+image data, a local/sandbox path, or a temporary ChatGPT link as the document's
+image reference.
+
+import_page_image requires pages:read and pages:write plus current Page edit
+access. It copies the bytes into private Page storage and returns asset_id,
+asset_url, mime_type, size, width, and height. It does not insert content.
+Repeating an import of identical bytes to the same Page reuses the asset.
+No additional API key or public hosting is needed. If ChatGPT does not expose this tool yet, refresh the connection's
+tool list. Newly generated images must be available as transferable files in
+that client; this handoff still needs a separate live ChatGPT trial. An uploaded
+attachment and a generated image are not interchangeable proof of support.
+If the client cannot supply a file descriptor, ask the human to upload through
+Pages' image control instead of inserting a broken placeholder link.
+
+After either import or byte upload, call read_page and insert the returned
+asset_id through edit_page. The dedicated insert_image operation creates one
+rich-text block containing the image. Supply descriptive alt text; after_block_id
+is optional (omitted appends; null prepends). The asset must already exist in
+this Page's private storage; an asset from another Page must be copied first.
+
+\`\`\`json
+{
+  "operation": "edit_page",
+  "arguments": {
+    "page_id": "<page_id>",
+    "base_heads": ["<head from read_page>"],
+    "retry_token": "<retry_token from read_page>",
+    "idempotency_key": "<retry_key_prefix><new UUID>",
+    "operations": [{
+      "op": "insert_image",
+      "asset_id": "<asset_id from import or upload>",
+      "alt": "Describe what the image shows",
+      "after_block_id": "<preceding block ID from read_page>"
+    }]
+  }
+}
+\`\`\`
+
+The receipt returns result.inserted_images with the actual block_id, asset_id,
+asset_url, and alt, plus updated heads and the Page url. The MCP structured
+result matches its text receipt. Save the exact edit request and retry it after
+an uncertain result: it returns the original receipt without another block or
+file download, even if the temporary source link has expired. A fresh insertion
+requires a new read and operation key. Verify the block through read_page and
+the authenticated Page; an upload receipt alone does not mean it was inserted.
+
+OAuth credentials remain restricted to /mcp; they do not authorize the raw-image
+HTTP endpoint above. MCP can import files and preserve image references, but it
+does not return image pixels. A reference from read_page is not evidence that an
+agent has seen the image. Copying a document to another deployment also requires
+transferring its private assets; copying Markdown alone is insufficient.
 
 ## JSON tools
 
@@ -347,12 +397,14 @@ retry_token for catalog operations (create_page and delete_page). Browser link: 
 - create_page: title, optional markdown, and idempotency_key.
 - read_page: page_id.
 - patch_page: replace_match for literal visible-text edits; patch_block_markdown for Markdown syntax edits.
-- edit_page: set_title, replace_block_markdown, insert_markdown, move_block,
-  or delete_block operations.
+- edit_page: set_title, replace_block_markdown, insert_markdown, insert_image,
+  move_block, or delete_block operations.
 - manage_page_comment: add, reply, resolve, reopen, edit, or delete_message.
+- import_page_image: page_id and a ChatGPT-supplied file descriptor; returns a
+  private asset_id and asset_url for a subsequent insert_image edit. See Images above.
 - delete_page: delete the Page and comments. There is no restore operation.
 
-Read before editing. All mutations of an existing Page require page_id,
+Read before editing. Document edits and deletion require page_id,
 base_heads from the latest read_page, and idempotency_key. Include retry_token
 from read_page for edits/comments; use the list_pages token for create/delete.
 Append a new UUID to retry_key_prefix from the same result for
@@ -406,7 +458,7 @@ remain recoverable with their original request. Keys bind to their exact token: 
 requests without a token retain their receipts, with a separate lifetime cap of 1,000 operations. Use the
 token protocol for ongoing work.
 
-For insert_markdown and move_block, after_block_id is the preceding block's ID;
+For insert_markdown, insert_image, and move_block, after_block_id is the preceding block's ID;
 null places the block first, and omission appends it. For a comment, use action
 add with block_id and body. Add selected_text to anchor it to a passage in that
 block; occurrence is one-based and defaults to 1. Replies use thread_id and body;

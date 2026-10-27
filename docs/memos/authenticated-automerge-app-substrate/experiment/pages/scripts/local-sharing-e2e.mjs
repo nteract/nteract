@@ -19,7 +19,9 @@ const output = path.resolve(
 );
 const domainView = process.argv.includes("--domain-view");
 const images = process.argv.includes("--images");
-if (domainView && images) throw new Error("Choose one qualification: --domain-view or --images");
+const mcpImages = process.argv.includes("--mcp-images");
+if ([domainView, images, mcpImages].filter(Boolean).length > 1)
+  throw new Error("Choose one qualification: --domain-view, --images or --mcp-images");
 const children = new Set();
 let canceled = false;
 async function stop(child) {
@@ -93,7 +95,11 @@ try {
       path.join(
         app,
         "scripts/fixtures",
-        domainView ? "local-domain-sharing-worker.mjs" : "local-sharing-worker.mjs",
+        mcpImages
+          ? "local-mcp-image-worker.mjs"
+          : domainView
+            ? "local-domain-sharing-worker.mjs"
+            : "local-sharing-worker.mjs",
       ),
     ],
     bundle: true,
@@ -153,7 +159,7 @@ try {
       .filter((key) => process.env[key] !== undefined)
       .map((key) => [key, process.env[key]]),
   );
-  if (images) hostEnv.CELLD_MAX_REQUEST_BODY_BYTES = String(6 * 1024 * 1024);
+  if (images || mcpImages) hostEnv.CELLD_MAX_REQUEST_BODY_BYTES = String(6 * 1024 * 1024);
   const version = parseRuntimeVersion(
     execFileSync(process.env.CELLD_BIN || "celld", ["--version"], {
       encoding: "utf8",
@@ -195,11 +201,13 @@ try {
   await run(
     process.execPath,
     [
-      images
-        ? "scripts/images-smoke.mjs"
-        : domainView
-          ? "scripts/domain-sharing-smoke.mjs"
-          : "scripts/sharing-smoke.mjs",
+      mcpImages
+        ? "scripts/mcp-image-import-smoke.mjs"
+        : images
+          ? "scripts/images-smoke.mjs"
+          : domainView
+            ? "scripts/domain-sharing-smoke.mjs"
+            : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {

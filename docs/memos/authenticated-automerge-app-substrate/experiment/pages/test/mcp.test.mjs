@@ -37,6 +37,44 @@ test("MCP forwards authorized operations and preserves stale-write failure", asy
   assert.match(result.result.content[0].text, /stale_heads/);
   assert.deepEqual(calls[0].args.base_heads, ["old"]);
 });
+
+test("MCP advertises typed image insertion and echoes its exact receipt as structured content", async () => {
+  const descriptor = tools.find((tool) => tool.name === "edit_page");
+  const schema = descriptor.inputSchema.properties.operations.items.oneOf.find(
+    (item) => item.properties.op.const === "insert_image",
+  );
+  assert.deepEqual(schema.required, ["op", "asset_id", "alt"]);
+  assert.equal(schema.additionalProperties, false);
+  const asset_id = "a".repeat(64);
+  const receipt = {
+    page_id: pageId,
+    heads: ["b".repeat(64)],
+    result: {
+      page_id: pageId,
+      inserted_images: [
+        {
+          block_id: "image-block",
+          asset_id,
+          asset_url: `/api/pages/${pageId}/assets/${asset_id}`,
+          alt: "A cat",
+        },
+      ],
+    },
+  };
+  const response = await handleMcp(
+    request("tools/call", {
+      name: "edit_page",
+      arguments: { page_id: pageId, operations: [{ op: "insert_image", asset_id, alt: "A cat" }] },
+    }),
+    async () => Response.json(receipt),
+  );
+  const result = (await response.json()).result;
+  assert.deepEqual(result.structuredContent, {
+    ...receipt,
+    url: `https://pages.example/p/${pageId}`,
+  });
+  assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
+});
 test("MCP refuses resource URLs outside this service before invoking tools", async () => {
   let invoked = false;
   const response = await handleMcp(
@@ -181,6 +219,60 @@ test("MCP tool metadata declares the OAuth scopes needed by each operation", asy
       tool.name,
     );
   }
+});
+
+test("MCP image import advertises ChatGPT's complete file descriptor and keeps the private asset URL", async () => {
+  const listed = await handleMcp(request("tools/list"), async () => assert.fail("unexpected call"));
+  const descriptor = (await listed.json()).result.tools.find(
+    (tool) => tool.name === "import_page_image",
+  );
+  assert.deepEqual(descriptor._meta, { "openai/fileParams": ["file"] });
+  const fileSchema = descriptor.inputSchema.properties.file;
+  assert.deepEqual(Object.keys(fileSchema.properties).sort(), [
+    "download_url",
+    "file_id",
+    "file_name",
+    "mime_type",
+  ]);
+  assert.deepEqual(fileSchema.required, ["download_url", "file_id"]);
+  assert.equal(fileSchema.additionalProperties, false);
+  assert.deepEqual(descriptor.inputSchema.required, ["page_id", "file"]);
+  assert.deepEqual(descriptor.securitySchemes[0].scopes, ["pages:read", "pages:write"]);
+  assert.equal(descriptor.annotations.destructiveHint, false);
+  assert.equal(descriptor.annotations.openWorldHint, true);
+
+  const file = {
+    download_url: "https://files.oaiusercontent.com/file-fixture?temporary=secret",
+    file_id: "file-fixture",
+  };
+  const assetUrl = `/api/pages/${pageId}/assets/${"a".repeat(64)}`;
+  const response = await handleMcp(
+    request("tools/call", { name: "import_page_image", arguments: { page_id: pageId, file } }),
+    async (operation, args) => {
+      assert.equal(operation, "import_page_image");
+      assert.deepEqual(args, { page_id: pageId, file });
+      return Response.json({ page_id: pageId, asset_url: assetUrl, mime_type: "image/png" });
+    },
+  );
+  const result = (await response.json()).result;
+  assert.equal(result.isError, undefined);
+  const asset = JSON.parse(result.content[0].text);
+  assert.equal(asset.asset_url, assetUrl);
+  assert.equal(asset.url, `https://pages.example/p/${pageId}`);
+  assert.equal(JSON.stringify(result).includes("temporary=secret"), false);
+});
+
+test("image import failures distinguish storage retries from document edits without leaking file URLs", async () => {
+  const response = await handleMcp(
+    request("tools/call", { name: "import_page_image", arguments: { page_id: pageId } }),
+    async () => {
+      throw new Error("private download URL with credentials");
+    },
+  );
+  const result = (await response.json()).result;
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /document was not edited/);
+  assert.doesNotMatch(result.content[0].text, /private download|same key/);
 });
 
 test("only verified OAuth credential failures produce tool reauthorization challenges", async () => {

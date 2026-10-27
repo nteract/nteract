@@ -47,6 +47,7 @@ export async function documentMutation({
   operation,
   args,
   identity,
+  prepare,
   apply,
   flush,
   admission,
@@ -69,6 +70,10 @@ export async function documentMutation({
         status: 429,
         code: "pending_operation_capacity",
       });
+    // Check external prerequisites only for new intents. A retry must replay
+    // its original bytes/receipt even if an external service is unavailable.
+    requireHeads(handle.doc(), args.base_heads);
+    if (prepare) await prepare();
     const before = handle.doc();
     requireHeads(before, args.base_heads);
     let result;

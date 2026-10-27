@@ -158,8 +158,29 @@ const cellAttrs = (token) => ({
   isAmgBlock: true,
   align: /^text-align:(left|center|right)$/.exec(token.attrGet("style") ?? "")?.[1] ?? null,
 });
+const imageAlt = (tokens) =>
+  (tokens ?? [])
+    .map((token) =>
+      token.children
+        ? imageAlt(token.children)
+        : ["softbreak", "hardbreak"].includes(token.type)
+          ? "\n"
+          : token.content,
+    )
+    .join("");
+const imageToken = {
+  node: "image",
+  getAttrs: (token) => ({
+    src: token.attrGet("src"),
+    title: token.attrGet("title") || null,
+    // The upstream parser takes only the first child. Escaped punctuation and
+    // entities split alt text into multiple tokens, all of which belong here.
+    alt: imageAlt(token.children),
+  }),
+};
 const parser = new MarkdownParser(schema, tokenizer, {
   ...defaultMarkdownParser.tokens,
+  image: imageToken,
   table: { block: "table", attrs: { isAmgBlock: true } },
   thead: { ignore: true },
   tbody: { ignore: true },
@@ -170,7 +191,7 @@ const parser = new MarkdownParser(schema, tokenizer, {
 const plainImportParser = new MarkdownParser(
   schema,
   new MarkdownIt("commonmark", { html: false, linkify: false }),
-  defaultMarkdownParser.tokens,
+  { ...defaultMarkdownParser.tokens, image: imageToken },
 );
 const serializer = new MarkdownSerializer(
   {
@@ -309,6 +330,13 @@ export function setRichMarkdown(doc, id, source) {
     pmNodeToSpans(adapter, parseMarkdown(source)),
     adapter.updateSpansConfig(),
   );
+}
+export function setRichImage(doc, id, { src, alt }) {
+  // Construct the embed directly: alt text is content, never Markdown syntax.
+  const tree = schema.node("doc", null, [
+    schema.node("paragraph", null, [schema.node("image", { src, alt, title: null })]),
+  ]);
+  A.updateSpans(doc, textPath(id), pmNodeToSpans(adapter, tree), adapter.updateSpansConfig());
 }
 export function projectedBlock(block) {
   const { richText: _rich, ...result } = block;
