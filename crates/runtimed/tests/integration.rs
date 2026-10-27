@@ -5121,10 +5121,18 @@ async fn test_notebook_sync_uuid_ignores_stale_mirror_without_recovery_journal()
 
     let daemon = Daemon::new_for_test(config.clone()).unwrap();
     let mut daemon_handle = tokio::spawn(async move {
-        daemon.run().await.ok();
+        daemon
+            .run()
+            .await
+            .expect("initial stale-mirror daemon failed");
     });
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client).await);
+    assert_running_daemon_ready(
+        &pool_client,
+        &mut daemon_handle,
+        "initial stale-mirror daemon",
+    )
+    .await;
 
     let opened = connect::connect_open(socket_path.clone(), saved_path.clone(), "open")
         .await
@@ -5132,7 +5140,7 @@ async fn test_notebook_sync_uuid_ignores_stale_mirror_without_recovery_journal()
     let notebook_id = opened.info.notebook_id.clone();
     assert_session_ready(&opened.handle, "stale mirror setup").await;
     drop(opened);
-    stop_daemon_for_replacement(&pool_client, &mut daemon_handle).await;
+    stop_daemon_and_transport_for_replacement(&pool_client, &mut daemon_handle, &socket_path).await;
 
     std::fs::create_dir_all(&config.notebook_docs_dir).unwrap();
     let persist_path = config
@@ -5164,12 +5172,20 @@ async fn test_notebook_sync_uuid_ignores_stale_mirror_without_recovery_journal()
     let restarted =
         Daemon::new_for_test(replacement_config(config, &temp_dir, "stale-mirror")).unwrap();
     let mut restarted_handle = tokio::spawn(async move {
-        restarted.run().await.ok();
+        restarted
+            .run()
+            .await
+            .expect("replacement stale-mirror daemon failed");
     });
     let restarted_pool = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&restarted_pool).await);
+    assert_running_daemon_ready(
+        &restarted_pool,
+        &mut restarted_handle,
+        "replacement stale-mirror daemon",
+    )
+    .await;
 
-    let rejoined = connect::connect(socket_path, notebook_id, "rejoin")
+    let rejoined = connect::connect(socket_path.clone(), notebook_id, "rejoin")
         .await
         .expect("registry-backed UUID should import the current source file");
     assert_session_ready(&rejoined.handle, "stale mirror UUID recovery").await;
@@ -5188,7 +5204,8 @@ async fn test_notebook_sync_uuid_ignores_stale_mirror_without_recovery_journal()
     );
 
     drop(rejoined);
-    stop_daemon_for_replacement(&restarted_pool, &mut restarted_handle).await;
+    stop_daemon_and_transport_for_replacement(&restarted_pool, &mut restarted_handle, &socket_path)
+        .await;
 }
 
 /// A durable UUID-to-path binding is not itself recoverable notebook content.
