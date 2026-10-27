@@ -33,9 +33,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
+mod bokeh_session;
 mod keyed_doc;
 mod output_content;
 
+pub use bokeh_session::BokehSessionDocHandle;
 pub use keyed_doc::{encode_keyed_doc_frame, keyed_doc_frame_header, KeyedDocHandle};
 
 const MARKDOWN_PROJECTION_MIME: &str = "application/vnd.nteract.markdown+json";

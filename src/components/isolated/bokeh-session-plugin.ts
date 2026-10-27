@@ -3,17 +3,21 @@
  *
  * The plugin binds `application/vnd.nteract.bokeh-session.v1+json` outputs to
  * the RuntimeStateDoc session records and serves the iframe's Bokeh requests
- * through `BokehSessionBridgeManager`.
+ * through `BokehSessionBridgeManager`. Session documents are followed only
+ * when the daemon routes the `bokeh_session` keyed document kind to this
+ * connection; otherwise outputs render their saved state read-only.
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ApplyBokehSessionPatchOptions,
   BlobRef,
   BlobResolver,
-  BokehSessionPatchBroadcast,
+  BokehSessionDataTail,
+  BokehSessionEvents,
   BokehSessionPatchReply,
   BokehSessionState,
+  SyncEngine,
 } from "runtimed";
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import {
@@ -30,18 +34,28 @@ import {
   type BokehSessionOutputBinding,
 } from "./bokeh-session-bridge-manager";
 import {
-  NTERACT_BOKEH_APPLY_PATCH,
+  BOKEH_SESSION_DOC_KIND,
+  BokehSessionDocStore,
+  type BokehSessionDocReplica,
+  type BokehSessionDocStoreOptions,
+} from "./bokeh-session-doc-store";
+import {
   NTERACT_BOKEH_SESSION_HOST_METHODS,
-  NTERACT_BOKEH_SESSION_OPEN,
-  type NteractBokehApplyPatchParams,
-  type NteractBokehSessionOpenParams,
+  type NteractBokehSessionHostMethod,
 } from "./bokeh-session-rpc";
 import type { IsolatedFrameHandle } from "./isolated-frame";
 
 export interface BokehSessionTransport {
+  /**
+   * Host replicas of the session documents, shared by every output frame;
+   * `null` when the connection does not sync them.
+   */
+  docs: BokehSessionDocStore | null;
   fetchBlob(ref: BlobRef): Promise<Response>;
+  /** One-off events (`MessageSent`, `ColumnsStreamed`, `ColumnsPatched`). */
   applyPatch(options: ApplyBokehSessionPatchOptions): Promise<BokehSessionPatchReply>;
-  subscribePatches(listener: (broadcast: BokehSessionPatchBroadcast) => void): () => void;
+  getData(sessionId: string, sourceIds?: string[]): Promise<BokehSessionDataTail>;
+  subscribeEvents(listener: (events: BokehSessionEvents) => void): () => void;
 }
 
 export interface BokehSessionRuntime {
@@ -97,14 +111,7 @@ class BokehSessionPluginBridge implements OutputSessionBridge {
     if (!manager) {
       return Promise.reject(new Error("Bokeh document session transport is unavailable"));
     }
-    switch (method) {
-      case NTERACT_BOKEH_SESSION_OPEN:
-        return manager.openSession(params as NteractBokehSessionOpenParams);
-      case NTERACT_BOKEH_APPLY_PATCH:
-        return manager.applyPatch(params as NteractBokehApplyPatchParams);
-      default:
-        return Promise.reject(new Error(`Unsupported Bokeh session method ${method}`));
-    }
+    return manager.handleRequest(method as NteractBokehSessionHostMethod, params);
   }
 
   notifyCurrentState(): void {
@@ -133,17 +140,76 @@ export function installBokehSessionPlugin(): () => void {
   return registerOutputSessionPlugin(bokehSessionPlugin);
 }
 
+/** The sync engine streams the session documents travel on. */
+export type BokehSessionEngine = Pick<
+  SyncEngine,
+  | "keyedDocFrames$"
+  | "keyedDocResyncs$"
+  | "keyedDocsReset$"
+  | "negotiatedCapabilities$"
+  | "sendKeyedDocFrame"
+  | "bokehSessionEventsBroadcasts$"
+>;
+
+export type BokehSessionDocsOptions = Omit<BokehSessionDocStoreOptions, "sendFrame">;
+
+/**
+ * Keep a `BokehSessionDocStore` on `engine` while the negotiated
+ * capabilities include `bokeh_session`, and none otherwise. `onDocs` sees
+ * every change. Returns a function that stops following and disposes the
+ * store.
+ */
+export function followBokehSessionDocs(
+  engine: BokehSessionEngine,
+  options: BokehSessionDocsOptions,
+  onDocs: (docs: BokehSessionDocStore | null) => void,
+): () => void {
+  let docs: BokehSessionDocStore | null = null;
+  let streams: Array<{ unsubscribe(): void }> = [];
+  const stop = () => {
+    for (const stream of streams) stream.unsubscribe();
+    streams = [];
+    docs?.dispose();
+    docs = null;
+  };
+  const capabilities = engine.negotiatedCapabilities$.subscribe(({ keyedDocKinds }) => {
+    const supported = keyedDocKinds.has(BOKEH_SESSION_DOC_KIND);
+    if (supported === (docs !== null)) return;
+    stop();
+    if (supported) {
+      const store = new BokehSessionDocStore({
+        ...options,
+        sendFrame: (payload) => engine.sendKeyedDocFrame(BOKEH_SESSION_DOC_KIND, payload),
+      });
+      streams = [
+        engine.keyedDocFrames$.subscribe((frame) => store.receiveFrame(frame)),
+        engine.keyedDocResyncs$.subscribe((resync) => store.handleResync(resync)),
+        engine.keyedDocsReset$.subscribe(() => store.resubscribeAll()),
+      ];
+      docs = store;
+    }
+    onDocs(docs);
+  });
+  return () => {
+    capabilities.unsubscribe();
+    if (docs) {
+      stop();
+      onDocs(null);
+    }
+  };
+}
+
 export interface BokehSessionPluginSources {
   sessions: Record<string, BokehSessionState>;
+  engine: BokehSessionEngine | null;
   blobResolver: Pick<BlobResolver, "fetch"> | null;
-  patches: {
-    subscribe(listener: (broadcast: BokehSessionPatchBroadcast) => void): {
-      unsubscribe(): void;
-    };
-  } | null;
   client: {
     applyBokehSessionPatch(options: ApplyBokehSessionPatchOptions): Promise<BokehSessionPatchReply>;
+    getBokehSessionData(sessionId: string, sourceIds?: string[]): Promise<BokehSessionDataTail>;
   };
+  /** WASM `BokehSessionDocHandle` factory. */
+  createReplica(sessionId: string, epoch: number): BokehSessionDocReplica;
+  logger?: BokehSessionDocStoreOptions["logger"];
 }
 
 /**
@@ -153,22 +219,56 @@ export interface BokehSessionPluginSources {
  */
 export function useBokehSessionPlugin({
   sessions,
+  engine,
   blobResolver,
-  patches,
   client,
+  createReplica,
+  logger,
 }: BokehSessionPluginSources): Readonly<Record<string, unknown>> {
+  const [docs, setDocs] = useState<BokehSessionDocStore | null>(null);
+  // Read through a ref so a new resolver or factory reaches the existing
+  // store instead of rebuilding it, which would drop every replica.
+  const sources = useRef({ blobResolver, createReplica, logger });
+  useEffect(() => {
+    sources.current = { blobResolver, createReplica, logger };
+  });
+  const hasBlobResolver = blobResolver !== null;
+  useEffect(() => {
+    if (!engine || !hasBlobResolver) return;
+    return followBokehSessionDocs(
+      engine,
+      {
+        createReplica: (sessionId, epoch) => sources.current.createReplica(sessionId, epoch),
+        fetchBlob: (ref) => {
+          const resolver = sources.current.blobResolver;
+          return resolver
+            ? resolver.fetch(ref)
+            : Promise.reject(new Error("Blob resolver is unavailable"));
+        },
+        logger: { warn: (message, ...args) => sources.current.logger?.warn(message, ...args) },
+      },
+      setDocs,
+    );
+  }, [engine, hasBlobResolver]);
+  useEffect(() => {
+    docs?.updateSessions(sessions);
+  }, [docs, sessions]);
   const transport = useMemo<BokehSessionTransport | null>(() => {
     if (!blobResolver) return null;
     return {
+      docs,
       fetchBlob: (ref) => blobResolver.fetch(ref),
       applyPatch: (options) => client.applyBokehSessionPatch(options),
-      subscribePatches: (listener) => {
-        if (!patches) return () => {};
-        const subscription = patches.subscribe(listener);
+      getData: (sessionId, sourceIds) => client.getBokehSessionData(sessionId, sourceIds),
+      subscribeEvents: (listener) => {
+        if (!engine) return () => {};
+        const subscription = engine.bokehSessionEventsBroadcasts$.subscribe((broadcast) =>
+          listener(broadcast.events),
+        );
         return () => subscription.unsubscribe();
       },
     };
-  }, [blobResolver, client, patches]);
+  }, [blobResolver, client, docs, engine]);
   return useMemo(
     () => ({ [BOKEH_SESSION_PLUGIN_ID]: { sessions, transport } satisfies BokehSessionRuntime }),
     [sessions, transport],

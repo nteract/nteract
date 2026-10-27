@@ -333,7 +333,15 @@ function normalizeText(text: string | string[]): string {
   return Array.isArray(text) ? text.join("") : text;
 }
 
+/**
+ * The unsegmented area and the first segment share this key, so a cell whose
+ * outputs start segmenting (a live session output followed by callback
+ * stdout) keeps its iframe and the live document in it.
+ */
+const PRIMARY_SEGMENT_KEY = "primary";
+
 function outputSegmentKey(segment: OutputSegment, index: number): string {
+  if (index === 0) return PRIMARY_SEGMENT_KEY;
   const firstOutput = segment.outputs[0];
   if (firstOutput?.output_id) {
     return [segment.lane, firstOutput.output_id].join("\0");
@@ -583,6 +591,7 @@ export function OutputArea({
 
   return (
     <OutputAreaSingle
+      key={PRIMARY_SEGMENT_KEY}
       {...passthroughProps}
       outputs={outputs}
       isolated={isolated}
@@ -804,8 +813,13 @@ function OutputAreaSingle({
         }
         setStaticFrameInteractionActive(true);
         // Move DOM focus off CodeMirror without scrolling; this wrapper owns
-        // focus until iframe pointer interaction is active.
-        staticFrameInteractionRef.current?.focus({ preventScroll: true });
+        // focus until iframe pointer interaction is active. Leave focus that
+        // is already in the iframe alone: iframe mousedowns arrive after the
+        // frame focused an input, and refocusing would blur its editor.
+        const wrapper = staticFrameInteractionRef.current;
+        if (wrapper && !wrapper.contains(document.activeElement)) {
+          wrapper.focus({ preventScroll: true });
+        }
       }
       onIframeMouseDown?.();
     },

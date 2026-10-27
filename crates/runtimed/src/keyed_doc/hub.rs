@@ -89,13 +89,6 @@ impl KeyedSyncStates {
 
     /// Keep only the states `keep` accepts, e.g. to forget documents that
     /// no longer exist.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "kind-facing seam; production callers arrive with the first registered kind"
-        )
-    )]
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(&KeyedDocKey) -> bool) {
         self.0.retain(|key, _| keep(key));
     }
@@ -478,13 +471,6 @@ impl KeyedDocHub {
     }
 
     /// Run `f` on the replica of `key`. Runs under the hub lock.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "kind-facing seam; production callers arrive with the first registered kind"
-        )
-    )]
     pub(crate) fn with_doc<R>(
         &self,
         key: &KeyedDocKey,

@@ -5,10 +5,10 @@ import initRuntimedWasm, {
   project_markdown_json,
 } from "../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
 
-let markdownProjectionWasmReady: Promise<void> | undefined;
+let runtimedWasmReady: Promise<void> | undefined;
 
-export function initializeMarkdownProjectionWasm(): Promise<void> {
-  markdownProjectionWasmReady ??= Promise.resolve()
+export function initializeRuntimedWasm(): Promise<void> {
+  runtimedWasmReady ??= Promise.resolve()
     .then(async () => {
       const wasmBytes = readFileSync(runtimedWasmBinaryPath());
       await initRuntimedWasm({
@@ -17,13 +17,17 @@ export function initializeMarkdownProjectionWasm(): Promise<void> {
           wasmBytes.byteOffset + wasmBytes.byteLength,
         ),
       });
-      setMarkdownProjectionProjector(project_markdown_json);
     })
     .catch((error: unknown) => {
-      markdownProjectionWasmReady = undefined;
+      runtimedWasmReady = undefined;
       throw error;
     });
-  return markdownProjectionWasmReady;
+  return runtimedWasmReady;
+}
+
+export async function initializeMarkdownProjectionWasm(): Promise<void> {
+  await initializeRuntimedWasm();
+  setMarkdownProjectionProjector(project_markdown_json);
 }
 
 function runtimedWasmBinaryPath(): string {

@@ -21,6 +21,7 @@ import {
   type SessionStatus,
 } from "runtimed";
 import {
+  type BokehSessionDocReplica,
   installBokehSessionPlugin,
   IsolationTest,
   useBokehSessionPlugin,
@@ -156,6 +157,7 @@ import { getTrustApprovalHandoffDisplayStatus, KERNEL_STATUS } from "./lib/kerne
 import { useNotebookActionPolicy } from "./lib/notebook-action-policy";
 import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
+import { BokehSessionDocHandle } from "./lib/runtimed-wasm";
 import { hostedNotebookWindowTitle } from "./lib/hosted-notebook-url";
 import { fileSourceIssueNotice, notebookDocumentIsDirty } from "./lib/notebook-file-state";
 import {
@@ -632,11 +634,22 @@ function AppContent() {
     [host, getHandle, getEngine],
   );
 
+  const createBokehReplica = useCallback(
+    (sessionId: string, epoch: number) =>
+      new BokehSessionDocHandle(
+        sessionId,
+        epoch,
+        getHandle()?.get_actor_id() ?? "",
+      ) as unknown as BokehSessionDocReplica,
+    [getHandle],
+  );
   const outputSessionRuntimes = useBokehSessionPlugin({
     sessions: runtimeState.bokeh_sessions,
+    engine: getEngine(),
     blobResolver: useBlobResolver(),
-    patches: getEngine()?.bokehSessionPatchBroadcasts$ ?? null,
     client: notebookClient,
+    createReplica: createBokehReplica,
+    logger,
   });
 
   // Daemon-owned kernel execution

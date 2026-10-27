@@ -70,6 +70,8 @@ alacritty_terminal = "0.25"
 # Error parsing
 regex = { workspace = true }
 base64 = { workspace = true }
+# Bokeh 3.8+ base64 buffers are gzipped
+flate2 = { workspace = true }
 
 # Markdown parsing for image extraction
 pulldown-cmark = "0.13"

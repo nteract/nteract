@@ -21,7 +21,7 @@ import sys
 import threading
 from collections import deque
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 from ipykernel.displayhook import ZMQShellDisplayHook
 from ipykernel.ipkernel import IPythonKernel
@@ -29,13 +29,69 @@ from ipykernel.kernelapp import IPKernelApp
 from ipykernel.zmqshell import ZMQInteractiveShell
 from traitlets import List, Type, Unicode
 
-from nteract_kernel_launcher._bokeh_handlers import wire_bokeh_event as _wire_bokeh_event
-from nteract_kernel_launcher._bokeh_session import BokehServerEvent, session_registry
 from nteract_kernel_launcher.transport import ReliableIOPubMixin
 
-_BOKEH_EVENT = "nteract_bokeh_event"
-
 ShellHandler = Callable[[Any, list[bytes], dict[str, Any]], None | Awaitable[None]]
+T = TypeVar("T")
+IOPubEncoder = Callable[[T], tuple[dict[str, Any], list[bytes]]]
+
+
+class IOPubPublisher(Generic[T]):
+    """Ordered, thread-safe IOPub publisher that sends from the calling thread.
+
+    Scheduling sends on the kernel IOLoop would hold every message until a
+    running cell finishes. The IOPub socket hands messages to ipykernel's IOPub
+    thread, which is how ``print`` streams during a cell.
+
+    Items are encoded at send time. An encode error is deterministic for that
+    item, so it is dropped; a send error keeps it queued and the next
+    ``publish`` retries it first. ``encode`` must not publish to this publisher.
+    """
+
+    def __init__(
+        self,
+        msg_type: str,
+        encode: IOPubEncoder[T],
+        send: Callable[[str, dict[str, Any], list[bytes]], None],
+        log: Any,
+    ) -> None:
+        self.msg_type = msg_type
+        self._encode = encode
+        self._send = send
+        self._log = log
+        self._lock = threading.Lock()
+        self._queue: deque[T] = deque()
+        self._closed = False
+
+    def publish(self, item: T) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._queue.append(item)
+            while self._queue:
+                head = self._queue[0]
+                try:
+                    content, buffers = self._encode(head)
+                except Exception:
+                    self._queue.popleft()
+                    self._log.exception("Could not encode %s; dropping it", self.msg_type)
+                    continue
+                try:
+                    self._send(self.msg_type, content, buffers)
+                except Exception:
+                    self._log.exception("Could not publish %s", self.msg_type)
+                    return
+                self._queue.popleft()
+
+    def close(self) -> None:
+        """Drop queued items; later ``publish`` calls do nothing."""
+        with self._lock:
+            self._closed = True
+            self._queue.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._queue)
 
 
 class NteractShellDisplayHook(ZMQShellDisplayHook):
@@ -105,13 +161,6 @@ class NteractKernel(IPythonKernel):
 
     shell_class = Type(NteractShell)
 
-    def __init__(self, *args, **kwargs):
-        self._bokeh_event_lock = threading.Lock()
-        self._bokeh_event_queue: deque[BokehServerEvent] = deque()
-        self._bokeh_event_drain_scheduled = False
-        super().__init__(*args, **kwargs)
-        session_registry.set_event_sink(self._enqueue_bokeh_event)
-
     def register_shell_handler(self, msg_type: str, handler: ShellHandler) -> Callable[[], None]:
         """Install *handler* for shell messages of *msg_type*; returns an unregister callable.
 
@@ -130,50 +179,32 @@ class NteractKernel(IPythonKernel):
 
         return unregister
 
-    def _enqueue_bokeh_event(self, event: BokehServerEvent) -> None:
-        with self._bokeh_event_lock:
-            self._bokeh_event_queue.append(event)
-            if self._bokeh_event_drain_scheduled:
-                return
-            self._bokeh_event_drain_scheduled = True
-        try:
-            self.io_loop.add_callback(self._drain_bokeh_events)
-        except Exception:
-            with self._bokeh_event_lock:
-                self._bokeh_event_drain_scheduled = False
-            self.log.exception("Could not schedule Bokeh session event publication")
+    def iopub_publisher(self, msg_type: str, encode: IOPubEncoder[T]) -> IOPubPublisher[T]:
+        """An :class:`IOPubPublisher` for unparented *msg_type* messages on this kernel."""
 
-    def _drain_bokeh_events(self) -> None:
-        while True:
-            with self._bokeh_event_lock:
-                if not self._bokeh_event_queue:
-                    self._bokeh_event_drain_scheduled = False
-                    return
-                event = self._bokeh_event_queue.popleft()
+        def send(msg_type: str, content: dict[str, Any], buffers: list[bytes]) -> None:
+            wire_buffers: list[bytes | memoryview[bytes]] = list(buffers)
+            self.session.send(
+                self.iopub_socket,
+                msg_type,
+                content,
+                parent=None,
+                ident=self._topic(msg_type),
+                buffers=wire_buffers,
+            )
 
-            try:
-                content, buffers = _wire_bokeh_event(event)
-                wire_buffers: list[bytes | memoryview[bytes]] = list(buffers)
-            except Exception:
-                # Serialization failures are deterministic for this event. Drop
-                # it so one malformed payload cannot wedge the publication loop.
-                self.log.exception("Could not serialize Bokeh session event; dropping event")
-                continue
-            try:
-                self.session.send(
-                    self.iopub_socket,
-                    _BOKEH_EVENT,
-                    content,
-                    parent=None,
-                    ident=self._topic(_BOKEH_EVENT),
-                    buffers=wire_buffers,
-                )
-            except Exception:
-                with self._bokeh_event_lock:
-                    self._bokeh_event_queue.appendleft(event)
-                    self._bokeh_event_drain_scheduled = False
-                self.log.exception("Could not publish Bokeh session event")
-                return
+        return IOPubPublisher(msg_type, encode, send, self.log)
+
+    def send_extension_reply(
+        self,
+        stream: Any,
+        ident: Any,
+        msg_type: str,
+        content: dict[str, Any],
+        buffers: list[bytes] | None = None,
+    ) -> None:
+        """Reply to the shell request being handled (ipykernel tracks its parent)."""
+        self.send_response(stream, msg_type, content=content, ident=ident, buffers=buffers or [])
 
 
 class NteractKernelApp(ReliableIOPubMixin, IPKernelApp):

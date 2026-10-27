@@ -2656,6 +2656,7 @@ fn test_room_with_path_and_store(
         genesis_snapshot.clone(),
     ));
     let lifecycle = RoomLifecycle::new(genesis_snapshot, document_heads);
+    let extensions = crate::extensions::room_extensions(&blob_store, &state);
     let room = NotebookRoom {
         id: room_id,
         doc: Arc::new(RwLock::new(doc)),
@@ -2674,7 +2675,7 @@ fn test_room_with_path_and_store(
         preparing_kernel_env_path: std::sync::Mutex::new(None),
         evicted: AtomicBool::new(false),
         blob_store,
-        output_hooks: crate::extensions::room_output_hooks(),
+        output_hooks: extensions.output_hooks,
         trust_state: Arc::new(RwLock::new(TrustState {
             status: runt_trust::TrustStatus::Untrusted,
             pep723_dependencies: vec![],
@@ -2700,7 +2701,7 @@ fn test_room_with_path_and_store(
         project_trust_prompt: Default::default(),
         state,
         comms,
-        keyed_docs: Arc::new(crate::keyed_doc::KeyedDocHub::default()),
+        keyed_docs: extensions.keyed_docs,
         comments,
         comments_store,
         runtime_agent_handle: Arc::new(Mutex::new(None)),
@@ -3173,6 +3174,7 @@ async fn peer_journal_failure_rolls_back_document_and_sync_ack() {
             room.id.to_string(),
             "receipt-peer".into(),
             identity.actor_label().to_string(),
+            true,
         );
         let envelope = NotebookRequestEnvelope {
             id: Some("failed-storage-receipt".into()),
@@ -14361,6 +14363,7 @@ async fn save_request_aborted_by_peer_disconnect_after_commit_keeps_room_saveabl
         room.id.to_string(),
         "closing-peer".into(),
         "closing-peer".into(),
+        true,
     );
     let envelope = NotebookRequestEnvelope {
         id: Some("save-then-close".into()),
@@ -16161,6 +16164,292 @@ async fn assert_mutable_replay_recovery(conflict: Option<&str>) {
             let payload = room_payload(room, "viz-execution".to_string()).await;
             assert_eq!(payload["snapshot"], saved_snapshot());
             assert_eq!(payload["document"], initial["document"]);
+        }
+        Some(conflict) => {
+            assert!(
+                matches!(&settled, RoomSourceState::Failed(_))
+                    && format!("{settled:?}").contains("does not match"),
+                "{conflict}: {settled:?}"
+            );
+        }
+    }
+}
+
+/// Exchange keyed frames between a runtime agent's Bokeh store and the room
+/// hub until quiet, as the runtime agent connection does.
+fn pump_bokeh_store(room: &NotebookRoom, store: &crate::bokeh_session::store::BokehSessionStore) {
+    let mut agent_states = crate::keyed_doc::KeyedSyncStates::new();
+    let mut hub_states = crate::keyed_doc::KeyedSyncStates::new();
+    for _ in 0..16 {
+        let mut inbound: Vec<Vec<u8>> = Vec::new();
+        for frame in store.generate_frames(&mut agent_states) {
+            inbound.extend(
+                room.keyed_docs
+                    .receive_runtime_frame(&mut hub_states, &frame),
+            );
+        }
+        inbound.extend(room.keyed_docs.runtime_updates(&mut hub_states, None));
+        if inbound.is_empty() {
+            return;
+        }
+        for reply in inbound {
+            if let Some(back) = store.receive_payload(&reply, &mut agent_states).unwrap() {
+                room.keyed_docs
+                    .receive_runtime_frame(&mut hub_states, &back);
+            }
+        }
+    }
+    panic!("runtime agent and hub did not converge");
+}
+
+fn connected_bokeh_record(output_id: &str, execution_id: &str) -> runtime_doc::BokehSessionState {
+    runtime_doc::BokehSessionState {
+        output_id: output_id.into(),
+        cell_id: "viz".into(),
+        execution_id: execution_id.into(),
+        kernel_id: "kernel-1".into(),
+        status: runtime_doc::BokehSessionStatus::Connected,
+        producer_name: "panel".into(),
+        producer_version: "1.9.4".into(),
+        bokeh_version: "3.9.2".into(),
+        root_ids: vec!["p1".into()],
+        epoch: 0,
+        doc_heads: vec!["a".repeat(64)],
+        previous_heads: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn saved_bokeh_output_carries_the_hub_state_as_snapshot() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = Arc::new(BlobStore::new(tmp.path().join("blobs")));
+    let room = NotebookRoom::new_fresh(Uuid::new_v4(), None, tmp.path(), blob_store, true);
+    room.state
+        .with_doc(|doc| {
+            doc.put_bokeh_session("session-1", &connected_bokeh_record("output-1", "exec-1"))
+        })
+        .unwrap();
+    let store = crate::bokeh_session::store::tests::store_with_session();
+    store.with_doc("session-1", |doc| {
+        doc.set_prop("p2", "value", "0.8").unwrap();
+        doc.commit();
+    });
+    pump_bokeh_store(&room, &store);
+
+    let output = serde_json::json!({
+        "output_type": "display_data",
+        "data": {runtime_doc::BOKEH_SESSION_MIME: {
+            "session_id": "session-1", "document": {"roots": []},
+            "session_doc": {"models": {}}, "buffers": [{"id": "stale"}],
+        }},
+        "metadata": {},
+    });
+    let saved = room.output_hooks.materialize_for_save(output).await;
+    let payload = &saved["data"][runtime_doc::BOKEH_SESSION_MIME];
+    assert!(payload.get("session_doc").is_none());
+    assert_eq!(payload["document"], serde_json::json!({"roots": []}));
+    assert_eq!(payload["buffers"], serde_json::json!([{"id": "stale"}]));
+    assert_eq!(payload["snapshot"]["buffers"], serde_json::json!([]));
+    let slider = &payload["snapshot"]["document"]["roots"][0]["attributes"]["children"][0];
+    assert_eq!(slider["attributes"]["value"], serde_json::json!(0.8));
+
+    let unknown = serde_json::json!({"output_type": "display_data", "data": {
+        runtime_doc::BOKEH_SESSION_MIME: {"session_id": "other", "document": {}},
+    }});
+    assert_eq!(
+        room.output_hooks
+            .materialize_for_save(unknown.clone())
+            .await,
+        unknown
+    );
+}
+
+// Kyle's fix-7 probe: a Bokeh output displayed with `[0]`, replaced live with
+// `[1]`, saved, and the process lost before any disconnect cleanup. The
+// durable record keeps `[0]`; recovery accepts the saved `snapshot` and
+// renders `[1]` from it. A changed `document` or `session_id` still fails.
+#[tokio::test]
+async fn bokeh_live_state_survives_save_and_process_loss() {
+    assert_bokeh_replay_recovery(None).await;
+}
+
+#[tokio::test]
+async fn bokeh_document_differences_still_degrade_recovery() {
+    for conflict in ["document", "session_id"] {
+        assert_bokeh_replay_recovery(Some(conflict)).await;
+    }
+}
+
+async fn assert_bokeh_replay_recovery(conflict: Option<&str>) {
+    use crate::bokeh_session::store::tests::{materialized_x, store_with_session};
+    use crate::output_store::{create_manifest, ContentRef, DEFAULT_INLINE_THRESHOLD};
+    use runtime_doc::BOKEH_SESSION_MIME as MIME;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blobs = test_blob_store(&tmp);
+    let path = tmp.path().join("panel.ipynb");
+    let docs = tmp.path().join("docs");
+    let records_dir = tmp.path().join("executions");
+    let store = runtimed_client::execution_store::ExecutionStore::new(&records_dir);
+    let id = Uuid::new_v4();
+    tokio::fs::write(
+        &path,
+        br#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[]}"#,
+    )
+    .await
+    .unwrap();
+    let source = "pn.panel(plot)";
+    let initial = serde_json::json!({
+        "session_id": "session-1",
+        "document": {"roots": [{"id": "p1", "x": [0]}]},
+        "buffers": [],
+    });
+    let original_room;
+    let mut expected = {
+        let (room, ready) =
+            arrow_recovery_room_from_disk(id, &docs, Arc::clone(&blobs), &path, &records_dir).await;
+        assert_source_ready(&ready);
+        original_room = Arc::downgrade(&room);
+        let raw = serde_json::json!({"output_type": "display_data", "metadata": {},
+            "data": {MIME: initial}});
+        let output = create_manifest(&raw, &blobs, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap()
+            .to_json();
+        let output_id = output["output_id"].as_str().unwrap().to_string();
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "viz", "code").unwrap();
+            doc.update_source("viz", source).unwrap();
+            doc.set_execution_id("viz", Some("viz-execution")).unwrap();
+        }
+        room.state
+            .with_doc(|state| {
+                state.create_execution_with_source_provenance(
+                    "viz-execution",
+                    source,
+                    1,
+                    Some("mcp:replay"),
+                    Some("viz"),
+                )?;
+                state.set_execution_count("viz-execution", 1)?;
+                state.set_outputs("viz-execution", &[output])?;
+                state.set_execution_done("viz-execution", true)?;
+                state.put_bokeh_session(
+                    "session-1",
+                    &connected_bokeh_record(&output_id, "viz-execution"),
+                )
+            })
+            .unwrap();
+
+        // The kernel replaces the source's data with `[1]`.
+        let agent = store_with_session();
+        crate::bokeh_session::store::tests::flush(
+            &agent,
+            &blobs,
+            crate::bokeh_session::ingest::tests::wire_delta(
+                "tx-replace",
+                serde_json::json!({"data_events": [{
+                    "kind": "ColumnDataChanged", "source_id": "p3", "base_version": 0,
+                    "new_version": 1, "columns": {"x": [1]}, "columns_removed": [],
+                }]}),
+            ),
+            &[],
+        )
+        .await;
+        pump_bokeh_store(&room, &agent);
+
+        save_notebook_to_disk(&room, None).await.unwrap();
+        super::peer_runtime_sync::persist_terminal_execution_records(
+            &room,
+            &store,
+            &mut HashMap::new(),
+        )
+        .await;
+        // Process loss: the room goes away without runtime-agent cleanup.
+        store.read_record("viz-execution").await.unwrap()
+    };
+    assert!(original_room.upgrade().is_none());
+
+    let saved: serde_json::Value =
+        serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+    let saved_payload = &saved["cells"][0]["outputs"][0]["data"][MIME];
+    assert_eq!(saved_payload["document"], initial["document"]);
+    assert_eq!(
+        materialized_x(&saved_payload["snapshot"]["document"]),
+        serde_json::json!([1])
+    );
+    let recorded = |record: &runtimed_client::execution_store::ExecutionRecord| {
+        let content: ContentRef =
+            serde_json::from_value(record.outputs[0]["data"][MIME].clone()).unwrap();
+        content
+    };
+    let recorded_payload: serde_json::Value =
+        serde_json::from_str(&recorded(&expected).resolve(&blobs).await.unwrap()).unwrap();
+    assert_eq!(
+        recorded_payload, initial,
+        "the durable record keeps the display-time payload"
+    );
+
+    if let Some(conflict) = conflict {
+        let mut payload = recorded_payload;
+        match conflict {
+            "document" => payload["document"] = serde_json::json!({"roots": [{"x": [1]}]}),
+            "session_id" => payload["session_id"] = serde_json::json!("session-2"),
+            _ => unreachable!(),
+        }
+        expected.outputs[0]["data"][MIME] = serde_json::json!({"inline": payload.to_string()});
+        store.write_record(expected.clone()).await.unwrap();
+    }
+
+    let rendered_x = |room: Arc<NotebookRoom>, execution_id: String| {
+        let blobs = Arc::clone(&blobs);
+        async move {
+            let outputs = room
+                .state
+                .read(|state| state.get_outputs(&execution_id))
+                .unwrap();
+            let content: ContentRef =
+                serde_json::from_value(outputs[0]["data"][MIME].clone()).unwrap();
+            let payload: serde_json::Value =
+                serde_json::from_str(&content.resolve(&blobs).await.unwrap()).unwrap();
+            materialized_x(&payload["snapshot"]["document"])
+        }
+    };
+
+    // Fresh import claims the durable record by content.
+    {
+        let (fresh, ready) = arrow_recovery_room_from_disk(
+            id,
+            &tmp.path().join("fresh-docs"),
+            Arc::clone(&blobs),
+            &path,
+            &records_dir,
+        )
+        .await;
+        assert_source_ready(&ready);
+        let execution_id = fresh.doc.read().await.get_execution_id("viz").unwrap();
+        assert_eq!(
+            execution_id == "viz-execution",
+            conflict.is_none(),
+            "fresh import, conflict {conflict:?}"
+        );
+        assert_eq!(
+            rendered_x(fresh, execution_id).await,
+            serde_json::json!([1])
+        );
+    }
+
+    // Journal recovery verifies the exact durable record.
+    let (room, settled) =
+        arrow_recovery_room_from_disk(id, &docs, Arc::clone(&blobs), &path, &records_dir).await;
+    match conflict {
+        None => {
+            assert_source_ready(&settled);
+            assert_eq!(
+                rendered_x(room, "viz-execution".to_string()).await,
+                serde_json::json!([1])
+            );
         }
         Some(conflict) => {
             assert!(

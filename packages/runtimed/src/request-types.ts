@@ -116,25 +116,35 @@ export interface BokehSessionBufferRef {
   media_type: string;
 }
 
+/** One-off events only: MessageSent, ColumnsStreamed, ColumnsPatched. */
 export interface BokehSessionPatchRequest {
   session_id: string;
   transaction_id: string;
-  base_revision: number;
   patch: Record<string, unknown>;
   buffers?: Array<{ id: string; data: number[] }>;
   buffer_refs?: BokehSessionBufferRef[];
 }
 
 export type BokehSessionPatchReply =
-  | { status: "accepted"; session_id: string; transaction_id: string; revision: number }
-  | { status: "stale"; session_id: string; transaction_id: string; revision: number }
-  | {
-      status: "error";
-      session_id: string;
-      transaction_id: string;
-      revision?: number | null;
-      error: string;
-    };
+  | { status: "accepted"; session_id: string; transaction_id: string }
+  | { status: "error"; session_id: string; transaction_id: string; error: string };
+
+/** Data events and Python messages; also the `bokeh_session_events` broadcast payload. */
+export interface BokehSessionEvents {
+  session_id: string;
+  epoch: number;
+  transaction_id: string;
+  data_events?: Array<Record<string, unknown>>;
+  messages?: Array<Record<string, unknown>>;
+  buffers?: BokehSessionBufferRef[];
+}
+
+export interface BokehSessionDataTail {
+  session_id: string;
+  epoch: number;
+  events: BokehSessionEvents[];
+  fold_requested?: string[];
+}
 
 export interface BlobUploadPart {
   part_number: number;
@@ -175,6 +185,7 @@ export type NotebookRequest =
     }
   | { type: "send_comm"; message: CommRequestMessage }
   | { type: "apply_bokeh_session_patch"; request: BokehSessionPatchRequest }
+  | { type: "get_bokeh_session_data"; session_id: string; source_ids?: string[] | null }
   | {
       type: "get_history";
       /** Glob-style pattern to match. null for no filter. */
@@ -305,6 +316,7 @@ export type NotebookResponse =
       cursor_end: number;
     }
   | { result: "bokeh_session_patch"; reply: BokehSessionPatchReply }
+  | { result: "bokeh_session_data"; data: BokehSessionDataTail }
   | { result: "sync_environment_complete"; synced_packages: string[] }
   | { result: "sync_environment_failed"; error: string; needs_restart: boolean }
   | { result: "doc_bytes"; bytes: number[] }

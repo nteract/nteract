@@ -252,6 +252,7 @@ async fn recv_next_outbound_frame(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_peer_request_worker(
     room: Arc<NotebookRoom>,
     daemon: Arc<crate::daemon::Daemon>,
@@ -260,6 +261,7 @@ pub(super) fn spawn_peer_request_worker(
     notebook_id: String,
     peer_id: String,
     submitter_actor_label: String,
+    allows_notebook_write: bool,
 ) -> PeerRequestWorker {
     let (tx, mut rx) = mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(
         PEER_REQUEST_QUEUE_CAPACITY,
@@ -303,6 +305,18 @@ pub(super) fn spawn_peer_request_worker(
                     .await
                     {
                         response
+                    } else if let NotebookRequest::GetBokehSessionData {
+                        session_id,
+                        source_ids,
+                    } = envelope.request
+                    {
+                        crate::requests::apply_bokeh_session_patch::handle_get_data(
+                            &room,
+                            session_id,
+                            source_ids,
+                            allows_notebook_write,
+                        )
+                        .await
                     } else {
                         handle_notebook_request(
                             &room,
@@ -468,6 +482,7 @@ fn request_allowed_for_scope(
         request,
         notebook_protocol::protocol::NotebookRequest::GetDocBytes {}
             | notebook_protocol::protocol::NotebookRequest::AcknowledgeNotebookSync {}
+            | notebook_protocol::protocol::NotebookRequest::GetBokehSessionData { .. }
     ) || match request_required_scope(request) {
         RequestRequiredScope::NotebookWrite => connection_scope.allows_notebook_write(),
         RequestRequiredScope::BlobUpload => connection_scope.allows_local_blob_upload(),
@@ -514,6 +529,7 @@ fn request_required_scope(
         | NotebookRequest::DeclineProjectTrust { .. } => RequestRequiredScope::Owner,
         NotebookRequest::SendComm { .. }
         | NotebookRequest::ApplyBokehSessionPatch { .. }
+        | NotebookRequest::GetBokehSessionData { .. }
         | NotebookRequest::CloneAsEphemeral { .. }
         | NotebookRequest::AcknowledgeNotebookSync {}
         | NotebookRequest::GetDocBytes {} => RequestRequiredScope::NotebookWrite,

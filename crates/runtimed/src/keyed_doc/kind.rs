@@ -86,10 +86,6 @@ pub(crate) trait KeyedDocKind: Send + Sync + 'static {
     }
 }
 
-#[expect(
-    dead_code,
-    reason = "kind-facing seam; production callers arrive with the first registered kind"
-)]
 pub(crate) struct RoomKindCtx<'a> {
     pub state: &'a RuntimeStateHandle,
     pub blob_store: &'a Arc<BlobStore>,

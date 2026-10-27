@@ -19,7 +19,7 @@ from nteract_kernel_launcher._bokeh_session import (
     BokehSerialization,
     session_registry,
 )
-from nteract_kernel_launcher._buffer_hook import pending_buffers
+from nteract_kernel_launcher._buffer_hook import _get_ipython, pending_buffers
 from nteract_kernel_launcher._refs import BLOB_REF_MIME
 
 log = logging.getLogger("nteract_kernel_launcher")
@@ -133,10 +133,72 @@ class _PanelBootstrapFilter:
         return _without_legacy_panel_load(msg, content, data)
 
 
+def _announced_session(msg: dict[str, Any]) -> BokehDocumentSession | None:
+    content = msg.get("content")
+    data = content.get("data") if isinstance(content, dict) else None
+    payload = data.get(BOKEH_SESSION_MIME) if isinstance(data, dict) else None
+    session_id = payload.get("session_id") if isinstance(payload, dict) else None
+    if not isinstance(session_id, str):
+        return None
+    session = session_registry.get(session_id)
+    return session if session is not None and not session.announced else None
+
+
+class _SessionAnnouncer:
+    """Send a session's display message, then let the session publish deltas.
+
+    Deltas published before the display message would reach the runtime for
+    a session it does not know yet, so this hook runs the rest of the chain
+    and the send itself, and only then marks the session announced.
+    """
+
+    _nteract_bokeh_session_announcer = True
+
+    def __init__(self, publisher: Any) -> None:
+        self._publisher = publisher
+
+    def __call__(self, msg: dict[str, Any]) -> dict[str, Any] | None:
+        session = _announced_session(msg)
+        if session is None:
+            return msg
+        try:
+            hooks = list(self._publisher._hooks)
+            following = hooks[hooks.index(self) + 1 :] if self in hooks else []
+            outgoing: dict[str, Any] | None = msg
+            for hook in following:
+                outgoing = hook(outgoing)
+                if outgoing is None:
+                    break
+            if outgoing is not None:
+                self._publisher.session.send(
+                    self._publisher.pub_socket, outgoing, ident=self._publisher.topic
+                )
+        finally:
+            session.mark_announced()
+        return None
+
+
+def _install_session_announcer(publisher: Any) -> None:
+    hooks = getattr(publisher, "_hooks", None)
+    if not isinstance(hooks, list):
+        return
+    if any(getattr(hook, "_nteract_bokeh_session_announcer", False) for hook in hooks):
+        return
+    # First, so a hook that sends the message itself cannot skip it.
+    hooks.insert(0, _SessionAnnouncer(publisher))
+
+
+def _publishers(ip: Any) -> list[Any]:
+    return [
+        publisher
+        for publisher in (getattr(ip, "display_pub", None), getattr(ip, "displayhook", None))
+        if publisher is not None
+    ]
+
+
 def _install_bootstrap_filter(ip: Any) -> None:
-    for publisher in (getattr(ip, "display_pub", None), getattr(ip, "displayhook", None)):
-        if publisher is None:
-            continue
+    for publisher in _publishers(ip):
+        _install_session_announcer(publisher)
         hooks = list(getattr(publisher, "_hooks", []))
         if any(getattr(hook, "_nteract_panel_bootstrap_filter", False) for hook in hooks):
             continue
@@ -146,14 +208,14 @@ def _install_bootstrap_filter(ip: Any) -> None:
 
 
 def _uninstall_bootstrap_filter(ip: Any) -> None:
-    for publisher in (getattr(ip, "display_pub", None), getattr(ip, "displayhook", None)):
-        if publisher is None:
-            continue
+    for publisher in _publishers(ip):
         unregister = getattr(publisher, "unregister_hook", None)
         if unregister is None:
             continue
         for hook in list(getattr(publisher, "_hooks", [])):
-            if getattr(hook, "_nteract_panel_bootstrap_filter", False):
+            if getattr(hook, "_nteract_panel_bootstrap_filter", False) or getattr(
+                hook, "_nteract_bokeh_session_announcer", False
+            ):
                 unregister(hook)
 
 
@@ -235,7 +297,7 @@ def _create_panel_session(viewable: Any) -> tuple[BokehDocumentSession, dict[str
     import panel
     from bokeh.document import Document
     from panel.config import config
-    from panel.io.model import add_to_doc, monkeypatch_events
+    from panel.io.model import add_to_doc
     from panel.io.resources import set_resource_mode
 
     document = Document()
@@ -255,8 +317,8 @@ def _create_panel_session(viewable: Any) -> tuple[BokehDocumentSession, dict[str
         [root],
         producer_name="panel",
         producer_version=panel.__version__,
-        event_transform=monkeypatch_events,
         cleanup=_panel_cleanup(viewable, root, document),
+        announced=False,
     )
     return session, resources, bokeh.__version__
 
@@ -276,22 +338,39 @@ def _mark_document_loaded(document: Any) -> None:
 
 
 def _stash_buffers(
-    serialized: BokehSerialization,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    descriptors = serialized.buffer_descriptors()
+    document: BokehSerialization, session_doc: BokehSerialization | None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Wire descriptors for both serializations and the blob refs they index.
+
+    The session state holds the same column bytes as the DocJson, so its
+    buffers point at the DocJson's frames instead of sending them twice.
+    """
     refs: list[dict[str, Any]] = []
+    index_by_hash: dict[str, int] = {}
     pending = pending_buffers()
-    for descriptor, buffer in zip(descriptors, serialized.buffers, strict=True):
-        pending[descriptor["hash"]] = buffer.data
+
+    def add_ref(buffer: Any) -> int:
+        index = len(refs)
+        index_by_hash.setdefault(buffer.sha256, index)
+        pending[buffer.sha256] = buffer.data
         refs.append(
             {
-                "hash": descriptor["hash"],
-                "size": descriptor["size"],
+                "hash": buffer.sha256,
+                "size": len(buffer.data),
                 "content_type": "application/octet-stream",
-                "buffer_index": descriptor["buffer_index"],
+                "buffer_index": index,
             }
         )
-    return descriptors, refs
+        return index
+
+    document_descriptors = [buffer.descriptor(add_ref(buffer)) for buffer in document.buffers]
+    session_descriptors = [
+        buffer.descriptor(
+            index_by_hash[buffer.sha256] if buffer.sha256 in index_by_hash else add_ref(buffer)
+        )
+        for buffer in (session_doc.buffers if session_doc is not None else ())
+    ]
+    return document_descriptors, session_descriptors, refs
 
 
 def _plain_text(viewable: Any) -> str:
@@ -303,27 +382,38 @@ def _native_panel_mimebundle(viewable: Any) -> tuple[dict[str, Any], dict[str, A
     if not _panel_extension_loaded():
         raise RuntimeError("Panel extension is not loaded")
 
+    # Without a delta sink nothing would publish Python changes or route peer
+    # patches back, so the output carries no `session_doc` and renders static.
+    live = session_registry.live
     session, resources, bokeh_version = _create_panel_session(viewable)
     stashed_hashes: set[str] = set()
     try:
-        revision, snapshot = session.checkpoint()
-        _mark_document_loaded(session.document)
-        buffer_descriptors, refs = _stash_buffers(snapshot)
+        checkpoint = session.checkpoint()
+        if live:
+            # Changes from onload callbacks stay pending until the display
+            # message announcing the session has been sent.
+            _mark_document_loaded(session.document)
+        session_doc = checkpoint.session_doc if live else None
+        document_buffers, session_doc_buffers, refs = _stash_buffers(
+            checkpoint.document, session_doc
+        )
         stashed_hashes = {ref["hash"] for ref in refs}
-        payload = {
+        payload: dict[str, Any] = {
             "schema_version": BOKEH_SESSION_SCHEMA_VERSION,
             "session_id": session.session_id,
-            "revision": revision,
             "producer": {
                 "name": session.producer_name,
                 "version": session.producer_version,
             },
             "bokeh_version": bokeh_version,
-            "document": snapshot.content,
+            "document": checkpoint.document.content,
             "root_ids": session.root_ids,
             "resources": resources,
-            "buffers": buffer_descriptors,
+            "buffers": document_buffers,
         }
+        if session_doc is not None:
+            payload["session_doc"] = session_doc.content
+            payload["session_doc_buffers"] = session_doc_buffers
         data: dict[str, Any] = {
             BOKEH_SESSION_MIME: payload,
             "text/plain": _plain_text(viewable),
@@ -336,7 +426,15 @@ def _native_panel_mimebundle(viewable: Any) -> tuple[dict[str, Any], dict[str, A
                 "isolated": True,
             }
         }
+        if not live:
+            session.close()
+            return data, metadata
         session_registry.register(session)
+        ip = _get_ipython()
+        if ip is not None:
+            # Publisher hooks are thread-local and display() may run on a worker.
+            for publisher in _publishers(ip):
+                _install_session_announcer(publisher)
         return data, metadata
     except Exception:
         pending = pending_buffers()

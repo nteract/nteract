@@ -515,7 +515,7 @@ describe("OutputArea iframe theme sync", () => {
     expect(mockFrameHandle.renderBatch).toHaveBeenCalledTimes(1);
   });
 
-  it("forwards Bokeh session revisions without resending isolated output renders", async () => {
+  it("forwards Bokeh session epochs without resending isolated output renders", async () => {
     const outputs: JupyterOutput[] = [
       {
         output_id: "bokeh-output",
@@ -524,7 +524,6 @@ describe("OutputArea iframe theme sync", () => {
           [NTERACT_BOKEH_SESSION_MIME_TYPE]: {
             schema_version: 1,
             session_id: "session-1",
-            revision: 0,
             producer: { name: "panel", version: "1.9.3" },
             bokeh_version: "3.9.1",
             document: { roots: [] },
@@ -542,29 +541,30 @@ describe("OutputArea iframe theme sync", () => {
       },
     ];
     const transport: BokehSessionRuntime["transport"] = {
+      docs: null,
       fetchBlob: vi.fn(),
       applyPatch: vi.fn(),
-      subscribePatches: () => () => {},
+      getData: vi.fn(),
+      subscribeEvents: () => () => {},
     };
-    const session = (headRevision: number): BokehSessionState => ({
+    const session = (epoch: number): BokehSessionState => ({
       output_id: "bokeh-output",
       cell_id: "cell-1",
       execution_id: "execution-1",
       kernel_id: "kernel-1",
       status: "connected",
-      head_revision: headRevision,
       producer_name: "panel",
       producer_version: "1.9.3",
       bokeh_version: "3.9.1",
       root_ids: ["root-1"],
-      checkpoint: null,
-      patch_tail: [],
+      epoch,
+      doc_heads: ["head"],
     });
-    const renderWithRevision = (headRevision: number) => (
+    const renderWithEpoch = (epoch: number) => (
       <OutputSessionRuntimeContext.Provider
         value={{
           [BOKEH_SESSION_PLUGIN_ID]: {
-            sessions: { "session-1": session(headRevision) },
+            sessions: { "session-1": session(epoch) },
             transport,
           } satisfies BokehSessionRuntime,
         }}
@@ -576,20 +576,20 @@ describe("OutputArea iframe theme sync", () => {
     const uninstall = installBokehSessionPlugin();
     mockFrameHandle.isReady = true;
     try {
-      const { rerender } = render(renderWithRevision(0));
+      const { rerender } = render(renderWithEpoch(0));
       await waitFor(() => {
         expect(mockFrameHandle.renderBatch).toHaveBeenCalled();
       });
       const initialRenders = mockFrameHandle.renderBatch.mock.calls.length;
 
-      rerender(renderWithRevision(1));
+      rerender(renderWithEpoch(1));
 
       await waitFor(() => {
         expect(mockFrameHandle.notifyExtension).toHaveBeenCalledWith(NTERACT_BOKEH_SESSION_STATE, {
           sessionId: "session-1",
           outputId: "bokeh-output",
           status: "connected",
-          headRevision: 1,
+          epoch: 1,
         });
       });
       expect(mockFrameHandle.renderBatch).toHaveBeenCalledTimes(initialRenders);
@@ -1354,6 +1354,23 @@ describe("OutputArea iframe theme sync", () => {
     });
   });
 
+  it("leaves focus inside an engaged Bokeh frame when the frame reports a mousedown", () => {
+    render(<OutputArea outputs={makeBokehDocumentOutputs()} />);
+    const frame = screen.getByTestId("isolated-frame");
+    const activationWell = frame.parentElement as HTMLElement;
+
+    // Engaging from outside moves focus off the editor onto the well.
+    act(() => lastFrameMouseDown?.());
+    expect(document.activeElement).toBe(activationWell);
+
+    // A later mousedown reported after the frame focused an input must not
+    // pull focus back to the well and blur that input.
+    frame.tabIndex = 0;
+    frame.focus();
+    act(() => lastFrameMouseDown?.());
+    expect(document.activeElement).toBe(frame);
+  });
+
   it("keeps show(p) root HTML with the Bokeh exec renderer payload", async () => {
     render(<OutputArea outputs={makeBokehShowOnlyOutputs()} />);
 
@@ -1473,6 +1490,22 @@ describe("OutputArea iframe theme sync", () => {
         }),
       ]);
     });
+    expect(isolatedFrameMountCount).toBe(1);
+  });
+
+  it("keeps a lone iframe mounted when a DOM output appends and segments the area", async () => {
+    const widget = makeWidgetOutput("widget-progress-1", "model-progress-1");
+    const { rerender } = render(<OutputArea outputs={[widget]} />);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("isolated-frame")).toHaveLength(1);
+    });
+    expect(isolatedFrameMountCount).toBe(1);
+
+    rerender(<OutputArea outputs={[widget, ...makeStreamOutput("callback stdout\n")]} />);
+
+    expect(screen.getByText(/callback stdout/)).toBeInTheDocument();
+    expect(screen.getAllByTestId("isolated-frame")).toHaveLength(1);
     expect(isolatedFrameMountCount).toBe(1);
   });
 

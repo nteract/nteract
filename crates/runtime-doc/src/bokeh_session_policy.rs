@@ -8,8 +8,7 @@ use crate::policy::{
     RuntimeStateWriteScope,
 };
 use crate::{
-    BokehSessionContentRef, BokehSessionState, BokehSessionStatus, ExecutionState,
-    RuntimeStateError, BOKEH_SESSION_MIME,
+    BokehSessionState, BokehSessionStatus, ExecutionState, RuntimeStateError, BOKEH_SESSION_MIME,
 };
 
 pub(crate) const RECORD_POLICY: RecordRootPolicy = RecordRootPolicy {
@@ -35,7 +34,7 @@ fn validate_runtime_peer_delta(
     }
 
     for (session_id, after_session) in &after.state.bokeh_sessions {
-        validate_bokeh_session_replay(scope, session_id, after_session)?;
+        validate_bokeh_session_record(scope, session_id, after_session)?;
 
         let Some(before_session) = before.state.bokeh_sessions.get(session_id) else {
             let Some(execution) = after.state.executions.get(&after_session.execution_id) else {
@@ -108,29 +107,23 @@ fn validate_runtime_peer_delta(
             ));
         }
 
-        if after_session.head_revision < before_session.head_revision {
+        if after_session.epoch < before_session.epoch {
             return Err(runtime_state_policy_error(
                 scope,
                 "bokeh_sessions",
-                &format!("Bokeh session revision cannot move backward: {session_id}"),
+                &format!("Bokeh session epoch cannot move backward: {session_id}"),
             ));
         }
-
-        let before_checkpoint_revision = before_session
-            .checkpoint
-            .as_ref()
-            .map(|checkpoint| checkpoint.revision)
-            .unwrap_or(0);
-        let after_checkpoint_revision = after_session
-            .checkpoint
-            .as_ref()
-            .map(|checkpoint| checkpoint.revision)
-            .unwrap_or(0);
-        if after_checkpoint_revision < before_checkpoint_revision {
+        if after_session.epoch == before_session.epoch
+            && (after_session.doc_heads != before_session.doc_heads
+                || after_session.previous_heads != before_session.previous_heads)
+        {
             return Err(runtime_state_policy_error(
                 scope,
                 "bokeh_sessions",
-                &format!("Bokeh session checkpoint cannot move backward: {session_id}"),
+                &format!(
+                    "Bokeh session document identity changes only with its epoch: {session_id}"
+                ),
             ));
         }
     }
@@ -138,7 +131,7 @@ fn validate_runtime_peer_delta(
     Ok(())
 }
 
-fn validate_bokeh_session_replay(
+fn validate_bokeh_session_record(
     scope: RuntimeStateWriteScope,
     session_id: &str,
     session: &BokehSessionState,
@@ -157,40 +150,22 @@ fn validate_bokeh_session_replay(
             &format!("Bokeh session {session_id} has incomplete topology"),
         ));
     }
-
-    let Some(checkpoint) = &session.checkpoint else {
-        return Err(runtime_state_policy_error(
-            scope,
-            "bokeh_sessions",
-            &format!("Bokeh session {session_id} has no checkpoint"),
-        ));
+    let valid_heads = |heads: &[String]| {
+        heads
+            .iter()
+            .all(|head| head.len() == 64 && head.chars().all(|c| c.is_ascii_hexdigit()))
     };
-    validate_bokeh_content_ref(scope, session_id, &checkpoint.content_ref)?;
-    let mut replay_revision = checkpoint.revision;
-
-    for patch in &session.patch_tail {
-        validate_bokeh_content_ref(scope, session_id, &patch.content_ref)?;
-        if patch.base_revision != replay_revision || patch.revision <= patch.base_revision {
-            return Err(runtime_state_policy_error(
-                scope,
-                "bokeh_sessions",
-                &format!("Bokeh session {session_id} has a non-contiguous patch tail"),
-            ));
-        }
-        replay_revision = patch.revision;
-    }
-
-    if replay_revision != session.head_revision {
+    if session.doc_heads.is_empty()
+        || !valid_heads(&session.doc_heads)
+        || !valid_heads(&session.previous_heads)
+        || (session.epoch == 0) != session.previous_heads.is_empty()
+    {
         return Err(runtime_state_policy_error(
             scope,
             "bokeh_sessions",
-            &format!(
-                "Bokeh session {session_id} replay ends at {replay_revision}, expected {}",
-                session.head_revision
-            ),
+            &format!("Bokeh session {session_id} has an invalid document identity"),
         ));
     }
-
     Ok(())
 }
 
@@ -208,21 +183,6 @@ fn execution_has_bokeh_output(execution: &ExecutionState, output_id: &str) -> bo
                 .and_then(serde_json::Value::as_object)
                 .is_some_and(|data| data.contains_key(BOKEH_SESSION_MIME))
     })
-}
-
-fn validate_bokeh_content_ref(
-    scope: RuntimeStateWriteScope,
-    session_id: &str,
-    content_ref: &BokehSessionContentRef,
-) -> Result<(), RuntimeStateError> {
-    if content_ref.blob.is_empty() || content_ref.media_type.is_empty() {
-        return Err(runtime_state_policy_error(
-            scope,
-            "bokeh_sessions",
-            &format!("Bokeh session {session_id} has an invalid content reference"),
-        ));
-    }
-    Ok(())
 }
 
 fn bokeh_session_status_transition_allowed(
@@ -246,15 +206,11 @@ fn bokeh_session_status_transition_allowed(
 mod tests {
     use super::*;
     use crate::policy::{runtime_state_policy_snapshot, validate_runtime_state_sync_scope};
-    use crate::{BokehSessionCheckpoint, BokehSessionPatchRef, RuntimeStateDoc};
+    use crate::RuntimeStateDoc;
     use serde_json::json;
 
-    fn bokeh_content_ref(blob: &str) -> BokehSessionContentRef {
-        BokehSessionContentRef {
-            blob: blob.to_string(),
-            size: 128,
-            media_type: "application/vnd.nteract.bokeh-state.v1+json".to_string(),
-        }
+    fn heads(byte: char) -> Vec<String> {
+        vec![byte.to_string().repeat(64)]
     }
 
     fn bokeh_session(execution_id: &str) -> BokehSessionState {
@@ -264,16 +220,13 @@ mod tests {
             execution_id: execution_id.to_string(),
             kernel_id: "kernel-1".to_string(),
             status: BokehSessionStatus::Connected,
-            head_revision: 0,
             producer_name: "panel".to_string(),
             producer_version: "1.9.3".to_string(),
             bokeh_version: "3.9.1".to_string(),
             root_ids: vec!["p1001".to_string()],
-            checkpoint: Some(BokehSessionCheckpoint {
-                revision: 0,
-                content_ref: bokeh_content_ref("checkpoint-0"),
-            }),
-            patch_tail: Vec::new(),
+            epoch: 0,
+            doc_heads: heads('a'),
+            previous_heads: Vec::new(),
         }
     }
 
@@ -300,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_peer_policy_allows_bokeh_session_creation_and_revision_advance() {
+    fn runtime_peer_policy_allows_bokeh_session_creation_and_epoch_advance() {
         let before_doc = runtime_doc_with_accepted_execution();
         let before = runtime_state_policy_snapshot(&before_doc);
         let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
@@ -312,12 +265,9 @@ mod tests {
             .unwrap();
 
         let before_update = created;
-        session.head_revision = 1;
-        session.patch_tail.push(BokehSessionPatchRef {
-            base_revision: 0,
-            revision: 1,
-            content_ref: bokeh_content_ref("patch-1"),
-        });
+        session.epoch = 1;
+        session.previous_heads = session.doc_heads.clone();
+        session.doc_heads = heads('b');
         after_doc.put_bokeh_session("session-1", &session).unwrap();
         let after_update = runtime_state_policy_snapshot(&after_doc);
         validate_runtime_state_sync_scope(
@@ -326,6 +276,45 @@ mod tests {
             RuntimeStateWriteScope::RuntimePeer,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn runtime_peer_policy_rejects_bokeh_epoch_rewind_and_identity_rewrite() {
+        let mut before_doc = runtime_doc_with_accepted_execution();
+        append_bokeh_output(&mut before_doc, "exec-1", "output-1");
+        let mut session = bokeh_session("exec-1");
+        session.epoch = 2;
+        session.previous_heads = heads('c');
+        before_doc.put_bokeh_session("session-1", &session).unwrap();
+        let before = runtime_state_policy_snapshot(&before_doc);
+
+        let mut rewound_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        let mut rewound = session.clone();
+        rewound.epoch = 1;
+        rewound_doc
+            .put_bokeh_session("session-1", &rewound)
+            .unwrap();
+        let error = validate_runtime_state_sync_scope(
+            &before,
+            &runtime_state_policy_snapshot(&rewound_doc),
+            RuntimeStateWriteScope::RuntimePeer,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("epoch cannot move backward"));
+
+        let mut rewritten_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        let mut rewritten = session;
+        rewritten.doc_heads = heads('d');
+        rewritten_doc
+            .put_bokeh_session("session-1", &rewritten)
+            .unwrap();
+        let error = validate_runtime_state_sync_scope(
+            &before,
+            &runtime_state_policy_snapshot(&rewritten_doc),
+            RuntimeStateWriteScope::RuntimePeer,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("changes only with its epoch"));
     }
 
     #[test]
@@ -344,25 +333,20 @@ mod tests {
     }
 
     #[test]
-    fn runtime_peer_policy_rejects_non_contiguous_bokeh_replay() {
+    fn runtime_peer_policy_rejects_bokeh_epoch_without_previous_heads() {
         let before_doc = runtime_doc_with_accepted_execution();
         let before = runtime_state_policy_snapshot(&before_doc);
         let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
         append_bokeh_output(&mut after_doc, "exec-1", "output-1");
         let mut session = bokeh_session("exec-1");
-        session.head_revision = 2;
-        session.patch_tail.push(BokehSessionPatchRef {
-            base_revision: 1,
-            revision: 2,
-            content_ref: bokeh_content_ref("patch-2"),
-        });
+        session.epoch = 2;
         after_doc.put_bokeh_session("session-1", &session).unwrap();
         let after = runtime_state_policy_snapshot(&after_doc);
 
         let error =
             validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
                 .unwrap_err();
-        assert!(error.to_string().contains("non-contiguous"));
+        assert!(error.to_string().contains("invalid document identity"));
     }
 
     #[test]
@@ -386,20 +370,20 @@ mod tests {
     }
 
     #[test]
-    fn runtime_peer_policy_rejects_bokeh_session_without_checkpoint() {
+    fn runtime_peer_policy_rejects_bokeh_session_without_document_identity() {
         let before_doc = runtime_doc_with_accepted_execution();
         let before = runtime_state_policy_snapshot(&before_doc);
         let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
         append_bokeh_output(&mut after_doc, "exec-1", "output-1");
         let mut session = bokeh_session("exec-1");
-        session.checkpoint = None;
+        session.doc_heads = Vec::new();
         after_doc.put_bokeh_session("session-1", &session).unwrap();
         let after = runtime_state_policy_snapshot(&after_doc);
 
         let error =
             validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
                 .unwrap_err();
-        assert!(error.to_string().contains("has no checkpoint"));
+        assert!(error.to_string().contains("invalid document identity"));
     }
 
     #[test]

@@ -267,12 +267,20 @@ pub async fn run_all_cells(
         let output_manifests = &exec.outputs;
         let (outputs, resolved_outputs_by_manifest) = if !output_manifests.is_empty() {
             // Batch execute path — always preview mode. No per-cell opt-out.
+            let live_views = crate::live_views::collect(
+                &handle,
+                output_manifests,
+                metadata.blob_base_url.as_deref(),
+                metadata.blob_store_path.as_deref(),
+            )
+            .await;
             let aligned = runtimed_outputs::output_resolver::resolve_cell_outputs_for_llm_aligned(
                 output_manifests,
                 runtimed_outputs::output_resolver::ResolveCtx {
                     blob_base_url: metadata.blob_base_url.as_deref(),
                     blob_store_path: metadata.blob_store_path.as_deref(),
                     comms,
+                    live_views: Some(&live_views),
                     execution_cell_map: Some(&execution_cell_map),
                     ..Default::default()
                 },
@@ -804,6 +812,8 @@ pub(super) async fn render_execution_result(
                 blob_base_url: metadata.blob_base_url.as_deref(),
                 blob_store_path: metadata.blob_store_path.as_deref(),
                 comms,
+                // No connection here; session outputs use their saved state.
+                live_views: None,
                 length: if full_output {
                     output_resolver::OutputLength::Full
                 } else {

@@ -101,13 +101,6 @@ impl AgentDocs {
         self.refresh_availability();
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "kind-facing seam; production callers arrive with the first registered kind"
-        )
-    )]
     pub(crate) fn availability(&self) -> KeyedDocAvailability {
         self.availability.clone()
     }

@@ -8075,6 +8075,7 @@ dependencies = [
  "clap",
  "comments-doc",
  "dirs",
+ "flate2",
  "futures",
  "hex",
  "http-body-util",

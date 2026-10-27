@@ -5584,7 +5584,9 @@ fn read_package_version(package: &str) -> String {
         .to_string()
 }
 
-const TOOL_DESC_BYTE_BUDGET: usize = 1500;
+// Raised from 1500 for set_bokeh_property, whose description must state
+// that it runs Python callbacks.
+const TOOL_DESC_BYTE_BUDGET: usize = 1600;
 
 #[allow(clippy::expect_used)]
 fn cmd_sync_tool_cache(check: bool) {

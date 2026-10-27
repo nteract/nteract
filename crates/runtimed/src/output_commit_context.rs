@@ -46,11 +46,11 @@ impl OutputCommitContext {
             kernel_id,
             lifecycle_tx,
             redactor,
-            output_hooks: crate::extensions::agent_output_hooks(),
+            output_hooks: crate::extensions::agent_output_hooks(None),
         }
     }
 
-    #[cfg(test)]
+    /// The runtime agent's output hooks (`AgentExtensions::output_hooks`).
     pub(crate) fn with_output_hooks(mut self, output_hooks: OutputHookRegistry) -> Self {
         self.output_hooks = output_hooks;
         self

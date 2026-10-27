@@ -121,6 +121,10 @@
       "name": "get_results"
     },
     {
+      "description": "Set a property value in a cell's Bokeh/Panel output; runs Python callbacks. Values only, not structure.",
+      "name": "set_bokeh_property"
+    },
+    {
       "description": "Interrupt execution.",
       "name": "interrupt_kernel"
     },
