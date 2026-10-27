@@ -156,13 +156,17 @@ export default {
       }
       if (url.pathname === "/mcp") {
         await authenticate(request, env);
-        return handleMcp(request, async (operation, args) => {
-          try {
-            return await invoke(request, env, operation, args);
-          } catch (error) {
-            return errorResponse(error, "mcp-operation");
-          }
-        });
+        return await handleMcp(
+          request,
+          async (operation, args) => {
+            try {
+              return await invoke(request, env, operation, args);
+            } catch (error) {
+              return errorResponse(error, "mcp-operation");
+            }
+          },
+          env,
+        );
       }
       if (url.pathname === "/api/pages/register" && request.method === "POST") {
         const identity = await authenticate(request, env);

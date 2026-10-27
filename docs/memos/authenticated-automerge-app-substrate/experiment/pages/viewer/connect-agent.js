@@ -10,9 +10,10 @@ if (navigator.clipboard?.writeText) {
       try {
         await navigator.clipboard.writeText(value);
         status.textContent =
-          button.dataset.copy === "mcp-endpoint"
+          button.dataset.copyMessage ||
+          (button.dataset.copy === "mcp-endpoint"
             ? "Server URL copied."
-            : "Headers copied. Replace the placeholders in your client.";
+            : "Headers copied. Replace the placeholders in your client.");
       } catch {
         status.textContent = "Couldn't copy. Select and copy the value above.";
       } finally {

@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { handleMcp, tools } from "../mcp.mjs";
+import { handleMcp as handleMcpRequest, tools } from "../mcp.mjs";
+const env = { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example" };
+const handleMcp = (request, invoke) => handleMcpRequest(request, invoke, env);
 const request = (method, params = {}) =>
-  new Request("https://pages.example/mcp", {
+  new Request("http://127.0.0.1:9477/mcp", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      Host: "untrusted.example",
+      "X-Forwarded-Host": "also-untrusted.example",
+      "X-Forwarded-Proto": "http",
+    },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
 test("MCP forwards authorized operations and preserves stale-write failure", async () => {
@@ -42,7 +50,7 @@ test("MCP refuses resource URLs outside this service before invoking tools", asy
   assert.ok((await response.json()).error);
 });
 const pageId = "1a160b47-6df1-4983-81eb-489ca5a26812";
-test("MCP creation and listings return canonical browser links", async () => {
+test("MCP creation and listings use the configured HTTPS origin behind an HTTP proxy", async () => {
   const response = await handleMcp(
     request("tools/call", {
       name: "create_page",
@@ -76,6 +84,10 @@ test("MCP reads canonical and legacy links while rejecting ambiguous resource UR
     `https://pages.example/p/${pageId}?other=1`,
     `https://pages.example/p/${pageId}#other`,
     `https://pages.example/?page=${pageId}&other=1`,
+    `http://127.0.0.1:9477/p/${pageId}`,
+    `http://pages.example/p/${pageId}`,
+    `https://untrusted.example/p/${pageId}`,
+    `https://also-untrusted.example/p/${pageId}`,
   ]) {
     let invoked = false;
     const response = await handleMcp(request("resources/read", { uri }), async () => {
@@ -126,5 +138,25 @@ test("MCP advertises visible-text replacement separately from Markdown replaceme
   assert.equal(
     JSON.parse((await response.json()).result.content[0].text).result.edits[0].matched,
     1,
+  );
+});
+
+test("MCP list and read tool links use the public origin regardless of proxy headers", async () => {
+  for (const [name, body] of [
+    ["list_pages", { pages: [{ page_id: pageId, title: "Test" }] }],
+    ["read_page", { page_id: pageId, title: "Test", blocks: [] }],
+  ]) {
+    const response = await handleMcp(
+      request("tools/call", { name, arguments: name === "read_page" ? { page_id: pageId } : {} }),
+      async () => Response.json(body),
+    );
+    const result = JSON.parse((await response.json()).result.content[0].text);
+    assert.equal((result.pages?.[0] ?? result).url, `https://pages.example/p/${pageId}`);
+  }
+});
+
+test("MCP does not fall back to the request URL when public origin configuration is missing", async () => {
+  await assert.rejects(() =>
+    handleMcpRequest(request("tools/list"), async () => Response.json({}), {}),
   );
 });

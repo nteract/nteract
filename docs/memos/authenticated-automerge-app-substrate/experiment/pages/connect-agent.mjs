@@ -1,4 +1,12 @@
 import { pagesPublicOrigin } from "./agent-guide.mjs";
+import {
+  codexConfig,
+  codexHeaderHelper,
+  keyFile,
+  kiloConfig,
+  saveKeyCommand,
+  setupPrompt,
+} from "./agent-client-setup.mjs";
 
 const escapeHtml = (value) =>
   value.replace(
@@ -16,6 +24,7 @@ export function agentConnectionSetup(env) {
     "https://auth.anaconda.com/api/auth/sessions/whoami",
   ].includes(env.NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL);
   return {
+    origin,
     endpoint: origin + "/mcp",
     apiKeyUrl: production ? "https://anaconda.com/app/profile/api-keys" : null,
     headers: "Authorization: Bearer <YOUR_ANACONDA_API_KEY>\nX-Pages-Driver: <YOUR_CLIENT_NAME>",
@@ -32,7 +41,7 @@ export function connectAgentResponse(request, env) {
         <div><dt>User Resources</dt><dd>Read and write <span>(or Read-only)</span></dd></div>
         <div><dt>Platform Channels</dt><dd>No access</dd></div>
       </dl>
-      <p>Choose an expiration, then save the key in your client's secret settings. It is shown only once.</p>
+      <p>Choose an expiration and copy the key. It is shown only once. Save it in step 2 before closing the Anaconda tab.</p>
       <a class="primary setup-action" href="${setup.apiKeyUrl}" target="_blank" rel="noopener noreferrer">Create API key <span aria-hidden="true">↗</span><span class="sr-only"> (opens in a new tab)</span></a>
       <p class="setup-note">This key has Anaconda User Resources permissions, not just Pages access. Each Page's sharing permissions still apply.</p>`
     : `<p>Ask the deployment owner for the API-key setup instructions for this identity provider. This deployment does not use the standard production Anaconda key endpoint.</p>
@@ -44,20 +53,56 @@ export function connectAgentResponse(request, env) {
 <main class="agent-setup">
   <h1>Connect an agent</h1>
   <p class="setup-intro">Let your agent read, edit, and comment on your Pages.</p>
+  <p><strong>Start with your API key.</strong> Signing in to Pages doesn't connect Kilo or Codex. Your agent can prepare the settings while you complete steps 1 and 2. Then tell it you're ready to connect. Keep the key out of chat.</p>
+  <details class="setup-details"><summary>Give your agent the setup steps</summary>
+    <pre class="setup-value"><code id="setup-prompt">${escapeHtml(setupPrompt(setup.origin))}</code></pre>
+    <button type="button" class="setup-copy" data-copy="setup-prompt" data-copy-message="Setup instructions copied. Paste them into your agent chat." hidden>Copy setup instructions</button>
+  </details>
   <section aria-labelledby="setup-key"><h2 id="setup-key"><span>1</span> Create an API key</h2>${keyInstructions}</section>
-  <section aria-labelledby="setup-client"><h2 id="setup-client"><span>2</span> Add Pages to your client</h2>
+  <section aria-labelledby="setup-save"><h2 id="setup-save"><span>2</span> Save it privately</h2>
+    <p>Kilo and Codex can use the same local key file: <code>${keyFile}</code>. Your agent configures the connection; you enter the key.</p>
+    <details class="setup-details"><summary>Save the key on macOS or Linux</summary>
+      <p>Copy this command into your own terminal. It uses Python 3 to ask for the key with input hidden. Paste the raw key when prompted, then press Enter.</p>
+      <pre class="setup-value"><code id="save-key-command">${escapeHtml(saveKeyCommand)}</code></pre>
+      <button type="button" class="setup-copy" data-copy="save-key-command" data-copy-message="Command copied. Run it in your own terminal, then paste the key at the hidden prompt." hidden>Copy save command</button>
+      <p class="setup-note">This replaces the key in that file and allows only your user to read or write it. If you don't have Python 3, ask your agent to prepare a private local file and enter the key there yourself. The key never goes through this page.</p>
+    </details>
+    <p>Once saved, tell your agent: <q>The key is ready in ${keyFile}. Finish setup and call list_pages to verify it.</q></p>
+  </section>
+  <section aria-labelledby="setup-client"><h2 id="setup-client"><span>3</span> Connect your client</h2>
+    <p>Your agent can apply the matching recipe below after the key is saved. It should preserve your other settings.</p>
+    <details class="setup-details" id="kilo"><summary>Kilo Desktop / CLI</summary>
+      <p>Merge into <code>~/.config/kilo/kilo.jsonc</code>, the global config (or your customized XDG config directory). Use this after the key file exists and is nonempty.</p>
+      <pre class="setup-value"><code id="kilo-config">${escapeHtml(kiloConfig(setup.origin))}</code></pre>
+      <button type="button" class="setup-copy" data-copy="kilo-config" data-copy-message="Kilo config copied. Merge it into global config after saving your key." hidden>Copy Kilo config</button>
+      <p><code>oauth: false</code> keeps Kilo on API-key authentication. Don't use <code>kilo mcp auth</code> for Pages. Reload the server or restart Kilo, then ask it to list your Pages.</p>
+      <p class="setup-note">This is the Desktop/CLI format. Project configs and the older VS Code extension use different rules. <a href="https://kilo.ai/docs/automate/mcp/using-in-cli">Kilo configuration reference</a></p>
+    </details>
+    <details class="setup-details" id="codex"><summary>Codex Desktop / CLI</summary>
+      <p>Ask your agent to save this helper as <code>~/.config/pages/mcp-headers.py</code>. It contains no secret. Codex runs it to read your key; don't run it in chat or print its output.</p>
+      <pre class="setup-value"><code id="codex-helper">${escapeHtml(codexHeaderHelper)}</code></pre>
+      <button type="button" class="setup-copy" data-copy="codex-helper" data-copy-message="Helper code copied. Save it as ~/.config/pages/mcp-headers.py; Codex runs it privately." hidden>Copy header helper</button>
+      <p>Merge this into <code>~/.codex/config.toml</code> (or your configured CODEX_HOME). Replace both placeholders with absolute paths, using <code>command -v python3</code> to locate Python.</p>
+      <pre class="setup-value"><code id="codex-config">${escapeHtml(codexConfig(setup.origin))}</code></pre>
+      <button type="button" class="setup-copy" data-copy="codex-config" data-copy-message="Codex config copied. Fill in the two absolute paths before merging it into your config." hidden>Copy Codex config</button>
+      <p>Use a current Codex release with local HTTP header helpers (checked with CLI 0.156.1). Remove any previous <code>bearer_token_env_var</code> or Authorization header for this server; they take precedence. Reload MCP, then ask it to list your Pages.</p>
+      <p class="setup-note">This works without desktop shell environment variables. Remote execution placement needs its own credential setup. <a href="https://developers.openai.com/codex/mcp">Codex configuration reference</a></p>
+    </details>
+    <details class="setup-details" id="other-client"><summary>Other MCP clients</summary>
     <p>Add a remote MCP server using <strong>Streamable HTTP</strong>.</p>
     <div class="setup-field-label"><h3>Server URL</h3><button type="button" class="setup-copy" data-copy="mcp-endpoint" aria-label="Copy server URL" hidden>Copy</button></div>
     <pre class="setup-value"><code id="mcp-endpoint">${escapeHtml(setup.endpoint)}</code></pre>
     <div class="setup-field-label"><h3>Headers</h3><button type="button" class="setup-copy" data-copy="mcp-headers" aria-label="Copy headers" hidden>Copy</button></div>
     <pre class="setup-value"><code id="mcp-headers">${escapeHtml(setup.headers)}</code></pre>
     <p class="setup-note">Replace the placeholders in your client with your key and its name, such as Codex or Kilo. Keep the key in the client's secret settings, outside chats and documents. Signing in to Pages does not sign in your MCP client.</p>
-    <p class="setup-copy-status" role="status" aria-live="polite"></p>
+    </details>
   </section>
-  <section aria-labelledby="setup-try"><h2 id="setup-try"><span>3</span> Try it together</h2>
-    <p>Ask your agent: <q>List my Pages.</q> Open a Page in your browser, then ask the agent to make an edit. You'll see its changes in the same document.</p>
+  <section aria-labelledby="setup-try"><h2 id="setup-try"><span>4</span> Check the connection</h2>
+    <p>Ask your agent: <q>List my Pages.</q> A successful response, even an empty list, means you're connected. A config file or a client status label alone doesn't verify access.</p>
+    <p class="setup-note">If authentication fails, check that the key is saved, unexpired, and belongs to this deployment's Anaconda environment. Missing access to one Page can also mean it hasn't been shared with that account.</p>
     <p class="setup-note">For CLI setup, tool details, and troubleshooting, read the <a href="/llms.txt">agent guide</a>.</p>
   </section>
+  <p class="setup-copy-status" role="status" aria-live="polite"></p>
 </main><script type="module" src="/connect.js"></script></body></html>`;
   return new Response(request.method === "HEAD" ? null : body, {
     headers: {

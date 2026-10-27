@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import worker from "../worker/index.mjs";
 import { agentConnectionSetup } from "../connect-agent.mjs";
+import { codexConfig, kiloConfig, setupPrompt } from "../agent-client-setup.mjs";
 const origin = "https://page5.runtimed.run";
 const env = {
   NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
@@ -51,7 +52,10 @@ test("setup is public, uses configured destinations, and never reflects credenti
     "https://anaconda.com/app/profile/api-keys",
   );
   assert.equal(dom.querySelectorAll("input, textarea, form").length, 0);
-  assert.equal(dom.querySelectorAll("[data-copy][hidden]").length, 2);
+  assert.equal(dom.querySelectorAll("[data-copy][hidden]").length, 7);
+  assert.equal(dom.getElementById("kilo-config").textContent, kiloConfig(origin));
+  assert.equal(dom.getElementById("codex-config").textContent, codexConfig(origin));
+  assert.equal(dom.getElementById("setup-prompt").textContent, setupPrompt(origin));
 });
 
 test("setup supports HEAD and refuses mutation methods", async () => {

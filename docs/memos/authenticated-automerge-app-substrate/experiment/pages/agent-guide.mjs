@@ -1,3 +1,11 @@
+import {
+  codexConfig,
+  codexHeaderHelper,
+  keyFile,
+  kiloConfig,
+  saveKeyCommand,
+} from "./agent-client-setup.mjs";
+
 /** Public onboarding contains no account or document data. URLs come only from
  * deployment configuration, never a request Host or forwarded header. */
 export function pagesPublicOrigin(env) {
@@ -15,6 +23,104 @@ export function pagesPublicOrigin(env) {
 export function agentGuide(env) {
   const origin = pagesPublicOrigin(env);
   return `# Pages
+
+## Start here: connecting Kilo or Codex
+
+MCP endpoint: ${origin}/mcp. Authentication: Anaconda API key, not MCP OAuth.
+Human setup: ${origin}/connect. Follow this order before investigating anything else:
+
+1. Check whether a key is already explicitly configured for Pages (a supplied
+   secret path/header or ANACONDA_API_KEY / ANACONDA_AUTH_API_KEY). Check presence
+   without displaying its value. The recipes below use ${keyFile}.
+2. If no key is available, ask the human immediately:
+   "Pages needs a separate Anaconda API key. Please open ${origin}/connect,
+   create a key, and save it privately using that page's instructions. Tell me
+   when it is ready; do not paste it into this chat. I'll prepare the connection
+   settings while you do that."
+   In parallel, prepare the private directory, a config draft outside the active
+   client config, and the non-secret Codex helper if needed. Check the client
+   version and preserve its existing settings. Wait for the key before merging
+   an active secret reference, enabling MCP, or attempting authentication.
+   Browser sign-in does not authenticate MCP. Do not create an empty key file,
+   enable a connection without a key, install an Anaconda CLI just for setup,
+   inspect client binaries, or search app/keyring storage to find credentials.
+3. After the human saves the key, merge the client recipe below into their
+   existing configuration. Preserve unrelated settings and existing servers.
+   If they supplied another secret path, use that path consistently instead.
+4. Reload the client's MCP connection, then call list_pages. Only a successful
+   authenticated tool call proves it works; a saved config is not a connection.
+   An empty Pages list is a successful result. Until then report the exact stage:
+   prepared and waiting for a key, configured but not verified, or connected.
+
+Do not paste keys into chat, print resolved config/headers, or put credentials in
+URLs. For 401, check key presence, expiry, and provider environment once, then ask
+the human to replace the key through /connect. Do not try MCP OAuth login. For
+403, check User Resources scopes and Page sharing permissions. Do not retry in a loop.
+
+### Save the key privately (human step, macOS/Linux)
+
+Create the key through /connect, then run this in your own terminal. Python 3
+prompts with input hidden and writes a user-only file. Paste only the raw key,
+not an environment-variable assignment. Nothing is sent to the agent or this page.
+This replaces the key in ${keyFile}; clients using that file will use the new key.
+If Python 3 is unavailable, ask the agent to prepare an equivalent private local
+file and enter the key yourself; no CLI installation is required.
+
+\`\`\`sh
+${saveKeyCommand}
+\`\`\`
+
+### Kilo Desktop / CLI
+
+Once the key file is nonempty, merge this into the GLOBAL
+~/.config/kilo/kilo.jsonc (respect XDG_CONFIG_HOME if customized). This is the
+Kilo Desktop/CLI format, not the legacy VS Code mcpServers format. Secret file
+references belong in global config; project configs may drop variable headers.
+The file contains the raw key only. oauth: false is required for this API-key
+endpoint; kilo mcp auth is not the setup path.
+
+\`\`\`json
+${kiloConfig(origin)}
+\`\`\`
+
+Reload the Pages server in Kilo or restart the desktop app. kilo mcp list is a
+connection diagnostic; also call list_pages from the actual session using it.
+If a key is already supplied through an environment variable, you may replace
+the Authorization value with "Bearer {env:ANACONDA_API_KEY}" (or the explicitly
+configured ANACONDA_AUTH_API_KEY). Do this only when the running Kilo process
+actually inherits that variable. A shell-only variable does not establish that
+Desktop has it; otherwise ask the human to save the key through /connect. Do not
+silently use a nonexistent file just because an environment variable was found.
+Official configuration: https://kilo.ai/docs/automate/mcp/using-in-cli
+
+### Codex Desktop / CLI (local HTTP connection)
+
+Use the same private file. Have the agent save this non-secret helper as
+~/.config/pages/mcp-headers.py. Codex runs it to obtain the header; do not run it
+in an agent terminal or print its output, which contains the key.
+
+\`\`\`python
+${codexHeaderHelper}
+\`\`\`
+
+Merge this into ~/.codex/config.toml (or the configured CODEX_HOME). Replace
+both path placeholders with real absolute paths; use command -v python3 to
+locate the interpreter. Keep the quotes around paths with spaces.
+
+\`\`\`toml
+${codexConfig(origin)}
+\`\`\`
+
+http_headers_helper is supported in current Codex (checked with CLI 0.156.1).
+This recipe avoids shell environment inheritance in a desktop app. Do not also
+set bearer_token_env_var or a literal Authorization header: those take precedence.
+For an older Codex, use the supported bearer_token_env_var = "ANACONDA_API_KEY"
+option only when that variable is actually available to the running client, or
+ask the human to update. Never put the key value in config. Restart/reload MCP,
+then call list_pages. codex mcp get/list checks config only, not authentication.
+Official configuration: https://developers.openai.com/codex/mcp
+
+## Documents and permissions
 
 Realtime documents for people and agents. Markdown tools, comments, and browser
 edits use the same document. Pages start private. The owner can invite signed-in
@@ -49,12 +155,11 @@ not scope it exclusively to Pages: User Resources is an Anaconda account scope.
 Pages also enforces the account's per-Page viewer/editor/owner permissions.
 Official instructions: https://www.anaconda.com/docs/anaconda-platform/user/api-keys
 
-If you already use the anaconda-auth CLI, retrieve its key through the supported
-command. Install the CLI and sign in first if needed:
+If you already use the anaconda-auth CLI, it can supply an explicitly authorized
+key through its supported command. This is optional; do not install it just for
+MCP setup. The browser route above is the default:
 
 \`\`\`sh
-conda install anaconda-auth
-anaconda auth login --at anaconda.com
 export ANACONDA_API_KEY="$(anaconda auth api-key --at anaconda.com)"
 \`\`\`
 

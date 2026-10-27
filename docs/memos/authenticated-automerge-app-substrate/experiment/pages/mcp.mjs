@@ -1,4 +1,5 @@
 import { pagePath, readPageRoute } from "./shared/routes.mjs";
+import { pagesPublicOrigin } from "./agent-guide.mjs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
@@ -196,10 +197,12 @@ export const tools = [
 /** Caller verifies credentials before constructing this request-local server.
  * Every invocation goes through the same authorization and model as HTTP tools.
  */
-export async function handleMcp(request, invoke) {
+export async function handleMcp(request, invoke, env) {
   if (request.method !== "POST")
     return new Response(null, { status: 405, headers: { Allow: "POST" } });
-  const origin = new URL(request.url).origin;
+  // A tunnel may terminate TLS before this request reaches the runtime. Only
+  // deployment configuration identifies the public browser/resource origin.
+  const origin = pagesPublicOrigin(env);
   const server = new Server(
     { name: "nteract-pages-native", version: "0.1.0" },
     { capabilities: { tools: {}, resources: {} } },
