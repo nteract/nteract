@@ -158,6 +158,97 @@ function openDiagram(editor, dom) {
   editor.focus();
 }
 
+// Wordgard owns this DOM. Use the same small stroke icons as the React toolbar
+// without mounting a second React root inside an editor decoration.
+function diagramIcon(kind) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [name, value] of Object.entries({
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    "stroke-width": "2",
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round",
+    "aria-hidden": "true",
+    focusable: "false",
+  }))
+    svg.setAttribute(name, value);
+  const paths = {
+    code: ["m16 18 6-6-6-6", "m8 6-6 6 6 6"],
+    preview: [
+      "M2.1 12a1 1 0 0 1 0-.7 10.8 10.8 0 0 1 19.8 0 1 1 0 0 1 0 .7 10.8 10.8 0 0 1-19.8 0",
+      "M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
+    ],
+    copy: ["M9 9h11v11H9z", "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"],
+    check: ["m20 6-11 11-5-5"],
+  };
+  for (const d of paths[kind]) {
+    const path = document.createElementNS(svg.namespaceURI, "path");
+    path.setAttribute("d", d);
+    svg.append(path);
+  }
+  return svg;
+}
+
+function diagramButton(label, icon, className = "") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `icon-button wordgard-diagram-action ${className}`;
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.append(diagramIcon(icon));
+  return button;
+}
+
+function diagramActions(editor, dom, toggle) {
+  const actions = document.createElement("div");
+  actions.className = "wordgard-diagram-actions";
+  actions.setAttribute("role", "group");
+  actions.setAttribute("aria-label", "Diagram actions");
+  if (toggle) actions.append(toggle);
+  const copy = actions.appendChild(diagramButton("Copy diagram code", "copy"));
+  const feedback = actions.appendChild(document.createElement("span"));
+  feedback.className = "sr-only";
+  feedback.setAttribute("role", "status");
+  let copying = false;
+  let feedbackVersion = 0;
+  copy.onclick = async () => {
+    if (copying) return;
+    const block = editor.nodeFromDOM(dom.closest("pre") ?? dom);
+    if (!block || !isMermaid(block.node)) return;
+    copying = true;
+    const version = ++feedbackVersion;
+    copy.setAttribute("aria-busy", "true");
+    feedback.className = "sr-only";
+    feedback.textContent = "";
+    try {
+      await navigator.clipboard.writeText(codeSource(block.node));
+      if (!copy.isConnected || version !== feedbackVersion) return;
+      copy.replaceChildren(diagramIcon("check"));
+      copy.title = "Copied";
+      feedback.className = "sr-only";
+      feedback.textContent = "Diagram code copied";
+    } catch {
+      if (!copy.isConnected || version !== feedbackVersion) return;
+      feedback.className = "wordgard-diagram-copy-error";
+      feedback.textContent = "Couldn’t copy. Try again.";
+    } finally {
+      copying = false;
+      if (copy.isConnected) copy.removeAttribute("aria-busy");
+    }
+  };
+  const reset = () => {
+    feedbackVersion++;
+    copy.replaceChildren(diagramIcon("copy"));
+    copy.title = "Copy diagram code";
+    feedback.className = "sr-only";
+    feedback.textContent = "";
+  };
+  copy.onblur = reset;
+  copy.onmouseleave = reset;
+  return actions;
+}
+
 const diagram = Widget.define({
   eq: (a, b) => a.source === b.source && a.editable === b.editable,
   render({ source, editable }, editor) {
@@ -165,13 +256,17 @@ const diagram = Widget.define({
     dom.className = "wordgard-widget wordgard-diagram";
     dom.tabIndex = -1;
     dom.setAttribute("aria-label", "Mermaid diagram");
+    const header = dom.appendChild(document.createElement("div"));
+    header.className = "wordgard-diagram-header";
+    const label = header.appendChild(document.createElement("span"));
+    label.className = "wordgard-diagram-language";
+    label.textContent = "Mermaid";
+    let edit;
     if (editable) {
-      const edit = dom.appendChild(document.createElement("button"));
-      edit.type = "button";
-      edit.className = "wordgard-diagram-edit";
-      edit.textContent = "Edit diagram";
+      edit = diagramButton("Edit diagram", "code", "wordgard-diagram-edit");
       edit.onclick = () => openDiagram(editor, dom);
     }
+    header.append(diagramActions(editor, dom, edit));
     const status = dom.appendChild(document.createElement("p"));
     status.textContent = "Rendering diagram…";
     status.setAttribute("role", "status");
@@ -226,11 +321,12 @@ const diagram = Widget.define({
 
 const previewDiagram = Widget.create({
   render(_value, editor) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "wordgard-diagram-preview";
-    button.textContent = "Preview";
-    button.setAttribute("aria-label", "Preview diagram");
+    const button = diagramButton("Preview diagram", "preview", "wordgard-diagram-preview");
+    const host = document.createElement("span");
+    host.className = "wordgard-code-actions";
+    // Resolve the code block when used, after the point widget has mounted.
+    const actions = diagramActions(editor, host, button);
+    host.append(actions);
     button.onclick = () => {
       if (!editor.editable) return;
       const block = editor.nodeFromDOM(button.closest("pre"));
@@ -244,7 +340,7 @@ const previewDiagram = Widget.create({
       // focus to its replacement instead of leaving a hidden source caret.
       editor.nodeDOM(block.pos)?.querySelector(".wordgard-diagram-edit")?.focus();
     };
-    return button;
+    return host;
   },
   propagateEvent: false,
   inFlow: false,

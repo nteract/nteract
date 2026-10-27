@@ -53,20 +53,29 @@
     monospace;
   border-radius: 10px;
   background: #f6f7f5;
-  padding: 40px 16px 16px;
+  padding: 44px 16px 16px;
   overflow-x: auto;
   white-space: pre-wrap;
   position: relative;
 }
 .wordgard-document .wg-code-language {
-  font: 12px/1.4 inherit;
+  font:
+    12px/1.4 ui-sans-serif,
+    system-ui,
+    sans-serif;
   max-width: 160px;
   position: absolute;
   top: 8px;
-  right: 12px;
-  border: 0;
-  border-radius: 4px;
-  background: #ededeb;
+  left: 12px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted, #637469);
+  cursor: pointer;
+}
+.wordgard-document .wg-code-language:hover {
+  background: var(--accent-soft, #eef0ec);
 }
 .wordgard-document wg-content img {
   max-width: 100%;
@@ -143,41 +152,73 @@
   max-width: 100%;
   height: auto;
 }
-.wordgard-diagram-edit,
-.wordgard-diagram-preview {
-  position: absolute;
-  top: 4px;
-  z-index: 1;
-  min-height: 32px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  padding: 4px 8px;
-  background: var(--paper, #fff);
+.wordgard-diagram-header,
+.wordgard-diagram-actions {
+  -webkit-user-select: none;
+  user-select: none;
+}
+.wordgard-diagram-header {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 4px 12px;
+}
+.wordgard-diagram-language {
   color: var(--muted, #637469);
   font:
-    12px/1.5 ui-sans-serif,
+    12px/1.4 ui-sans-serif,
     system-ui,
     sans-serif;
+}
+.wordgard-diagram-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  z-index: 1;
+}
+.wordgard-diagram-actions .wordgard-diagram-action {
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted, #637469);
   cursor: pointer;
 }
-.wordgard-diagram-edit {
-  position: static;
-  align-self: flex-end;
-  order: 1;
+.wordgard-diagram-action svg {
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
 }
-.wordgard-diagram-preview {
-  left: 8px;
-  background: transparent;
-}
-.wordgard-diagram-edit:hover,
-.wordgard-diagram-preview:hover {
+.wordgard-diagram-actions .wordgard-diagram-action:hover:not(:disabled) {
   background: var(--accent-soft, #f6f7f5);
   color: inherit;
 }
-.wordgard-diagram-edit:focus-visible,
-.wordgard-diagram-preview:focus-visible {
+.wordgard-diagram-action:focus-visible {
   outline: 2px solid var(--focus, #4e7964);
   outline-offset: 2px;
+}
+.wordgard-diagram-copy-error {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: max-content;
+  max-width: 200px;
+  padding: 6px 10px;
+  border: 1px solid #e3e4e2;
+  border-radius: 6px;
+  background: var(--paper, #fff);
+  color: var(--muted, #637469);
+  font:
+    12px/1.4 ui-sans-serif,
+    system-ui,
+    sans-serif;
+  white-space: normal;
 }
 .wordgard-document .preserved-table,
 .wordgard-document .preserved-table .markdown-table-scroll {
@@ -191,11 +232,21 @@
 }
 @media (max-width: 600px) {
   .wordgard-document wg-content pre {
+    padding-top: 56px;
     padding-inline: 12px;
   }
-  .wordgard-diagram-edit,
-  .wordgard-diagram-preview {
-    min-height: 40px;
+  .wordgard-diagram-header {
+    min-height: 52px;
+  }
+  .wordgard-diagram-actions .wordgard-diagram-action {
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+  .wordgard-document .wg-code-language {
+    top: 4px;
+    height: 44px;
+    max-width: calc(100% - 116px);
   }
 }
 

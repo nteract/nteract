@@ -158,7 +158,9 @@ protocol check before navigation.
 Type three backticks on an empty paragraph, followed by Enter or Space, to make
 a code block. A language can follow the backticks, or be chosen from the code
 block's language selector. In Wordgard, **Edit diagram** opens the native code
-editor and **Preview** returns to the diagram. ProseMirror uses **Source** and
+editor and **Preview** returns to the diagram. Both are compact icon actions in
+the upper-right corner, beside **Copy diagram code**; copying is available to
+readers too. ProseMirror uses **Source** and
 **Preview**. Both switch only the local view. Cmd/Ctrl+Enter
 continues in a paragraph after the code block. The source and language remain
 Automerge content and round-trip through Markdown. The preview reuses nteract's

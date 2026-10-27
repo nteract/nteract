@@ -90,7 +90,9 @@ async function selectText(page, text, collapse = false, block = 0) {
     (el, { text, collapse }) => {
       const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
         acceptNode(node) {
-          return node.parentElement.closest(".peer-caret,.wordgard-widget,select,button")
+          return node.parentElement.closest(
+            ".peer-caret,.wordgard-widget,.wordgard-diagram-actions,select,button",
+          )
             ? NodeFilter.FILTER_REJECT
             : NodeFilter.FILTER_ACCEPT;
         },
@@ -170,6 +172,109 @@ async function editDiagram(page, block = 0) {
   await expect(content(page).nth(block).locator("pre")).toBeVisible();
   await expect(content(page).nth(block).locator(".wordgard-diagram")).toHaveCount(0);
 }
+async function diagramControls(page, mode, block = 0) {
+  const editor = content(page).nth(block);
+  const toggle = editor.getByRole("button", {
+    name: mode === "source" ? "Preview diagram" : "Edit diagram",
+    exact: true,
+  });
+  await expect(toggle).toBeVisible();
+  await expect(
+    editor.getByRole("button", { name: "Copy diagram code", exact: true }),
+  ).toBeVisible();
+  const geometry = await toggle.evaluate((button) => {
+    const host = button.closest("pre,.wordgard-diagram");
+    const actions = button.closest(".wordgard-diagram-actions");
+    const copy = actions.querySelector('[aria-label="Copy diagram code"]');
+    const bounds = host.getBoundingClientRect();
+    const control = button.getBoundingClientRect();
+    const clipboard = copy.getBoundingClientRect();
+    const language = host.querySelector(".wg-code-language")?.getBoundingClientRect();
+    return {
+      top: control.top - bounds.top,
+      right: bounds.right - clipboard.right,
+      toggle: { width: control.width, height: control.height },
+      copy: { width: clipboard.width, height: clipboard.height },
+      actionsOverlap: control.right > clipboard.left,
+      languageOverlaps: !!language && language.right > control.left,
+      inBounds: control.left >= bounds.left && clipboard.right <= bounds.right,
+      mobile: innerWidth <= 600,
+    };
+  });
+  assert.ok(geometry.top >= 0 && geometry.top <= 12, "diagram actions occupy the top corner");
+  assert.ok(geometry.right >= 0 && geometry.right <= 12, "diagram actions occupy the right corner");
+  assert.equal(geometry.actionsOverlap, false, "source/preview and copy controls do not overlap");
+  assert.equal(geometry.languageOverlaps, false, "language menu does not overlap diagram actions");
+  assert.equal(geometry.inBounds, true, "diagram controls stay within their block");
+  for (const target of [geometry.toggle, geometry.copy]) {
+    const minimum = geometry.mobile ? 40 : 32;
+    assert.ok(
+      target.width >= minimum && target.height >= minimum,
+      "diagram actions have usable hit targets",
+    );
+    assert.ok(target.width <= 48 && target.height <= 48, "diagram controls remain compact");
+  }
+  return geometry;
+}
+function sameDiagramCorner(preview, source) {
+  assert.ok(Math.abs(preview.top - source.top) <= 4, "preview and source keep the same top offset");
+  assert.ok(
+    Math.abs(preview.right - source.right) <= 4,
+    "preview and source keep the same right offset",
+  );
+}
+async function copyDiagram(page, expected, block = 0) {
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.bringToFront();
+  await page.evaluate(() => navigator.clipboard.writeText("not copied yet"));
+  const copy = content(page)
+    .nth(block)
+    .getByRole("button", { name: "Copy diagram code", exact: true });
+  await copy.click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expected);
+  await expect(copy).toBeFocused();
+}
+async function deniedDiagramCopy(page, block = 0, delayed = false) {
+  await page.evaluate((delayed) => {
+    if (Object.hasOwn(navigator.clipboard, "writeText"))
+      throw Error("Unexpected clipboard override in fixture");
+    Object.defineProperty(navigator.clipboard, "writeText", {
+      configurable: true,
+      value: async () => {
+        if (delayed)
+          await new Promise((resolve) => {
+            window.finishDiagramCopy = resolve;
+          });
+        throw new DOMException("Clipboard denied by fixture", "NotAllowedError");
+      },
+    });
+  }, delayed);
+  try {
+    const editor = content(page).nth(block);
+    const copy = editor.getByRole("button", { name: "Copy diagram code", exact: true });
+    await copy.click();
+    const status = editor.locator(".wordgard-diagram-actions").getByRole("status");
+    if (delayed) {
+      await expect(copy).toBeFocused();
+      await expect(copy).toHaveAttribute("aria-busy", "true");
+      await copy.press("Tab");
+      await page.evaluate(() => window.finishDiagramCopy());
+      await expect(copy).not.toHaveAttribute("aria-busy");
+      await expect(status).toBeEmpty();
+      return;
+    }
+    await expect(status).toHaveText("Couldn’t copy. Try again.");
+    await expect(status).toBeVisible();
+    await expect(copy).toBeFocused();
+    await copy.press("Tab");
+    await expect(status).toBeEmpty();
+  } finally {
+    await page.evaluate(() => {
+      delete navigator.clipboard.writeText;
+      delete window.finishDiagramCopy;
+    });
+  }
+}
 async function textOf(page, block) {
   const editors = block === undefined ? content(page) : content(page).nth(block);
   return editors.evaluateAll((elements) =>
@@ -177,7 +282,7 @@ async function textOf(page, block) {
       .map((el) => {
         const clone = el.cloneNode(true);
         clone
-          .querySelectorAll(".peer-caret,.wordgard-widget,select,button")
+          .querySelectorAll(".peer-caret,.wordgard-widget,.wordgard-diagram-actions,select,button")
           .forEach((n) => n.remove());
         clone.querySelectorAll("br").forEach((node) => node.replaceWith("\n"));
         return clone.textContent;
@@ -193,7 +298,9 @@ async function cursorGeometry(page, text, { reveal = false } = {}) {
       (el, { text, reveal }) => {
         const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
           acceptNode(node) {
-            return node.parentElement.closest(".wordgard-widget,select,button")
+            return node.parentElement.closest(
+              ".wordgard-widget,.wordgard-diagram-actions,select,button",
+            )
               ? NodeFilter.FILTER_REJECT
               : NodeFilter.FILTER_ACCEPT;
           },
@@ -575,7 +682,16 @@ try {
 
   stage = "Mermaid preview is local, preserves source and undo, and synchronizes edits";
   const beforeToggle = await call(a, "read_page", { page_id: code.page_id });
+  const desktopPreview = await diagramControls(a, "preview");
+  await deniedDiagramCopy(a);
+  await deniedDiagramCopy(a, 0, true);
+  await copyDiagram(a, diagram);
+  await a.screenshot({ path: output + "/diagram-controls-desktop.png", fullPage: true });
   await editDiagram(a);
+  const desktopSource = await diagramControls(a, "source");
+  sameDiagramCorner(desktopPreview, desktopSource);
+  await copyDiagram(a, diagram);
+  await a.screenshot({ path: output + "/diagram-source-desktop.png", fullPage: true });
   await expect.poll(() => textOf(a)).toBe(diagram);
   await expect(content(b).locator("pre:visible")).toHaveCount(0);
   await previewDiagram(a);
@@ -583,7 +699,7 @@ try {
   assert.deepEqual(
     afterToggle.heads,
     beforeToggle.heads,
-    "preview toggles do not write the document",
+    "preview toggles and copying code do not write the document",
   );
   assert.deepEqual(
     afterToggle.blocks,
@@ -603,6 +719,10 @@ try {
   await a.keyboard.insertText("Overview");
   await expect(b.locator(".wordgard-diagram")).toContainText("Overview", { timeout: 30000 });
   await expect(content(b).locator("pre:visible")).toHaveCount(0);
+  await copyDiagram(a, diagram.replace("Dashboard", "Overview"));
+  await copyDiagram(b, diagram.replace("Dashboard", "Overview"));
+  // Copying leaves focus on its control. Return to native source before undo.
+  await content(a).first().focus();
   await a.keyboard.press("ControlOrMeta+z");
   await expect.poll(() => textOf(a)).toBe(diagram);
   await expect(b.locator(".wordgard-diagram")).toContainText("Dashboard", { timeout: 30000 });
@@ -724,12 +844,25 @@ try {
 
   stage = "mobile preview toggle and table without a source-header gap";
   await a.setViewportSize({ width: 390, height: 844 });
+  const beforeMobileControls = await call(a, "read_page", { page_id: code.page_id });
+  const mobilePreview = await diagramControls(a, "preview");
+  await copyDiagram(a, diagram);
   await content(a).first().locator(".wordgard-diagram-canvas").click();
   await expect(a.locator("wg-cursor.wg-cursor-h:visible")).toHaveCount(0);
   await editDiagram(a);
+  const mobileSource = await diagramControls(a, "source");
+  sameDiagramCorner(mobilePreview, mobileSource);
+  await copyDiagram(a, diagram);
+  await a.screenshot({ path: output + "/diagram-source-mobile.png", fullPage: true });
   await expect.poll(() => textOf(a, 0)).toBe(diagram);
   await expect(content(b).first().locator("pre:visible")).toHaveCount(0);
   await previewDiagram(a);
+  const afterMobileControls = await call(a, "read_page", { page_id: code.page_id });
+  assert.deepEqual(
+    afterMobileControls.heads,
+    beforeMobileControls.heads,
+    "mobile diagram controls do not edit the document",
+  );
   const tableGap = await a.locator(".preserved-table").evaluate((element) => {
     const preview = element.querySelector(".markdown-table-scroll");
     return preview.getBoundingClientRect().top - element.getBoundingClientRect().top;
@@ -840,13 +973,21 @@ try {
   await expect(reader.locator("select.wg-code-language:enabled")).toHaveCount(0);
   await expect(reader.getByRole("button", { name: "Edit diagram", exact: true })).toHaveCount(0);
   await expect(reader.getByRole("button", { name: "Preview diagram", exact: true })).toHaveCount(0);
+  await expect(reader.getByRole("button", { name: "Copy diagram code", exact: true })).toHaveCount(
+    2,
+  );
   await expect(content(reader).locator("pre:visible")).toHaveCount(0);
   const beforeRead = await call(a, "read_page", { page_id: code.page_id });
+  await copyDiagram(reader, diagram.replace("Dashboard", "Overview"));
   await content(reader).first().click();
   await reader.keyboard.type("must not edit");
   await expect.poll(() => textOf(reader)).not.toContain("must not edit");
   const afterRead = await call(a, "read_page", { page_id: code.page_id });
-  assert.deepEqual(afterRead.heads, beforeRead.heads, "read-only typing creates no changes");
+  assert.deepEqual(
+    afterRead.heads,
+    beforeRead.heads,
+    "read-only copy and typing create no changes",
+  );
   await reader.screenshot({ path: output + "/read-only.png", fullPage: true });
   await readerContext.close();
   checkpoint(stage);
