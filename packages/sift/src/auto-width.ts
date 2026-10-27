@@ -4,17 +4,28 @@
  * autoWidth() — initial width from header label measurement + type minimums.
  * fitColumnWidths() — refine widths by sampling actual cell data via pretext.
  */
-import { measureNaturalWidth, prepareWithSegments } from "@chenglou/pretext";
+import { measureNaturalWidth, prepare } from "@chenglou/pretext";
 import type { ColumnType, TableData } from "./table";
 
-const LABEL_FONT = '600 11px Inter, "Helvetica Neue", Helvetica, Arial, sans-serif';
-const CELL_FONT = '14px Inter, "Helvetica Neue", Helvetica, Arial, sans-serif';
+/**
+ * Default `--sift-font` family list. Matches `--sift-font` in tokens.css.
+ * Named families lead because pretext measures `system-ui` differently from
+ * how macOS paints it; `system-ui` only applies where none of them exist.
+ */
+const DEFAULT_FONT_FAMILY =
+  'Inter, "Helvetica Neue", "Segoe UI", Helvetica, Arial, ui-sans-serif, system-ui, sans-serif';
+const LABEL_FONT = `600 11px ${DEFAULT_FONT_FAMILY}`;
+/**
+ * Canvas font for `.sift-cell` when the rendered font can't be read from the
+ * DOM. Size must match `.sift-cell` in library.css and LINE_HEIGHT in table.ts.
+ */
+export const DEFAULT_CELL_FONT = `14px ${DEFAULT_FONT_FAMILY}`;
 const HEADER_CHROME = 60; // cell padding + type icon + sort arrow
 const CELL_PAD = 24; // 12px each side — matches CELL_PAD_H in table.ts
 
 /** Widest forced line for `text` at `font`. Same engine as the table's layout. */
 function measureText(text: string, font: string): number {
-  return measureNaturalWidth(prepareWithSegments(text, font));
+  return measureNaturalWidth(prepare(text, font));
 }
 
 /** Compute initial column width from header label + type constraints */
@@ -37,14 +48,20 @@ export function autoWidth(name: string, colType: ColumnType): number {
 
 /**
  * Refine column widths by sampling actual cell data.
- * Uses pretext prepareWithSegments for accurate text measurement —
- * this matches the table engine's own layout calculations.
+ * Measures with pretext, the same engine the table uses for row heights.
  *
  * Uses the median single-line width — avoids outlier-driven expansion.
  * Only widens columns, never shrinks below the header-based width.
  * Narrows index columns to save space.
+ *
+ * `cellFont` is the canvas font string cells render with.
  */
-export function fitColumnWidths(data: TableData, colWidths: number[], maxWidth = 300): void {
+export function fitColumnWidths(
+  data: TableData,
+  colWidths: number[],
+  maxWidth = 300,
+  cellFont = DEFAULT_CELL_FONT,
+): void {
   const sampleSize = Math.min(30, data.rowCount);
   if (sampleSize === 0) return;
 
@@ -54,7 +71,7 @@ export function fitColumnWidths(data: TableData, colWidths: number[], maxWidth =
     if (summary && (summary as any).isIndex === true) {
       const maxVal = (summary as any).max as number;
       const formatted = maxVal != null ? Math.round(maxVal).toLocaleString() : "";
-      const indexW = Math.ceil(measureText(formatted, CELL_FONT)) + CELL_PAD;
+      const indexW = Math.ceil(measureText(formatted, cellFont)) + CELL_PAD;
       // Only widen — main.ts may have set a larger width from totalRows
       if (indexW > colWidths[c]) colWidths[c] = indexW;
       continue;
@@ -64,7 +81,7 @@ export function fitColumnWidths(data: TableData, colWidths: number[], maxWidth =
     for (let r = 0; r < sampleSize; r++) {
       const text = data.getCell(r, c);
       if (!text) continue;
-      const w = measureText(text, CELL_FONT) + CELL_PAD;
+      const w = measureText(text, cellFont) + CELL_PAD;
       widths.push(w);
     }
     if (widths.length === 0) continue;

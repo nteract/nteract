@@ -234,10 +234,16 @@ that are portaled to `<body>`:
   --sift-color-accent: #2563eb; /* histogram bars, selection, focus ring */
   --sift-color-true: #22c55e;   /* boolean true */
   --sift-color-false: #ef4444;  /* boolean false */
-  --sift-font-family: Inter, system-ui, sans-serif;
+  --sift-font-family: Inter, "Helvetica Neue", "Segoe UI", Arial, sans-serif;
   --sift-radius-base: 0.5rem;
 }
 ```
+
+Row heights are computed from text measured in the cell's font, read from the
+DOM when the table mounts. Set `--sift-font-family` before creating the table.
+Lead with a named family such as `Inter` or `"Helvetica Neue"`: on macOS,
+`system-ui` measures a little differently in canvas than it paints, so an
+occasional row can come out a line short or tall.
 
 Every other color (row stripes, scrollbars, badges, skeletons) is derived from
 these with `color-mix()`, so they follow light and dark automatically.
