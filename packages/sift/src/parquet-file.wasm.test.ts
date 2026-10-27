@@ -14,6 +14,7 @@ import {
   getModuleSync,
 } from "./predicate";
 import { SiftTable, type SiftLoadMilestone, type SiftSource } from "./react";
+import { createResidentWindowedData } from "./windowed-resident";
 
 const wasmPath = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -918,5 +919,34 @@ describe.skipIf(!existsSync(wasmPath))("byte-range Parquet with real WASM", () =
     release?.();
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(onLoadError).not.toHaveBeenCalled();
+  });
+
+  it("keeps the windowed head identity-ordered across sort desc, cast, and clear sort", async () => {
+    const ipc = tableToIPC(
+      tableFromArrays({
+        id: Int32Array.from([1, 2, 3, 4]),
+        code: ["001", "002", "003", "004"],
+      }),
+      "stream",
+    );
+    const data = await loadTableFile(writeParquet(ipc));
+    const adapter = createResidentWindowedData(data, { headRows: 10 });
+    try {
+      const none = [null, null];
+      await adapter.setQuery({ filters: none, sort: { col: 0, dir: "desc" } }, 1);
+      expect(Array.from((await adapter.requestWindow(0, 4, 1)).dataRows)).toEqual([3, 2, 1, 0]);
+      await adapter.castColumn!(1, "numeric", 2);
+      expect(data.columns[1].columnType).toBe("numeric");
+      await adapter.setQuery({ filters: none, sort: null }, 3);
+      const identity = await adapter.requestWindow(0, 4, 3);
+      expect(Array.from(identity.dataRows)).toEqual([0, 1, 2, 3]);
+      expect(Array.from(adapter.head.dataRows)).toEqual(Array.from(identity.dataRows));
+      const cols = data.columns.length;
+      expect(Array.from({ length: 4 }, (_, i) => adapter.head.numeric[i * cols + 1])).toEqual([
+        1, 2, 3, 4,
+      ]);
+    } finally {
+      adapter.dispose();
+    }
   });
 });

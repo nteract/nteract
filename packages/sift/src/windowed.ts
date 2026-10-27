@@ -70,7 +70,12 @@ export type WindowedTableData = {
   rowCount: number;
   coverage?: DatasetCoverage;
   datasetStats?: readonly (ColumnFileStats | null)[];
-  /** Cells for view rows `[0, headRows)`, available at mount for auto-width and first paint. */
+  /**
+   * Cells for data rows `[0, headRows)` in identity order, regardless of the
+   * current query; the engine uses it only when no sort or filter is active.
+   * Available at mount for auto-width and first paint. Refresh it when cell
+   * strings change (cast, undo).
+   */
   head: WindowCells;
   /**
    * Cells for view rows `[viewStart, viewEnd)` under the current query. The

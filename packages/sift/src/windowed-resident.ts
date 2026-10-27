@@ -87,6 +87,15 @@ export function createResidentWindowedData(
     return out;
   }
 
+  /** `WindowedTableData.head`: the first `headRows` data rows in identity order. */
+  function headCells(): WindowCells {
+    const count = Math.max(0, Math.min(headRows, data.rowCount));
+    return cellsFor(
+      0,
+      Uint32Array.from({ length: count }, (_, i) => i),
+    );
+  }
+
   /** Recompute the permutation for `query` and the summaries the header shows. */
   function runQuery(generation: number): QueryResult {
     const { columns, rowCount } = data;
@@ -145,7 +154,7 @@ export function createResidentWindowedData(
     get datasetStats() {
       return data.datasetStats;
     },
-    head: cellsFor(0, viewRows(0, headRows)),
+    head: headCells(),
     requestWindow(viewStart, viewEnd) {
       return settle(() => cellsFor(Math.max(0, viewStart), viewRows(viewStart, viewEnd)));
     },
@@ -170,7 +179,7 @@ export function createResidentWindowedData(
             data.recomputeSummaries?.();
             summariesAll = [...data.columnSummaries];
             const result = runQuery(generation);
-            adapter.head = cellsFor(0, viewRows(0, headRows));
+            adapter.head = headCells();
             return { ...result, columns: data.columns };
           })
       : undefined,
@@ -183,7 +192,7 @@ export function createResidentWindowedData(
             data.recomputeSummaries?.();
             summariesAll = [...data.columnSummaries];
             const result = runQuery(generation);
-            adapter.head = cellsFor(0, viewRows(0, headRows));
+            adapter.head = headCells();
             return { ...result, columns: data.columns };
           })
       : undefined,

@@ -322,6 +322,26 @@ export type TableEngine = {
   setFocusedDataRow(dataRow: number | null): void;
 };
 
+/**
+ * A view row and an offset into it, in virtual content pixels (the space
+ * `rowPositions` lives in, header excluded). See `captureScrollAnchor`.
+ * @internal
+ */
+export type ScrollAnchor = { row: number; offset: number };
+
+/**
+ * Engine internals for tests. Not exported from `index.ts`.
+ * @internal
+ */
+export type TableEngineTestHooks = {
+  captureScrollAnchor(): ScrollAnchor | null;
+  /** Scroll so `anchor` sits under the header's bottom edge again. */
+  restoreScrollAnchor(anchor: ScrollAnchor): void;
+};
+
+/** @internal */
+export type InternalTableEngine = TableEngine & { __test: TableEngineTestHooks };
+
 type SortState = { col: number; dir: "asc" | "desc" } | null;
 
 // --- Constants ---
@@ -519,6 +539,14 @@ export function createTable(
         if (!cellCaches[dataRow]) cellCaches[dataRow] = prepareCellRow(dataRow);
       }
     }
+  }
+
+  /** Whether `head.dataRows[i] === head.viewStart + i` for every row. */
+  function isIdentityHead(head: WindowCells): boolean {
+    for (let i = 0; i < head.dataRows.length; i++) {
+      if (head.dataRows[i] !== head.viewStart + i) return false;
+    }
+    return true;
   }
 
   let data: TableData = windowed ? viewReaderFor(initialData) : initialData;
@@ -817,12 +845,16 @@ export function createTable(
     return lo;
   }
 
-  type ScrollAnchor = {
-    row: number;
-    offset: number;
-  };
-
   let pendingScrollAnchor: ScrollAnchor | null = null;
+
+  // Scroll anchor coordinates. The anchor point is the header's bottom edge:
+  // the sticky header covers the top `headerH` px of the viewport, and the row
+  // pool starts `headerH` below the top of the scroll content, so at DOM
+  // scroll position `s` the content under that edge is at virtual offset
+  // `V = s * scrollScale` in `rowPositions` space (header excluded). An anchor
+  // is the view row containing `V` and `V - rowPositions[row]`. Both capture
+  // paths produce that pair and `applyScrollAnchor` inverts it, so a capture
+  // and restore with no geometry change leaves `scrollTop` where it was.
 
   function captureScrollAnchor(): ScrollAnchor | null {
     if (filteredCount === 0) return null;
@@ -830,6 +862,8 @@ export function createTable(
     const viewportRect = viewport.getBoundingClientRect();
     const anchorY = viewportRect.top + headerH;
     if (viewportRect.height > 0) {
+      // A painted row's screen top is `viewportTop + headerH + rowPositions[r]
+      // - V`, so `anchorY - rowRect.top` is `V - rowPositions[r]`.
       for (const pr of pool) {
         if (pr.assignedRow === -1) continue;
         const rowRect = pr.el.getBoundingClientRect();
@@ -843,11 +877,12 @@ export function createTable(
       }
     }
 
-    const scrollTop = Math.max(0, viewport.scrollTop * scrollScale - headerH);
-    const row = Math.min(rowAtOffset(scrollTop), filteredCount - 1);
+    // No painted row under the edge (or no layout): the same point from geometry.
+    const anchorVirtual = Math.max(0, viewport.scrollTop * scrollScale);
+    const row = Math.min(rowAtOffset(anchorVirtual), filteredCount - 1);
     return {
       row,
-      offset: Math.max(0, scrollTop - rowPositions[row]),
+      offset: Math.max(0, anchorVirtual - rowPositions[row]),
     };
   }
 
@@ -858,13 +893,20 @@ export function createTable(
     heightsDirty = true;
   }
 
-  function restoreScrollAnchor(headerH: number) {
-    if (!pendingScrollAnchor) return;
+  /** Apply the pending anchor, if any; true when one was applied. */
+  function restoreScrollAnchor(): boolean {
+    if (!pendingScrollAnchor) return false;
     const anchor = pendingScrollAnchor;
     pendingScrollAnchor = null;
+    applyScrollAnchor(anchor);
+    return true;
+  }
+
+  /** Scroll so `anchor` is under the header's bottom edge: the inverse of `captureScrollAnchor`. */
+  function applyScrollAnchor(anchor: ScrollAnchor) {
     if (filteredCount === 0) return;
     const row = Math.min(anchor.row, filteredCount - 1);
-    const targetVirtual = headerH + rowPositions[row] + anchor.offset;
+    const targetVirtual = rowPositions[row] + anchor.offset;
     const targetScroll = scrollScale === 1 ? targetVirtual : targetVirtual / scrollScale;
     const maxScrollTop = Math.max(0, spacerHeight - viewport.clientHeight);
     viewport.scrollTop = Math.min(maxScrollTop, targetScroll);
@@ -1034,9 +1076,11 @@ export function createTable(
     filteredCount = result.filteredCount;
     growBuffers(filteredCount);
     viewIndices.fill(-1, 0, filteredCount);
-    // The head is the identity permutation, so it resolves rows at once when
-    // nothing filters or sorts.
-    if (!hasActiveFilters() && !sortState) storeWindowCells(windowedData!.head, true);
+    // The head is identity-ordered, so it resolves rows at once when nothing
+    // filters or sorts. A head that is not (a data side that built it from a
+    // permutation) is skipped; `render()` asks for those rows instead.
+    const head = windowedData!.head;
+    if (!hasActiveFilters() && !sortState && isIdentityHead(head)) storeWindowCells(head, true);
     if (cells) storeWindowCells(cells, true);
     data.columnSummaries = result.summaries;
     unfilteredSummaries = result.summariesAll;
@@ -1169,10 +1213,13 @@ export function createTable(
       rebuildPositions();
       data.columnSummaries = summariesAll;
       renderAllSummaries();
+      updateRowCountDisplay();
+      // The counts are final for this append; a query append reports when it answers.
+      notifyChange();
     } else {
       startQuery(false);
+      updateRowCountDisplay();
     }
-    updateRowCountDisplay();
     lastVisFirst = -1;
     lastVisLast = -1;
     scheduleRender();
@@ -2200,12 +2247,14 @@ export function createTable(
   }
 
   function render() {
+    // An anchored relayout rebuilt positions and moved scrollTop together: rows
+    // kept in the pool below need their transforms rewritten in this frame.
+    let relayout = false;
     if (heightsDirty) {
       recomputeAllHeights();
       // Account for header height — row pool is absolute inside scroll-content
-      const headerH = headerEl.offsetHeight;
-      rowPool.style.top = headerH + "px";
-      restoreScrollAnchor(headerH);
+      rowPool.style.top = headerEl.offsetHeight + "px";
+      relayout = restoreScrollAnchor();
     }
 
     if (filteredCount === 0) {
@@ -2339,7 +2388,11 @@ export function createTable(
       }
     }
 
-    if (lazyPrepared || (lastScrollTop === scrollTop && lastViewportHeight === viewportH)) {
+    if (
+      relayout ||
+      lazyPrepared ||
+      (lastScrollTop === scrollTop && lastViewportHeight === viewportH)
+    ) {
       for (const pr of pool) {
         if (pr.assignedRow === -1) continue;
         for (let c = 0; c < columns.length; c++) {
@@ -3683,5 +3736,10 @@ export function createTable(
     getFocusedDataRow: () => focusedDataRow,
     setFocusedDataRow,
   };
+  const testHooks: TableEngineTestHooks = {
+    captureScrollAnchor,
+    restoreScrollAnchor: applyScrollAnchor,
+  };
+  (api as InternalTableEngine).__test = testHooks;
   return api;
 }

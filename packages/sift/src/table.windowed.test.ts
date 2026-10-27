@@ -9,6 +9,8 @@ import { createTable, type Column, type TableData, type TableEngine } from "./ta
 import { makeColumns, makeRows, makeTableData, makeTableDataWithColumns } from "./table.fixtures";
 import type { WindowedTableData } from "./windowed";
 import { createResidentWindowedData, type ResidentWindowedData } from "./windowed-resident";
+import { layout, prepare } from "@chenglou/pretext";
+import type { InternalTableEngine } from "./table";
 
 type Kind = "query" | "window" | "image" | "cast";
 
@@ -717,5 +719,364 @@ describe("windowed appends and failures keep the painted snapshot", () => {
     await frame();
     expect(shownSkeletons()).toBe(0);
     expect(painted().map((r) => r.text)).toEqual(before.map((r) => r.text));
+  });
+});
+
+/**
+ * jsdom has no layout. Give the sticky header a height and place every shown
+ * pooled row where a browser puts it: viewport top − scrollTop + header +
+ * translateY. With `state.viewportRect` false the viewport reports zero height,
+ * which sends `captureScrollAnchor` down its geometry-only path.
+ */
+function installLayout(container: HTMLElement, headerH: number) {
+  const state = { viewportRect: true };
+  const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight")!;
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.classList.contains("sift-header") && container.contains(this)
+        ? headerH
+        : offsetHeight.get!.call(this);
+    },
+  });
+  const rect = (top: number, height: number) =>
+    ({ top, bottom: top + height, height, left: 0, right: 0, width: 0, x: 0, y: top }) as DOMRect;
+  const original = Element.prototype.getBoundingClientRect;
+  const spy = vi
+    .spyOn(Element.prototype, "getBoundingClientRect")
+    .mockImplementation(function (this: Element) {
+      if (!(this instanceof HTMLElement) || !container.contains(this)) return original.call(this);
+      if (this.classList.contains("sift-viewport")) return rect(0, state.viewportRect ? 400 : 0);
+      if (this.classList.contains("sift-row")) {
+        if (this.style.display === "none") return rect(0, 0);
+        const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
+        const y = Number(/translateY\((-?[\d.]+)px\)/.exec(this.style.transform)?.[1] ?? 0);
+        return rect(headerH - viewport.scrollTop + y, Number.parseFloat(this.style.height) || 0);
+      }
+      return original.call(this);
+    });
+  return {
+    state,
+    restore() {
+      spy.mockRestore();
+      Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeight);
+    },
+  };
+}
+
+/** Text starting with "TALL" lays out as three lines (a 76 px row); anything else as one. */
+function tallTextLayout() {
+  const prepareImpl = vi.mocked(prepare).getMockImplementation()!;
+  const layoutImpl = vi.mocked(layout).getMockImplementation()!;
+  vi.mocked(prepare).mockImplementation(((text: string) => ({
+    __brand: "PreparedText",
+    text,
+  })) as never);
+  vi.mocked(layout).mockImplementation(((prepared: { text?: string }) => {
+    const lineCount = prepared.text?.startsWith("TALL") ? 3 : 1;
+    return { lineCount, height: lineCount * 20 };
+  }) as never);
+  return () => {
+    vi.mocked(prepare).mockImplementation(prepareImpl);
+    vi.mocked(layout).mockImplementation(layoutImpl);
+  };
+}
+
+/**
+ * QA round 2 on #4504: the scroll anchor's two capture paths and its restore
+ * share one coordinate system; `head` is identity-ordered; identity appends
+ * reach `onChange`.
+ */
+describe("windowed QA round 2", () => {
+  const HEADER_H = 121;
+  let container: HTMLDivElement;
+  let rows: unknown[][];
+  let source: TableData;
+  let harness: ReturnType<typeof delayed>;
+  let engine: TableEngine;
+  let geometry: ReturnType<typeof installLayout>;
+  let restoreText: () => void;
+
+  const viewport = () => container.querySelector<HTMLElement>(".sift-viewport")!;
+  const hooks = () => (engine as InternalTableEngine).__test;
+  const shownRows = () =>
+    [...container.querySelectorAll<HTMLElement>(".sift-row")].filter(
+      (row) => row.style.display !== "none",
+    );
+  /** The shown row under the header's bottom edge: its view row and screen top. */
+  function anchoredRow(): { viewRow: number; top: number } {
+    const row = shownRows().find((el) => {
+      const r = el.getBoundingClientRect();
+      return r.top <= HEADER_H && r.bottom > HEADER_H;
+    });
+    expect(row).toBeDefined();
+    return {
+      viewRow: Number(row!.getAttribute("aria-rowindex")) - 2,
+      top: row!.getBoundingClientRect().top,
+    };
+  }
+  function screenTop(viewRow: number): number | undefined {
+    return shownRows()
+      .find((el) => el.getAttribute("aria-rowindex") === String(viewRow + 2))
+      ?.getBoundingClientRect().top;
+  }
+
+  function mount(data: TableData | WindowedTableData, options?: Parameters<typeof createTable>[2]) {
+    engine = createTable(container, data, options);
+    Object.defineProperty(viewport(), "clientHeight", { value: 400, configurable: true });
+    viewport().dispatchEvent(new Event("scroll"));
+    return engine;
+  }
+
+  async function settle() {
+    await frame();
+    await harness.releaseAll();
+    await frame();
+    await harness.releaseAll();
+    await frame();
+  }
+
+  async function scrollTo(top: number) {
+    viewport().scrollTop = top;
+    viewport().dispatchEvent(new Event("scroll"));
+    await settle();
+  }
+
+  function append(count: number) {
+    for (let i = 0; i < count; i++) {
+      const id = rows.length + 1;
+      rows.push([id, `Person ${id - 1}`, 500 + i, true]);
+    }
+    source.rowCount = rows.length;
+    harness.inner.notifyAppended();
+  }
+
+  /** `count` rows; every fourth name lays out as a tall row. */
+  function rowsWithTallNames(count: number, every = 4): unknown[][] {
+    return makeRows(count).map((row, i) =>
+      i % every === 0 ? [row[0], `TALL ${i}`, row[2], row[3]] : row,
+    );
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    geometry = installLayout(container, HEADER_H);
+    restoreText = tallTextLayout();
+    rows = makeRows(60);
+    source = makeTableData(rows);
+    harness = delayed(createResidentWindowedData(source, { headRows: 10 }));
+  });
+
+  afterEach(() => {
+    engine?.destroy();
+    container.remove();
+    geometry.restore();
+    restoreText();
+    vi.useRealTimers();
+  });
+
+  for (const mode of ["resident", "windowed"] as const) {
+    it(`capture then restore with no geometry change leaves scrollTop alone (${mode})`, async () => {
+      rows = rowsWithTallNames(80);
+      source = makeTableData(rows);
+      harness = delayed(createResidentWindowedData(source, { headRows: 10 }));
+      mount(mode === "resident" ? source : harness.data);
+      await settle();
+
+      const positions: number[] = [];
+      for (const target of [0, 250, 900]) {
+        await scrollTo(target);
+        positions.push(viewport().scrollTop);
+      }
+      // The middle of a tall row sits under the header's bottom edge.
+      const tall = shownRows().find(
+        (row) => row.style.height === "76px" && row.getBoundingClientRect().top > HEADER_H,
+      )!;
+      expect(tall).toBeDefined();
+      await scrollTo(viewport().scrollTop + tall.getBoundingClientRect().top - HEADER_H + 30);
+      positions.push(viewport().scrollTop);
+      expect(anchoredRow().top).toBe(HEADER_H - 30);
+
+      for (const position of positions) {
+        await scrollTo(position);
+        const s = viewport().scrollTop;
+        for (const domPath of [true, false]) {
+          geometry.state.viewportRect = domPath;
+          const anchor = hooks().captureScrollAnchor();
+          expect(anchor).not.toBeNull();
+          hooks().restoreScrollAnchor(anchor!);
+          expect(Math.abs(viewport().scrollTop - s)).toBeLessThanOrEqual(1);
+          viewport().scrollTop = s;
+        }
+        geometry.state.viewportRect = true;
+      }
+    });
+  }
+
+  it("filtered appends commit without moving the viewport or the anchored row", async () => {
+    mount(harness.data);
+    await settle();
+    engine.setFilter(3, { kind: "boolean", value: true });
+    await settle();
+    await scrollTo(8 * 36 + 10);
+    const scrollTop = viewport().scrollTop;
+    const anchor = anchoredRow();
+    const counts: number[] = [];
+
+    for (let i = 0; i < 3; i++) {
+      append(5);
+      await settle();
+      expect(engine.getState().pending).toBe(false);
+      counts.push(engine.getState().filteredCount);
+      expect(viewport().scrollTop).toBe(scrollTop);
+      expect(screenTop(anchor.viewRow)).toBe(anchor.top);
+      expect(anchoredRow()).toEqual(anchor);
+    }
+    const base = rows.slice(0, 60).filter((row) => row[3] === true).length;
+    expect(counts).toEqual([base + 5, base + 10, base + 15]);
+  });
+
+  it("a window landing taller rows above the viewport keeps the anchored row on screen", async () => {
+    rows = rowsWithTallNames(200, 1); // every row measures 76 px; placeholders are 36 px
+    source = makeTableData(rows);
+    harness = delayed(createResidentWindowedData(source, { headRows: 0 }));
+    mount(harness.data);
+    await harness.release("query");
+    await frame();
+    expect(harness.pending()).toEqual(["window"]); // rows from 0, still placeholders
+
+    // Scroll into unresolved rows. The first window (rows from 0) lands
+    // entirely above the viewport, the second straddles it.
+    viewport().scrollTop = 100 * 36 + 10;
+    viewport().dispatchEvent(new Event("scroll"));
+    await frame();
+    for (let landing = 0; landing < 2; landing++) {
+      const scrollTop = viewport().scrollTop;
+      const anchor = anchoredRow();
+      await harness.release("window");
+      await frame();
+      // Rows above grew from 36 to 76 px, so scrollTop grows by that much;
+      // what the user sees under the header does not move.
+      expect(viewport().scrollTop).toBeGreaterThan(scrollTop);
+      expect(screenTop(anchor.viewRow)).toBe(anchor.top);
+      expect(anchoredRow().viewRow).toBe(anchor.viewRow);
+    }
+    // Both landings resolved the rows on screen, at their measured height.
+    expect(container.getAttribute("aria-busy")).toBe("false");
+    const shown = shownRows().find(
+      (el) => el.getAttribute("aria-rowindex") === String(anchoredRow().viewRow + 2),
+    )!;
+    expect(shown.style.height).toBe("76px");
+  });
+
+  it("identity appends notify onChange with the growing counts", async () => {
+    const onChange = vi.fn();
+    mount(harness.data, { onChange });
+    await settle();
+    onChange.mockClear();
+    for (let i = 0; i < 3; i++) {
+      append(5);
+      await frame();
+    }
+    expect(harness.pending()).toEqual([]);
+    expect(
+      onChange.mock.calls.map(([state]) => [
+        state.totalCount,
+        state.loadedCount,
+        state.filteredCount,
+      ]),
+    ).toEqual([
+      [65, 65, 65],
+      [70, 70, 70],
+      [75, 75, 75],
+    ]);
+  });
+
+  /** Four rows: numeric `id` 1..4 and a text `code` "001".."004" that casts to a number. */
+  function codeTable() {
+    const codeRows: unknown[][] = [
+      [1, "001"],
+      [2, "002"],
+      [3, "003"],
+      [4, "004"],
+    ];
+    const columns: Column[] = [
+      makeColumns()[0],
+      {
+        key: "code",
+        label: "Code",
+        width: 100,
+        sortable: true,
+        numeric: false,
+        columnType: "categorical",
+      },
+    ];
+    let codeNumeric = false;
+    const data = makeTableDataWithColumns(codeRows, columns);
+    data.getCell = (r, c) =>
+      c === 1 && codeNumeric ? String(Number(codeRows[r][1])) : String(codeRows[r][c]);
+    data.getCellRaw = (r, c) => (c === 1 && codeNumeric ? Number(codeRows[r][1]) : codeRows[r][c]);
+    data.castColumn = vi.fn(() => {
+      codeNumeric = true;
+    });
+    data.isColumnCast = () => codeNumeric;
+    return data;
+  }
+
+  it("sort desc, cast, clear sort: the head lands identity rows in order", async () => {
+    harness = delayed(createResidentWindowedData(codeTable(), { headRows: 10 }));
+    mount(harness.data);
+    engine.setStreamingDone();
+    await settle();
+    engine.setSort("id", "desc");
+    await settle();
+    expect(cellText(container, 0, 0)).toBe("4");
+
+    await act(async () => {
+      container
+        .querySelector<HTMLElement>('.sift-th[data-col="1"]')!
+        .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    });
+    const menu = document.getElementById("column-context-menu-root")!;
+    const numberItem = [...menu.querySelectorAll("button")].find((b) =>
+      b.textContent?.startsWith("Number"),
+    );
+    await act(async () => {
+      numberItem!.click();
+    });
+    await settle();
+    expect(harness.data.columns[1].columnType).toBe("numeric");
+    expect(cellText(container, 0, 1)).toBe("4");
+
+    // A click on a descending header clears the sort.
+    container.querySelector<HTMLElement>('.sift-th[data-col="0"] .sift-th-top')!.click();
+    await settle();
+    expect(engine.getSort()).toBeNull();
+    expect(Array.from(harness.inner.head.dataRows)).toEqual([0, 1, 2, 3]);
+    for (let r = 0; r < 4; r++) {
+      expect(cellText(container, r, 0)).toBe(String(r + 1));
+      expect(cellText(container, r, 1)).toBe(String(r + 1));
+    }
+  });
+
+  it("ignores a head that is not identity-ordered", async () => {
+    const inner = createResidentWindowedData(codeTable(), { headRows: 10 });
+    const none = [null, null];
+    await inner.setQuery({ filters: none, sort: { col: 0, dir: "desc" } }, 1);
+    const reversed = await inner.requestWindow(0, 4, 1);
+    await inner.setQuery({ filters: none, sort: null }, 2);
+    expect(Array.from(reversed.dataRows)).toEqual([3, 2, 1, 0]);
+    harness = delayed(inner);
+    const data: WindowedTableData = {
+      ...harness.data,
+      get head() {
+        return reversed;
+      },
+    };
+    mount(data);
+    await settle();
+    for (let r = 0; r < 4; r++) expect(cellText(container, r, 0)).toBe(String(r + 1));
   });
 });

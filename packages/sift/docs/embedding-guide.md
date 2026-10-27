@@ -418,14 +418,23 @@ with one cell's bytes; it pushes `rows-appended` and `streaming-done` through
 rows carry `.sift-row-placeholder`, the grid `aria-busy="true"`) for view rows
 whose cells have not landed, drops any answer tagged with a stale generation,
 and reports `pending: true` in `TableEngineState` while a query is in flight.
-Geometry stays dense: `rowCount` is a resident row count.
+Geometry stays dense: `rowCount` is a resident row count. `head` holds cells
+for data rows `[0, headRows)` in identity order, whatever the current query; the
+engine paints from it only when no sort or filter is active, and ignores a head
+whose `dataRows` are not `0, 1, 2, …`. A data side that rewrites cell strings
+(cast, undo) refreshes `head` the same way.
 
 What is painted stays painted. A `rows-appended` push under the identity
-permutation extends the map in place; under a sort or filter it re-queries, and
+permutation extends the map in place and calls `onChange` with the new
+`totalCount` and `filteredCount`; under a sort or filter it re-queries, and
 the answer is held until the window covering the visible span arrives, then
-both commit in one frame under the scroll anchor. A user's own sort or filter
-shows placeholders at once (the viewport returns to the top), and a refused
-query puts the delivered cells back. A `{ type: "error", fatal: true }` event
+both commit in one frame under the scroll anchor (`onChange` fires when the
+answer arrives). The scroll anchor is the row under the header's bottom edge:
+landing windows, appends, and commits keep that row at the same screen
+position; `scrollTop` changes only by row height measured above it. A user's
+own sort or filter shows placeholders at once (the viewport returns to the
+top), and a refused query puts the delivered cells back. A
+`{ type: "error", fatal: true }` event
 sets `TableEngineState.dataFailed`: the rows on screen stay, and sort, filter,
 and cast controls are disabled with the title "Data source stopped; table tools
 are unavailable".
