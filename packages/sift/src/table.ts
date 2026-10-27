@@ -15,6 +15,8 @@ import {
   type ImageViewerItem,
   mountImageViewer,
 } from "./components/image-viewer";
+import { predicateToEnglish } from "./filter-schema";
+import type { Count, TableQuery } from "./query";
 import { renderColumnSummary, unmountColumnSummary } from "./sparkline";
 // --- Types ---
 
@@ -188,11 +190,25 @@ export type TableEngineState = {
   totalCount: number;
   /** Resident rows; a truncated load holds fewer than the dataset. */
   loadedCount?: number;
+  /**
+   * The query the resident rows already satisfy, when a provider answered one.
+   * `null` means a provider result with no filters; absent means the rows
+   * came from a file or stream and every filter is local.
+   */
+  committedQuery?: TableQuery | null;
+  /** Rows matching `committedQuery` in the whole dataset, when known. */
+  resultCount?: Count;
 };
 
 export type TableEngineOptions = {
   /** Called whenever sort or filter state changes from UI interaction. */
   onChange?: (state: TableEngineState) => void;
+  /**
+   * Called when the user removes a committed filter pill. The engine never
+   * re-runs queries; the host answers `next` and swaps the result in through
+   * `replaceData(data, { committedQuery: next })`.
+   */
+  onCommittedQueryChange?: (next: TableQuery) => void;
   /** Optional control rendered in the stats/footer bar before built-in buttons. */
   footerControl?: HTMLElement;
   /**
@@ -223,6 +239,23 @@ export type ReplaceDataOptions = {
    * `null` removes the current one; omit to keep it.
    */
   footerControl?: HTMLElement | null;
+  /**
+   * The new rows already satisfy this query (`null`: a provider result with no
+   * filters). Local filters and sort are reset instead of being re-applied,
+   * and committed filters render as pills the host clears through
+   * `onCommittedQueryChange`. Omit to keep the usual preservation, which also
+   * clears any committed query and result count.
+   */
+  committedQuery?: TableQuery | null;
+};
+
+/**
+ * Options the engine passes itself when a column-shape change rebuilds it.
+ * Not public: hosts set a committed query through `replaceData`.
+ * @internal
+ */
+export type InternalTableEngineOptions = TableEngineOptions & {
+  committedQuery?: TableQuery | null;
 };
 
 export type TableEngine = {
@@ -254,6 +287,11 @@ export type TableEngine = {
   getFilters(): { column: string; filter: ColumnFilter }[];
   /** Get the full explorer state (sort + filters + counts) in a serializable format. */
   getState(): TableEngineState;
+  /**
+   * Record how many whole-dataset rows match the committed query. Updates the
+   * footer; cleared by `replaceData` without `committedQuery`.
+   */
+  setResultCount(count: Count): void;
   /**
    * Currently focused (expanded) data row, or `null` when every row uses the
    * collapsed text-line cap. Tracked by data row, so focus survives sort
@@ -385,6 +423,13 @@ export function createTable(
 
   // Sort state
   let sortState: SortState = null;
+
+  // Query ownership: the provider query the resident rows already satisfy, and
+  // how many whole-dataset rows match it. `undefined` means no provider.
+  let committedQuery: TableQuery | null | undefined = (
+    options as InternalTableEngineOptions | undefined
+  )?.committedQuery;
+  let resultCount: Count | undefined;
 
   // Pinned columns + visual ordering
   const pinnedColumns = new Set<number>([0]); // first column pinned by default
@@ -1089,6 +1134,9 @@ export function createTable(
   statusIndicator.title = "Loading data…";
 
   const statRows = makeStatSpan("sift-stat-rows");
+  // Local filter over a provider result: "J of K shown rows". Hidden otherwise.
+  const statLocal = makeStatSpan("sift-stat-local");
+  statLocal.style.display = "none";
   // Debug stats (DOM rows, FPS) — hidden by default
   const debugGroup = document.createElement("span");
   debugGroup.className = "sift-debug-group";
@@ -1098,11 +1146,48 @@ export function createTable(
 
   const rowsOdometer = createOdometer(statRows);
 
+  /**
+   * Footer copy for a provider result. `K` is the resident row count; the
+   * count describes the whole dataset. These are the strings hosts and tests
+   * match on, so they live here and nowhere else.
+   */
+  const footerText = {
+    committed(query: TableQuery | null, count: Count | undefined, shown: number): string {
+      const noun =
+        query && query.filters.length > 0 ? "whole-dataset matches" : "rows in whole dataset";
+      const k = `${shown.toLocaleString()} rows shown`;
+      switch (count?.kind) {
+        case "exact":
+          return `${count.value.toLocaleString()} ${noun} · ${k}`;
+        case "estimate":
+          return `≈${count.value.toLocaleString()} ${noun} · Estimated · ${k}`;
+        case "lower-bound":
+          return `≥${count.value.toLocaleString()} ${noun} · ${k}`;
+        default:
+          return `Counting ${noun}… · ${k}`;
+      }
+    },
+    localOverCommitted(filtered: number, shown: number): string {
+      return `${filtered.toLocaleString()} of ${shown.toLocaleString()} shown rows · Filters use shown rows`;
+    },
+  };
+
   function updateRowCountDisplay() {
-    if (hasActiveFilters()) {
-      rowsOdometer.update(`${filteredCount.toLocaleString()} of ${rowCount.toLocaleString()} rows`);
+    if (committedQuery !== undefined) {
+      rowsOdometer.update(footerText.committed(committedQuery, resultCount, rowCount));
+      const local = hasActiveFilters();
+      statLocal.style.display = local ? "" : "none";
+      statLocal.textContent = local ? footerText.localOverCommitted(filteredCount, rowCount) : "";
     } else {
-      rowsOdometer.update(`${rowCount.toLocaleString()} rows`);
+      statLocal.style.display = "none";
+      statLocal.textContent = "";
+      if (hasActiveFilters()) {
+        rowsOdometer.update(
+          `${filteredCount.toLocaleString()} of ${rowCount.toLocaleString()} rows`,
+        );
+      } else {
+        rowsOdometer.update(`${rowCount.toLocaleString()} rows`);
+      }
     }
     // Keep ARIA row count in sync
     container.setAttribute("aria-rowcount", String(filteredCount + 1)); // +1 for header row
@@ -1167,6 +1252,7 @@ export function createTable(
   statsEl.append(
     statusIndicator,
     statRows,
+    statLocal,
     debugGroup,
     filterPillsEl,
     statsSpacer,
@@ -1223,8 +1309,39 @@ export function createTable(
     if (schedule) scheduleRender();
   }
 
+  /** Committed filters first: they describe the rows, local pills narrow them. */
+  function appendCommittedPills() {
+    const query = committedQuery;
+    if (!query) return;
+    query.filters.forEach((predicate, index) => {
+      const pill = document.createElement("span");
+      pill.className = "sift-filter-pill sift-filter-pill--committed";
+      pill.title = "Applied to the whole dataset";
+
+      const label = document.createElement("span");
+      label.className = "sift-filter-pill-label";
+      label.textContent = predicateToEnglish(predicate);
+
+      const closeBtn = document.createElement("button");
+      closeBtn.className = "sift-filter-pill-x";
+      closeBtn.textContent = "×";
+      closeBtn.setAttribute("aria-label", "Remove this filter from the whole-dataset query");
+      closeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        options?.onCommittedQueryChange?.({
+          ...query,
+          filters: query.filters.filter((_, i) => i !== index),
+        });
+      });
+
+      pill.append(label, closeBtn);
+      filterPillsEl.appendChild(pill);
+    });
+  }
+
   function rebuildFilterPills() {
     filterPillsEl.innerHTML = "";
+    appendCommittedPills();
     for (let c = 0; c < columns.length; c++) {
       const f = filters[c];
       if (!f) continue;
@@ -2270,6 +2387,10 @@ export function createTable(
     sort: TableEngineState["sort"];
     filters: TableEngineState["filters"];
   } {
+    // A provider result already satisfies its query: re-applying local filters
+    // or sort would evaluate the same predicates twice and could reorder what
+    // the provider ordered.
+    if (hasCommittedQuery(replaceOptions)) return { sort: null, filters: [] };
     const survivors = findSurvivingColumnIndices(newColumns);
     const preservedFilters: TableEngineState["filters"] = [];
     if (!replaceOptions?.resetFilters) {
@@ -2314,6 +2435,12 @@ export function createTable(
     }
   }
 
+  function hasCommittedQuery(
+    replaceOptions: ReplaceDataOptions | undefined,
+  ): replaceOptions is ReplaceDataOptions & { committedQuery: TableQuery | null } {
+    return replaceOptions?.committedQuery !== undefined;
+  }
+
   function replaceData(newData: TableData, replaceOptions?: ReplaceDataOptions) {
     const replacementStreaming = replaceOptions?.streaming ?? streaming;
     const preserved = preserveStateFor(newData.columns, replaceOptions);
@@ -2321,13 +2448,18 @@ export function createTable(
       replaceOptions?.footerControl === undefined
         ? footerControl
         : (replaceOptions.footerControl ?? undefined);
+    const nextCommittedQuery = hasCommittedQuery(replaceOptions)
+      ? replaceOptions.committedQuery
+      : undefined;
 
     if (!sameColumnShape(newData.columns)) {
       destroy();
-      const replacement = createTable(container, newData, {
+      const rebuildOptions: InternalTableEngineOptions = {
         ...options,
         footerControl: nextFooterControl,
-      });
+        committedQuery: nextCommittedQuery,
+      };
+      const replacement = createTable(container, newData, rebuildOptions);
       if (!replacementStreaming) {
         replacement.setStreamingDone();
       }
@@ -2364,6 +2496,14 @@ export function createTable(
     if (replaceOptions?.resetFilters) {
       filters = columns.map(() => null);
     }
+    // The provider answered the query, so local state starts clean; without a
+    // committed query the rows are a file or stream again and own no count.
+    if (nextCommittedQuery !== undefined) {
+      sortState = null;
+      filters = columns.map(() => null);
+    }
+    committedQuery = nextCommittedQuery;
+    resultCount = undefined;
 
     cellCaches.length = 0;
     focusedDataRow = null;
@@ -2399,6 +2539,10 @@ export function createTable(
   }
 
   // --- Boot ---
+
+  // Pills are otherwise built on filter changes; a rebuilt engine starts with
+  // committed filters to show.
+  if (committedQuery) rebuildFilterPills();
 
   // pretext caches segment widths per font string. Widths measured before a
   // web font loads are the fallback font's, so a load has to clear that cache
@@ -2810,13 +2954,22 @@ export function createTable(
   }
 
   function getState(): TableEngineState {
-    return {
+    const state: TableEngineState = {
       sort: getSort(),
       filters: getFilters(),
       filteredCount,
       totalCount: rowCount,
       loadedCount: rowCount,
     };
+    if (committedQuery !== undefined) state.committedQuery = committedQuery;
+    if (resultCount !== undefined) state.resultCount = resultCount;
+    return state;
+  }
+
+  function setResultCount(count: Count) {
+    resultCount = count;
+    updateRowCountDisplay();
+    notifyChange();
   }
 
   function notifyChange() {
@@ -3035,6 +3188,7 @@ export function createTable(
     setSort: setSortByName,
     getFilters,
     getState,
+    setResultCount,
     getFocusedDataRow: () => focusedDataRow,
     setFocusedDataRow,
   };

@@ -4,8 +4,11 @@ export interface DatasetEntry {
   id: string;
   label: string;
   description: string;
-  /** 'local' = fetch from BASE_URL, 'huggingface' = fetch Parquet from HF */
-  source: "local" | "huggingface";
+  /**
+   * 'local' = fetch from BASE_URL, 'huggingface' = fetch Parquet from HF,
+   * 'query-fake' = a local Arrow file served through a fake query session
+   */
+  source: "local" | "huggingface" | "query-fake";
   /** For local: relative path under BASE_URL. For HF: "{owner}/{name}" */
   path: string;
   /** HF config name (default: "default") */
@@ -25,6 +28,16 @@ export const DATASETS: DatasetEntry[] = [
     description:
       "100k synthetic rows with multilingual text, nulls, NaN, ±Infinity, edge-case floats",
     source: "local",
+    path: "data.arrow",
+    rows: "100,000",
+    typeOverrides: { joined: "timestamp" },
+  },
+  {
+    id: "query-fake",
+    label: "Query session (fake, 100k)",
+    description:
+      "The generated dataset behind a fake query session: a 10k-row head is shown, brushes stay local until “Apply filters to whole dataset” re-queries",
+    source: "query-fake",
     path: "data.arrow",
     rows: "100,000",
     typeOverrides: { joined: "timestamp" },

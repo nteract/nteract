@@ -310,6 +310,102 @@ and shows whole-file nulls on a separate line. Captions carry `data-scope` and
 `data-precision` attributes. `TableEngineState.loadedCount` reports resident
 rows alongside `totalCount`, which keeps its current meaning.
 
+## Query sessions
+
+When the data lives behind a database, a scan service, or anything that can
+answer a filter without shipping the whole table, the host implements
+`TableQuerySession` and hands it to a `query-session` source. Sift sends a
+`TableQuery` and receives one bounded Arrow IPC stream; it loads that stream
+through the same resident path as a file and records that the rows already
+satisfy the query. It does not filter them again, and the footer and pills
+describe the committed query rather than a local one.
+
+```tsx
+import type { TableQuerySession } from '@nteract/sift'
+
+const session: TableQuerySession = {
+  capabilities: {
+    filters: { price: ['between'], category: ['in', 'not_in', 'is_null'] },
+    sort: [],
+    casts: [],
+    counts: ['exact'],
+    compound: ['or'], // for Sift's category exclusion, or(is_null, not_in)
+  },
+  async query(q, ctx) {
+    // Compile q.filters to your dialect with bound parameters, run it with
+    // ctx.signal and ctx.budget, and return one uncompressed IPC stream.
+    return { ipc, returnedRows, matchedCount: { kind: 'exact', value }, continuation: { kind: 'more' } }
+  },
+  async count(q, mode, ctx) { /* COUNT(*) or an estimate */ },
+  async close() { /* release the connection */ },
+}
+
+<SiftTable source={{ kind: 'query-session', session, headRows: 10_000 }} />
+```
+
+The contract (`src/query.ts`):
+
+- `TableQuery` is `casts`, `filters` (top-level AND of `FilterPredicate`), and
+  `sort`. The vocabulary is the same name-addressed predicate tree that
+  `engineStateToExplorerState` produces; SQL and pandas text are exports, not the
+  wire format. The host owns the SQL dialect, the trusted base relation, the
+  connection, credentials, and placement. Sift never receives SQL text.
+- `capabilities` says what the provider can run: leaf ops per column, sortable
+  columns, casts, which count kinds it offers, and which compound predicates it
+  accepts. `supportsQuery(caps, q)` checks a query against it and returns the
+  reason when something is missing. A provider still validates the whole query
+  and refuses what it cannot run; it never narrows a result silently.
+- `query` takes a `window` of `{ mode: 'head', limit }` and returns a
+  `QueryPage`: the IPC stream (schema-only when empty), `returnedRows`,
+  `matchedCount` (a `Count`: exact, estimate, lower bound, or unknown, always for
+  the query, never the base relation), and a `continuation` that says whether
+  more rows matched. `RequestContext` carries a `requestId`, an `AbortSignal`,
+  and a byte budget. Sift aborts a request when a newer query supersedes it or
+  the source unmounts; a late answer is dropped and its store freed.
+- `count` is separate so first paint never waits on `COUNT(*)`. Sift asks for a
+  `'cheap'` count when the page's `matchedCount` is `unknown` and the provider
+  lists a count kind.
+
+What the user sees:
+
+- The footer's primary line is the whole-dataset count with the shown rows:
+  "N whole-dataset matches · K rows shown", "≈N whole-dataset matches ·
+  Estimated · K rows shown", "≥N …", or "Counting whole-dataset matches… · K
+  rows shown" while the count is pending. A query with no filters says "rows in
+  whole dataset" instead of "matches".
+- Committed filters render as pills with `.sift-filter-pill--committed` and the
+  title "Applied to the whole dataset". Clearing one does not touch the resident
+  rows; it runs the reduced query against the source. Removing a filter must
+  query the source, not the already-filtered result, or the rows it hid could
+  never come back.
+- Brushes and category clicks stay local, over the shown rows, exactly as for a
+  truncated file: the footer adds "J of K shown rows · Filters use shown rows"
+  and the summaries recompute over the resident rows. When local filters exist,
+  the footer offers "Apply filters to whole dataset" (`.sift-apply-query`). It
+  commits the committed filters plus the local ones as one `TableQuery` against
+  the source and replaces the resident rows with the new head; it does not layer
+  on the previous result or union rows. While the query runs the button reads
+  "Querying…" and the old rows stay visible. If the merged query is outside
+  `capabilities`, the button is disabled with the reason as its title.
+- `onQueryStateChange` reports each generation (`pending`, `committedQuery`,
+  `resultCount`); `onChange` keeps reporting the local state, and
+  `TableEngineState` gains `committedQuery` and `resultCount`.
+  `engineStateToExplorerState` carries them as `committedQuery` and `counts`;
+  its existing fields keep meaning resident rows.
+
+What stays local in this version: sort (the head is sorted in the browser, so
+it orders the shown rows, not the whole result), casts (they apply to the
+resident rows and are not part of `committedQuery`), and summaries (computed
+over the shown rows; the interface has no summary request yet). `limits` bounds
+decoded memory and columns per result; `headRows` is the row limit, 10,000 by
+default. Only the head window exists: there is no paging or windowing past it.
+
+For the imperative API the same ownership is available directly:
+`engine.replaceData(data, { committedQuery })` swaps in rows that satisfy a
+query without re-applying local filters or sort, `engine.setResultCount(count)`
+sets the footer count, and `onCommittedQueryChange` in `createTable` options
+receives the reduced query when a committed pill is cleared.
+
 ## Lifecycle and host controls
 
 A `TableData` instance returned by `loadTableFile` owns one WASM store. The React

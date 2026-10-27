@@ -1118,6 +1118,50 @@
   opacity: 1;
 }
 
+/* A filter the provider applied to the whole dataset, not a local brush. */
+.sift-filter-pill--committed {
+  background: color-mix(in srgb, var(--sift-ink) 8%, transparent);
+  border-color: color-mix(in srgb, var(--sift-ink) 25%, transparent);
+  border-style: dashed;
+  color: var(--sift-ink);
+}
+
+.sift-filter-pill--committed .sift-filter-pill-x {
+  color: var(--sift-ink);
+}
+
+/* Local filter over a provider result; the engine shows it only then. */
+.sift-stat-local::before {
+  content: " · ";
+}
+
+/* "Apply filters to whole dataset" for a query-session source. */
+.sift-apply-query {
+  margin-left: 8px;
+  background: none;
+  border: 1px solid var(--sift-rule);
+  border-radius: 4px;
+  color: var(--sift-accent);
+  font: 500 11px/1.2 var(--sift-font);
+  padding: 1px 8px;
+  cursor: pointer;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
+.sift-apply-query:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--sift-accent) 8%, transparent);
+}
+
+.sift-apply-query:disabled {
+  color: var(--sift-muted);
+  cursor: default;
+}
+
+.sift-apply-query[aria-busy="true"] {
+  cursor: progress;
+}
+
 .sift-debug-group {
   display: inline;
 }

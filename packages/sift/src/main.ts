@@ -1,3 +1,5 @@
+import { createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { catchError, defer, EMPTY, Observable, Subject, switchMap } from "rxjs";
 import { DATASETS, type DatasetEntry } from "./datasets";
 import {
@@ -8,6 +10,8 @@ import {
 } from "./parquet-features";
 import { resolveHuggingFaceParquetUrl } from "./parquet-loader";
 import { ensureModule, getModuleSync, loadIpc } from "./predicate";
+import { createArrowIpcSession } from "./query-fake";
+import { SiftTable } from "./react";
 import { type Column, createTable, type TableData, type TableEngine } from "./table";
 import { createWasmTableData } from "./wasm-table-data";
 import "./demo.css";
@@ -31,6 +35,8 @@ const generatedColumnOverrides: Record<string, Partial<Column>> = {
 
 // --- State ---
 let currentEngine: TableEngine | null = null;
+/** React root for the query-session scene, which mounts `SiftTable` instead of the engine. */
+let currentReactRoot: Root | null = null;
 let currentDatasetId = "generated";
 
 // --- Reactive dataset selection ---
@@ -59,6 +65,10 @@ function boot() {
           currentEngine.destroy();
           currentEngine = null;
         }
+        if (currentReactRoot) {
+          currentReactRoot.unmount();
+          currentReactRoot = null;
+        }
 
         // Update description and page title
         const descEl = document.getElementById("dataset-description");
@@ -70,7 +80,9 @@ function boot() {
         const load$ =
           dataset.source === "local"
             ? loadLocalArrow$(dataset, tableRoot)
-            : loadHuggingFaceWasm$(dataset, tableRoot);
+            : dataset.source === "query-fake"
+              ? loadQueryFake$(dataset, tableRoot)
+              : loadHuggingFaceWasm$(dataset, tableRoot);
 
         return load$.pipe(
           catchError((err) => {
@@ -285,6 +297,61 @@ function loadLocalArrow$(dataset: DatasetEntry, tableRoot: HTMLElement): Observa
           cancelled = true;
           disposePendingStore?.();
           disposePendingStore = null;
+        };
+      }),
+  );
+}
+
+/**
+ * Serve a local Arrow file through a fake query session and mount `SiftTable`
+ * on it, so the demo exercises the `query-session` source end to end: a
+ * bounded head, local brushes, and "Apply filters to whole dataset".
+ */
+function loadQueryFake$(dataset: DatasetEntry, tableRoot: HTMLElement): Observable<void> {
+  return defer(
+    () =>
+      new Observable<void>((subscriber) => {
+        let cancelled = false;
+        let closeSession: (() => void) | null = null;
+
+        (async () => {
+          const response = await fetch(`${import.meta.env.BASE_URL}${dataset.path}`);
+          if (!response.ok) {
+            tableRoot.innerHTML =
+              '<div class="sift-loading">Missing data.arrow — run <code>npm run generate</code> first.</div>';
+            subscriber.complete();
+            return;
+          }
+          renderLoadingSkeleton(tableRoot, "Opening query session…");
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          if (cancelled) return;
+          const session = await createArrowIpcSession(bytes, { limits: { maxRows: 1_000_000 } });
+          closeSession = () => void session.close();
+          if (cancelled) {
+            closeSession();
+            return;
+          }
+          tableRoot.innerHTML = "";
+          currentReactRoot = createRoot(tableRoot);
+          currentReactRoot.render(
+            createElement(SiftTable, {
+              source: { kind: "query-session", session, headRows: 10_000 },
+              columnOverrides: generatedColumnOverrides,
+              style: { height: "100%" },
+            }),
+          );
+          // SiftTable closes the session when it unmounts.
+          closeSession = null;
+          subscriber.next();
+          subscriber.complete();
+        })().catch((err) => {
+          if (!cancelled) subscriber.error(err);
+        });
+
+        return () => {
+          cancelled = true;
+          closeSession?.();
+          closeSession = null;
         };
       }),
   );

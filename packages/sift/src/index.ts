@@ -46,6 +46,19 @@ export {
   predicateToPandas,
   predicateToSQL,
 } from "./filter-schema";
+// Query seam: hosts implement TableQuerySession over their own data source
+// and pass it to a `query-session` SiftSource.
+export type {
+  Count,
+  QueryCapabilities,
+  QueryPage,
+  QuerySupport,
+  RequestContext,
+  TableQuery,
+  TableQuerySession,
+  WindowRequest,
+} from "./query";
+export { supportsQuery } from "./query";
 export type { SiftFocusStatusProps, SiftScrollHandoffCueProps } from "./handoff";
 export { SiftFocusStatus, SiftScrollHandoffCue } from "./handoff";
 export type {
@@ -54,6 +67,7 @@ export type {
   ArrowStreamSummary,
   SiftAutoLoad,
   SiftLoadMilestone,
+  SiftQueryState,
   SiftSource,
   SiftTableHandle,
   SiftTableProps,

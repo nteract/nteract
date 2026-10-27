@@ -114,10 +114,17 @@ export type SortEntry = {
 };
 
 export type ExplorerState = {
-  filters: FilterPredicate[]; // top-level AND
+  /** Local filters over the resident rows; top-level AND. */
+  filters: FilterPredicate[];
   sort: SortEntry[];
+  /** Resident rows passing the local filters. */
   resultCount?: number;
+  /** Resident rows. */
   totalCount?: number;
+  /** The provider query the resident rows already satisfy, when there is one. */
+  committedQuery?: TableQuery | null;
+  /** Resident rows, and the whole-dataset count for `committedQuery` when known. */
+  counts?: { loaded: number; result?: Count };
 };
 
 // --- Compilers ---
@@ -228,6 +235,7 @@ export function predicateToEnglish(p: FilterPredicate): string {
 
 // --- Conversion from our internal ColumnFilter types ---
 
+import type { Count, TableQuery } from "./query";
 import type { ColumnFilter, TableEngineState } from "./table";
 
 function categoryExclusionPredicate(column: string, values: Set<string>): CompoundPredicate {
@@ -287,12 +295,18 @@ export function engineStateToExplorerState(state: TableEngineState): ExplorerSta
     ? [{ column: state.sort.column, direction: state.sort.direction }]
     : [];
 
-  return {
+  const explorer: ExplorerState = {
     filters,
     sort,
     resultCount: state.filteredCount,
     totalCount: state.totalCount,
   };
+  if (state.committedQuery !== undefined) {
+    explorer.committedQuery = state.committedQuery;
+    explorer.counts = { loaded: state.loadedCount ?? state.totalCount };
+    if (state.resultCount) explorer.counts.result = state.resultCount;
+  }
+  return explorer;
 }
 
 export function explorerStateToJSON(state: ExplorerState): string {

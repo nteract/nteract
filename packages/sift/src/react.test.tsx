@@ -1,10 +1,17 @@
 import { cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { SiftFocusStatus, SiftScrollHandoffCue } from "./handoff";
-import { loadIpc } from "./predicate";
+import { ensureModule, loadIpc } from "./predicate";
+import type {
+  QueryCapabilities,
+  QueryPage,
+  RequestContext,
+  TableQuery,
+  WindowRequest,
+} from "./query";
 import { SiftTable, URL_PARQUET_LIMITS } from "./react";
-import type { SiftLoadMilestone, SiftSource } from "./react";
-import { createTable, type Column, type TableData } from "./table";
+import type { SiftLoadMilestone, SiftQueryState, SiftSource } from "./react";
+import { createTable, type Column, type TableData, type TableEngine } from "./table";
 
 // Wrapped so tests can read the TableData the url source mounted.
 vi.mock("./table", async (importOriginal) => {
@@ -14,6 +21,14 @@ vi.mock("./table", async (importOriginal) => {
 
 const predicateModule = vi.hoisted(() => ({
   create_arrow_stream_store: vi.fn(() => 9),
+  // Each whole-buffer IPC load gets its own handle so tests can tell which
+  // store a `free` released.
+  load_ipc_bounded: vi.fn(
+    (() => {
+      let next = 100;
+      return () => ++next;
+    })(),
+  ),
   append_arrow_stream_chunk: vi.fn(),
   finish_arrow_stream_store: vi.fn(),
   arrow_ipc_column_hints_with_row_count: vi.fn(() => []),
@@ -29,6 +44,11 @@ const predicateModule = vi.hoisted(() => ({
   store_value_counts: vi.fn(() => []),
   store_bool_counts: vi.fn(() => [0, 0, 0]),
   store_null_counts: vi.fn(() => new Uint32Array([0, 0])),
+  // Local filters over the two-row table match both rows.
+  store_filter_rows: vi.fn(() => new Uint32Array([0, 1])),
+  store_filtered_value_counts: vi.fn(() => []),
+  store_filtered_histogram: vi.fn(() => []),
+  store_filtered_bool_counts: vi.fn(() => new Uint32Array([0, 0, 0])),
   // Byte-range Parquet over a fake two-row-group file; see `parquetFixture`.
   parquet_footer_length: vi.fn(() => 4),
   parquet_open: vi.fn(() => 11),
@@ -147,6 +167,47 @@ function parquetByteSource() {
     read: vi.fn(async (offset: number, length: number) => bytes.slice(offset, offset + length)),
   };
 }
+
+type PendingQuery = {
+  q: TableQuery & { window: WindowRequest };
+  ctx: RequestContext;
+  resolve: (page: QueryPage) => void;
+  reject: (reason: unknown) => void;
+};
+
+/**
+ * A query session whose answers the test releases by hand. The mocked WASM
+ * module decodes any bytes as the two-row `id`/`name` table.
+ */
+function fakeSession(caps: Partial<QueryCapabilities> = {}) {
+  const pending: PendingQuery[] = [];
+  const session = {
+    capabilities: {
+      filters: { id: ["between"], name: ["in"] },
+      sort: [],
+      casts: [],
+      counts: ["exact"],
+      ...caps,
+    } as QueryCapabilities,
+    query: vi.fn(
+      (q: TableQuery & { window: WindowRequest }, ctx: RequestContext) =>
+        new Promise<QueryPage>((resolve, reject) => pending.push({ q, ctx, resolve, reject })),
+    ),
+    count: vi.fn(async () => ({ kind: "exact" as const, value: 5 })),
+    close: vi.fn(async () => {}),
+  };
+  const page = (over: Partial<QueryPage> = {}): QueryPage => ({
+    ipc: new Uint8Array([1, 2, 3, 4]),
+    returnedRows: 2,
+    matchedCount: { kind: "exact", value: 40 },
+    continuation: { kind: "more" },
+    ...over,
+  });
+  return { session, pending, page };
+}
+
+const emptyQuery: TableQuery = { casts: [], filters: [], sort: [] };
+const lastEngine = () => vi.mocked(createTable).mock.results.at(-1)?.value as TableEngine;
 
 function makeColumns(): Column[] {
   return [
@@ -610,6 +671,283 @@ describe("SiftTable", () => {
     } finally {
       restore();
     }
+  });
+
+  describe("query-session", () => {
+    const footer = (root: ParentNode) =>
+      root.querySelector<HTMLElement>(".sift-stat-rows")?.dataset.value;
+    const idRange: TableQuery["filters"][number] = { column: "id", op: "between", value: [1, 2] };
+    const nameIn: TableQuery["filters"][number] = { column: "name", op: "in", value: ["row 1"] };
+
+    beforeEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("mounts the head as a committed query and reports milestones", async () => {
+      const { session, pending, page } = fakeSession();
+      const milestones: SiftLoadMilestone[] = [];
+      const queryStates: SiftQueryState[] = [];
+      const { container, unmount } = render(
+        <SiftTable
+          source={{ kind: "query-session", session, headRows: 2 }}
+          onLoadMilestone={(m) => milestones.push(m)}
+          onQueryStateChange={(s) => queryStates.push(s)}
+        />,
+      );
+      await waitFor(() => expect(pending).toHaveLength(1));
+      expect(pending[0].q).toEqual({ ...emptyQuery, window: { mode: "head", limit: 2 } });
+      expect(pending[0].ctx.budget).toMatchObject({
+        maxIpcBytes: 64 * 1024 * 1024,
+        maxDecodedBytes: 128 * 1024 * 1024,
+      });
+      expect(queryStates.at(-1)).toMatchObject({ generation: 1, pending: true });
+
+      pending[0].resolve(page());
+      await waitFor(() => {
+        expect(container.querySelector(".sift-status-ready")).not.toBeNull();
+        expect(footer(container)).toBe("40 rows in whole dataset · 2 rows shown");
+      });
+      const options = vi.mocked(createTable).mock.calls.at(-1)?.[2];
+      expect(options).toMatchObject({ committedQuery: emptyQuery });
+      const data = vi.mocked(createTable).mock.calls.at(-1)?.[1];
+      expect(data?.coverage).toMatchObject({
+        loadedRows: 2,
+        truncated: true,
+        totalRows: { value: 40, scope: "dataset", source: "query" },
+      });
+      expect(lastEngine().getState()).toMatchObject({
+        committedQuery: emptyQuery,
+        resultCount: { kind: "exact", value: 40 },
+      });
+      expect(milestones.map((m) => m.phase)).toEqual([
+        "load-start",
+        "wasm-ready",
+        "table-data-created",
+        "engine-mounted",
+        "complete",
+      ]);
+      expect(milestones.every((m) => m.source === "query-session")).toBe(true);
+      // The provider knew the count, so no separate count call.
+      expect(session.count).not.toHaveBeenCalled();
+      await waitFor(() => {
+        expect(queryStates.at(-1)).toMatchObject({
+          generation: 1,
+          pending: false,
+          committedQuery: emptyQuery,
+          resultCount: { kind: "exact", value: 40 },
+        });
+      });
+      expect(container.querySelector(".sift-apply-query")).toBeNull();
+      unmount();
+    });
+
+    it("asks for a cheap count when the page does not know it", async () => {
+      const { session, pending, page } = fakeSession();
+      const { container, unmount } = render(
+        <SiftTable source={{ kind: "query-session", session }} />,
+      );
+      await waitFor(() => expect(pending).toHaveLength(1));
+      expect(pending[0].q.window).toEqual({ mode: "head", limit: 10_000 });
+      pending[0].resolve(page({ matchedCount: { kind: "unknown" } }));
+      await waitFor(() => {
+        expect(footer(container)).toBe("5 rows in whole dataset · 2 rows shown");
+      });
+      expect(session.count).toHaveBeenCalledWith(emptyQuery, "cheap", expect.anything());
+      unmount();
+    });
+
+    it("disposes a stale response and never mounts it", async () => {
+      const { session, pending, page } = fakeSession();
+      const { container, unmount } = render(
+        <SiftTable
+          source={{
+            kind: "query-session",
+            session,
+            initialQuery: { filters: [idRange, nameIn] },
+          }}
+        />,
+      );
+      await waitFor(() => expect(pending).toHaveLength(1));
+      pending[0].resolve(page());
+      await waitFor(() => {
+        expect(container.querySelectorAll(".sift-filter-pill--committed")).toHaveLength(2);
+      });
+      const engine = lastEngine();
+      const replaceData = vi.spyOn(engine, "replaceData");
+      const freedBefore = predicateModule.free.mock.calls.length;
+
+      // Clearing a committed pill starts generation 2.
+      const closers = container.querySelectorAll<HTMLButtonElement>(
+        ".sift-filter-pill--committed .sift-filter-pill-x",
+      );
+      closers[0].click();
+      await waitFor(() => expect(pending).toHaveLength(2));
+      expect(pending[1].q.filters).toEqual([nameIn]);
+
+      // Hold generation 2 inside loadTableFile (its second ensureModule call)
+      // so generation 3 can start while its rows are being decoded.
+      let releaseLoad: (() => void) | null = null;
+      const ensureModuleCalls = vi.mocked(ensureModule).mock.calls.length;
+      vi.mocked(ensureModule)
+        .mockImplementationOnce(async () => predicateModule as never)
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              releaseLoad = () => resolve(predicateModule as never);
+            }),
+        );
+      pending[1].resolve(page({ matchedCount: { kind: "exact", value: 2 } }));
+      await waitFor(() => {
+        expect(vi.mocked(ensureModule).mock.calls.length).toBe(ensureModuleCalls + 2);
+      });
+
+      closers[1].click();
+      await waitFor(() => expect(pending).toHaveLength(3));
+      expect(pending[2].q.filters).toEqual([idRange]);
+      expect(pending[1].ctx.signal.aborted).toBe(true);
+      expect(pending[2].ctx.signal.aborted).toBe(false);
+
+      // Generation 2 finishes decoding late: its store is freed, nothing mounts.
+      releaseLoad!();
+      await waitFor(() => {
+        expect(predicateModule.free.mock.calls.length).toBe(freedBefore + 1);
+      });
+      expect(replaceData).not.toHaveBeenCalled();
+      expect(engine.getState().committedQuery).toEqual({
+        ...emptyQuery,
+        filters: [idRange, nameIn],
+      });
+
+      pending[2].resolve(page({ matchedCount: { kind: "exact", value: 3 } }));
+      await waitFor(() => {
+        expect(footer(container)).toBe("3 whole-dataset matches · 2 rows shown");
+      });
+      expect(replaceData).toHaveBeenCalledTimes(1);
+      expect(replaceData.mock.calls[0][1]).toMatchObject({
+        committedQuery: { ...emptyQuery, filters: [idRange] },
+        streaming: false,
+      });
+      expect(container.querySelectorAll(".sift-filter-pill--committed")).toHaveLength(1);
+      unmount();
+    });
+
+    it("applies local filters to the whole dataset as one merged query", async () => {
+      const { session, pending, page } = fakeSession();
+      const onChange = vi.fn();
+      const { container, unmount } = render(
+        <SiftTable
+          source={{ kind: "query-session", session, initialQuery: { filters: [nameIn] } }}
+          onChange={onChange}
+        />,
+      );
+      await waitFor(() => expect(pending).toHaveLength(1));
+      pending[0].resolve(page());
+      await waitFor(() => expect(container.querySelector(".sift-status-ready")).not.toBeNull());
+      expect(container.querySelector(".sift-apply-query")).toBeNull();
+
+      const engine = lastEngine();
+      engine.setFilter(0, { kind: "range", min: 1, max: 2 });
+      const button = await waitFor(() => {
+        const el = container.querySelector<HTMLButtonElement>(".sift-apply-query");
+        expect(el).not.toBeNull();
+        return el!;
+      });
+      expect(button.textContent).toBe("Apply filters to whole dataset");
+      expect(button.disabled).toBe(false);
+      expect(container.querySelector<HTMLElement>(".sift-stat-local")?.textContent).toBe(
+        "2 of 2 shown rows · Filters use shown rows",
+      );
+
+      button.click();
+      await waitFor(() => expect(pending).toHaveLength(2));
+      expect(pending[1].q).toEqual({
+        ...emptyQuery,
+        filters: [nameIn, idRange],
+        window: { mode: "head", limit: 10_000 },
+      });
+      await waitFor(() => {
+        const busy = container.querySelector<HTMLButtonElement>(".sift-apply-query");
+        expect(busy?.textContent).toBe("Querying…");
+        expect(busy?.disabled).toBe(true);
+      });
+      // The old rows stay visible while the query runs.
+      expect(engine.getState().filteredCount).toBe(2);
+
+      pending[1].resolve(page({ matchedCount: { kind: "exact", value: 12 } }));
+      await waitFor(() => {
+        expect(footer(container)).toBe("12 whole-dataset matches · 2 rows shown");
+        expect(container.querySelector(".sift-apply-query")).toBeNull();
+      });
+      expect(engine.getState()).toMatchObject({
+        filters: [],
+        committedQuery: { ...emptyQuery, filters: [nameIn, idRange] },
+      });
+      expect(container.querySelectorAll(".sift-filter-pill--committed")).toHaveLength(2);
+      expect(container.querySelectorAll(".sift-filter-pill")).toHaveLength(2);
+      expect(onChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ committedQuery: { ...emptyQuery, filters: [nameIn, idRange] } }),
+      );
+      unmount();
+    });
+
+    it("disables Apply with the reason when the provider cannot run the merged query", async () => {
+      const { session, pending, page } = fakeSession({ filters: { name: ["in"] } });
+      const { container, unmount } = render(
+        <SiftTable source={{ kind: "query-session", session }} />,
+      );
+      await waitFor(() => expect(pending).toHaveLength(1));
+      pending[0].resolve(page());
+      await waitFor(() => expect(container.querySelector(".sift-status-ready")).not.toBeNull());
+
+      lastEngine().setFilter(0, { kind: "range", min: 1, max: 2 });
+      await waitFor(() => {
+        const button = container.querySelector<HTMLButtonElement>(".sift-apply-query");
+        expect(button?.disabled).toBe(true);
+        expect(button?.title).toBe("Filters on id are not supported");
+      });
+      expect(session.query).toHaveBeenCalledTimes(1);
+      unmount();
+    });
+
+    it("aborts the query in flight and closes the session on unmount", async () => {
+      const { session, pending } = fakeSession();
+      const { unmount } = render(<SiftTable source={{ kind: "query-session", session }} />);
+      await waitFor(() => expect(pending).toHaveLength(1));
+      unmount();
+      expect(pending[0].ctx.signal.aborted).toBe(true);
+      await waitFor(() => expect(session.close).toHaveBeenCalledTimes(1));
+    });
+
+    it("shows a footer notice when a re-query fails and keeps the rows", async () => {
+      const { session, pending, page } = fakeSession({ filters: { id: ["between"] } });
+      const onLoadError = vi.fn();
+      const { container, unmount } = render(
+        <SiftTable source={{ kind: "query-session", session }} onLoadError={onLoadError} />,
+      );
+      await waitFor(() => expect(pending).toHaveLength(1));
+      pending[0].resolve(page());
+      await waitFor(() => expect(container.querySelector(".sift-status-ready")).not.toBeNull());
+      lastEngine().setFilter(0, { kind: "range", min: 1, max: 2 });
+      const button = await waitFor(() => {
+        const el = container.querySelector<HTMLButtonElement>(".sift-apply-query");
+        expect(el?.disabled).toBe(false);
+        return el!;
+      });
+      button.click();
+      await waitFor(() => expect(pending).toHaveLength(2));
+      pending[1].reject(new Error("connection lost"));
+      await waitFor(() => {
+        expect(container.querySelector(".sift-load-failure")?.textContent).toContain(
+          "connection lost",
+        );
+      });
+      expect(onLoadError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "connection lost" }),
+      );
+      expect(lastEngine().getState().filteredCount).toBe(2);
+      expect(container.querySelector<HTMLButtonElement>(".sift-apply-query")?.disabled).toBe(false);
+      unmount();
+    });
   });
 
   describe("autoLoad", () => {

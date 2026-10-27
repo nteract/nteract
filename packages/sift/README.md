@@ -59,6 +59,9 @@ budget instead of failing, and `autoLoad` pauses at a soft budget with a
 "Load more" button; see the embedding guide. Every summary labels what
 its numbers cover (`scope`): histograms are over loaded rows, while range and
 null count come from Parquet footer statistics for the whole file when present.
+Data behind a database or scan service plugs in through a `query-session`
+source: the host implements `TableQuerySession`, Sift shows a bounded head and
+applies brushes to the whole dataset on request; see the embedding guide.
 CSV and TSV go through [`@nteract/sift-csv`](https://www.npmjs.com/package/@nteract/sift-csv), a separate WASM
 module that returns Arrow IPC bytes for `loadTableFile`, so apps that only open
 Parquet or Arrow do not carry the CSV parser.

@@ -11,8 +11,10 @@ test.describe("Dataset Picker", () => {
     await expect(select).toBeVisible();
 
     const options = select.locator("option");
-    await expect(options).toHaveCount(13);
+    // One option per entry in src/datasets.ts.
+    await expect(options).toHaveCount(14);
     await expect(options.first()).toContainText("Generated");
+    await expect(options.nth(1)).toContainText("Query session");
   });
 
   test("can load generated dataset via URL param", async ({ page }) => {

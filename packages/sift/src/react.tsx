@@ -23,7 +23,13 @@ import {
   applyParquetColumnHints,
   pandasIndexColumnsFromHints,
 } from "./parquet-features";
-import { resolveTableFileLimits, type TableFileLimits, type TableLimitOverflow } from "./file-data";
+import {
+  loadTableFile,
+  resolveTableFileLimits,
+  type TableFileLimits,
+  type TableLimitOverflow,
+} from "./file-data";
+import { columnFiltersToPredicates, type FilterPredicate } from "./filter-schema";
 import {
   type ByteSource,
   byteSourceFromBytes,
@@ -33,10 +39,18 @@ import {
 } from "./parquet-file";
 import { ensureModule, getModuleSync, loadIpc } from "./predicate";
 import {
+  type Count,
+  type QuerySupport,
+  supportsQuery,
+  type TableQuery,
+  type TableQuerySession,
+} from "./query";
+import {
   type Column,
   type ColumnFilter,
   type ColumnType,
   createTable,
+  type InternalTableEngineOptions,
   type ReplaceDataOptions,
   type TableData,
   type TableEngine,
@@ -103,7 +117,33 @@ export type SiftSource =
       overflow?: TableLimitOverflow;
       /** Pause below the hard budget and let the user load more. Needs `overflow: "truncate"`. */
       autoLoad?: SiftAutoLoad;
+    }
+  /**
+   * A host-owned query provider. Sift asks it for the head of the result,
+   * shows those rows, and keeps brushes local until the user applies them to
+   * the whole dataset, which runs one new query. Memoize `session`; a new
+   * identity re-queries from `initialQuery`. The session is closed on unmount
+   * or source change.
+   */
+  | {
+      kind: "query-session";
+      session: TableQuerySession;
+      /** Starting query; missing parts default to no casts, filters, or sort. */
+      initialQuery?: Partial<TableQuery>;
+      /** Decoded-memory and column limits for each result; `maxRows` is `headRows`. */
+      limits?: Partial<TableFileLimits>;
+      /** Rows requested per query. Default 10,000. */
+      headRows?: number;
     };
+
+/** What a `query-session` source has committed and whether a query is in flight. */
+export type SiftQueryState = {
+  /** Increments per query; a response from an older generation is dropped. */
+  generation: number;
+  pending: boolean;
+  committedQuery: TableQuery;
+  resultCount: Count;
+};
 
 /**
  * Pause a Parquet load at a soft budget below the hard `limits`; the user
@@ -170,6 +210,8 @@ export type SiftTableProps = {
    * milestone for this load.
    */
   onLoadError?: (error: Error) => void;
+  /** Called as a `query-session` source starts and finishes each query. */
+  onQueryStateChange?: (state: SiftQueryState) => void;
   /** Optional control rendered in Sift's footer before built-in buttons. */
   footerControl?: ReactNode;
   /** CSS class name for the container div. */
@@ -559,6 +601,33 @@ function streamParquetIntoEngine(args: ProgressiveParquetArgs): ParquetStream {
   }
 }
 
+// --- Query sessions ---
+
+/** Default IPC byte budget per query result. */
+const QUERY_MAX_IPC_BYTES = 64 * 1024 * 1024;
+const QUERY_DEFAULT_HEAD_ROWS = 10_000;
+
+function completeQuery(partial: Partial<TableQuery> | undefined): TableQuery {
+  return {
+    casts: partial?.casts ?? [],
+    filters: partial?.filters ?? [],
+    sort: partial?.sort ?? [],
+  };
+}
+
+/** The committed query plus the engine's local filters, as one query. */
+function mergeLocalFilters(committed: TableQuery, local: FilterPredicate[]): TableQuery {
+  return { ...committed, filters: [...committed.filters, ...local] };
+}
+
+/** Portable predicates for the engine's current local filters. */
+function localPredicates(state: TableEngineState): FilterPredicate[] {
+  return columnFiltersToPredicates(
+    state.filters.map((entry) => ({ key: entry.column })),
+    state.filters.map((entry) => entry.filter),
+  );
+}
+
 /** Reject `autoLoad` settings the loader cannot honor. */
 function validateAutoLoad(
   autoLoad: SiftAutoLoad | undefined,
@@ -598,11 +667,21 @@ export function SiftTable({
   onChange,
   onLoadMilestone,
   onLoadError,
+  onQueryStateChange,
   footerControl,
   className,
   style,
 }: SiftTableProps) {
   const dataSource = source?.kind === "table-data" ? source.data : data;
+  const querySession = source?.kind === "query-session" ? source.session : undefined;
+  // Read once per session: a new initial query means a new session.
+  const queryInitialRef = useRef<Partial<TableQuery> | undefined>(undefined);
+  if (source?.kind === "query-session") queryInitialRef.current = source.initialQuery;
+  const queryHeadRows =
+    (source?.kind === "query-session" ? source.headRows : undefined) ?? QUERY_DEFAULT_HEAD_ROWS;
+  const queryLimits = source?.kind === "query-session" ? source.limits : undefined;
+  const queryMaxColumns = queryLimits?.maxColumns;
+  const queryMaxDecodedBytes = queryLimits?.maxDecodedBytes;
   const urlSource = source?.kind === "url" ? source.url : url;
   const manifestSource = source?.kind === "arrow-stream-manifest" ? source.manifest : undefined;
   const loadSource = source?.kind === "loader" ? source.load : undefined;
@@ -662,6 +741,40 @@ export function SiftTable({
   const stableOnScrollNearEnd = useCallback(() => {
     onScrollNearEndRef.current?.();
   }, []);
+  /**
+   * The query-session source's committed state, keyed by session so a stale
+   * run never describes a new session. `runQuery` is set by the active effect.
+   */
+  const [queryRun, setQueryRun] = useState<
+    (SiftQueryState & { session: TableQuerySession }) | null
+  >(null);
+  const currentQueryRun = querySession && queryRun?.session === querySession ? queryRun : null;
+  const runQueryRef = useRef<((q: TableQuery) => void) | null>(null);
+  /** A session whose close is deferred past a possible StrictMode replay. */
+  const pendingSessionCloseRef = useRef<{
+    session: TableQuerySession;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  /** Local filters the engine reported, as portable predicates. Query sessions only. */
+  const [queryLocalFilters, setQueryLocalFilters] = useState<FilterPredicate[]>([]);
+  const querySessionRef = useRef(querySession);
+  querySessionRef.current = querySession;
+  const applyQuery: { merged: TableQuery; support: QuerySupport } | null = useMemo(() => {
+    if (!currentQueryRun || !querySession || queryLocalFilters.length === 0) return null;
+    const merged = mergeLocalFilters(currentQueryRun.committedQuery, queryLocalFilters);
+    return { merged, support: supportsQuery(querySession.capabilities, merged) };
+  }, [currentQueryRun, querySession, queryLocalFilters]);
+  const applyToWholeDataset = useCallback(() => {
+    if (!applyQuery?.support.ok) return;
+    runQueryRef.current?.(applyQuery.merged);
+  }, [applyQuery]);
+  const onQueryStateChangeRef = useRef(onQueryStateChange);
+  onQueryStateChangeRef.current = onQueryStateChange;
+  useEffect(() => {
+    if (!currentQueryRun) return;
+    const { session: _session, ...state } = currentQueryRun;
+    onQueryStateChangeRef.current?.(state);
+  }, [currentQueryRun]);
   const previewNotice = useMemo(
     () => arrowStreamPreviewNotice(manifestSource) ?? parquetPreviewNotice(currentParquetPreview),
     [manifestSource, currentParquetPreview],
@@ -683,6 +796,7 @@ export function SiftTable({
   const hasFooterControl =
     footerControl != null ||
     manifestSource != null ||
+    querySession != null ||
     (byteSource != null && byteSourceOverflow === "truncate") ||
     (urlSource != null && urlOverflow === "truncate");
 
@@ -695,7 +809,19 @@ export function SiftTable({
   onLoadErrorRef.current = onLoadError;
 
   const stableOnChange = useCallback((state: TableEngineState) => {
+    // Only a query session needs the local filters in React state, for Apply.
+    // Brushing reports every step, so unchanged predicates keep their identity.
+    if (querySessionRef.current) {
+      const next = localPredicates(state);
+      setQueryLocalFilters((current) =>
+        JSON.stringify(current) === JSON.stringify(next) ? current : next,
+      );
+    }
     onChangeRef.current?.(state);
+  }, []);
+  // The engine gets one stable callback; the active query effect answers it.
+  const stableOnCommittedQueryChange = useCallback((next: TableQuery) => {
+    runQueryRef.current?.(next);
   }, []);
 
   /**
@@ -832,11 +958,26 @@ export function SiftTable({
             </span>
           </span>
         )}
+        {applyQuery && currentQueryRun && (
+          <button
+            type="button"
+            className="sift-apply-query"
+            disabled={currentQueryRun.pending || !applyQuery.support.ok}
+            aria-busy={currentQueryRun.pending}
+            title={applyQuery.support.ok ? undefined : applyQuery.support.reason}
+            onClick={applyToWholeDataset}
+          >
+            {currentQueryRun.pending ? "Querying…" : "Apply filters to whole dataset"}
+          </button>
+        )}
         {footerControl}
       </>,
     );
   }, [
+    applyQuery,
+    applyToWholeDataset,
     currentPausedLoad,
+    currentQueryRun,
     footerControl,
     getFooterControlElement,
     hasFooterControl,
@@ -895,6 +1036,7 @@ export function SiftTable({
         engineRef.current = createTable(engineDiv, loaded, {
           onChange: stableOnChange,
           onScrollNearEnd: stableOnScrollNearEnd,
+          onCommittedQueryChange: stableOnCommittedQueryChange,
           footerControl: getFooterControlElement(),
         });
         pendingData = undefined;
@@ -922,6 +1064,186 @@ export function SiftTable({
     loadSource,
     columnOverrides,
     stableOnChange,
+    getEngineElement,
+    getFooterControlElement,
+    emitLoadMilestone,
+    reportLoadError,
+  ]);
+
+  // Query session: ask the provider for the head of the result, mount it as a
+  // committed query, and re-query on Apply or when a committed pill is cleared.
+  useEffect(() => {
+    if (!querySession || !containerRef.current) return;
+    const session = querySession;
+    const caps = session.capabilities;
+    const pendingClose = pendingSessionCloseRef.current;
+    if (pendingClose) {
+      clearTimeout(pendingClose.timer);
+      pendingSessionCloseRef.current = null;
+      if (pendingClose.session !== session) pendingClose.session.close().catch(() => {});
+    }
+    // See the `data` effect: this source takes over the engine.
+    storeRef.current = null;
+    setLoadFailure(null);
+    setQueryLocalFilters([]);
+
+    let generation = 0;
+    let controller: AbortController | null = null;
+    let cancelled = false;
+    let limits: ParquetFileLimits;
+    try {
+      limits = resolveTableFileLimits({
+        maxRows: queryHeadRows,
+        maxColumns: queryMaxColumns,
+        maxDecodedBytes: queryMaxDecodedBytes,
+      });
+    } catch (cause) {
+      reportLoadError(cause);
+      return;
+    }
+    const stale = (myGeneration: number) => cancelled || myGeneration !== generation;
+
+    function runQuery(q: TableQuery) {
+      controller?.abort();
+      const myController = new AbortController();
+      controller = myController;
+      const myGeneration = ++generation;
+      const startedAt = performance.now();
+      const emit = (milestone: Omit<SiftLoadMilestone, "elapsedMs" | "source">) =>
+        emitLoadMilestone(startedAt, { ...milestone, source: "query-session" });
+      const ctx = {
+        requestId: `sift-query-${myGeneration}`,
+        signal: myController.signal,
+        budget: { maxIpcBytes: QUERY_MAX_IPC_BYTES, maxDecodedBytes: limits.maxDecodedBytes },
+      };
+      setQueryRun({
+        session,
+        generation: myGeneration,
+        pending: true,
+        committedQuery: q,
+        resultCount: { kind: "unknown" },
+      });
+      setStatus((current) => (current === "ready" ? current : "loading"));
+      setError(null);
+      emit({ phase: "load-start" });
+
+      (async () => {
+        const page = await session.query(
+          { ...q, window: { mode: "head", limit: limits.maxRows } },
+          ctx,
+        );
+        if (stale(myGeneration)) return;
+        await ensureModule();
+        if (stale(myGeneration)) return;
+        emit({ phase: "wasm-ready", format: "arrow-ipc", byteLength: page.ipc.byteLength });
+        const tableData = await loadTableFile(page.ipc, {
+          format: "arrow-ipc",
+          maxRows: limits.maxRows,
+          maxColumns: limits.maxColumns,
+          maxDecodedBytes: limits.maxDecodedBytes,
+          maxBytes: QUERY_MAX_IPC_BYTES,
+        });
+        if (stale(myGeneration)) {
+          tableData.dispose?.();
+          return;
+        }
+        // The result is a window over the query's matches, so coverage speaks
+        // of them: the total is the matched count when the provider knows it.
+        tableData.coverage = {
+          loadedRows: page.returnedRows,
+          totalRows:
+            page.matchedCount.kind === "exact"
+              ? {
+                  value: page.matchedCount.value,
+                  scope: "dataset",
+                  precision: "exact",
+                  source: "query",
+                }
+              : undefined,
+          truncated: page.continuation.kind !== "end",
+        };
+        tableData.recomputeSummaries?.();
+        applyColumnOverrides(tableData.columns, columnOverrides);
+        emit({ phase: "table-data-created", format: "arrow-ipc", rowCount: tableData.rowCount });
+
+        let engine = engineRef.current;
+        if (engine) {
+          engine.replaceData(tableData, {
+            committedQuery: q,
+            streaming: false,
+            footerControl: getFooterControlElement() ?? null,
+          });
+        } else {
+          const engineDiv = getEngineElement();
+          if (!engineDiv) {
+            tableData.dispose?.();
+            return;
+          }
+          const engineOptions: InternalTableEngineOptions = {
+            onChange: stableOnChange,
+            onScrollNearEnd: stableOnScrollNearEnd,
+            onCommittedQueryChange: stableOnCommittedQueryChange,
+            footerControl: getFooterControlElement(),
+            committedQuery: q,
+          };
+          engine = createTable(engineDiv, tableData, engineOptions);
+          engineRef.current = engine;
+          engine.setStreamingDone();
+        }
+        engine.setResultCount(page.matchedCount);
+        setStatus("ready");
+        emit({ phase: "engine-mounted", format: "arrow-ipc", rowCount: tableData.rowCount });
+
+        let count = page.matchedCount;
+        if (count.kind === "unknown" && caps.counts.length > 0) {
+          setQueryRun((current) =>
+            current?.generation === myGeneration ? { ...current, pending: false } : current,
+          );
+          count = await session.count(q, "cheap", ctx);
+          if (stale(myGeneration)) return;
+          engine.setResultCount(count);
+        }
+        setQueryRun((current) =>
+          current?.generation === myGeneration
+            ? { ...current, pending: false, resultCount: count }
+            : current,
+        );
+        emit({ phase: "complete", format: "arrow-ipc", rowCount: tableData.rowCount });
+      })().catch((cause: unknown) => {
+        if (stale(myGeneration)) return;
+        setQueryRun((current) =>
+          current?.generation === myGeneration ? { ...current, pending: false } : current,
+        );
+        reportLoadError(cause, engineRef.current !== null);
+      });
+    }
+
+    runQueryRef.current = runQuery;
+    runQuery(completeQuery(queryInitialRef.current));
+
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      if (runQueryRef.current === runQuery) runQueryRef.current = null;
+      // Deferred one tick: StrictMode replays the effect with the same session,
+      // and a closed session could not answer the replay.
+      pendingSessionCloseRef.current = {
+        session,
+        timer: setTimeout(() => {
+          pendingSessionCloseRef.current = null;
+          session.close().catch(() => {});
+        }, 0),
+      };
+    };
+  }, [
+    querySession,
+    queryHeadRows,
+    queryMaxColumns,
+    queryMaxDecodedBytes,
+    columnOverrides,
+    stableOnChange,
+    stableOnScrollNearEnd,
+    stableOnCommittedQueryChange,
     getEngineElement,
     getFooterControlElement,
     emitLoadMilestone,
@@ -991,6 +1313,7 @@ export function SiftTable({
           engineRef.current = createTable(engineDiv, tableData, {
             onChange: stableOnChange,
             onScrollNearEnd: stableOnScrollNearEnd,
+            onCommittedQueryChange: stableOnCommittedQueryChange,
             footerControl: getFooterControlElement(),
           });
         }
@@ -1089,6 +1412,7 @@ export function SiftTable({
     engineRef.current = createTable(engineDiv, dataSource, {
       onChange: stableOnChange,
       onScrollNearEnd: stableOnScrollNearEnd,
+      onCommittedQueryChange: stableOnCommittedQueryChange,
       footerControl: getFooterControlElement(),
     });
     engineRef.current.setStreamingDone();
@@ -1126,6 +1450,7 @@ export function SiftTable({
       engineRef.current = createTable(engineDiv, tableData, {
         onChange: stableOnChange,
         onScrollNearEnd: stableOnScrollNearEnd,
+        onCommittedQueryChange: stableOnCommittedQueryChange,
         footerControl: getFooterControlElement(),
       });
       disposePendingStore = null;
@@ -1428,6 +1753,7 @@ export function SiftTable({
       engineRef.current = createTable(engineDiv, tableData, {
         onChange: stableOnChange,
         onScrollNearEnd: stableOnScrollNearEnd,
+        onCommittedQueryChange: stableOnCommittedQueryChange,
         footerControl: getFooterControlElement(),
       });
       disposePendingStore = null;

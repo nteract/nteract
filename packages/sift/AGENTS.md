@@ -53,6 +53,11 @@ Every source ends as a `TableData` the engine reads by `(row, col)`:
    bytes, which take path 1. Sift itself has no CSV parser.
 4. **Hosted URLs and Arrow manifests**: the `url` and `manifest` sources in
    `react.tsx`, used by the notebook renderer.
+5. **Query sessions**: a host `TableQuerySession` (`query.ts`) answers a
+   `TableQuery` with one bounded Arrow IPC stream; the `query-session` source
+   loads it through path 1 and `replaceData(…, { committedQuery })` tells the
+   engine not to re-filter it. `query-fake.ts` is the in-memory session for
+   tests and `?dataset=query-fake`.
 
 Column types come from the Arrow schema with data-driven refinement; summaries
 for WASM sources are computed in Rust (`wasm-summaries.ts` adapts them).
