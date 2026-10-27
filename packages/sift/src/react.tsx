@@ -59,6 +59,8 @@ import {
 import { createWasmTableData } from "./wasm-table-data";
 import { tableResponse } from "./table-response";
 import { updateWasmSummaries } from "./wasm-summaries";
+import type { WindowedTableData } from "./windowed";
+import { createResidentWindowedData, type ResidentWindowedData } from "./windowed-resident";
 
 // --- Props ---
 
@@ -97,6 +99,8 @@ export type SiftSource =
       limits?: TableFileLimits;
       overflow?: TableLimitOverflow;
       autoLoad?: SiftAutoLoad;
+      /** Experimental: see the `byte-source` option. Parquet only. */
+      windowed?: boolean;
     }
   | { kind: "arrow-stream-manifest"; manifest: ArrowStreamManifest }
   /**
@@ -117,6 +121,12 @@ export type SiftSource =
       overflow?: TableLimitOverflow;
       /** Pause below the hard budget and let the user load more. Needs `overflow: "truncate"`. */
       autoLoad?: SiftAutoLoad;
+      /**
+       * Experimental: run the engine over a `WindowedTableData` adapter so cells
+       * and the permutation arrive asynchronously. Off by default; a seam for
+       * the worker-backed data side.
+       */
+      windowed?: boolean;
     }
   /**
    * A host-owned query provider. Sift asks it for the head of the result,
@@ -413,6 +423,8 @@ type ProgressiveParquetArgs = {
   /** Soft budget to pause at; absent means load to the hard budget. */
   autoLoad?: Pick<SiftAutoLoad, "rows" | "decodedBytes">;
   columnOverrides?: Record<string, Partial<Column>>;
+  /** Mount a `WindowedTableData` adapter over the store instead of the store itself. */
+  windowed?: boolean;
   signal: AbortSignal;
   emit: (milestone: Omit<SiftLoadMilestone, "elapsedMs" | "source">) => void;
   /** Called once the file is open so cleanup can close or dispose it. */
@@ -421,7 +433,7 @@ type ProgressiveParquetArgs = {
    * Mount the first lease; later leases go through `engine().replaceData`.
    * `streaming` is true when more row groups follow.
    */
-  mount: (tableData: TableData, streaming: boolean) => void;
+  mount: (tableData: TableData | WindowedTableData, streaming: boolean) => void;
   engine: () => TableEngine | null;
   /** Called when the load pauses at the soft budget, with the rows shown so far. */
   onPause?: (preview: ParquetPreview) => void;
@@ -461,6 +473,7 @@ function streamParquetIntoEngine(args: ProgressiveParquetArgs): ParquetStream {
     overflow,
     autoLoad,
     columnOverrides,
+    windowed,
     signal,
     emit,
     onOpen,
@@ -470,6 +483,15 @@ function streamParquetIntoEngine(args: ProgressiveParquetArgs): ParquetStream {
   } = args;
   const format = "parquet";
   let resumeWaiting: (() => void) | null = null;
+  /** The adapter the engine is mounted on, in windowed mode. */
+  let adapter: ResidentWindowedData | null = null;
+  const dataFor = (tableData: TableData): TableData | WindowedTableData => {
+    if (!windowed) return tableData;
+    adapter = createResidentWindowedData(tableData);
+    return adapter;
+  };
+  const notifyAppended = () => (adapter ? adapter.notifyAppended() : engine()?.onBatchAppended());
+  const done = () => (adapter ? adapter.notifyStreamingDone() : engine()?.setStreamingDone());
 
   const stream: ParquetStream = {
     done: run(),
@@ -513,7 +535,7 @@ function streamParquetIntoEngine(args: ProgressiveParquetArgs): ParquetStream {
       if (usage.rows < softRows && usage.decodedBytes < softBytes) return;
 
       file.setPaused(true);
-      engine()?.setStreamingDone();
+      done();
       emit({
         phase: "streaming-complete",
         format,
@@ -556,7 +578,7 @@ function streamParquetIntoEngine(args: ProgressiveParquetArgs): ParquetStream {
     }
     emit({ phase: "summaries-ready", format, rowCount: file.tableData.rowCount });
     signal.throwIfAborted();
-    mount(file.tableData, file.rowGroupCount > 1 && !exhausted);
+    mount(dataFor(file.tableData), file.rowGroupCount > 1 && !exhausted);
     emit({ phase: "engine-mounted", format, rowCount: file.tableData.rowCount });
     await pauseIfOverSoftBudget(1, exhausted);
 
@@ -568,9 +590,9 @@ function streamParquetIntoEngine(args: ProgressiveParquetArgs): ParquetStream {
       exhausted = appended.exhausted;
       signal.throwIfAborted();
       if (replaced) {
-        engine()?.replaceData(replaced, { streaming: true });
+        engine()?.replaceData(dataFor(replaced), { streaming: true });
       } else {
-        engine()?.onBatchAppended();
+        notifyAppended();
       }
       emit({
         phase: "chunk-appended",
@@ -585,9 +607,9 @@ function streamParquetIntoEngine(args: ProgressiveParquetArgs): ParquetStream {
     signal.throwIfAborted();
     const { replaced } = file.finish();
     if (replaced) {
-      engine()?.replaceData(replaced, { streaming: false });
+      engine()?.replaceData(dataFor(replaced), { streaming: false });
     } else {
-      engine()?.setStreamingDone();
+      done();
     }
     emit({
       phase: "streaming-complete",
@@ -695,6 +717,8 @@ export function SiftTable({
   const autoLoad =
     source?.kind === "byte-source" || source?.kind === "url" ? source.autoLoad : undefined;
   const hasAutoLoad = autoLoad !== undefined;
+  const windowedSource =
+    (source?.kind === "byte-source" || source?.kind === "url") && source.windowed === true;
   const autoLoadRows = autoLoad?.rows;
   const autoLoadDecodedBytes = autoLoad?.decodedBytes;
   const autoLoadTrigger = autoLoad?.trigger;
@@ -1296,6 +1320,7 @@ export function SiftTable({
       overflow: byteSourceOverflow,
       autoLoad: softBudget,
       columnOverrides,
+      windowed: windowedSource,
       signal: controller.signal,
       emit: (milestone) => emitLoadMilestone(startedAt, { ...milestone, source: "byte-source" }),
       onOpen: (file) => {
@@ -1372,6 +1397,7 @@ export function SiftTable({
     autoLoadRows,
     autoLoadDecodedBytes,
     autoLoadTrigger,
+    windowedSource,
     stableOnScrollNearEnd,
     columnOverrides,
     stableOnChange,
@@ -1739,7 +1765,7 @@ export function SiftTable({
     let openFile: OpenParquetFile | null = null;
     let parquetMounted = false;
 
-    function mountEngine(tableData: TableData, streaming?: boolean) {
+    function mountEngine(tableData: TableData | WindowedTableData, streaming?: boolean) {
       if (engineRef.current) {
         engineRef.current.replaceData(tableData, {
           streaming,
@@ -1780,6 +1806,7 @@ export function SiftTable({
         overflow: urlOverflow,
         autoLoad: softBudget,
         columnOverrides,
+        windowed: windowedSource,
         signal: controller.signal,
         emit: (milestone) => emitLoadMilestone(startedAt, { ...milestone, source: "url" }),
         onOpen: (file) => {
@@ -1962,6 +1989,7 @@ export function SiftTable({
     autoLoadRows,
     autoLoadDecodedBytes,
     autoLoadTrigger,
+    windowedSource,
     stableOnScrollNearEnd,
     typeOverrides,
     columnOverrides,

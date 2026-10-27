@@ -13,6 +13,7 @@ import { ensureModule, getModuleSync, loadIpc } from "./predicate";
 import { createArrowIpcSession } from "./query-fake";
 import { SiftTable } from "./react";
 import { type Column, createTable, type TableData, type TableEngine } from "./table";
+import { createResidentWindowedData } from "./windowed-resident";
 import { createWasmTableData } from "./wasm-table-data";
 import "./demo.css";
 
@@ -47,6 +48,11 @@ const dataset$ = new Subject<DatasetEntry>();
 function getInitialDataset(): string {
   const params = new URLSearchParams(window.location.search);
   return params.get("dataset") ?? "spotify";
+}
+
+/** `?windowed=1` runs local Arrow scenes through the windowed adapter (experimental). */
+function windowedRequested(): boolean {
+  return new URLSearchParams(window.location.search).get("windowed") === "1";
 }
 
 function boot() {
@@ -284,7 +290,10 @@ function loadLocalArrow$(dataset: DatasetEntry, tableRoot: HTMLElement): Observa
 
           if (cancelled) return;
           tableRoot.innerHTML = "";
-          currentEngine = createTable(tableRoot, tableData);
+          currentEngine = createTable(
+            tableRoot,
+            windowedRequested() ? createResidentWindowedData(tableData) : tableData,
+          );
           disposePendingStore = null;
           currentEngine.setStreamingDone();
           subscriber.next();

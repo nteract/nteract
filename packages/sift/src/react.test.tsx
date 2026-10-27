@@ -1664,6 +1664,57 @@ describe("SiftTable", () => {
     vi.useFakeTimers();
   });
 
+  describe("windowed byte-source", () => {
+    const phases = (milestones: SiftLoadMilestone[]) => milestones.map((m) => m.phase);
+
+    async function streamParquet(windowed: boolean) {
+      const restore = stubParquetStore({ rowGroups: 3 });
+      const milestones: SiftLoadMilestone[] = [];
+      const source = parquetByteSource();
+      const { container, unmount } = render(
+        <SiftTable
+          source={{ kind: "byte-source", source, overflow: "truncate", windowed }}
+          onLoadMilestone={(milestone) => milestones.push(milestone)}
+        />,
+      );
+      try {
+        await waitFor(() => {
+          expect(phases(milestones)).toContain("streaming-complete");
+          expect(container.querySelector(".sift-status-ready")).not.toBeNull();
+        });
+        await waitFor(() => {
+          expect(container.querySelector<HTMLElement>(".sift-stat-rows")?.dataset.value).toBe(
+            "6 rows",
+          );
+        });
+        return { phases: phases(milestones), container, unmount };
+      } finally {
+        restore();
+      }
+    }
+
+    it("mounts a WindowedTableData and streams with the same milestones as resident mode", async () => {
+      vi.useRealTimers();
+      const resident = await streamParquet(false);
+      resident.unmount();
+      const residentData = vi.mocked(createTable).mock.calls.at(-1)?.[1];
+      expect(residentData && "kind" in residentData).toBe(false);
+
+      vi.mocked(createTable).mockClear();
+      const windowed = await streamParquet(true);
+      const windowedData = vi.mocked(createTable).mock.calls.at(-1)?.[1];
+      expect(windowedData).toMatchObject({ kind: "windowed" });
+      expect(windowed.phases).toEqual(resident.phases);
+      await waitFor(() => {
+        expect(windowed.container.querySelector(".sift-cell-skeleton")).toBeNull();
+        expect(windowed.container.querySelector(".sift-cell")?.textContent).toBe("1");
+      });
+      expect(windowed.container.getAttribute("aria-busy")).not.toBe("true");
+      windowed.unmount();
+      expect(predicateModule.free).toHaveBeenCalled();
+    });
+  });
+
   it("accepts className and style props", async () => {
     const rows = [[1, "Alice", 95]];
     const data = makeTableData(rows);

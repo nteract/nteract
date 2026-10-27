@@ -102,5 +102,10 @@ export type {
 } from "./table";
 // Imperative engine
 export { createTable } from "./table";
+// Windowed data (experimental): the async view↔data protocol and the
+// main-thread adapter over a TableData.
+export type { DataEvent, QueryResult, ViewQuery, WindowCells, WindowedTableData } from "./windowed";
+export type { ResidentWindowedData } from "./windowed-resident";
+export { createResidentWindowedData } from "./windowed-resident";
 // WASM configuration
 export { setWasmUrl } from "./predicate";

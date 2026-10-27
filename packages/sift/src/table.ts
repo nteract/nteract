@@ -16,8 +16,15 @@ import {
   mountImageViewer,
 } from "./components/image-viewer";
 import { predicateToEnglish } from "./filter-schema";
+import { computePermutation } from "./permutation";
 import type { Count, TableQuery } from "./query";
 import { renderColumnSummary, unmountColumnSummary } from "./sparkline";
+import {
+  isWindowedTableData,
+  type QueryResult,
+  type WindowCells,
+  type WindowedTableData,
+} from "./windowed";
 // --- Types ---
 
 export type ColumnType = "numeric" | "categorical" | "timestamp" | "boolean" | "image";
@@ -198,6 +205,11 @@ export type TableEngineState = {
   committedQuery?: TableQuery | null;
   /** Rows matching `committedQuery` in the whole dataset, when known. */
   resultCount?: Count;
+  /**
+   * True while a windowed source is answering a filter, sort, or cast;
+   * `filteredCount` is then the last known value. Always false for resident data.
+   */
+  pending?: boolean;
 };
 
 export type TableEngineOptions = {
@@ -268,7 +280,7 @@ export type TableEngine = {
    * `setStreamingDone()`. Used when a paused load resumes.
    */
   resumeStreaming(): void;
-  replaceData(newData: TableData, options?: ReplaceDataOptions): void;
+  replaceData(newData: TableData | WindowedTableData, options?: ReplaceDataOptions): void;
   /**
    * Show `control` in the footer from now on, as
    * `TableEngineOptions.footerControl`; `null` removes the current one. Rows,
@@ -404,10 +416,85 @@ function resolveCellFont(container: HTMLElement): string {
 
 export function createTable(
   container: HTMLElement,
-  initialData: TableData,
+  initialData: TableData | WindowedTableData,
   options?: TableEngineOptions,
 ): TableEngine {
-  let data = initialData;
+  // --- Windowed mode ---
+  //
+  // Decided once here. With a `WindowedTableData` the data side owns the
+  // permutation; the view keeps a `TableData`-shaped reader (`data`) over the
+  // cells it has received, and `viewIndices[r]` is `-1` for a view row whose
+  // data row has not arrived. Resident data takes the unchanged synchronous
+  // path: nothing below awaits unless `windowed` is true.
+  const windowed = isWindowedTableData(initialData);
+  let windowedData: WindowedTableData | null = windowed ? initialData : null;
+  /** Cells received from the data side, by data row. Windowed mode only. */
+  const windowCells = new Map<number, { strings: string[]; raws: unknown[] }>();
+  /** Non-null raw for an image cell whose bytes arrive through `requestImage`. */
+  const IMAGE_PENDING: readonly Uint8Array[] = Object.freeze([]);
+  let unsubscribeWindowed: (() => void) | null = null;
+  // Query generation: bumped by every filter, sort, cast, or append; responses
+  // tagged with an older generation are dropped.
+  let generation = 0;
+  let pending = false;
+  let windowInFlight = false;
+  let wantedWindow: { start: number; end: number } | null = null;
+
+  /** A `TableData` reader over the cells the view holds for `w`. */
+  function viewReaderFor(w: WindowedTableData): TableData {
+    return {
+      columns: w.columns,
+      rowCount: w.rowCount,
+      getCell: (row, col) => windowCells.get(row)?.strings[col] ?? "",
+      getCellRaw: (row, col) => {
+        const cells = windowCells.get(row);
+        return cells ? cells.raws[col] : null;
+      },
+      columnSummaries: w.columns.map(() => null),
+      isColumnCast: w.isColumnCast ? (col) => w.isColumnCast!(col) : undefined,
+      coverage: w.coverage,
+      datasetStats: w.datasetStats,
+      dispose: () => w.dispose(),
+    };
+  }
+
+  /** Keep the cells of `cells` and mark their view rows resolved. */
+  function storeWindowCells(cells: WindowCells, markResolved: boolean) {
+    const cols = columns.length;
+    for (let i = 0; i < cells.dataRows.length; i++) {
+      const dataRow = cells.dataRows[i];
+      const strings: string[] = Array.from({ length: cols }, () => "");
+      const raws: unknown[] = Array.from({ length: cols }, () => null);
+      for (let c = 0; c < cols; c++) {
+        const k = i * cols + c;
+        const s = cells.strings[k] ?? "";
+        strings[c] = s;
+        if (cells.nulls[k]) {
+          raws[c] = null;
+          continue;
+        }
+        switch (columns[c].columnType) {
+          case "numeric":
+          case "timestamp":
+            raws[c] = cells.numeric[k];
+            break;
+          case "boolean":
+            raws[c] = cells.numeric[k] === 1;
+            break;
+          case "image":
+            raws[c] = IMAGE_PENDING;
+            break;
+          default:
+            raws[c] = s;
+        }
+      }
+      windowCells.set(dataRow, { strings, raws });
+      const viewRow = cells.viewStart + i;
+      if (markResolved && viewRow < filteredCount) viewIndices[viewRow] = dataRow;
+    }
+  }
+
+  let data: TableData = windowed ? viewReaderFor(initialData) : initialData;
   let columns = data.columns;
   let footerControl = options?.footerControl;
 
@@ -450,7 +537,14 @@ export function createTable(
   let rowHeights = new Float64Array(capacity);
   let rowPositions = new Float64Array(capacity + 1);
   viewIndices = new Int32Array(capacity);
-  for (let i = 0; i < rowCount; i++) viewIndices[i] = i;
+  if (windowed) {
+    // Nothing is resolved until the first query answers; the head fills the
+    // reader so auto-width and first paint have cells.
+    viewIndices.fill(-1, 0, rowCount);
+    storeWindowCells(windowedData!.head, false);
+  } else {
+    for (let i = 0; i < rowCount; i++) viewIndices[i] = i;
+  }
 
   let totalHeight = 0;
   let heightsDirty = true;
@@ -520,10 +614,21 @@ export function createTable(
 
   // --- Compute heights ---
 
+  // Estimate for a row with no prepared cells: one text line, or a thumbnail
+  // when the schema has an image column (windowed placeholders).
+  let placeholderHeight = LINE_HEIGHT + CELL_PAD_V;
+  function updatePlaceholderHeight() {
+    placeholderHeight =
+      windowed && columns.some((c) => c.columnType === "image")
+        ? IMAGE_THUMB_MAX_HEIGHT + CELL_PAD_V
+        : LINE_HEIGHT + CELL_PAD_V;
+  }
+  updatePlaceholderHeight();
+
   function computeRowHeight(sortedRow: number): number {
     const dataRow = viewIndices[sortedRow];
     const cache = cellCaches[dataRow];
-    if (!cache) return LINE_HEIGHT + CELL_PAD_V; // estimate for unprepared rows
+    if (!cache) return placeholderHeight; // estimate for unprepared rows
     const isFocused = focusedDataRow === dataRow;
     const cap = MAX_COLLAPSED_LINES * LINE_HEIGHT;
 
@@ -741,130 +846,214 @@ export function createTable(
 
   // --- Filter + Sort ---
 
-  function rowPassesFilters(dataRow: number): boolean {
-    for (let c = 0; c < columns.length; c++) {
-      const f = filters[c];
-      if (!f) continue;
-      const raw = data.getCellRaw(dataRow, c);
-      switch (f.kind) {
-        case "range": {
-          if (raw == null) return false;
-          const v = Number(raw);
-          if (!Number.isFinite(v)) return false;
-          if (v < f.min || v > f.max) return false;
-          break;
-        }
-        case "set": {
-          if (raw == null) return false;
-          const s = data.getCell(dataRow, c);
-          if (!f.values.has(s)) return false;
-          break;
-        }
-        case "not-in": {
-          // Null is not a string category, including the empty-string category.
-          if (raw == null) break;
-          const s = data.getCell(dataRow, c);
-          // Inverted: exclude row if value IS in the exclusion set
-          if (f.values.has(s)) return false;
-          break;
-        }
-        case "boolean": {
-          if (raw == null || Boolean(raw) !== f.value) return false;
-          break;
-        }
-      }
-    }
-    return true;
-  }
-
   function hasActiveFilters(): boolean {
     return filters.some((f) => f !== null);
   }
 
   function applyFilterAndSort() {
-    // Step 1: filter
-    const filtered: number[] = [];
-    if (hasActiveFilters()) {
-      if (data.filterRows) {
-        // WASM fast path: apply all filters in Rust, no per-cell FFI
-        const wasmResult = data.filterRows(filters);
-        for (let i = 0; i < wasmResult.length; i++) filtered.push(wasmResult[i]);
-      } else {
-        for (let i = 0; i < rowCount; i++) {
-          if (rowPassesFilters(i)) filtered.push(i);
-        }
-      }
-    } else {
-      for (let i = 0; i < rowCount; i++) filtered.push(i);
+    if (windowed) {
+      startQuery();
+      return;
     }
+    const filtered = computePermutation(data, columns, filters, sortState, rowCount);
     filteredCount = filtered.length;
 
-    // Step 2: sort the filtered set
-    if (sortState) {
-      const { col, dir } = sortState;
-      if (data.sortColumn) {
-        // WASM fast path: get sorted indices for all rows, then intersect with filter
-        const sortedAll = data.sortColumn(col, dir === "asc");
-        if (hasActiveFilters()) {
-          const filterSet = new Set(filtered);
-          filtered.length = 0;
-          for (let i = 0; i < sortedAll.length; i++) {
-            if (filterSet.has(sortedAll[i])) filtered.push(sortedAll[i]);
-          }
-        } else {
-          filtered.length = 0;
-          for (let i = 0; i < sortedAll.length; i++) {
-            filtered.push(sortedAll[i]);
-          }
-        }
-      } else {
-        // JS fallback: sort the filtered set with comparators
-        const colType = columns[col].columnType;
-        const isNumeric = colType === "numeric" || colType === "timestamp";
-        filtered.sort((a, b) => {
-          let cmp: number;
-          if (isNumeric) {
-            const rawA = data.getCellRaw(a, col);
-            const rawB = data.getCellRaw(b, col);
-            const va = rawA == null ? NaN : Number(rawA);
-            const vb = rawB == null ? NaN : Number(rawB);
-            const aOk = Number.isFinite(va) || va === Infinity || va === -Infinity;
-            const bOk = Number.isFinite(vb) || vb === Infinity || vb === -Infinity;
-            if (!aOk && !bOk) cmp = 0;
-            else if (!aOk) return 1;
-            else if (!bOk) return -1;
-            else cmp = va - vb;
-          } else if (colType === "boolean") {
-            const rawA = data.getCellRaw(a, col);
-            const rawB = data.getCellRaw(b, col);
-            if (rawA == null && rawB == null) cmp = 0;
-            else if (rawA == null) return 1;
-            else if (rawB == null) return -1;
-            else cmp = (rawA ? 1 : 0) - (rawB ? 1 : 0);
-          } else {
-            const rawA = data.getCellRaw(a, col);
-            const rawB = data.getCellRaw(b, col);
-            if (rawA == null && rawB == null) cmp = 0;
-            else if (rawA == null) return 1;
-            else if (rawB == null) return -1;
-            else {
-              const sa = data.getCell(a, col);
-              const sb = data.getCell(b, col);
-              cmp = sa < sb ? -1 : sa > sb ? 1 : 0;
-            }
-          }
-          return dir === "asc" ? cmp : -cmp;
-        });
-      }
-    }
-
-    // Step 3: write to viewIndices
+    // Write to viewIndices
     if (filtered.length > capacity) growBuffers(filtered.length);
     for (let i = 0; i < filtered.length; i++) {
       viewIndices[i] = filtered[i];
     }
 
     heightsDirty = true;
+  }
+
+  // --- Windowed mode: queries and windows ---
+  //
+  // The data side answers `setQuery` with the filtered count and summaries and
+  // `requestWindow` with cells for a span of view rows. Every view row is
+  // unresolved (-1) from the moment a query starts until a window for it lands;
+  // `render()` shows placeholders there and asks for the rows it needs.
+
+  /** Ask the data side for the current filters and sort. */
+  function startQuery() {
+    const w = windowedData!;
+    const myGeneration = ++generation;
+    pending = true;
+    wantedWindow = null;
+    viewIndices.fill(-1, 0, filteredCount);
+    heightsDirty = true;
+    const sort = sortState ? { col: sortState.col, dir: sortState.dir } : null;
+    w.setQuery({ filters: [...filters], sort }, myGeneration).then(
+      (result) => {
+        if (destroyed || myGeneration !== generation) return;
+        applyQueryResult(result);
+      },
+      (error: unknown) => {
+        if (destroyed || myGeneration !== generation) return;
+        pending = false;
+        console.warn("Sift query failed:", error);
+        notifyChange();
+      },
+    );
+  }
+
+  /** Install a query answer: counts, summaries, and an empty resolution map. */
+  function applyQueryResult(result: QueryResult) {
+    filteredCount = result.filteredCount;
+    growBuffers(filteredCount);
+    viewIndices.fill(-1, 0, filteredCount);
+    // The head is the identity permutation, so it resolves rows at once when
+    // nothing filters or sorts.
+    if (!hasActiveFilters() && !sortState) storeWindowCells(windowedData!.head, true);
+    data.columnSummaries = result.summaries;
+    unfilteredSummaries = result.summariesAll;
+    pending = false;
+    wantedWindow = null;
+    heightsDirty = true;
+    lastVisFirst = -1;
+    lastVisLast = -1;
+    updateRowCountDisplay();
+    renderAllSummaries();
+    updateFilteredLabels();
+    scheduleRender();
+    notifyChange();
+  }
+
+  /** From `render()`: request the unresolved part of `[first, last]`, one request at a time. */
+  function requestWindowFor(first: number, last: number) {
+    if (pending) return; // the permutation is changing; wait for the query
+    let lo = -1;
+    let hi = -1;
+    for (let r = first; r <= last; r++) {
+      if (viewIndices[r] >= 0) continue;
+      if (lo < 0) lo = r;
+      hi = r;
+    }
+    if (lo < 0) return;
+    wantedWindow = { start: lo, end: hi + 1 };
+    if (!windowInFlight) issueWindowRequest();
+  }
+
+  function issueWindowRequest() {
+    const wanted = wantedWindow;
+    if (!wanted || destroyed) return;
+    wantedWindow = null;
+    windowInFlight = true;
+    const myGeneration = generation;
+    windowedData!.requestWindow(wanted.start, wanted.end, myGeneration).then(
+      (cells) => {
+        windowInFlight = false;
+        if (destroyed) return;
+        if (myGeneration === generation && !pending) {
+          storeWindowCells(cells, true);
+          // Measured heights replace estimates; keep the anchored row in place.
+          markHeightsDirty(true);
+          scheduleRender();
+        }
+        issueWindowRequest();
+      },
+      (error: unknown) => {
+        windowInFlight = false;
+        if (!destroyed) console.warn("Sift window request failed:", error);
+      },
+    );
+  }
+
+  /** Column types changed on the data side (cast, undo, schema refinement). */
+  function applyColumnTypes(next: Column[]) {
+    for (let c = 0; c < columns.length && c < next.length; c++) {
+      columns[c].columnType = next[c].columnType;
+      columns[c].numeric = next[c].numeric;
+      const icon = headerCells[c].querySelector(".sift-type-icon");
+      if (icon) {
+        icon.textContent = typeIconChar(columns[c].columnType);
+        icon.setAttribute("title", columns[c].columnType);
+      }
+    }
+    updatePlaceholderHeight();
+    windowCells.clear();
+    cellCaches.length = 0;
+    hidePooledRows();
+  }
+
+  /** A cast or undo on the data side: a query answer with new column types. */
+  function startCast(
+    run: (
+      w: WindowedTableData,
+      generation: number,
+    ) => Promise<QueryResult & { columns: Column[] }> | undefined,
+  ) {
+    const w = windowedData!;
+    const myGeneration = ++generation;
+    const request = run(w, myGeneration);
+    if (!request) {
+      generation--;
+      return;
+    }
+    pending = true;
+    wantedWindow = null;
+    viewIndices.fill(-1, 0, filteredCount);
+    heightsDirty = true;
+    scheduleRender();
+    request.then(
+      (result) => {
+        if (destroyed || myGeneration !== generation) return;
+        applyColumnTypes(result.columns);
+        applyQueryResult(result);
+      },
+      (error: unknown) => {
+        if (destroyed || myGeneration !== generation) return;
+        pending = false;
+        console.warn("Cast failed:", error);
+        notifyChange();
+      },
+    );
+  }
+
+  /** `rows-appended`: more resident rows under the same query. */
+  function onRowsAppended(newRowCount: number, summariesAll: ColumnSummary[]) {
+    growBuffers(newRowCount);
+    rowCount = newRowCount;
+    data.rowCount = newRowCount;
+    unfilteredSummaries = summariesAll;
+    startQuery();
+    updateRowCountDisplay();
+    lastVisFirst = -1;
+    lastVisLast = -1;
+    scheduleRender();
+  }
+
+  /** Swap to `w` as the data side; returns the reader for it. */
+  function attachWindowed(w: WindowedTableData): TableData {
+    subscribeWindowed(w);
+    windowCells.clear();
+    const reader = viewReaderFor(w);
+    storeWindowCells(w.head, false);
+    return reader;
+  }
+
+  /** Listen to `w` and route its push events. */
+  function subscribeWindowed(w: WindowedTableData) {
+    unsubscribeWindowed?.();
+    windowedData = w;
+    unsubscribeWindowed = w.subscribe((event) => {
+      if (destroyed) return;
+      switch (event.type) {
+        case "rows-appended":
+          onRowsAppended(event.rowCount, event.summariesAll);
+          break;
+        case "streaming-done":
+          setStreamingDone();
+          break;
+        case "schema-changed":
+          applyColumnTypes(event.columns);
+          startQuery();
+          break;
+        case "error":
+          console.warn("Sift windowed data error:", event.message);
+          break;
+      }
+    });
   }
 
   // --- DOM ---
@@ -1609,7 +1798,65 @@ export function createTable(
     }
   }
 
+  /** Thumbnail strip for an image cell's byte chunks; `str` when there are none. */
+  function renderImageChunks(cellEl: HTMLDivElement, chunks: Uint8Array[], str: string) {
+    if (chunks.length === 0) {
+      cellEl.textContent = str;
+      return;
+    }
+    cellEl.classList.add("sift-cell-image");
+    const visible = chunks.slice(0, IMAGE_THUMB_CAP);
+    for (let imageIndex = 0; imageIndex < visible.length; imageIndex++) {
+      const bytes = visible[imageIndex];
+      const mime = sniffImageMime(bytes);
+      if (!mime) {
+        // Unknown payload — keep the strip dense; show a small marker
+        // so a malformed item doesn't push the rest off the row.
+        const span = document.createElement("span");
+        span.className = "sift-cell-image-fallback";
+        span.textContent = `${bytes.length}b`;
+        cellEl.appendChild(span);
+        continue;
+      }
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "sift-cell-image-thumb-button";
+      button.dataset.siftImageIndex = String(imageIndex);
+      button.setAttribute("aria-label", "Open image");
+      const img = document.createElement("img");
+      img.className = "sift-cell-image-thumb";
+      img.alt = "";
+      img.decoding = "async";
+      img.loading = "lazy";
+      const url = createImageObjectUrl(bytes, mime);
+      img.src = url;
+      img.dataset.siftBlobUrl = url;
+      button.appendChild(img);
+      cellEl.appendChild(button);
+    }
+    if (chunks.length > IMAGE_THUMB_CAP) {
+      const more = document.createElement("span");
+      more.className = "sift-cell-image-more";
+      more.textContent = `+${chunks.length - IMAGE_THUMB_CAP}`;
+      cellEl.appendChild(more);
+    }
+  }
+
+  /** A windowed cell whose data row has not arrived: one skeleton bar, no text. */
+  function renderPlaceholderCell(cellEl: HTMLDivElement) {
+    revokeCellBlobUrls(cellEl);
+    cellEl.textContent = "";
+    cellEl.className = "sift-cell sift-cell-skeleton";
+    const bar = document.createElement("span");
+    bar.className = "sift-skeleton-bar";
+    cellEl.appendChild(bar);
+  }
+
   function renderCell(cellEl: HTMLDivElement, dataRow: number, colIndex: number) {
+    if (dataRow < 0) {
+      renderPlaceholderCell(cellEl);
+      return;
+    }
     const col = columns[colIndex];
     const raw = data.getCellRaw(dataRow, colIndex);
     const str = data.getCell(dataRow, colIndex);
@@ -1652,49 +1899,26 @@ export function createTable(
         break;
       }
       case "image": {
-        // wasm-table-data normalizes both HF `Image` and `List<Image>` to
-        // an array of byte chunks; HF `Image` is just an array of length 1.
-        const chunks = getImageChunks(raw);
-        if (chunks.length === 0) {
-          cellEl.textContent = str;
+        if (windowed) {
+          // Bytes arrive separately; render the shell now and fill it only if
+          // this pooled row still shows the same data row when they land.
+          cellEl.classList.add("sift-cell-image");
+          const rowEl = cellEl.parentElement;
+          windowedData!.requestImage(dataRow, colIndex).then(
+            (chunks) => {
+              const pr = pool.find((p) => p.el === rowEl);
+              if (destroyed || !pr || pr.assignedDataRow !== dataRow) return;
+              revokeCellBlobUrls(cellEl);
+              cellEl.textContent = "";
+              renderImageChunks(cellEl, chunks ?? [], str);
+            },
+            () => {},
+          );
           break;
         }
-        cellEl.classList.add("sift-cell-image");
-        const visible = chunks.slice(0, IMAGE_THUMB_CAP);
-        for (let imageIndex = 0; imageIndex < visible.length; imageIndex++) {
-          const bytes = visible[imageIndex];
-          const mime = sniffImageMime(bytes);
-          if (!mime) {
-            // Unknown payload — keep the strip dense; show a small marker
-            // so a malformed item doesn't push the rest off the row.
-            const span = document.createElement("span");
-            span.className = "sift-cell-image-fallback";
-            span.textContent = `${bytes.length}b`;
-            cellEl.appendChild(span);
-            continue;
-          }
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "sift-cell-image-thumb-button";
-          button.dataset.siftImageIndex = String(imageIndex);
-          button.setAttribute("aria-label", "Open image");
-          const img = document.createElement("img");
-          img.className = "sift-cell-image-thumb";
-          img.alt = "";
-          img.decoding = "async";
-          img.loading = "lazy";
-          const url = createImageObjectUrl(bytes, mime);
-          img.src = url;
-          img.dataset.siftBlobUrl = url;
-          button.appendChild(img);
-          cellEl.appendChild(button);
-        }
-        if (chunks.length > IMAGE_THUMB_CAP) {
-          const more = document.createElement("span");
-          more.className = "sift-cell-image-more";
-          more.textContent = `+${chunks.length - IMAGE_THUMB_CAP}`;
-          cellEl.appendChild(more);
-        }
+        // wasm-table-data normalizes both HF `Image` and `List<Image>` to
+        // an array of byte chunks; HF `Image` is just an array of length 1.
+        renderImageChunks(cellEl, getImageChunks(raw), str);
         break;
       }
       default:
@@ -1735,7 +1959,19 @@ export function createTable(
   }
 
   function showImageViewer(dataRow: number, colIndex: number, imageIndex: number) {
-    const chunks = getImageChunks(data.getCellRaw(dataRow, colIndex));
+    if (windowed) {
+      windowedData!.requestImage(dataRow, colIndex).then(
+        (chunks) => {
+          if (!destroyed && chunks) openImageViewer(chunks, colIndex, imageIndex);
+        },
+        () => {},
+      );
+      return;
+    }
+    openImageViewer(getImageChunks(data.getCellRaw(dataRow, colIndex)), colIndex, imageIndex);
+  }
+
+  function openImageViewer(chunks: Uint8Array[], colIndex: number, imageIndex: number) {
     const items = getImageViewerItems(chunks);
     if (items.length === 0) return;
     const initialIndex = items.findIndex((item) => item.sourceIndex === imageIndex);
@@ -1823,7 +2059,9 @@ export function createTable(
     const last = Math.min(visLast + OVERSCAN, filteredCount - 1);
 
     // Prefetch visible rows in batch (WASM viewport optimization)
-    if (data.prefetchViewport) {
+    if (windowed) {
+      requestWindowFor(first, last);
+    } else if (data.prefetchViewport) {
       const visibleDataRows: number[] = [];
       for (let r = first; r <= last; r++) {
         visibleDataRows.push(viewIndices[r]);
@@ -1848,8 +2086,9 @@ export function createTable(
     for (let r = first; r <= last; r++) {
       const dataRow = viewIndices[r];
 
-      // Lazy-prepare cells on first visibility
-      if (!cellCaches[dataRow]) {
+      // Lazy-prepare cells on first visibility. An unresolved windowed row
+      // (-1) keeps the estimate until its cells arrive.
+      if (dataRow >= 0 && !cellCaches[dataRow]) {
         cellCaches[dataRow] = prepareCellRow(dataRow);
         // Recompute this row's height now that we have real measurements
         rowHeights[r] = computeRowHeight(r);
@@ -1890,12 +2129,19 @@ export function createTable(
       } else {
         pr.el.classList.remove("sift-row-focused");
       }
+      if (windowed) pr.el.classList.toggle("sift-row-placeholder", dataRow < 0);
 
       for (let c = 0; c < columns.length; c++) {
         renderCell(pr.cells[c], dataRow, c);
         pr.cells[c].style.width = colWidths[c] + "px";
         applyCellPinStyle(pr.cells[c], c);
       }
+    }
+
+    if (windowed) {
+      let busy = false;
+      for (let r = visFirst; r <= visLast && !busy; r++) busy = viewIndices[r] < 0;
+      container.setAttribute("aria-busy", String(busy));
     }
 
     // Transforms depend on virtualOffset, which changes with scrollTop whenever
@@ -1975,10 +2221,12 @@ export function createTable(
   }
 
   function showDetailSheet(viewRow: number) {
+    const dataRow = viewIndices[viewRow];
+    // A windowed placeholder has nothing to show yet.
+    if (dataRow < 0) return;
+
     // Dismiss any existing sheet first
     dismissDetailSheet();
-
-    const dataRow = viewIndices[viewRow];
 
     // Backdrop
     const backdrop = document.createElement("div");
@@ -2141,6 +2389,7 @@ export function createTable(
     for (const pr of pool) {
       if (pr.el === rowEl && pr.assignedRow !== -1) {
         const dataRow = viewIndices[pr.assignedRow];
+        if (dataRow < 0) break; // windowed placeholder
         setFocusedDataRow(focusedDataRow === dataRow ? null : dataRow);
         break;
       }
@@ -2270,6 +2519,11 @@ export function createTable(
   // --- Batch append handler ---
 
   function onBatchAppended() {
+    if (windowed) {
+      // The data side normally pushes `rows-appended`; a direct call re-reads it.
+      onRowsAppended(windowedData!.rowCount, unfilteredSummaries);
+      return;
+    }
     const newRowCount = data.rowCount;
     growBuffers(newRowCount);
 
@@ -2441,7 +2695,10 @@ export function createTable(
     return replaceOptions?.committedQuery !== undefined;
   }
 
-  function replaceData(newData: TableData, replaceOptions?: ReplaceDataOptions) {
+  function replaceData(
+    newData: TableData | WindowedTableData,
+    replaceOptions?: ReplaceDataOptions,
+  ) {
     const replacementStreaming = replaceOptions?.streaming ?? streaming;
     const preserved = preserveStateFor(newData.columns, replaceOptions);
     const nextFooterControl =
@@ -2452,7 +2709,8 @@ export function createTable(
       ? replaceOptions.committedQuery
       : undefined;
 
-    if (!sameColumnShape(newData.columns)) {
+    // A mode change (resident ↔ windowed) rebuilds like a new column shape.
+    if (isWindowedTableData(newData) !== windowed || !sameColumnShape(newData.columns)) {
       destroy();
       const rebuildOptions: InternalTableEngineOptions = {
         ...options,
@@ -2483,12 +2741,19 @@ export function createTable(
     setFooterControl(nextFooterControl ?? null);
 
     const oldData = data;
-    data = newData;
+    const oldWindowedData = windowedData;
     columns = newData.columns;
+    // Same mode as construction: a windowed swap gets a fresh reader and
+    // subscription; summaries arrive with its first query.
+    data = isWindowedTableData(newData) ? attachWindowed(newData) : newData;
     rowCount = newData.rowCount;
     growBuffers(rowCount);
     filteredCount = rowCount;
-    unfilteredSummaries = [...newData.columnSummaries];
+    unfilteredSummaries = [...data.columnSummaries];
+    if (windowed) {
+      wantedWindow = null;
+      updatePlaceholderHeight();
+    }
 
     if (replaceOptions?.resetSort) {
       sortState = null;
@@ -2534,7 +2799,7 @@ export function createTable(
     viewport.scrollTop = 0;
     heightsDirty = true;
     scheduleRender();
-    if (oldData !== newData) oldData.dispose?.();
+    if (oldData !== newData && oldWindowedData !== newData) oldData.dispose?.();
     notifyChange();
   }
 
@@ -2543,6 +2808,12 @@ export function createTable(
   // Pills are otherwise built on filter changes; a rebuilt engine starts with
   // committed filters to show.
   if (committedQuery) rebuildFilterPills();
+
+  // Windowed: listen for pushes and ask for the first permutation and summaries.
+  if (windowed) {
+    subscribeWindowed(windowedData!);
+    startQuery();
+  }
 
   // pretext caches segment widths per font string. Widths measured before a
   // web font loads are the fallback font's, so a load has to clear that cache
@@ -2712,6 +2983,8 @@ export function createTable(
     // Clear DOM
     container.innerHTML = "";
     container.classList.remove("sift-root", "sift-table-container");
+    unsubscribeWindowed?.();
+    unsubscribeWindowed = null;
     data.dispose?.();
   }
 
@@ -2886,7 +3159,9 @@ export function createTable(
       : `${rowCount.toLocaleString()} rows`;
     // WASM path is fast enough to compute summaries synchronously — no flicker.
     // JS fallback still debounces since it's O(rows × cols) with per-cell access.
-    if (data.recomputeFilteredSummaries) {
+    if (windowed) {
+      // Summaries arrive with the query result.
+    } else if (data.recomputeFilteredSummaries) {
       if (summaryDebounceTimer !== null) {
         clearTimeout(summaryDebounceTimer);
         summaryDebounceTimer = null;
@@ -2960,6 +3235,7 @@ export function createTable(
       filteredCount,
       totalCount: rowCount,
       loadedCount: rowCount,
+      pending,
     };
     if (committedQuery !== undefined) state.committedQuery = committedQuery;
     if (resultCount !== undefined) state.resultCount = resultCount;
@@ -3012,6 +3288,10 @@ export function createTable(
 
       case "cast":
         if (streaming) break; // Cast blocked during streaming — schema mismatch would crash WASM
+        if (windowed) {
+          startCast((w, gen) => w.castColumn?.(colIndex, action.targetType, gen));
+          break;
+        }
         if (data.castColumn) {
           try {
             data.castColumn(colIndex, action.targetType);
@@ -3050,6 +3330,10 @@ export function createTable(
 
       case "undo-cast":
         if (streaming) break;
+        if (windowed) {
+          startCast((w, gen) => w.undoCastColumn?.(colIndex, gen));
+          break;
+        }
         if (data.undoCastColumn) {
           const restoredType = data.undoCastColumn(colIndex);
           // Update the column metadata

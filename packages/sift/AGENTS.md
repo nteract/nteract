@@ -58,6 +58,12 @@ Every source ends as a `TableData` the engine reads by `(row, col)`:
    loads it through path 1 and `replaceData(…, { committedQuery })` tells the
    engine not to re-filter it. `query-fake.ts` is the in-memory session for
    tests and `?dataset=query-fake`.
+6. **Windowed data (experimental)**: `createTable` over a `WindowedTableData`
+   (`windowed.ts`) asks the data side for `setQuery` / `requestWindow` /
+   `requestImage` and shows placeholders meanwhile; `viewIndices[r] === -1`
+   marks an unresolved view row. `windowed-resident.ts` adapts a `TableData`
+   (permutation logic shared through `permutation.ts`); `windowed: true` on
+   `byte-source`/`url` and `?windowed=1` in the demo mount through it.
 
 Column types come from the Arrow schema with data-driven refinement; summaries
 for WASM sources are computed in Rust (`wasm-summaries.ts` adapts them).

@@ -406,6 +406,28 @@ query without re-applying local filters or sort, `engine.setResultCount(count)`
 sets the footer count, and `onCommittedQueryChange` in `createTable` options
 receives the reduced query when a committed pill is cleared.
 
+## Windowed data (experimental)
+
+`createTable` also accepts a `WindowedTableData`: a source whose cells,
+permutation, filtered summaries, and image bytes arrive asynchronously. The
+data side owns the filter-and-sort permutation and answers `setQuery` with the
+filtered count and summaries, `requestWindow(viewStart, viewEnd, generation)`
+with the data rows and cells for a span of view positions, and `requestImage`
+with one cell's bytes; it pushes `rows-appended` and `streaming-done` through
+`subscribe`. The engine shows skeleton placeholders (`.sift-cell-skeleton`,
+rows carry `.sift-row-placeholder`, the grid `aria-busy="true"`) for view rows
+whose cells have not landed, drops any answer tagged with a stale generation,
+and reports `pending: true` in `TableEngineState` while a query is in flight.
+Geometry stays dense: `rowCount` is a resident row count.
+
+`createResidentWindowedData(tableData)` adapts a loaded `TableData` to this
+shape on the main thread. It exists to exercise the mode and is the contract a
+worker-backed data side will implement over a `MessagePort`; it is not faster
+than resident mode. `byte-source` and Parquet `url` sources take
+`windowed: true` to mount through it, with the same milestones as today. Off
+by default. Lists render as text in this mode, and casts and summaries go
+through the data side.
+
 ## Lifecycle and host controls
 
 A `TableData` instance returned by `loadTableFile` owns one WASM store. The React
