@@ -83,7 +83,7 @@ function statValue(value: unknown): number | string | boolean | null {
     : null;
 }
 
-type PredicateModule = {
+export type PredicateModule = {
   // Data store
   load_ipc(ipc_bytes: Uint8Array): number;
   load_ipc_bounded(
@@ -169,6 +169,16 @@ type PredicateModule = {
   get_cell_image_bytes_at(handle: number, row: number, col: number, idx: number): Uint8Array;
   is_null(handle: number, row: number, col: number): boolean;
   store_viewport_cells(handle: number, rows: Uint32Array): ViewportCells;
+  /** Arrow IPC → Parquet with at most `maxRowGroupRows` rows per row group. Demo and tests. */
+  write_parquet_ipc_row_groups(ipc: Uint8Array, maxRowGroupRows?: number | null): Uint8Array;
+  // Allocation accounting (counting global allocator). Optional until every
+  // shipped binary carries it; callers guard on presence.
+  /** Cap on live heap bytes for this instance; 0 removes it. Over-cap allocations trap. */
+  set_allocation_cap?(bytes: number): void;
+  /** Live heap bytes right now. */
+  allocated_bytes?(): number;
+  /** Highest live heap bytes seen since the instance started. */
+  peak_allocated_bytes?(): number;
   // Store-based summaries (operates on handle, iterates in Rust)
   store_value_counts(handle: number, col: number): { label: string; count: number }[];
   store_histogram(
@@ -243,6 +253,27 @@ export function setWasmUrl(url: string, fallbackUrl?: string): void {
   configuredWasmFallbackUrl = fallbackUrl;
 }
 
+/** The URL `setWasmUrl` configured, if any. A worker is told it at `open`. */
+export function getWasmUrl(): string | undefined {
+  return configuredWasmUrl;
+}
+
+export function getWasmFallbackUrl(): string | undefined {
+  return configuredWasmFallbackUrl;
+}
+
+let wasmMemory: WebAssembly.Memory | null = null;
+
+/** Linear memory of the initialized module, for size reporting between calls. */
+export function getWasmMemory(): WebAssembly.Memory | null {
+  return wasmMemory;
+}
+
+function rememberMemory(output: unknown) {
+  const memory = (output as { memory?: unknown } | undefined)?.memory;
+  if (memory instanceof WebAssembly.Memory) wasmMemory = memory;
+}
+
 export async function ensureModule(): Promise<PredicateModule> {
   if (mod) return mod;
   initializing ??= initializeModule().catch((error: unknown) => {
@@ -258,7 +289,7 @@ async function initializeModule(): Promise<PredicateModule> {
     const input = configuredWasmUrl?.startsWith("data:")
       ? await (await tableResponse(configuredWasmUrl)).arrayBuffer()
       : configuredWasmUrl;
-    await wasm.default({ module_or_path: input });
+    rememberMemory(await wasm.default({ module_or_path: input }));
   } catch (error) {
     if (!configuredWasmFallbackUrl || configuredWasmFallbackUrl === configuredWasmUrl) {
       throw error;
@@ -267,7 +298,7 @@ async function initializeModule(): Promise<PredicateModule> {
       `[sift] wasm load failed from ${configuredWasmUrl}; falling back to ${configuredWasmFallbackUrl}`,
       error,
     );
-    await wasm.default({ module_or_path: configuredWasmFallbackUrl });
+    rememberMemory(await wasm.default({ module_or_path: configuredWasmFallbackUrl }));
   }
   mod = wasm as unknown as PredicateModule;
   return mod;
@@ -291,6 +322,7 @@ export function _resetPredicateModuleForTests(): void {
   initializing = null;
   configuredWasmUrl = undefined;
   configuredWasmFallbackUrl = undefined;
+  wasmMemory = null;
 }
 
 /**

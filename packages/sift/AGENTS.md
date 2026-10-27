@@ -64,6 +64,12 @@ Every source ends as a `TableData` the engine reads by `(row, col)`:
    marks an unresolved view row. `windowed-resident.ts` adapts a `TableData`
    (permutation logic shared through `permutation.ts`); `windowed: true` on
    `byte-source`/`url` and `?windowed=1` in the demo mount through it.
+7. **Data worker (experimental)**: `src/worker/host.ts` runs the resident
+   adapter behind a `MessagePort` (`protocol.ts` is the versioned wire format;
+   `entry.ts` is the `@nteract/sift/worker` bundle). `client.ts` is the
+   main-thread `WindowedTableData`; `factory.ts` holds the host-registered
+   spawn (`setWorkerFactory`). `worker: true` on `byte-source` and `?worker=1`
+   in the demo use it. A WASM trap is fatal: terminate, keep loaded rows.
 
 Column types come from the Arrow schema with data-driven refinement; summaries
 for WASM sources are computed in Rust (`wasm-summaries.ts` adapts them).

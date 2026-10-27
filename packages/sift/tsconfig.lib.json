@@ -8,5 +8,5 @@
     "outDir": "./lib/types",
     "types": ["vite/client"]
   },
-  "include": ["src/index.ts", "src/handoff.tsx", "src/sift-wasm.d.ts"]
+  "include": ["src/index.ts", "src/handoff.tsx", "src/worker/entry.ts", "src/sift-wasm.d.ts"]
 }

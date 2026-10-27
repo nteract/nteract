@@ -107,5 +107,13 @@ export { createTable } from "./table";
 export type { DataEvent, QueryResult, ViewQuery, WindowCells, WindowedTableData } from "./windowed";
 export type { ResidentWindowedData } from "./windowed-resident";
 export { createResidentWindowedData } from "./windowed-resident";
+// Data worker (experimental): the host registers how to spawn
+// `@nteract/sift/worker`; `worker: true` on a byte-source then loads there.
+export { setWorkerFactory, type WorkerFactory } from "./worker/factory";
+export {
+  createWorkerWindowedData,
+  type WorkerWindowedData,
+  type WorkerWindowedDataOptions,
+} from "./worker/client";
 // WASM configuration
 export { setWasmUrl } from "./predicate";

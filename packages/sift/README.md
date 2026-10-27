@@ -62,6 +62,8 @@ null count come from Parquet footer statistics for the whole file when present.
 Data behind a database or scan service plugs in through a `query-session`
 source: the host implements `TableQuerySession`, Sift shows a bounded head and
 applies brushes to the whole dataset on request; see the embedding guide.
+`worker: true` on a byte-range Parquet source decodes in the `@nteract/sift/worker`
+data worker under an allocation cap, once the host registers `setWorkerFactory`.
 CSV and TSV go through [`@nteract/sift-csv`](https://www.npmjs.com/package/@nteract/sift-csv), a separate WASM
 module that returns Arrow IPC bytes for `loadTableFile`, so apps that only open
 Parquet or Arrow do not carry the CSV parser.

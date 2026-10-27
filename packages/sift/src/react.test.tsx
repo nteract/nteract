@@ -12,6 +12,7 @@ import type {
 import { SiftTable, URL_PARQUET_LIMITS } from "./react";
 import type { SiftLoadMilestone, SiftQueryState, SiftSource } from "./react";
 import { createTable, type Column, type TableData, type TableEngine } from "./table";
+import { setWorkerFactory } from "./worker/factory";
 
 // Wrapped so tests can read the TableData the url source mounted.
 vi.mock("./table", async (importOriginal) => {
@@ -1662,6 +1663,264 @@ describe("SiftTable", () => {
 
     vi.unstubAllGlobals();
     vi.useFakeTimers();
+  });
+
+  describe("worker byte-source", () => {
+    type Listener = (event: Event) => void;
+
+    /**
+     * A fake data worker that speaks the wire protocol for a two-row-group file:
+     * `opened` with the first group, then a `rows-appended` push and
+     * `streaming-done`. Requests answer from a tiny in-memory table.
+     */
+    function fakeWorker(options: { failOpen?: string; fatalAfterMount?: string } = {}) {
+      const listeners = new Map<string, Listener[]>();
+      const posted: unknown[] = [];
+      let terminated = false;
+      const rows = [
+        [1, "a"],
+        [2, "b"],
+        [3, "c"],
+        [4, "d"],
+      ];
+      const cellsFor = (viewStart: number, viewEnd: number, count: number) => {
+        const end = Math.min(viewEnd, count);
+        const n = Math.max(0, end - viewStart);
+        return {
+          viewStart,
+          dataRows: Uint32Array.from({ length: n }, (_, i) => viewStart + i),
+          strings: Array.from({ length: n }, (_, i) => rows[viewStart + i].map(String)).flat(),
+          nulls: new Uint8Array(n * 2),
+          numeric: Float64Array.from({ length: n * 2 }, (_, k) =>
+            k % 2 === 0 ? (rows[viewStart + Math.floor(k / 2)][0] as number) : Number.NaN,
+          ),
+        };
+      };
+      const columns = [
+        { key: "id", label: "id", width: 80, sortable: true, numeric: true, columnType: "numeric" },
+        {
+          key: "name",
+          label: "name",
+          width: 80,
+          sortable: true,
+          numeric: false,
+          columnType: "categorical",
+        },
+      ];
+      let rowCount = 2;
+      const reply = (message: unknown) => {
+        if (terminated) return;
+        setTimeout(() => {
+          if (terminated) return;
+          for (const listener of listeners.get("message") ?? []) {
+            listener({ data: message } as unknown as Event);
+          }
+        }, 0);
+      };
+      const worker = {
+        postMessage(message: { t: string; id?: number; viewStart?: number; viewEnd?: number }) {
+          posted.push(message);
+          switch (message.t) {
+            case "open":
+              if (options.failOpen) {
+                reply({ t: "error", id: message.id, message: options.failOpen, fatal: false });
+                return;
+              }
+              reply({
+                t: "opened",
+                id: message.id,
+                columns,
+                rowCount,
+                head: cellsFor(0, 2, 2),
+                rowGroupCount: 2,
+              });
+              reply({
+                t: "progress",
+                phase: "chunk",
+                rowGroup: 0,
+                rowGroupCount: 2,
+                loadedRows: 2,
+                totalRows: 4,
+                truncated: false,
+                memoryBytes: 10,
+              });
+              setTimeout(() => {
+                if (options.fatalAfterMount) {
+                  reply({ t: "error", id: null, message: options.fatalAfterMount, fatal: true });
+                  return;
+                }
+                rowCount = 4;
+                reply({
+                  t: "event",
+                  event: { type: "rows-appended", rowCount: 4, summariesAll: [null, null] },
+                });
+                reply({
+                  t: "progress",
+                  phase: "chunk",
+                  rowGroup: 1,
+                  rowGroupCount: 2,
+                  loadedRows: 4,
+                  totalRows: 4,
+                  truncated: false,
+                  memoryBytes: 20,
+                });
+                reply({ t: "event", event: { type: "streaming-done" } });
+                reply({
+                  t: "progress",
+                  phase: "complete",
+                  rowGroup: 1,
+                  rowGroupCount: 2,
+                  loadedRows: 4,
+                  totalRows: 4,
+                  truncated: false,
+                  memoryBytes: 20,
+                });
+              }, 5);
+              return;
+            case "query":
+              reply({
+                t: "query",
+                id: message.id,
+                result: {
+                  generation: 0,
+                  filteredCount: rowCount,
+                  summaries: [null, null],
+                  summariesAll: [null, null],
+                },
+              });
+              return;
+            case "window":
+              reply({
+                t: "window",
+                id: message.id,
+                cells: cellsFor(message.viewStart!, message.viewEnd!, rowCount),
+              });
+              return;
+            case "close":
+              reply({ t: "closed" });
+              return;
+          }
+        },
+        addEventListener(type: string, listener: Listener) {
+          listeners.set(type, [...(listeners.get(type) ?? []), listener]);
+        },
+        terminate() {
+          terminated = true;
+        },
+        posted,
+        isTerminated: () => terminated,
+      };
+      return worker;
+    }
+
+    const source = { byteLength: 1024, read: vi.fn(async () => new Uint8Array(8)) };
+
+    afterEach(() => {
+      setWorkerFactory(null);
+    });
+
+    it("rejects at validation without a factory; no main-thread fallback", async () => {
+      vi.useRealTimers();
+      const onLoadError = vi.fn();
+      const { container, unmount } = render(
+        <SiftTable
+          source={{ kind: "byte-source", source, worker: true }}
+          onLoadError={onLoadError}
+        />,
+      );
+      await waitFor(() => {
+        expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+          "setWorkerFactory",
+        );
+      });
+      expect(onLoadError).toHaveBeenCalledTimes(1);
+      expect(source.read).not.toHaveBeenCalled();
+      expect(createTable).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it("mounts the worker's data, streams, and emits the milestone sequence", async () => {
+      vi.useRealTimers();
+      const worker = fakeWorker();
+      setWorkerFactory(() => worker as unknown as Worker);
+      const milestones: SiftLoadMilestone[] = [];
+      const { container, unmount } = render(
+        <SiftTable
+          source={{ kind: "byte-source", source, worker: true, allocationCap: 123 }}
+          onLoadMilestone={(m) => milestones.push(m)}
+        />,
+      );
+      await waitFor(() => {
+        expect(milestones.map((m) => m.phase)).toEqual([
+          "load-start",
+          "wasm-ready",
+          "table-data-created",
+          "engine-mounted",
+          "chunk-appended",
+          "streaming-complete",
+        ]);
+      });
+      expect(milestones.every((m) => m.source === "byte-source")).toBe(true);
+      const open = worker.posted[0] as {
+        t: string;
+        allocationCap?: number;
+        source: { byteLength: number };
+      };
+      expect(open).toMatchObject({ t: "open", allocationCap: 123, source: { byteLength: 1024 } });
+      const data = vi.mocked(createTable).mock.calls.at(-1)?.[1];
+      expect(data).toMatchObject({ kind: "windowed" });
+      await waitFor(() => {
+        expect(container.querySelector<HTMLElement>(".sift-stat-rows")?.dataset.value).toBe(
+          "4 rows",
+        );
+        expect(container.querySelector(".sift-status-ready")).not.toBeNull();
+        expect(container.querySelector(".sift-cell")?.textContent).toBe("1");
+      });
+      unmount();
+      // Engine teardown disposes the data: close, then terminate on the ack.
+      await waitFor(() => expect(worker.isTerminated()).toBe(true));
+      expect(worker.posted.some((m) => (m as { t: string }).t === "close")).toBe(true);
+    });
+
+    it("keeps the loaded rows and shows the stopped-loading footer on a fatal worker error", async () => {
+      vi.useRealTimers();
+      const worker = fakeWorker({
+        fatalAfterMount: "row group 1 exceeded the worker memory limit",
+      });
+      setWorkerFactory(() => worker as unknown as Worker);
+      const onLoadError = vi.fn();
+      const { container, unmount } = render(
+        <SiftTable
+          source={{ kind: "byte-source", source, worker: true }}
+          onLoadError={onLoadError}
+        />,
+      );
+      await waitFor(() => {
+        expect(container.querySelector(".sift-load-failure")?.textContent).toBe(
+          "Stopped loading: row group 1 exceeded the worker memory limit · Showing loaded rows",
+        );
+      });
+      expect(onLoadError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "row group 1 exceeded the worker memory limit" }),
+      );
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.querySelector<HTMLElement>(".sift-stat-rows")?.dataset.value).toBe("2 rows");
+      expect(worker.isTerminated()).toBe(true);
+      unmount();
+    });
+
+    it("reports an open failure as a blocking error", async () => {
+      vi.useRealTimers();
+      const worker = fakeWorker({ failOpen: "Table file is too small to be a Parquet file" });
+      setWorkerFactory(() => worker as unknown as Worker);
+      const { container, unmount } = render(
+        <SiftTable source={{ kind: "byte-source", source, worker: true }} />,
+      );
+      await waitFor(() => {
+        expect(container.querySelector('[role="alert"]')?.textContent).toContain("too small");
+      });
+      unmount();
+    });
   });
 
   describe("windowed byte-source", () => {

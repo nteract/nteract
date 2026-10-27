@@ -447,6 +447,56 @@ than resident mode. `byte-source` and Parquet `url` sources take
 by default. Lists render as text in this mode, and casts and summaries go
 through the data side.
 
+## Running the data side in a worker (experimental)
+
+`worker: true` on a `byte-source` moves decoding and the table store into a
+dedicated worker. The worker is the resident windowed adapter behind a
+`MessagePort`: it owns the WASM module, the Parquet file, the permutation, and
+the summaries, and answers the engine's windows over messages. The main thread
+keeps the engine, the host's `ByteSource`, and the rows it has already been
+shown.
+
+The library ships the worker bundle as `@nteract/sift/worker` but not the
+spawn. Register one before mounting:
+
+```ts
+import { setWorkerFactory } from '@nteract/sift'
+
+// Same-origin module worker (Desktop, a browser page you control).
+setWorkerFactory(
+  () => new Worker(new URL('@nteract/sift/worker', import.meta.url), { type: 'module' }),
+)
+
+<SiftTable source={{ kind: 'byte-source', source, overflow: 'truncate', worker: true }} />
+```
+
+With no factory the source fails at validation with a visible error. Sift does
+not fall back to the main thread: a file that needs the worker's containment
+must not run without it. The notebook output frame has an opaque origin and
+cannot load a same-origin module worker; a blob-URL worker build for it is a
+follow-up and that host is not covered yet.
+
+Reads are relayed: the worker asks for a byte range, the main thread calls
+`source.read` and transfers the copy. `setWasmUrl` state is forwarded in the
+`open` message, so configure it before mounting as today.
+
+What the worker contains: WASM traps, decoder hangs, and retained memory. A trap
+(including the allocation cap below) ends that worker: Sift terminates it,
+keeps the rows already loaded, shows "Stopped loading: row group N exceeded the
+worker memory limit … · Showing loaded rows" in the footer, and fires
+`onLoadError`. Rows not yet shown stay as placeholders; a respawn with
+row-group quarantine is a follow-up. What it does not contain: the renderer
+process's memory (a dedicated worker lives in it) and the host's own I/O. The
+allocation cap is what bounds memory: the worker calls `set_allocation_cap`
+with `allocationCap` (default `2 × maxDecodedBytes`) before loading, so a
+decompression bomb traps in Rust before the process pays for it. Between row
+groups the host also compares live heap bytes against the cap and stops a load
+that has already exceeded it.
+
+Not in this version: `autoLoad` pause/resume in the worker (it loads to the
+hard budget), `url` and manifest sources, a request-latency watchdog, and
+respawn.
+
 ## Lifecycle and host controls
 
 A `TableData` instance returned by `loadTableFile` owns one WASM store. The React

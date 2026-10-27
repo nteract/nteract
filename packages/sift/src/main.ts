@@ -10,10 +10,12 @@ import {
 } from "./parquet-features";
 import { resolveHuggingFaceParquetUrl } from "./parquet-loader";
 import { ensureModule, getModuleSync, loadIpc } from "./predicate";
+import { byteSourceFromBytes } from "./parquet-file";
 import { createArrowIpcSession } from "./query-fake";
 import { SiftTable } from "./react";
 import { type Column, createTable, type TableData, type TableEngine } from "./table";
 import { createResidentWindowedData } from "./windowed-resident";
+import { setWorkerFactory } from "./worker/factory";
 import { createWasmTableData } from "./wasm-table-data";
 import "./demo.css";
 
@@ -55,6 +57,16 @@ function windowedRequested(): boolean {
   return new URLSearchParams(window.location.search).get("windowed") === "1";
 }
 
+/** `?worker=1` loads local Arrow scenes as Parquet in the data worker; `&cap=<bytes>` caps its heap. */
+function workerRequested(): boolean {
+  return new URLSearchParams(window.location.search).get("worker") === "1";
+}
+
+function workerAllocationCap(): number | undefined {
+  const cap = Number(new URLSearchParams(window.location.search).get("cap"));
+  return Number.isFinite(cap) && cap > 0 ? cap : undefined;
+}
+
 function boot() {
   const app = document.getElementById("app")!;
   currentDatasetId = getInitialDataset();
@@ -85,7 +97,9 @@ function boot() {
 
         const load$ =
           dataset.source === "local"
-            ? loadLocalArrow$(dataset, tableRoot)
+            ? workerRequested()
+              ? loadWorkerParquet$(dataset, tableRoot)
+              : loadLocalArrow$(dataset, tableRoot)
             : dataset.source === "query-fake"
               ? loadQueryFake$(dataset, tableRoot)
               : loadHuggingFaceWasm$(dataset, tableRoot);
@@ -306,6 +320,62 @@ function loadLocalArrow$(dataset: DatasetEntry, tableRoot: HTMLElement): Observa
           cancelled = true;
           disposePendingStore?.();
           disposePendingStore = null;
+        };
+      }),
+  );
+}
+
+/**
+ * Convert a local Arrow file to Parquet row groups on the main thread, then
+ * load it through `SiftTable` with `worker: true`: the data worker decodes the
+ * Parquet, holds the store, and answers the engine over messages.
+ */
+function loadWorkerParquet$(dataset: DatasetEntry, tableRoot: HTMLElement): Observable<void> {
+  return defer(
+    () =>
+      new Observable<void>((subscriber) => {
+        let cancelled = false;
+        setWorkerFactory(
+          () => new Worker(new URL("./worker/entry.ts", import.meta.url), { type: "module" }),
+        );
+
+        (async () => {
+          const response = await fetch(`${import.meta.env.BASE_URL}${dataset.path}`);
+          if (!response.ok) {
+            tableRoot.innerHTML =
+              '<div class="sift-loading">Missing data.arrow — run <code>npm run generate</code> first.</div>';
+            subscriber.complete();
+            return;
+          }
+          renderLoadingSkeleton(tableRoot, "Writing Parquet row groups…");
+          const arrow = new Uint8Array(await response.arrayBuffer());
+          const mod = await ensureModule();
+          // Ten row groups, so streaming and the memory check are visible.
+          const parquet = mod.write_parquet_ipc_row_groups(arrow, 10_000);
+          if (cancelled) return;
+          tableRoot.innerHTML = "";
+          currentReactRoot = createRoot(tableRoot);
+          currentReactRoot.render(
+            createElement(SiftTable, {
+              source: {
+                kind: "byte-source",
+                source: byteSourceFromBytes(parquet),
+                overflow: "truncate",
+                worker: true,
+                allocationCap: workerAllocationCap(),
+              },
+              columnOverrides: generatedColumnOverrides,
+              style: { height: "100%" },
+            }),
+          );
+          subscriber.next();
+          subscriber.complete();
+        })().catch((err) => {
+          if (!cancelled) subscriber.error(err);
+        });
+
+        return () => {
+          cancelled = true;
         };
       }),
   );

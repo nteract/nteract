@@ -20,3 +20,18 @@ export function store_null_counts(_handle) {
 export function parquet_file_usage(_file) {
   return { rows: 0, decoded_bytes: 0 };
 }
+
+// Allocation accounting (`alloc_cap.rs`). The stub never allocates.
+let allocationCap = 0;
+export function set_allocation_cap(bytes) {
+  allocationCap = bytes;
+}
+export function allocated_bytes() {
+  return 0;
+}
+export function peak_allocated_bytes() {
+  return 0;
+}
+export function _allocation_cap_for_tests() {
+  return allocationCap;
+}

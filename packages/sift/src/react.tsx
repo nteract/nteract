@@ -61,6 +61,8 @@ import { tableResponse } from "./table-response";
 import { updateWasmSummaries } from "./wasm-summaries";
 import type { WindowedTableData } from "./windowed";
 import { createResidentWindowedData, type ResidentWindowedData } from "./windowed-resident";
+import { createWorkerWindowedData } from "./worker/client";
+import { getWorkerFactory } from "./worker/factory";
 
 // --- Props ---
 
@@ -127,6 +129,15 @@ export type SiftSource =
        * the worker-backed data side.
        */
       windowed?: boolean;
+      /**
+       * Experimental: decode and hold the file in the Sift data worker. Needs
+       * `setWorkerFactory`; without one the source fails at validation, it
+       * never falls back to the main thread. Implies `windowed`. `autoLoad`
+       * does not apply: the worker loads to the hard budget.
+       */
+      worker?: boolean;
+      /** Live WASM heap bytes allowed in the worker; default `2 × maxDecodedBytes`. */
+      allocationCap?: number;
     }
   /**
    * A host-owned query provider. Sift asks it for the head of the result,
@@ -719,6 +730,8 @@ export function SiftTable({
   const hasAutoLoad = autoLoad !== undefined;
   const windowedSource =
     (source?.kind === "byte-source" || source?.kind === "url") && source.windowed === true;
+  const workerSource = source?.kind === "byte-source" && source.worker === true;
+  const workerAllocationCap = source?.kind === "byte-source" ? source.allocationCap : undefined;
   const autoLoadRows = autoLoad?.rows;
   const autoLoadDecodedBytes = autoLoad?.decodedBytes;
   const autoLoadTrigger = autoLoad?.trigger;
@@ -1314,6 +1327,81 @@ export function SiftTable({
       return;
     }
 
+    if (workerSource) {
+      if (!getWorkerFactory()) {
+        reportLoadError(
+          new Error(
+            "worker: true needs a worker factory. Call setWorkerFactory(() => new Worker(...)) first; Sift does not fall back to the main thread.",
+          ),
+        );
+        return;
+      }
+      let data: (WindowedTableData & { terminate(): void }) | null = null;
+      let unsubscribe: (() => void) | null = null;
+      createWorkerWindowedData({
+        source: byteSource,
+        limits,
+        overflow: byteSourceOverflow,
+        columnOverrides,
+        allocationCap: workerAllocationCap,
+        signal: controller.signal,
+        emit: (milestone) => emitLoadMilestone(startedAt, { ...milestone, source: "byte-source" }),
+      }).then(
+        (opened) => {
+          if (cancelled) {
+            opened.dispose();
+            return;
+          }
+          data = opened;
+          // A fatal error after mount keeps the loaded rows; the footer says why.
+          unsubscribe = opened.subscribe((event) => {
+            if (cancelled || event.type !== "error" || !event.fatal) return;
+            engineRef.current?.setStreamingDone();
+            reportLoadError(new Error(event.message), mounted);
+          });
+          const streaming = opened.rowGroupCount > 1;
+          if (engineRef.current) {
+            engineRef.current.replaceData(opened, {
+              streaming,
+              footerControl: getFooterControlElement() ?? null,
+            });
+          } else {
+            const engineDiv = getEngineElement();
+            if (!engineDiv) {
+              opened.dispose();
+              return;
+            }
+            engineRef.current = createTable(engineDiv, opened, {
+              onChange: stableOnChange,
+              onScrollNearEnd: stableOnScrollNearEnd,
+              onCommittedQueryChange: stableOnCommittedQueryChange,
+              footerControl: getFooterControlElement(),
+            });
+            if (!streaming) engineRef.current.setStreamingDone();
+          }
+          mounted = true;
+          setStatus("ready");
+          emitLoadMilestone(startedAt, {
+            source: "byte-source",
+            phase: "engine-mounted",
+            format: "parquet",
+            rowCount: opened.rowCount,
+          });
+        },
+        (cause: unknown) => {
+          if (cancelled) return;
+          reportLoadError(cause, mounted);
+        },
+      );
+      return () => {
+        cancelled = true;
+        controller.abort();
+        unsubscribe?.();
+        // Once mounted the engine owns the data and closes the worker on destroy.
+        if (data && !mounted) data.dispose();
+      };
+    }
+
     const stream = streamParquetIntoEngine({
       source: byteSource,
       limits,
@@ -1398,9 +1486,12 @@ export function SiftTable({
     autoLoadDecodedBytes,
     autoLoadTrigger,
     windowedSource,
+    workerSource,
+    workerAllocationCap,
     stableOnScrollNearEnd,
     columnOverrides,
     stableOnChange,
+    stableOnCommittedQueryChange,
     getEngineElement,
     getFooterControlElement,
     emitLoadMilestone,
