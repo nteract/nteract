@@ -31,7 +31,7 @@ import { matchingPages } from "./page-list.mjs";
 import { SharingControls } from "./SharingControls.jsx";
 import { CommentsPanel } from "./CommentsPanel.jsx";
 import { captureCommentDraft } from "./comment-draft.mjs";
-import { applyPageOperation } from "../model/page.mjs";
+import { writingContinuation } from "./writing-continuation.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
 import "./style.css";
@@ -287,6 +287,7 @@ function App() {
   useEffect(() => {
     if (!focusBlock || !session?.canWrite) return;
     const frame = requestAnimationFrame(() => {
+      if (current.current !== session || !session.canWrite) return;
       const element = article.current?.querySelector(
         `[data-block-id="${CSS.escape(focusBlock)}"] :is(.ProseMirror, wg-content)`,
       );
@@ -434,16 +435,11 @@ function App() {
         ?.querySelector(`[data-block-id="${CSS.escape(id)}"]`)
         ?.scrollIntoView({ block: "center" });
   }
-  function addBlock() {
+  function continueWriting() {
+    if (!session || current.current !== session) return;
     try {
-      let id;
-      session.change((doc) => {
-        applyPageOperation(doc, {
-          operation: "edit_page",
-          arguments: { operations: [{ op: "insert_markdown", markdown: "" }] },
-        });
-        id = orderedBlockIds(doc).at(-1);
-      });
+      const id = writingContinuation(session);
+      if (!id || current.current !== session) return;
       activateBlock(id);
       setFocusBlock(id);
     } catch (error) {
@@ -682,8 +678,8 @@ function App() {
                   </section>
                 ))}
                 {session.canWrite && (
-                  <button className="add-block subtle-button" onClick={addBlock}>
-                    <Plus size={17} aria-hidden="true" /> Block
+                  <button type="button" className="writing-continuation" onClick={continueWriting}>
+                    Write something…
                   </button>
                 )}
               </article>

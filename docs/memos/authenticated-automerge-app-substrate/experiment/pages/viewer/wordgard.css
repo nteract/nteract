@@ -72,6 +72,11 @@
   max-width: 100%;
   height: auto;
 }
+.image-selection-label {
+  padding: 0 8px;
+  color: var(--muted, #637469);
+  font-size: 13px;
+}
 .image-upload-status {
   display: flex;
   align-items: center;

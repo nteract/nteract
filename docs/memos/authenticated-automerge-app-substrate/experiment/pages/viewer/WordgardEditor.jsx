@@ -69,6 +69,7 @@ import { wordgardWidgets, wordgardCodeLanguages } from "./wordgard-widgets.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination } from "./rich-links.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
+import { selectedImage } from "./image-selection.mjs";
 import {
   IMAGE_ACCEPT,
   captureImageInsertion,
@@ -417,7 +418,14 @@ export function WordgardEditor(props) {
         collab.observeChange(event);
         let selection;
         const { anchor, head } = editor.state.selection;
-        if (event.nativeBefore && event.nativeAfter && !event.changes.empty) {
+        // Let Wordgard map a selected image through the projection change set.
+        // Rebuilding it as a text range would bring back text controls on peer edits.
+        if (
+          !selectedImage(editor.state) &&
+          event.nativeBefore &&
+          event.nativeAfter &&
+          !event.changes.empty
+        ) {
           const path = ["blocks", id, "richText"];
           try {
             const translate = (pos) => {
@@ -506,6 +514,7 @@ export function WordgardEditor(props) {
       }
       const block = state.sel.head.textblockParent?.node;
       const snapshot = {
+        image: !!selectedImage(state),
         table: !!selectedTable(state),
         style:
           block?.type === Heading
@@ -655,6 +664,7 @@ export function WordgardEditor(props) {
         media.matches &&
         !dragging &&
         !selection.empty &&
+        !selectedImage(editor.state) &&
         !editor.composing &&
         (editor.hasFocus || element.contains(document.activeElement))
       ) {
@@ -787,7 +797,7 @@ export function WordgardEditor(props) {
             className={`rich-toolbar${floating ? " is-floating" : ""}`}
             style={floating || undefined}
             role="toolbar"
-            aria-label="Text formatting"
+            aria-label={format?.image ? "Image actions" : "Text formatting"}
             onKeyDown={toolbarKeys}
           >
             {controls.slice(0, 2).map(([name, label, Icon]) => (
@@ -804,52 +814,60 @@ export function WordgardEditor(props) {
               </button>
             ))}
             <span className="toolbar-separator" role="separator" />
-            <select
-              className="toolbar-select"
-              aria-label="Text style"
-              disabled={!editable || format?.table}
-              value={format?.style ?? "p"}
-              onChange={(event) =>
-                run(event.target.value === "code" ? "code-block" : event.target.value)
-              }
-            >
-              {styles.map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-            <span className="toolbar-separator" role="separator" />
-            <TableMenu
-              editor={view.current}
-              inTable={!!format?.table}
-              editable={editable}
-              onError={report}
-            />
-            <button
-              className="toolbar-button"
-              aria-label="Insert image"
-              title="Insert image"
-              disabled={!editable || imageStatus?.pending}
-              onPointerDown={(event) => event.preventDefault()}
-              onClick={chooseImage}
-            >
-              <ImagePlus size={18} aria-hidden="true" />
-            </button>
-            {controls.slice(2).map(([name, label, Icon]) => (
-              <button
-                key={name}
-                className={`toolbar-button${format?.[name] && !["link", "comment"].includes(name) ? " is-active" : ""}`}
-                aria-label={label}
-                title={label}
-                aria-pressed={!["link", "comment"].includes(name) ? !!format?.[name] : undefined}
-                disabled={!editable || (["link", "comment"].includes(name) && !format?.[name])}
-                onPointerDown={(event) => event.preventDefault()}
-                onClick={() => run(name)}
-              >
-                <Icon size={18} aria-hidden="true" />
-              </button>
-            ))}
+            {format?.image ? (
+              <span className="image-selection-label">Image</span>
+            ) : (
+              <>
+                <select
+                  className="toolbar-select"
+                  aria-label="Text style"
+                  disabled={!editable || format?.table}
+                  value={format?.style ?? "p"}
+                  onChange={(event) =>
+                    run(event.target.value === "code" ? "code-block" : event.target.value)
+                  }
+                >
+                  {styles.map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+                <span className="toolbar-separator" role="separator" />
+                <TableMenu
+                  editor={view.current}
+                  inTable={!!format?.table}
+                  editable={editable}
+                  onError={report}
+                />
+                <button
+                  className="toolbar-button"
+                  aria-label="Insert image"
+                  title="Insert image"
+                  disabled={!editable || imageStatus?.pending}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={chooseImage}
+                >
+                  <ImagePlus size={18} aria-hidden="true" />
+                </button>
+                {controls.slice(2).map(([name, label, Icon]) => (
+                  <button
+                    key={name}
+                    className={`toolbar-button${format?.[name] && !["link", "comment"].includes(name) ? " is-active" : ""}`}
+                    aria-label={label}
+                    title={label}
+                    aria-pressed={
+                      !["link", "comment"].includes(name) ? !!format?.[name] : undefined
+                    }
+                    disabled={!editable || (["link", "comment"].includes(name) && !format?.[name])}
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={() => run(name)}
+                  >
+                    <Icon size={18} aria-hidden="true" />
+                  </button>
+                ))}
+              </>
+            )}
           </div>,
           toolbarHost,
         )}

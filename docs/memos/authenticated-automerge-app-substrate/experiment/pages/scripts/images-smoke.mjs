@@ -274,6 +274,24 @@ try {
   for (const page of [owner, editor, viewer]) await expectImages(page, 1);
   complete("File picker upload tolerates concurrent editing; image undo/redo reaches both peers");
 
+  await images(owner).first().click();
+  await expect(images(owner).first()).toHaveClass(/wg-selected-node/);
+  await expect(owner.getByRole("toolbar", { name: "Image actions" })).toBeVisible();
+  await expect(owner.getByRole("button", { name: "Bold", exact: true })).toHaveCount(0);
+  await expect(owner.getByRole("combobox", { name: "Text style" })).toHaveCount(0);
+  await atEnd(editor);
+  await editor.keyboard.insertText(" A peer keeps writing while the image is selected.");
+  await expect(content(owner)).toContainText("peer keeps writing while the image is selected");
+  await expect(images(owner).first()).toHaveClass(/wg-selected-node/);
+  await expect(owner.getByRole("toolbar", { name: "Image actions" })).toBeVisible();
+  await content(owner)
+    .locator("p")
+    .first()
+    .click({ position: { x: 20, y: 12 } });
+  await expect(owner.getByRole("toolbar", { name: "Text formatting" })).toBeVisible();
+  await expect(owner.getByRole("button", { name: "Bold", exact: true })).toBeVisible();
+  complete("Image clicks hide font controls across peer edits; clicking text restores formatting");
+
   await atEnd(editor);
   await imageEvent(editor, "paste", fixtures[1], "pasted-screenshot.png");
   for (const page of [owner, editor, viewer]) await expectImages(page, 2);
@@ -281,6 +299,22 @@ try {
   await imageEvent(owner, "drop", fixtures[2], "dropped-screenshot.png");
   for (const page of [owner, editor, viewer]) await expectImages(page, 3);
   complete("Screenshot paste and file drop upload through the shared insertion path");
+
+  const beforeContinuation = await owner.locator(".page-block").count();
+  await owner.getByRole("button", { name: "Write something…", exact: true }).click();
+  const trailing = owner.locator("wg-content").last();
+  await expect(trailing).toBeFocused();
+  await expect(owner.locator(".page-block")).toHaveCount(beforeContinuation + 1);
+  await owner.getByRole("button", { name: "Write something…", exact: true }).click();
+  await expect(trailing).toBeFocused();
+  await expect(owner.locator(".page-block")).toHaveCount(beforeContinuation + 1);
+  await owner.keyboard.insertText("Writing continues naturally below the images.");
+  for (const page of [owner, editor, viewer])
+    await expect(page.locator("wg-content").last()).toContainText(
+      "Writing continues naturally below the images.",
+    );
+  await expect(viewer.getByRole("button", { name: "Write something…" })).toHaveCount(0);
+  complete("Writing continues below images; repeated activation reuses the empty paragraph");
 
   await expect
     .poll(async () => {

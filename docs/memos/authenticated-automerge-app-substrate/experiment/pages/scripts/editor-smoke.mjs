@@ -485,8 +485,12 @@ try {
   await a.setViewportSize({ width: 1280, height: 900 });
   await edge(ea);
   await a.keyboard.press("Shift+ArrowRight");
-  await a.getByRole("button", { name: "Block", exact: true }).click();
+  await a.getByRole("button", { name: "Write something…", exact: true }).click();
   const second = a.locator(".ProseMirror").nth(1);
+  await expect(second).toBeFocused();
+  // Repeated activation reuses the blank paragraph instead of accumulating blocks.
+  await a.getByRole("button", { name: "Write something…", exact: true }).click();
+  await expect(a.locator(".ProseMirror")).toHaveCount(2);
   await expect(second).toBeFocused();
   await a.keyboard.type("A second block");
   // Opening the thread list never turns the stale first-block selection into a draft.

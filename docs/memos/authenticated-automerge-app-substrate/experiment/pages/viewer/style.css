@@ -535,14 +535,27 @@ details.document-actions > div button {
 .page-block {
   position: relative;
 }
-.add-block {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  margin-top: 1.5rem;
-  padding-left: 0.4rem;
+.writing-continuation {
+  display: block;
+  width: 100%;
+  min-height: 7rem;
+  margin-top: 0.25rem;
+  padding: 0.75rem 0.4rem 4rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--muted);
-  font-size: 0.85rem;
+  font: inherit;
+  text-align: left;
+  cursor: text;
+}
+.writing-continuation:hover:not(:disabled) {
+  background: transparent;
+  color: var(--accent);
+}
+.writing-continuation:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 dialog {
   color: inherit;
@@ -938,7 +951,7 @@ dialog::backdrop {
   .app-header,
   .toolbar-host,
   .document-meta,
-  .add-block,
+  .writing-continuation,
   .comments {
     display: none !important;
   }
@@ -1078,15 +1091,6 @@ dialog::backdrop {
   font-size: 0.875rem;
 }
 
-@media (min-width: 901px) and (hover: hover) and (pointer: fine) {
-  .add-block {
-    opacity: 0;
-  }
-  article:hover .add-block,
-  article:focus-within .add-block {
-    opacity: 1;
-  }
-}
 @media (max-width: 600px) {
   .app-header {
     gap: 0.3rem;
