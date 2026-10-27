@@ -180,17 +180,40 @@ const targets = Object.freeze({
     tunnelService: "cloudflared-page7.service",
     frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5", "page6"]),
   }),
+  page8: Object.freeze({
+    deployment: Object.freeze({
+      host: shared.host,
+      hostname: "page8.runtimed.run",
+      service: "nteract-page8",
+      bucket: shared.bucket,
+      prefix: "standalone/page8",
+      region: shared.region,
+      listen: "127.0.0.1:9478",
+      internalListen: "127.0.0.1:19478",
+      runtime: shared.runtime,
+      requiredVersion: shared.requiredVersion,
+    }),
+    firewallTable: "nteract_page8",
+    firewallMark: "0x00800000",
+    firewallComment: "nteract/preview-infra standalone-page8",
+    asyncPersistence: true,
+    compactRecords: true,
+    companyViewDomains: "anaconda.com",
+    editor: "wordgard",
+    tunnelService: "cloudflared-page8.service",
+    frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5", "page6", "page7"]),
+  }),
 });
 export function deploymentProfile(target = "pages-next") {
   if (!Object.hasOwn(targets, target)) throw new Error("Unknown Pages deployment target");
   return targets[target];
 }
-// This binary-v2 release is qualified only for its fresh Page7 storage prefix.
+// This release is qualified only for the isolated Page8 prefix.
 // Historical profiles remain readable for comparison and frozen-release checks.
 export function assertQualifiedDeploymentTarget(target) {
   deploymentProfile(target);
-  if (target !== "page7")
-    throw new Error("This build is qualified only for page7; earlier deployments are frozen");
+  if (target !== "page8")
+    throw new Error("This build is qualified only for page8; earlier deployments are frozen");
 }
 
 export function selectTarget(argv) {

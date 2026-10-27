@@ -8,18 +8,18 @@ import { fileURLToPath } from "node:url";
 import { assertQualifiedDeploymentTarget, deploymentProfile } from "./deployment/profiles.mjs";
 
 const scripts = path.dirname(fileURLToPath(import.meta.url));
-const frozen = ["pages-next", "page3", "page4", "page5", "page6"];
+const frozen = ["pages-next", "page3", "page4", "page5", "page6", "page7"];
 
-test("current build qualifies Page7 while historical profiles remain inspectable", () => {
-  assert.doesNotThrow(() => assertQualifiedDeploymentTarget("page7"));
+test("current build qualifies Page8 while historical profiles remain inspectable", () => {
+  assert.doesNotThrow(() => assertQualifiedDeploymentTarget("page8"));
   for (const target of frozen) {
     assert.ok(deploymentProfile(target).deployment.hostname);
-    assert.throws(() => assertQualifiedDeploymentTarget(target), /qualified only for page7/);
+    assert.throws(() => assertQualifiedDeploymentTarget(target), /qualified only for page8/);
   }
 });
 
 test("operator entrypoints reject every frozen target and implicit default before external calls", (t) => {
-  const directory = mkdtempSync(path.join(tmpdir(), "page7-release-guard-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "page8-release-guard-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const called = path.join(directory, "external-call");
   // A missing guard must fail locally even on a workstation with working SSH.
@@ -39,7 +39,7 @@ test("operator entrypoints reject every frozen target and implicit default befor
       timeout: 5000,
     });
     assert.equal(result.status, 1, `${entry} ${args.join(" ")}: ${result.stderr}`);
-    assert.match(result.stderr, /This build is qualified only for page7/);
+    assert.match(result.stderr, /This build is qualified only for page8/);
     assert.equal(existsSync(called), false, "qualification must precede SSH/SCP");
   };
   for (const target of [undefined, ...frozen]) {

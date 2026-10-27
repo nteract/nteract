@@ -258,7 +258,9 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
     } else filesystem.writeFileSync(file, contents, { mode, flag: "wx" });
   }
   function validateRoutes(file) {
-    const sharing = target === "page5" || target === "page6" || target === "page7";
+    const sharing = ["page5", "page6", "page7", "page8"].includes(target);
+    const oauth = target === "page7" || target === "page8";
+    const assets = "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets";
     run("/usr/bin/cloudflared", ["--config", file, "tunnel", "ingress", "validate"]);
     for (const [pathname, expected] of [
       ["/", plan.listen],
@@ -276,24 +278,20 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
       ["/api/access/private", "http_status:404"],
       ["/llms.txt", plan.listen],
       ["/oidc", plan.listen],
-      ["/oauth/authorize", target === "page7" ? plan.listen : "http_status:404"],
-      ["/oauth/token", target === "page7" ? plan.listen : "http_status:404"],
-      ["/oauth/revoke", target === "page7" ? plan.listen : "http_status:404"],
-      [
-        "/.well-known/oauth-protected-resource/mcp",
-        target === "page7" ? plan.listen : "http_status:404",
-      ],
-      [
-        "/.well-known/oauth-protected-resource",
-        target === "page7" ? plan.listen : "http_status:404",
-      ],
-      [
-        "/.well-known/oauth-authorization-server",
-        target === "page7" ? plan.listen : "http_status:404",
-      ],
+      ["/oauth/authorize", oauth ? plan.listen : "http_status:404"],
+      ["/oauth/token", oauth ? plan.listen : "http_status:404"],
+      ["/oauth/revoke", oauth ? plan.listen : "http_status:404"],
+      ["/.well-known/oauth-protected-resource/mcp", oauth ? plan.listen : "http_status:404"],
+      ["/.well-known/oauth-protected-resource", oauth ? plan.listen : "http_status:404"],
+      ["/.well-known/oauth-authorization-server", oauth ? plan.listen : "http_status:404"],
       ["/oauth/test/callback", "http_status:404"],
       ["/oauth/token/private", "http_status:404"],
       ["/.well-known/oauth-protected-resource/private", "http_status:404"],
+      [assets, oauth ? plan.listen : "http_status:404"],
+      [assets + "/" + "a".repeat(64), oauth ? plan.listen : "http_status:404"],
+      ["/api/pages/arbitrary/assets", "http_status:404"],
+      [assets + "/private", "http_status:404"],
+      [assets + "/" + "a".repeat(64) + "/private", "http_status:404"],
       ["/state", "http_status:404"],
       ["/internal/create", "http_status:404"],
     ]) {

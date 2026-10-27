@@ -63,7 +63,13 @@ test("dedicated page3 plan cannot use shared or unowned tunnel credentials", () 
 
 function fixture(
   t,
-  { failStart = false, failRestart = false, interruptRollback = null, target = "page3" } = {},
+  {
+    failStart = false,
+    failRestart = false,
+    interruptRollback = null,
+    target = "page3",
+    misroutePath = null,
+  } = {},
 ) {
   const current = inputFor(target);
   const profile = deploymentProfile(target);
@@ -130,12 +136,15 @@ function fixture(
   };
   let active = false,
     frozenPid = "12345";
+  const changedFrozenPids = new Map();
   const run = (command, args) => {
     calls.push({ command, args });
     if (command === "systemctl") {
       if (args[0] === "show") {
         if (args[1] === "cloudflared.service") return "3393474";
-        return args.includes("--property=MainPID") ? frozenPid : "not-found";
+        return args.includes("--property=MainPID")
+          ? (changedFrozenPids.get(args[1]) ?? frozenPid)
+          : "not-found";
       }
       if (args[0] === "is-active") return args[1] === service || active ? "active" : "inactive";
       if (args[0] === "restart") {
@@ -161,10 +170,8 @@ function fixture(
       const pathname = new URL(args.at(-1)).pathname;
       const contents = fs.readFileSync(local(args[1]), "utf8");
       const pattern = new RegExp(/^    path: (.+)$/m.exec(contents)[1]);
-      return (
-        "service: " +
-        (pattern.test(pathname) ? "http://" + profile.deployment.listen : "http_status:404")
-      );
+      const forwarded = pattern.test(pathname) !== (pathname === misroutePath);
+      return "service: " + (forwarded ? "http://" + profile.deployment.listen : "http_status:404");
     }
     throw Error("Unexpected command " + command);
   };
@@ -180,8 +187,9 @@ function fixture(
           return result;
         },
       }),
-    changeFrozenPid: () => {
-      frozenPid = "54321";
+    changeFrozenPid: (unit) => {
+      if (unit) changedFrozenPids.set(unit, "54321");
+      else frozenPid = "54321";
     },
     write,
     writes,
@@ -294,8 +302,8 @@ test("page3 admits the exact Mermaid asset path; existing pages-next routes stay
     assert.equal(current.test(path), false, path);
 });
 
-test("OAuth and private images publish only exact Page7 routes while previous targets remain closed", () => {
-  for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7"]) {
+test("OAuth and private images publish only exact Page7 and Page8 routes while previous targets remain closed", () => {
+  for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8"]) {
     const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
     for (const pathname of [
       "/oauth/authorize",
@@ -307,7 +315,11 @@ test("OAuth and private images publish only exact Page7 routes while previous ta
       "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets",
       "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets/" + "a".repeat(64),
     ])
-      assert.equal(route.test(pathname), target === "page7", `${target}: ${pathname}`);
+      assert.equal(
+        route.test(pathname),
+        ["page7", "page8"].includes(target),
+        `${target}: ${pathname}`,
+      );
     for (const pathname of [
       "/oauth/register",
       "/oauth/test/callback",
@@ -785,61 +797,63 @@ test("page6 cannot adopt other targets' historical or pending route receipts", (
   }
 });
 
-test("page7 publication retries preserve all five earlier deployments", (t) => {
-  const f = fixture(t, { target: "page7", failStart: true });
-  assert.throws(f.execute, /injected connector startup failure/);
-  const installation = "/etc/nteract-page7/tunnel-installation.json";
-  const receipt = fs.readFileSync(f.local(installation), "utf8");
-  for (let i = 0; i < 2; i++) {
-    const result = f.execute();
-    assert.deepEqual(result.frozenTargetsUnchanged, [
-      "pages-next",
-      "page3",
-      "page4",
-      "page5",
-      "page6",
-    ]);
-    assert.equal(result.sharedTunnelUnchanged, true);
-    assert.equal(result.routesUpdated, false);
-    assert.equal(fs.readFileSync(f.local(installation), "utf8"), receipt);
-  }
-  assert.ok(
-    f.writes.every(
-      (file) =>
-        file.startsWith("/etc/nteract-page7/") ||
-        file === "/etc/systemd/system/cloudflared-page7.service",
-    ),
-  );
-  assert.ok(
-    f.calls
-      .filter(
-        ({ command, args }) =>
-          command === "systemctl" && ["start", "restart", "stop", "enable"].includes(args[0]),
-      )
-      .every(({ args }) => args[1] === "cloudflared-page7.service"),
-  );
-  const route = new RegExp(/^    path: (.+)$/m.exec(routesFor("page7"))[1]);
-  for (const pathname of [
-    "/",
-    "/connect",
-    "/connect.js",
-    "/api/access",
-    "/mcp",
-    "/llms.txt",
-    "/api/sync",
-    "/oidc",
-  ])
-    assert.equal(route.test(pathname), true, pathname);
-  for (const pathname of [
-    "/state",
-    "/internal/create",
-    "/api/access/private",
-    "/connect/private",
-    "/connect.js/private",
-    "/dev/oidc/authorize",
-  ])
-    assert.equal(route.test(pathname), false, pathname);
-});
+for (const target of ["page7", "page8"])
+  test(`${target} publication retries preserve every earlier deployment`, (t) => {
+    const f = fixture(t, { target, failStart: true });
+    assert.throws(f.execute, /injected connector startup failure/);
+    const installation = `/etc/nteract-${target}/tunnel-installation.json`;
+    const receipt = fs.readFileSync(f.local(installation), "utf8");
+    for (let i = 0; i < 2; i++) {
+      const result = f.execute();
+      assert.deepEqual(result.frozenTargetsUnchanged, [
+        "pages-next",
+        "page3",
+        "page4",
+        "page5",
+        "page6",
+        ...(target === "page8" ? ["page7"] : []),
+      ]);
+      assert.equal(result.sharedTunnelUnchanged, true);
+      assert.equal(result.routesUpdated, false);
+      assert.equal(fs.readFileSync(f.local(installation), "utf8"), receipt);
+    }
+    assert.ok(
+      f.writes.every(
+        (file) =>
+          file.startsWith(`/etc/nteract-${target}/`) ||
+          file === `/etc/systemd/system/cloudflared-${target}.service`,
+      ),
+    );
+    assert.ok(
+      f.calls
+        .filter(
+          ({ command, args }) =>
+            command === "systemctl" && ["start", "restart", "stop", "enable"].includes(args[0]),
+        )
+        .every(({ args }) => args[1] === `cloudflared-${target}.service`),
+    );
+    const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
+    for (const pathname of [
+      "/",
+      "/connect",
+      "/connect.js",
+      "/api/access",
+      "/mcp",
+      "/llms.txt",
+      "/api/sync",
+      "/oidc",
+    ])
+      assert.equal(route.test(pathname), true, pathname);
+    for (const pathname of [
+      "/state",
+      "/internal/create",
+      "/api/access/private",
+      "/connect/private",
+      "/connect.js/private",
+      "/dev/oidc/authorize",
+    ])
+      assert.equal(route.test(pathname), false, pathname);
+  });
 
 test("page7 refuses page6 manifests and foreign tunnel receipts", (t) => {
   const value = inputFor("page7");
@@ -866,3 +880,83 @@ test("page7 refuses page6 manifests and foreign tunnel receipts", (t) => {
   assert.throws(f.execute, /Dedicated tunnel installation differs/);
   assert.equal(f.writes.length, 0);
 });
+
+test("Page8 refuses Page7 manifests, connector credentials and installation receipts", (t) => {
+  const value = inputFor("page8");
+  assert.throws(
+    () => isolatedPublicationPlan({ ...value, target: "page7" }),
+    /Unexpected deployment target/,
+  );
+  assert.throws(
+    () =>
+      isolatedPublicationPlan({ ...value, frozenTunnelConfigs: ["tunnel: " + tunnelId + "\n"] }),
+    /different tunnel/,
+  );
+  const f = fixture(t, { target: "page8" });
+  const foreign = isolatedPublicationPlan(inputFor("page7"));
+  f.write(
+    "/etc/nteract-page8/tunnel-installation.json",
+    JSON.stringify({
+      schema: 1,
+      tunnel_id: tunnelId,
+      config_sha256: digest(foreign.config),
+      unit_sha256: digest(foreign.unit),
+    }),
+  );
+  assert.throws(f.execute, /Dedicated tunnel installation differs/);
+  assert.equal(f.writes.length, 0);
+});
+
+for (const mutation of ["config", "pid"])
+  test(`Page8 publication detects changed frozen Page7 ${mutation}`, (t) => {
+    const f = fixture(t, { target: "page8" });
+    assert.throws(
+      () =>
+        f.executeWith(() =>
+          mutation === "config"
+            ? f.write("/etc/nteract-page7/tunnel.yml", "foreign change")
+            : f.changeFrozenPid("nteract-page7.service"),
+        ),
+      /Frozen Pages (configuration|service) changed/,
+    );
+  });
+
+const imageAssetPath = "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets";
+for (const target of ["page6", "page7", "page8"])
+  test(`${target} publisher verifies private image ingress before starting its connector`, (t) => {
+    const f = fixture(t, { target });
+    f.execute();
+    const start = f.calls.findIndex(
+      ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
+    );
+    assert.ok(start >= 0);
+    const paths = f.calls
+      .slice(0, start)
+      .filter(({ command, args }) => command === "/usr/bin/cloudflared" && args.includes("rule"))
+      .map(({ args }) => new URL(args.at(-1)).pathname);
+    for (const pathname of [
+      imageAssetPath,
+      imageAssetPath + "/" + "a".repeat(64),
+      "/api/pages/arbitrary/assets",
+      imageAssetPath + "/private",
+      imageAssetPath + "/" + "a".repeat(64) + "/private",
+    ])
+      assert.ok(paths.includes(pathname), pathname);
+  });
+
+for (const misroutePath of [
+  imageAssetPath,
+  imageAssetPath + "/" + "a".repeat(64),
+  imageAssetPath + "/private",
+])
+  test(`Page8 does not activate a connector with misrouted asset path ${misroutePath}`, (t) => {
+    const f = fixture(t, { target: "page8", misroutePath });
+    assert.throws(f.execute, /Dedicated tunnel route validation failed/);
+    assert.equal(
+      f.calls.some(
+        ({ command, args }) =>
+          command === "systemctl" && ["start", "restart", "enable"].includes(args[0]),
+      ),
+      false,
+    );
+  });

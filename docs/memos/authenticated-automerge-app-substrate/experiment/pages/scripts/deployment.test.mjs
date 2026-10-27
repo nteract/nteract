@@ -388,14 +388,14 @@ function installFixture(
 function historicalInstallFixture(t, options = {}) {
   return installFixture(t, {
     ...options,
-    ...(options.target !== "page7" && { qualify: profiles.deploymentProfile }),
+    ...(options.target !== "page8" && { qualify: profiles.deploymentProfile }),
   });
 }
 
-for (const target of ["pages-next", "page3", "page4", "page5", "page6"])
+for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7"])
   test(`current installer refuses frozen ${target} before host commands or release writes`, (t) => {
     const fixture = installFixture(t, { target });
-    assert.throws(fixture.execute, /qualified only for page7/);
+    assert.throws(fixture.execute, /qualified only for page8/);
     assert.deepEqual(fixture.calls, []);
     assert.equal(fs.existsSync(fixture.local(fixture.release)), false);
     assert.equal(fs.existsSync(fixture.local(fixture.audit)), false);
@@ -1124,80 +1124,132 @@ test("new page6 setup tolerates frozen resources but rejects its own ports and f
   }
 });
 
-test("page7 rejects frozen manifests, DNS ownership and occupied resources", async (t) => {
-  const target = "page7",
-    profile = profiles.deploymentProfile(target);
-  assert.deepEqual(profile.frozenTargets, ["pages-next", "page3", "page4", "page5", "page6"]);
-  const stage = "/tmp/nteract-page7-stage-abcd1234";
-  assert.equal(profiles.stageTarget(stage), target);
-  for (const other of profile.frozenTargets) {
-    const previous = profiles.deploymentProfile(other);
-    for (const key of ["hostname", "service", "prefix", "listen", "internalListen"])
-      assert.notEqual(profile.deployment[key], previous.deployment[key], `${other}: ${key}`);
-    for (const key of ["firewallTable", "firewallMark", "tunnelService"])
-      assert.notEqual(profile[key], previous[key], `${other}: ${key}`);
-    assert.equal(profiles.stagePattern(other).test(stage), false);
-    const rejected = historicalInstallFixture(t, { target });
-    rejected.write(
-      rejected.stage + "/manifest.json",
-      JSON.stringify({
-        ...rejected.manifest,
-        deployment: previous.deployment,
-      }),
-    );
-    assert.throws(rejected.execute, /Unexpected deployment target/);
-    assert.deepEqual(rejected.calls, []);
-    const foreign = dnsFixture([
-      {
-        id: "b".repeat(32),
-        name: "page7.runtimed.run",
-        type: "CNAME",
-        content: `${tunnelId}.cfargotunnel.com`,
-        proxied: true,
-        ttl: 1,
-        comment: "nteract/pages:experiment:" + other,
-      },
+for (const target of ["page7", "page8"])
+  test(`${target} rejects frozen manifests, DNS ownership and occupied resources`, async (t) => {
+    const profile = profiles.deploymentProfile(target);
+    assert.deepEqual(profile.frozenTargets, [
+      "pages-next",
+      "page3",
+      "page4",
+      "page5",
+      "page6",
+      ...(target === "page8" ? ["page7"] : []),
     ]);
-    await assert.rejects(
-      configureDns({
-        token: "fixture",
-        tunnelId,
-        target,
-        apply: true,
-        fetchImpl: foreign.fetchImpl,
-      }),
-      /conflicts/,
-    );
-    assert.ok(foreign.calls.every(({ method }) => method === "GET"));
-    const rules = pagesFirewall(999, true, target);
-    assert.ok(!rules.includes(previous.firewallTable));
-    assert.ok(!rules.includes(previous.firewallMark));
-  }
-  for (const collision of [
-    { listeners: `LISTEN 0 4096 ${profile.deployment.listen} 0.0.0.0:*` },
-    { listeners: `LISTEN 0 4096 ${profile.deployment.internalListen} 0.0.0.0:*` },
-    { rules: JSON.stringify({ mark: Number(profile.firewallMark) }) },
-    { rules: JSON.stringify({ table: profile.firewallTable }) },
-  ]) {
-    const rejected = historicalInstallFixture(t, { target, fresh: true, ...collision });
-    assert.throws(rejected.execute, /port is occupied|firewall namespace or mark is occupied/);
-    assert.equal(
-      rejected.calls.some(({ command }) => command === "useradd"),
-      false,
-    );
-  }
-});
+    const stage = `/tmp/nteract-${target}-stage-abcd1234`;
+    assert.equal(profiles.stageTarget(stage), target);
+    for (const other of profile.frozenTargets) {
+      const previous = profiles.deploymentProfile(other);
+      for (const key of ["hostname", "service", "prefix", "listen", "internalListen"])
+        assert.notEqual(profile.deployment[key], previous.deployment[key], `${other}: ${key}`);
+      for (const key of ["firewallTable", "firewallMark", "tunnelService"])
+        assert.notEqual(profile[key], previous[key], `${other}: ${key}`);
+      assert.equal(profiles.stagePattern(other).test(stage), false);
+      const rejected = historicalInstallFixture(t, { target });
+      rejected.write(
+        rejected.stage + "/manifest.json",
+        JSON.stringify({
+          ...rejected.manifest,
+          deployment: previous.deployment,
+        }),
+      );
+      assert.throws(rejected.execute, /Unexpected deployment target/);
+      assert.deepEqual(rejected.calls, []);
+      const foreign = dnsFixture([
+        {
+          id: "b".repeat(32),
+          name: profile.deployment.hostname,
+          type: "CNAME",
+          content: `${tunnelId}.cfargotunnel.com`,
+          proxied: true,
+          ttl: 1,
+          comment: "nteract/pages:experiment:" + other,
+        },
+      ]);
+      await assert.rejects(
+        configureDns({
+          token: "fixture",
+          tunnelId,
+          target,
+          apply: true,
+          fetchImpl: foreign.fetchImpl,
+        }),
+        /conflicts/,
+      );
+      assert.ok(foreign.calls.every(({ method }) => method === "GET"));
+      const rules = pagesFirewall(999, true, target);
+      assert.ok(!rules.includes(previous.firewallTable));
+      assert.ok(!rules.includes(previous.firewallMark));
+    }
+    for (const collision of [
+      { listeners: `LISTEN 0 4096 ${profile.deployment.listen} 0.0.0.0:*` },
+      { listeners: `LISTEN 0 4096 ${profile.deployment.internalListen} 0.0.0.0:*` },
+      { rules: JSON.stringify({ mark: Number(profile.firewallMark) }) },
+      { rules: JSON.stringify({ table: profile.firewallTable }) },
+    ]) {
+      const rejected = historicalInstallFixture(t, { target, fresh: true, ...collision });
+      assert.throws(rejected.execute, /port is occupied|firewall namespace or mark is occupied/);
+      assert.equal(
+        rejected.calls.some(({ command }) => command === "useradd"),
+        false,
+      );
+    }
+  });
 
-test("compaction maintenance is enabled only for the new page7 deployment", (t) => {
-  for (const target of ["page6", "page7"]) {
+test("compaction maintenance and company viewing are enabled for Page7 and Page8", (t) => {
+  for (const target of ["page6", "page7", "page8"]) {
     const f = historicalInstallFixture(t, { target });
     f.execute();
     const config = JSON.parse(f.read(f.release + "/wrangler.json"));
     assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, "true");
-    assert.equal(config.vars.PAGES_COMPACT_RECORDS, target === "page7" ? "true" : undefined);
+    assert.equal(config.vars.PAGES_COMPACT_RECORDS, target !== "page6" ? "true" : undefined);
     assert.equal(
       config.vars.PAGES_COMPANY_VIEW_DOMAINS,
-      target === "page7" ? "anaconda.com" : undefined,
+      target !== "page6" ? "anaconda.com" : undefined,
     );
+  }
+});
+
+test("fresh Page8 installation owns its origin, storage, runtime and service", (t) => {
+  const target = "page8";
+  const profile = profiles.deploymentProfile(target);
+  assert.deepEqual(profiles.selectTarget(["--target", target, "plan"]), { target, args: ["plan"] });
+  assert.doesNotThrow(() => profiles.assertQualifiedDeploymentTarget(target));
+  const f = installFixture(t, { target, fresh: true });
+  f.execute();
+  const config = JSON.parse(f.read(f.release + "/wrangler.json"));
+  assert.equal(config.vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN, "https://page8.runtimed.run");
+  assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://page8.runtimed.run/oidc");
+  assert.equal(config.vars.PAGES_EDITOR, "wordgard");
+  assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, "true");
+  assert.equal(config.vars.PAGES_COMPACT_RECORDS, "true");
+  assert.equal(config.vars.PAGES_COMPANY_VIEW_DOMAINS, "anaconda.com");
+  const unit = f.read("/etc/systemd/system/nteract-page8.service");
+  assert.match(unit, /User=nteract-page8\n/);
+  assert.match(unit, /WorkingDirectory=\/var\/lib\/nteract-page8\n/);
+  assert.match(
+    unit,
+    /ExecStart=\/opt\/nteract-page8\/celld --bucket s3:\/\/[^ ]+\/standalone\/page8 /,
+  );
+  assert.match(unit, /--listen 127[.]0[.]0[.]1:9478 --internal-listen 127[.]0[.]0[.]1:19478/);
+  assert.match(unit, /firewall[.]mjs --target page8/);
+  const prefixCheck = f.calls.find(
+    ({ command, args }) => command === "/usr/local/bin/aws" && args.includes("--prefix"),
+  );
+  assert.equal(prefixCheck.args[prefixCheck.args.indexOf("--prefix") + 1], "standalone/page8/");
+  assert.ok(
+    f.calls
+      .filter(
+        ({ command, args }) =>
+          command === "systemctl" && ["restart", "start", "stop", "enable"].includes(args[0]),
+      )
+      .every(({ args }) => args[1] === profile.deployment.service),
+  );
+  for (const frozen of profile.frozenTargets) {
+    const prior = profiles.deploymentProfile(frozen).deployment;
+    assert.equal(
+      fs.existsSync(f.local("/etc/systemd/system/" + prior.service + ".service")),
+      false,
+    );
+    assert.equal(fs.existsSync(f.local("/opt/" + prior.service)), false);
   }
 });

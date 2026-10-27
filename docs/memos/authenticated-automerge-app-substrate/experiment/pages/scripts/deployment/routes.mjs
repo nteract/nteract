@@ -10,7 +10,8 @@ export function routesFor(target = "pages-next", legacy = false) {
   const renderer = deploymentProfile(target).tunnelService ? "mermaid[.]js|" : "";
   // Frozen deployments retain their exact route receipts. Sharing targets expose
   // only the public setup page, its script, and the authenticated access API.
-  const sharing = target === "page5" || target === "page6" || target === "page7";
+  const sharing = ["page5", "page6", "page7", "page8"].includes(target);
+  const authenticatedAssets = target === "page7" || target === "page8";
   const connect = sharing ? "connect|connect[.]js|" : "";
   const access = sharing ? "access|" : "";
   const paths = legacy
@@ -18,10 +19,10 @@ export function routesFor(target = "pages-next", legacy = false) {
     : "index[.]html|app[.](js|css)|" +
       renderer +
       connect +
-      (target === "page7" ? oauthPaths : "") +
+      (authenticatedAssets ? oauthPaths : "") +
       "(automerge|subduction)[.]wasm|health|mcp|llms[.]txt|p/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|api/(" +
       access +
-      (target === "page7" ? imagePaths : "") +
+      (authenticatedAssets ? imagePaths : "") +
       "tools|connect|sync|saved|pages/register|auth/(login|logout|session))|oidc";
   return `  - hostname: ${hostname}
     path: ^/(${paths})?$

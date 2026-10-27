@@ -101,7 +101,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [tunnelId, mode, extra] = args;
   if (extra || (mode && mode !== "--apply"))
     throw new Error(
-      "Usage: dns.mjs [--target pages-next|page3|page4|page5|page6|page7] VERIFIED_TUNNEL_UUID [--apply]",
+      "Usage: dns.mjs [--target pages-next|page3|page4|page5|page6|page7|page8] VERIFIED_TUNNEL_UUID [--apply]",
     );
   try {
     if (mode === "--apply") assertQualifiedDeploymentTarget(target);
