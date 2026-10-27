@@ -1146,10 +1146,26 @@
   color: var(--sift-ink);
 }
 
+/* Scope note after the preview label: the full sentence on wide footers, a
+   short badge where the footer is narrow. Exactly one is shown at a time. */
+.sift-preview-scope-short {
+  display: none;
+}
+
 @media (max-width: 700px) {
-  .sift-preview-scope {
+  .sift-preview-scope-full {
     display: none;
   }
+
+  .sift-preview-scope-short {
+    display: inline;
+  }
+}
+
+/* Whole-file bounds under a loaded-rows range label. */
+.sift-th-dataset-range {
+  margin-top: 0;
+  font-style: italic;
 }
 
 .sift-focus-hint {

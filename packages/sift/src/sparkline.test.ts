@@ -1,6 +1,7 @@
 import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { binOverlapsFilter, renderColumnSummary, unmountColumnSummary } from "./sparkline";
+import type { ColumnSummary } from "./table";
 
 function pointerEvent(type: string, clientX: number) {
   const event = new Event(type, { bubbles: true, cancelable: true });
@@ -194,6 +195,253 @@ describe("category filter popover", () => {
       unmountColumnSummary(container);
       container.remove();
       document.querySelector(".sift-cat-popover")?.remove();
+    }
+  });
+});
+
+describe("metric scope", () => {
+  const datasetRows = {
+    value: 1_000,
+    scope: "dataset",
+    precision: "exact",
+    source: "metadata",
+  } as const;
+  const loadedDistribution = {
+    scope: "loaded",
+    precision: "exact",
+    source: "resident",
+  } as const;
+
+  function mount(summary: NonNullable<ColumnSummary>, width = 160) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    return {
+      container,
+      async render() {
+        await act(async () => {
+          renderColumnSummary(container, summary, width);
+        });
+      },
+      cleanup() {
+        unmountColumnSummary(container);
+        container.remove();
+        document.querySelector(".sift-cat-popover")?.remove();
+      },
+    };
+  }
+
+  it("captions a numeric histogram with whole-file bounds and scoped nulls", async () => {
+    const view = mount({
+      kind: "numeric",
+      min: 0,
+      max: 100,
+      bins: [
+        { x0: 0, x1: 50, count: 6 },
+        { x0: 50, x1: 100, count: 2 },
+      ],
+      uniqueCount: 40,
+      nullCount: 2,
+      scope: {
+        rows: { loaded: 10, dataset: datasetRows },
+        distribution: loadedDistribution,
+        range: {
+          value: { min: -20, max: 240 },
+          scope: "dataset",
+          precision: "exact",
+          source: "metadata",
+        },
+        nullCount: { value: 250, scope: "dataset", precision: "exact", source: "metadata" },
+      },
+    });
+    try {
+      await view.render();
+      expect(view.container.querySelector(".sift-th-range")?.textContent).toBe("0 – 100");
+      const caption = view.container.querySelector(".sift-th-dataset-range");
+      expect(caption?.textContent).toBe("-20 – 240 · whole file");
+      expect(caption?.getAttribute("data-scope")).toBe("dataset");
+      expect(caption?.getAttribute("data-precision")).toBe("exact");
+      // 250 of 1,000 dataset rows, not 2 of 10 loaded rows.
+      expect(view.container.querySelector(".sift-th-profile")?.textContent).toBe(
+        "25% null · whole file · 40 distinct",
+      );
+      expect(
+        view.container.querySelector(".sift-th-profile [data-scope]")?.getAttribute("data-scope"),
+      ).toBe("dataset");
+    } finally {
+      view.cleanup();
+    }
+  });
+
+  it("marks inexact bounds and loaded-row nulls", async () => {
+    const view = mount({
+      kind: "numeric",
+      min: 0,
+      max: 100,
+      bins: [{ x0: 0, x1: 100, count: 8 }],
+      scope: {
+        rows: { loaded: 10, dataset: datasetRows },
+        distribution: loadedDistribution,
+        range: {
+          value: { min: 0, max: 500 },
+          scope: "dataset",
+          precision: "estimated",
+          source: "metadata",
+        },
+        nullCount: { value: 2, scope: "loaded", precision: "exact", source: "resident" },
+      },
+    });
+    try {
+      await view.render();
+      const caption = view.container.querySelector(".sift-th-dataset-range");
+      expect(caption?.textContent).toBe("≈0 – 500 · whole file");
+      expect(caption?.getAttribute("data-precision")).toBe("estimated");
+      expect(view.container.querySelector(".sift-th-profile")?.textContent).toBe(
+        "20% null · loaded rows",
+      );
+    } finally {
+      view.cleanup();
+    }
+  });
+
+  it("drops the scope suffix and the bounds caption when every row is resident", async () => {
+    const view = mount({
+      kind: "numeric",
+      min: 0,
+      max: 100,
+      bins: [{ x0: 0, x1: 100, count: 8 }],
+      scope: {
+        rows: { loaded: 10, dataset: { ...datasetRows, value: 10 } },
+        distribution: { scope: "dataset", precision: "exact", source: "resident" },
+        range: {
+          value: { min: 0, max: 100 },
+          scope: "dataset",
+          precision: "exact",
+          source: "metadata",
+        },
+        nullCount: { value: 2, scope: "dataset", precision: "exact", source: "metadata" },
+      },
+    });
+    try {
+      await view.render();
+      expect(view.container.querySelector(".sift-th-dataset-range")).toBeNull();
+      expect(view.container.querySelector(".sift-th-profile")?.textContent).toBe("20% null");
+    } finally {
+      view.cleanup();
+    }
+  });
+
+  it("captions a timestamp histogram with whole-file bounds", async () => {
+    const day = 24 * 60 * 60 * 1000;
+    const view = mount({
+      kind: "timestamp",
+      min: 10 * day,
+      max: 20 * day,
+      bins: [{ x0: 10 * day, x1: 20 * day, count: 8 }],
+      scope: {
+        rows: { loaded: 10, dataset: datasetRows },
+        distribution: loadedDistribution,
+        range: {
+          value: { min: 0, max: 40 * day },
+          scope: "dataset",
+          precision: "exact",
+          source: "metadata",
+        },
+      },
+    });
+    try {
+      await view.render();
+      const caption = view.container.querySelector(".sift-th-dataset-range");
+      expect(caption?.textContent).toMatch(/^Jan 1, 1970 – Feb 10, 1970 · whole file$/);
+      expect(caption?.getAttribute("data-scope")).toBe("dataset");
+    } finally {
+      view.cleanup();
+    }
+  });
+
+  it("names the loaded-row domain in the category popover", async () => {
+    const categories = [
+      { label: "core", count: 4, pct: 40 },
+      { label: "sift", count: 3, pct: 30 },
+    ];
+    const view = mount({
+      kind: "categorical",
+      uniqueCount: 2,
+      topCategories: categories,
+      othersCount: 0,
+      othersPct: 0,
+      allCategories: categories,
+      medianTextLength: 4,
+      scope: {
+        rows: { loaded: 10, dataset: datasetRows },
+        distribution: loadedDistribution,
+      },
+    });
+    try {
+      await view.render();
+      await act(async () => {
+        view.container.querySelector<HTMLElement>(".sift-cat-summary-trigger")!.click();
+      });
+      const popover = document.querySelector(".sift-cat-popover");
+      expect(popover?.getAttribute("data-scope")).toBe("loaded");
+      expect(
+        popover?.querySelector<HTMLInputElement>(".sift-cat-popover-search")?.placeholder,
+      ).toBe("Search 2 loaded values…");
+      expect(popover?.querySelector(".sift-cat-popover-btn")?.textContent).toBe("All loaded");
+    } finally {
+      view.cleanup();
+    }
+  });
+
+  it("keeps the plain popover labels when every value is resident", async () => {
+    const categories = [{ label: "core", count: 4, pct: 100 }];
+    const view = mount({
+      kind: "categorical",
+      uniqueCount: 1,
+      topCategories: categories,
+      othersCount: 0,
+      othersPct: 0,
+      allCategories: categories,
+      medianTextLength: 4,
+    });
+    try {
+      await view.render();
+      await act(async () => {
+        view.container.querySelector<HTMLElement>(".sift-cat-summary-trigger")!.click();
+      });
+      const popover = document.querySelector(".sift-cat-popover");
+      expect(
+        popover?.querySelector<HTMLInputElement>(".sift-cat-popover-search")?.placeholder,
+      ).toBe("Search 1 values…");
+      expect(popover?.querySelector(".sift-cat-popover-btn")?.textContent).toBe("All");
+    } finally {
+      view.cleanup();
+    }
+  });
+
+  it("keeps the boolean bar over loaded rows and adds a whole-file null line", async () => {
+    const view = mount({
+      kind: "boolean",
+      trueCount: 6,
+      falseCount: 3,
+      nullCount: 1,
+      total: 10,
+      scope: {
+        rows: { loaded: 10, dataset: datasetRows },
+        distribution: loadedDistribution,
+        nullCount: { value: 400, scope: "dataset", precision: "exact", source: "metadata" },
+      },
+    });
+    try {
+      await view.render();
+      const root = view.container.querySelector(".sift-bool-summary");
+      expect(root?.getAttribute("data-scope")).toBe("loaded");
+      // The bar's own null label is still the loaded 10%.
+      expect(view.container.querySelector(".sift-bool-null-label")?.textContent).toBe("10% null");
+      const line = view.container.querySelector(".sift-bool-summary .sift-th-profile");
+      expect(line?.textContent).toBe("40% null · whole file");
+      expect(line?.getAttribute("data-scope")).toBe("dataset");
+    } finally {
+      view.cleanup();
     }
   });
 });

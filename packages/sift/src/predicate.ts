@@ -7,6 +7,7 @@ import { tableResponse } from "./table-response";
  */
 
 import type { ParquetColumnHint } from "./parquet-features";
+import type { ColumnFileStats } from "./table";
 
 /** Filter spec passed to WASM store_filter_rows. */
 export type FilterSpecJson =
@@ -29,6 +30,58 @@ export type ParquetFileInfo = {
   row_group_rows: number[];
   column_names: string[];
 };
+
+/** One column's footer statistics, as serialized by `parquet_file_column_stats`. */
+export type ColumnFileStatsJson = {
+  null_count: number | null;
+  min: number | string | boolean | null;
+  max: number | string | boolean | null;
+  bounded_row_groups: number;
+  bounds_exact: boolean;
+  has_infinite: boolean;
+};
+
+/** Footer statistics returned by `parquet_file_column_stats`. */
+export type ParquetFileStatsJson = {
+  num_rows: number;
+  num_row_groups: number;
+  /** One per top-level column, in schema order. */
+  columns: ColumnFileStatsJson[];
+};
+
+/**
+ * Map the snake_case wire shape onto `ColumnFileStats`. A column whose stats
+ * are missing or malformed maps to `null` so a bad footer entry degrades to
+ * "no footer stats" rather than failing the open.
+ */
+export function columnFileStatsFromWasm(
+  stats: unknown,
+  numCols: number,
+): (ColumnFileStats | null)[] {
+  const out: (ColumnFileStats | null)[] = Array.from({ length: numCols }, () => null);
+  if (!stats || typeof stats !== "object") return out;
+  const columns = (stats as Partial<ParquetFileStatsJson>).columns;
+  if (!Array.isArray(columns)) return out;
+  for (let c = 0; c < numCols && c < columns.length; c++) {
+    const entry = columns[c] as Partial<ColumnFileStatsJson> | null | undefined;
+    if (!entry || typeof entry !== "object") continue;
+    out[c] = {
+      nullCount: typeof entry.null_count === "number" ? entry.null_count : null,
+      min: statValue(entry.min),
+      max: statValue(entry.max),
+      boundedRowGroups: typeof entry.bounded_row_groups === "number" ? entry.bounded_row_groups : 0,
+      boundsExact: entry.bounds_exact === true,
+      hasInfinite: entry.has_infinite === true,
+    };
+  }
+  return out;
+}
+
+function statValue(value: unknown): number | string | boolean | null {
+  return typeof value === "number" || typeof value === "string" || typeof value === "boolean"
+    ? value
+    : null;
+}
 
 type PredicateModule = {
   // Data store
@@ -68,6 +121,8 @@ type PredicateModule = {
     truncate: boolean,
   ): number;
   parquet_file_info(file: number): ParquetFileInfo;
+  /** Per-column footer statistics, computed at open. See `ParquetFileStatsJson`. */
+  parquet_file_column_stats(file: number): unknown;
   /** Budget state of a truncating load. Both flags stay false in error mode. */
   parquet_file_budget(file: number): { exhausted: boolean; truncated: boolean };
   parquet_file_column_hints(file: number): ParquetColumnHint[];
@@ -124,6 +179,8 @@ type PredicateModule = {
     col: number,
   ): { x0: number; x1: number; count: number }[];
   store_bool_counts(handle: number, col: number): Uint32Array;
+  /** Null count per top-level column over resident rows, after casts. */
+  store_null_counts(handle: number): Uint32Array;
   store_sort_indices(handle: number, col: number, ascending: boolean): Uint32Array;
   // Store-based filtered summaries (crossfilter — takes byte mask)
   store_filtered_value_counts(

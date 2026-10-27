@@ -696,7 +696,84 @@ describe("createTable", () => {
       expect(state.sort).toEqual({ column: "score", direction: "desc" });
       expect(state.filters).toHaveLength(1);
       expect(state.totalCount).toBe(50);
+      expect(state.loadedCount).toBe(50);
       expect(state.filteredCount).toBeLessThanOrEqual(50);
+    });
+
+    it("getState reports loadedCount alongside totalCount as rows arrive", () => {
+      expect(engine.getState()).toMatchObject({ totalCount: 50, loadedCount: 50 });
+      rows.push([51, "Person 50", 7, true]);
+      data.rowCount = 51;
+      engine.onBatchAppended();
+      expect(engine.getState()).toMatchObject({ totalCount: 51, loadedCount: 51 });
+    });
+
+    it("renders scoped summaries and keeps them through replaceData", async () => {
+      const scoped: TableData = {
+        ...makeTableData(makeRows(4)),
+        coverage: {
+          loadedRows: 4,
+          totalRows: { value: 400, scope: "dataset", precision: "exact", source: "metadata" },
+          rowGroups: 2,
+          truncated: true,
+        },
+      };
+      scoped.columnSummaries[2] = {
+        kind: "numeric",
+        min: 0,
+        max: 100,
+        bins: [
+          { x0: 0, x1: 50, count: 2 },
+          { x0: 50, x1: 100, count: 2 },
+        ],
+        scope: {
+          rows: { loaded: 4, dataset: scoped.coverage!.totalRows },
+          distribution: { scope: "loaded", precision: "exact", source: "resident" },
+          range: {
+            value: { min: -10, max: 250 },
+            scope: "dataset",
+            precision: "exact",
+            source: "metadata",
+          },
+          nullCount: { value: 80, scope: "dataset", precision: "exact", source: "metadata" },
+        },
+      };
+      engine.destroy();
+      engine = createTable(container, scoped);
+      await flushRAF();
+      await act(async () => {});
+
+      const caption = () => container.querySelector(".sift-th-dataset-range");
+      expect(caption()?.textContent).toBe("-10 – 250 · whole file");
+      expect(caption()?.getAttribute("data-scope")).toBe("dataset");
+      expect(container.querySelector(".sift-th-profile")?.textContent).toBe(
+        "20% null · whole file",
+      );
+
+      // Same columns, new lease: the summaries ride on the new TableData.
+      const next: TableData = {
+        ...makeTableData(makeRows(4)),
+        coverage: scoped.coverage,
+        columnSummaries: scoped.columnSummaries,
+      };
+      engine.replaceData(next);
+      await flushRAF();
+      await act(async () => {});
+      expect(caption()?.textContent).toBe("-10 – 250 · whole file");
+
+      // A summary without scope drops the caption again.
+      const unscoped = makeTableData(makeRows(4));
+      unscoped.columnSummaries[2] = {
+        kind: "numeric",
+        min: 0,
+        max: 100,
+        bins: [{ x0: 0, x1: 100, count: 4 }],
+      };
+      engine.replaceData(unscoped);
+      await flushRAF();
+      await act(async () => {});
+      expect(caption()).toBeNull();
+      expect(container.querySelector(".sift-th-profile")).toBeNull();
     });
 
     it("onChange callback fires on filter change", async () => {

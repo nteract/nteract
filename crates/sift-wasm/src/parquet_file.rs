@@ -25,6 +25,8 @@
 //! page decompression and one decoder batch still allocate before a batch is
 //! admitted.
 
+use crate::column_stats::{file_column_stats, ParquetFileStats};
+use crate::footer_thrift::read_raw_footer;
 use crate::store::{
     admit_parquet_footer, admit_parquet_footer_columns, append_batches_to_store, check_file_limit,
     collect_file_batches_into, empty_streaming_store, fixed_width_rows_within,
@@ -78,6 +80,8 @@ struct ParquetFile {
     /// group never shows up here.
     usage: FileUsage,
     budget: BudgetState,
+    /// Whole-file column statistics from the footer, computed at open.
+    column_stats: ParquetFileStats,
     /// One flag per row group. A row group may be appended once per file
     /// handle, so a retried fetch cannot duplicate rows in the store. A row
     /// group the budget cut short counts as appended.
@@ -278,8 +282,12 @@ fn open_parquet_file_with_overflow(
             tail.len()
         )
     })?;
-    let metadata = ParquetMetaDataReader::decode_metadata(&tail[metadata_start..metadata_end])
-        .map_err(|e| e.to_string())?;
+    let footer = &tail[metadata_start..metadata_end];
+    // Runs first: the decoder below aborts the module on some crafted
+    // footers instead of returning an error. See `footer_thrift`.
+    let raw = read_raw_footer(footer)?;
+    raw.check_int96_statistics()?;
+    let metadata = ParquetMetaDataReader::decode_metadata(footer).map_err(|e| e.to_string())?;
     let file_end = file_len - FOOTER_SIZE as u64 - metadata_len as u64;
     validate_chunk_ranges(&metadata, file_end, usize::MAX as u64)?;
     let arrow = ArrowReaderMetadata::try_new(Arc::new(metadata), ArrowReaderOptions::default())
@@ -301,6 +309,7 @@ fn open_parquet_file_with_overflow(
             )?;
         }
     }
+    let column_stats = file_column_stats(arrow.metadata(), arrow.schema(), &raw);
     let appended = vec![false; arrow.metadata().num_row_groups()];
     let handle = next_handle();
     with_files(|files| {
@@ -313,6 +322,7 @@ fn open_parquet_file_with_overflow(
                 overflow,
                 usage: FileUsage::default(),
                 budget: BudgetState::default(),
+                column_stats,
                 appended,
             },
         );
@@ -332,6 +342,18 @@ pub fn parquet_file_budget(file: u32) -> Result<JsValue, JsValue> {
 
 fn budget_state(file: u32) -> Result<BudgetState, String> {
     with_file(file, |file| Ok(file.budget))
+}
+
+/// Whole-file column statistics merged from the footer, one entry per
+/// top-level column: `{ num_rows, num_row_groups, columns: [{ null_count, min,
+/// max, bounded_row_groups, bounds_exact, has_infinite }] }`. Absent values
+/// are `null`. Numbers use the store's units (epoch milliseconds for temporal
+/// columns, scaled decimals). Computed at open, so it reads no bytes.
+#[wasm_bindgen]
+pub fn parquet_file_column_stats(file: u32) -> Result<JsValue, JsValue> {
+    let stats = with_file(file, |file| Ok(file.column_stats.clone())).map_err(js_err)?;
+    let serializer = serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true);
+    stats.serialize(&serializer).map_err(js_err)
 }
 
 #[derive(Serialize)]
@@ -876,6 +898,7 @@ impl ChunkReader for RangeSetReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::column_stats::StatValue;
     use crate::store::{free, get_cell_string, is_null, num_rows};
     use arrow::array::{ArrayRef, Int64Array, StringArray};
     use arrow::record_batch::RecordBatch;
@@ -1200,6 +1223,389 @@ mod tests {
         let honest = footer_with_chunk(&file, |c| c);
         let handle = open_parquet_file(&honest, len, limits()).unwrap();
         parquet_close(handle);
+
+        // parquet's decoder asserts INT96 statistics are 12 bytes, which
+        // would abort the module. The pre-pass rejects the footer first.
+        let (tail, file_len) = int96_footer(12);
+        let handle = open_parquet_file(&tail, file_len, limits()).unwrap();
+        parquet_close(handle);
+        for length in [13, 11, 0] {
+            let (tail, file_len) = int96_footer(length);
+            let error = open_parquet_file(&tail, file_len, limits()).unwrap_err();
+            assert_eq!(
+                error, "Parquet footer has malformed INT96 statistics",
+                "{length}-byte INT96 min"
+            );
+        }
+    }
+
+    /// A footer with one optional INT96 column whose `min_value` statistic is
+    /// `min_length` bytes, serialized straight from thrift so the length can
+    /// be wrong. Returns the tail and a file length that fits its one chunk.
+    fn int96_footer(min_length: usize) -> (Vec<u8>, u64) {
+        let statistics = parquet::format::Statistics::new(
+            None,
+            None,
+            0,
+            None,
+            vec![0xAB; 12],
+            vec![0xCD; min_length],
+            None,
+            None,
+        );
+        thrift_footer(parquet::format::Type::INT96, statistics)
+    }
+
+    /// A one-column, one-row footer written straight from thrift, so its
+    /// statistics can say what no writer would.
+    fn thrift_footer(
+        physical: parquet::format::Type,
+        statistics: parquet::format::Statistics,
+    ) -> (Vec<u8>, u64) {
+        use parquet::format::{
+            ColumnChunk, ColumnMetaData, CompressionCodec, Encoding, FieldRepetitionType,
+            FileMetaData, RowGroup, SchemaElement,
+        };
+        use parquet::thrift::{TCompactOutputProtocol, TSerializable};
+
+        let root = SchemaElement::new(
+            None,
+            None,
+            None,
+            "schema".to_string(),
+            1,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let leaf = SchemaElement::new(
+            physical,
+            None,
+            FieldRepetitionType::OPTIONAL,
+            "t".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let meta = ColumnMetaData::new(
+            physical,
+            vec![Encoding::PLAIN],
+            vec!["t".to_string()],
+            CompressionCodec::UNCOMPRESSED,
+            1,
+            1,
+            1,
+            None,
+            4,
+            None,
+            None,
+            statistics,
+            None,
+            None,
+            None,
+            None,
+        );
+        let chunk = ColumnChunk::new(None, 4, meta, None, None, None, None, None, None);
+        let group = RowGroup::new(vec![chunk], 1, 1, None, None, None, None);
+        let metadata = FileMetaData::new(
+            1,
+            vec![root, leaf],
+            1,
+            vec![group],
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let mut tail = Vec::new();
+        {
+            let mut protocol = TCompactOutputProtocol::new(&mut tail);
+            metadata.write_to_out_protocol(&mut protocol).unwrap();
+        }
+        let metadata_len = tail.len() as u32;
+        tail.extend_from_slice(&metadata_len.to_le_bytes());
+        tail.extend_from_slice(b"PAR1");
+        // Leading magic plus one byte of column data ahead of the footer.
+        let file_len = tail.len() as u64 + 4 + 16;
+        (tail, file_len)
+    }
+
+    #[test]
+    fn column_stats_distrust_a_missing_null_count() {
+        // parquet 54.3.1 decodes an absent null_count as Some(0); the raw
+        // pre-pass knows it was absent.
+        let bounds = |null_count: Option<i64>| {
+            parquet::format::Statistics::new(
+                None,
+                None,
+                null_count,
+                None,
+                9i64.to_le_bytes().to_vec(),
+                (-4i64).to_le_bytes().to_vec(),
+                None,
+                None,
+            )
+        };
+        for (null_count, expected) in [(None, None), (Some(0), Some(0.0))] {
+            let (tail, file_len) = thrift_footer(parquet::format::Type::INT64, bounds(null_count));
+            let handle = open_parquet_file(&tail, file_len, limits()).unwrap();
+            let decoded_count = with_file(handle, |f| {
+                Ok(f.metadata()
+                    .row_group(0)
+                    .column(0)
+                    .statistics()
+                    .unwrap()
+                    .null_count_opt())
+            })
+            .unwrap();
+            assert_eq!(decoded_count, Some(0), "the decoder cannot tell");
+            let stats = with_file(handle, |f| Ok(f.column_stats.clone())).unwrap();
+            parquet_close(handle);
+            let column = &stats.columns[0];
+            assert_eq!(column.null_count, expected, "raw null_count {null_count:?}");
+            assert_eq!(
+                (column.min.clone(), column.max.clone()),
+                (number(-4.0), number(9.0))
+            );
+            // No column_orders in this footer, but INT64 sorts signed.
+            assert_eq!(column.bounded_row_groups, 1);
+        }
+    }
+
+    fn column_stats_of(file: &[u8]) -> ParquetFileStats {
+        let handle = open_from_tail(file, 64, limits()).unwrap();
+        let stats = with_file(handle, |f| Ok(f.column_stats.clone())).unwrap();
+        parquet_close(handle);
+        stats
+    }
+
+    fn write_parquet(
+        batch: &RecordBatch,
+        row_group_size: usize,
+        edit: impl FnOnce(
+            parquet::file::properties::WriterPropertiesBuilder,
+        ) -> parquet::file::properties::WriterPropertiesBuilder,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let properties = edit(
+            parquet::file::properties::WriterProperties::builder()
+                .set_max_row_group_size(row_group_size),
+        )
+        .build();
+        let mut writer =
+            parquet::arrow::ArrowWriter::try_new(&mut bytes, batch.schema(), Some(properties))
+                .unwrap();
+        writer.write(batch).unwrap();
+        writer.close().unwrap();
+        bytes
+    }
+
+    fn number(value: f64) -> Option<StatValue> {
+        Some(StatValue::Number(value))
+    }
+
+    #[test]
+    fn column_stats_merge_row_groups_in_store_units() {
+        use arrow::array::{BooleanArray, Decimal128Array, TimestampMillisecondArray};
+        let base = 1_700_000_000_000i64;
+        let decimals = Decimal128Array::from(vec![
+            Some(125),
+            Some(-350),
+            None,
+            Some(1000),
+            Some(0),
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+        ])
+        .with_precision_and_scale(10, 2)
+        .unwrap();
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "n",
+                Arc::new(Int64Array::from(vec![
+                    Some(5),
+                    None,
+                    Some(-2),
+                    Some(10),
+                    Some(7),
+                    None,
+                    Some(3),
+                    Some(0),
+                    Some(1),
+                ])) as ArrayRef,
+            ),
+            (
+                "s",
+                Arc::new(StringArray::from(vec![
+                    Some("m"),
+                    Some("b"),
+                    None,
+                    Some("z"),
+                    Some("a"),
+                    Some("q"),
+                    None,
+                    None,
+                    Some("c"),
+                ])) as ArrayRef,
+            ),
+            (
+                "t",
+                Arc::new(TimestampMillisecondArray::from(vec![
+                    Some(base + 4_000),
+                    Some(base),
+                    Some(base + 8_000),
+                    None,
+                    Some(base + 1_000),
+                    Some(base + 2_000),
+                    Some(base + 3_000),
+                    Some(base + 5_000),
+                    Some(base + 6_000),
+                ])) as ArrayRef,
+            ),
+            ("d", Arc::new(decimals) as ArrayRef),
+            (
+                "b",
+                Arc::new(BooleanArray::from(vec![
+                    Some(true),
+                    Some(true),
+                    None,
+                    Some(true),
+                    Some(true),
+                    Some(true),
+                    Some(false),
+                    None,
+                    Some(true),
+                ])) as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let stats = column_stats_of(&write_parquet(&batch, 3, |p| p));
+        assert_eq!(stats.num_rows, 9.0);
+        assert_eq!(stats.num_row_groups, 3);
+        let [n, s, t, d, b] = stats.columns.as_slice() else {
+            panic!("expected five columns: {stats:?}");
+        };
+
+        assert_eq!(n.null_count, Some(2.0));
+        assert_eq!((n.min.clone(), n.max.clone()), (number(-2.0), number(10.0)));
+        assert_eq!(s.null_count, Some(3.0));
+        assert_eq!(
+            (s.min.clone(), s.max.clone()),
+            (
+                Some(StatValue::Text("a".to_string())),
+                Some(StatValue::Text("z".to_string()))
+            )
+        );
+        assert_eq!(t.null_count, Some(1.0));
+        assert_eq!(
+            (t.min.clone(), t.max.clone()),
+            (number(base as f64), number((base + 8_000) as f64))
+        );
+        assert_eq!(d.null_count, Some(1.0));
+        assert_eq!((d.min.clone(), d.max.clone()), (number(-3.5), number(10.0)));
+        assert_eq!(b.null_count, Some(2.0));
+        assert_eq!(
+            (b.min.clone(), b.max.clone()),
+            (Some(StatValue::Bool(false)), Some(StatValue::Bool(true)))
+        );
+        for column in [n, s, t, d, b] {
+            assert_eq!(column.bounded_row_groups, 3, "{column:?}");
+            assert!(!column.has_infinite, "{column:?}");
+        }
+        for column in [n, t, d] {
+            assert!(column.bounds_exact, "{column:?}");
+        }
+    }
+
+    #[test]
+    fn column_stats_without_statistics_are_unknown() {
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "x",
+                Arc::new(Int64Array::from(vec![Some(1), None, Some(3), Some(4)])) as ArrayRef,
+            ),
+            (
+                "y",
+                Arc::new(Int64Array::from(vec![Some(1), Some(2), None, Some(4)])) as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let file = write_parquet(&batch, 2, |p| {
+            p.set_column_statistics_enabled(
+                parquet::schema::types::ColumnPath::from("x"),
+                parquet::file::properties::EnabledStatistics::None,
+            )
+        });
+        let stats = column_stats_of(&file);
+        let x = &stats.columns[0];
+        assert_eq!(x.null_count, None);
+        assert_eq!((x.min.clone(), x.max.clone()), (None, None));
+        assert_eq!(x.bounded_row_groups, 0);
+        assert!(!x.bounds_exact);
+        // The neighbouring column keeps its statistics.
+        let y = &stats.columns[1];
+        assert_eq!(y.null_count, Some(1.0));
+        assert_eq!((y.min.clone(), y.max.clone()), (number(1.0), number(4.0)));
+    }
+
+    #[test]
+    fn column_stats_bound_all_null_columns_by_their_null_count() {
+        let batch = RecordBatch::try_from_iter(vec![(
+            "empty",
+            Arc::new(Int64Array::from(vec![None::<i64>; 6])) as ArrayRef,
+        )])
+        .unwrap();
+        let stats = column_stats_of(&write_parquet(&batch, 3, |p| p));
+        let column = &stats.columns[0];
+        assert_eq!(column.null_count, Some(6.0));
+        assert_eq!((column.min.clone(), column.max.clone()), (None, None));
+        assert_eq!(column.bounded_row_groups, stats.num_row_groups);
+        assert_eq!(stats.num_row_groups, 2);
+    }
+
+    #[test]
+    fn column_stats_flag_infinite_bounds() {
+        let batch = RecordBatch::try_from_iter(vec![(
+            "f",
+            Arc::new(arrow::array::Float64Array::from(vec![
+                Some(1.5),
+                Some(f64::INFINITY),
+                Some(-0.5),
+                Some(f64::NAN),
+            ])) as ArrayRef,
+        )])
+        .unwrap();
+        let stats = column_stats_of(&write_parquet(&batch, 2, |p| p));
+        let column = &stats.columns[0];
+        assert!(column.has_infinite);
+        assert_eq!(column.max, number(f64::INFINITY));
+        assert_eq!(column.min, number(-0.5));
+    }
+
+    #[test]
+    fn column_stats_required_columns_have_no_nulls_without_statistics() {
+        use arrow::datatypes::{DataType, Field, Schema};
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3])) as ArrayRef],
+        )
+        .unwrap();
+        let file = write_parquet(&batch, 2, |p| {
+            p.set_statistics_enabled(parquet::file::properties::EnabledStatistics::None)
+        });
+        let column = &column_stats_of(&file).columns[0];
+        assert_eq!(column.null_count, Some(0.0));
+        assert_eq!((column.min.clone(), column.max.clone()), (None, None));
+        assert_eq!(column.bounded_row_groups, 0);
     }
 
     #[test]

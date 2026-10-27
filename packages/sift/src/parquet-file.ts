@@ -18,8 +18,8 @@ import {
   pandasIndexColumnsFromHints,
   typeOverridesFromHints,
 } from "./parquet-features";
-import { ensureModule } from "./predicate";
-import type { Column, TableData } from "./table";
+import { columnFileStatsFromWasm, ensureModule } from "./predicate";
+import type { Column, ColumnFileStats, DatasetCoverage, TableData } from "./table";
 import { updateWasmSummaries } from "./wasm-summaries";
 import { createWasmTableData } from "./wasm-table-data";
 
@@ -275,13 +275,12 @@ export async function openParquetFile(
     applyColumnOverrides(columns, columnOverrides);
     // Type pins carried into every refresh so footer semantics survive appends.
     const refreshOverrides = typeOverridesFromHints(hints, columnOverrides);
-    tableData.prefetchViewport = wasm.prefetchViewport;
-    const installSummaries = (data: TableData, cols: Column[]) => {
-      data.recomputeSummaries = () =>
-        updateWasmSummaries(mod, storeHandle, data, cols, pandasIndexCols);
-      data.recomputeSummaries();
-    };
-    installSummaries(tableData, columns);
+    // Footer statistics are read once, while the footer is still open, and
+    // ride along on every lease. They describe the whole file regardless of
+    // how many row groups end up resident.
+    const datasetStats: readonly (ColumnFileStats | null)[] = Object.freeze(
+      columnFileStatsFromWasm(mod.parquet_file_column_stats(file), columns.length),
+    );
 
     // A truncating load admits a row group whose chunks fit `maxDecodedBytes`;
     // bridged gaps must not take the fetch past what was admitted.
@@ -291,6 +290,31 @@ export async function openParquetFile(
     let truncated = false;
     let finished = false;
     let appending = false;
+
+    const coverage = (): DatasetCoverage => ({
+      loadedRows,
+      totalRows: {
+        value: info.num_rows,
+        scope: "dataset",
+        precision: "exact",
+        source: "metadata",
+      },
+      rowGroups: info.num_row_groups,
+      truncated,
+    });
+    // Coverage is set before summaries so the summary adapter can label the
+    // metrics it computes against the dataset total.
+    const installSummaries = (data: TableData, cols: Column[]) => {
+      data.datasetStats = datasetStats;
+      data.coverage = coverage();
+      data.recomputeSummaries = () => {
+        data.coverage = coverage();
+        updateWasmSummaries(mod, storeHandle, data, cols, pandasIndexCols);
+      };
+      data.recomputeSummaries();
+    };
+    tableData.prefetchViewport = wasm.prefetchViewport;
+    installSummaries(tableData, columns);
 
     /**
      * Re-read column types after an append. A changed type mints a new lease;

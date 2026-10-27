@@ -448,8 +448,10 @@ pub(crate) fn with_stores<F, R>(f: F) -> R
 where
     F: FnOnce(&mut HashMap<u32, DataStore>) -> R,
 {
-    // wasm32 is single-threaded, so poisoning only occurs if a prior call
-    // panicked while holding the lock. Recover the inner value and carry on.
+    // Panics abort on wasm32, so a trap under this lock is terminal for the
+    // instance: no later call runs, and recovery is the host terminating the
+    // worker that owns it. Poison recovery here only matters for native
+    // builds and tests, where a panic unwinds past the guard.
     let mut guard = STORES.lock().unwrap_or_else(|e| e.into_inner());
     let stores = guard.get_or_insert_with(HashMap::new);
     f(stores)
@@ -1577,63 +1579,74 @@ pub fn store_value_counts(handle: u32, col: usize) -> Result<JsValue, JsValue> {
 #[wasm_bindgen]
 pub fn store_histogram(handle: u32, col: usize, num_bins: usize) -> Result<JsValue, JsValue> {
     with_store(handle, |s| {
-        let mut values: Vec<f64> = Vec::new();
-        for batch in &s.batches {
-            let column = batch.column(col);
-            for row in 0..column.len() {
-                if !cell_is_null(column.as_ref(), row) {
-                    let value = get_f64_value(column.as_ref(), row);
-                    if value.is_finite() {
-                        values.push(value);
-                    }
-                }
-            }
-        }
-        if values.is_empty() {
-            // serde_wasm_bindgen serialization won't fail for simple structs
+        let bins = histogram_for(s, col, num_bins);
+        if bins.is_empty() {
             return JsValue::from(js_sys::Array::new());
-        }
-        let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-
-        // Constant column: collapse to a single degenerate bin at `min`
-        // rather than stretching `num_bins` bins across `[min, min + num_bins]`.
-        // Without this the TS consumer reads `bins[last].x1 = min + num_bins`
-        // as the column max, producing header labels like "0.46 - 25.46" for
-        // columns where every row is 0.459. See nteract/nteract#1847.
-        if (max - min).abs() < f64::EPSILON {
-            let single = vec![HistogramBin {
-                x0: min,
-                x1: min,
-                count: u32::try_from(values.len()).unwrap_or(u32::MAX),
-            }];
-            return serde_wasm_bindgen::to_value(&single).unwrap_or(JsValue::NULL);
-        }
-
-        let bin_width = (max - min) / num_bins as f64;
-        let mut bins: Vec<HistogramBin> = (0..num_bins)
-            .map(|i| HistogramBin {
-                x0: min + i as f64 * bin_width,
-                x1: min + (i + 1) as f64 * bin_width,
-                count: 0,
-            })
-            .collect();
-        for v in &values {
-            let mut idx = ((v - min) / bin_width) as usize;
-            if idx >= num_bins {
-                idx = num_bins - 1;
-            }
-            if idx > 0 && *v < bins[idx].x0 {
-                idx -= 1;
-            } else if idx + 1 < num_bins && *v >= bins[idx + 1].x0 {
-                idx += 1;
-            }
-            bins[idx].count += 1;
         }
         // Returns Vec<HistogramBin> - simple struct with f64/u32 fields
         serde_wasm_bindgen::to_value(&bins).unwrap_or(JsValue::NULL)
     })
     .map_err(|e| JsValue::from_str(&e))
+}
+
+/// Histogram bins over a column's finite, non-null values. Empty when the
+/// column has none.
+fn histogram_for(s: &DataStore, col: usize, num_bins: usize) -> Vec<HistogramBin> {
+    let mut values: Vec<f64> = Vec::new();
+    for batch in &s.batches {
+        let column = batch.column(col);
+        for row in 0..column.len() {
+            if !cell_is_null(column.as_ref(), row) {
+                let value = get_f64_value(column.as_ref(), row);
+                if value.is_finite() {
+                    values.push(value);
+                }
+            }
+        }
+    }
+    if values.is_empty() {
+        return Vec::new();
+    }
+    let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+    // Constant column: collapse to a single degenerate bin at `min`
+    // rather than stretching `num_bins` bins across `[min, min + num_bins]`.
+    // Without this the TS consumer reads `bins[last].x1 = min + num_bins`
+    // as the column max, producing header labels like "0.46 - 25.46" for
+    // columns where every row is 0.459. See nteract/nteract#1847.
+    if (max - min).abs() < f64::EPSILON {
+        return vec![HistogramBin {
+            x0: min,
+            x1: min,
+            count: u32::try_from(values.len()).unwrap_or(u32::MAX),
+        }];
+    }
+
+    if num_bins == 0 {
+        return Vec::new();
+    }
+    let bin_width = (max - min) / num_bins as f64;
+    let mut bins: Vec<HistogramBin> = (0..num_bins)
+        .map(|i| HistogramBin {
+            x0: min + i as f64 * bin_width,
+            x1: min + (i + 1) as f64 * bin_width,
+            count: 0,
+        })
+        .collect();
+    for v in &values {
+        let mut idx = ((v - min) / bin_width) as usize;
+        if idx >= num_bins {
+            idx = num_bins - 1;
+        }
+        if idx > 0 && *v < bins[idx].x0 {
+            idx -= 1;
+        } else if idx + 1 < num_bins && *v >= bins[idx + 1].x0 {
+            idx += 1;
+        }
+        bins[idx].count += 1;
+    }
+    bins
 }
 
 /// Compute temporal histogram: bins timestamps by calendar unit (auto-detected).
@@ -1751,6 +1764,37 @@ pub fn store_bool_counts(handle: u32, col: usize) -> Result<Vec<u32>, JsValue> {
         vec![true_count, false_count, null_count]
     })
     .map_err(|e| JsValue::from_str(&e))
+}
+
+/// Null count per top-level column over resident rows. O(batches).
+///
+/// Counts the current column, so a cast column reports the nulls the user
+/// sees after the cast. A `Null`-typed column counts every row, matching
+/// `cell_is_null`.
+#[wasm_bindgen]
+pub fn store_null_counts(handle: u32) -> Result<Vec<u32>, JsValue> {
+    with_store(handle, store_null_counts_for).map_err(|e| JsValue::from_str(&e))
+}
+
+fn store_null_counts_for(s: &DataStore) -> Vec<u32> {
+    let mut counts = vec![0u64; s.num_cols];
+    for batch in &s.batches {
+        for (col, count) in counts.iter_mut().enumerate() {
+            let Some(column) = batch.columns().get(col) else {
+                continue;
+            };
+            let nulls = if matches!(column.data_type(), DataType::Null) {
+                column.len()
+            } else {
+                column.null_count()
+            };
+            *count = count.saturating_add(nulls as u64);
+        }
+    }
+    counts
+        .into_iter()
+        .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
+        .collect()
 }
 
 // --- Filtered summaries (crossfilter) ---
@@ -2719,7 +2763,7 @@ fn filter_rows_in_store(
 }
 
 /// Extract an f64 from any numeric or timestamp array at the given row.
-fn get_f64_value(arr: &dyn Array, row: usize) -> f64 {
+pub(crate) fn get_f64_value(arr: &dyn Array, row: usize) -> f64 {
     match arr.data_type() {
         DataType::Float64 => arr
             .as_any()
@@ -2801,8 +2845,44 @@ fn get_f64_value(arr: &dyn Array, row: usize) -> f64 {
             .downcast_ref::<arrow::array::Date64Array>()
             .map(|a| a.value(row) as f64)
             .unwrap_or(f64::NAN),
+        DataType::Decimal128(_, scale) => arr
+            .as_any()
+            .downcast_ref::<arrow::array::Decimal128Array>()
+            .map(|a| decimal128_to_f64(a.value(row), *scale))
+            .unwrap_or(f64::NAN),
+        DataType::Decimal256(_, scale) => arr
+            .as_any()
+            .downcast_ref::<arrow::array::Decimal256Array>()
+            .map(|a| decimal256_to_f64(a.value(row), *scale))
+            .unwrap_or(f64::NAN),
         _ => f64::NAN,
     }
+}
+
+/// An unscaled Decimal128 value as `unscaled / 10^scale`. Lossy past 2^53,
+/// which is fine for summaries, ranges, and filter bounds.
+pub(crate) fn decimal128_to_f64(unscaled: i128, scale: i8) -> f64 {
+    unscaled as f64 / 10f64.powi(i32::from(scale))
+}
+
+/// An unscaled Decimal256 value as `unscaled / 10^scale`. Values beyond i128
+/// are assembled from the magnitude's two 128-bit halves; summing the signed
+/// halves directly would cancel to zero for small negatives.
+pub(crate) fn decimal256_to_f64(unscaled: arrow::datatypes::i256, scale: i8) -> f64 {
+    fn from_halves(value: arrow::datatypes::i256) -> f64 {
+        let (low, high) = value.to_parts();
+        high as f64 * 2f64.powi(128) + low as f64
+    }
+    let value = match unscaled.to_i128() {
+        Some(small) => small as f64,
+        None if unscaled.is_negative() => match unscaled.checked_neg() {
+            Some(magnitude) => -from_halves(magnitude),
+            // i256::MIN has no positive counterpart; its halves are exact.
+            None => from_halves(unscaled),
+        },
+        None => from_halves(unscaled),
+    };
+    value / 10f64.powi(i32::from(scale))
 }
 
 /// Extract a string value from any string, boolean, or dictionary-encoded column.
@@ -3524,6 +3604,91 @@ mod tests {
             filter_rows_in_store(&store, &filters, &set_lookups),
             vec![1]
         );
+    }
+
+    fn decimal_store() -> u32 {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "price",
+            DataType::Decimal128(10, 2),
+            true,
+        )]));
+        let prices =
+            arrow::array::Decimal128Array::from(vec![Some(1_25), None, Some(-3_50), Some(10_00)])
+                .with_precision_and_scale(10, 2)
+                .unwrap();
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(prices)]).unwrap();
+        store_batches(vec![batch], schema).unwrap()
+    }
+
+    #[test]
+    fn decimal_columns_get_histograms_and_range_filters() {
+        let handle = decimal_store();
+        let bins = with_store(handle, |s| histogram_for(s, 0, 4)).unwrap();
+        assert_eq!(bins.len(), 4);
+        assert_eq!(bins[0].x0, -3.5);
+        assert_eq!(bins[3].x1, 10.0);
+        assert_eq!(bins.iter().map(|bin| bin.count).sum::<u32>(), 3);
+
+        let filters = vec![FilterSpec::Range {
+            col: 0,
+            min: 0.0,
+            max: 5.0,
+        }];
+        let matched = with_store(handle, |s| filter_rows_in_store(s, &filters, &[None])).unwrap();
+        assert_eq!(matched, vec![0]);
+        assert_eq!(get_cell_f64(handle, 3, 0).unwrap(), 10.0);
+        free(handle);
+    }
+
+    #[test]
+    fn decimal_scaling_handles_negative_scale_and_wide_values() {
+        assert_eq!(decimal128_to_f64(-12_345, 3), -12.345);
+        assert_eq!(decimal128_to_f64(7, -2), 700.0);
+        let wide = arrow::datatypes::i256::from_i128(i128::MAX)
+            .checked_mul(arrow::datatypes::i256::from_i128(4))
+            .unwrap();
+        let expected = i128::MAX as f64 * 4.0 / 100.0;
+        assert!((decimal256_to_f64(wide, 2) - expected).abs() / expected < 1e-12);
+        let wide_negative = wide.checked_neg().unwrap();
+        assert!((decimal256_to_f64(wide_negative, 2) + expected).abs() / expected < 1e-12);
+        let negative = arrow::datatypes::i256::from_i128(-250);
+        assert_eq!(decimal256_to_f64(negative, 2), -2.5);
+    }
+
+    #[test]
+    fn null_counts_sum_batches_and_follow_casts() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("n", DataType::Int64, true),
+            Field::new("s", DataType::Utf8, true),
+            Field::new("z", DataType::Null, true),
+        ]));
+        let first = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![Some(1), None])) as ArrayRef,
+                Arc::new(StringArray::from(vec![Some("1"), Some("x")])) as ArrayRef,
+                Arc::new(NullArray::new(2)) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let second = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![None, None, Some(3)])) as ArrayRef,
+                Arc::new(StringArray::from(vec![None, Some("2.5"), Some("3")])) as ArrayRef,
+                Arc::new(NullArray::new(3)) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let handle = store_batches(vec![first, second], schema).unwrap();
+        assert_eq!(store_null_counts(handle).unwrap(), vec![3, 1, 5]);
+
+        // "x" cannot parse as a number, so the cast column has one more null.
+        cast_column(handle, 1, "numeric").unwrap();
+        assert_eq!(store_null_counts(handle).unwrap(), vec![3, 2, 5]);
+        undo_cast_column(handle, 1).unwrap();
+        assert_eq!(store_null_counts(handle).unwrap(), vec![3, 1, 5]);
+        free(handle);
     }
 
     #[test]

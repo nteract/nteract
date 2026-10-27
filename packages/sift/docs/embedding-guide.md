@@ -231,6 +231,40 @@ read whole and goes through the bytes path with its `maxBytes` check.
 when a load fails, with the same `Error` Sift shows. For streaming Parquet it
 may arrive after rows mounted; see above.
 
+### What the numbers cover
+
+A table loaded from a file carries three pieces of provenance:
+
+- `TableData.coverage` says how much of the dataset is resident: `loadedRows`,
+  `totalRows` (with its own scope, precision, and source), the file's
+  `rowGroups`, and `truncated`. `loadTableFile` sets it on every path, so a
+  caller of `loadTableFile(source, { overflow: 'truncate' })` reads
+  `data.coverage.truncated` to learn the result was cut. Absent means every row
+  is resident.
+- `TableData.datasetStats` holds one `ColumnFileStats` per column, read from
+  the Parquet footer at open and never changed: a whole-file null count when
+  every row group recorded one, min/max when every row group had usable bounds,
+  and flags for inexact (truncated string) bounds and infinite values. Columns
+  without usable footer statistics are `null`.
+- Each non-null `ColumnSummary` has `scope`, which labels every metric
+  separately. `scope.distribution` covers the histogram bins, category bars,
+  and true/false counts; it is always computed over loaded rows and says
+  `dataset` only when every row is resident. `scope.range` and
+  `scope.nullCount` come from footer metadata when the footer has them, and
+  then describe the whole file; otherwise they describe loaded rows.
+  `scope.distinctCount` is always over loaded rows. A cast column ignores its
+  footer entry, since that entry describes the stored type.
+
+The header renders these as text. The histogram and its brush domain stay over
+loaded rows. When the file has more rows than are loaded, a numeric or timestamp
+header adds a line with the whole-file bounds ("0 – 100 · whole file", with "≈"
+when the bounds are inexact), the null percentage names its scope ("20% null ·
+whole file" or "20% null · loaded rows"), the category popover says "Search N
+loaded values…" and "All loaded", and a boolean column keeps its loaded-rows bar
+and shows whole-file nulls on a separate line. Captions carry `data-scope` and
+`data-precision` attributes. `TableEngineState.loadedCount` reports resident
+rows alongside `totalCount`, which keeps its current meaning.
+
 ## Lifecycle and host controls
 
 A `TableData` instance returned by `loadTableFile` owns one WASM store. The React

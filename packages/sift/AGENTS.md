@@ -56,6 +56,9 @@ Every source ends as a `TableData` the engine reads by `(row, col)`:
 
 Column types come from the Arrow schema with data-driven refinement; summaries
 for WASM sources are computed in Rust (`wasm-summaries.ts` adapts them).
+Byte-range Parquet reads footer column statistics once at open
+(`parquet_file_column_stats` → `TableData.datasetStats`); `wasm-summaries.ts`
+folds them with `TableData.coverage` into each summary's per-metric `scope`.
 
 ### Rendering
 

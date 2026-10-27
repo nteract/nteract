@@ -265,6 +265,64 @@ describe.skipIf(!existsSync(wasmPath))("byte-range Parquet with real WASM", () =
     }
   });
 
+  it("reads footer statistics at open and scopes summaries as row groups land", async () => {
+    const totalRows = ROWS_PER_GROUP * GROUPS;
+    // Mirrors the `i % 97 === 3` null pattern in the fixture.
+    const nullsPerGroup = Array.from({ length: ROWS_PER_GROUP }, (_, i) => i).filter(
+      (i) => i % 97 === 3,
+    ).length;
+    const textNulls = GROUPS * nullsPerGroup;
+    const file = await openParquetFile(recordingSource(parquet), { limits: DEFAULT_LIMITS });
+    try {
+      // Footer stats are fixed at open, before any row group is resident.
+      const stats = file.tableData.datasetStats;
+      expect(stats).toHaveLength(2);
+      expect(stats?.[0]).toEqual({
+        nullCount: 0,
+        min: 0,
+        max: totalRows - 1,
+        boundedRowGroups: GROUPS,
+        boundsExact: true,
+        hasInfinite: false,
+      });
+      expect(stats?.[1]).toMatchObject({ nullCount: textNulls, boundedRowGroups: GROUPS });
+      expect(typeof stats?.[1]?.min).toBe("string");
+      expect(file.tableData.coverage).toEqual({
+        loadedRows: 0,
+        totalRows: { value: totalRows, scope: "dataset", precision: "exact", source: "metadata" },
+        rowGroups: GROUPS,
+        truncated: false,
+      });
+
+      await file.appendRowGroup(0);
+      const partial = file.tableData.columnSummaries[0];
+      expect(partial?.kind).toBe("numeric");
+      if (partial?.kind !== "numeric") throw new Error("expected numeric");
+      // Histogram over loaded rows; range and nulls lifted to the whole file.
+      expect(partial.max).toBe(ROWS_PER_GROUP - 1);
+      expect(partial.scope).toMatchObject({
+        rows: { loaded: ROWS_PER_GROUP, dataset: { value: totalRows } },
+        distribution: { scope: "loaded", precision: "exact", source: "resident" },
+        range: { value: { min: 0, max: totalRows - 1 }, scope: "dataset", source: "metadata" },
+        nullCount: { value: 0, scope: "dataset", source: "metadata" },
+      });
+      const text = file.tableData.columnSummaries[1];
+      if (text?.kind !== "categorical") throw new Error("expected categorical");
+      expect(text.nullCount).toBe(nullsPerGroup);
+      expect(text.scope?.nullCount).toMatchObject({ value: textNulls, scope: "dataset" });
+      expect(text.scope?.range).toBeUndefined();
+
+      await file.appendRowGroup(1);
+      await file.appendRowGroup(2);
+      file.finish();
+      expect(file.tableData.coverage).toMatchObject({ loadedRows: totalRows, truncated: false });
+      expect(file.tableData.columnSummaries[0]?.scope?.distribution.scope).toBe("dataset");
+      expect(file.tableData.datasetStats).toBe(stats);
+    } finally {
+      file.dispose();
+    }
+  });
+
   it("streams a byte-source through SiftTable and reports milestones", async () => {
     const source = recordingSource(parquet);
     const milestones: SiftLoadMilestone[] = [];
@@ -588,6 +646,23 @@ describe.skipIf(!existsSync(wasmPath))("byte-range Parquet with real WASM", () =
         expect(data.rowCount).toBe(100);
         // Tail plus row group 0 only.
         expect(source.reads).toHaveLength(2);
+        // The result says it was cut and how big the file is.
+        expect(data.coverage).toEqual({
+          loadedRows: 100,
+          totalRows: {
+            value: ROWS_PER_GROUP * GROUPS,
+            scope: "dataset",
+            precision: "exact",
+            source: "metadata",
+          },
+          rowGroups: GROUPS,
+          truncated: true,
+        });
+        expect(data.columnSummaries[0]?.scope).toMatchObject({
+          rows: { loaded: 100, dataset: { value: ROWS_PER_GROUP * GROUPS } },
+          distribution: { scope: "loaded" },
+          range: { value: { min: 0, max: ROWS_PER_GROUP * GROUPS - 1 }, scope: "dataset" },
+        });
       } finally {
         data.dispose?.();
       }

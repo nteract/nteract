@@ -600,8 +600,13 @@ export function SiftTable({
             aria-label={`${previewNotice.label}. ${previewNotice.title}`}
           >
             <span>{previewNotice.label}</span>
-            <span className="sift-preview-scope" aria-hidden="true">
+            {/* The stylesheet shows one of these by viewport width: the full
+                sentence on wide footers, the short badge on narrow ones. */}
+            <span className="sift-preview-scope sift-preview-scope-full" aria-hidden="true">
               {" · Table tools use shown rows"}
+            </span>
+            <span className="sift-preview-scope sift-preview-scope-short" aria-hidden="true">
+              {" · Shown rows"}
             </span>
           </span>
         )}

@@ -30,6 +30,54 @@ export type Column = {
   timezone?: string | null;
 };
 
+// --- Metric coverage ---
+
+/** Which rows a metric describes: the resident rows, or the whole dataset. */
+export type DataScope = "loaded" | "dataset";
+/** How much to trust a metric's value. */
+export type MetricPrecision = "exact" | "estimated" | "lower-bound";
+/** Where a metric came from: resident rows, file metadata, or a pushed-down query. */
+export type MetricSource = "resident" | "metadata" | "query";
+export type Coverage = { scope: DataScope; precision: MetricPrecision; source: MetricSource };
+export type ScopedValue<T> = Coverage & { value: T };
+
+/**
+ * Per-metric coverage of a column summary. Absent means every metric is
+ * exact over resident rows, which are the whole dataset.
+ */
+export type SummaryScope = {
+  rows: { loaded: number; dataset?: ScopedValue<number> };
+  /** Covers bins / topCategories / allCategories / trueCount / falseCount. */
+  distribution: Coverage;
+  range?: ScopedValue<{ min: number; max: number }>;
+  nullCount?: ScopedValue<number>;
+  distinctCount?: ScopedValue<number>;
+};
+
+/** Whole-dataset coverage of a TableData. Absent means every row is resident. */
+export type DatasetCoverage = {
+  loadedRows: number;
+  /** Absent when the dataset size is unknown. */
+  totalRows?: ScopedValue<number>;
+  /** Row groups in the source file, when the source has them. */
+  rowGroups?: number;
+  truncated: boolean;
+};
+
+/** Per-column statistics read from Parquet footer metadata at open. */
+export type ColumnFileStats = {
+  /** Whole-file null count, or null when any row group did not record one. */
+  nullCount: number | null;
+  min: number | string | boolean | null;
+  max: number | string | boolean | null;
+  /** Row groups whose bounds were usable. Bounds cover the file only when equal to its row-group count. */
+  boundedRowGroups: number;
+  /** True when every row group's bounds are exact (not truncated strings). */
+  boundsExact: boolean;
+  /** min or max is ±Infinity. */
+  hasInfinite: boolean;
+};
+
 export type NumericColumnSummary = {
   kind: "numeric";
   min: number;
@@ -41,6 +89,7 @@ export type NumericColumnSummary = {
   isIndex?: boolean;
   /** Number of null/undefined/NaN values. */
   nullCount?: number;
+  scope?: SummaryScope;
 };
 
 export type CategoryEntry = { label: string; count: number; pct: number };
@@ -55,6 +104,9 @@ export type CategoricalColumnSummary = {
   allCategories: CategoryEntry[];
   /** Median string length across all unique values. Used for display heuristics. */
   medianTextLength: number;
+  /** Number of null values. */
+  nullCount?: number;
+  scope?: SummaryScope;
 };
 
 export type BooleanColumnSummary = {
@@ -63,6 +115,7 @@ export type BooleanColumnSummary = {
   falseCount: number;
   nullCount: number;
   total: number;
+  scope?: SummaryScope;
 };
 
 export type TimestampColumnSummary = {
@@ -73,6 +126,7 @@ export type TimestampColumnSummary = {
   /** Number of null/undefined values. */
   nullCount?: number;
   timezone?: string | null;
+  scope?: SummaryScope;
 };
 
 export type ColumnSummary =
@@ -106,6 +160,14 @@ export type TableData = {
   filterRows?: (filters: (ColumnFilter | null)[]) => Uint32Array;
   /** Optional: release backing resources when the table engine is destroyed. */
   dispose?: () => void;
+  /** Optional: how much of the dataset is resident. Absent means all of it. */
+  coverage?: DatasetCoverage;
+  /**
+   * Optional: footer statistics per column, in column order, fixed at open.
+   * Summaries fold them into `scope`; a cast column's entry is ignored since
+   * it describes the original type.
+   */
+  datasetStats?: readonly (ColumnFileStats | null)[];
 };
 
 // --- Filter types ---
@@ -120,7 +182,10 @@ export type TableEngineState = {
   sort: { column: string; direction: "asc" | "desc" } | null;
   filters: { column: string; filter: ColumnFilter }[];
   filteredCount: number;
+  /** Resident rows. The same number as `loadedCount`; kept for compatibility. */
   totalCount: number;
+  /** Resident rows; a truncated load holds fewer than the dataset. */
+  loadedCount?: number;
 };
 
 export type TableEngineOptions = {
@@ -2713,6 +2778,7 @@ export function createTable(
       filters: getFilters(),
       filteredCount,
       totalCount: rowCount,
+      loadedCount: rowCount,
     };
   }
 

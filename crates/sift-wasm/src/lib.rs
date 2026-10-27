@@ -11,6 +11,8 @@
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 
+mod column_stats;
+mod footer_thrift;
 mod parquet_file;
 mod store;
 mod writer;

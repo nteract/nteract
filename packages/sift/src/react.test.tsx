@@ -22,6 +22,7 @@ const predicateModule = vi.hoisted(() => ({
   store_temporal_histogram: vi.fn(() => []),
   store_value_counts: vi.fn(() => []),
   store_bool_counts: vi.fn(() => [0, 0, 0]),
+  store_null_counts: vi.fn(() => new Uint32Array([0, 0])),
   store_viewport_cells: vi.fn(() => ({
     rows: [],
     strings: [],
@@ -351,8 +352,15 @@ describe("SiftTable", () => {
     );
     const previewHint = container.querySelector(".sift-preview-hint");
     expect(previewHint?.getAttribute("role")).toBe("note");
-    expect(previewHint?.textContent).toBe(
-      "Showing first 50,000 of 100,000 rows · Table tools use shown rows",
+    expect(previewHint?.firstElementChild?.textContent).toBe(
+      "Showing first 50,000 of 100,000 rows",
+    );
+    expect(previewHint?.querySelector(".sift-preview-scope-full")?.textContent).toBe(
+      " · Table tools use shown rows",
+    );
+    // Narrow footers swap the sentence for this badge through the stylesheet.
+    expect(previewHint?.querySelector(".sift-preview-scope-short")?.textContent).toBe(
+      " · Shown rows",
     );
     expect(previewHint?.getAttribute("title")).toBe(
       "Sorting, filtering, and column summaries use only the rows shown in this preview.",
@@ -391,8 +399,8 @@ describe("SiftTable", () => {
         "sift-status-ready",
       );
     });
-    expect(container.querySelector(".sift-preview-hint")?.textContent).toBe(
-      "Showing first 50,000 rows · total unknown · Table tools use shown rows",
+    expect(container.querySelector(".sift-preview-hint")?.firstElementChild?.textContent).toBe(
+      "Showing first 50,000 rows · total unknown",
     );
   });
 

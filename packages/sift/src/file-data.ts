@@ -92,8 +92,10 @@ function isByteSource(input: Uint8Array | ByteSource): input is ByteSource {
  * By default (`overflow: "error"`) the result is the complete file or an
  * error: files exceeding the limits fail. A Parquet `ByteSource` with
  * `overflow: "truncate"` resolves with the leading rows that fit the row and
- * decoded-bytes budget instead; the result does not say whether rows were
- * cut. Sorting, filtering, and summaries operate on every loaded row.
+ * decoded-bytes budget instead; `coverage.truncated` says whether rows were
+ * cut and `coverage.totalRows` carries the footer total. Sorting, filtering,
+ * and summaries operate on every loaded row; each summary's `scope` says
+ * which metrics also describe the whole file.
  * Numeric raw values, summaries, and range filters use f64/JavaScript numbers;
  * integers beyond the safe-integer range are approximate in those operations.
  *
@@ -154,6 +156,13 @@ export async function loadTableFile(
     applyParquetColumnHints(columns, hints);
     const pandasIndexCols = pandasIndexColumnsFromHints(hints);
     tableData.prefetchViewport = prefetchViewport;
+    // A whole-buffer load is complete or an error, so every row is resident.
+    const loadedRows = tableData.rowCount;
+    tableData.coverage = {
+      loadedRows,
+      totalRows: { value: loadedRows, scope: "dataset", precision: "exact", source: "resident" },
+      truncated: false,
+    };
     tableData.recomputeSummaries = () =>
       updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
     tableData.recomputeSummaries();
