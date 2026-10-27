@@ -97,7 +97,10 @@ export interface PyProjectInfo {
 export interface EnvironmentYmlInfo {
   path: string;
   relative_path: string;
+  /** environment.yml `name:`, the existing named conda env it selects. */
   name: string | null;
+  /** environment.yml `prefix:`, an explicit env path used instead of `name:`. */
+  prefix?: string | null;
   has_dependencies: boolean;
   dependency_count: number;
   has_pip_dependencies: boolean;
@@ -109,7 +112,10 @@ export interface EnvironmentYmlInfo {
 export interface EnvironmentYmlDeps {
   path: string;
   relative_path: string;
+  /** environment.yml `name:`, the existing named conda env it selects. */
   name: string | null;
+  /** environment.yml `prefix:`, an explicit env path used instead of `name:`. */
+  prefix?: string | null;
   dependencies: string[];
   pip_dependencies: string[];
   python: string | null;
@@ -295,20 +301,24 @@ export function derivePyproject(ctx: ProjectContext): {
   };
 }
 
-function envYmlExtras(extras: ProjectFileExtras): { channels: string[]; pip: string[] } {
+function envYmlExtras(extras: ProjectFileExtras): {
+  channels: string[];
+  pip: string[];
+  name: string | null;
+  prefix: string | null;
+} {
   if (extras.kind === "EnvironmentYml") {
-    return { channels: extras.channels, pip: extras.pip };
+    return {
+      channels: extras.channels,
+      pip: extras.pip,
+      name: extras.name ?? null,
+      prefix: extras.prefix ?? null,
+    };
   }
-  return { channels: [], pip: [] };
+  return { channels: [], pip: [], name: null, prefix: null };
 }
 
-/**
- * Derive environment.yml display data from daemon-authored project context.
- *
- * Some fields that the old app-side walker produced (`name`) are not
- * currently surfaced through `ProjectFileParsed`; they're emitted as
- * `null` and UI treats them as optional display.
- */
+/** Derive environment.yml display data from daemon-authored project context. */
 export function deriveEnvironmentYml(ctx: ProjectContext): {
   environmentYmlInfo: EnvironmentYmlInfo | null;
   environmentYmlDeps: EnvironmentYmlDeps | null;
@@ -316,11 +326,12 @@ export function deriveEnvironmentYml(ctx: ProjectContext): {
   if (ctx.state !== "Detected" || ctx.project_file.kind !== "EnvironmentYml") {
     return { environmentYmlInfo: null, environmentYmlDeps: null };
   }
-  const { channels, pip } = envYmlExtras(ctx.parsed.extras);
+  const { channels, pip, name, prefix } = envYmlExtras(ctx.parsed.extras);
   const shared = {
     path: ctx.project_file.absolute_path,
     relative_path: ctx.project_file.relative_to_notebook,
-    name: null,
+    name,
+    prefix,
     python: ctx.parsed.requires_python,
     channels,
   };

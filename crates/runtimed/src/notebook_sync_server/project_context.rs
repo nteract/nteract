@@ -14,8 +14,10 @@
 //! - Save-as rename, after `save_notebook_to_disk` moves the file and
 //!   `set_path` updates the room.
 //!
-//! Filesystem watches for external project-file edits or for the
-//! notebook being moved out from under us are still follow-up work.
+//! - A filesystem watcher over every directory the detection walk
+//!   visits (see [`daemon_project_file::project_watch_dirs`]), so edits,
+//!   deletion, and creation of a closer or first manifest all refresh
+//!   the context. Moving the notebook itself is still follow-up work.
 //!
 //! pyproject.toml goes through the `toml` crate; pixi.toml and
 //! environment.yml still use line-scan for the handful of fields we
@@ -42,8 +44,9 @@ use crate::task_supervisor::spawn_best_effort;
 
 /// Walk up from the notebook path, parse what the daemon can, write the
 /// result into `RuntimeStateDoc.project_context`, and arm (or rearm) a
-/// filesystem watcher on the detected project file. External edits to
-/// that file will re-enter this routine via the watcher.
+/// filesystem watcher over the directories that can change that result.
+/// External edits, deletions, and newly created manifests re-enter this
+/// routine via the watcher.
 ///
 /// Untitled notebooks with no filesystem anchor leave the field at
 /// `Pending`; a sentinel write would be misleading because there's
@@ -57,10 +60,10 @@ use crate::task_supervisor::spawn_best_effort;
 /// transition doesn't leave ghost data. Any previously-armed watcher is
 /// shut down before a new one is spawned.
 pub(super) async fn refresh_project_context_async(room: &Arc<NotebookRoom>, path: Option<&Path>) {
-    let (ctx, detected_path) = match path {
-        Some(p) => build_context(p),
-        None => return,
+    let Some(anchor) = path else {
+        return;
     };
+    let ctx = build_context(anchor);
 
     if let Err(e) = room.state.with_doc(|sd| sd.set_project_context(&ctx)) {
         warn!(
@@ -76,21 +79,25 @@ pub(super) async fn refresh_project_context_async(room: &Arc<NotebookRoom>, path
         ctx.variant_str()
     );
 
-    rearm_project_file_watcher(room, detected_path).await;
+    let watch_dirs = daemon_project_file::project_watch_dirs(anchor);
+    rearm_project_file_watcher(room, anchor.to_path_buf(), watch_dirs).await;
 }
 
 /// Shut down any existing project-file watcher on the room and arm a new
-/// one pointed at the just-detected path (if any). A `None` detection
-/// result (NotFound / Unreadable with missing file) leaves the slot
-/// empty; the next refresh trigger will re-evaluate.
-async fn rearm_project_file_watcher(room: &Arc<NotebookRoom>, detected_path: Option<PathBuf>) {
+/// one over `watch_dirs`. An empty set (an anchor at the home directory)
+/// leaves the slot empty; the next refresh trigger will re-evaluate.
+async fn rearm_project_file_watcher(
+    room: &Arc<NotebookRoom>,
+    anchor: PathBuf,
+    watch_dirs: Vec<PathBuf>,
+) {
     room.file_binding.shutdown_project_file_watcher().await;
 
-    let Some(watch_path) = detected_path else {
+    if watch_dirs.is_empty() {
         return;
-    };
+    }
 
-    let (shutdown_tx, ready_rx) = spawn_project_file_watcher(watch_path, room.clone());
+    let (shutdown_tx, ready_rx) = spawn_project_file_watcher(anchor, watch_dirs, room.clone());
     room.file_binding
         .install_project_file_watcher_shutdown_tx(shutdown_tx)
         .await;
@@ -104,38 +111,34 @@ async fn rearm_project_file_watcher(room: &Arc<NotebookRoom>, detected_path: Opt
     let _ = ready_rx.await;
 }
 
-/// Watch a single project file and call `refresh_project_context_async`
-/// whenever the debouncer fires a change. The daemon is not a writer
-/// of project files today, so there's no self-write feedback loop to
-/// suppress — any event from `notify` is an external change worth
-/// re-parsing.
+/// Watch `watch_dirs` non-recursively and call
+/// `refresh_project_context_async` whenever a project-manifest filename
+/// changes in any of them. The daemon is not a writer of project files
+/// today, so there's no self-write feedback loop to suppress.
+///
+/// Directories are watched rather than files: watching a file directly
+/// misses atomic "write to temp + rename" saves on macOS FSEvents, and a
+/// file that does not exist yet cannot be watched at all.
 ///
 /// Returns two channels:
 ///
 /// - `shutdown_tx`: the caller stores it; sending (or dropping) stops
 ///   the watcher.
 /// - `ready_rx`: resolves when the task has actually installed the
-///   FSEvents subscription (or hit an error and given up). Callers
-///   await this before returning to guarantee that events after the
-///   return point actually reach the watcher.
+///   subscriptions (or hit an error and given up). Callers await this
+///   before returning to guarantee that events after the return point
+///   actually reach the watcher.
 fn spawn_project_file_watcher(
-    project_file_path: PathBuf,
+    anchor: PathBuf,
+    watch_dirs: Vec<PathBuf>,
     room: Arc<NotebookRoom>,
 ) -> (oneshot::Sender<()>, oneshot::Receiver<()>) {
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
     let (ready_tx, ready_rx) = oneshot::channel::<()>();
 
     spawn_best_effort("project-file-watcher", async move {
-        // Signals readiness or gives up, running `ready_tx.send(())`
-        // exactly once on any exit path. Dropping without sending (the
-        // error arms below) still unblocks the waiter via `RecvError`.
-        let mut ready_tx = Some(ready_tx);
-        let signal_ready = |slot: &mut Option<oneshot::Sender<()>>| {
-            if let Some(tx) = slot.take() {
-                let _ = tx.send(());
-            }
-        };
-
+        // Dropping `ready_tx` without sending (the error arms below)
+        // still unblocks the waiter via `RecvError`.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<DebounceEventResult>(16);
         let debouncer_result = notify_debouncer_mini::new_debouncer(
             std::time::Duration::from_millis(500),
@@ -149,85 +152,73 @@ fn spawn_project_file_watcher(
             Err(e) => {
                 error!(
                     "[project-watch] Failed to create watcher for {:?}: {}",
-                    project_file_path, e
+                    watch_dirs, e
                 );
                 return;
             }
         };
 
-        // Watch the parent directory. Watching the file directly doesn't
-        // work on macOS FSEvents for atomic "write to temp + rename"
-        // sequences — the inode the watch is pinned to disappears. The
-        // parent-dir watch catches all modify / create / remove events
-        // for our file and we filter on path below.
-        let Some(parent_dir) = project_file_path.parent() else {
-            error!(
-                "[project-watch] Project file {:?} has no parent dir",
-                project_file_path
-            );
-            return;
-        };
-
-        if let Err(e) = debouncer
-            .watcher()
-            .watch(parent_dir, notify::RecursiveMode::NonRecursive)
-        {
-            error!("[project-watch] Failed to watch {:?}: {}", parent_dir, e);
+        let mut watched = 0usize;
+        for dir in &watch_dirs {
+            match debouncer
+                .watcher()
+                .watch(dir, notify::RecursiveMode::NonRecursive)
+            {
+                Ok(()) => watched += 1,
+                Err(e) => warn!("[project-watch] Failed to watch {:?}: {}", dir, e),
+            }
+        }
+        if watched == 0 {
+            error!("[project-watch] No project directories could be watched: {watch_dirs:?}");
             return;
         }
 
-        // Canonicalize the target path once so we can compare against
-        // the canonical paths `notify` emits on platforms that resolve
-        // symlinks (macOS's /var → /private/var). Falls back to the
-        // original path when canonicalize fails (file may not exist).
-        let canonical_target =
-            std::fs::canonicalize(&project_file_path).unwrap_or_else(|_| project_file_path.clone());
-
         info!(
-            "[project-watch] Watching project file {:?} (parent {:?})",
-            project_file_path, parent_dir
+            "[project-watch] Watching project directories {:?}",
+            watch_dirs
         );
 
-        // Subscription is live; unblock the waiter. From this point on,
-        // events that land against `project_file_path` reach `rx`.
-        signal_ready(&mut ready_tx);
+        // Subscriptions are live; unblock the waiter.
+        let _ = ready_tx.send(());
 
         loop {
             tokio::select! {
                 Some(result) = rx.recv() => {
                     match result {
                         Ok(events) => {
+                            // Non-recursive watches only report direct
+                            // children, so a manifest filename is enough;
+                            // no path canonicalization is needed.
                             let relevant = events.iter().any(|e| {
-                                e.path == project_file_path || e.path == canonical_target
+                                e.path
+                                    .file_name()
+                                    .is_some_and(daemon_project_file::is_project_file_name)
                             });
                             if !relevant {
                                 continue;
                             }
                             // Re-run detection against the room's current
-                            // notebook path, not the cached project-file
-                            // path: the notebook may have been moved such
-                            // that a closer project file now wins, or the
-                            // detected file may have been deleted.
+                            // notebook path: the notebook may have moved, a
+                            // closer manifest may now win, or the detected
+                            // file may have been deleted.
                             let refresh_anchor = room
                                 .file_binding
                                 .path()
                                 .await
-                                .or_else(|| project_file_path.parent().map(Path::to_path_buf));
-                            refresh_project_context_async(&room, refresh_anchor.as_deref()).await;
+                                .unwrap_or_else(|| anchor.clone());
+                            refresh_project_context_async(&room, Some(refresh_anchor.as_path()))
+                                .await;
                         }
                         Err(e) => {
                             warn!(
                                 "[project-watch] Debouncer error for {:?}: {:?}",
-                                project_file_path, e
+                                watch_dirs, e
                             );
                         }
                     }
                 }
                 _ = &mut shutdown_rx => {
-                    debug!(
-                        "[project-watch] Shutting down watcher for {:?}",
-                        project_file_path
-                    );
+                    debug!("[project-watch] Shutting down watcher for {:?}", watch_dirs);
                     return;
                 }
             }
@@ -238,35 +229,29 @@ fn spawn_project_file_watcher(
 }
 
 /// Detect + parse, translating the daemon's internal `DetectedProjectFile`
-/// into the `ProjectContext` shape consumers read. Also returns the
-/// detected file's absolute path when there is one, so the caller can
-/// (re)arm a filesystem watcher on it.
-fn build_context(notebook_path: &Path) -> (ProjectContext, Option<PathBuf>) {
+/// into the `ProjectContext` shape consumers read.
+fn build_context(notebook_path: &Path) -> ProjectContext {
     let observed_at = current_iso_timestamp();
 
     let Some(detected) = daemon_project_file::detect_project_file(notebook_path) else {
-        return (ProjectContext::NotFound { observed_at }, None);
+        return ProjectContext::NotFound { observed_at };
     };
 
-    let detected_path = detected.path.clone();
     let kind = translate_kind(&detected.kind);
     let relative_to_notebook = relative_to_notebook(notebook_path, &detected.path);
 
     let content = match std::fs::read_to_string(&detected.path) {
         Ok(s) => s,
         Err(e) => {
-            return (
-                ProjectContext::Unreadable {
-                    path: detected.path.to_string_lossy().into_owned(),
-                    reason: format!("read failed: {e}"),
-                    observed_at,
-                },
-                Some(detected_path),
-            );
+            return ProjectContext::Unreadable {
+                path: detected.path.to_string_lossy().into_owned(),
+                reason: format!("read failed: {e}"),
+                observed_at,
+            };
         }
     };
 
-    let ctx = match parse_detected(&detected, &content) {
+    match parse_detected(&detected, &content) {
         Ok(parsed) => ProjectContext::Detected {
             project_file: ProjectFile {
                 kind,
@@ -281,8 +266,7 @@ fn build_context(notebook_path: &Path) -> (ProjectContext, Option<PathBuf>) {
             reason,
             observed_at,
         },
-    };
-    (ctx, Some(detected_path))
+    }
 }
 
 fn translate_kind(kind: &daemon_project_file::ProjectFileKind) -> ProjectFileKind {
@@ -537,6 +521,8 @@ fn parse_environment_yml(path: &Path, content: &str) -> Result<ProjectFileParsed
         extras: ProjectFileExtras::EnvironmentYml {
             channels: config.channels,
             pip,
+            name: config.name,
+            prefix: config.prefix.map(|p| p.to_string_lossy().into_owned()),
         },
     })
 }
@@ -618,7 +604,7 @@ mod tests {
     fn build_context_on_empty_tempdir_returns_not_found() {
         let temp = TempDir::new().unwrap();
         let notebook = write(temp.path(), "untitled.ipynb", "{}");
-        let (ctx, _) = build_context(&notebook);
+        let ctx = build_context(&notebook);
         assert!(matches!(ctx, ProjectContext::NotFound { .. }));
     }
 
@@ -632,7 +618,7 @@ mod tests {
         );
         let notebook = write(temp.path(), "demo.ipynb", "{}");
 
-        let (ctx, _) = build_context(&notebook);
+        let ctx = build_context(&notebook);
         let ProjectContext::Detected {
             project_file,
             parsed,
@@ -661,7 +647,7 @@ mod tests {
         );
         let notebook = write(temp.path(), "demo.ipynb", "{}");
 
-        let (ctx, _) = build_context(&notebook);
+        let ctx = build_context(&notebook);
         let ProjectContext::Detected { parsed, .. } = ctx else {
             panic!("expected Detected");
         };
@@ -688,7 +674,7 @@ mod tests {
         );
         let notebook = write(temp.path(), "demo.ipynb", "{}");
 
-        let (ctx, _) = build_context(&notebook);
+        let ctx = build_context(&notebook);
         let ProjectContext::Detected { parsed, .. } = ctx else {
             panic!("expected Detected");
         };
@@ -708,7 +694,7 @@ mod tests {
         );
         let notebook = write(temp.path(), "demo.ipynb", "{}");
 
-        let (ctx, _) = build_context(&notebook);
+        let ctx = build_context(&notebook);
         let ProjectContext::Detected { parsed, .. } = ctx else {
             panic!("expected Detected");
         };
@@ -724,7 +710,7 @@ mod tests {
             "[project]\nname = \"demo\"\ndependencies = [\"pandas\"]\n",
         );
 
-        let (ctx, _) = build_context(temp.path());
+        let ctx = build_context(temp.path());
         let ProjectContext::Detected {
             project_file,
             parsed,
@@ -748,7 +734,7 @@ mod tests {
         );
         let notebook = write(temp.path(), "demo.ipynb", "{}");
 
-        let (ctx, _) = build_context(&notebook);
+        let ctx = build_context(&notebook);
         let ProjectContext::Detected { parsed, .. } = ctx else {
             panic!("expected Detected");
         };
@@ -766,7 +752,7 @@ mod tests {
         );
         let notebook = write(temp.path(), "demo.ipynb", "{}");
 
-        let (ctx, _) = build_context(&notebook);
+        let ctx = build_context(&notebook);
         let ProjectContext::Detected { parsed, .. } = ctx else {
             panic!("expected Detected");
         };
@@ -784,7 +770,7 @@ mod tests {
         );
         let notebook = write(temp.path(), "demo.ipynb", "{}");
 
-        let (ctx, _) = build_context(&notebook);
+        let ctx = build_context(&notebook);
         let ProjectContext::Detected { parsed, .. } = ctx else {
             panic!("expected Detected");
         };
@@ -806,7 +792,7 @@ mod tests {
         );
         let notebook = write(temp.path(), "demo.ipynb", "{}");
 
-        let (ctx, _) = build_context(&notebook);
+        let ctx = build_context(&notebook);
         let ProjectContext::Unreadable { path, reason, .. } = ctx else {
             panic!("expected Unreadable, got {ctx:?}");
         };
@@ -827,7 +813,7 @@ mod tests {
         );
         let notebook = write(temp.path(), "demo.ipynb", "{}");
 
-        let (ctx, _) = build_context(&notebook);
+        let ctx = build_context(&notebook);
         let ProjectContext::Detected { parsed, .. } = ctx else {
             panic!("expected Detected");
         };
@@ -844,7 +830,7 @@ mod tests {
         );
         let notebook = write(temp.path(), "demo.ipynb", "{}");
 
-        let (ctx, _) = build_context(&notebook);
+        let ctx = build_context(&notebook);
         let ProjectContext::Detected {
             project_file,
             parsed,
@@ -878,7 +864,7 @@ mod tests {
         );
         let notebook = write(temp.path(), "demo.ipynb", "{}");
 
-        let (ctx, _) = build_context(&notebook);
+        let ctx = build_context(&notebook);
         let ProjectContext::Detected {
             project_file,
             parsed,
@@ -891,11 +877,40 @@ mod tests {
         assert!(parsed.dependencies.iter().any(|d| d == "numpy"));
         // rattler normalizes `python=3.11` → `"3.11.*"`
         assert_eq!(parsed.requires_python.as_deref(), Some("3.11.*"));
-        let ProjectFileExtras::EnvironmentYml { channels, pip } = parsed.extras else {
+        let ProjectFileExtras::EnvironmentYml {
+            channels,
+            pip,
+            name,
+            prefix,
+        } = parsed.extras
+        else {
             panic!("expected EnvironmentYml extras");
         };
         assert_eq!(channels, vec!["conda-forge".to_string()]);
         assert_eq!(pip, vec!["requests".to_string(), "flask".to_string()]);
+        assert_eq!(name.as_deref(), Some("demo"));
+        assert_eq!(prefix, None);
+    }
+
+    #[test]
+    fn build_context_environment_yml_surfaces_explicit_prefix() {
+        let temp = TempDir::new().unwrap();
+        write(
+            temp.path(),
+            "environment.yml",
+            "prefix: /opt/envs/my env\ndependencies:\n  - python=3.11\n",
+        );
+        let notebook = write(temp.path(), "demo.ipynb", "{}");
+
+        let ctx = build_context(&notebook);
+        let ProjectContext::Detected { parsed, .. } = ctx else {
+            panic!("expected Detected");
+        };
+        let ProjectFileExtras::EnvironmentYml { name, prefix, .. } = parsed.extras else {
+            panic!("expected EnvironmentYml extras");
+        };
+        assert_eq!(name, None);
+        assert_eq!(prefix.as_deref(), Some("/opt/envs/my env"));
     }
 
     #[test]
@@ -909,7 +924,7 @@ mod tests {
         );
         let notebook = write(temp.path(), "demo.ipynb", "{}");
 
-        let (ctx, _) = build_context(&notebook);
+        let ctx = build_context(&notebook);
         let ProjectContext::Unreadable { path, reason, .. } = ctx else {
             panic!("expected Unreadable, got {ctx:?}");
         };
@@ -926,7 +941,7 @@ mod tests {
         std::fs::create_dir(temp.path().join("pyproject.toml")).unwrap();
         let notebook = write(temp.path(), "demo.ipynb", "{}");
 
-        let (ctx, _) = build_context(&notebook);
+        let ctx = build_context(&notebook);
         let ProjectContext::Unreadable { path, reason, .. } = ctx else {
             panic!("expected Unreadable, got {ctx:?}");
         };
@@ -978,7 +993,7 @@ mod tests {
         let nb_no_project = write(&bare, "demo.ipynb", "{}");
 
         // First location: Detected against pyproject.toml.
-        let (first, _) = build_context(&nb_in_project);
+        let first = build_context(&nb_in_project);
         assert!(
             matches!(first, ProjectContext::Detected { .. }),
             "expected Detected for notebook under project dir, got {first:?}"
@@ -989,7 +1004,7 @@ mod tests {
         // does the field-clearing in the CRDT setter; here we just
         // confirm `build_context` returns the unambiguous answer for
         // the new path.
-        let (second, _) = build_context(&nb_no_project);
+        let second = build_context(&nb_no_project);
         assert!(
             matches!(second, ProjectContext::NotFound { .. }),
             "expected NotFound for notebook in bare dir, got {second:?}"

@@ -8743,6 +8743,8 @@ mod tests {
                 extras: ProjectFileExtras::EnvironmentYml {
                     channels: vec!["conda-forge".into()],
                     pip: vec!["httpx".into()],
+                    name: Some("rankings".into()),
+                    prefix: None,
                 },
             },
             observed_at: "2026-04-25T12:00:00Z".into(),
@@ -8750,6 +8752,27 @@ mod tests {
         doc.set_project_context(&ctx)?;
         assert_eq!(doc.project_context(), ctx);
         Ok(())
+    }
+
+    #[test]
+    fn environment_yml_extras_without_identity_fields_still_parse() {
+        // Extras are stored as a JSON string; docs written before `name` and
+        // `prefix` existed must keep deserializing.
+        let extras: ProjectFileExtras = serde_json::from_str(
+            r#"{"kind":"EnvironmentYml","channels":["conda-forge"],"pip":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            extras,
+            ProjectFileExtras::EnvironmentYml {
+                channels: vec!["conda-forge".into()],
+                pip: vec![],
+                name: None,
+                prefix: None,
+            }
+        );
+        let json = serde_json::to_string(&extras).unwrap();
+        assert!(!json.contains("name") && !json.contains("prefix"), "{json}");
     }
 
     #[test]

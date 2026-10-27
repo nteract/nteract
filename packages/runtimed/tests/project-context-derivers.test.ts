@@ -71,6 +71,8 @@ function envYmlCtx(
     pip?: string[];
     channels?: string[];
     requires_python?: string | null;
+    name?: string;
+    prefix?: string;
   } = {},
 ): ProjectContext {
   return {
@@ -89,6 +91,8 @@ function envYmlCtx(
         kind: "EnvironmentYml",
         channels: overrides.channels ?? [],
         pip: overrides.pip ?? [],
+        ...(overrides.name ? { name: overrides.name } : {}),
+        ...(overrides.prefix ? { prefix: overrides.prefix } : {}),
       },
     },
     observed_at: OBSERVED_AT,
@@ -283,6 +287,7 @@ describe("deriveEnvironmentYml", () => {
       path: "/proj/environment.yml",
       relative_path: "environment.yml",
       name: null,
+      prefix: null,
       has_dependencies: true,
       dependency_count: 2,
       has_pip_dependencies: true,
@@ -294,6 +299,7 @@ describe("deriveEnvironmentYml", () => {
       path: "/proj/environment.yml",
       relative_path: "environment.yml",
       name: null,
+      prefix: null,
       dependencies: ["python=3.11", "numpy"],
       pip_dependencies: ["requests", "flask"],
       python: "3.11",
@@ -308,5 +314,16 @@ describe("deriveEnvironmentYml", () => {
     expect(environmentYmlDeps?.dependencies).toEqual([]);
     expect(environmentYmlDeps?.pip_dependencies).toEqual([]);
     expect(environmentYmlDeps?.channels).toEqual([]);
+  });
+
+  it("surfaces the existing env the file selects by name or prefix", () => {
+    const named = deriveEnvironmentYml(envYmlCtx({ name: "rankings" }));
+    expect(named.environmentYmlInfo?.name).toBe("rankings");
+    expect(named.environmentYmlDeps?.name).toBe("rankings");
+    expect(named.environmentYmlInfo?.prefix).toBeNull();
+
+    const prefixed = deriveEnvironmentYml(envYmlCtx({ prefix: "C:\\Users\\Owen\\envs\\my env" }));
+    expect(prefixed.environmentYmlInfo?.name).toBeNull();
+    expect(prefixed.environmentYmlInfo?.prefix).toBe("C:\\Users\\Owen\\envs\\my env");
   });
 });
