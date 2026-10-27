@@ -58,7 +58,6 @@ vi.mock("@/components/isolated", async () => {
       React.useEffect(() => props.onReady?.(), [props.onReady]);
       return <iframe title="Markdown renderer" tabIndex={-1} />;
     }),
-    useBokehSessionRuntime: () => null,
   };
 });
 

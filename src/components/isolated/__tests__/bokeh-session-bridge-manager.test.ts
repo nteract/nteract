@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import type { BokehSessionPatchBroadcast, BokehSessionState } from "runtimed";
 import { BokehSessionBridgeManager } from "../bokeh-session-bridge-manager";
-import type { BokehSessionTransport } from "../bokeh-session-context";
+import type { BokehSessionTransport } from "../bokeh-session-plugin";
+import { NTERACT_BOKEH_SESSION_PATCH } from "../bokeh-session-rpc";
 import type { IsolatedFrameHandle } from "../isolated-frame";
 
 const payload = {
@@ -112,7 +113,7 @@ function makeHarness() {
       };
     },
   };
-  const frame = { send: vi.fn() } as unknown as IsolatedFrameHandle;
+  const frame = { notifyExtension: vi.fn() } as unknown as IsolatedFrameHandle;
   const manager = new BokehSessionBridgeManager({
     frame,
     transport,
@@ -194,7 +195,7 @@ describe("BokehSessionBridgeManager", () => {
 
   it("delivers canonical broadcasts through the typed frame channel", async () => {
     const { frame, manager, patchListener } = makeHarness();
-    vi.mocked(frame.send).mockClear();
+    vi.mocked(frame.notifyExtension).mockClear();
     patchListener()?.({
       event: "bokeh_session_patch",
       patch: {
@@ -213,17 +214,14 @@ describe("BokehSessionBridgeManager", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(frame.send).toHaveBeenCalledWith({
-      type: "bokeh_session_patch",
-      payload: {
-        outputId: "output-1",
-        event: expect.objectContaining({
-          sessionId: "session-1",
-          transactionId: "transaction-2",
-          revision: 2,
-          checkpoint: expect.objectContaining({ revision: 2 }),
-        }),
-      },
+    expect(frame.notifyExtension).toHaveBeenCalledWith(NTERACT_BOKEH_SESSION_PATCH, {
+      outputId: "output-1",
+      event: expect.objectContaining({
+        sessionId: "session-1",
+        transactionId: "transaction-2",
+        revision: 2,
+        checkpoint: expect.objectContaining({ revision: 2 }),
+      }),
     });
     expect(patchQueueSize(manager)).toBe(0);
     manager.dispose();
@@ -231,7 +229,7 @@ describe("BokehSessionBridgeManager", () => {
 
   it("does not deliver an in-flight broadcast after disposal", async () => {
     const { frame, manager, patchListener, transport } = makeHarness();
-    vi.mocked(frame.send).mockClear();
+    vi.mocked(frame.notifyExtension).mockClear();
     let markFetchStarted: (() => void) | undefined;
     let resolveFetch: ((response: Response) => void) | undefined;
     const fetchStarted = new Promise<void>((resolve) => {
@@ -270,13 +268,13 @@ describe("BokehSessionBridgeManager", () => {
     resolveFetch?.(new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(frame.send).not.toHaveBeenCalled();
+    expect(frame.notifyExtension).not.toHaveBeenCalled();
   });
 
   it("rejects a live checkpoint whose identity does not match its event", async () => {
     const { frame, manager, patchListener } = makeHarness();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.mocked(frame.send).mockClear();
+    vi.mocked(frame.notifyExtension).mockClear();
 
     patchListener()?.({
       event: "bokeh_session_patch",
@@ -312,7 +310,7 @@ describe("BokehSessionBridgeManager", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(frame.send).not.toHaveBeenCalled();
+    expect(frame.notifyExtension).not.toHaveBeenCalled();
     expect(consoleError).toHaveBeenNthCalledWith(
       1,
       "[bokeh-session] Failed to deliver document patch:",

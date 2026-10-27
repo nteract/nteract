@@ -12,7 +12,7 @@ import {
   type NteractBokehSessionSnapshot,
   type NteractBokehSessionStateParams,
   type NteractBokehSessionStatus,
-} from "@/components/isolated/rpc-methods";
+} from "@/components/isolated/bokeh-session-rpc";
 
 interface BokehDocumentEvent {
   sync?: boolean;

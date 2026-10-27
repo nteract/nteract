@@ -1,4 +1,4 @@
-use runtimed_client::output_equivalence::{compare_outputs, OutputComparison};
+use runtimed_client::output_equivalence::{compare_outputs_with_policy, OutputComparison};
 use std::collections::HashSet;
 
 use super::*;
@@ -990,10 +990,11 @@ async fn bind_prepared_executions_to_staged_document(
                         "source_degraded: cannot verify durable execution {staged_execution_id}: saved Arrow chunk content is unavailable"
                     ));
                 }
-                let comparison = compare_outputs(
+                let comparison = compare_outputs_with_policy(
                     &record.outputs,
                     &prepared_cell.output_refs,
                     |hash| async move { blob_store.get(&hash).await },
+                    crate::extensions::replay_field_policy(),
                 )
                 .await;
                 match comparison {
@@ -1655,9 +1656,12 @@ async fn durable_or_synthetic_execution(
                 lookup.execution_count,
             )
     }) {
-        if compare_outputs(&record.outputs, lookup.outputs, |hash| async move {
-            blob_store.get(&hash).await
-        })
+        if compare_outputs_with_policy(
+            &record.outputs,
+            lookup.outputs,
+            |hash| async move { blob_store.get(&hash).await },
+            crate::extensions::replay_field_policy(),
+        )
         .await
             != OutputComparison::Equivalent
         {

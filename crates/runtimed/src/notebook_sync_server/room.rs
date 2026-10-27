@@ -1752,6 +1752,8 @@ pub struct NotebookRoom {
     pub(crate) evicted: AtomicBool,
     /// Blob store for output manifests.
     pub blob_store: Arc<BlobStore>,
+    /// Output-type hooks for save and runtime-agent retirement.
+    pub(crate) output_hooks: crate::output_hooks::OutputHookRegistry,
     /// Trust state for this notebook (for auto-launch decisions).
     pub trust_state: Arc<RwLock<TrustState>>,
     /// Daemon-local package allowlist for familiar dependency auto-approval.
@@ -2494,6 +2496,7 @@ impl NotebookRoom {
             preparing_kernel_env_path: std::sync::Mutex::new(None),
             evicted: AtomicBool::new(false),
             blob_store,
+            output_hooks: crate::extensions::room_output_hooks(),
             trust_state: Arc::new(RwLock::new(trust_state)),
             trusted_packages,
             project_trust_session_decline: std::sync::Mutex::new(None),

@@ -130,7 +130,7 @@ impl ExecutionRecord {
     }
 
     /// Conservative, non-resolving comparison for callers without a blob store.
-    /// File admission uses identity plus `output_equivalence::compare_outputs`.
+    /// File admission uses identity plus `output_equivalence::compare_outputs_with_policy`.
     pub fn matches_notebook_cell(
         &self,
         context_id: &str,
@@ -178,7 +178,7 @@ impl ExecutionRecord {
     /// an exact execution ID already owned by the recovered NotebookDoc; it
     /// must not be used to authorize standalone result reads by path.
     /// This convenience check does not resolve unequal content references.
-    /// Journal admission uses identity plus `output_equivalence::compare_outputs`.
+    /// Journal admission uses identity plus `output_equivalence::compare_outputs_with_policy`.
     pub fn matches_recovered_notebook_cell(
         &self,
         notebook_id: &str,
