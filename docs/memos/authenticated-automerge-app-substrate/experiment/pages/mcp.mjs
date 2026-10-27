@@ -10,6 +10,16 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 const string = { type: "string" };
+const title = {
+  ...string,
+  description:
+    "Page title, displayed above the document body and used in navigation. Put the document's title here once; do not repeat it as a leading body heading.",
+};
+const markdownBody = {
+  ...string,
+  description:
+    "Document body as Markdown. The Page title is already displayed separately. Start with introductory prose or a section heading; do not repeat or paraphrase the Page title as an opening heading. Preserve an intentional heading when the user explicitly requests it.",
+};
 const page = { ...string, description: "Explicit Page ID returned by list_pages or create_page." };
 const guard = {
   page_id: page,
@@ -89,10 +99,10 @@ export const tools = [
   ),
   tool(
     "create_page",
-    "Create an editable rich-text Page and return its browser URL. Human and API edits sync into the same document.",
+    "Create an editable rich-text Page and return its browser URL. title is displayed above the body: supply body-only markdown, without repeating or paraphrasing the title as an opening heading. Human and API edits sync into the same document.",
     {
-      title: string,
-      markdown: string,
+      title,
+      markdown: markdownBody,
       idempotency_key: guard.idempotency_key,
       retry_token: guard.retry_token,
     },
@@ -100,7 +110,7 @@ export const tools = [
   ),
   tool(
     "read_page",
-    "Read a Page as Markdown blocks, comments, current heads, and a retry_token for edits. Read before editing.",
+    "Read a Page's separately displayed title, Markdown body blocks, comments, current heads, and a retry_token for edits. The title is already shown above the body; do not add it again as a body heading. Read before editing.",
     { page_id: page },
     ["page_id"],
     { readOnlyHint: true },
@@ -152,8 +162,8 @@ export const tools = [
                   ],
                 },
                 block_id: string,
-                title: string,
-                markdown: string,
+                title,
+                markdown: markdownBody,
                 after_block_id: {
                   type: ["string", "null"],
                   description:

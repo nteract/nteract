@@ -404,6 +404,24 @@ retry_token for catalog operations (create_page and delete_page). Browser link: 
   private asset_id and asset_url for a subsequent insert_image edit. See Images above.
 - delete_page: delete the Page and comments. There is no restore operation.
 
+### One document title
+
+The title field is already rendered as the large Page heading above the body and
+used in navigation. Put the document title there once. For create_page, supply
+body-only markdown: start with introductory prose or a real section heading,
+not another heading that repeats or paraphrases the Page title. The same applies
+when inserting or replacing opening content with edit_page. To rename the Page,
+use set_title rather than adding a new heading to its body.
+
+For example, a Page titled "Release plan" can start its body with "We are preparing
+the next release." followed by a "## Checklist" section. It should not also start
+with "# Release plan" or "# Our release plan". If importing a complete Markdown
+document with its own title, put that title in the title field and the remaining
+content in markdown, unless the user explicitly wants the original layout.
+Pages preserves supplied body content; it does not silently delete headings.
+
+### Guarded edits
+
 Read before editing. Document edits and deletion require page_id,
 base_heads from the latest read_page, and idempotency_key. Include retry_token
 from read_page for edits/comments; use the list_pages token for create/delete.
