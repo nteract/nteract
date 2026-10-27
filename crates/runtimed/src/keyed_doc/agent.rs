@@ -113,14 +113,9 @@ impl AgentDocs {
     }
 
     /// Whether frames for `kind` may be sent on this connection: the agent
-    /// registers it and the coordinator advertised it.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "kind-facing seam; production callers arrive with the first registered kind"
-        )
-    )]
+    /// registers it and the coordinator advertised it. Kinds read the same
+    /// answer through [`Self::availability`].
+    #[cfg(test)]
     pub(crate) fn supports(&self, kind: &str) -> bool {
         self.availability.is_available(kind)
     }

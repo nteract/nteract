@@ -9,7 +9,7 @@
 //! so the peer drops its replica instead of resending the refused changes.
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard};
 
 use automerge::sync::SyncDoc;
@@ -32,6 +32,8 @@ use crate::notebook_sync_server::RoomConnectionIdentity;
 
 const HUB_ACTOR: &[u8] = b"runtimed:keyed-hub";
 const CHANGED_CHANNEL_CAPACITY: usize = 256;
+/// Record reads a peer frame may retry while replicas are being removed.
+const MAX_RECORD_READS: usize = 3;
 
 struct HubDoc {
     epoch: u64,
@@ -84,6 +86,19 @@ impl KeyedSyncStates {
     pub(crate) fn reset(&mut self, key: &KeyedDocKey, epoch: u64) {
         self.0.insert(key.clone(), (epoch, sync::State::new()));
     }
+
+    /// Keep only the states `keep` accepts, e.g. to forget documents that
+    /// no longer exist.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "kind-facing seam; production callers arrive with the first registered kind"
+        )
+    )]
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&KeyedDocKey) -> bool) {
+        self.0.retain(|key, _| keep(key));
+    }
 }
 
 /// What to send back after a peer frame.
@@ -101,6 +116,8 @@ pub(crate) struct KeyedDocHub {
     /// has no runtime agent here and the cloud does not route 0x0b.
     routing: AtomicBool,
     docs: StdMutex<HashMap<KeyedDocKey, HubDoc>>,
+    /// Bumped under the `docs` lock whenever a replica is removed.
+    removals: AtomicU64,
     changed_tx: broadcast::Sender<KeyedDocKey>,
 }
 
@@ -118,6 +135,7 @@ impl KeyedDocHub {
             kinds,
             routing: AtomicBool::new(true),
             docs: StdMutex::new(HashMap::new()),
+            removals: AtomicU64::new(0),
             changed_tx,
         }
     }
@@ -321,7 +339,8 @@ impl KeyedDocHub {
     /// A frame from a notebook peer.
     ///
     /// Order: header → routed kind (both silent drops) → record (read from
-    /// `state` before the hub lock) → known key (silent drop otherwise) →
+    /// `state` before the hub lock, again if a replica was removed meanwhile)
+    /// → known key (silent drop otherwise) →
     /// epoch (the newer of hub and record) → per-kind size → write
     /// permission (changes stripped on refusal) → preview, actor check and
     /// kind validation → commit. Any refusal after the key is known resets
@@ -339,7 +358,7 @@ impl KeyedDocHub {
             return reply;
         };
         let key = header.key();
-        let record = match state.read(|doc| kind.record(doc, &key.id)) {
+        let read_record = || match state.read(|doc| kind.record(doc, &key.id)) {
             Ok(record) => record,
             Err(error) => {
                 warn!(
@@ -354,7 +373,26 @@ impl KeyedDocHub {
         // kind contract allows under it.
         let size_check = Self::check_body_size(kind.as_ref(), &header, body, "peer");
 
-        let mut docs = self.lock();
+        // The record is read before the hub lock (lock order). If a replica
+        // was removed after that read, the record is stale and could
+        // recreate the replica empty, so read it again.
+        let mut attempts = 0;
+        let (record, mut docs) = loop {
+            let removals = self.removals.load(Ordering::Acquire);
+            let record = read_record();
+            let docs = self.lock();
+            if docs.contains_key(&key) || self.removals.load(Ordering::Acquire) == removals {
+                break (record, docs);
+            }
+            attempts += 1;
+            if attempts == MAX_RECORD_READS {
+                debug!(
+                    "[keyed-doc] Dropping peer frame for {}/{}: replicas kept being removed",
+                    key.kind, key.id
+                );
+                return reply;
+            }
+        };
         let current = match (docs.get(&key).map(|doc| doc.epoch), record.as_ref()) {
             (None, None) => {
                 debug!(
@@ -448,13 +486,6 @@ impl KeyedDocHub {
         Some(f(doc.epoch, &mut doc.doc))
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "kind-facing seam; production callers arrive with the first registered kind"
-        )
-    )]
     pub(crate) fn ids(&self, kind: &str) -> Vec<String> {
         let mut ids: Vec<String> = self
             .lock()
@@ -480,6 +511,48 @@ impl KeyedDocHub {
             }
         }
         roots
+    }
+
+    /// Let each kind drop replicas whose records ended. The record read
+    /// completes before the hub lock is taken.
+    pub(crate) fn on_runtime_state_change(&self, state: &RuntimeStateHandle) {
+        for kind in self.kinds.values() {
+            let ids = self.ids(kind.kind());
+            if ids.is_empty() {
+                continue;
+            }
+            let retired = match state.read(|doc| kind.on_runtime_state_change(doc, &ids)) {
+                Ok(retired) => retired,
+                Err(error) => {
+                    warn!(
+                        "[keyed-doc] Could not read RuntimeStateDoc for {}: {error}",
+                        kind.kind()
+                    );
+                    continue;
+                }
+            };
+            if retired.is_empty() {
+                continue;
+            }
+            self.remove_docs(
+                retired
+                    .into_iter()
+                    .map(|id| KeyedDocKey::new(kind.kind(), id)),
+            );
+        }
+    }
+
+    fn remove_docs(&self, keys: impl IntoIterator<Item = KeyedDocKey>) {
+        let mut docs = self.lock();
+        for key in keys {
+            docs.remove(&key);
+        }
+        self.removals.fetch_add(1, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_doc(&self, key: &KeyedDocKey) {
+        self.remove_docs([key.clone()]);
     }
 
     pub(crate) fn observe_runtime_broadcast(&self, broadcast: &NotebookBroadcast) {

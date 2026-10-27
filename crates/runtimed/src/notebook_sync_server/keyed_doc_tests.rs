@@ -324,6 +324,38 @@ async fn notebook_sync_client_and_runtime_agent_share_a_keyed_document() {
     agent.abort();
 }
 
+/// The coordinator lets kinds drop replicas on each RuntimeStateDoc change.
+#[tokio::test]
+async fn a_runtime_state_change_drops_replicas_of_closed_records() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let kind = Arc::new(TestKvKind::default());
+    kind.set_record("doc-1", 0, true);
+    let room = room_with_kinds(&tmp, Some(kind.clone()));
+    let producer = Arc::new(TestKvAgentDoc::default());
+    producer.insert("doc-1", 0);
+    producer.put("doc-1", "a", "1");
+    let (agent_reader, agent_writer, coordinator) = connect_runtime_agent(&tmp, &room).await;
+    let agent = spawn_agent(agent_reader, agent_writer, producer);
+    wait_for(
+        || room.keyed_docs.ids(TEST_KV) == vec!["doc-1".to_string()],
+        "the hub to receive the agent's document",
+    )
+    .await;
+
+    kind.remove_record("doc-1");
+    room.state
+        .with_doc(|state| state.set_path(Some("/tmp/closed-record.ipynb")))
+        .unwrap();
+    wait_for(
+        || room.keyed_docs.ids(TEST_KV).is_empty(),
+        "the closed document's replica to be dropped",
+    )
+    .await;
+
+    coordinator.abort();
+    agent.abort();
+}
+
 /// With no routed kinds, the agent side never sends `KeyedDocSync`.
 #[tokio::test]
 async fn agent_sends_nothing_for_kinds_the_coordinator_does_not_route() {

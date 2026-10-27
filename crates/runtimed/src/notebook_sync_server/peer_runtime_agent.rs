@@ -675,6 +675,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
             _ = state_changed_rx.recv() => {
                 retirement_dirty = true;
                 while state_changed_rx.try_recv().is_ok() {}
+                room.keyed_docs.on_runtime_state_change(&room.state);
                 let encoded = match room
                     .state
                     .generate_sync_message_recovering(

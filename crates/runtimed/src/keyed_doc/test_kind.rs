@@ -72,11 +72,15 @@ fn kv_values(doc: &AutoCommit) -> Vec<(String, String)> {
         .collect()
 }
 
+type RecordHook = Box<dyn FnOnce(&str) + Send>;
+
 /// Room side.
 #[derive(Default)]
 pub(crate) struct TestKvKind {
     records: StdMutex<HashMap<String, KeyedDocRecord>>,
     blob_roots: StdMutex<BTreeSet<String>>,
+    /// Runs once, right after the next `record` read.
+    record_hook: StdMutex<Option<RecordHook>>,
 }
 
 impl TestKvKind {
@@ -93,6 +97,15 @@ impl TestKvKind {
                 },
             },
         );
+    }
+
+    pub(crate) fn remove_record(&self, id: &str) {
+        lock(&self.records).remove(id);
+    }
+
+    /// Interleave `hook` between the next record read and what follows it.
+    pub(crate) fn after_next_record(&self, hook: impl FnOnce(&str) + Send + 'static) {
+        *lock(&self.record_hook) = Some(Box::new(hook));
     }
 
     pub(crate) fn set_blob_roots(&self, roots: impl IntoIterator<Item = String>) {
@@ -113,7 +126,12 @@ impl KeyedDocKind for TestKvKind {
     }
 
     fn record(&self, _state: &RuntimeStateDoc, id: &str) -> Option<KeyedDocRecord> {
-        lock(&self.records).get(id).cloned()
+        let record = lock(&self.records).get(id).cloned();
+        let hook = lock(&self.record_hook).take();
+        if let Some(hook) = hook {
+            hook(id);
+        }
+        record
     }
 
     /// Only string values under `values` may change; judged on the state
@@ -158,6 +176,15 @@ impl KeyedDocKind for TestKvKind {
         kv_values(doc)
             .into_iter()
             .filter_map(|(key, value)| (key == "blob").then_some(value))
+            .collect()
+    }
+
+    /// A document ends when its record is removed.
+    fn on_runtime_state_change(&self, _state: &RuntimeStateDoc, ids: &[String]) -> Vec<String> {
+        let records = lock(&self.records);
+        ids.iter()
+            .filter(|id| !records.contains_key(id.as_str()))
+            .cloned()
             .collect()
     }
 }

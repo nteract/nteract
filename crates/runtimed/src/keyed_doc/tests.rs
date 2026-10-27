@@ -41,7 +41,7 @@ fn key(id: &str) -> KeyedDocKey {
 /// synced so the hub holds `doc-1` at epoch 0 with `a = 1`.
 struct Room {
     kind: Arc<TestKvKind>,
-    hub: KeyedDocHub,
+    hub: Arc<KeyedDocHub>,
     agent: Arc<TestKvAgentDoc>,
     agent_states: KeyedSyncStates,
     hub_agent_states: KeyedSyncStates,
@@ -56,7 +56,7 @@ impl Room {
         agent.insert("doc-1", 0);
         agent.put("doc-1", "a", "1");
         let mut room = Self {
-            hub: KeyedDocHub::new(vec![kind.clone()]),
+            hub: Arc::new(KeyedDocHub::new(vec![kind.clone()])),
             kind,
             agent,
             agent_states: KeyedSyncStates::new(),
@@ -536,4 +536,71 @@ fn blob_roots_cover_documents_and_kind_state() {
         room.hub.blob_roots().into_iter().collect::<Vec<_>>(),
         vec!["hash-in-doc".to_string(), "hash-in-tail".to_string()]
     );
+}
+
+#[test]
+fn sync_states_retain_only_accepted_keys() {
+    let mut states = KeyedSyncStates::new();
+    states.for_epoch(&key("doc-1"), 0);
+    states.for_epoch(&key("doc-2"), 3);
+    states.retain(|key| key.id == "doc-2");
+    assert!(!states.contains(&key("doc-1")));
+    assert!(states.contains(&key("doc-2")));
+}
+
+/// R4 P3-3: a peer frame whose record read raced the replica's removal must
+/// not recreate the replica from the stale record.
+#[test]
+fn a_record_read_racing_a_removal_does_not_recreate_the_replica() {
+    let room = Room::new();
+    let mut alice = Peer::new(alice(), ALICE);
+    alice.sync(&room.hub, &room.state, "doc-1");
+    assert_eq!(alice.value("a").as_deref(), Some("1"));
+
+    // The record is read as live; the document ends right after that read.
+    let hub = Arc::downgrade(&room.hub);
+    let kind = Arc::downgrade(&room.kind);
+    room.kind.after_next_record(move |id| {
+        kind.upgrade().unwrap().remove_record(id);
+        hub.upgrade().unwrap().remove_doc(&key(id));
+    });
+    kv_put(&mut alice.doc, "b", "2");
+    alice.sync(&room.hub, &room.state, "doc-1");
+    assert!(room.hub.ids(TEST_KV).is_empty(), "replica recreated");
+    assert!(alice.resyncs.is_empty());
+}
+
+#[test]
+fn a_runtime_state_change_drops_replicas_whose_records_closed() {
+    let mut room = Room::new();
+    room.kind.set_record("doc-2", 0, true);
+    room.agent.insert("doc-2", 0);
+    room.sync_agent();
+    let mut alice = Peer::new(alice(), ALICE);
+    alice.sync(&room.hub, &room.state, "doc-1");
+    assert_eq!(alice.value("a").as_deref(), Some("1"));
+
+    room.hub.on_runtime_state_change(&room.state);
+    assert_eq!(
+        room.hub.ids(TEST_KV),
+        vec!["doc-1".to_string(), "doc-2".to_string()],
+        "live records keep their replicas"
+    );
+
+    room.kind.remove_record("doc-1");
+    room.hub.on_runtime_state_change(&room.state);
+    assert_eq!(room.hub.ids(TEST_KV), vec!["doc-2".to_string()]);
+    assert!(room
+        .hub
+        .peer_updates(&mut alice.hub_states, None)
+        .is_empty());
+
+    // Later frames for the closed document are dropped without a resync.
+    kv_put(&mut alice.doc, "b", "2");
+    let frame = alice.frame("doc-1").expect("a change to send");
+    let reply =
+        room.hub
+            .receive_peer_frame(&mut alice.hub_states, &frame, &alice.identity, &room.state);
+    assert!(reply.frames.is_empty() && reply.resync.is_none());
+    assert_eq!(room.hub.ids(TEST_KV), vec!["doc-2".to_string()]);
 }

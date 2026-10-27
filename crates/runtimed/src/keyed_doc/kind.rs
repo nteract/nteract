@@ -72,6 +72,13 @@ pub(crate) trait KeyedDocKind: Send + Sync + 'static {
     /// A runtime-agent frame changed `id`; `doc` is the hub replica after it.
     fn on_runtime_change(&self, _id: &str, _epoch: u64, _doc: &AutoCommit) {}
 
+    /// RuntimeStateDoc changed. `ids` are the kind's replicas in the hub;
+    /// returns those the hub should drop, after the kind dropped its own
+    /// state for them. Runs inside `RuntimeStateHandle::read`.
+    fn on_runtime_state_change(&self, _state: &RuntimeStateDoc, _ids: &[String]) -> Vec<String> {
+        Vec::new()
+    }
+
     /// The current runtime agent disconnected. Freeze or terminalize whatever
     /// the kind owns. Runs without the hub lock.
     fn on_runtime_agent_lost<'a>(&'a self, _ctx: RoomKindCtx<'a>) -> BoxFuture<'a, ()> {
