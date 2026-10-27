@@ -1,4 +1,4 @@
-import { layout, type PreparedText, prepare } from "@chenglou/pretext";
+import { clearCache, layout, type PreparedText, prepare } from "@chenglou/pretext";
 import { createOdometer } from "@nteract/odometer";
 import {
   animationFrameScheduler,
@@ -8,7 +8,7 @@ import {
   scan,
   throttleTime,
 } from "rxjs";
-import { fitColumnWidths } from "./auto-width";
+import { DEFAULT_CELL_FONT, fitColumnWidths } from "./auto-width";
 import { type ColumnAction, mountColumnMenu, unmountColumnMenu } from "./column-menu";
 import {
   type ImageViewerHandle,
@@ -180,7 +180,6 @@ type SortState = { col: number; dir: "asc" | "desc" } | null;
 
 // --- Constants ---
 
-const FONT = '14px Inter, "Helvetica Neue", Helvetica, Arial, sans-serif';
 const LINE_HEIGHT = 20;
 const CELL_PAD_H = 24; // 12px each side
 const CELL_PAD_V = 16; // 8px top + 8px bottom
@@ -239,6 +238,37 @@ function measureMaxElementHeight(): number {
     cachedHeightCap = Math.max(1_000_000, lo - SCROLL_SPACER_SAFETY_PX);
   }
   return cachedHeightCap;
+}
+
+/**
+ * Canvas font string for the text `.sift-cell` paints. Row heights are only
+ * right when pretext measures the font the browser draws, and hosts theme that
+ * font through `--sift-font-family`. Size stays 14px: LINE_HEIGHT and the cell
+ * padding constants assume it. Returns DEFAULT_CELL_FONT when the container is
+ * detached or the family doesn't resolve (jsdom, styles not loaded yet).
+ */
+function resolveCellFont(container: HTMLElement): string {
+  if (!container.isConnected || typeof getComputedStyle !== "function") {
+    return DEFAULT_CELL_FONT;
+  }
+  const probe = document.createElement("div");
+  probe.className = "sift-root";
+  probe.style.cssText = "position:absolute;visibility:hidden;pointer-events:none";
+  const cell = document.createElement("div");
+  cell.className = "sift-cell";
+  probe.appendChild(cell);
+  container.appendChild(probe);
+  const family = getComputedStyle(cell).fontFamily.trim();
+  probe.remove();
+  if (!family || family.includes("var(")) return DEFAULT_CELL_FONT;
+  const font = `14px ${family}`;
+  // pretext throws a RangeError for a font string Canvas ignores.
+  try {
+    prepare("", font);
+  } catch {
+    return DEFAULT_CELL_FONT;
+  }
+  return font;
 }
 
 // --- Table Engine ---
@@ -329,11 +359,13 @@ export function createTable(
   // `null` means every row uses the collapsed cap.
   let focusedDataRow: number | null = null;
 
+  const cellFont = resolveCellFont(container);
+
   function prepareCellRow(r: number): CellCache[] {
     const row = Array.from<CellCache>({ length: columns.length });
     for (let c = 0; c < columns.length; c++) {
       row[c] = {
-        prepared: prepare(data.getCell(r, c), FONT),
+        prepared: prepare(data.getCell(r, c), cellFont),
         lastWidth: -1,
         lastHeight: 0,
         lastTruncated: false,
@@ -347,7 +379,7 @@ export function createTable(
 
   // Column widths — header-based floor, refined by sampled cell data
   const colWidths = columns.map((c) => c.width);
-  fitColumnWidths(data, colWidths);
+  fitColumnWidths(data, colWidths, undefined, cellFont);
 
   // --- Compute heights ---
 
@@ -375,7 +407,7 @@ export function createTable(
           cell.lastHeight = IMAGE_THUMB_MAX_HEIGHT;
           cell.lastTruncated = false;
         } else {
-          // Pretext returns lineCount alongside height in 0.0.6, so the
+          // layout() returns lineCount alongside height, so the
           // collapsed/expanded decision is free.
           const { height, lineCount } = layout(cell.prepared, cellW, LINE_HEIGHT);
           const overflows = lineCount > MAX_COLLAPSED_LINES;
@@ -2237,18 +2269,46 @@ export function createTable(
 
   // --- Boot ---
 
-  document.fonts.ready.then(() => {
+  // pretext caches segment widths per font string. Widths measured before a
+  // web font loads are the fallback font's, so a load has to clear that cache
+  // before cells are prepared again. `loadingdone` also covers faces that
+  // load after boot, such as a `unicode-range` subset first used by a later
+  // batch of rows. Loads of other families (a host's code font) are skipped:
+  // re-preparing touches every row the user has scrolled past.
+  const cellFamilies = cellFont
+    .slice(cellFont.indexOf(" ") + 1)
+    .split(",")
+    .map((f) =>
+      f
+        .trim()
+        .replace(/^["']|["']$/g, "")
+        .toLowerCase(),
+    );
+  function onFontsLoaded(event: Event) {
+    if (destroyed) return;
+    const faces = (event as Event & { fontfaces?: readonly FontFace[] }).fontfaces;
+    if (
+      faces &&
+      !faces.some((face) =>
+        cellFamilies.includes(face.family.replace(/^["']|["']$/g, "").toLowerCase()),
+      )
+    ) {
+      return;
+    }
+    clearCache();
     for (let r = 0; r < rowCount; r++) {
       const cache = cellCaches[r];
       if (!cache) continue;
       for (let c = 0; c < columns.length; c++) {
-        cache[c].prepared = prepare(data.getCell(r, c), FONT);
+        cache[c].prepared = prepare(data.getCell(r, c), cellFont);
         cache[c].lastWidth = -1;
       }
     }
     heightsDirty = true;
     scheduleRender();
-  });
+  }
+  const fontFaces = typeof document.fonts?.addEventListener === "function" ? document.fonts : null;
+  fontFaces?.addEventListener("loadingdone", onFontsLoaded);
 
   scheduleRender();
 
@@ -2348,6 +2408,7 @@ export function createTable(
     if (summaryDebounceTimer !== null) clearTimeout(summaryDebounceTimer);
 
     // Remove event listeners and observers
+    fontFaces?.removeEventListener("loadingdone", onFontsLoaded);
     headerResizeObserver?.disconnect();
     viewport.removeEventListener("scroll", onScroll);
 

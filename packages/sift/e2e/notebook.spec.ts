@@ -8,17 +8,16 @@ test.describe("Notebook Demo", () => {
   });
 
   test("renders multiple tables", async ({ page }) => {
+    // beforeEach waits for the first table only; the others mount as their
+    // copies of the file arrive, so poll instead of counting once.
     const tables = page.locator(".sift-table-container");
-    const count = await tables.count();
-    expect(count).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => tables.count(), { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
   });
 
   test("each table has its own status bar", async ({ page }) => {
     // Wait for data to load
-    await page.waitForSelector(".sift-stat-rows", { timeout: 10_000 });
     const statusBars = page.locator(".sift-stat-rows");
-    const count = await statusBars.count();
-    expect(count).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => statusBars.count(), { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
   });
 
   test("tables scroll independently", async ({ page }) => {
