@@ -24,10 +24,52 @@ export function agentGuide(env) {
   const origin = pagesPublicOrigin(env);
   return `# Pages
 
-## Start here: connecting Kilo or Codex
+## Start here: connect your agent
 
-MCP endpoint: ${origin}/mcp. Authentication: Anaconda API key, not MCP OAuth.
-Human setup: ${origin}/connect. Follow this order before investigating anything else:
+MCP endpoint: ${origin}/mcp. Human setup: ${origin}/connect.
+Choose the client section below before investigating authentication:
+
+- ChatGPT / cloud clients using the ChatGPT OAuth client: add the endpoint and
+  complete browser authorization. No API key is needed for this flow.
+- Kilo Desktop / CLI and Codex Desktop / CLI: use the API-key recipes below.
+- Other clients: use an Anaconda API key if they support bearer headers. This
+  prototype accepts the ChatGPT OAuth client; arbitrary OAuth client registration
+  is not enabled. Ask for client support instead of trying unrelated login flows.
+
+Ask the human for their step early, and prepare non-secret configuration in
+parallel. Only a successful list_pages call proves the connection works.
+
+### ChatGPT / cloud connection (OAuth)
+
+Add a custom MCP server in the client's connection or plugin settings:
+
+- Server URL: ${origin}/mcp
+- Authentication: OAuth with discovery / client metadata (CIMD)
+- Permissions: pages:read; add pages:write for editing and offline_access to
+  stay connected. Each Page's current sharing permissions still apply.
+
+The human follows the client's authorization link, signs in to Pages with
+Anaconda, checks the account and requested permissions, and approves. Pages
+issues credentials for this deployment's MCP endpoint; the client never receives
+an Anaconda API key or provider refresh token. Do not copy browser cookies.
+
+Discovery: ${origin}/.well-known/oauth-protected-resource/mcp and
+${origin}/.well-known/oauth-authorization-server. The supported ChatGPT client ID
+is https://chatgpt.com/oauth/client.json, with callback
+https://chatgpt.com/connector_platform_oauth_redirect. The predefined public
+client pages-chatgpt uses that same callback when a client ID is requested.
+PKCE S256 is required; no client secret is used. Do not invent a callback URL.
+If the client shows a different callback or registration error, report it for
+deployment configuration rather than asking the human for an API key it can't use.
+
+Refresh tokens rotate and expire after 30 days; reconnect when requested.
+OAuth credentials work on /mcp only, not the JSON API, sharing API, or native sync.
+After authorization, call list_pages from the actual connected chat. Dot's
+availability depends on its connection UI; a configured plugin alone isn't proof.
+
+### API-key connection: first ask the human
+
+For clients using the API-key recipes, follow this order:
 
 1. Check whether a key is already explicitly configured for Pages (a supplied
    secret path/header or ANACONDA_API_KEY / ANACONDA_AUTH_API_KEY). Check presence
@@ -54,7 +96,8 @@ Human setup: ${origin}/connect. Follow this order before investigating anything 
 
 Do not paste keys into chat, print resolved config/headers, or put credentials in
 URLs. For 401, check key presence, expiry, and provider environment once, then ask
-the human to replace the key through /connect. Do not try MCP OAuth login. For
+the human to replace the key through /connect. Do not switch an API-key recipe
+to MCP OAuth login. For
 403, check User Resources scopes and Page sharing permissions. Do not retry in a loop.
 
 ### Save the key privately (human step, macOS/Linux)
@@ -76,8 +119,8 @@ Once the key file is nonempty, merge this into the GLOBAL
 ~/.config/kilo/kilo.jsonc (respect XDG_CONFIG_HOME if customized). This is the
 Kilo Desktop/CLI format, not the legacy VS Code mcpServers format. Secret file
 references belong in global config; project configs may drop variable headers.
-The file contains the raw key only. oauth: false is required for this API-key
-endpoint; kilo mcp auth is not the setup path.
+The file contains the raw key only. oauth: false keeps this recipe on API-key
+authentication; kilo mcp auth is not the setup path for this recipe.
 
 \`\`\`json
 ${kiloConfig(origin)}
@@ -126,12 +169,13 @@ Realtime documents for people and agents. Markdown tools, comments, and browser
 edits use the same document. Pages start private. The owner can invite signed-in
 people as viewers or editors; document links alone do not grant access. Editors
 can write and comment, viewers can read, and only the owner can manage access or
-delete a Page. API-key scope further limits the account's Page permissions.
+delete a Page. Credential scope further limits the account's Page permissions.
 
 ## Authentication
 
 Browser: ${origin}/ — choose Sign In, or open ${origin}/api/auth/login.
-Agents: use an Anaconda API key for the same provider environment as browser
+Agents can authorize supported OAuth clients as described above, or use an
+Anaconda API key for the same provider environment as browser
 Sign In. Production and staging keys are not interchangeable. Browser sign-in
 cookies and API keys are separate credentials; an OIDC access token is not an
 API key.
@@ -313,8 +357,9 @@ For example, tools/call uses this JSON-RPC shape:
 
 The same operations and guards apply. Results contain JSON in content[].text;
 check result.isError even when HTTP succeeds. resources/list returns document
-links and resources/read reads those URLs. This endpoint does not provide an
-interactive MCP OAuth setup; configure the API-key Authorization header.
+links and resources/read reads those URLs. Supported OAuth clients use a Pages
+access token; other clients use an Anaconda API key. Both authenticate with
+Authorization: Bearer, using the connection instructions above.
 
 Tool edits sync into the browser editor and carry the account/driver label.
 Each tool batch is atomic: it does not stream keystrokes or publish an agent cursor.

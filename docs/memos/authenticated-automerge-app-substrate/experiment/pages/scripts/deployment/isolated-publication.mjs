@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
-import { routesFor } from "./routes.mjs";
+import { routesFor, oauthPaths } from "./routes.mjs";
 
 const accountId = "1cfb529b94b3d6cde3aaf49d1d6ed5e6";
 function publicationPaths(target) {
@@ -189,7 +189,9 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
       ? plan.config.replace("|mermaid[.]js|", "|")
       : target === "page5"
         ? plan.config.replace("|connect|connect[.]js|", "|")
-        : null;
+        : target === "page7"
+          ? plan.config.replace(oauthPaths, "")
+          : null;
   const previousReceipt = previousConfig === null ? null : receiptFor(previousConfig);
   const pendingReceipt =
     previousConfig === null
@@ -274,6 +276,24 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
       ["/api/access/private", "http_status:404"],
       ["/llms.txt", plan.listen],
       ["/oidc", plan.listen],
+      ["/oauth/authorize", target === "page7" ? plan.listen : "http_status:404"],
+      ["/oauth/token", target === "page7" ? plan.listen : "http_status:404"],
+      ["/oauth/revoke", target === "page7" ? plan.listen : "http_status:404"],
+      [
+        "/.well-known/oauth-protected-resource/mcp",
+        target === "page7" ? plan.listen : "http_status:404",
+      ],
+      [
+        "/.well-known/oauth-protected-resource",
+        target === "page7" ? plan.listen : "http_status:404",
+      ],
+      [
+        "/.well-known/oauth-authorization-server",
+        target === "page7" ? plan.listen : "http_status:404",
+      ],
+      ["/oauth/test/callback", "http_status:404"],
+      ["/oauth/token/private", "http_status:404"],
+      ["/.well-known/oauth-protected-resource/private", "http_status:404"],
       ["/state", "http_status:404"],
       ["/internal/create", "http_status:404"],
     ]) {

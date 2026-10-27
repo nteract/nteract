@@ -18,7 +18,7 @@ print("Key saved privately. Tell your agent it is ready.")
 '`;
 
 export function setupPrompt(origin) {
-  return `Configure Pages for ${origin}/ using the Kilo or Codex recipe at ${origin}/llms.txt. First check whether a Pages API key is already explicitly configured. If it is missing, ask me to open ${origin}/connect and save a key privately. Prepare the private folder, config draft, and any non-secret helper while I do that. Wait for the key before enabling the connection. Do not ask me to paste the key into chat. Preserve my other client settings. Once authenticated, call list_pages to verify the connection.`;
+  return `Configure Pages for ${origin}/ using the agent guide at ${origin}/llms.txt. Follow the connection method for this client. Ask me early to complete browser authorization or save an API key privately through ${origin}/connect, as needed. Prepare the non-secret settings while I do that. Do not ask me to paste credentials into chat or enable an empty-key connection. Preserve my other client settings. Once authenticated, call list_pages to verify the connection.`;
 }
 
 export function kiloConfig(origin) {

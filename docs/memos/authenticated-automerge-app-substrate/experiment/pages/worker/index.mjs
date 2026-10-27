@@ -19,6 +19,7 @@ import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model
 import { handleMcp } from "../mcp.mjs";
 import { agentGuideResponse } from "../agent-guide.mjs";
 import { connectAgentResponse } from "../connect-agent.mjs";
+import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
 import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import {
@@ -84,7 +85,8 @@ function forwarded(request, path, body) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
-  headers.set("x-pages-driver", driverLabel(request));
+  if (request.headers.has("x-pages-driver") || new URL(request.url).searchParams.has("driver"))
+    headers.set("x-pages-driver", driverLabel(request));
   headers.set("content-type", "application/json");
   return new Request(url, { method: "POST", headers, body: JSON.stringify(body) });
 }
@@ -121,6 +123,8 @@ export default {
       if (url.pathname === "/connect") return connectAgentResponse(request, env);
       if (url.pathname === "/llms.txt") return agentGuideResponse(request, env);
       if (url.pathname === "/health") return json({ ok: true, prototype: "pages-celld-native" });
+      const oauth = await handleOAuth(request, env);
+      if (oauth) return oauth;
       if (url.pathname === "/api/auth/login" && request.method === "GET")
         return beginServerOidcLogin(request, env);
       if (url.pathname === "/oidc") return completeServerOidcLogin(request, env, noop);
@@ -209,7 +213,10 @@ export default {
         return json({ error: "Not found" }, 404);
       return env.ASSETS.fetch(request);
     } catch (error) {
-      return errorResponse(error, "gateway");
+      const response = errorResponse(error, "gateway");
+      return new URL(request.url).pathname === "/mcp" && response.status === 401
+        ? mcpAuthChallenge(env, response)
+        : response;
     }
   },
 };

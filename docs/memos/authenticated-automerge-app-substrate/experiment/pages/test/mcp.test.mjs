@@ -160,3 +160,60 @@ test("MCP does not fall back to the request URL when public origin configuration
     handleMcpRequest(request("tools/list"), async () => Response.json({}), {}),
   );
 });
+
+test("MCP tool metadata declares the OAuth scopes needed by each operation", async () => {
+  const response = await handleMcp(request("tools/list"), async () =>
+    assert.fail("listing invoked an operation"),
+  );
+  const listed = (await response.json()).result.tools;
+  assert.equal(listed.length, tools.length);
+  for (const tool of listed) {
+    assert.deepEqual(
+      tool.securitySchemes,
+      [
+        {
+          type: "oauth2",
+          scopes: ["list_pages", "read_page"].includes(tool.name)
+            ? ["pages:read"]
+            : ["pages:read", "pages:write"],
+        },
+      ],
+      tool.name,
+    );
+  }
+});
+
+test("only verified OAuth credential failures produce tool reauthorization challenges", async () => {
+  for (const [token, status, code, expected] of [
+    ["pages_at_fixture", 401, "oauth_invalid_token", "invalid_token"],
+    ["pages_at_fixture", 403, "oauth_insufficient_scope", "insufficient_scope"],
+    ["pages_at_fixture", 403, undefined, undefined],
+    ["pages_at_fixture", 409, "oauth_insufficient_scope", undefined],
+    ["anaconda-fixture-key", 403, "oauth_insufficient_scope", undefined],
+    ["anaconda-fixture-key", 401, undefined, undefined],
+  ]) {
+    const req = request("tools/call", { name: "read_page", arguments: { page_id: pageId } });
+    req.headers.set("authorization", `Bearer ${token}`);
+    const response = await handleMcp(req, async () =>
+      Response.json({ error: "Denied", ...(code && { code }) }, { status }),
+    );
+    const result = (await response.json()).result;
+    assert.equal(result.isError, true);
+    if (!expected) {
+      assert.equal(result._meta, undefined);
+      continue;
+    }
+    const [challenge] = result._meta["mcp/www_authenticate"];
+    assert.match(challenge, new RegExp(`error="${expected}"`));
+    assert.match(challenge, /error_description="[^"\n]+"/);
+    assert.match(challenge, /scope="pages:read"/);
+    assert.ok(
+      challenge.includes(
+        'resource_metadata="https://pages.example/.well-known/oauth-protected-resource/mcp"',
+      ),
+    );
+    assert.equal(challenge.includes(token), false);
+    assert.equal(challenge.includes("untrusted.example"), false);
+    assert.equal(challenge.includes("127.0.0.1"), false);
+  }
+});

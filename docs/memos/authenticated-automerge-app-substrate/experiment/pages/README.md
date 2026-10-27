@@ -317,6 +317,29 @@ principal namespaces explicitly when those credentials represent the same
 Anaconda account. A driver label describes the authenticated client; it does not
 prove a particular application vendor or grant permissions.
 
+Pages also acts as an OAuth authorization server for MCP. ChatGPT's fixed client
+metadata URL is allowed explicitly; its registered callback, PKCE S256, requested
+resource, and scopes are validated before the existing Anaconda browser sign-in
+and a separate consent screen. Public client authentication is `none`; dynamic
+registration and arbitrary client-metadata fetching are not enabled. Authorization
+responses include the issuer (`iss`) so ChatGPT can use its stable callback.
+
+The SQL database holds session-bound consent requests and hashes of single-use
+codes and opaque Pages access/refresh tokens. Access tokens last ten minutes; optional
+refresh tokens rotate within an absolute thirty-day grant. Replaying a correctly
+bound authorization code or refresh token revokes its family. No Anaconda
+provider token leaves the server.
+Token scope and the current Page ACL intersect on every operation. These grants
+authorize `/mcp` only: they do not authorize the HTTP sharing API or native sync.
+`pages:read` permits reading, and `pages:write` adds creation, editing, comments,
+and deletion where the account's Page role permits it. `offline_access` requests
+a refresh token. Token refresh does not renew verified-email invitation proof.
+
+`/connect` and `/llms.txt` describe OAuth for ChatGPT and API-key recipes for
+Kilo, Codex, and other bearer-header clients. The generic setup prompt points to
+the agent guide. Agents can prepare non-secret settings while the human completes
+authorization; a successful `list_pages` call is the connection check.
+
 The native handshake proves possession of the peer signing key. Before adding
 that connection to the backend, the host binds its verified peer ID to the
 credential-authenticated account and driver. Native storage and ephemeral
@@ -452,7 +475,7 @@ tombstones remain permanent; this is not arbitrary history or tombstone GC.
 
 ## API
 
-Public `GET /llms.txt` (also `HEAD`) explains API-key authentication, driver
+Public `GET /llms.txt` (also `HEAD`) explains OAuth and API-key authentication, driver
 attribution, MCP discovery, and guarded Markdown edits. The initial HTML links
 the guide so agents can discover it without running JavaScript. Guide URLs use
 the configured public origin; no account or document data is included.
@@ -460,12 +483,18 @@ the configured public origin; no account or document data is included.
 - `POST /api/tools` with `{operation, arguments}` provides list/create/read,
   structural edits, literal Markdown patches, comments, and deletion.
 - `POST /mcp` exposes the same authorized operations through Streamable HTTP MCP.
-  Use `Authorization: Bearer <Anaconda API key>` and optionally
+  Use `Authorization: Bearer <Pages OAuth access token or Anaconda API key>` and optionally
   `X-Pages-Driver: ChatGPT` (or another driver label).
 - `GET /api/connect?page=<id>` returns the native document ID, host peer ID,
   authenticated identity, and capability projection.
 - `GET /api/sync?page=<id>` upgrades to the native Subduction binary protocol.
 - `POST /api/saved?page=<id>` accepts `{heads}` and returns a durable frontier.
+- OAuth discovery is public at `/.well-known/oauth-protected-resource/mcp`
+  (also the root resource-metadata path) and `/.well-known/oauth-authorization-server`.
+  `/oauth/authorize` handles sign-in and consent; `/oauth/token` exchanges codes
+  or refresh tokens; `/oauth/revoke` revokes the supplied credential's grant.
+  These endpoints are published only on Page7's isolated tunnel. Earlier target
+  route definitions remain byte-identical.
 
 `edit_page` supports `insert_markdown` and `move_block` with `after_block_id`:
 use a stable block ID to insert after it, `null` to put the block first, or omit

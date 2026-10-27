@@ -53,11 +53,20 @@ export function connectAgentResponse(request, env) {
 <main class="agent-setup">
   <h1>Connect an agent</h1>
   <p class="setup-intro">Let your agent read, edit, and comment on your Pages.</p>
-  <p><strong>Start with your API key.</strong> Signing in to Pages doesn't connect Kilo or Codex. Your agent can prepare the settings while you complete steps 1 and 2. Then tell it you're ready to connect. Keep the key out of chat.</p>
+  <p>Choose your client's connection method below. Your agent can prepare the settings while you authorize access.</p>
   <details class="setup-details"><summary>Give your agent the setup steps</summary>
     <pre class="setup-value"><code id="setup-prompt">${escapeHtml(setupPrompt(setup.origin))}</code></pre>
     <button type="button" class="setup-copy" data-copy="setup-prompt" data-copy-message="Setup instructions copied. Paste them into your agent chat." hidden>Copy setup instructions</button>
   </details>
+  <section aria-labelledby="setup-oauth"><h2 id="setup-oauth">ChatGPT and cloud clients</h2>
+    <p>Add a custom MCP server in your client's connection settings, choose <strong>OAuth</strong>, and enter this server URL:</p>
+    <pre class="setup-value"><code id="oauth-endpoint">${escapeHtml(setup.endpoint)}</code></pre>
+    <button type="button" class="setup-copy" data-copy="oauth-endpoint" data-copy-message="Server URL copied. Add it to your client's MCP connections and choose OAuth." hidden>Copy server URL</button>
+    <p>Follow the client's sign-in link, check your Pages account and permissions, then approve access. You don't need to create or transfer an API key.</p>
+    <p class="setup-note">This deployment supports the ChatGPT OAuth client. Client metadata and permissions are discovered automatically. If your client asks for manual details or reports a different callback, follow the <a href="/llms.txt">agent guide</a>. Other OAuth clients need deployment support.</p>
+  </section>
+  <h2>Clients using an API key</h2>
+  <p>For the Kilo and Codex recipes below, create and save a key first. Your agent can prepare a config draft while you do this; tell it when the key is ready. Keep the key out of chat.</p>
   <section aria-labelledby="setup-key"><h2 id="setup-key"><span>1</span> Create an API key</h2>${keyInstructions}</section>
   <section aria-labelledby="setup-save"><h2 id="setup-save"><span>2</span> Save it privately</h2>
     <p>Kilo and Codex can use the same local key file: <code>${keyFile}</code>. Your agent configures the connection; you enter the key.</p>
@@ -75,7 +84,7 @@ export function connectAgentResponse(request, env) {
       <p>Merge into <code>~/.config/kilo/kilo.jsonc</code>, the global config (or your customized XDG config directory). Use this after the key file exists and is nonempty.</p>
       <pre class="setup-value"><code id="kilo-config">${escapeHtml(kiloConfig(setup.origin))}</code></pre>
       <button type="button" class="setup-copy" data-copy="kilo-config" data-copy-message="Kilo config copied. Merge it into global config after saving your key." hidden>Copy Kilo config</button>
-      <p><code>oauth: false</code> keeps Kilo on API-key authentication. Don't use <code>kilo mcp auth</code> for Pages. Reload the server or restart Kilo, then ask it to list your Pages.</p>
+      <p><code>oauth: false</code> keeps this recipe on API-key authentication. Don't use <code>kilo mcp auth</code> with this recipe. Reload the server or restart Kilo, then ask it to list your Pages.</p>
       <p class="setup-note">This is the Desktop/CLI format. Project configs and the older VS Code extension use different rules. <a href="https://kilo.ai/docs/automate/mcp/using-in-cli">Kilo configuration reference</a></p>
     </details>
     <details class="setup-details" id="codex"><summary>Codex Desktop / CLI</summary>

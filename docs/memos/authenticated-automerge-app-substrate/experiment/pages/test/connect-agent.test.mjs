@@ -52,7 +52,8 @@ test("setup is public, uses configured destinations, and never reflects credenti
     "https://anaconda.com/app/profile/api-keys",
   );
   assert.equal(dom.querySelectorAll("input, textarea, form").length, 0);
-  assert.equal(dom.querySelectorAll("[data-copy][hidden]").length, 7);
+  assert.equal(dom.querySelectorAll("[data-copy][hidden]").length, 8);
+  assert.equal(dom.getElementById("oauth-endpoint").textContent, origin + "/mcp");
   assert.equal(dom.getElementById("kilo-config").textContent, kiloConfig(origin));
   assert.equal(dom.getElementById("codex-config").textContent, codexConfig(origin));
   assert.equal(dom.getElementById("setup-prompt").textContent, setupPrompt(origin));

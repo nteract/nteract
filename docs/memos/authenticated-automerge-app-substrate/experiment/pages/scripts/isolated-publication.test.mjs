@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
-import { routesFor } from "./deployment/routes.mjs";
+import { routesFor, oauthPaths } from "./deployment/routes.mjs";
 import { deploymentProfile } from "./deployment/profiles.mjs";
 import { isolatedPublicationPlan, publishIsolated } from "./deployment/isolated-publication.mjs";
 
@@ -252,7 +252,9 @@ const digest = (text) => createHash("sha256").update(text).digest("hex");
 function priorConfig(config, target) {
   return target === "page5"
     ? config.replace("|connect|connect[.]js|", "|")
-    : config.replace("|mermaid[.]js|", "|");
+    : target === "page7"
+      ? config.replace(oauthPaths, "")
+      : config.replace("|mermaid[.]js|", "|");
 }
 function previousInstallation(f, { pending = false, newConfig = false } = {}) {
   const plan = isolatedPublicationPlan(inputFor(f.target));
@@ -292,7 +294,29 @@ test("page3 admits the exact Mermaid asset path; existing pages-next routes stay
     assert.equal(current.test(path), false, path);
 });
 
-for (const target of ["page3", "page5"]) {
+test("OAuth publishes only exact Page7 routes while previous targets remain closed", () => {
+  for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7"]) {
+    const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
+    for (const pathname of [
+      "/oauth/authorize",
+      "/oauth/token",
+      "/oauth/revoke",
+      "/.well-known/oauth-protected-resource",
+      "/.well-known/oauth-protected-resource/mcp",
+      "/.well-known/oauth-authorization-server",
+    ])
+      assert.equal(route.test(pathname), target === "page7", `${target}: ${pathname}`);
+    for (const pathname of [
+      "/oauth/register",
+      "/oauth/test/callback",
+      "/oauth/token/private",
+      "/.well-known/oauth-protected-resource/private",
+    ])
+      assert.equal(route.test(pathname), false, `${target}: ${pathname}`);
+  }
+});
+
+for (const target of ["page3", "page5", "page7"]) {
   test(`${target} known route upgrade restarts only its dedicated connector then becomes a no-op`, (t) => {
     const f = fixture(t, { target });
     const expected = previousInstallation(f);

@@ -1,10 +1,13 @@
 import { authenticateAnacondaApiKeyRequest } from "@cloud/identity.ts";
 import { readServerAppSession } from "@cloud/oidc-session-store.ts";
+import { pagesPublicOrigin } from "../agent-guide.mjs";
+import { readAccessToken } from "./oauth-store.mjs";
 
 export class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -28,7 +31,18 @@ export function requireSameOrigin(request, env) {
   const changesState =
     !["GET", "HEAD", "OPTIONS"].includes(request.method) ||
     request.headers.get("upgrade")?.toLowerCase() === "websocket";
-  if (changesState && !request.headers.has("authorization") && supplied !== origin)
+  // A new MCP client needs a 401 challenge to discover OAuth before it has a
+  // credential. This exception never authorizes an operation or a foreign Origin.
+  const discoveringMcp =
+    new URL(request.url).pathname === "/mcp" &&
+    !request.headers.has("authorization") &&
+    !request.headers.has("cookie");
+  if (
+    changesState &&
+    !discoveringMcp &&
+    !request.headers.has("authorization") &&
+    supplied !== origin
+  )
     throw new HttpError(403, "Origin is required");
 }
 
@@ -37,7 +51,44 @@ export async function authenticate(request, env) {
   const driver = driverLabel(request);
   const authorization = request.headers.get("authorization");
   if (authorization) {
-    if (!/^Bearer \S+$/i.test(authorization)) throw new HttpError(401, "Use an Anaconda API key");
+    if (!/^Bearer \S+$/i.test(authorization)) throw new HttpError(401, "Use a bearer credential");
+    const token = authorization.slice(7);
+    if (token.startsWith("pages_")) {
+      // Internal routes are only reachable through host namespace forwarding.
+      // An MCP grant cannot be used to change ACLs or open a native sync socket.
+      if (
+        ![
+          "/mcp",
+          "/internal/catalog",
+          "/internal/tool",
+          "/internal/create",
+          "/internal/delete",
+        ].includes(new URL(request.url).pathname)
+      )
+        throw new HttpError(403, "This credential is limited to Pages MCP");
+      const grant = await readAccessToken(env, token, {
+        resource: pagesPublicOrigin(env) + "/mcp",
+      });
+      if (!grant) throw new HttpError(401, "Reconnect your Pages client", "oauth_invalid_token");
+      const scopes = new Set(grant.scope.split(" "));
+      if (!scopes.has("pages:read"))
+        throw new HttpError(403, "Pages read permission is required", "oauth_insufficient_scope");
+      return Object.freeze({
+        principal: grant.identity.principal,
+        displayName: grant.identity.displayName || grant.identity.principal,
+        driver:
+          request.headers.has("x-pages-driver") || new URL(request.url).searchParams.has("driver")
+            ? driver
+            : ["pages-chatgpt", "https://chatgpt.com/oauth/client.json"].includes(grant.clientId)
+              ? "ChatGPT"
+              : "MCP",
+        canWrite: scopes.has("pages:write"),
+        credentialKind: "oauth",
+        namespace: grant.identity.namespace,
+        emailProof: grant.identity.emailProof,
+        expiresAt: grant.expiresAt * 1000,
+      });
+    }
     // Caller identity/scope/operator headers are never forwarded to the verifier.
     const verify = (scope) =>
       authenticateAnacondaApiKeyRequest(
@@ -71,6 +122,7 @@ export async function authenticate(request, env) {
       expiresAt: Date.now() + 60_000,
     });
   }
+  if (!request.headers.has("cookie")) throw new HttpError(401, "Sign in to Pages");
   const session = await readServerAppSession(env, request, Math.floor(Date.now() / 1000));
   if (!session) throw new HttpError(401, "Sign in to Pages");
   return Object.freeze({
@@ -92,7 +144,12 @@ export async function authenticate(request, env) {
 }
 
 export function requireWrite(identity) {
-  if (!identity.canWrite) throw new HttpError(403, "This credential is read-only");
+  if (!identity.canWrite)
+    throw new HttpError(
+      403,
+      "This credential is read-only",
+      identity.credentialKind === "oauth" ? "oauth_insufficient_scope" : undefined,
+    );
 }
 
 // Structured categories only: provider exceptions can contain credentials or bodies.
@@ -125,6 +182,8 @@ export function errorResponse(error, stage = "request") {
     {
       error: status < 500 ? error.message : "Pages request failed",
       ...([
+        "oauth_invalid_token",
+        "oauth_insufficient_scope",
         "retry_expired",
         "invalid_retry_token",
         "idempotency_conflict",

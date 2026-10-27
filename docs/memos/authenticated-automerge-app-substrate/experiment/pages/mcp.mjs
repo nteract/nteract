@@ -70,6 +70,12 @@ const tool = (name, description, properties, required = [], annotations) => ({
   description,
   inputSchema: { type: "object", properties, required, additionalProperties: false },
   ...(annotations ? { annotations } : {}),
+  securitySchemes: [
+    {
+      type: "oauth2",
+      scopes: annotations?.readOnlyHint ? ["pages:read"] : ["pages:read", "pages:write"],
+    },
+  ],
 });
 export const tools = [
   tool(
@@ -209,8 +215,8 @@ export async function handleMcp(request, invoke, env) {
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
   server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
-    if (!tools.some((tool) => tool.name === params.name))
-      return { isError: true, content: [{ type: "text", text: "Unknown tool" }] };
+    const descriptor = tools.find((tool) => tool.name === params.name);
+    if (!descriptor) return { isError: true, content: [{ type: "text", text: "Unknown tool" }] };
     try {
       const result = await invoke(params.name, params.arguments ?? {});
       const body = await result.json();
@@ -222,8 +228,25 @@ export async function handleMcp(request, invoke, env) {
             url: new URL(pagePath(page.page_id), origin).href,
           }));
       }
+      // Only our credential errors can request account reauthorization. A Page
+      // ACL denial cannot be repaired by granting broader OAuth scopes.
+      const oauthError =
+        /^Bearer pages_\S+$/i.test(request.headers.get("authorization") ?? "") &&
+        (result.status === 401 && body.code === "oauth_invalid_token"
+          ? "invalid_token"
+          : result.status === 403 && body.code === "oauth_insufficient_scope"
+            ? "insufficient_scope"
+            : null);
+      const authMeta = oauthError
+        ? {
+            "mcp/www_authenticate": [
+              `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp", error="${oauthError}", error_description="${oauthError === "invalid_token" ? "Reconnect your Pages account to continue" : "Allow the requested Pages permissions to continue"}", scope="${descriptor.securitySchemes[0].scopes.join(" ")}"`,
+            ],
+          }
+        : undefined;
       return {
         ...(result.ok ? {} : { isError: true }),
+        ...(authMeta && { _meta: authMeta }),
         content: [{ type: "text", text: JSON.stringify(body) }],
       };
     } catch {
