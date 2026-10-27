@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { NTERACT_HOST_OUTSIDE_INTERACTION_EVENT } from "./events";
@@ -814,9 +814,12 @@ function CategoryPopoverContent({
   onFilter: FilterCallback;
   scope?: SummaryScope;
 }) {
-  // The checkbox domain is the resident values. Say so when the dataset has
-  // rows that are not loaded, so "All" is not read as "every value in the file".
+  // The checkbox domain is the resident values. When the dataset has rows that
+  // are not loaded, a note beside the controls says so; the search box and the
+  // "All" button point at it through aria-describedby so the familiar labels
+  // stay short and the caveat still reaches assistive technology.
   const loadedOnly = scope?.distribution.scope === "loaded";
+  const scopeNoteId = useId();
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
@@ -938,11 +941,8 @@ function CategoryPopoverContent({
         ref={inputRef}
         className="sift-cat-popover-search"
         type="text"
-        placeholder={
-          loadedOnly
-            ? `Search ${allCategories.length} loaded values…`
-            : `Search ${allCategories.length} values…`
-        }
+        placeholder={`Search ${allCategories.length} values…`}
+        aria-describedby={loadedOnly ? scopeNoteId : undefined}
         value={searchInput}
         onChange={(e) => {
           setSearchInput(e.target.value);
@@ -950,14 +950,26 @@ function CategoryPopoverContent({
         }}
       />
       <div className="sift-cat-popover-actions">
-        <button onClick={selectAll} className="sift-cat-popover-btn">
-          {loadedOnly ? "All loaded" : "All"}
+        <button
+          onClick={selectAll}
+          className="sift-cat-popover-btn"
+          aria-describedby={loadedOnly ? scopeNoteId : undefined}
+        >
+          All
         </button>
         <button onClick={clearAll} className="sift-cat-popover-btn">
           None
         </button>
         <span className="sift-cat-popover-count">{selectedCount} selected</span>
       </div>
+      {loadedOnly && (
+        <p id={scopeNoteId} className="sift-cat-popover-scope" data-scope="loaded">
+          Values from loaded rows
+          {scope?.rows.dataset
+            ? ` · ${scope.rows.loaded.toLocaleString()} of ${scope.rows.dataset.value.toLocaleString()}`
+            : ""}
+        </p>
+      )}
       <div
         ref={listRef}
         className="sift-cat-popover-list"

@@ -259,8 +259,9 @@ The header renders these as text. The histogram and its brush domain stay over
 loaded rows. When the file has more rows than are loaded, a numeric or timestamp
 header adds a line with the whole-file bounds ("0 – 100 · whole file", with "≈"
 when the bounds are inexact), the null percentage names its scope ("20% null ·
-whole file" or "20% null · loaded rows"), the category popover says "Search N
-loaded values…" and "All loaded", and a boolean column keeps its loaded-rows bar
+whole file" or "20% null · loaded rows"), the category popover keeps its "Search
+N values…" and "All" controls and adds a note "Values from loaded rows · N of M"
+that both controls reference through `aria-describedby`, and a boolean column keeps its loaded-rows bar
 and shows whole-file nulls on a separate line. Captions carry `data-scope` and
 `data-precision` attributes. `TableEngineState.loadedCount` reports resident
 rows alongside `totalCount`, which keeps its current meaning.

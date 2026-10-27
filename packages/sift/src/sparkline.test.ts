@@ -383,10 +383,19 @@ describe("metric scope", () => {
       });
       const popover = document.querySelector(".sift-cat-popover");
       expect(popover?.getAttribute("data-scope")).toBe("loaded");
-      expect(
-        popover?.querySelector<HTMLInputElement>(".sift-cat-popover-search")?.placeholder,
-      ).toBe("Search 2 loaded values…");
-      expect(popover?.querySelector(".sift-cat-popover-btn")?.textContent).toBe("All loaded");
+      // Familiar labels; the loaded-rows caveat is a visible note that the
+      // search box and "All" reference for assistive technology.
+      const search = popover?.querySelector<HTMLInputElement>(".sift-cat-popover-search");
+      const all = popover?.querySelector<HTMLButtonElement>(".sift-cat-popover-btn");
+      const note = popover?.querySelector<HTMLElement>(".sift-cat-popover-scope");
+      expect(search?.placeholder).toBe("Search 2 values…");
+      expect(all?.textContent).toBe("All");
+      expect(note?.textContent).toBe(
+        `Values from loaded rows · 10 of ${datasetRows.value.toLocaleString()}`,
+      );
+      expect(note?.id).toBeTruthy();
+      expect(search?.getAttribute("aria-describedby")).toBe(note?.id);
+      expect(all?.getAttribute("aria-describedby")).toBe(note?.id);
     } finally {
       view.cleanup();
     }
