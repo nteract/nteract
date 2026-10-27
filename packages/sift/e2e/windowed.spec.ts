@@ -76,3 +76,64 @@ test.describe("Windowed data (resident adapter)", () => {
     await settled(page);
   });
 });
+
+test.describe("Windowed data: scrolling into unresolved rows", () => {
+  test("holds the viewport and never repaints delivered rows as placeholders", async ({ page }) => {
+    await page.goto("/?dataset=generated&windowed=1");
+    await page.waitForSelector(".sift-table-container");
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /100,000/, {
+      timeout: 15_000,
+    });
+    await expect(page.locator(".sift-table-container")).toHaveAttribute("aria-busy", "false");
+
+    // Jump deep into unresolved rows and sample every frame for two seconds:
+    // windows land, measured heights replace estimates (rows above the viewport
+    // too, which moves scrollTop), and the anchor keeps the same row at the top.
+    const sample = await page.evaluate(
+      () =>
+        new Promise<{
+          frames: number;
+          topRows: number[];
+          allPlaceholderAfterResolved: number;
+        }>((resolve) => {
+          const viewport = document.querySelector<HTMLElement>(".sift-viewport")!;
+          viewport.scrollTop = 12_000;
+          const start = performance.now();
+          let frames = 0;
+          let sawResolved = false;
+          let allPlaceholderAfterResolved = 0;
+          const topRows: number[] = [];
+          const tick = () => {
+            frames++;
+            const vp = viewport.getBoundingClientRect();
+            const header = document.querySelector<HTMLElement>(".sift-header")!.offsetHeight;
+            const visible = [...document.querySelectorAll<HTMLElement>(".sift-row")].filter(
+              (row) => {
+                if (row.style.display === "none") return false;
+                const r = row.getBoundingClientRect();
+                return r.bottom > vp.top + header && r.top < vp.bottom;
+              },
+            );
+            const placeholders = visible.filter((row) => row.querySelector(".sift-cell-skeleton"));
+            if (visible.length > 0 && placeholders.length < visible.length) sawResolved = true;
+            if (sawResolved && visible.length > 0) {
+              if (placeholders.length === visible.length) allPlaceholderAfterResolved++;
+              const top = visible.reduce((best, row) =>
+                row.getBoundingClientRect().top < best.getBoundingClientRect().top ? row : best,
+              );
+              topRows.push(Number(top.getAttribute("aria-rowindex")));
+            }
+            if (performance.now() - start < 2000) requestAnimationFrame(tick);
+            else resolve({ frames, topRows, allPlaceholderAfterResolved });
+          };
+          requestAnimationFrame(tick);
+        }),
+    );
+    expect(sample.frames).toBeGreaterThan(30);
+    expect(sample.allPlaceholderAfterResolved).toBe(0);
+    // The row at the top of the viewport stays put (±1 for a partially shown row).
+    expect(sample.topRows.length).toBeGreaterThan(0);
+    expect(Math.max(...sample.topRows) - Math.min(...sample.topRows)).toBeLessThanOrEqual(1);
+    await expect(page.locator(".sift-row:visible .sift-cell-skeleton")).toHaveCount(0);
+  });
+});

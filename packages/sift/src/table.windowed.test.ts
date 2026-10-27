@@ -443,3 +443,279 @@ describe("createTable over WindowedTableData", () => {
     expect(skeletons(container)).toBe(0);
   });
 });
+
+/**
+ * QA findings on #4504: appends must not repaint delivered rows as placeholders
+ * or move the viewport, and a refused or dead data side must not erase cells.
+ */
+describe("windowed appends and failures keep the painted snapshot", () => {
+  let container: HTMLDivElement;
+  let rows: unknown[][];
+  let source: TableData;
+  let harness: ReturnType<typeof delayed>;
+  let engine: TableEngine;
+
+  type Painted = { text: string | undefined; height: string; transform: string }[];
+  /** Text, height, and transform of every shown pooled row, by view row. */
+  function painted(): Painted {
+    return [...container.querySelectorAll<HTMLElement>(".sift-row")]
+      .filter((row) => row.style.display !== "none")
+      .sort(
+        (a, b) => Number(a.getAttribute("aria-rowindex")) - Number(b.getAttribute("aria-rowindex")),
+      )
+      .map((row) => ({
+        text: row.querySelectorAll(".sift-cell")[1]?.textContent ?? undefined,
+        height: row.style.height,
+        transform: row.style.transform,
+      }));
+  }
+  const viewport = () => container.querySelector<HTMLElement>(".sift-viewport")!;
+  /** Skeleton cells in shown rows; released pooled rows are hidden, not cleared. */
+  const shownSkeletons = () =>
+    [...container.querySelectorAll<HTMLElement>(".sift-row")]
+      .filter((row) => row.style.display !== "none")
+      .reduce((n, row) => n + row.querySelectorAll(".sift-cell-skeleton").length, 0);
+
+  function mount(data: WindowedTableData, options?: Parameters<typeof createTable>[2]) {
+    engine = createTable(container, data, options);
+    Object.defineProperty(viewport(), "clientHeight", { value: 400, configurable: true });
+    viewport().dispatchEvent(new Event("scroll"));
+    return engine;
+  }
+
+  async function settle() {
+    await frame();
+    await harness.releaseAll();
+    await frame();
+    await harness.releaseAll();
+    await frame();
+  }
+
+  function append(count: number) {
+    for (let i = 0; i < count; i++) {
+      const id = rows.length + 1;
+      rows.push([id, `Person ${id - 1}`, 500 + i, true]);
+    }
+    source.rowCount = rows.length;
+    harness.inner.notifyAppended();
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    rows = makeRows(60);
+    source = makeTableData(rows);
+    harness = delayed(createResidentWindowedData(source, { headRows: 10 }));
+  });
+
+  afterEach(() => {
+    engine?.destroy();
+    container.remove();
+    vi.useRealTimers();
+  });
+
+  it("(a) identity append at the head: painted rows and scrollTop never change while the window is held", async () => {
+    mount(harness.data);
+    await settle();
+    const before = painted();
+    expect(before.length).toBeGreaterThan(10);
+    expect(before[0].text).toBe("Person 0");
+    expect(skeletons(container)).toBe(0);
+    const scrollTop = viewport().scrollTop;
+
+    append(5);
+    expect(engine.getState()).toMatchObject({ pending: false, filteredCount: 65, totalCount: 65 });
+    expect(footer(container)).toBe("65 rows");
+    // The new rows' window is held across several frames.
+    for (let i = 0; i < 3; i++) {
+      await frame();
+      const now = painted().slice(0, before.length);
+      expect(now).toEqual(before);
+      expect(viewport().scrollTop).toBe(scrollTop);
+    }
+    expect(harness.pending()).toEqual([]);
+    // Nothing visible is unresolved: the new rows sit below the viewport.
+    expect(container.getAttribute("aria-busy")).toBe("false");
+    await settle();
+    expect(painted().slice(0, before.length)).toEqual(before);
+  });
+
+  it("(b) identity append beyond the head: the resolved window stays painted and the viewport holds", async () => {
+    mount(harness.data);
+    await settle();
+    // Scroll to a window past the head and let it resolve.
+    viewport().scrollTop = 30 * 36;
+    viewport().dispatchEvent(new Event("scroll"));
+    await settle();
+    const before = painted();
+    expect(before.some((row) => row.text === "Person 35")).toBe(true);
+    expect(shownSkeletons()).toBe(0);
+    const scrollTop = viewport().scrollTop;
+    expect(scrollTop).toBe(30 * 36);
+
+    append(5);
+    for (let i = 0; i < 3; i++) {
+      await frame();
+      expect(painted().slice(0, before.length)).toEqual(before);
+      expect(viewport().scrollTop).toBe(scrollTop);
+      // Only the appended rows (view rows 60+, below the viewport) are placeholders.
+      const placeholderRows = [...container.querySelectorAll<HTMLElement>(".sift-row")]
+        .filter((row) => row.style.display !== "none" && row.querySelector(".sift-cell-skeleton"))
+        .map((row) => Number(row.getAttribute("aria-rowindex")) - 2);
+      expect(placeholderRows.every((r) => r >= 60)).toBe(true);
+    }
+    await settle();
+    expect(shownSkeletons()).toBe(0);
+    expect(painted().slice(0, before.length)).toEqual(before);
+    expect(viewport().scrollTop).toBe(scrollTop);
+    expect(engine.getState().filteredCount).toBe(65);
+  });
+
+  it("(c) sorted append: the snapshot stays until query and window commit together under the anchor", async () => {
+    const onChange = vi.fn();
+    mount(harness.data, { onChange });
+    engine.setSort("score", "desc");
+    await settle();
+    viewport().scrollTop = 5 * 36;
+    viewport().dispatchEvent(new Event("scroll"));
+    await settle();
+    const before = painted();
+    expect(shownSkeletons()).toBe(0);
+    const scrollTop = viewport().scrollTop;
+
+    append(1); // score 500 sorts first and shifts every row down by one
+    expect(engine.getState()).toMatchObject({ pending: true, totalCount: 61, filteredCount: 60 });
+    expect(harness.pending()).toEqual(["query"]);
+    await frame();
+    expect(painted()).toEqual(before);
+
+    await harness.release("query");
+    // The answer is reported, the rows are not touched yet.
+    expect(engine.getState()).toMatchObject({ pending: false, filteredCount: 61 });
+    expect(footer(container)).toBe("61 rows");
+    expect(harness.pending()).toEqual(["window"]);
+    for (let i = 0; i < 3; i++) {
+      await frame();
+      expect(painted()).toEqual(before);
+      expect(viewport().scrollTop).toBe(scrollTop);
+      expect(harness.pending()).toEqual(["window"]);
+    }
+
+    await harness.release("window");
+    await frame();
+    // Committed in one frame: no placeholder, every row shifted down by the
+    // new first row, and the anchored view row keeps its offset.
+    expect(shownSkeletons()).toBe(0);
+    const after = painted();
+    expect(after[0].text).toBe("Person 60");
+    for (let i = 1; i < before.length; i++) expect(after[i].text).toBe(before[i - 1].text);
+    expect(after.map((r) => r.transform)).toEqual(before.map((r) => r.transform));
+    expect(viewport().scrollTop).toBe(scrollTop);
+    expect(engine.getState().filteredCount).toBe(61);
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ filteredCount: 61 }));
+  });
+
+  it("(d) a superseding query during a held sorted append discards the pending commit", async () => {
+    mount(harness.data);
+    engine.setSort("score", "desc");
+    await settle();
+    const before = painted();
+
+    append(1);
+    await harness.release("query");
+    expect(harness.pending()).toEqual(["window"]);
+    expect(footer(container)).toBe("61 rows");
+
+    // The user filters before the append's window lands.
+    engine.setFilter(3, { kind: "boolean", value: false });
+    expect(engine.getState().pending).toBe(true);
+    await harness.release("window"); // the held append window: dropped
+    await frame();
+    // The held answer (61) never committed; the snapshot's count still reports.
+    expect(engine.getState()).toMatchObject({ pending: true, filteredCount: 60 });
+    expect(footer(container)).toBe("60 of 61 rows");
+
+    await harness.release("query");
+    const expected = rows.filter((row) => row[3] === false).length;
+    expect(engine.getState()).toMatchObject({ pending: false, filteredCount: expected });
+    await settle();
+    expect(shownSkeletons()).toBe(0);
+    expect(before.length).toBeGreaterThan(0);
+    const activeCells = [...container.querySelectorAll<HTMLElement>(".sift-row")]
+      .filter((row) => row.style.display !== "none")
+      .map((row) => row.querySelectorAll(".sift-cell")[3]?.textContent);
+    expect(new Set(activeCells)).toEqual(new Set(["No"]));
+  });
+
+  it("a refused query after a sort click puts the delivered cells back; a fatal event disables the tools", async () => {
+    // Forward the adapter's events and allow the test to inject a fatal one.
+    const listeners = new Set<
+      (event: Parameters<Parameters<WindowedTableData["subscribe"]>[0]>[0]) => void
+    >();
+    const data: WindowedTableData = {
+      ...harness.data,
+      get columns() {
+        return harness.inner.columns;
+      },
+      get rowCount() {
+        return harness.inner.rowCount;
+      },
+      get head() {
+        return harness.inner.head;
+      },
+      subscribe(listener) {
+        listeners.add(listener);
+        const off = harness.data.subscribe(listener);
+        return () => {
+          listeners.delete(listener);
+          off();
+        };
+      },
+    };
+    const onChange = vi.fn();
+    mount(data, { onChange });
+    await settle();
+    const before = painted();
+    expect(before[0].text).toBe("Person 0");
+
+    // The data side is dead: every query rejects.
+    vi.spyOn(harness.inner, "setQuery").mockImplementation(() =>
+      Promise.reject(new Error("worker terminated")),
+    );
+    engine.setSort("score", "desc");
+    expect(engine.getState().pending).toBe(true);
+    await frame();
+    expect(skeletons(container)).toBeGreaterThan(0); // the deliberate change shows placeholders
+    await harness.release("query");
+    expect(engine.getState()).toMatchObject({ pending: false, dataFailed: false });
+    await frame();
+    // Rejected: the snapshot is back, no placeholder remains.
+    expect(shownSkeletons()).toBe(0);
+    expect(painted().map((r) => r.text)).toEqual(before.map((r) => r.text));
+    expect(footer(container)).toBe("60 rows");
+
+    // The fatal event: rows stay, tools go.
+    for (const listener of listeners) {
+      listener({ type: "error", message: "worker terminated", fatal: true });
+    }
+    expect(engine.getState().dataFailed).toBe(true);
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ dataFailed: true }));
+    expect(painted().map((r) => r.text)).toEqual(before.map((r) => r.text));
+    const scoreTop = container.querySelector<HTMLElement>('.sift-th[data-col="2"] .sift-th-top')!;
+    expect(scoreTop.getAttribute("aria-disabled")).toBe("true");
+    expect(scoreTop.title).toBe("Data source stopped; table tools are unavailable");
+    const sortBefore = engine.getSort();
+    scoreTop.click();
+    expect(engine.getSort()).toEqual(sortBefore);
+    expect(harness.pending()).toEqual([]);
+    // Filters would need a query too: popovers, pills, and the API are no-ops.
+    engine.setFilter(3, { kind: "boolean", value: true });
+    engine.clearAllFilters();
+    expect(engine.getState().filters).toEqual([]);
+    expect(harness.pending()).toEqual([]);
+    await frame();
+    expect(shownSkeletons()).toBe(0);
+    expect(painted().map((r) => r.text)).toEqual(before.map((r) => r.text));
+  });
+});

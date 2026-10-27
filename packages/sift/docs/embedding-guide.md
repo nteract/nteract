@@ -420,6 +420,16 @@ whose cells have not landed, drops any answer tagged with a stale generation,
 and reports `pending: true` in `TableEngineState` while a query is in flight.
 Geometry stays dense: `rowCount` is a resident row count.
 
+What is painted stays painted. A `rows-appended` push under the identity
+permutation extends the map in place; under a sort or filter it re-queries, and
+the answer is held until the window covering the visible span arrives, then
+both commit in one frame under the scroll anchor. A user's own sort or filter
+shows placeholders at once (the viewport returns to the top), and a refused
+query puts the delivered cells back. A `{ type: "error", fatal: true }` event
+sets `TableEngineState.dataFailed`: the rows on screen stay, and sort, filter,
+and cast controls are disabled with the title "Data source stopped; table tools
+are unavailable".
+
 `createResidentWindowedData(tableData)` adapts a loaded `TableData` to this
 shape on the main thread. It exists to exercise the mode and is the contract a
 worker-backed data side will implement over a `MessagePort`; it is not faster

@@ -210,6 +210,11 @@ export type TableEngineState = {
    * `filteredCount` is then the last known value. Always false for resident data.
    */
   pending?: boolean;
+  /**
+   * A windowed data side reported a fatal error. The rows on screen stay;
+   * sort, filter, and cast controls are disabled. Always false for resident data.
+   */
+  dataFailed?: boolean;
 };
 
 export type TableEngineOptions = {
@@ -439,6 +444,21 @@ export function createTable(
   let pending = false;
   let windowInFlight = false;
   let wantedWindow: { start: number; end: number } | null = null;
+  /**
+   * A query answer waiting for the window that covers the visible span. Both
+   * land together in one frame so the committed snapshot stays painted until
+   * then; a newer generation discards it.
+   */
+  let pendingCommit: {
+    generation: number;
+    result: QueryResult;
+    columns: Column[] | null;
+    scrollToTop: boolean;
+  } | null = null;
+  /** The data side reported a fatal error: keep the rows, disable the tools. */
+  let dataFailed = false;
+  const TOOLS_DISABLED_TITLE = "Data source stopped; table tools are unavailable";
+  const toolsDisabled = () => windowed && dataFailed;
 
   /** A `TableData` reader over the cells the view holds for `w`. */
   function viewReaderFor(w: WindowedTableData): TableData {
@@ -490,7 +510,14 @@ export function createTable(
       }
       windowCells.set(dataRow, { strings, raws });
       const viewRow = cells.viewStart + i;
-      if (markResolved && viewRow < filteredCount) viewIndices[viewRow] = dataRow;
+      if (markResolved && viewRow < filteredCount) {
+        viewIndices[viewRow] = dataRow;
+        // Measure now, so the anchored relayout that follows uses real heights
+        // for every landed row, including those above the viewport. Left to
+        // the render loop, rows above would grow after the anchor was restored
+        // and push the content down.
+        if (!cellCaches[dataRow]) cellCaches[dataRow] = prepareCellRow(dataRow);
+      }
     }
   }
 
@@ -852,7 +879,8 @@ export function createTable(
 
   function applyFilterAndSort() {
     if (windowed) {
-      startQuery();
+      // Only `replaceData` reaches this in windowed mode; it starts at the top.
+      startQuery(true);
       return;
     }
     const filtered = computePermutation(data, columns, filters, sortState, rowCount);
@@ -870,45 +898,150 @@ export function createTable(
   // --- Windowed mode: queries and windows ---
   //
   // The data side answers `setQuery` with the filtered count and summaries and
-  // `requestWindow` with cells for a span of view rows. Every view row is
-  // unresolved (-1) from the moment a query starts until a window for it lands;
-  // `render()` shows placeholders there and asks for the rows it needs.
+  // `requestWindow` with cells for a span of view rows. A query never clears
+  // what is painted: the committed snapshot (resolution map, cell caches,
+  // heights) stays until the answer and the window covering the visible span
+  // have both arrived for the same generation, then they commit in one frame
+  // under the scroll anchor. Rows the snapshot never resolved stay `-1` and
+  // `render()` shows placeholders there and asks for them.
 
-  /** Ask the data side for the current filters and sort. */
-  function startQuery() {
+  /**
+   * Ask the data side for the current filters and sort. `scrollToTop` is the
+   * user-initiated sort/filter path, which has already scrolled to the top;
+   * appends and schema changes hold the viewport where it is.
+   */
+  function startQuery(scrollToTop = false, nextColumns: Column[] | null = null) {
     const w = windowedData!;
     const myGeneration = ++generation;
     pending = true;
+    pendingCommit = null;
     wantedWindow = null;
-    viewIndices.fill(-1, 0, filteredCount);
-    heightsDirty = true;
+    // The user changed what is on screen: placeholders at once, and the answer
+    // commits as soon as it arrives since nothing visible is resolved. The
+    // snapshot is kept so a refused query puts the delivered cells back.
+    const snapshot = scrollToTop ? viewIndices.slice(0, filteredCount) : null;
+    if (snapshot) {
+      viewIndices.fill(-1, 0, filteredCount);
+      heightsDirty = true;
+    }
     const sort = sortState ? { col: sortState.col, dir: sortState.dir } : null;
     w.setQuery({ filters: [...filters], sort }, myGeneration).then(
       (result) => {
         if (destroyed || myGeneration !== generation) return;
-        applyQueryResult(result);
+        holdQueryResult(result, nextColumns, scrollToTop);
       },
       (error: unknown) => {
         if (destroyed || myGeneration !== generation) return;
         pending = false;
+        pendingCommit = null;
         console.warn("Sift query failed:", error);
+        if (snapshot && snapshot.length === filteredCount) {
+          viewIndices.set(snapshot);
+          heightsDirty = true;
+          lastVisFirst = -1;
+          lastVisLast = -1;
+          scheduleRender();
+        }
         notifyChange();
       },
     );
   }
 
-  /** Install a query answer: counts, summaries, and an empty resolution map. */
-  function applyQueryResult(result: QueryResult) {
+  /** View rows to fetch for a `count`-row permutation around the current viewport. */
+  function commitSpan(count: number, scrollToTop: boolean): { start: number; end: number } {
+    const headerH = headerEl.offsetHeight;
+    const viewportH = viewport.clientHeight;
+    const visibleRows = Math.ceil(viewportH / placeholderHeight) + 1;
+    if (scrollToTop) return { start: 0, end: Math.min(count, visibleRows + OVERSCAN) };
+    const scrollTop = Math.max(0, viewport.scrollTop * scrollScale - headerH);
+    const visFirst = Math.min(rowAtOffset(scrollTop), Math.max(0, count - 1));
+    const start = Math.max(0, visFirst - OVERSCAN);
+    return { start, end: Math.min(count, visFirst + visibleRows + OVERSCAN) };
+  }
+
+  /** The committed view count, for the resident path's footer. */
+  function committedFilteredCount(): number {
+    return filteredCount;
+  }
+
+  /** Rows the footer and `getState()` report: the latest answer, committed or held. */
+  function reportedFilteredCount(): number {
+    return pendingCommit ? pendingCommit.result.filteredCount : filteredCount;
+  }
+
+  /** Whether the painted snapshot has any resolved row in the span `render()` would show. */
+  function snapshotVisible(scrollToTop: boolean): boolean {
+    if (filteredCount === 0) return false;
+    const span = commitSpan(filteredCount, scrollToTop);
+    for (let r = span.start; r < span.end; r++) if (viewIndices[r] >= 0) return true;
+    return false;
+  }
+
+  /**
+   * A query answered. The count and summaries are known now and are reported;
+   * the painted snapshot stays until the window covering the visible span
+   * arrives, then both commit in one frame. With nothing resolved on screen
+   * there is nothing to hold, so the answer commits at once and `render()`
+   * asks for rows as usual.
+   */
+  function holdQueryResult(
+    result: QueryResult,
+    nextColumns: Column[] | null,
+    scrollToTop: boolean,
+  ) {
+    pending = false;
+    if (nextColumns) applyColumnTypeMeta(nextColumns);
+    const hold = { generation: result.generation, result, columns: nextColumns, scrollToTop };
+    pendingCommit = hold;
+    if (result.filteredCount === 0 || !snapshotVisible(scrollToTop)) {
+      commitPending(null);
+      return;
+    }
+    updateRowCountDisplay();
+    notifyChange();
+    const span = commitSpan(result.filteredCount, scrollToTop);
+    windowedData!.requestWindow(span.start, span.end, hold.generation).then(
+      (cells) => {
+        if (destroyed || pendingCommit !== hold || hold.generation !== generation) return;
+        commitPending(cells);
+      },
+      (error: unknown) => {
+        if (destroyed || pendingCommit !== hold || hold.generation !== generation) return;
+        // The snapshot stays painted; only the count it reported is withdrawn.
+        pendingCommit = null;
+        console.warn("Sift window request failed:", error);
+        updateRowCountDisplay();
+        notifyChange();
+      },
+    );
+  }
+
+  /** Swap the map, fill the window, and keep the anchored row where it was: one frame. */
+  function commitPending(cells: WindowCells | null) {
+    const hold = pendingCommit!;
+    pendingCommit = null;
+    const { result } = hold;
+    // The anchor reads the rows still painted from the previous snapshot, so it
+    // comes before anything moves. Before the first layout there is nothing to
+    // anchor to (positions are all zero and would resolve to the last row).
+    const anchor = hold.scrollToTop || totalHeight === 0 ? null : captureScrollAnchor();
+    if (hold.columns) {
+      // Cell strings changed with the types: drop every cached cell and repaint.
+      windowCells.clear();
+      cellCaches.length = 0;
+      hidePooledRows();
+    }
     filteredCount = result.filteredCount;
     growBuffers(filteredCount);
     viewIndices.fill(-1, 0, filteredCount);
     // The head is the identity permutation, so it resolves rows at once when
     // nothing filters or sorts.
     if (!hasActiveFilters() && !sortState) storeWindowCells(windowedData!.head, true);
+    if (cells) storeWindowCells(cells, true);
     data.columnSummaries = result.summaries;
     unfilteredSummaries = result.summariesAll;
-    pending = false;
     wantedWindow = null;
+    pendingScrollAnchor = anchor;
     heightsDirty = true;
     lastVisFirst = -1;
     lastVisLast = -1;
@@ -921,7 +1054,8 @@ export function createTable(
 
   /** From `render()`: request the unresolved part of `[first, last]`, one request at a time. */
   function requestWindowFor(first: number, last: number) {
-    if (pending) return; // the permutation is changing; wait for the query
+    // A query is in flight or held, or nobody will answer: the snapshot stands.
+    if (pending || pendingCommit || dataFailed) return;
     let lo = -1;
     let hi = -1;
     for (let r = first; r <= last; r++) {
@@ -944,7 +1078,7 @@ export function createTable(
       (cells) => {
         windowInFlight = false;
         if (destroyed) return;
-        if (myGeneration === generation && !pending) {
+        if (myGeneration === generation && !pending && !pendingCommit) {
           storeWindowCells(cells, true);
           // Measured heights replace estimates; keep the anchored row in place.
           markHeightsDirty(true);
@@ -959,8 +1093,12 @@ export function createTable(
     );
   }
 
-  /** Column types changed on the data side (cast, undo, schema refinement). */
-  function applyColumnTypes(next: Column[]) {
+  /**
+   * Column types changed on the data side (cast, undo, schema refinement):
+   * metadata and icons now; cached cells are dropped when the matching query
+   * commits, so the rows stay painted until their new strings arrive.
+   */
+  function applyColumnTypeMeta(next: Column[]) {
     for (let c = 0; c < columns.length && c < next.length; c++) {
       columns[c].columnType = next[c].columnType;
       columns[c].numeric = next[c].numeric;
@@ -971,9 +1109,6 @@ export function createTable(
       }
     }
     updatePlaceholderHeight();
-    windowCells.clear();
-    cellCaches.length = 0;
-    hidePooledRows();
   }
 
   /** A cast or undo on the data side: a query answer with new column types. */
@@ -991,36 +1126,78 @@ export function createTable(
       return;
     }
     pending = true;
+    pendingCommit = null;
     wantedWindow = null;
-    viewIndices.fill(-1, 0, filteredCount);
-    heightsDirty = true;
-    scheduleRender();
+    notifyChange();
     request.then(
       (result) => {
         if (destroyed || myGeneration !== generation) return;
-        applyColumnTypes(result.columns);
-        applyQueryResult(result);
+        holdQueryResult(result, result.columns, false);
       },
       (error: unknown) => {
         if (destroyed || myGeneration !== generation) return;
         pending = false;
+        pendingCommit = null;
         console.warn("Cast failed:", error);
         notifyChange();
       },
     );
   }
 
-  /** `rows-appended`: more resident rows under the same query. */
+  /**
+   * `rows-appended`: more resident rows under the same query. Under the
+   * identity permutation the new rows simply extend the map; every existing
+   * mapping, cached cell, and measured height stays. Otherwise the permutation
+   * can change, so a query runs and commits under the scroll anchor.
+   */
   function onRowsAppended(newRowCount: number, summariesAll: ColumnSummary[]) {
     growBuffers(newRowCount);
     rowCount = newRowCount;
     data.rowCount = newRowCount;
     unfilteredSummaries = summariesAll;
-    startQuery();
+    if (
+      !hasActiveFilters() &&
+      !sortState &&
+      !pending &&
+      !pendingCommit &&
+      newRowCount >= filteredCount
+    ) {
+      const previous = filteredCount;
+      filteredCount = newRowCount;
+      viewIndices.fill(-1, previous, filteredCount);
+      for (let r = previous; r < filteredCount; r++) rowHeights[r] = placeholderHeight;
+      rebuildPositions();
+      data.columnSummaries = summariesAll;
+      renderAllSummaries();
+    } else {
+      startQuery(false);
+    }
     updateRowCountDisplay();
     lastVisFirst = -1;
     lastVisLast = -1;
     scheduleRender();
+  }
+
+  /**
+   * The data side is gone (a trap, a dead worker). Everything painted stays;
+   * nothing new can be asked for, so the sort, filter, and cast controls are
+   * disabled rather than left to fail one request at a time.
+   */
+  function onDataFailed() {
+    if (dataFailed) return;
+    dataFailed = true;
+    pending = false;
+    pendingCommit = null;
+    wantedWindow = null;
+    for (const th of headerCells) {
+      const top = th.querySelector<HTMLElement>(".sift-th-top");
+      if (!top) continue;
+      top.setAttribute("aria-disabled", "true");
+      top.title = TOOLS_DISABLED_TITLE;
+      top.style.cursor = "default";
+    }
+    container.setAttribute("aria-busy", "false");
+    notifyChange();
   }
 
   /** Swap to `w` as the data side; returns the reader for it. */
@@ -1046,11 +1223,12 @@ export function createTable(
           setStreamingDone();
           break;
         case "schema-changed":
-          applyColumnTypes(event.columns);
-          startQuery();
+          // Types swap with the re-query so cells and icons change in one frame.
+          startQuery(false, event.columns);
           break;
         case "error":
           console.warn("Sift windowed data error:", event.message);
+          if (event.fatal) onDataFailed();
           break;
       }
     });
@@ -1169,7 +1347,8 @@ export function createTable(
           colType: columns[c].columnType,
           isPinned: pinnedColumns.has(c),
           isCast: data.isColumnCast ? data.isColumnCast(c) : false,
-          isStreaming: streaming,
+          // A failed data side hides the cast entries too: nothing can answer.
+          isStreaming: streaming || toolsDisabled(),
           sortDirection: sortState?.col === c ? sortState.dir : null,
           x,
           y,
@@ -1230,7 +1409,10 @@ export function createTable(
 
   // Create stable filter callbacks per column
   const filterCallbacks: ((filter: ColumnFilter) => void)[] = columns.map(
-    (_, c) => (filter: ColumnFilter) => setFilter(c, filter),
+    (_, c) => (filter: ColumnFilter) => {
+      if (toolsDisabled()) return;
+      setFilter(c, filter);
+    },
   );
 
   function renderSummary(c: number, visibleBins?: number[]) {
@@ -1362,6 +1544,8 @@ export function createTable(
   };
 
   function updateRowCountDisplay() {
+    // Windowed: a held query answer is reported before its rows commit.
+    const filteredCount = windowed ? reportedFilteredCount() : committedFilteredCount();
     if (committedQuery !== undefined) {
       rowsOdometer.update(footerText.committed(committedQuery, resultCount, rowCount));
       const local = hasActiveFilters();
@@ -2481,6 +2665,7 @@ export function createTable(
   // --- Sort ---
 
   function onSortClick(col: number) {
+    if (toolsDisabled()) return;
     if (sortState && sortState.col === col) {
       if (sortState.dir === "asc") sortState = { col, dir: "desc" };
       else sortState = null;
@@ -2489,7 +2674,8 @@ export function createTable(
     }
 
     updateSortUI();
-    applyFilterAndSort();
+    if (windowed) startQuery(true);
+    else applyFilterAndSort();
     // Reset vertical scroll but preserve horizontal position
     viewport.scrollTop = 0;
     for (const pr of pool) {
@@ -2751,7 +2937,11 @@ export function createTable(
     filteredCount = rowCount;
     unfilteredSummaries = [...data.columnSummaries];
     if (windowed) {
+      // A new source: nothing of the old snapshot is resolved any more.
+      viewIndices.fill(-1, 0, filteredCount);
       wantedWindow = null;
+      pendingCommit = null;
+      dataFailed = false;
       updatePlaceholderHeight();
     }
 
@@ -3146,10 +3336,14 @@ export function createTable(
   }
 
   function onFilterChanged() {
+    // With the data side gone no query can answer; the filter state stays as
+    // the last answered query left it.
+    if (toolsDisabled()) return;
     // Filtering can hide the focused row entirely, leaving the user with no
     // visual cue for what's still expanded. Reset and let them re-pick.
     focusedDataRow = null;
-    applyFilterAndSort();
+    if (windowed) startQuery(true);
+    else applyFilterAndSort();
     // Fast path: update rows immediately, defer expensive summary recomputation
     updateRowCountDisplay();
     rebuildFilterPills();
@@ -3183,16 +3377,19 @@ export function createTable(
   }
 
   function setFilter(colIndex: number, filter: ColumnFilter) {
+    if (toolsDisabled()) return;
     filters[colIndex] = filter;
     onFilterChanged();
   }
 
   function clearFilter(colIndex: number) {
+    if (toolsDisabled()) return;
     filters[colIndex] = null;
     onFilterChanged();
   }
 
   function clearAllFilters() {
+    if (toolsDisabled()) return;
     for (let i = 0; i < filters.length; i++) filters[i] = null;
     onFilterChanged();
   }
@@ -3205,12 +3402,14 @@ export function createTable(
   }
 
   function setSortByName(column: string, direction: "asc" | "desc") {
+    if (toolsDisabled()) return;
     const colIndex = columns.findIndex((c) => c.key === column);
     if (colIndex === -1) return;
     sortState = { col: colIndex, dir: direction };
 
     updateSortUI();
-    applyFilterAndSort();
+    if (windowed) startQuery(true);
+    else applyFilterAndSort();
     viewport.scrollTop = 0;
     for (const pr of pool) {
       releasePooledRow(pr);
@@ -3232,10 +3431,11 @@ export function createTable(
     const state: TableEngineState = {
       sort: getSort(),
       filters: getFilters(),
-      filteredCount,
+      filteredCount: windowed ? reportedFilteredCount() : filteredCount,
       totalCount: rowCount,
       loadedCount: rowCount,
       pending,
+      dataFailed,
     };
     if (committedQuery !== undefined) state.committedQuery = committedQuery;
     if (resultCount !== undefined) state.resultCount = resultCount;
@@ -3255,6 +3455,12 @@ export function createTable(
   // --- Column context menu action handler ---
 
   function handleColumnAction(colIndex: number, action: ColumnAction) {
+    if (
+      toolsDisabled() &&
+      (action.kind === "sort" || action.kind === "cast" || action.kind === "undo-cast")
+    ) {
+      return;
+    }
     switch (action.kind) {
       case "sort":
         if (sortState?.col === colIndex && sortState.dir === action.direction) {
@@ -3263,7 +3469,8 @@ export function createTable(
           sortState = { col: colIndex, dir: action.direction };
         }
         updateSortUI();
-        applyFilterAndSort();
+        if (windowed) startQuery(true);
+        else applyFilterAndSort();
         viewport.scrollTop = 0;
         for (const pr of pool) {
           releasePooledRow(pr);

@@ -201,6 +201,9 @@ export function createResidentWindowedData(
     notifyAppended() {
       assertOpen();
       adapter.rowCount = data.rowCount;
+      // Under the identity permutation the new rows are already in view
+      // order; a filter or sort waits for the engine's re-query.
+      if (!permutation) filteredCount = data.rowCount;
       // The loader refreshed the source summaries for the new rows.
       summariesAll = [...data.columnSummaries];
       emit({ type: "rows-appended", rowCount: data.rowCount, summariesAll: [...summariesAll] });
