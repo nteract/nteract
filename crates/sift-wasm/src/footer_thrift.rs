@@ -99,6 +99,33 @@ pub(crate) fn read_raw_footer(buf: &[u8]) -> Result<RawFooter, String> {
         .map_err(|e| format!("Could not parse Parquet footer: {e}"))
 }
 
+/// Locate the footer in a complete Parquet buffer and run the raw pre-pass.
+/// Rejects bad magic, a footer length that does not fit, and anything
+/// `read_raw_footer` / `check_int96_statistics` reject.
+///
+/// Every whole-buffer entry point calls this before handing the bytes to the
+/// parquet crate, whose footer decoder can abort the module.
+pub(crate) fn precheck_parquet_buffer(bytes: &[u8]) -> Result<RawFooter, String> {
+    let len = bytes.len();
+    if len < 12 {
+        return Err("Parquet file is too small to hold a footer".to_string());
+    }
+    if &bytes[len - 4..] != b"PAR1" {
+        return Err("Not a Parquet file: missing PAR1 footer magic".to_string());
+    }
+    let mut length = [0u8; 4];
+    length.copy_from_slice(&bytes[len - 8..len - 4]);
+    let metadata_len = u32::from_le_bytes(length) as usize;
+    let footer_start = len
+        .checked_sub(12)
+        .and_then(|room| room.checked_sub(metadata_len))
+        .map(|_| len - 8 - metadata_len)
+        .ok_or("Parquet footer length exceeds the file length")?;
+    let raw = read_raw_footer(&bytes[footer_start..len - 8])?;
+    raw.check_int96_statistics()?;
+    Ok(raw)
+}
+
 /// Compact protocol wire types.
 mod wire {
     pub const STOP: u8 = 0x00;

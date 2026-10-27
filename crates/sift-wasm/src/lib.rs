@@ -15,6 +15,8 @@ mod column_stats;
 mod footer_thrift;
 mod parquet_file;
 mod store;
+#[cfg(test)]
+mod test_footers;
 mod writer;
 
 pub use writer::{

@@ -1,3 +1,4 @@
+use crate::footer_thrift::precheck_parquet_buffer;
 use arrow::array::{
     Array, BinaryArray, BinaryViewArray, BooleanArray, Float64Array, Int32Array, Int64Array,
     LargeBinaryArray, LargeListArray, LargeStringArray, ListArray, StringArray, StringViewArray,
@@ -604,20 +605,22 @@ pub fn load_ipc(ipc_bytes: &[u8]) -> Result<u32, JsValue> {
 /// This replaces the need for parquet-wasm — one WASM binary for everything.
 #[wasm_bindgen]
 pub fn load_parquet(parquet_bytes: &[u8]) -> Result<u32, JsValue> {
+    load_parquet_from(parquet_bytes).map_err(|e| JsValue::from_str(&e))
+}
+
+fn load_parquet_from(parquet_bytes: &[u8]) -> Result<u32, String> {
+    precheck_parquet_buffer(parquet_bytes)?;
     let bytes = bytes::Bytes::copy_from_slice(parquet_bytes);
-    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes).map_err(|e| e.to_string())?;
     let schema = builder.schema().clone();
-    let reader = builder
-        .build()
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let reader = builder.build().map_err(|e| e.to_string())?;
 
     let mut batches = Vec::new();
     for batch in reader {
-        batches.push(batch.map_err(|e| JsValue::from_str(&e.to_string()))?);
+        batches.push(batch.map_err(|e| e.to_string())?);
     }
 
-    store_batches(batches, schema).map_err(|e| JsValue::from_str(&e))
+    store_batches(batches, schema)
 }
 
 #[derive(Clone, Copy)]
@@ -871,6 +874,7 @@ fn bounded_parquet_batches(
     parquet_bytes: &[u8],
     limits: FileLimits,
 ) -> Result<(Arc<arrow::datatypes::Schema>, Vec<RecordBatch>), String> {
+    precheck_parquet_buffer(parquet_bytes)?;
     let builder =
         ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::copy_from_slice(parquet_bytes))
             .map_err(|e| e.to_string())?;
@@ -2299,9 +2303,13 @@ pub fn get_viewport_by_indices(handle: u32, indices: &[u32]) -> Result<Vec<u8>, 
 /// Returns [num_row_groups, total_rows] as Vec<u32>.
 #[wasm_bindgen]
 pub fn parquet_metadata(parquet_bytes: &[u8]) -> Result<Vec<u32>, JsValue> {
+    parquet_metadata_from(parquet_bytes).map_err(|e| JsValue::from_str(&e))
+}
+
+fn parquet_metadata_from(parquet_bytes: &[u8]) -> Result<Vec<u32>, String> {
+    precheck_parquet_buffer(parquet_bytes)?;
     let bytes = bytes::Bytes::copy_from_slice(parquet_bytes);
-    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes).map_err(|e| e.to_string())?;
     let metadata = builder.metadata();
     let num_row_groups = metadata.num_row_groups() as u32;
     let total_rows = metadata.file_metadata().num_rows() as u32;
@@ -2311,9 +2319,15 @@ pub fn parquet_metadata(parquet_bytes: &[u8]) -> Result<Vec<u32>, JsValue> {
 /// Extract canonical column hints from Parquet file-level metadata.
 #[wasm_bindgen]
 pub fn parquet_column_hints(parquet_bytes: &[u8]) -> Result<JsValue, JsValue> {
-    let hints = predicate_parquet_column_hints(parquet_bytes)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let hints = parquet_column_hints_from(parquet_bytes).map_err(|e| JsValue::from_str(&e))?;
     serde_wasm_bindgen::to_value(&hints).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+fn parquet_column_hints_from(
+    parquet_bytes: &[u8],
+) -> Result<Vec<nteract_predicate::parquet_features::ParquetColumnHint>, String> {
+    precheck_parquet_buffer(parquet_bytes)?;
+    predicate_parquet_column_hints(parquet_bytes).map_err(|e| e.to_string())
 }
 
 /// Extract canonical column hints from Arrow IPC schema metadata.
@@ -2345,6 +2359,7 @@ pub fn load_parquet_row_group(
     row_group: usize,
     handle: u32,
 ) -> Result<u32, JsValue> {
+    precheck_parquet_buffer(parquet_bytes).map_err(|e| JsValue::from_str(&e))?;
     let bytes = bytes::Bytes::copy_from_slice(parquet_bytes);
     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -3604,6 +3619,69 @@ mod tests {
             filter_rows_in_store(&store, &filters, &set_lookups),
             vec![1]
         );
+    }
+
+    #[test]
+    fn whole_buffer_parquet_entry_points_reject_traps_and_load_valid_files() {
+        // parquet's footer decoder asserts INT96 statistics are 12 bytes,
+        // which aborts the module on wasm32. Each entry point must refuse the
+        // buffer before the decoder sees it.
+        let hostile = crate::test_footers::int96_file(13);
+        let expected = "Parquet footer has malformed INT96 statistics";
+        assert_eq!(
+            bounded_parquet_batches(&hostile, file_limits()).unwrap_err(),
+            expected
+        );
+        assert_eq!(load_parquet_from(&hostile).unwrap_err(), expected);
+        assert_eq!(parquet_metadata_from(&hostile).unwrap_err(), expected);
+        assert_eq!(parquet_column_hints_from(&hostile).unwrap_err(), expected);
+
+        let batch = file_fixture();
+        let valid = parquet_fixture(&batch);
+        let (_, batches) = bounded_parquet_batches(&valid, file_limits()).unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
+        let handle = load_parquet_from(&valid).unwrap();
+        assert_eq!(num_rows(handle).unwrap(), 3);
+        assert_eq!(get_cell_string(handle, 0, 1).unwrap(), "東京");
+        free(handle);
+        assert_eq!(parquet_metadata_from(&valid).unwrap(), vec![2, 3]);
+        assert_eq!(
+            parquet_column_hints_from(&valid).unwrap().len(),
+            predicate_parquet_column_hints(&valid).unwrap().len()
+        );
+        let handle = load_parquet_row_group(&valid, 1, 0).unwrap();
+        assert_eq!(num_rows(handle).unwrap(), 1);
+        free(handle);
+    }
+
+    #[test]
+    fn precheck_rejects_buffers_without_a_fitting_footer() {
+        use crate::footer_thrift::precheck_parquet_buffer;
+        let valid = parquet_fixture(&file_fixture());
+        let raw = precheck_parquet_buffer(&valid).unwrap();
+        assert_eq!(raw.row_groups.len(), 2);
+
+        assert!(precheck_parquet_buffer(b"PAR1PAR1")
+            .unwrap_err()
+            .contains("too small"));
+        let mut bad_magic = valid.clone();
+        let n = bad_magic.len();
+        bad_magic[n - 4..].copy_from_slice(b"PARE");
+        assert!(precheck_parquet_buffer(&bad_magic)
+            .unwrap_err()
+            .contains("magic"));
+        // A footer length one byte past what the buffer can hold.
+        let mut too_long = valid.clone();
+        let claim = (n - 12 + 1) as u32;
+        too_long[n - 8..n - 4].copy_from_slice(&claim.to_le_bytes());
+        assert!(precheck_parquet_buffer(&too_long)
+            .unwrap_err()
+            .contains("exceeds"));
+        let mut huge = valid;
+        huge[n - 8..n - 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(precheck_parquet_buffer(&huge)
+            .unwrap_err()
+            .contains("exceeds"));
     }
 
     fn decimal_store() -> u32 {

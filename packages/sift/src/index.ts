@@ -20,7 +20,7 @@
 // for loadTableFile. Keeping the parser out of this package keeps its WASM
 // to Parquet and Arrow.
 export { loadTableFile } from "./file-data";
-export type { TableFileOptions, TableLimitOverflow } from "./file-data";
+export type { TableFileLimits, TableFileOptions, TableLimitOverflow } from "./file-data";
 // Byte-range Parquet: hosts implement ByteSource over a file, IPC call, or
 // Range-capable URL and pass it to loadTableFile or a `byte-source` SiftSource.
 export type { ByteSource } from "./parquet-file";
@@ -58,7 +58,7 @@ export type {
   SiftTableProps,
 } from "./react";
 // React component
-export { SiftTable, useSiftEngine } from "./react";
+export { SiftTable, URL_PARQUET_LIMITS, useSiftEngine } from "./react";
 export type {
   BooleanColumnSummary,
   BooleanFilter,

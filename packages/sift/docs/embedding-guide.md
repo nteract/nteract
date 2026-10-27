@@ -216,9 +216,10 @@ const data = await loadTableFile(source, { maxRows: 100_000, overflow: 'truncate
   shows "Showing first N of M rows" and the status tooltip reads "Preview
   loaded". Sorting, filtering, and summaries cover only the loaded rows.
 
-The default, `overflow: 'error'`, keeps the behavior described above. Only
-byte-source Parquet honors `overflow`; in-memory buffers and Arrow IPC still
-fail on overflow.
+The default for `byte-source` and `loadTableFile`, `overflow: 'error'`, keeps
+the behavior described above; a Parquet `url` source defaults to `'truncate'`
+(see below). Only streaming Parquet honors `overflow`; in-memory buffers and
+Arrow IPC still fail on overflow.
 
 The budget is a loading guardrail, like the other limits, not isolation from
 hostile files. Page decompression and one decoder batch allocate before a
@@ -286,11 +287,31 @@ responsibilities. Parquet can use a view-only mode.
 
 For already hosted data, `<SiftTable url="/data.arrow" />` and
 `<SiftTable url="/data.parquet" />` remain available. The URL/manifest paths have
-different loading behavior and do not inherit `loadTableFile` admission limits:
-a Parquet URL streams row groups through the same loader as `byte-source`, with
-the limits set to their maxima. A schema-only Parquet URL mounts an empty table.
-A sampled Arrow manifest must include its `summary.sampled` and included/total
-row metadata; its sorting, filtering, and summaries cover only the supplied rows.
+their own loading behavior. A Parquet URL is downloaded whole, then streams row
+groups through the same loader as `byte-source`, with the same budget and
+preview footer. Its defaults are `URL_PARQUET_LIMITS` (1,000,000 rows, 512 MiB
+of decoded memory, 256 columns) and `overflow: 'truncate'`, so a file past the
+budget shows its leading rows and the footer reads "Showing first N of M rows".
+The `streaming-complete` milestone carries `rowCount`, `totalRowCount`, and
+`truncated`, and the mounted data carries `coverage`, as for `byte-source`.
+Override either on the source:
+
+```tsx
+<SiftTable
+  source={{
+    kind: 'url',
+    url: '/data.parquet',
+    limits: { maxRows: 5_000_000, maxDecodedBytes: 2 * 1024 * 1024 * 1024 },
+    overflow: 'error', // fail instead of truncating
+  }}
+/>
+```
+
+The download itself is not bounded; the budget bounds decoded memory. Arrow IPC
+over a URL is read whole and ignores `limits` and `overflow`. A schema-only
+Parquet URL mounts an empty table. A sampled Arrow manifest must include its
+`summary.sampled` and included/total row metadata; its sorting, filtering, and
+summaries cover only the supplied rows.
 
 ## Interaction and appearance
 

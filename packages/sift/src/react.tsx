@@ -23,11 +23,7 @@ import {
   applyParquetColumnHints,
   pandasIndexColumnsFromHints,
 } from "./parquet-features";
-import {
-  resolveTableFileLimits,
-  type TableFileOptions,
-  type TableLimitOverflow,
-} from "./file-data";
+import { resolveTableFileLimits, type TableFileLimits, type TableLimitOverflow } from "./file-data";
 import {
   type ByteSource,
   byteSourceFromBytes,
@@ -74,7 +70,14 @@ export type SiftSource =
   | { kind: "table-data"; data: TableData }
   /** Memoize the loader; each call must return a fresh, independently disposable table. */
   | { kind: "loader"; load: () => Promise<TableData> }
-  | { kind: "url"; url: string }
+  /**
+   * A hosted Arrow IPC or Parquet file; the format is detected from the
+   * response. Parquet streams row groups like `byte-source`, with `limits` and
+   * `overflow` defaulting to `URL_PARQUET_LIMITS` and `"truncate"`: a large file
+   * shows its leading rows and notes the preview in the footer. Arrow IPC is
+   * read whole and ignores both.
+   */
+  | { kind: "url"; url: string; limits?: TableFileLimits; overflow?: TableLimitOverflow }
   | { kind: "arrow-stream-manifest"; manifest: ArrowStreamManifest }
   /**
    * A Parquet file read by byte range. Sift reads the footer, mounts after
@@ -85,7 +88,7 @@ export type SiftSource =
   | {
       kind: "byte-source";
       source: ByteSource;
-      limits?: Pick<TableFileOptions, "maxRows" | "maxColumns" | "maxDecodedBytes">;
+      limits?: TableFileLimits;
       /**
        * What to do when the rows or decoded-bytes budget runs out. Default
        * `"error"`. With `"truncate"`, Sift shows the leading rows that fit
@@ -321,12 +324,15 @@ async function detectFormat(
 
 // --- Progressive Parquet ---
 
-/** Largest limits the WASM API accepts (u32). Used where no cap is wanted. */
-const UNBOUNDED_LIMITS: ParquetFileLimits = {
-  maxRows: 0xffff_ffff,
-  maxColumns: 0xffff_ffff,
-  maxDecodedBytes: 0xffff_ffff,
-};
+/**
+ * Default budget for Parquet behind a `url` source. The response is already
+ * buffered, so these bound decoded memory, not the download. Hosts raise them
+ * through `limits`; `maxColumns` keeps the `loadTableFile` default.
+ */
+export const URL_PARQUET_LIMITS: Readonly<TableFileLimits> = Object.freeze({
+  maxRows: 1_000_000,
+  maxDecodedBytes: 512 * 1024 * 1024,
+});
 
 type ProgressiveParquetArgs = {
   source: ByteSource;
@@ -445,13 +451,23 @@ export function SiftTable({
   const byteSourceMaxColumns = byteSourceLimits?.maxColumns;
   const byteSourceMaxDecodedBytes = byteSourceLimits?.maxDecodedBytes;
   const byteSourceOverflow = source?.kind === "byte-source" ? source.overflow : undefined;
-  // Keyed by source so a preview never outlives the byte source that produced it.
+  const urlLimits = source?.kind === "url" ? source.limits : undefined;
+  const urlMaxRows = urlLimits?.maxRows;
+  const urlMaxColumns = urlLimits?.maxColumns;
+  const urlMaxDecodedBytes = urlLimits?.maxDecodedBytes;
+  const urlOverflow: TableLimitOverflow =
+    (source?.kind === "url" ? source.overflow : undefined) ?? "truncate";
+  // Keyed by source so a preview never outlives the byte source or URL that
+  // produced it.
   const [parquetPreview, setParquetPreview] = useState<{
-    source: ByteSource;
+    source: ByteSource | string;
     preview: ParquetPreview;
   } | null>(null);
+  const parquetPreviewSource = byteSource ?? urlSource;
   const currentParquetPreview =
-    byteSource && parquetPreview?.source === byteSource ? parquetPreview.preview : null;
+    parquetPreviewSource && parquetPreview?.source === parquetPreviewSource
+      ? parquetPreview.preview
+      : null;
   const previewNotice = useMemo(
     () => arrowStreamPreviewNotice(manifestSource) ?? parquetPreviewNotice(currentParquetPreview),
     [manifestSource, currentParquetPreview],
@@ -473,7 +489,8 @@ export function SiftTable({
   const hasFooterControl =
     footerControl != null ||
     manifestSource != null ||
-    (byteSource != null && byteSourceOverflow === "truncate");
+    (byteSource != null && byteSourceOverflow === "truncate") ||
+    (urlSource != null && urlOverflow === "truncate");
 
   // Stable callback ref to avoid re-mounting engine when onChange identity changes
   const onChangeRef = useRef(onChange);
@@ -1169,12 +1186,17 @@ export function SiftTable({
 
     async function loadParquet(parquetBytes: Uint8Array) {
       // The response is already buffered; the ranged loader still removes the
-      // per-row-group file copy and shares its progressive mount with the
-      // byte-source path. Hosted URLs carry no admission limits (the notebook
-      // renderer has no way to raise them), so the loader gets the maxima.
-      await streamParquetIntoEngine({
+      // per-row-group file copy and shares its progressive mount, budget, and
+      // preview footer with the byte-source path.
+      const limits = resolveTableFileLimits({
+        maxRows: urlMaxRows ?? URL_PARQUET_LIMITS.maxRows,
+        maxColumns: urlMaxColumns,
+        maxDecodedBytes: urlMaxDecodedBytes ?? URL_PARQUET_LIMITS.maxDecodedBytes,
+      });
+      const preview = await streamParquetIntoEngine({
         source: byteSourceFromBytes(parquetBytes),
-        limits: UNBOUNDED_LIMITS,
+        limits,
+        overflow: urlOverflow,
         columnOverrides,
         signal: controller.signal,
         emit: (milestone) => emitLoadMilestone(startedAt, { ...milestone, source: "url" }),
@@ -1189,6 +1211,7 @@ export function SiftTable({
         },
         engine: () => engineRef.current,
       });
+      if (!cancelled) setParquetPreview(preview ? { source: sourceUrl, preview } : null);
     }
 
     async function loadArrowIpc(source: Response | ReadableStream<Uint8Array>) {
@@ -1278,6 +1301,7 @@ export function SiftTable({
       setStatus("loading");
       setError(null);
       setLoadFailure(null);
+      setParquetPreview(null);
       emitLoadMilestone(startedAt, { source: "url", phase: "load-start" });
 
       const response = await tableResponse(sourceUrl);
@@ -1329,6 +1353,10 @@ export function SiftTable({
     };
   }, [
     urlSource,
+    urlMaxRows,
+    urlMaxColumns,
+    urlMaxDecodedBytes,
+    urlOverflow,
     typeOverrides,
     columnOverrides,
     stableOnChange,

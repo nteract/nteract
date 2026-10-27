@@ -59,6 +59,9 @@ export type TableFileOptions = {
   overflow?: TableLimitOverflow;
 };
 
+/** The row, column, and decoded-memory limits a streaming source accepts. */
+export type TableFileLimits = Pick<TableFileOptions, "maxRows" | "maxColumns" | "maxDecodedBytes">;
+
 function limit(value: number | undefined, fallback: number, name: string): number {
   const result = value ?? fallback;
   if (!Number.isInteger(result) || result <= 0 || result > 0xffff_ffff) {
@@ -68,7 +71,7 @@ function limit(value: number | undefined, fallback: number, name: string): numbe
 }
 
 /** Validate the limits shared by both load paths. */
-export function resolveTableFileLimits(options: TableFileOptions): ParquetFileLimits {
+export function resolveTableFileLimits(options: TableFileLimits): ParquetFileLimits {
   return {
     maxRows: limit(options.maxRows, 100_000, "maxRows"),
     maxColumns: limit(options.maxColumns, 256, "maxColumns"),

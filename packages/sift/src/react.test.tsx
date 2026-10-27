@@ -2,9 +2,15 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { SiftFocusStatus, SiftScrollHandoffCue } from "./handoff";
 import { loadIpc } from "./predicate";
-import { SiftTable } from "./react";
-import type { SiftSource } from "./react";
-import type { Column, TableData } from "./table";
+import { SiftTable, URL_PARQUET_LIMITS } from "./react";
+import type { SiftLoadMilestone, SiftSource } from "./react";
+import { createTable, type Column, type TableData } from "./table";
+
+// Wrapped so tests can read the TableData the url source mounted.
+vi.mock("./table", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./table")>();
+  return { ...actual, createTable: vi.fn(actual.createTable) };
+});
 
 const predicateModule = vi.hoisted(() => ({
   create_arrow_stream_store: vi.fn(() => 9),
@@ -23,6 +29,23 @@ const predicateModule = vi.hoisted(() => ({
   store_value_counts: vi.fn(() => []),
   store_bool_counts: vi.fn(() => [0, 0, 0]),
   store_null_counts: vi.fn(() => new Uint32Array([0, 0])),
+  // Byte-range Parquet over a fake two-row-group file; see `parquetFixture`.
+  parquet_footer_length: vi.fn(() => 4),
+  parquet_open: vi.fn(() => 11),
+  parquet_file_info: vi.fn(() => ({
+    num_rows: 4,
+    num_row_groups: 2,
+    row_group_rows: [2, 2],
+    column_names: ["id", "name"],
+  })),
+  parquet_file_column_stats: vi.fn(() => ({ num_rows: 4, num_row_groups: 2, columns: [] })),
+  parquet_file_column_hints: vi.fn(() => []),
+  parquet_create_store: vi.fn(() => 9),
+  parquet_row_group_ranges: vi.fn(() => Float64Array.from([4, 4])),
+  parquet_append_row_group: vi.fn(() => 2),
+  parquet_file_budget: vi.fn(() => ({ exhausted: false, truncated: false })),
+  parquet_close: vi.fn(),
+  has_original_column: vi.fn(() => false),
   store_viewport_cells: vi.fn(() => ({
     rows: [],
     strings: [],
@@ -39,11 +62,55 @@ const predicateModule = vi.hoisted(() => ({
   free: vi.fn(),
 }));
 
-vi.mock("./predicate", () => ({
+vi.mock("./predicate", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./predicate")>()),
   ensureModule: vi.fn(async () => predicateModule),
   getModuleSync: () => predicateModule,
   loadIpc: vi.fn(async () => 9),
 }));
+
+/**
+ * 64 bytes shaped like a Parquet file: leading and trailing `PAR1` with a
+ * 4-byte footer length. The mocked module answers every footer question, so
+ * the bytes only have to pass Sift's own magic and length checks.
+ */
+function parquetFixture(): Uint8Array {
+  const bytes = new Uint8Array(64);
+  bytes.set([0x50, 0x41, 0x52, 0x31], 0);
+  bytes.set([4, 0, 0, 0, 0x50, 0x41, 0x52, 0x31], 56);
+  return bytes;
+}
+
+/** Serve `parquetFixture` from fetch and let the mocked store grow per row group. */
+function stubParquetUrl(options: { truncateAfterGroups?: number } = {}) {
+  vi.stubGlobal("fetch", () =>
+    Promise.resolve({
+      ok: true,
+      headers: new Headers({ "Content-Type": "application/vnd.apache.parquet" }),
+      arrayBuffer: async () => parquetFixture().buffer,
+    }),
+  );
+  let loaded = 0;
+  let groups = 0;
+  predicateModule.num_rows.mockImplementation(() => loaded);
+  predicateModule.parquet_append_row_group.mockImplementation(() => {
+    loaded += 2;
+    groups += 1;
+    return 2;
+  });
+  predicateModule.parquet_file_budget.mockImplementation(() => {
+    const cut = options.truncateAfterGroups !== undefined && groups >= options.truncateAfterGroups;
+    return { exhausted: cut, truncated: cut };
+  });
+  return () => {
+    predicateModule.num_rows.mockImplementation(() => 2);
+    predicateModule.parquet_append_row_group.mockImplementation(() => 2);
+    predicateModule.parquet_file_budget.mockImplementation(() => ({
+      exhausted: false,
+      truncated: false,
+    }));
+  };
+}
 
 function makeColumns(): Column[] {
   return [
@@ -402,6 +469,132 @@ describe("SiftTable", () => {
     expect(container.querySelector(".sift-preview-hint")?.firstElementChild?.textContent).toBe(
       "Showing first 50,000 rows · total unknown",
     );
+  });
+
+  it("truncates url Parquet at the row budget and labels the preview", async () => {
+    vi.useRealTimers();
+    const restore = stubParquetUrl({ truncateAfterGroups: 1 });
+    const milestones: SiftLoadMilestone[] = [];
+    try {
+      const { container } = render(
+        <SiftTable
+          source={{
+            kind: "url",
+            url: "http://127.0.0.1:9000/data.parquet",
+            limits: { maxRows: 2 },
+          }}
+          onLoadMilestone={(milestone) => milestones.push(milestone)}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(container.querySelector(".sift-status-indicator")?.className).toContain(
+          "sift-status-ready",
+        );
+        expect(container.querySelector(".sift-preview-hint")).not.toBeNull();
+      });
+
+      expect(predicateModule.parquet_open).toHaveBeenCalledWith(
+        expect.any(Uint8Array),
+        64,
+        2,
+        256,
+        URL_PARQUET_LIMITS.maxDecodedBytes,
+        true,
+      );
+      // Only the first row group is read once the budget is spent.
+      expect(predicateModule.parquet_append_row_group).toHaveBeenCalledTimes(1);
+
+      const hint = container.querySelector(".sift-preview-hint");
+      expect(hint?.firstElementChild?.textContent).toBe("Showing first 2 of 4 rows");
+      expect(hint?.querySelector(".sift-preview-scope-full")?.textContent).toBe(
+        " · Table tools use shown rows",
+      );
+      expect(container.querySelector(".sift-status-indicator")?.getAttribute("title")).toBe(
+        "Preview loaded",
+      );
+
+      const complete = milestones.find((m) => m.phase === "streaming-complete");
+      expect(complete).toMatchObject({
+        source: "url",
+        format: "parquet",
+        rowCount: 2,
+        totalRowCount: 4,
+        truncated: true,
+      });
+
+      const mounted = vi.mocked(createTable).mock.calls.at(-1)?.[1];
+      expect(mounted?.coverage).toMatchObject({ loadedRows: 2, truncated: true });
+      expect(mounted?.coverage?.totalRows?.value).toBe(4);
+    } finally {
+      restore();
+    }
+  });
+
+  it("loads url Parquet completely under the default budget", async () => {
+    vi.useRealTimers();
+    const restore = stubParquetUrl();
+    const milestones: SiftLoadMilestone[] = [];
+    try {
+      const { container } = render(
+        <SiftTable
+          url="http://127.0.0.1:9000/small.parquet"
+          onLoadMilestone={(milestone) => milestones.push(milestone)}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(container.querySelector(".sift-status-indicator")?.className).toContain(
+          "sift-status-ready",
+        );
+        expect(milestones.some((m) => m.phase === "streaming-complete")).toBe(true);
+      });
+
+      expect(predicateModule.parquet_open).toHaveBeenCalledWith(
+        expect.any(Uint8Array),
+        64,
+        URL_PARQUET_LIMITS.maxRows,
+        256,
+        URL_PARQUET_LIMITS.maxDecodedBytes,
+        true,
+      );
+      expect(predicateModule.parquet_append_row_group).toHaveBeenCalledTimes(2);
+      expect(container.querySelector(".sift-preview-hint")).toBeNull();
+      expect(container.querySelector(".sift-status-indicator")?.getAttribute("title")).toBe(
+        "All data loaded",
+      );
+      expect(milestones.at(-1)).toMatchObject({
+        phase: "streaming-complete",
+        rowCount: 4,
+        totalRowCount: 4,
+        truncated: false,
+      });
+      const mounted = vi.mocked(createTable).mock.calls.at(-1)?.[1];
+      expect(mounted?.coverage).toMatchObject({ loadedRows: 4, truncated: false });
+    } finally {
+      restore();
+    }
+  });
+
+  it("rejects invalid url limits before mounting", async () => {
+    vi.useRealTimers();
+    const restore = stubParquetUrl();
+    const onLoadError = vi.fn();
+    try {
+      const { container } = render(
+        <SiftTable
+          source={{ kind: "url", url: "http://127.0.0.1:9000/x.parquet", limits: { maxRows: 0 } }}
+          onLoadError={onLoadError}
+        />,
+      );
+      await waitFor(() => {
+        expect(container.querySelector(".sift-loading")?.textContent).toContain("maxRows");
+      });
+      expect(onLoadError).toHaveBeenCalledTimes(1);
+      expect(predicateModule.parquet_open).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
   });
 
   it("fetches trailing Arrow stream chunks sequentially after each append", async () => {
