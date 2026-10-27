@@ -68,10 +68,15 @@ export type WorkerDataErrorCode = "factory" | "open" | "aborted" | "terminated" 
 
 export class WorkerDataError extends Error {
   readonly code: WorkerDataErrorCode;
-  constructor(code: WorkerDataErrorCode, message: string, options?: ErrorOptions) {
-    super(message, options);
+  /** The underlying error, when there is one. Set by hand: `ErrorOptions`
+   *  and the two-argument `Error` constructor are ES2022 lib types, and
+   *  consumers type-check this file under older `lib` settings. */
+  readonly cause?: unknown;
+  constructor(code: WorkerDataErrorCode, message: string, options?: { cause?: unknown }) {
+    super(message);
     this.name = "WorkerDataError";
     this.code = code;
+    if (options && "cause" in options) this.cause = options.cause;
   }
 }
 
