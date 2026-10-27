@@ -12493,9 +12493,7 @@ async fn wait_for_project_context(
 
 fn detected_kind(ctx: &runtime_doc::ProjectContext) -> Option<runtime_doc::ProjectFileKind> {
     match ctx {
-        runtime_doc::ProjectContext::Detected { project_file, .. } => {
-            Some(project_file.kind.clone())
-        }
+        runtime_doc::ProjectContext::Detected { project_file, .. } => Some(project_file.kind),
         _ => None,
     }
 }
