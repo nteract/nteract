@@ -1043,7 +1043,11 @@ dialog::backdrop {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.4rem;
+  gap: 0.1rem 0.4rem;
+  overflow-wrap: anywhere;
+}
+.message-author .muted {
+  font-size: 0.8rem;
 }
 .thread.thread-active {
   border-color: #c6b67c;

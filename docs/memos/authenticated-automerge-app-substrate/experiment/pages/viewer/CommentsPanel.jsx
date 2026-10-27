@@ -2,6 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import { Check, MessageSquare, RotateCcw, X } from "lucide-react";
 import { resolveCommentDraft } from "./comment-draft.mjs";
 
+function CommentAuthor({ author }) {
+  const name = author?.displayName?.trim() || "Collaborator";
+  const driver = author?.driver?.trim();
+  const delegated = driver && driver.toLowerCase() !== "browser";
+  return (
+    <div className="message-author">
+      <strong>{delegated ? driver : name}</strong>
+      {delegated && <span className="muted">on behalf of {name}</span>}
+    </div>
+  );
+}
+
 export function CommentsPanel({
   open,
   session,
@@ -132,10 +144,7 @@ export function CommentsPanel({
         {thread.messages.map((message) =>
           message.deletedAt ? null : (
             <div className="message" key={message.id}>
-              <div className="message-author">
-                <strong>{message.author?.displayName || "Collaborator"}</strong>
-                {message.author?.driver && <span className="muted">{message.author.driver}</span>}
-              </div>
+              <CommentAuthor author={message.author} />
               <p>{message.body}</p>
             </div>
           ),
