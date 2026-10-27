@@ -56,6 +56,7 @@ pub mod error;
 pub mod execution_wait;
 pub mod execution_watch;
 pub mod handle;
+pub mod keyed_doc;
 pub mod presence;
 pub mod relay;
 pub mod relay_task;
@@ -73,6 +74,8 @@ pub use execution_wait::{
 };
 pub use execution_watch::{ExecutionProgressState, ExecutionTerminalReason, ExecutionWatcher};
 pub use handle::{DocHandle, SnapshotPairBytes};
+pub use keyed_doc::{KeyedDocEvent, KeyedReplicaView};
+pub use notebook_protocol::connection::KeyedDocKey;
 pub use notebook_protocol::protocol::PutBlobResult;
 pub use relay::RelayHandle;
 pub use shared::SharedDocState;

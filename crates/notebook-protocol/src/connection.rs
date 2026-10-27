@@ -12,9 +12,12 @@ mod transport;
 pub use env::{CreateNotebookEnvironmentMode, EnvSource, LaunchSpec, PackageManager};
 
 pub use framing::{
-    recv_control_frame, recv_frame, recv_json_frame, recv_preamble, recv_typed_frame, send_frame,
-    send_json_frame, send_preamble, send_typed_frame, send_typed_json_frame, FramedReader,
-    NotebookFrameType, TypedNotebookFrame, MAGIC, MIN_PROTOCOL_VERSION, PREAMBLE_LEN,
+    frame_types, is_daemon_originated_frame, is_optional_frame, recv_control_frame, recv_frame,
+    recv_json_frame, recv_preamble, recv_typed_frame, send_frame, send_json_frame, send_preamble,
+    send_raw_typed_frame, send_typed_frame, send_typed_json_frame, FramedReader,
+    KeyedDocFrameError, KeyedDocFrameHeader, KeyedDocKey, NotebookFrameType, TypedNotebookFrame,
+    MAGIC, MAX_FRAME_SIZE, MAX_KEYED_DOC_FRAME_HEADER_LEN, MAX_KEYED_DOC_ID_LEN,
+    MAX_KEYED_DOC_KIND_LEN, MIN_PROTOCOL_VERSION, PREAMBLE_LEN,
 };
 
 pub use handshake::{
@@ -321,6 +324,7 @@ mod tests {
                 connection_scope: None,
                 comments_doc_id: None,
                 comments_notebook_ref: None,
+                keyed_doc_kinds: Vec::new(),
             }
         }
 
@@ -451,6 +455,54 @@ mod tests {
             serde_json::to_value(old).unwrap(),
             serde_json::json!({"protocol": "v4"})
         );
+    }
+
+    #[test]
+    fn keyed_doc_kinds_capability_defaults_empty_and_is_per_room() {
+        // Older daemons omit the field: clients must see no kinds.
+        let old: ProtocolCapabilities = serde_json::from_value(serde_json::json!({
+            "protocol": "v4",
+            "notebook_sync_receipt": true
+        }))
+        .unwrap();
+        assert!(old.keyed_doc_kinds.is_empty());
+        assert!(!old.supports_doc_kind("bokeh_session"));
+
+        // `v4()` leaves it empty; rooms add their kinds explicitly.
+        let caps = ProtocolCapabilities::v4(None);
+        assert!(caps.keyed_doc_kinds.is_empty());
+        assert!(!serde_json::to_string(&caps)
+            .unwrap()
+            .contains("keyed_doc_kinds"));
+
+        let caps = caps.with_keyed_doc_kinds(vec!["bokeh_session".into()]);
+        assert!(caps.supports_doc_kind("bokeh_session"));
+        assert!(!caps.supports_doc_kind("test_kv"));
+        let json = serde_json::to_value(&caps).unwrap();
+        assert_eq!(
+            json["keyed_doc_kinds"],
+            serde_json::json!(["bokeh_session"])
+        );
+        let parsed: ProtocolCapabilities = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, caps);
+
+        // The field rides the flattened connection info and typed bootstrap.
+        let info = NotebookConnectionInfo {
+            capabilities: caps,
+            notebook_id: "room".into(),
+            cell_count: 0,
+            needs_trust_approval: false,
+            error: None,
+            ephemeral: false,
+            notebook_path: None,
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(
+            json["keyed_doc_kinds"],
+            serde_json::json!(["bokeh_session"])
+        );
+        let parsed: NotebookConnectionInfo = serde_json::from_value(json).unwrap();
+        assert!(parsed.capabilities.supports_doc_kind("bokeh_session"));
     }
 
     #[test]
@@ -624,6 +676,33 @@ mod tests {
         assert_eq!(frame.payload.len(), payload.len());
     }
 
+    #[tokio::test]
+    async fn raw_typed_frame_sends_unknown_types_and_receiver_skips_them() {
+        let mut buf = Vec::new();
+        send_raw_typed_frame(&mut buf, 0x7f, b"future")
+            .await
+            .unwrap();
+        send_typed_frame(&mut buf, NotebookFrameType::Presence, b"known")
+            .await
+            .unwrap();
+
+        let mut cursor = std::io::Cursor::new(buf);
+        let frame = recv_typed_frame(&mut cursor).await.unwrap().unwrap();
+        assert_eq!(frame.frame_type, NotebookFrameType::Presence);
+        assert_eq!(frame.payload, b"known");
+    }
+
+    #[tokio::test]
+    async fn raw_typed_frame_applies_known_type_caps() {
+        let cap = frame_size_limits(frame_types::KEYED_DOC_SYNC).cap;
+        let mut buf = Vec::new();
+        let err = send_raw_typed_frame(&mut buf, frame_types::KEYED_DOC_SYNC, &vec![0; cap + 1])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("outbound frame too large"));
+        assert!(buf.is_empty());
+    }
+
     #[test]
     fn frame_size_limits_cover_every_known_frame_type() {
         // Pin the per-type cap table so a new frame type can't slip in
@@ -643,6 +722,7 @@ mod tests {
             ft::COMMENTS_DOC_SYNC,
             ft::SESSION_CONTROL,
             ft::PUT_BLOB,
+            ft::KEYED_DOC_SYNC,
         ] {
             let limits = frame_size_limits(ty);
             assert!(
@@ -744,6 +824,15 @@ mod tests {
             NotebookFrameType::try_from(0x09).unwrap(),
             NotebookFrameType::CommsDocSync
         );
+        assert_eq!(
+            NotebookFrameType::try_from(0x0a).unwrap(),
+            NotebookFrameType::CommentsDocSync
+        );
+        assert_eq!(
+            NotebookFrameType::try_from(0x0b).unwrap(),
+            NotebookFrameType::KeyedDocSync
+        );
+        assert!(NotebookFrameType::try_from(0x0c).is_err());
         assert!(NotebookFrameType::try_from(0xFF).is_err());
     }
 

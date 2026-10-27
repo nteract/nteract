@@ -462,7 +462,8 @@ where
                 ctx.connection_identity.actor_label().as_str(),
                 ctx.connection_identity.scope().as_str(),
             )
-            .with_comments_doc_identity(comments_doc_id, comments_notebook_ref);
+            .with_comments_doc_identity(comments_doc_id, comments_notebook_ref)
+            .with_keyed_doc_kinds(room.keyed_docs.advertised_kinds());
         if typed_capabilities {
             connection::send_typed_bootstrap_frame(
                 &mut writer,

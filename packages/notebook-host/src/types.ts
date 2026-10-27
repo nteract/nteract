@@ -95,6 +95,11 @@ export interface DaemonReadyPayload {
   comments_doc_id?: string | null;
   /** Daemon-authoritative notebook reference stored inside the CommentsDoc. */
   comments_notebook_ref?: CommentsNotebookRef | null;
+  /**
+   * Keyed document kinds this room routes over `KeyedDocSync` (0x0b). Absent
+   * (older daemons, hosted rooms) means none; send 0x0b only for listed kinds.
+   */
+  keyed_doc_kinds?: string[];
 }
 
 export type CommentsNotebookRef =

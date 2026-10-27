@@ -281,11 +281,23 @@ fn classify_ready_control(payload: &[u8]) -> ReadyControl {
     }
 }
 
+/// The type byte a `cloud_frame_rejected` control names: the numeric
+/// `frame.type` the cloud room sends.
+pub fn rejected_frame_type(control: &serde_json::Value) -> Option<u8> {
+    let number = control.get("frame_type")?.as_u64()?;
+    u8::try_from(number).ok()
+}
+
+/// A rejection of a frame the connection can live without stays a control
+/// frame for the agent instead of a terminal `PermissionDenied`.
 fn cloud_frame_rejection_error(payload: &[u8]) -> Option<std::io::Error> {
     let Ok(control) = serde_json::from_slice::<serde_json::Value>(payload) else {
         return None;
     };
     if control.get("type").and_then(|t| t.as_str()) != Some("cloud_frame_rejected") {
+        return None;
+    }
+    if rejected_frame_type(&control).is_some_and(notebook_wire::is_optional_frame) {
         return None;
     }
     let frame_type = match control.get("frame_type") {
@@ -973,6 +985,73 @@ mod tests {
         }))
         .unwrap();
         assert!(cloud_frame_rejection_error(&accepted).is_none());
+    }
+
+    #[test]
+    fn optional_frame_rejection_is_not_an_error() {
+        let keyed = |frame_type: serde_json::Value| {
+            serde_json::to_vec(&serde_json::json!({
+                "type": "cloud_frame_rejected",
+                "frame_type": frame_type,
+                "reason": "keyed_doc_sync is not routed by cloud rooms",
+            }))
+            .unwrap()
+        };
+        assert!(
+            cloud_frame_rejection_error(&keyed(0x0b.into())).is_none(),
+            "an optional frame's rejection must reach the agent as a control frame"
+        );
+        let control: serde_json::Value = serde_json::from_slice(&keyed(0x0b.into())).unwrap();
+        assert_eq!(rejected_frame_type(&control), Some(0x0b));
+        // Only the numeric type the room sends counts; names stay terminal.
+        assert!(cloud_frame_rejection_error(&keyed("keyed_doc_sync".into())).is_some());
+        assert!(cloud_frame_rejection_error(&keyed(0x05.into())).is_some());
+        assert!(cloud_frame_rejection_error(&keyed(serde_json::json!(4096))).is_some());
+        let missing = serde_json::json!({"type": "cloud_frame_rejected"});
+        assert_eq!(rejected_frame_type(&missing), None);
+    }
+
+    /// End to end through a WebSocket: the optional-frame rejection arrives
+    /// as a SessionControl frame and the source keeps reading, while a
+    /// required-frame rejection still ends in `PermissionDenied`.
+    #[tokio::test]
+    async fn cloud_source_passes_optional_frame_rejection_through() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            for (frame_type, reason) in [(0x0b, "not routed"), (0x05, "forbidden")] {
+                let control = serde_json::to_vec(&serde_json::json!({
+                    "type": "cloud_frame_rejected",
+                    "frame_type": frame_type,
+                    "reason": reason,
+                }))
+                .unwrap();
+                ws.send(WsMessage::binary(encode_frame(
+                    NotebookFrameType::SessionControl,
+                    &control,
+                )))
+                .await
+                .unwrap();
+            }
+            ws
+        });
+        let (client, _) = connect_async(format!("ws://{addr}")).await.unwrap();
+        let (_sink, stream) = client.split();
+        let mut source = CloudWsSource {
+            stream,
+            pending: VecDeque::new(),
+        };
+
+        let frame = source.recv_frame().await.unwrap().expect("not an error");
+        assert_eq!(frame.frame_type, NotebookFrameType::SessionControl);
+        let control: serde_json::Value = serde_json::from_slice(&frame.payload).unwrap();
+        assert_eq!(rejected_frame_type(&control), Some(0x0b));
+
+        let error = source.recv_frame().await.unwrap().unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        drop(server.await.unwrap());
     }
 
     #[test]

@@ -307,7 +307,11 @@ fn decode_sync_status(
     .expect("valid session control frame")
     {
         notebook_protocol::protocol::SessionControlMessage::SyncStatus(status) => Some(status),
-        notebook_protocol::protocol::SessionControlMessage::HostedBridgeStatus { .. } => None,
+        notebook_protocol::protocol::SessionControlMessage::HostedBridgeStatus { .. }
+        | notebook_protocol::protocol::SessionControlMessage::DocResync { .. }
+        | notebook_protocol::protocol::SessionControlMessage::RuntimeAgentCapabilities { .. } => {
+            None
+        }
     }
 }
 
@@ -2695,6 +2699,7 @@ fn test_room_with_path_and_store(
         project_trust_prompt: Default::default(),
         state,
         comms,
+        keyed_docs: Arc::new(crate::keyed_doc::KeyedDocHub::default()),
         comments,
         comments_store,
         runtime_agent_handle: Arc::new(Mutex::new(None)),
@@ -3233,7 +3238,7 @@ async fn save_notebook_to_disk(
     super::persist::save_notebook_to_disk(room, target_path).await
 }
 
-fn test_daemon_config(tmp: &tempfile::TempDir) -> crate::daemon::DaemonConfig {
+pub(super) fn test_daemon_config(tmp: &tempfile::TempDir) -> crate::daemon::DaemonConfig {
     #[cfg(windows)]
     let socket_path = {
         let unique = tmp.path().file_name().unwrap_or_default().to_string_lossy();

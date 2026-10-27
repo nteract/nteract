@@ -60,6 +60,15 @@ pub enum SyncError {
     #[error("Runtime state error: {0}")]
     RuntimeState(#[from] runtime_doc::RuntimeStateError),
 
+    /// The daemon did not advertise this keyed document kind for the room,
+    /// so this client never sends `KeyedDocSync` for it.
+    #[error("this connection does not sync {0} documents")]
+    UnsupportedDocKind(String),
+
+    /// A keyed document kind or id the daemon would reject.
+    #[error("invalid keyed document key: {0}")]
+    InvalidKeyedDocKey(String),
+
     /// Comments document setup or mutation failed.
     #[error("Comments error: {0}")]
     Comments(#[from] comments_doc::CommentsDocError),

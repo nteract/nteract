@@ -17,7 +17,9 @@ use log::warn;
 use notebook_doc::presence::PresenceState;
 use runtime_doc::{CommsDoc, RuntimeStateDoc};
 use std::sync::Arc;
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
+
+use crate::keyed_doc::{KeyedDocEvent, KeyedReplicas};
 
 /// The shared state behind `Arc<Mutex<SharedDocState>>`.
 ///
@@ -59,6 +61,12 @@ pub struct SharedDocState {
     /// observing comments cannot keep a notebook peer connected.
     pub(crate) comments_tx: watch::Sender<Option<Arc<comments_doc::CommentsProjection>>>,
 
+    /// Keyed documents this client opened, with their sync states.
+    pub(crate) keyed: KeyedReplicas,
+
+    /// Changes and restarts of `keyed` replicas.
+    pub(crate) keyed_tx: broadcast::Sender<KeyedDocEvent>,
+
     #[cfg(test)]
     panic_on_next_doc_sync: bool,
     #[cfg(test)]
@@ -90,6 +98,8 @@ impl SharedDocState {
             comments_doc,
             comments_peer_state: sync::State::new(),
             comments_tx: watch::channel(None).0,
+            keyed: KeyedReplicas::default(),
+            keyed_tx: broadcast::channel(64).0,
             #[cfg(test)]
             panic_on_next_doc_sync: false,
             #[cfg(test)]

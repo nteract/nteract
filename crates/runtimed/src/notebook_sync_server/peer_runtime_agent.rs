@@ -3,9 +3,12 @@ use std::sync::Arc;
 
 use automerge::SaveOptions;
 use notebook_doc::presence;
-use notebook_protocol::connection::{send_typed_frame, FramedReader, NotebookFrameType};
+use notebook_protocol::connection::{
+    send_typed_frame, send_typed_json_frame, FramedReader, NotebookFrameType,
+};
 use notebook_protocol::protocol::{
     NotebookBroadcast, RuntimeAgentRequest, RuntimeAgentRequestEnvelope, RuntimeAgentResponse,
+    SessionControlMessage,
 };
 use tracing::{debug, info, warn};
 
@@ -226,6 +229,23 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
         }
     }
 
+    // ── 0. Keyed document kinds this room routes ─────────────────────
+    // The first SessionControl frame after the handshake, on every connect.
+    // The agent sends no KeyedDocSync for a kind missing here.
+    let capabilities = SessionControlMessage::RuntimeAgentCapabilities {
+        keyed_doc_kinds: room.keyed_docs.advertised_kinds(),
+    };
+    if let Err(e) = send_typed_json_frame(
+        &mut writer,
+        NotebookFrameType::SessionControl,
+        &capabilities,
+    )
+    .await
+    {
+        warn!("[notebook-sync] Agent capabilities send failed: {}", e);
+        return;
+    }
+
     // ── 1. Initial NotebookDoc sync ──────────────────────────────────
     // Scope the doc write guard so it drops before the async send
     // (deadlock prevention: no lock held across `.await`).
@@ -343,6 +363,8 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     let mut changed_rx = room.broadcasts.changed_tx.subscribe();
     let mut state_changed_rx = room.state.subscribe();
     let mut comms_changed_rx = room.comms.subscribe();
+    let mut keyed_changed_rx = room.keyed_docs.subscribe();
+    let mut keyed_sync_states = crate::keyed_doc::KeyedSyncStates::new();
     let execution_store =
         runtimed_client::execution_store::ExecutionStore::new(execution_store_dir);
     let mut persisted_execution_records: std::collections::HashMap<
@@ -583,9 +605,23 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                             }
                         }
                     }
+                    NotebookFrameType::KeyedDocSync => {
+                        for frame in room
+                            .keyed_docs
+                            .receive_runtime_frame(&mut keyed_sync_states, &typed_frame.payload)
+                        {
+                            if let Err(e) =
+                                agent_writer.send_frame(NotebookFrameType::KeyedDocSync, frame)
+                            {
+                                warn!("[notebook-sync] Failed to queue keyed document sync reply to runtime agent: {}", e);
+                                break 'sync;
+                            }
+                        }
+                    }
                     NotebookFrameType::Broadcast => {
                         match forward_runtime_agent_broadcast(
                             &room.broadcasts.kernel_broadcast_tx,
+                            &room.keyed_docs,
                             &typed_frame.payload,
                         ) {
                             Ok(0) => {
@@ -684,6 +720,22 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                     ) {
                         warn!("[notebook-sync] Failed to queue CommsDoc sync to runtime agent: {}", e);
                         break;
+                    }
+                }
+            }
+
+            // Keyed document changes (peer writes) → sync to runtime agent.
+            // The agent produces every document, so it needs no subscription.
+            result = keyed_changed_rx.recv() => {
+                let key = match result {
+                    Ok(key) => Some(key),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => None,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                for frame in room.keyed_docs.runtime_updates(&mut keyed_sync_states, key.as_ref()) {
+                    if let Err(e) = agent_writer.send_frame(NotebookFrameType::KeyedDocSync, frame) {
+                        warn!("[notebook-sync] Failed to queue keyed document sync to runtime agent: {}", e);
+                        break 'sync;
                     }
                 }
             }
@@ -847,6 +899,9 @@ async fn cleanup_runtime_agent_disconnect(room: &NotebookRoom, runtime_agent_id:
         disconnected
     };
     if is_current {
+        room.keyed_docs
+            .on_runtime_agent_lost(&room.state, &room.blob_store)
+            .await;
         {
             let mut current = room.current_runtime_agent_id.write().await;
             if current.as_deref() == Some(runtime_agent_id) {
@@ -873,10 +928,12 @@ async fn cleanup_runtime_agent_disconnect(room: &NotebookRoom, runtime_agent_id:
 
 fn forward_runtime_agent_broadcast(
     tx: &tokio::sync::broadcast::Sender<NotebookBroadcast>,
+    keyed_docs: &crate::keyed_doc::KeyedDocHub,
     payload: &[u8],
 ) -> anyhow::Result<usize> {
     let broadcast = serde_json::from_slice::<NotebookBroadcast>(payload)?;
     validate_runtime_agent_broadcast(&broadcast)?;
+    keyed_docs.observe_runtime_broadcast(&broadcast);
     match tx.send(broadcast) {
         Ok(receiver_count) => Ok(receiver_count),
         Err(_) => Ok(0),
@@ -1272,6 +1329,9 @@ mod tests {
         let (mut reader, mut writer) = tokio::io::split(agent_socket);
         let mut agent = RuntimeStateDoc::new_with_actor(agent_id);
         let mut peer = automerge::sync::State::new();
+
+        let capabilities = recv_typed_frame(&mut reader).await.unwrap().unwrap();
+        assert_eq!(capabilities.frame_type, NotebookFrameType::SessionControl);
 
         // The first state frame advertises heads but carries no changes. It
         // must not authorize LaunchKernel against the agent's seed document.
@@ -1755,8 +1815,12 @@ mod tests {
         };
         let payload = serde_json::to_vec(&broadcast).expect("serialize broadcast");
 
-        let receiver_count =
-            forward_runtime_agent_broadcast(&tx, &payload).expect("forward broadcast");
+        let receiver_count = forward_runtime_agent_broadcast(
+            &tx,
+            &crate::keyed_doc::KeyedDocHub::default(),
+            &payload,
+        )
+        .expect("forward broadcast");
 
         assert_eq!(receiver_count, 1);
         match rx.recv().await.expect("receive broadcast") {
@@ -1781,8 +1845,12 @@ mod tests {
     fn rejects_malformed_runtime_agent_broadcast() {
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
 
-        forward_runtime_agent_broadcast(&tx, b"{not-json")
-            .expect_err("malformed broadcast must fail");
+        forward_runtime_agent_broadcast(
+            &tx,
+            &crate::keyed_doc::KeyedDocHub::default(),
+            b"{not-json",
+        )
+        .expect_err("malformed broadcast must fail");
     }
 
     #[test]
@@ -1792,7 +1860,12 @@ mod tests {
             selection: Default::default(),
         })
         .unwrap();
-        let error = forward_runtime_agent_broadcast(&tx, &payload).unwrap_err();
+        let error = forward_runtime_agent_broadcast(
+            &tx,
+            &crate::keyed_doc::KeyedDocHub::default(),
+            &payload,
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("owned by the local daemon"));
         assert!(rx.try_recv().is_err());
     }
@@ -1809,7 +1882,7 @@ mod tests {
         };
         let payload = serde_json::to_vec(&broadcast).expect("serialize broadcast");
 
-        forward_runtime_agent_broadcast(&tx, &payload)
+        forward_runtime_agent_broadcast(&tx, &crate::keyed_doc::KeyedDocHub::default(), &payload)
             .expect_err("non-comm message type must fail");
     }
 
@@ -1828,7 +1901,8 @@ mod tests {
         };
         let payload = serde_json::to_vec(&broadcast).expect("serialize broadcast");
 
-        forward_runtime_agent_broadcast(&tx, &payload).expect_err("missing comm_id must fail");
+        forward_runtime_agent_broadcast(&tx, &crate::keyed_doc::KeyedDocHub::default(), &payload)
+            .expect_err("missing comm_id must fail");
     }
 
     #[test]

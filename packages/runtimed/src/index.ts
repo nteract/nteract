@@ -7,7 +7,19 @@
 
 // Core
 export { SyncEngine } from "./sync-engine";
-export type { PresenceHeartbeatOptions, SyncEngineOptions, SyncEngineLogger } from "./sync-engine";
+export type {
+  KeyedDocFrame,
+  KeyedDocResync,
+  NegotiatedCapabilities,
+  PresenceHeartbeatOptions,
+  SyncEngineOptions,
+  SyncEngineLogger,
+} from "./sync-engine";
+export {
+  isValidKeyedDocFrameHeader,
+  parseKeyedDocFrameHeader,
+  type KeyedDocFrameHeader,
+} from "./keyed-doc-frame";
 
 // Transport
 export type {

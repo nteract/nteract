@@ -6,11 +6,11 @@ use tokio::io::AsyncWrite;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-use notebook_doc::diff::extract_change_actors;
 use notebook_protocol::connection::{self, NotebookFrameType};
 
 use super::peer_writer::PeerWriter;
 use super::{NotebookRoom, RoomConnectionIdentity, STATE_SYNC_COMPACT_THRESHOLD};
+use crate::keyed_doc::admission::{check_change_actors, preview_receive};
 
 pub(super) async fn send_initial_comms_doc_sync<W>(
     writer: &mut W,
@@ -67,28 +67,21 @@ pub(super) async fn handle_comms_doc_frame(
 
     let reply_encoded = room.comms.with_doc(|comms_doc| {
         if has_client_changes {
-            let heads_before = comms_doc.get_heads();
-            let mut preview = runtime_doc::CommsDoc::from_doc(comms_doc.doc().clone());
-            let mut preview_peer_state = comms_peer_state.clone();
-            match preview.receive_sync_message_with_changes_recovering(
-                &mut preview_peer_state,
+            let preview = match preview_receive(
+                comms_doc.doc(),
+                comms_peer_state,
                 message.clone(),
                 "comms-auth-preview",
             ) {
-                Ok(true) => {
-                    let actors = extract_change_actors(preview.doc_mut(), &heads_before);
-                    connection_identity
-                        .validate_actor_labels(actors.iter().map(std::string::String::as_str))
-                        .map_err(|error| {
-                            runtime_doc::RuntimeStateError::UnauthorizedActor(error.to_string())
-                        })?;
-                }
-                Ok(false) => {}
+                Ok(preview) => preview,
                 Err(e) => {
                     warn!("[notebook-sync] CommsDoc auth preview failed: {}", e);
                     return Err(e.into());
                 }
-            }
+            };
+            check_change_actors(connection_identity, &preview.new_changes).map_err(|foreign| {
+                runtime_doc::RuntimeStateError::UnauthorizedActor(foreign.reason)
+            })?;
         }
 
         match comms_doc.receive_sync_message_with_changes_recovering(
@@ -171,4 +164,85 @@ fn allows_comms_doc_write(scope: ConnectionScope) -> bool {
         scope,
         ConnectionScope::Editor | ConnectionScope::Owner | ConnectionScope::RuntimePeer
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::blob_store::BlobStore;
+    use crate::keyed_doc::admission::tests::message_with_changes;
+    use automerge::transaction::Transactable;
+    use automerge::ROOT;
+
+    /// A CommsDoc write authored under another principal is refused before
+    /// it touches the room document, and the error keeps the identity
+    /// check's reason.
+    #[tokio::test]
+    async fn foreign_actor_comms_write_is_refused() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        );
+        let identity = RoomConnectionIdentity::hosted_bridged(
+            "user:dev:alice",
+            Some("browser:a".into()),
+            ConnectionScope::Editor,
+        )
+        .unwrap();
+        let (writer, _task) = super::super::peer_writer::spawn_peer_writer(
+            tokio::io::sink(),
+            "comms-test".into(),
+            "peer".into(),
+        );
+        let fork = |actor: &str| {
+            let mut doc = room
+                .comms
+                .read(|comms| comms.doc().clone())
+                .unwrap()
+                .with_actor(automerge::ActorId::from(actor.as_bytes()));
+            doc.put(ROOT, "written_by", actor).unwrap();
+            doc.commit();
+            doc
+        };
+        let heads = || room.comms.with_doc(|comms| Ok(comms.get_heads())).unwrap();
+        let heads_before = heads();
+
+        let mut mallory = fork("user:dev:mallory/browser:m");
+        let error = handle_comms_doc_frame(
+            &room,
+            &mut sync::State::new(),
+            &writer,
+            &message_with_changes(&mut mallory).encode(),
+            &identity,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().contains(
+                "actor principal user:dev:mallory is not authorized for authenticated principal user:dev:alice"
+            ),
+            "{error}"
+        );
+        assert_eq!(heads(), heads_before, "the CommsDoc must not change");
+
+        let mut alice = fork("user:dev:alice/browser:a");
+        handle_comms_doc_frame(
+            &room,
+            &mut sync::State::new(),
+            &writer,
+            &message_with_changes(&mut alice).encode(),
+            &identity,
+        )
+        .await
+        .unwrap();
+        assert_ne!(
+            heads(),
+            heads_before,
+            "the connection's own actor is accepted"
+        );
+    }
 }

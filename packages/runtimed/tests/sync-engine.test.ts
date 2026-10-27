@@ -3006,6 +3006,127 @@ describe("SyncEngine", () => {
     });
   });
 
+  // ── Keyed documents ─────────────────────────────────────────────
+
+  describe("keyed documents", () => {
+    function keyedPayload(header: unknown, body: number[] = []): Uint8Array {
+      const json = new TextEncoder().encode(JSON.stringify(header));
+      const bytes = new Uint8Array(4 + json.length + body.length);
+      new DataView(bytes.buffer).setUint32(0, json.length, false);
+      bytes.set(json, 4);
+      bytes.set(body, 4 + json.length);
+      return bytes;
+    }
+
+    function keyedFrame(header: unknown, body: number[] = []): number[] {
+      return [FrameType.KEYED_DOC_SYNC, ...keyedPayload(header, body)];
+    }
+
+    function keyedSends(): Uint8Array[] {
+      return transport.sentFrames
+        .filter((f) => f.frameType === FrameType.KEYED_DOC_SYNC)
+        .map((f) => f.payload);
+    }
+
+    it("routes 0x0b frames to keyedDocFrames$ without the notebook handle", () => {
+      const engine = createEngine();
+      const frames: unknown[] = [];
+      const sub = engine.keyedDocFrames$.subscribe((f) => frames.push(f));
+      engine.start();
+
+      const frame = keyedFrame({ kind: "test_kv", id: "d1", epoch: 4 }, [7, 8]);
+      transport.deliver(frame);
+      // Malformed headers are dropped rather than handed to WASM.
+      transport.deliver([FrameType.KEYED_DOC_SYNC, 0, 0, 0, 9]);
+
+      expect(frames).toEqual([
+        { kind: "test_kv", id: "d1", epoch: 4, frame: new Uint8Array(frame) },
+      ]);
+      expect(handle.receive_frame).not.toHaveBeenCalled();
+
+      // Other frame types still go through the handle.
+      transport.deliver([FrameType.AUTOMERGE_SYNC, 1]);
+      expect(handle.receive_frame).toHaveBeenCalledOnce();
+      expect(frames).toHaveLength(1);
+      sub.unsubscribe();
+      engine.stop();
+    });
+
+    it("surfaces doc_resync frame events on keyedDocResyncs$", () => {
+      vi.mocked(handle.receive_frame).mockReturnValue([
+        { type: "doc_resync", kind: "test_kv", id: "d1", epoch: 3, reason: "stale epoch" },
+      ]);
+      const engine = createEngine();
+      const resyncs: unknown[] = [];
+      const sub = engine.keyedDocResyncs$.subscribe((r) => resyncs.push(r));
+      engine.start();
+      transport.deliver([FrameType.SESSION_CONTROL, 0]);
+      expect(resyncs).toEqual([{ kind: "test_kv", id: "d1", epoch: 3, reason: "stale epoch" }]);
+      sub.unsubscribe();
+      engine.stop();
+    });
+
+    it("replays negotiated capabilities and resets them on bootstrap before keyedDocsReset$", () => {
+      const engine = createEngine();
+      const seen: string[][] = [];
+      engine.negotiatedCapabilities$.subscribe((caps) => seen.push([...caps.keyedDocKinds]));
+      expect(seen).toEqual([[]]);
+      expect(engine.supportsKeyedDocKind("test_kv")).toBe(false);
+
+      engine.setNegotiatedCapabilities({ keyedDocKinds: new Set(["test_kv"]) });
+      expect(engine.supportsKeyedDocKind("test_kv")).toBe(true);
+      const late: string[][] = [];
+      engine.negotiatedCapabilities$
+        .subscribe((caps) => late.push([...caps.keyedDocKinds]))
+        .unsubscribe();
+      expect(late).toEqual([["test_kv"]]);
+
+      const order: string[] = [];
+      engine.keyedDocsReset$.subscribe(() =>
+        order.push(`reset:${engine.supportsKeyedDocKind("other_kind")}`),
+      );
+      engine.resetForBootstrap({ keyedDocKinds: new Set(["other_kind"]) });
+      expect(order).toEqual(["reset:true"]);
+      expect(engine.supportsKeyedDocKind("test_kv")).toBe(false);
+
+      engine.resetForBootstrap();
+      expect(order).toEqual(["reset:true", "reset:false"]);
+      expect(seen).toEqual([[], ["test_kv"], ["other_kind"], []]);
+    });
+
+    it("sends 0x0b only for negotiated kinds whose header matches", async () => {
+      const warn = vi.fn();
+      const engine = new SyncEngine({
+        getHandle: () => handle,
+        transport,
+        presenceHeartbeat: { intervalMs: 15_000, encode: () => new Uint8Array([0]) },
+        scheduler,
+        logger: { debug() {}, info() {}, warn, error() {} },
+      });
+      const payload = keyedPayload({ kind: "test_kv", id: "d1", epoch: 1 }, [1]);
+
+      await engine.sendKeyedDocFrame("test_kv", payload);
+      expect(keyedSends()).toEqual([]);
+      expect(warn).toHaveBeenCalledOnce();
+
+      engine.setNegotiatedCapabilities({ keyedDocKinds: new Set(["test_kv"]) });
+      await engine.sendKeyedDocFrame("test_kv", payload);
+      expect(keyedSends()).toEqual([payload]);
+
+      // The header, not the argument, is what the daemon routes on.
+      const other = keyedPayload({ kind: "other_kind", id: "d1", epoch: 1 });
+      await engine.sendKeyedDocFrame("test_kv", other);
+      await engine.sendKeyedDocFrame("test_kv", new Uint8Array([0, 0]));
+      expect(keyedSends()).toEqual([payload]);
+
+      // A new connection without the kind stops sends again.
+      engine.resetForBootstrap();
+      await engine.sendKeyedDocFrame("test_kv", payload);
+      expect(keyedSends()).toEqual([payload]);
+      expect(warn).toHaveBeenCalledTimes(4);
+    });
+  });
+
   // ── Cross-tab apply (applyLocalPeerChanges) ─────────────────────
 
   describe("applyLocalPeerChanges", () => {

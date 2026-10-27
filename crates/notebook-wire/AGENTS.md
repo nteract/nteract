@@ -106,12 +106,13 @@ After the handshake, frames carry a leading type byte:
 | `0x08` | PutBlob | Framed binary blob upload (`PutBlobHeader` + bytes) |
 | `0x09` | CommsDocSync | Binary (per-notebook `CommsDoc` Automerge sync) |
 | `0x0a` | CommentsDocSync | Binary (per-notebook `CommentsDoc` Automerge sync) |
+| `0x0b` | KeyedDocSync | Framed binary (`KeyedDocFrameHeader {kind, id, epoch}` + Automerge sync); sent only for kinds listed in `ProtocolCapabilities::keyed_doc_kinds` |
 
 | Sender | Valid types |
 |--------|-------------|
-| Frontend / Tauri relay | `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09`, `0x0a` |
-| Daemon notebook peer | `0x00`, `0x02`, `0x03`, `0x04`, `0x05`, `0x06`, `0x07`, `0x09`, `0x0a` |
-| Runtime agent peer | `0x00`, `0x01` (RuntimeAgentRequest/Envelope), `0x02` (RuntimeAgentResponse/Envelope), `0x05`, `0x09` |
+| Frontend / Tauri relay | `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09`, `0x0a`, `0x0b` |
+| Daemon notebook peer | `0x00`, `0x02`, `0x03`, `0x04`, `0x05`, `0x06`, `0x07`, `0x09`, `0x0a`, `0x0b` |
+| Runtime agent peer | `0x00`, `0x01` (RuntimeAgentRequest/Envelope), `0x02` (RuntimeAgentResponse/Envelope), `0x05`, `0x09`, `0x0b` (only kinds the coordinator listed in `SessionControlMessage::RuntimeAgentCapabilities`) |
 | Cloud viewer bridge | `0x00`, `0x04`, `0x05`, `0x09`, `0x0a` |
 
 `NotebookRequest` / `NotebookResponse` payloads travel in flattened `NotebookRequestEnvelope` / `NotebookResponseEnvelope`. Concurrent requests carry an `id`; clients route responses by id because broadcasts, state sync, and out-of-order responses interleave freely.
@@ -257,7 +258,7 @@ Kernel produces output
 | `daemon:ready` event | Relay → Frontend | `DaemonReadyPayload` | Connection established, ready to bootstrap |
 | `daemon:disconnected` event | Relay → Frontend | — | Connection lost |
 
-Outgoing frames use `sendFrame(frameType, payload)` where `payload` is `Uint8Array` via `tauri::ipc::Request`. Relay accepts frontend-originated `0x00`, `0x01`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09`, `0x0a`; `0x02`, `0x03`, `0x07` are daemon-originated.
+Outgoing frames use `sendFrame(frameType, payload)` where `payload` is `Uint8Array` via `tauri::ipc::Request`. Relays (Tauri and `notebook-sync` `relay_task`, which also serves `@runtimed/node`) refuse the daemon-originated `0x02`, `0x03`, `0x07` (`notebook_wire::is_daemon_originated_frame`) and forward every other type byte opaquely, bounded by `MAX_FRAME_SIZE`; the daemon decides which client types it accepts.
 
 ### In-memory frame bus
 
