@@ -15896,7 +15896,7 @@ async fn undeclared_replay_differences_still_degrade_recovery() {
 
 async fn assert_mutable_replay_recovery(conflict: Option<&str>) {
     use crate::output_hooks::test_hooks::{saved_snapshot, MUTABLE_REPLAY_TEST_MIME as MIME};
-    use crate::output_store::{create_manifest, DEFAULT_INLINE_THRESHOLD};
+    use crate::output_store::{create_manifest, ContentRef, DEFAULT_INLINE_THRESHOLD};
 
     let tmp = tempfile::TempDir::new().unwrap();
     let blobs = test_blob_store(&tmp);
@@ -15992,6 +15992,22 @@ async fn assert_mutable_replay_recovery(conflict: Option<&str>) {
         store.write_record(expected.clone()).await.unwrap();
     }
 
+    // The room's output adopts the saved payload, so the snapshot written at
+    // save time is what reopening renders.
+    let room_payload = |room: Arc<NotebookRoom>, execution_id: String| {
+        let blobs = Arc::clone(&blobs);
+        async move {
+            let outputs = room
+                .state
+                .read(|state| state.get_outputs(&execution_id))
+                .unwrap();
+            let content: ContentRef =
+                serde_json::from_value(outputs[0]["data"][MIME].clone()).unwrap();
+            serde_json::from_str::<serde_json::Value>(&content.resolve(&blobs).await.unwrap())
+                .unwrap()
+        }
+    };
+
     // Fresh import claims the durable record by content.
     {
         let (fresh, ready) = arrow_recovery_room_from_disk(
@@ -16009,6 +16025,12 @@ async fn assert_mutable_replay_recovery(conflict: Option<&str>) {
             conflict.is_none(),
             "fresh import, conflict {conflict:?}"
         );
+        let payload = room_payload(fresh, execution_id).await;
+        assert_eq!(
+            payload["snapshot"],
+            saved_snapshot(),
+            "fresh import, conflict {conflict:?}"
+        );
     }
 
     // Journal recovery verifies the exact durable record.
@@ -16023,6 +16045,9 @@ async fn assert_mutable_replay_recovery(conflict: Option<&str>) {
                 .unwrap()
                 .expect("recovered execution");
             assert_eq!(execution.source.as_deref(), Some(source));
+            let payload = room_payload(room, "viz-execution".to_string()).await;
+            assert_eq!(payload["snapshot"], saved_snapshot());
+            assert_eq!(payload["document"], initial["document"]);
         }
         Some(conflict) => {
             assert!(

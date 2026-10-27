@@ -1576,9 +1576,11 @@ impl LoadedExecution {
         imported_outputs: &[serde_json::Value],
     ) -> Self {
         let mut state = record.execution_state();
+        let policy = crate::extensions::replay_field_policy();
         // Pre-output-ID records can still match current file content. Preserve
         // every known ID and use the validated import's ID only when absent.
         for (output, imported) in state.outputs.iter_mut().zip(imported_outputs) {
+            adopt_mutable_replay_payloads(output, imported, policy);
             if output
                 .get("output_id")
                 .and_then(|value| value.as_str())
@@ -1678,6 +1680,33 @@ async fn durable_or_synthetic_execution(
         lookup.execution_count,
         lookup.outputs,
     )
+}
+
+/// Take the imported payload for MIMEs that declare mutable replay fields.
+/// The caller compared the record with the import under the same policy, so
+/// they differ only in those fields, which the record never carries (a saved
+/// Bokeh `snapshot`); keeping the record's payload would drop them.
+fn adopt_mutable_replay_payloads(
+    output: &mut serde_json::Value,
+    imported: &serde_json::Value,
+    policy: &dyn runtimed_client::output_equivalence::ReplayFieldPolicy,
+) {
+    let (Some(data), Some(imported_data)) = (
+        output
+            .get_mut("data")
+            .and_then(serde_json::Value::as_object_mut),
+        imported.get("data").and_then(serde_json::Value::as_object),
+    ) else {
+        return;
+    };
+    for (mime, content) in data.iter_mut() {
+        if policy.mutable_fields(mime).is_empty() {
+            continue;
+        }
+        if let Some(imported_content) = imported_data.get(mime) {
+            *content = imported_content.clone();
+        }
+    }
 }
 
 /// Create a new notebook with daemon-owned default metadata and one code cell.
