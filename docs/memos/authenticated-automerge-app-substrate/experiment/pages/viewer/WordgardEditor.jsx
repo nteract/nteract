@@ -47,6 +47,7 @@ import {
   Code as CodeIcon,
   List,
   ListOrdered,
+  ListTodo,
   Undo2,
   Redo2,
   MessageSquare,
@@ -58,7 +59,8 @@ import {
   wordgardCodeNewlines,
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
-import { PagesLink, elements } from "./wordgard-model.mjs";
+import { PagesLink, TaskList, elements } from "./wordgard-model.mjs";
+import { taskLists } from "./wordgard-task-lists.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import {
   createWordgardCollaboration,
@@ -93,6 +95,7 @@ const controls = [
   ["code", "Inline code", CodeIcon],
   ["bullet", "Bulleted list", List],
   ["ordered", "Numbered list", ListOrdered],
+  ["task", "Task list", ListTodo],
   ["link", "Link", LinkIcon],
   ["comment", "Comment on selection", MessageSquare],
 ];
@@ -282,6 +285,7 @@ export function WordgardEditor(props) {
         code(),
         bulletList(),
         orderedList(),
+        taskLists(),
         blockquote(),
         codeBlock(),
         tables({ cellContent: "inline", cellSpanning: false }),
@@ -528,6 +532,7 @@ export function WordgardEditor(props) {
         link: !!selected || !!PagesLink.isInSet(state.sel.activeMarks),
         bullet: listIsActive(BulletList)(state),
         ordered: listIsActive(OrderedList.of(1))(state),
+        task: listIsActive(TaskList)(state),
       };
       for (const [name, mark] of Object.entries(marks))
         snapshot[name] = selection.empty
@@ -736,8 +741,12 @@ export function WordgardEditor(props) {
       if (marks[name]) Command.dispatch(editor, toggleMark, marks[name]);
       else if (name === "undo" || name === "redo")
         Command.dispatch(editor, name === "undo" ? undo : redo);
-      else if (name === "bullet" || name === "ordered")
-        Command.dispatch(editor, toggleList, name === "bullet" ? BulletList : OrderedList.of(1));
+      else if (["bullet", "ordered", "task"].includes(name))
+        Command.dispatch(
+          editor,
+          toggleList,
+          name === "task" ? TaskList : name === "bullet" ? BulletList : OrderedList.of(1),
+        );
       else
         Command.dispatch(
           editor,

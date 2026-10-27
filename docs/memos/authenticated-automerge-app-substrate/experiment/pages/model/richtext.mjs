@@ -23,6 +23,54 @@ basicSchemaAdapter.schema.spec.marks.forEach((name, spec) => {
   if (name !== "unknownMark") marks[name] = { ...spec };
 });
 marks.code.automerge = { markName: "code" };
+nodes.task_list = {
+  content: "list_item+",
+  group: "block",
+  toDOM: () => ["ul", { "data-task-list": "true" }, 0],
+  parseDOM: [{ tag: 'ul[data-task-list="true"]', priority: 60 }],
+};
+nodes.list_item = {
+  ...nodes.list_item,
+  attrs: { ...nodes.list_item.attrs, checked: { default: null } },
+  toDOM: (node) =>
+    typeof node.attrs.checked === "boolean"
+      ? [
+          "li",
+          { "data-task-checked": String(node.attrs.checked) },
+          [
+            "input",
+            {
+              type: "checkbox",
+              ...(node.attrs.checked ? { checked: "" } : {}),
+              disabled: "",
+              contenteditable: "false",
+              "aria-label": "Task completed",
+            },
+          ],
+          ["div", 0],
+        ]
+      : ["li", 0],
+  parseDOM: [
+    {
+      tag: "li",
+      getAttrs: (dom) => ({
+        checked: dom.hasAttribute("data-task-checked")
+          ? dom.getAttribute("data-task-checked") === "true"
+          : null,
+      }),
+    },
+  ],
+  automerge: {
+    ...nodes.list_item.automerge,
+    block: {
+      within: { ...nodes.list_item.automerge.block.within, task_list: "task-list-item" },
+    },
+    attrParsers: {
+      fromAutomerge: (block) => ({ checked: block.attrs.checked ?? false }),
+      fromProsemirror: (node) => ({ checked: node.attrs.checked }),
+    },
+  },
+};
 nodes.code_block = {
   ...nodes.code_block,
   attrs: { ...nodes.code_block.attrs, params: { default: "" } },
@@ -124,10 +172,74 @@ const imageDOM = nodes.image.toDOM;
 nodes.image.toDOM = (node) =>
   safeUrl(node.attrs.src) ? imageDOM(node) : ["span", {}, "Image omitted"];
 export const adapter = new SchemaAdapter({ nodes, marks });
+// The upstream adapter currently installs attrParsers only for direct mappings,
+// not `within` mappings. Task items need both their list wrapper and checked
+// attribute; install the parser on that one resolved mapping explicitly.
+adapter.nodeMappings.find((mapping) => mapping.blockName === "task-list-item").attrParsers =
+  nodes.list_item.automerge.attrParsers;
 export const schema = adapter.schema;
 // Keep bare URLs and email addresses as prose. Use a private tokenizer so table
 // support does not mutate other consumers of the default Markdown parser.
 const tokenizer = new MarkdownIt("commonmark", { html: false, linkify: false }).enable("table");
+// Recognize task syntax only at the beginning of an actual list item. Splitting
+// mixed bullet/task runs retains ordinary bullets instead of inventing checkboxes
+// for their neighbors. Work on tokens before inline parsing so escaped brackets,
+// inline code, and prose containing "[ ]" remain literal.
+tokenizer.core.ruler.before("inline", "pages_tasks", (state) => {
+  const transform = (tokens) => {
+    const result = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const open = tokens[i];
+      if (open.type !== "bullet_list_open") {
+        result.push(open);
+        continue;
+      }
+      let end = i + 1,
+        depth = 1;
+      for (; end < tokens.length; end++) {
+        if (tokens[end].type === "bullet_list_open") depth++;
+        if (tokens[end].type === "bullet_list_close" && --depth === 0) break;
+      }
+      const items = [];
+      for (let j = i + 1; j < end; ) {
+        let itemEnd = j + 1,
+          itemDepth = 1;
+        for (; itemEnd < end; itemEnd++) {
+          if (tokens[itemEnd].type === "list_item_open") itemDepth++;
+          if (tokens[itemEnd].type === "list_item_close" && --itemDepth === 0) break;
+        }
+        const item = tokens.slice(j, itemEnd + 1),
+          inline =
+            item[1]?.type === "paragraph_open" && item[2]?.type === "inline" ? item[2] : null,
+          task = inline && /^\[([ xX])\](?:[ \t]+|$)/.exec(inline.content);
+        if (task) {
+          item[0].attrSet("checked", task[1].toLowerCase() === "x");
+          inline.content = inline.content.slice(task[0].length);
+        }
+        items.push({ task: !!task, tokens: transform(item) });
+        j = itemEnd + 1;
+      }
+      let kind = null;
+      const wrapper = (token, task) => {
+        const copy = Object.assign(Object.create(Object.getPrototypeOf(token)), token);
+        if (task) copy.type = copy.type.replace("bullet_list", "task_list");
+        return copy;
+      };
+      for (const item of items) {
+        if (kind !== item.task) {
+          if (kind !== null) result.push(wrapper(tokens[end], kind));
+          result.push(wrapper(open, item.task));
+          kind = item.task;
+        }
+        result.push(...item.tokens);
+      }
+      if (kind !== null) result.push(wrapper(tokens[end], kind));
+      i = end;
+    }
+    return result;
+  };
+  state.tokens = transform(state.tokens);
+});
 // A line break in a Markdown table cannot be a physical newline. Recognize
 // only this fixed tag while parsing cell text, before escape/entity information
 // is lost. General HTML stays literal, and code spans retain their own parser.
@@ -181,6 +293,11 @@ const imageToken = {
 const parser = new MarkdownParser(schema, tokenizer, {
   ...defaultMarkdownParser.tokens,
   image: imageToken,
+  task_list: { block: "task_list" },
+  list_item: {
+    block: "list_item",
+    getAttrs: (token) => ({ checked: token.attrGet("checked") ?? null }),
+  },
   table: { block: "table", attrs: { isAmgBlock: true } },
   thead: { ignore: true },
   tbody: { ignore: true },
@@ -196,6 +313,13 @@ const plainImportParser = new MarkdownParser(
 const serializer = new MarkdownSerializer(
   {
     ...defaultMarkdownSerializer.nodes,
+    task_list(state, node) {
+      // The Markdown list marker is '- '; '[x] ' belongs to the paragraph.
+      // Six-space continuation would turn later paragraphs into code blocks.
+      state.renderList(node, "  ", (index) =>
+        node.child(index).attrs.checked ? "- [x] " : "- [ ] ",
+      );
+    },
     table(state, node) {
       const rows = [];
       const width = Math.max(
@@ -258,11 +382,12 @@ const tableCellSerializer = new MarkdownSerializer(
 
 // Conservative import gate: unknown syntax is opaque rather than silently discarded.
 export function parseMarkdown(source, importId = "", kind = "markdown") {
+  // A task followed by an ordinary inline link is not a reference-link pair.
+  // Keep the conservative gate, but omit recognized task prefixes from its scan.
+  const syntax = source.replace(/^(\s*(?:>\s*)*[-+*][ \t]+)\[[ xX]\](?=[ \t]|$)/gm, "$1");
   const unsupported =
     kind !== "markdown" ||
-    /(^|\n)\s*(<|\$\$|---\s*$)|\$[^\n$]+\$|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~|\[[ xX]\]/m.test(
-      source,
-    );
+    /(^|\n)\s*(<|\$\$|---\s*$)|\$[^\n$]+\$|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~/m.test(syntax);
   return unsupported
     ? schema.node("doc", null, [schema.node("raw", { source, importId, kind })])
     : parser.parse(source);
@@ -369,6 +494,8 @@ export function validateRich(block) {
       for (const parent of value.parents)
         if (!adapter.nodeMappings.some((mapping) => mapping.blockName === String(parent)))
           throw Error("Unsupported rich parent");
+      if (String(value.type) === "task-list-item" && typeof value.attrs.checked !== "boolean")
+        throw Error("Invalid task checked state");
     } else throw Error("Unsupported rich span");
   }
   const tree = richDoc(block);

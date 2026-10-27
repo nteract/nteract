@@ -39,6 +39,51 @@
 .wordgard-document wg-content li > p {
   margin: 0.15em 0;
 }
+.wordgard-document wg-content .wordgard-task-item {
+  list-style: none;
+  position: relative;
+}
+.wordgard-task-content > p {
+  margin: 0.15em 0;
+}
+.wordgard-task-control {
+  position: absolute;
+  inset-inline-start: -1.7em;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.7em;
+  height: 1.7em;
+  cursor: pointer;
+}
+.wordgard-task-control input[type="checkbox"] {
+  appearance: auto;
+  margin: 0;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent, #365f4a);
+  cursor: inherit;
+}
+.wordgard-task-control input:focus-visible {
+  outline: 2px solid var(--accent, #365f4a);
+  outline-offset: 3px;
+}
+.wordgard-task-item[data-checked="true"] > .wordgard-task-content > p {
+  color: var(--muted, #637469);
+  text-decoration: line-through;
+}
+@media (pointer: coarse) {
+  .wordgard-task-item {
+    min-height: 44px;
+  }
+  .wordgard-task-control {
+    width: 44px;
+    height: 44px;
+    inset-inline-start: -36px;
+    top: -8px;
+  }
+}
 .wordgard-document wg-content a {
   color: inherit;
   text-decoration: underline;

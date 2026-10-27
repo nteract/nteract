@@ -20,8 +20,11 @@ const output = path.resolve(
 const domainView = process.argv.includes("--domain-view");
 const images = process.argv.includes("--images");
 const mcpImages = process.argv.includes("--mcp-images");
-if ([domainView, images, mcpImages].filter(Boolean).length > 1)
-  throw new Error("Choose one qualification: --domain-view, --images or --mcp-images");
+const taskLists = process.argv.includes("--task-lists");
+if ([domainView, images, mcpImages, taskLists].filter(Boolean).length > 1)
+  throw new Error(
+    "Choose one qualification: --domain-view, --images, --mcp-images or --task-lists",
+  );
 const children = new Set();
 let canceled = false;
 async function stop(child) {
@@ -201,13 +204,15 @@ try {
   await run(
     process.execPath,
     [
-      mcpImages
-        ? "scripts/mcp-image-import-smoke.mjs"
-        : images
-          ? "scripts/images-smoke.mjs"
-          : domainView
-            ? "scripts/domain-sharing-smoke.mjs"
-            : "scripts/sharing-smoke.mjs",
+      taskLists
+        ? "scripts/task-lists-smoke.mjs"
+        : mcpImages
+          ? "scripts/mcp-image-import-smoke.mjs"
+          : images
+            ? "scripts/images-smoke.mjs"
+            : domainView
+              ? "scripts/domain-sharing-smoke.mjs"
+              : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {

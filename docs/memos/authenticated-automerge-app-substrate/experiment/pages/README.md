@@ -187,6 +187,20 @@ operations, undo, agent patches, reload, and desktop/mobile layout against the
 local OIDC fixture. `node scripts/table-smoke.mjs` remains the earlier preserved
 preview qualification; it is not the native editable-table test.
 
+Use **Task list** in the toolbar, or type `- [ ] ` / `- [x] ` at the start of a
+paragraph, to create a checklist. Click a checkbox or focus it and press Space
+to check it off. Enter starts an unchecked item; Enter on an empty item returns
+to prose. Checked state lives on the native Automerge list-item marker, so
+checkbox changes merge with concurrent text edits without replacing their text
+or comment anchors. Undo remains local to the person who made the change.
+Read-only Pages display disabled checkboxes. Markdown tools import and export
+the same task state, including nested tasks; ordinary bullets stay bullets.
+
+`node scripts/local-sharing-e2e.mjs --task-lists` exercises the Wordgard controls
+with two independent local OIDC sessions, concurrent checkbox/text changes,
+undo, Markdown shortcuts, reload, and mobile layout. Its read-only UI check
+uses a frontend fixture; the shared ACL suite qualifies server enforcement.
+
 For agents, `patch_page` accepts `replace_match` to replace exactly one literal
 visible-text range, with optional context to disambiguate it. This preserves
 untouched character identities, marks, and comment anchors. Replacement text

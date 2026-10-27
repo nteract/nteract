@@ -126,6 +126,30 @@ export const Aside = Plot.define("PagesAside", {
   blockContent: Node.Group.Content,
   shape: { element: "aside" },
 });
+export const TaskList = Plot.define("PagesTaskList", {
+  blockContent: [ListItem],
+  group: Node.Group.Content,
+  role: Node.Role.List,
+  defining: true,
+  autoJoin: true,
+  shape: { element: "ul", attributes: { "data-task-list": "true" } },
+  parseRules: [{ selector: 'ul[data-task-list="true"]', precedence: 1 }],
+});
+export const TaskChecked = Mark.Type.define("PagesTaskChecked", {
+  target: ListItem,
+  keepOnSplit: false,
+  validate(value) {
+    if (typeof value !== "boolean") throw Error("Invalid task checked state");
+  },
+  shape: { attribute: "data-task-checked", value: (value) => String(value) },
+  parseRules: [
+    {
+      attribute: "data-task-checked",
+      readAttribute: (value) =>
+        value === "true" ? true : value === "false" ? false : parse.Reject,
+    },
+  ],
+});
 export const elements = [
   Doc,
   Paragraph,
@@ -141,6 +165,8 @@ export const elements = [
   ListItem,
   OrderedList,
   BulletList,
+  TaskList,
+  TaskChecked,
   OpaqueBlock,
   PagesImage,
   Aside,
@@ -242,6 +268,11 @@ function descriptor(type, attrs = {}) {
       return { tag: ListItem, outer: BulletList };
     case "ordered-list-item":
       return { tag: ListItem, outer: OrderedList.of(1) };
+    case "task-list-item": {
+      const checked = Object.hasOwn(attrs, "checked") ? attrs.checked : false;
+      if (typeof checked !== "boolean") throw Error("Invalid task checked state");
+      return { tag: ListItem.withMarks([TaskChecked.of(checked)]), outer: TaskList };
+    }
     default:
       throw Error(`Unsupported Pages block: ${type}`);
   }
@@ -386,10 +417,15 @@ export function encode(doc) {
       return;
     }
     if (!node.isPlot) throw Error(`Unsupported Wordgard block: ${node.name}`);
-    if (node.type === BulletList.type || node.type === OrderedList) {
+    if (node.type === BulletList.type || node.type === OrderedList || node.type === TaskList.type) {
       if (node.type === OrderedList && node.tag.param !== 1)
         throw Error("Pages ordered lists currently start at 1");
-      const itemType = node.type === BulletList.type ? "unordered-list-item" : "ordered-list-item";
+      const itemType =
+        node.type === TaskList.type
+          ? "task-list-item"
+          : node.type === BulletList.type
+            ? "unordered-list-item"
+            : "ordered-list-item";
       for (const child of node.content) block(child, parents, false, itemType);
       return;
     }
@@ -413,8 +449,14 @@ export function encode(doc) {
       attrs.params = String(node.mark(CodeBlockLanguage) ?? "");
     } else if (node.type === Blockquote.type) type = "blockquote";
     else if (node.type === Aside.type) type = "aside";
-    else if (node.type === ListItem.type && listType) type = listType;
-    else throw Error(`Unsupported Wordgard block: ${node.name}`);
+    else if (node.type === ListItem.type && listType) {
+      type = listType;
+      if (listType === "task-list-item") {
+        const mark = TaskChecked.isInSet(node.tag.marks);
+        attrs.checked = mark ? mark.value : false;
+        TaskChecked.spec.validate(attrs.checked);
+      }
+    } else throw Error(`Unsupported Wordgard block: ${node.name}`);
     if (!(implicit && type === "paragraph")) marker(type, parents, attrs);
     if (node.inlineContent)
       for (const child of node.content) inline(child, [...parents, type], type === "code-block");
