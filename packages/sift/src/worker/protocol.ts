@@ -76,10 +76,18 @@ export type FromWorker =
   | { t: "query"; id: number; result: QueryResult }
   /** Chunk buffers transferred. */
   | { t: "image"; id: number; chunks: Uint8Array[] | null }
-  | { t: "cast"; id: number; result: QueryResult & { columns: Column[] } }
+  /**
+   * Cast or undo answer. `head` is recomputed under the new types for the same
+   * `headRows` span. Cloned, not transferred: the host keeps its copy.
+   */
+  | { t: "cast"; id: number; result: QueryResult & { columns: Column[] }; head: WindowCells }
   /** Relay request: read `length` bytes at `offset` from the host's `ByteSource`. */
   | { t: "read"; id: number; offset: number; length: number }
-  /** Push from the data side. A `schema-changed` event carries the refreshed head. */
+  /**
+   * Push from the data side. A `schema-changed` event carries the refreshed
+   * head. A load failure after `opened` is an `error` event with `fatal:
+   * false`: the rows so far stay queryable and no `streaming-done` follows.
+   */
   | { t: "event"; event: DataEvent; head?: WindowCells }
   | ProgressReply
   /** `fatal` means the WASM instance is unusable; the worker stops answering. */

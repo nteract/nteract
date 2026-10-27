@@ -16,7 +16,7 @@ import {
   ensureModule,
   type PredicateModule,
 } from "../predicate";
-import { createWorkerWindowedData, type WorkerLike } from "./client";
+import { createWorkerWindowedData, WorkerDataError, type WorkerLike } from "./client";
 import { createWorkerHost } from "./host";
 import type { FromWorker, ToWorker } from "./protocol";
 
@@ -270,5 +270,160 @@ describe.skipIf(!existsSync(wasmPath))("worker host + client over MessageChannel
     await until(() => replies.length > 0, "reply");
     expect(replies[0]).toMatchObject({ t: "error", id: 1, fatal: false });
     expect((replies[0] as { message: string }).message).toContain("protocol 99");
+  });
+
+  /** `open()` over any file and source; `onMessage` sees every host reply first. */
+  function openWith(
+    bytes: Uint8Array,
+    opts: {
+      source?: ByteSource;
+      headRows?: number;
+      onMessage?: (message: FromWorker) => void;
+      beforeRequest?: (message: ToWorker) => void;
+    } = {},
+  ) {
+    channel = new MessageChannel();
+    host = createWorkerHost(channel.port1 as never, { beforeRequest: opts.beforeRequest });
+    if (opts.onMessage) channel.port2.on("message", opts.onMessage);
+    const milestones: Record<string, unknown>[] = [];
+    const data = createWorkerWindowedData({
+      source: opts.source ?? recordingSource(bytes).source,
+      limits,
+      overflow: "truncate",
+      headRows: opts.headRows ?? 2,
+      signal: new AbortController().signal,
+      emit: (m) => milestones.push(m),
+      worker: workerOver(channel.port2),
+    });
+    return { data, milestones };
+  }
+
+  it("reports a row-group read failure after open as one non-fatal error event", async () => {
+    let firstGroupLoaded = false;
+    const source: ByteSource = {
+      byteLength: parquet.byteLength,
+      read(offset, length) {
+        // The host reports group 0 before it asks for group 1's bytes.
+        if (firstGroupLoaded) return Promise.reject(new Error("network down"));
+        return Promise.resolve(parquet.subarray(offset, offset + length));
+      },
+    };
+    const { data: opening, milestones } = openWith(parquet, {
+      source,
+      onMessage: (message) => {
+        if (message.t === "progress" && message.rowGroup === 0) firstGroupLoaded = true;
+      },
+    });
+    const data = await opening;
+    const events: { type: string; fatal?: boolean; message?: string }[] = [];
+    data.subscribe((event) => events.push(event as never));
+    await until(() => events.some((e) => e.type === "error"), "error event");
+    // Give a stray `streaming-done` or second error time to arrive.
+    for (let i = 0; i < 10; i++) await tick();
+
+    expect(events).toEqual([{ type: "error", message: "network down", fatal: false }]);
+    expect(milestones.map((m) => m.phase)).not.toContain("streaming-complete");
+    // The first group's rows still answer.
+    expect(data.rowCount).toBe(4);
+    const result = await data.setQuery({ filters: [null, null, null], sort: null }, 1);
+    expect(result.filteredCount).toBe(4);
+    const cells = await data.requestWindow(0, 4, 1);
+    expect(Array.from(cells.dataRows)).toEqual([0, 1, 2, 3]);
+    expect(cells.strings[0]).toBe("1");
+    data.dispose();
+  });
+
+  it("refreshes the head on cast and undo", async () => {
+    const ipc = tableToIPC(tableFromArrays({ code: ["001", "002", "003", "004"] }), "stream");
+    const codes = mod.write_parquet_ipc_row_groups(ipc, 4);
+    const { data: opening } = openWith(codes, { headRows: 4 });
+    const data = await opening;
+    const events: string[] = [];
+    data.subscribe((event) => events.push(event.type));
+    await until(() => events.includes("streaming-done"), "streaming-done");
+    expect(data.columns[0].columnType).not.toBe("numeric");
+    expect(data.head.strings).toEqual(["001", "002", "003", "004"]);
+
+    const cast = await data.castColumn!(0, "numeric", 1);
+    expect(cast.columns[0].columnType).toBe("numeric");
+    expect(data.head.strings).toEqual(["1", "2", "3", "4"]);
+    expect(Array.from(data.head.numeric)).toEqual([1, 2, 3, 4]);
+    const cells = await data.requestWindow(0, 4, 1);
+    expect(cells.strings).toEqual(["1", "2", "3", "4"]);
+
+    await data.undoCastColumn!(0, 2);
+    expect(data.head.strings).toEqual(["001", "002", "003", "004"]);
+    data.dispose();
+  });
+
+  it("carries the final counts on streaming-done", async () => {
+    // A row budget of six: the second group crosses it and the load stops there.
+    channel = new MessageChannel();
+    host = createWorkerHost(channel.port1 as never);
+    const milestones: Record<string, unknown>[] = [];
+    const data = await createWorkerWindowedData({
+      source: recordingSource(parquet).source,
+      limits: { ...limits, maxRows: 6 },
+      overflow: "truncate",
+      headRows: 2,
+      signal: new AbortController().signal,
+      emit: (m) => milestones.push(m),
+      worker: workerOver(channel.port2),
+    });
+    const events: Record<string, unknown>[] = [];
+    data.subscribe((event) => events.push(event as never));
+    await until(() => events.some((e) => e.type === "streaming-done"), "streaming-done");
+    const done = events.find((e) => e.type === "streaming-done")!;
+    expect(done).toMatchObject({ totalRows: 12, truncated: true });
+    expect(done.loadedRows).toBe(data.rowCount);
+    expect(data.rowCount).toBeLessThan(12);
+    expect(milestones.at(-1)).toMatchObject({
+      phase: "streaming-complete",
+      rowCount: data.rowCount,
+      totalRowCount: 12,
+      truncated: true,
+    });
+    data.dispose();
+  });
+
+  it("after a trap, every method rejects at once with the same terminated error", async () => {
+    let trap = false;
+    const { data: opening } = openWith(parquet, {
+      beforeRequest: (message) => {
+        if (trap && message.t === "query") throw new WebAssembly.RuntimeError("unreachable");
+      },
+    });
+    const data = await opening;
+    const events: { type: string; fatal?: boolean }[] = [];
+    data.subscribe((event) => events.push(event as never));
+    await until(() => events.some((e) => e.type === "streaming-done"), "load");
+    trap = true;
+    const first = await data
+      .setQuery({ filters: [null, null, null], sort: null }, 1)
+      .catch((e: unknown) => e);
+    expect(first).toBeInstanceOf(WorkerDataError);
+    expect(first).toMatchObject({ code: "terminated" });
+
+    const later = [
+      data.requestWindow(0, 2, 2),
+      data.setQuery({ filters: [null, null, null], sort: null }, 3),
+      data.requestImage(0, 1),
+      data.castColumn!(0, "categorical", 4),
+    ];
+    const outcomes = await Promise.all(
+      later.map((p) =>
+        Promise.race([
+          p.then(
+            () => "resolved",
+            (e: unknown) => (e === first ? "same error" : "other error"),
+          ),
+          tick().then(() => "pending"),
+        ]),
+      ),
+    );
+    expect(outcomes).toEqual(Array(4).fill("same error"));
+    expect(events.filter((e) => e.type === "error")).toEqual([
+      expect.objectContaining({ fatal: true }),
+    ]);
   });
 });

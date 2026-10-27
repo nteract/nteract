@@ -472,7 +472,10 @@ setWorkerFactory(
 
 With no factory the source fails at validation with a visible error. Sift does
 not fall back to the main thread: a file that needs the worker's containment
-must not run without it. The notebook output frame has an opaque origin and
+must not run without it. A factory that throws (a CSP or sandbox
+`SecurityError`, for example) takes the same path as any other load error:
+Sift's error state shows "Worker factory threw: …" and `onLoadError` fires; it
+does not reach your error boundary. The notebook output frame has an opaque origin and
 cannot load a same-origin module worker; a blob-URL worker build for it is a
 follow-up and that host is not covered yet.
 
@@ -492,6 +495,22 @@ with `allocationCap` (default `2 × maxDecodedBytes`) before loading, so a
 decompression bomb traps in Rust before the process pays for it. Between row
 groups the host also compares live heap bytes against the cap and stops a load
 that has already exceeded it.
+
+After a trap the table keeps its rows, but sort, filter, and cast are disabled
+(`getState().dataFailed` is `true`). A host calling `createWorkerWindowedData`
+directly gets a `WorkerDataError` with `code: "terminated"` from every pending
+and later request; other codes are `factory`, `open`, `aborted`, and `closed`
+(after `dispose()`). A failed or aborted open terminates its worker.
+
+A failure that is not a trap, such as a `source.read` rejection for a later row
+group, stops loading without ending the worker. The footer shows "Stopped
+loading: <message> · Showing loaded rows", `onLoadError` fires, and the rows
+already loaded keep their sort, filter, and cast tools.
+
+With `overflow: 'truncate'`, a load the budget stops early shows the same
+"Showing first N of M rows · Table tools use shown rows" notice as the
+main-thread loader, and the `streaming-complete` milestone carries `rowCount`,
+`totalRowCount`, and `truncated`.
 
 Not in this version: `autoLoad` pause/resume in the worker (it loads to the
 hard budget), `url` and manifest sources, a request-latency watchdog, and

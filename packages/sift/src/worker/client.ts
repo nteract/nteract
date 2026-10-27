@@ -53,12 +53,35 @@ export type WorkerWindowedData = WindowedTableData & {
 const CLOSE_TIMEOUT_MS = 1000;
 const DEFAULT_HEAD_ROWS = 100;
 
+/**
+ * Why a worker-backed data side stopped answering:
+ *
+ * - `factory`: the registered factory is missing or threw while spawning.
+ * - `open`: the worker refused the file before the first row group mounted.
+ * - `aborted`: the caller's signal aborted before the open finished.
+ * - `terminated`: the worker died (a WASM trap, a crash) or was killed.
+ * - `closed`: `dispose()` was called.
+ *
+ * Every request after the stop rejects with the same instance.
+ */
+export type WorkerDataErrorCode = "factory" | "open" | "aborted" | "terminated" | "closed";
+
+export class WorkerDataError extends Error {
+  readonly code: WorkerDataErrorCode;
+  constructor(code: WorkerDataErrorCode, message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "WorkerDataError";
+    this.code = code;
+  }
+}
+
 type Pending = { resolve: (value: never) => void; reject: (error: Error) => void };
 
 /**
  * Spawn the data worker, open `source` in it, and resolve with a
- * `WindowedTableData` once the first row group is loaded. Rejects when no
- * factory is registered, when the open fails, or when `signal` aborts first.
+ * `WindowedTableData` once the first row group is loaded. Rejects with a
+ * `WorkerDataError` when no factory is registered or it throws, when the open
+ * fails, or when `signal` aborts first; the worker is terminated in each case.
  */
 export function createWorkerWindowedData(
   opts: WorkerWindowedDataOptions,
@@ -66,18 +89,33 @@ export function createWorkerWindowedData(
   const spawn = opts.worker ? () => opts.worker! : getWorkerFactory();
   if (!spawn) {
     return Promise.reject(
-      new Error(
+      new WorkerDataError(
+        "factory",
         "Sift worker: no factory registered. Call setWorkerFactory(() => new Worker(...)).",
       ),
     );
   }
-  const worker = spawn();
+  let worker: WorkerLike;
+  try {
+    worker = spawn();
+  } catch (cause) {
+    // A CSP or sandbox refusal (`SecurityError`) surfaces here, synchronously.
+    // It is a `DOMException`, which is not an `Error` in every realm.
+    const described = (cause as { message?: unknown } | null)?.message;
+    const message = typeof described === "string" ? described : String(cause);
+    return Promise.reject(
+      new WorkerDataError("factory", `Worker factory threw: ${message}`, { cause }),
+    );
+  }
   const emit = opts.emit ?? (() => {});
   const listeners = new Set<(event: DataEvent) => void>();
   const pending = new Map<number, Pending>();
   const castColumns = new Set<number>();
   let nextId = 1;
-  let dead = false;
+  /** Set once, when the data side stops answering; every later request rejects with it. */
+  let stopped: WorkerDataError | null = null;
+  /** `worker.terminate()` has run. */
+  let killed = false;
   let closing: ReturnType<typeof setTimeout> | null = null;
   let opened: ((reply: Extract<FromWorker, { t: "opened" }>) => void) | null = null;
   let openFailed: ((error: Error) => void) | null = null;
@@ -85,13 +123,13 @@ export function createWorkerWindowedData(
   let lastTotalRows = 0;
 
   function post(message: ToWorker, transfer?: Transferable[]) {
-    if (dead) return;
+    if (killed) return;
     if (transfer) worker.postMessage(message, transfer);
     else worker.postMessage(message);
   }
 
   function request<T>(build: (id: number) => ToWorker): Promise<T> {
-    if (dead) return Promise.reject(new Error("Sift worker is closed"));
+    if (stopped) return Promise.reject(stopped);
     const id = nextId++;
     return new Promise<T>((resolve, reject) => {
       pending.set(id, { resolve: resolve as Pending["resolve"], reject });
@@ -114,36 +152,53 @@ export function createWorkerWindowedData(
     for (const listener of listeners) listener(event);
   }
 
-  function terminate() {
-    if (dead) return;
-    dead = true;
-    if (closing) clearTimeout(closing);
-    closing = null;
-    worker.terminate();
-    const error = new Error("Sift worker terminated");
-    rejectAll(error);
-    openFailed?.(error);
+  /** Record why the data side stopped (first reason wins) and fail every wait. */
+  function stop(error: WorkerDataError) {
+    stopped ??= error;
+    rejectAll(stopped);
+    const reject = openFailed;
     openFailed = null;
     opened = null;
+    reject?.(stopped);
   }
 
-  /** The instance is unusable: tell subscribers, fail every wait, and kill it. */
-  function fatal(message: string) {
-    if (dead) return;
-    const error = new Error(message);
-    emitEvent({ type: "error", message, fatal: true });
-    rejectAll(error);
-    openFailed?.(error);
-    openFailed = null;
-    opened = null;
-    dead = true;
+  /** `worker.terminate()`, exactly once. */
+  function kill() {
     if (closing) clearTimeout(closing);
+    closing = null;
+    if (killed) return;
+    killed = true;
     worker.terminate();
+  }
+
+  /** Ask the worker to close, and kill it on the ack or after the grace period. */
+  function close(error: WorkerDataError) {
+    stop(error);
+    if (killed || closing) return;
+    post({ t: "close" });
+    closing = setTimeout(kill, CLOSE_TIMEOUT_MS);
+  }
+
+  function terminate() {
+    stop(new WorkerDataError("terminated", "Sift worker terminated"));
+    kill();
+  }
+
+  /** The instance is unusable: tell subscribers once, fail every wait, and kill it. */
+  function fatal(message: string) {
+    if (stopped) return;
+    // Recorded first, so a listener that calls back into the data side is refused.
+    const error = new WorkerDataError("terminated", `Sift worker terminated: ${message}`);
+    stopped = error;
+    emitEvent({ type: "error", message, fatal: true });
+    stop(error);
+    kill();
   }
 
   function serveRead(id: number, offset: number, length: number) {
     opts.source.read(offset, length, opts.signal).then(
       (bytes) => {
+        if (stopped) return;
         // A `ByteSource` may hand out views into a buffer it keeps (for
         // example `byteSourceFromBytes`), so the relay copies, then transfers
         // the copy. Zero-copy needs an ownership flag on the source contract.
@@ -151,6 +206,7 @@ export function createWorkerWindowedData(
         post({ t: "read-result", id, bytes: owned }, [owned.buffer]);
       },
       (error: unknown) => {
+        if (stopped) return;
         post({
           t: "read-error",
           id,
@@ -212,17 +268,16 @@ export function createWorkerWindowedData(
       return () => listeners.delete(listener);
     },
     dispose() {
-      if (dead || closing) return;
-      post({ t: "close" });
-      rejectAll(new Error("Sift worker is closed"));
-      closing = setTimeout(terminate, CLOSE_TIMEOUT_MS);
+      close(new WorkerDataError("closed", "Sift worker is closed"));
     },
     terminate,
   };
 
   const onMessage = (event: Event) => {
     const message = (event as MessageEvent).data as FromWorker;
-    if (!message || typeof message !== "object") return;
+    if (!message || typeof message !== "object" || killed) return;
+    // Once stopped, only the close ack matters; every wait has been rejected.
+    if (stopped && message.t !== "closed") return;
     switch (message.t) {
       case "opened": {
         data.columns = message.columns;
@@ -254,6 +309,9 @@ export function createWorkerWindowedData(
         settle(message.id, message.chunks);
         return;
       case "cast":
+        // The engine reads `head` when the cast's query commits; the cells it
+        // held for `[0, headRows)` carry the old type's strings.
+        data.head = message.head;
         settle(message.id, message.result);
         return;
       case "read":
@@ -266,12 +324,19 @@ export function createWorkerWindowedData(
           if (message.head) data.head = message.head;
         }
         if (message.event.type === "streaming-done") {
+          const done = message.event;
+          if (done.loadedRows !== undefined) data.rowCount = done.loadedRows;
+          if (done.totalRows !== undefined) lastTotalRows = done.totalRows;
+          const truncated = done.truncated ?? data.coverage?.truncated ?? false;
+          if (data.coverage) {
+            data.coverage = { ...data.coverage, loadedRows: data.rowCount, truncated };
+          }
           emit({
             phase: "streaming-complete",
             format: "parquet",
             rowCount: data.rowCount,
             totalRowCount: lastTotalRows || data.rowCount,
-            truncated: data.coverage?.truncated ?? false,
+            truncated,
             resumable: false,
           });
         }
@@ -297,25 +362,29 @@ export function createWorkerWindowedData(
           });
         }
         return;
-      case "error":
+      case "error": {
         if (message.fatal) {
           fatal(message.message);
-        } else if (message.id !== null) {
-          const entry = pending.get(message.id);
-          pending.delete(message.id);
-          entry?.reject(new Error(message.message));
-          if (openFailed && message.id === openId) {
-            const reject = openFailed;
-            openFailed = null;
-            opened = null;
-            reject(new Error(message.message));
-          }
+          return;
+        }
+        if (message.id === openId && openFailed) {
+          // Nothing mounted: close the worker rather than leave it idle.
+          close(new WorkerDataError("open", message.message));
+          return;
+        }
+        const entry = message.id === null ? undefined : pending.get(message.id);
+        if (entry) {
+          pending.delete(message.id!);
+          entry.reject(new Error(message.message));
         } else {
+          // No request is waiting on it (a load failure after `opened`): the
+          // subscribers are the only ones who can show it.
           emitEvent({ type: "error", message: message.message, fatal: false });
         }
         return;
+      }
       case "closed":
-        terminate();
+        kill();
         return;
     }
   };
@@ -329,14 +398,19 @@ export function createWorkerWindowedData(
   return new Promise<WorkerWindowedData>((resolve, reject) => {
     opened = () => resolve(data);
     openFailed = reject;
+    const abort = () => {
+      stop(new WorkerDataError("aborted", "Sift worker open aborted"));
+      kill();
+    };
     if (opts.signal.aborted) {
-      terminate();
+      abort();
       return;
     }
     opts.signal.addEventListener(
       "abort",
       () => {
-        if (!dead && (opened || openFailed)) terminate();
+        // After `opened` the caller owns the data and disposes it.
+        if (!stopped && openFailed) abort();
       },
       { once: true },
     );

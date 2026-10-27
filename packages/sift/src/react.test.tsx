@@ -2044,4 +2044,176 @@ describe("SiftTable", () => {
     expect(getByText("Table focused")).not.toBeNull();
     expect(getByText("Esc")).not.toBeNull();
   });
+
+  describe("worker byte-source load reporting", () => {
+    type Listener = (event: Event) => void;
+    const columns = [
+      { key: "id", label: "id", width: 80, sortable: true, numeric: true, columnType: "numeric" },
+      {
+        key: "name",
+        label: "name",
+        width: 80,
+        sortable: true,
+        numeric: false,
+        columnType: "categorical",
+      },
+    ];
+    const cells = (viewStart: number, viewEnd: number, count: number) => {
+      const n = Math.max(0, Math.min(viewEnd, count) - viewStart);
+      return {
+        viewStart,
+        dataRows: Uint32Array.from({ length: n }, (_, i) => viewStart + i),
+        strings: Array.from({ length: n }, (_, i) => [String(viewStart + i + 1), "x"]).flat(),
+        nulls: new Uint8Array(n * 2),
+        numeric: Float64Array.from({ length: n * 2 }, (_, k) =>
+          k % 2 === 0 ? viewStart + k / 2 + 1 : Number.NaN,
+        ),
+      };
+    };
+
+    /**
+     * Opens two of four rows, answers queries and windows over them, then
+     * sends `afterOpen` (the load's last word) a few milliseconds later.
+     */
+    function scriptedWorker(afterOpen: unknown[]) {
+      const listeners: Listener[] = [];
+      let terminated = false;
+      const reply = (message: unknown) =>
+        setTimeout(() => {
+          if (!terminated) for (const l of listeners) l({ data: message } as unknown as Event);
+        }, 0);
+      return {
+        postMessage(message: { t: string; id: number; viewStart?: number; viewEnd?: number }) {
+          if (message.t === "open") {
+            reply({
+              t: "opened",
+              id: message.id,
+              columns,
+              rowCount: 2,
+              head: cells(0, 2, 2),
+              rowGroupCount: 2,
+            });
+            setTimeout(() => afterOpen.forEach(reply), 5);
+          } else if (message.t === "query") {
+            const result = { generation: 0, filteredCount: 2, summaries: [null, null] };
+            reply({
+              t: "query",
+              id: message.id,
+              result: { ...result, summariesAll: [null, null] },
+            });
+          } else if (message.t === "window") {
+            reply({
+              t: "window",
+              id: message.id,
+              cells: cells(message.viewStart!, message.viewEnd!, 2),
+            });
+          } else if (message.t === "close") {
+            reply({ t: "closed" });
+          }
+        },
+        addEventListener(type: string, listener: Listener) {
+          if (type === "message") listeners.push(listener);
+        },
+        terminate() {
+          terminated = true;
+        },
+      };
+    }
+
+    const source = { byteLength: 1024, read: vi.fn(async () => new Uint8Array(8)) };
+
+    afterEach(() => {
+      setWorkerFactory(null);
+    });
+
+    it("routes a factory that throws to Sift's error state and onLoadError", async () => {
+      vi.useRealTimers();
+      setWorkerFactory(() => {
+        throw new DOMException("Refused to create a worker", "SecurityError");
+      });
+      const onLoadError = vi.fn();
+      const { container, unmount } = render(
+        <SiftTable
+          source={{ kind: "byte-source", source, worker: true }}
+          onLoadError={onLoadError}
+        />,
+      );
+      await waitFor(() => {
+        expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+          "Worker factory threw: Refused to create a worker",
+        );
+      });
+      expect(onLoadError).toHaveBeenCalledTimes(1);
+      expect(onLoadError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "Worker factory threw: Refused to create a worker" }),
+      );
+      expect(createTable).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it("shows the stopped-loading footer for a non-fatal load error after mount", async () => {
+      vi.useRealTimers();
+      setWorkerFactory(
+        () =>
+          scriptedWorker([
+            { t: "event", event: { type: "error", message: "network down", fatal: false } },
+          ]) as unknown as Worker,
+      );
+      const onLoadError = vi.fn();
+      const { container, unmount } = render(
+        <SiftTable
+          source={{ kind: "byte-source", source, worker: true }}
+          onLoadError={onLoadError}
+        />,
+      );
+      await waitFor(() => {
+        expect(container.querySelector(".sift-load-failure")?.textContent).toBe(
+          "Stopped loading: network down · Showing loaded rows",
+        );
+      });
+      expect(onLoadError).toHaveBeenCalledTimes(1);
+      expect(onLoadError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "network down" }),
+      );
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.querySelector<HTMLElement>(".sift-stat-rows")?.dataset.value).toBe("2 rows");
+      await waitFor(() => {
+        expect(container.querySelector(".sift-status-stopped")).not.toBeNull();
+      });
+      unmount();
+    });
+
+    it("shows the preview notice and reports counts when the budget stops the load", async () => {
+      vi.useRealTimers();
+      setWorkerFactory(
+        () =>
+          scriptedWorker([
+            {
+              t: "event",
+              event: { type: "streaming-done", loadedRows: 2, totalRows: 4, truncated: true },
+            },
+          ]) as unknown as Worker,
+      );
+      const milestones: SiftLoadMilestone[] = [];
+      const { container, unmount } = render(
+        <SiftTable
+          source={{ kind: "byte-source", source, worker: true, overflow: "truncate" }}
+          onLoadMilestone={(m) => milestones.push(m)}
+        />,
+      );
+      await waitFor(() => {
+        expect(container.querySelector(".sift-preview-hint")?.textContent).toContain(
+          "Showing first 2 of 4 rows · Table tools use shown rows",
+        );
+      });
+      expect(milestones.find((m) => m.phase === "streaming-complete")).toMatchObject({
+        rowCount: 2,
+        totalRowCount: 4,
+        truncated: true,
+        resumable: false,
+      });
+      expect(container.querySelector<HTMLElement>(".sift-stat-rows")?.dataset.value).toBe("2 rows");
+      unmount();
+    });
+  });
 });

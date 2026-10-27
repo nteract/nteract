@@ -1353,9 +1353,23 @@ export function SiftTable({
             return;
           }
           data = opened;
-          // A fatal error after mount keeps the loaded rows; the footer says why.
           unsubscribe = opened.subscribe((event) => {
-            if (cancelled || event.type !== "error" || !event.fatal) return;
+            if (cancelled) return;
+            if (event.type === "streaming-done") {
+              // A budget that stopped early gets the same notice as the
+              // main-thread loader.
+              const { loadedRows, totalRows, truncated } = event;
+              setParquetPreview(
+                truncated && loadedRows !== undefined && totalRows !== undefined
+                  ? { source: byteSource, preview: { loadedRows, totalRows } }
+                  : null,
+              );
+              return;
+            }
+            if (event.type !== "error") return;
+            // An error after mount keeps the loaded rows; the footer says why.
+            // Fatal: the worker is gone. Non-fatal: it stopped appending and
+            // still answers for the rows it has; no `streaming-done` follows.
             engineRef.current?.setStreamingDone();
             reportLoadError(new Error(event.message), mounted);
           });

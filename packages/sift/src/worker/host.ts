@@ -130,7 +130,19 @@ export function createWorkerHost(port: HostPort, options: WorkerHostOptions = {}
   function attach(data: ResidentWindowedData) {
     unsubscribeAdapter?.();
     adapter = data;
-    unsubscribeAdapter = data.subscribe((event) => post({ t: "event", event }));
+    unsubscribeAdapter = data.subscribe((event) => {
+      // The view's preview notice and `streaming-complete` milestone need the
+      // final counts; only the file knows the footer total and the budget.
+      if (event.type === "streaming-done" && file) {
+        event = {
+          ...event,
+          loadedRows: file.loadedRows,
+          totalRows: file.rowCount,
+          truncated: file.truncated,
+        };
+      }
+      post({ t: "event", event });
+    });
   }
 
   function swapLease(replaced: TableData, headRows: number) {
@@ -209,27 +221,56 @@ export function createWorkerHost(port: HostPort, options: WorkerHostOptions = {}
       head: data.head,
       rowGroupCount: file.rowGroupCount,
     });
+    try {
+      await stream(file, exhausted, request.headRows);
+    } catch (error) {
+      if (closed || fatal) return;
+      // A trap still ends the instance (the caller posts it as fatal).
+      if (isFatalWasmError(error)) throw error;
+      // Anything else (a failed relay read, a decode error in a later group)
+      // stops appending. The open request has already settled, so this is a
+      // push: the rows loaded so far stay queryable and no `streaming-done`
+      // follows.
+      loadingRowGroup = -1;
+      post({
+        t: "event",
+        event: {
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+          fatal: false,
+        },
+      });
+      try {
+        file.close();
+      } catch {
+        // Already released.
+      }
+    }
+  }
+
+  /** Row groups after the first, then the final refinement. Runs after `opened`. */
+  async function stream(parquet: OpenParquetFile, exhausted: boolean, headRows: number) {
     progress("chunk", 0);
     overCap(0);
 
-    for (let group = 1; group < file.rowGroupCount && !exhausted; group++) {
+    for (let group = 1; group < parquet.rowGroupCount && !exhausted; group++) {
       await new Promise((resolve) => setTimeout(resolve, 0));
       if (closed || fatal) return;
       loadingRowGroup = group;
-      const result = await file.appendRowGroup(group);
+      const result = await parquet.appendRowGroup(group);
       if (closed || fatal) return;
-      if (result.replaced) swapLease(result.replaced, request.headRows);
+      if (result.replaced) swapLease(result.replaced, headRows);
       else adapter!.notifyAppended();
       exhausted = result.exhausted;
       progress("chunk", group);
       overCap(group);
       loadingRowGroup = -1;
     }
-    const { replaced } = file.finish();
-    if (replaced) swapLease(replaced, request.headRows);
+    const { replaced } = parquet.finish();
+    if (replaced) swapLease(replaced, headRows);
     adapter!.notifyStreamingDone();
-    progress("complete", file.rowGroupCount - 1);
-    file.close();
+    progress("complete", parquet.rowGroupCount - 1);
+    parquet.close();
   }
 
   async function handle(message: ToWorker) {
@@ -282,13 +323,23 @@ export function createWorkerHost(port: HostPort, options: WorkerHostOptions = {}
       case "cast": {
         if (!adapter.castColumn) throw new Error("This source cannot cast columns");
         const result = await adapter.castColumn(message.col, message.to, message.gen);
-        post({ t: "cast", id: message.id, result: { ...result, columns: [...result.columns] } });
+        post({
+          t: "cast",
+          id: message.id,
+          result: { ...result, columns: [...result.columns] },
+          head: adapter.head,
+        });
         return;
       }
       case "undo-cast": {
         if (!adapter.undoCastColumn) throw new Error("This source cannot undo casts");
         const result = await adapter.undoCastColumn(message.col, message.gen);
-        post({ t: "cast", id: message.id, result: { ...result, columns: [...result.columns] } });
+        post({
+          t: "cast",
+          id: message.id,
+          result: { ...result, columns: [...result.columns] },
+          head: adapter.head,
+        });
         return;
       }
     }

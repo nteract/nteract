@@ -60,7 +60,16 @@ export type QueryResult = {
 export type DataEvent =
   | { type: "rows-appended"; rowCount: number; summariesAll: ColumnSummary[] }
   | { type: "schema-changed"; columns: Column[] }
-  | { type: "streaming-done" }
+  | {
+      type: "streaming-done";
+      /**
+       * Final counts, when the data side knows them (the worker does): rows
+       * resident, the file's row count, and whether the budget stopped early.
+       */
+      loadedRows?: number;
+      totalRows?: number;
+      truncated?: boolean;
+    }
   | { type: "error"; message: string; fatal: boolean };
 
 export type WindowedTableData = {
