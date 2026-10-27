@@ -250,6 +250,28 @@ const previewDiagram = Widget.create({
   inFlow: false,
 });
 
+export function selectCodeLanguage(editor, block, language) {
+  if (!editor.editable || block?.node.type !== CodeBlock.type) return false;
+  const existing = CodeBlockLanguage.isInSet(block.node.tag.marks);
+  const preview = language === "mermaid" && !!codeSource(block.node).trim();
+  editor.dispatch({
+    changes: language
+      ? { from: block.pos, add: CodeBlockLanguage.of(language) }
+      : existing
+        ? { from: block.pos, remove: existing }
+        : undefined,
+    ...(preview && {
+      effects: diagramMode.of({ pos: block.pos, editing: false }),
+      // Choosing Mermaid is an explicit request to render. Move outside the
+      // source in the same transaction so local caret tracking cannot reopen it.
+      selection: GardSelection.cursor(block.pos),
+    }),
+  });
+  if (preview) editor.nodeDOM(block.pos)?.querySelector(".wordgard-diagram-edit")?.focus();
+  else editor.focus();
+  return true;
+}
+
 export function wordgardWidgets() {
   return [
     editingDiagrams,
@@ -310,14 +332,8 @@ const languageMenu = Widget.define({
       select.append(option);
     }
     select.onchange = () => {
-      if (!editor.editable) return;
       const block = editor.nodeFromDOM(select.closest("pre"));
-      if (!block || block.node.type !== CodeBlock.type) return;
-      const existing = CodeBlockLanguage.isInSet(block.node.tag.marks);
-      if (select.value)
-        editor.dispatch({ changes: { from: block.pos, add: CodeBlockLanguage.of(select.value) } });
-      else if (existing) editor.dispatch({ changes: { from: block.pos, remove: existing } });
-      editor.focus();
+      selectCodeLanguage(editor, block, select.value);
     };
     return select;
   },

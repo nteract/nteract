@@ -554,6 +554,11 @@ try {
   // A peer choosing Mermaid must not collapse the source under an active cursor.
   await selectText(a, "Dashboard", true);
   await b.locator("select.wg-code-language").selectOption("mermaid");
+  // The person choosing Mermaid sees the diagram immediately, without another
+  // Preview click; the peer actively editing the same source keeps its caret.
+  await expect(b.locator(".wordgard-diagram svg.pele")).toBeVisible({ timeout: 30000 });
+  await expect(content(b).locator("pre:visible")).toHaveCount(0);
+  await expect(b.getByRole("button", { name: "Edit diagram", exact: true })).toBeFocused();
   await expect(a.locator("select.wg-code-language")).toHaveValue("mermaid");
   await expect(content(a).locator("pre:visible")).toHaveCount(1);
   await a.keyboard.insertText(" view");
@@ -563,7 +568,6 @@ try {
   await expect.poll(() => textOf(a)).toBe(diagram);
   await expect.poll(() => textOf(b)).toBe(diagram);
   await previewDiagram(a);
-  await previewDiagram(b);
   for (const page of [a, b])
     await expect(page.locator(".wordgard-diagram")).toContainText("Warehouse");
   await saved(a);
@@ -667,8 +671,12 @@ try {
   for (const page of [a, b]) await expect.poll(() => textOf(page, pastedIndex)).toBe(pastedDiagram);
   await expect(pastedEditor.locator("select.wg-code-language")).toHaveCount(1);
   await pastedEditor.locator("select.wg-code-language").selectOption("mermaid");
-  await previewDiagram(a, pastedIndex);
-  await previewDiagram(b, pastedIndex);
+  for (const page of [a, b]) {
+    await expect(content(page).nth(pastedIndex).locator(".wordgard-diagram svg.pele")).toBeVisible({
+      timeout: 30000,
+    });
+    await expect(content(page).nth(pastedIndex).locator("pre:visible")).toHaveCount(0);
+  }
   // Moving between blocks keeps inactive diagrams rendered, with no raw source.
   await content(a).first().getByRole("button", { name: "Edit diagram", exact: true }).focus();
   for (const page of [a, b]) {
