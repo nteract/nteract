@@ -2,6 +2,8 @@ import { deploymentProfile } from "./profiles.mjs";
 
 export const oauthPaths =
   "oauth/(authorize|token|revoke)|[.]well-known/(oauth-protected-resource(/mcp)?|oauth-authorization-server)|";
+export const imagePaths =
+  "pages/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/assets(/[0-9a-f]{64})?|";
 
 export function routesFor(target = "pages-next", legacy = false) {
   const { hostname, listen } = deploymentProfile(target).deployment;
@@ -19,6 +21,7 @@ export function routesFor(target = "pages-next", legacy = false) {
       (target === "page7" ? oauthPaths : "") +
       "(automerge|subduction)[.]wasm|health|mcp|llms[.]txt|p/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|api/(" +
       access +
+      (target === "page7" ? imagePaths : "") +
       "tools|connect|sync|saved|pages/register|auth/(login|logout|session))|oidc";
   return `  - hostname: ${hostname}
     path: ^/(${paths})?$

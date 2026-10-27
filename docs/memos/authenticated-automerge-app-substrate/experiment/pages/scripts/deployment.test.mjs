@@ -254,6 +254,7 @@ function installFixture(
       main: "index.js",
       no_bundle: true,
       durable_objects: { bindings: [{ name: "PAGE_RECORDS", class_name: "PageRecords" }] },
+      r2_buckets: [{ binding: "PAGES_ASSETS", bucket_name: "pages-images" }],
       migrations: [{ tag: "fixture", new_sqlite_classes: ["PageRecords"] }],
     }),
     "release/index.js": "export default {};",
@@ -663,8 +664,10 @@ for (const target of ["pages-next", "page3", "page4", "page5", "page6"])
       { name: "PAGE_RECORDS", class_name: "PageRecords" },
     ]);
     assert.deepEqual(config.migrations, [{ tag: "fixture", new_sqlite_classes: ["PageRecords"] }]);
+    assert.deepEqual(config.r2_buckets, [{ binding: "PAGES_ASSETS", bucket_name: "pages-images" }]);
     const unit = fixture.read("/etc/systemd/system/" + deployment.service + ".service");
     assert.match(unit, /Environment=CELLD_DURABILITY=bucket/);
+    assert.match(unit, /Environment=CELLD_MAX_REQUEST_BODY_BYTES=6291456\n/);
     assert.match(unit, /Environment=CELLD_OTEL=1\n/);
     assert.match(unit, /Environment=CELLD_OTEL_RETENTION=30d\n/);
     assert.doesNotMatch(unit, /CELLD_OTEL_(?:FLUSH_MS|FLUSH_BYTES|SINK)=/);

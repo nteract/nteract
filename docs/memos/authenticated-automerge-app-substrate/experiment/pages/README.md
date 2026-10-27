@@ -201,6 +201,46 @@ browser sessions, with reload and narrow-viewport checks.
 editable and read-only ProseMirror views. The existing
 `node scripts/editor-smoke.mjs` covers the broader editor and recovery flows.
 
+## Private images
+
+Wordgard's existing image embed remains the document representation. Browser
+insertion, screenshot paste, and file drop upload PNG/JPEG/static WebP bytes to
+`POST /api/pages/:pageId/assets`, then insert a stable relative reference through
+the normal rich-text transaction. Upload state stays local. The insertion target
+is a captured CRDT cursor; a deleted/replaced block, disposed editor, or revoked
+write permission must not redirect a completed upload into other content.
+
+`PAGES_ASSETS` is a private R2 binding. celld backs it with the fleet's configured
+object store, beneath the deployment prefix. Assets are immutable, hash addressed,
+and scoped to a Page. Only the reference and alt text enter Automerge; bytes do
+not consume its document history budget. The gateway authorizes uploads through
+the Page before transferring bytes and again before returning the reference;
+blob transfer does not occupy the Page's serialized mutation queue.
+
+`GET`/`HEAD /api/pages/:pageId/assets/:sha256` authorize current Page read access
+before storage lookup, then serve verified raster MIME with `nosniff` and
+`Cache-Control: private, no-store`. Browser session cookies work with ordinary
+image elements. No public bucket, durable presigned URL, or cross-Page hash lookup
+is exposed. Revocation prevents later reads but cannot retract downloaded bytes.
+
+Uploads are capped at 5 MiB, 8192 pixels per side, and 25 million pixels.
+The host request ceiling is 6 MiB; JSON tool limits remain separately bounded.
+SVG, HTML, GIF, animated WebP, and APNG are outside this first image surface.
+Container validation is not a full pixel decoder. Identical upload retries reuse
+the immutable object. Interrupted or abandoned uploads may leave private orphans;
+there is no immediate deletion when an image is removed, since undo and offline
+peers may still reference it. Asset retention/garbage collection and cross-Page or
+cross-deployment asset copying need a separate lifecycle implementation.
+
+Browser/API-key image transport uses the existing auth and Page ACL. MCP OAuth
+tokens are still scoped to `/mcp`; the existing JSON tools expose image references,
+not a hosted attachment upload or image-reading tool. Do not claim pixel access
+from a Markdown reference alone.
+
+Run `node scripts/local-sharing-e2e.mjs --images` with the qualified celld binary
+for real local object-storage, browser, and permission checks. Live fleet storage
+and provider auth require separate deployment verification.
+
 ## What owns what
 
 ```text
@@ -331,15 +371,21 @@ configured scopes with that hint, dropping write access. Supported scopes remain
 in discovery; insufficient-scope errors still request the required scope.
 
 The SQL database holds session-bound consent requests and hashes of single-use
-codes and opaque Pages access/refresh tokens. Access tokens last ten minutes; optional
-refresh tokens rotate within an absolute thirty-day grant. Replaying a correctly
+codes and opaque Pages access/refresh tokens. Access tokens last ten minutes;
+newly approved connections include rotating refresh tokens within an absolute
+thirty-day grant, explained on the consent screen. Refresh issuance is an OAuth
+authorization-server policy, not contingent on the optional `offline_access`
+scope. A live ChatGPT grant requesting only `pages:read pages:write` exposed the
+previous ten-minute-only behavior. Existing grants and old pending consent/code
+records are not silently extended; a new authorization is required. Replaying a correctly
 bound authorization code or refresh token revokes its family. No Anaconda
 provider token leaves the server.
 Token scope and the current Page ACL intersect on every operation. These grants
 authorize `/mcp` only: they do not authorize the HTTP sharing API or native sync.
 `pages:read` permits reading, and `pages:write` adds creation, editing, comments,
-and deletion where the account's Page role permits it. `offline_access` requests
-a refresh token. Token refresh does not renew verified-email invitation proof.
+and deletion where the account's Page role permits it. `offline_access` remains
+accepted for compatible clients but is not added to required tool scopes.
+Token refresh does not renew verified-email invitation or company-domain proof.
 
 `/connect` and `/llms.txt` describe OAuth for ChatGPT and Kilo, plus API-key recipes
 for Codex, Kilo fallback, and other bearer-header clients. Migrating Kilo removes
@@ -706,10 +752,11 @@ first, then update the existing Workers custom domain to service
 `nteract-notebook-cloud`; the old Worker, D1 and R2 resources remain available.
 The existing `m.runtimed.run` service is independent.
 
-This deployment does not need an R2 binding for native records: SQLite Durable
-Objects already provide durable storage. Independent large blobs or exports can
-use R2 later. Live provider login, API-key editing and recovery require separate
-verification from local workerd fixtures.
+Native records use SQLite Durable Objects. Images use the separate private R2
+bucket `nteract-pages-images`; create it before deploying this configuration.
+The celld target uses `pages-images` beneath its isolated fleet prefix instead.
+Live provider login, API-key editing and recovery require separate verification
+from local workerd fixtures.
 
 ## Isolated lab deployment
 

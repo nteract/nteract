@@ -45,7 +45,9 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
   const kiloCallback = "http://127.0.0.1:19876/mcp/oauth/callback";
   let interceptedChatgptCallbacks = 0;
   let interceptedKiloCallbacks = 0;
-  const fullScope = "pages:read pages:write offline_access";
+  // Match ChatGPT's ordinary resource scopes: refresh eligibility comes from
+  // the explicit connection consent, not an offline_access resource permission.
+  const fullScope = "pages:read pages:write";
   // Reject unexpected destinations rather than accidentally exercising a public provider.
   const localFetch = (input, options = {}) => {
     const url = new URL(input instanceof Request ? input.url : input);

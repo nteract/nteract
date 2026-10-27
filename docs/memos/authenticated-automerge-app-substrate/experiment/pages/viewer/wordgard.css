@@ -72,6 +72,29 @@
   max-width: 100%;
   height: auto;
 }
+.image-upload-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 0;
+  color: var(--muted, #637469);
+  font-size: 13px;
+}
+.image-upload-status > span {
+  flex: 1 1 180px;
+}
+.image-upload-status button {
+  min-height: 36px;
+  padding: 4px 8px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
 .wordgard-caret-layer {
   position: absolute;
   inset: 0;
@@ -85,6 +108,10 @@
 }
 .wordgard-caret-layer .peer-caret > span {
   max-width: min(220px, 60vw);
+}
+.wordgard-caret-layer .peer-caret[data-label-side="left"] > span {
+  left: auto;
+  right: 0;
 }
 .wordgard-widget {
   user-select: text;

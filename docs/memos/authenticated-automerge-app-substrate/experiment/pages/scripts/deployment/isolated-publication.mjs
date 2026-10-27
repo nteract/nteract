@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
-import { routesFor, oauthPaths } from "./routes.mjs";
+import { routesFor, imagePaths } from "./routes.mjs";
 
 const accountId = "1cfb529b94b3d6cde3aaf49d1d6ed5e6";
 function publicationPaths(target) {
@@ -190,7 +190,7 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
       : target === "page5"
         ? plan.config.replace("|connect|connect[.]js|", "|")
         : target === "page7"
-          ? plan.config.replace(oauthPaths, "")
+          ? plan.config.replace(imagePaths, "")
           : null;
   const previousReceipt = previousConfig === null ? null : receiptFor(previousConfig);
   const pendingReceipt =

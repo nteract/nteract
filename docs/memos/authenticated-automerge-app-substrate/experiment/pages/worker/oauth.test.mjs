@@ -22,6 +22,7 @@ class SqliteD1 {
     const build = (values = []) => ({
       bind: (...next) => build(next),
       first: async () => this.sqlite.prepare(sql).get(...values) ?? null,
+      all: async () => ({ success: true, results: this.sqlite.prepare(sql).all(...values) }),
       run: async () => ({
         success: true,
         meta: { changes: Number(this.sqlite.prepare(sql).run(...values).changes) },
@@ -100,7 +101,7 @@ async function authorization(env, overrides = {}) {
     resource: env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN + "/mcp",
     code_challenge: await secretHash(verifier),
     code_challenge_method: "S256",
-    scope: "pages:read pages:write offline_access",
+    scope: "pages:read pages:write",
     state: "client-state",
     ...overrides,
   });
@@ -251,6 +252,7 @@ test("explicit consent escapes identity, grants only Pages tokens, rotates, narr
   assert.match(screen.text, /&lt;img/);
   assert.doesNotMatch(screen.text, /<img/);
   assert.match(screen.text, /delete Pages you own/);
+  assert.match(screen.text, /Keep this connection active for up to 30 days/);
   assert.match(screen.text, /Your Anaconda password and API key are not shared/);
   assert.equal(screen.result.headers.get("referrer-policy"), "same-origin");
   assert.match(screen.result.headers.get("content-security-policy"), /frame-ancestors 'none'/);
@@ -270,6 +272,7 @@ test("explicit consent escapes identity, grants only Pages tokens, rotates, narr
   assert.match(tokens.access_token, /^pages_at_/);
   assert.match(tokens.refresh_token, /^pages_rt_/);
   assert.equal(tokens.expires_in, 600);
+  assert.equal(tokens.scope, "pages:read pages:write");
   assert.equal(
     (await readAccessToken(env, tokens.access_token, { resource: origin + "/mcp" })).identity
       .principal,
@@ -281,13 +284,14 @@ test("explicit consent escapes identity, grants only Pages tokens, rotates, narr
       client_id: "pages-chatgpt",
       resource: origin + "/mcp",
       refresh_token: tokens.refresh_token,
-      scope: "pages:read offline_access",
+      scope: "pages:read",
     }),
     env,
   );
   assert.equal(rotated.status, 200);
   const next = await rotated.json();
-  assert.equal(next.scope, "offline_access pages:read");
+  assert.equal(next.scope, "pages:read");
+  assert.match(next.refresh_token, /^pages_rt_/);
   const revoked = await handleOAuth(
     post("/oauth/revoke", { client_id: "pages-chatgpt", token: next.refresh_token }),
     env,
@@ -319,14 +323,49 @@ test("consent requires exact Origin, session, account, CSRF and immutable reques
   assert.equal(csrf.status, 403);
   assert.ok(csrf.headers.get("set-cookie"));
   assert.equal((await approve(env, login, { ...screen.fields, scope: "pages:write" })).status, 400);
+  assert.equal((await approve(env, login, { ...screen.fields, allowRefresh: "true" })).status, 400);
   const ok = await approve(env, login, screen.fields);
   assert.equal(ok.status, 303);
   const tokens = await (
     await exchange(env, new URL(ok.headers.get("location")).searchParams.get("code"))
   ).json();
   assert.equal(tokens.scope, "pages:read");
-  assert.equal(tokens.refresh_token, undefined);
+  assert.match(tokens.refresh_token, /^pages_rt_/);
   assert.equal((await approve(env, login, screen.fields)).status, 403);
+});
+
+test("pre-update pending consent keeps its original refresh permission when approved after deployment", async (t) => {
+  const env = fixture(t),
+    login = await session(env);
+  for (const scope of ["pages:read", "pages:read offline_access"]) {
+    const screen = await consent(env, login, { scope });
+    // Model an outstanding pre-update consent, whose immutable request did not
+    // record the new persistent-connection disclosure.
+    const hash = await secretHash(screen.fields.consent_id);
+    const row = env.DB.sqlite
+      .prepare("SELECT request_json FROM pages_oauth_consents WHERE id_hash = ?")
+      .get(hash);
+    const saved = JSON.parse(row.request_json);
+    assert.equal(saved.allowRefresh, true);
+    delete saved.allowRefresh;
+    env.DB.sqlite
+      .prepare("UPDATE pages_oauth_consents SET request_json = ? WHERE id_hash = ?")
+      .run(JSON.stringify(saved), hash);
+    const approved = await approve(env, login, screen.fields);
+    assert.equal(approved.status, 303);
+    const code = new URL(approved.headers.get("location")).searchParams.get("code");
+    const tokens = await (await exchange(env, code)).json();
+    assert.equal(tokens.scope, scope.split(" ").sort().join(" "));
+    assert.equal(
+      typeof tokens.refresh_token,
+      scope.includes("offline_access") ? "string" : "undefined",
+    );
+    const grant = env.DB.sqlite
+      .prepare("SELECT expires_at FROM pages_oauth_grants ORDER BY expires_at DESC")
+      .get();
+    const remaining = grant.expires_at - Math.floor(Date.now() / 1000);
+    assert.ok(scope.includes("offline_access") ? remaining > 29 * 86400 : remaining <= 600);
+  }
 });
 
 test("cancel returns a bound error with issuer and state without granting a code", async (t) => {

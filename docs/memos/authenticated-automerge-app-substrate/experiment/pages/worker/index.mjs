@@ -53,6 +53,7 @@ import { pageAccess, restrictAccessDuringCommit } from "./access.mjs";
 
 import { catalogTitle, listCatalog, refreshCatalogTitle } from "./catalog.mjs";
 import { readRegistration, requireRegistrationAccount, validPageId } from "./registration.mjs";
+import { handleImageAssets } from "./image-assets.mjs";
 
 const operations = new Set([
   "list_pages",
@@ -183,6 +184,27 @@ export default {
       if (url.pathname === "/api/tools" && request.method === "POST") {
         const body = await readJson(request);
         return await invoke(request, env, body.operation, body.arguments);
+      }
+      const imageRoute = url.pathname.match(/^\/api\/pages\/([^/]+)\/assets(?:\/([^/]+))?$/);
+      if (imageRoute) {
+        const [, pageId, assetId] = imageRoute;
+        return handleImageAssets(request, env, {
+          pageId,
+          assetId,
+          authorize(write) {
+            const internal = forwarded(request, "/internal/assets/authorize", {
+              page_id: pageId,
+              write,
+            });
+            // The original image request is authenticated before this callback.
+            if (!internal.headers.has("origin"))
+              internal.headers.set(
+                "origin",
+                new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin,
+              );
+            return env.PAGES.getByName(pageId).fetch(internal);
+          },
+        });
       }
       if (url.pathname === "/api/access") {
         await authenticate(request, env);
@@ -798,6 +820,13 @@ export class Page {
         if (claimed) await this.installAccess(claimed);
       }
       this.policy.account(identity);
+      if (url.pathname === "/internal/assets/authorize") {
+        const args = await readJson(request);
+        if (args.page_id !== this.metadata.pageId || typeof args.write !== "boolean")
+          throw new HttpError(400, "Invalid image access request");
+        this.policy.account(identity, args.write);
+        return json({ page_id: this.metadata.pageId });
+      }
       if (url.pathname === "/internal/catalog")
         return json({
           page_id: this.metadata.pageId,

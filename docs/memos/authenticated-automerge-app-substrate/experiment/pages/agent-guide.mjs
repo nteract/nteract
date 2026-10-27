@@ -48,8 +48,9 @@ Add a custom MCP server in the client's connection or plugin settings:
 
 - Server URL: ${origin}/mcp
 - Authentication: OAuth with discovery / client metadata (CIMD)
-- Permissions: pages:read; add pages:write for editing and offline_access to
-  stay connected. Each Page's current sharing permissions still apply.
+- Permissions: pages:read; add pages:write for editing. Each Page's current
+  sharing permissions still apply. The consent screen also explains that the
+  connection can remain active for up to 30 days.
 
 The human follows the client's authorization link, signs in to Pages with
 Anaconda, checks the account and requested permissions, and approves. Pages
@@ -65,7 +66,10 @@ PKCE S256 is required; no client secret is used. Do not invent a callback URL.
 If the client shows a different callback or registration error, report it for
 deployment configuration rather than asking the human for an API key it can't use.
 
-Refresh tokens rotate and expire after 30 days; reconnect when requested.
+Newly approved connections receive rotating refresh tokens, including clients
+that do not request offline_access. The original 30-day deadline never extends
+on refresh; reconnect when requested. Connections approved before this change
+without offline_access need one new authorization to enable renewal.
 OAuth credentials work on /mcp only, not the JSON API, sharing API, or native sync.
 After authorization, call list_pages from the actual connected chat. Dot's
 availability depends on its connection UI; a configured plugin alone isn't proof.
@@ -295,6 +299,33 @@ individual editor grants still work, and explicit removals override the domain.
 Browser/OAuth company proof expires after six hours without fresh sign-in;
 refreshing an OAuth token does not renew that identity proof. A 409 requires reading
 access again. An uncertain request can be retried with its identical key and body.
+
+## Images
+
+In the browser, use Insert image, paste a screenshot, or drop an image into an
+editable block. PNG, JPEG, and static WebP are supported up to 5 MiB; dimensions
+are limited to 8192 pixels per side and 25 million pixels. An upload completes
+before its reference is inserted into the shared document.
+
+Images are private Page assets, separate from Automerge history. The document
+contains a stable relative URL and alt text, never image bytes or an expiring
+signed URL. Each image read checks the Page's current permissions. Do not
+replace these URLs with public hosting or put base64 image data in Markdown.
+
+An API-key client can POST raw image bytes to
+${origin}/api/pages/<page_id>/assets with its configured bearer header and image
+Content-Type. The response contains asset_id, url, mime_type, size, width, and
+height. Repeating the same upload to that Page returns the same asset reference.
+Insert the returned url using normal guarded Markdown edits, with descriptive
+alt text: ![Description](<returned url>). GET or HEAD of the returned path also
+requires this Page's current read permission.
+
+OAuth MCP credentials remain restricted to /mcp. The current MCP tools can read
+and preserve image references but do not upload or return the image pixels.
+Use the browser to add screenshots; do not ask an OAuth user for an API key just
+to bypass that transport boundary. A reference from read_page is not evidence
+that an agent has seen the image. Copying a document to another deployment also
+requires transferring its private assets; copying Markdown alone is insufficient.
 
 ## JSON tools
 

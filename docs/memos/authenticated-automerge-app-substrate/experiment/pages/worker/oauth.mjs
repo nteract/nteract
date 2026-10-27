@@ -426,17 +426,19 @@ async function authorize(request, env, context) {
   }
   const binding = { sessionId: current.row.id, principal: current.session.principal };
   if (request.method === "GET") {
-    const consent = await issueConsent(env, { request: auth.request, ...binding });
+    const consent = await issueConsent(env, {
+      request: { ...auth.request, allowRefresh: true },
+      ...binding,
+    });
     const scopes = new Set(auth.request.scope.split(" "));
     const permissions = ["Read the Pages your account can access."];
     if (scopes.has(WRITE))
       permissions.push(
         "Create Pages, edit and comment, and delete Pages you own. Each Page's sharing permissions still apply.",
       );
-    if (scopes.has(OFFLINE))
-      permissions.push(
-        "Keep this connection active after you leave Pages, until it expires or its access is revoked.",
-      );
+    permissions.push(
+      "Keep this connection active for up to 30 days, unless you disconnect or its access is revoked.",
+    );
     return html(
       `Connect ${auth.client.name} to Pages`,
       `<p><strong>${escape(auth.client.name)}</strong> (${escape(new URL(auth.client.site).host)}) wants access to Pages at <strong>${escape(new URL(origin).host)}</strong>.</p><p>Signed in as <strong>${escape(current.session.displayName || "your Pages account")}</strong>.</p><ul>${permissions.map((permission) => `<li>${escape(permission)}</li>`).join("")}</ul><p>This connection uses a Pages access token. Your Anaconda password and API key are not shared with the client.</p><form method="post" action="/oauth/authorize"><input type="hidden" name="consent_id" value="${escape(consent.consentId)}"><input type="hidden" name="csrf_token" value="${escape(consent.csrfToken)}"><button class="primary setup-action" name="decision" value="approve" type="submit">Allow access</button> <button name="decision" value="cancel" type="submit">Cancel</button></form>`,

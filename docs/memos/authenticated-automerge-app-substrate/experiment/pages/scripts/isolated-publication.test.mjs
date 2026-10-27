@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
-import { routesFor, oauthPaths } from "./deployment/routes.mjs";
+import { routesFor, imagePaths } from "./deployment/routes.mjs";
 import { deploymentProfile } from "./deployment/profiles.mjs";
 import { isolatedPublicationPlan, publishIsolated } from "./deployment/isolated-publication.mjs";
 
@@ -253,7 +253,7 @@ function priorConfig(config, target) {
   return target === "page5"
     ? config.replace("|connect|connect[.]js|", "|")
     : target === "page7"
-      ? config.replace(oauthPaths, "")
+      ? config.replace(imagePaths, "")
       : config.replace("|mermaid[.]js|", "|");
 }
 function previousInstallation(f, { pending = false, newConfig = false } = {}) {
@@ -294,7 +294,7 @@ test("page3 admits the exact Mermaid asset path; existing pages-next routes stay
     assert.equal(current.test(path), false, path);
 });
 
-test("OAuth publishes only exact Page7 routes while previous targets remain closed", () => {
+test("OAuth and private images publish only exact Page7 routes while previous targets remain closed", () => {
   for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7"]) {
     const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
     for (const pathname of [
@@ -304,6 +304,8 @@ test("OAuth publishes only exact Page7 routes while previous targets remain clos
       "/.well-known/oauth-protected-resource",
       "/.well-known/oauth-protected-resource/mcp",
       "/.well-known/oauth-authorization-server",
+      "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets",
+      "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets/" + "a".repeat(64),
     ])
       assert.equal(route.test(pathname), target === "page7", `${target}: ${pathname}`);
     for (const pathname of [
@@ -311,6 +313,9 @@ test("OAuth publishes only exact Page7 routes while previous targets remain clos
       "/oauth/test/callback",
       "/oauth/token/private",
       "/.well-known/oauth-protected-resource/private",
+      "/api/pages/arbitrary/assets",
+      "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets/arbitrary",
+      "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets/" + "a".repeat(64) + "/private",
     ])
       assert.equal(route.test(pathname), false, `${target}: ${pathname}`);
   }

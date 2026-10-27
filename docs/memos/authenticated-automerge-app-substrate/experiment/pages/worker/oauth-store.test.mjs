@@ -29,6 +29,7 @@ class SqliteD1 {
     const build = (values = []) => ({
       bind: (...next) => build(next),
       first: async () => connection.prepare(sql).get(...values) ?? null,
+      all: async () => ({ success: true, results: connection.prepare(sql).all(...values) }),
       run: async () => {
         const result = connection.prepare(sql).run(...values);
         return { success: true, meta: { changes: Number(result.changes) } };
@@ -92,13 +93,14 @@ function fixture(t) {
   });
   return {
     env,
+    path,
     restart() {
       env.DB.sqlite.close();
       env.DB = new SqliteD1(path);
     },
   };
 }
-async function request(scope = "pages:read pages:write offline_access") {
+async function request(scope = "pages:read pages:write") {
   return {
     clientId: "https://client.example/metadata.json",
     redirectUri: "https://client.example/callback",
@@ -109,7 +111,7 @@ async function request(scope = "pages:read pages:write offline_access") {
   };
 }
 async function authorize(f, scope, now = start) {
-  const input = await request(scope);
+  const input = { ...(await request(scope)), allowRefresh: true };
   const { code } = await issueAuthorizationCode(f.env, { ...input, identity }, { now });
   return {
     input,
@@ -131,6 +133,143 @@ async function grant(f, scope, now = start) {
   };
 }
 const invalidGrant = (error) => error instanceof OAuthStoreError && error.error === "invalid_grant";
+
+function legacyCodeSchema(f) {
+  f.env.DB.sqlite.exec(`CREATE TABLE pages_oauth_codes (
+    code_hash TEXT PRIMARY KEY, context TEXT NOT NULL, client_id TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL, resource TEXT NOT NULL, scope TEXT NOT NULL,
+    challenge TEXT NOT NULL, identity_json TEXT NOT NULL, expires_at INTEGER NOT NULL,
+    consumed_by TEXT
+  )`);
+}
+async function legacyCode(f, scope, character) {
+  const input = await request(scope);
+  const code = character.repeat(43);
+  const context = JSON.stringify([
+    origin,
+    f.env.NOTEBOOK_CLOUD_OIDC_ISSUER,
+    f.env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID,
+    f.env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE,
+    "",
+  ]);
+  f.env.DB.sqlite
+    .prepare(`INSERT INTO pages_oauth_codes
+      (code_hash, context, client_id, redirect_uri, resource, scope, challenge, identity_json, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(
+      await secretHash(code),
+      context,
+      input.clientId,
+      input.redirectUri,
+      resource,
+      scope,
+      input.codeChallenge,
+      JSON.stringify({ principal: identity.principal, namespace: identity.namespace }),
+      start + 300,
+    );
+  return {
+    code,
+    clientId: input.clientId,
+    redirectUri: input.redirectUri,
+    resource,
+    codeVerifier: verifier,
+  };
+}
+
+test("additive migration preserves old code consent and legacy offline_access refresh", async (t) => {
+  const f = fixture(t);
+  legacyCodeSchema(f);
+  const transient = await legacyCode(f, "pages:read pages:write", "a");
+  const persistent = await legacyCode(f, "offline_access pages:read", "b");
+  const tokens = await exchangeAuthorizationCode(f.env, transient, { now: start });
+  assert.equal(tokens.refresh_token, undefined);
+  assert.equal(tokens.expires_in, 600);
+  assert.equal(await readAccessToken(f.env, tokens.access_token, { now: start + 600 }), null);
+  assert.deepEqual(
+    f.env.DB.sqlite
+      .prepare("SELECT allow_refresh FROM pages_oauth_codes")
+      .all()
+      .map((row) => row.allow_refresh),
+    [0, 0],
+  );
+  f.restart();
+  const approved = await exchangeAuthorizationCode(f.env, persistent, { now: start + 1 });
+  assert.match(approved.refresh_token, /^pages_rt_/);
+  assert.equal(approved.scope, "offline_access pages:read");
+  const narrowed = await rotateRefreshToken(
+    f.env,
+    {
+      refreshToken: approved.refresh_token,
+      clientId: persistent.clientId,
+      resource,
+      scope: "pages:read",
+    },
+    { now: start + 601 },
+  );
+  assert.equal(narrowed.scope, "pages:read");
+  assert.match(narrowed.refresh_token, /^pages_rt_/);
+});
+
+test("two isolates can race the additive refresh-consent migration", async (t) => {
+  const f = fixture(t);
+  legacyCodeSchema(f);
+  const one = await legacyCode(f, "pages:read", "a");
+  const two = await legacyCode(f, "pages:read", "b");
+  const second = { ...f.env, DB: new SqliteD1(f.path) };
+  t.after(() => second.DB.sqlite.close());
+  let readers = 0,
+    release;
+  const bothRead = new Promise((resolve) => {
+    release = resolve;
+  });
+  for (const db of [f.env.DB, second.DB]) {
+    const prepare = db.prepare.bind(db);
+    t.mock.method(db, "prepare", (sql) => {
+      const query = prepare(sql);
+      if (sql !== "PRAGMA table_info(pages_oauth_codes)") return query;
+      return {
+        ...query,
+        all: async () => {
+          const result = await query.all();
+          if (!result.results.some((column) => column.name === "allow_refresh")) {
+            if (++readers === 2) release();
+            await bothRead;
+          }
+          return result;
+        },
+      };
+    });
+  }
+  const results = await Promise.all([
+    exchangeAuthorizationCode(f.env, one, { now: start }),
+    exchangeAuthorizationCode(second, two, { now: start }),
+  ]);
+  assert.equal(readers, 2);
+  assert.ok(results.every((tokens) => tokens.refresh_token === undefined));
+  assert.equal(f.env.DB.sqlite.prepare("SELECT count(*) AS n FROM pages_oauth_grants").get().n, 2);
+});
+
+test("failed refresh-consent migration fails closed and retries instead of caching readiness", async (t) => {
+  const f = fixture(t);
+  legacyCodeSchema(f);
+  const code = await legacyCode(f, "pages:read", "a");
+  const prepare = f.env.DB.prepare.bind(f.env.DB);
+  const mock = t.mock.method(f.env.DB, "prepare", (sql) => {
+    if (sql.startsWith("ALTER TABLE pages_oauth_codes")) throw new Error("migration unavailable");
+    return prepare(sql);
+  });
+  await assert.rejects(
+    exchangeAuthorizationCode(f.env, code, { now: start }),
+    /migration unavailable/,
+  );
+  assert.equal(
+    f.env.DB.sqlite.prepare("SELECT consumed_by FROM pages_oauth_codes").get().consumed_by,
+    null,
+  );
+  mock.mock.restore();
+  const tokens = await exchangeAuthorizationCode(f.env, code, { now: start });
+  assert.equal(tokens.refresh_token, undefined);
+});
 
 test("consent binds session, account, context and CSRF; consumption is atomic and expires", async (t) => {
   const f = fixture(t),
@@ -328,12 +467,23 @@ test("exchange batch failure rolls back code consumption and partial credentials
   assert.ok(await readAccessToken(f.env, token.access_token, { now: start }));
 });
 
-test("no offline scope means no refresh and access expires after ten minutes", async (t) => {
+test("new consent without offline_access refreshes after ten-minute access expiry without adding scopes", async (t) => {
   const f = fixture(t),
-    g = await grant(f, "pages:read");
-  assert.equal(g.tokens.refresh_token, undefined);
+    g = await grant(f, "pages:read pages:write");
+  assert.match(g.tokens.refresh_token, /^pages_rt_/);
+  assert.equal(g.tokens.scope, "pages:read pages:write");
   assert.ok(await readAccessToken(f.env, g.tokens.access_token, { now: start + 599 }));
   assert.equal(await readAccessToken(f.env, g.tokens.access_token, { now: start + 600 }), null);
+  f.restart();
+  const renewed = await rotateRefreshToken(
+    f.env,
+    { refreshToken: g.tokens.refresh_token, clientId: g.input.clientId, resource },
+    { now: start + 601 },
+  );
+  assert.equal(renewed.scope, g.tokens.scope);
+  assert.equal(renewed.expires_in, 600);
+  assert.notEqual(renewed.refresh_token, g.tokens.refresh_token);
+  assert.ok(await readAccessToken(f.env, renewed.access_token, { now: start + 601 }));
 });
 
 test("refresh narrows scopes, preserves original proof, and cannot extend absolute expiry", async (t) => {
@@ -352,19 +502,20 @@ test("refresh narrows scopes, preserves original proof, and cannot extend absolu
   f.restart();
   const first = await rotateRefreshToken(
     f.env,
-    { ...binding, scope: "pages:read offline_access" },
+    { ...binding, scope: "pages:read" },
     { now: start + 600 },
   );
   const saved = await readAccessToken(f.env, first.access_token, { now: start + 600 });
   assert.deepEqual(saved.identity.emailProof, identity.emailProof);
   assert.equal(saved.scope.includes("pages:write"), false);
+  assert.match(first.refresh_token, /^pages_rt_/);
   await assert.rejects(
     rotateRefreshToken(
       f.env,
       {
         ...binding,
         refreshToken: first.refresh_token,
-        scope: "pages:read pages:write offline_access",
+        scope: "pages:read pages:write",
       },
       { now: start + 601 },
     ),

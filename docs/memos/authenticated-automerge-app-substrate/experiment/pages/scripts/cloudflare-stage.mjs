@@ -39,6 +39,8 @@ export function cloudflareConfig(databaseId) {
     d1_databases: [
       { binding: "DB", database_name: "nteract-pages-next-auth", database_id: databaseId },
     ],
+    // Create this private R2 bucket before publishing the Cloudflare target.
+    r2_buckets: [{ binding: "PAGES_ASSETS", bucket_name: "nteract-pages-images" }],
     observability: { enabled: true },
     vars: {
       NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://preview.runt.run",

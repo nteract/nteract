@@ -43,6 +43,7 @@ function database(t) {
         return {
           bind: (...next) => build(next),
           first: async () => sqlite.prepare(sql).get(...values) ?? null,
+          all: async () => ({ success: true, results: sqlite.prepare(sql).all(...values) }),
           run: async () => execute(),
           execute,
         };

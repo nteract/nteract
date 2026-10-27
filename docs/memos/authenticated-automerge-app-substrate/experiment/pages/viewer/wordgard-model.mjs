@@ -92,12 +92,32 @@ export const PagesImage = Leaf.Type.define("PagesImage", {
   inline: true,
   selectable: true,
   validate(value) {
-    if (!value || !safeUrl(value.src)) throw Error("Invalid Pages image");
+    if (
+      !value ||
+      !safeUrl(value.src) ||
+      ["alt", "title"].some((key) => value[key] != null && typeof value[key] !== "string")
+    )
+      throw Error("Invalid Pages image");
   },
+  parseRules: [
+    {
+      selector: "img[src]",
+      readElement(element) {
+        const src = element.getAttribute("src");
+        return safeUrl(src)
+          ? { src, alt: element.getAttribute("alt"), title: element.getAttribute("title") }
+          : parse.Reject;
+      },
+    },
+  ],
   shape: {
     structure: (value) =>
       safeUrl(value.src)
-        ? Elt.mk("img", { src: value.src, alt: value.alt ?? "", title: value.title ?? "" })
+        ? Elt.mk("img", {
+            src: value.src,
+            ...(value.alt != null ? { alt: value.alt } : {}),
+            ...(value.title != null ? { title: value.title } : {}),
+          })
         : Elt.mk("span", ["Image omitted"]),
   },
 });
@@ -355,8 +375,10 @@ export function encode(doc) {
     else if (node.type === LineBreak.type) {
       if (code) spans.push({ type: "text", value: "\n", marks: toMarks(node.marks) });
       else marker("hard-break", parents, {}, true);
-    } else if (node.type === PagesImage) marker("image", parents, node.param, true);
-    else throw Error(`Unsupported Wordgard inline node: ${node.name}`);
+    } else if (node.type === PagesImage) {
+      PagesImage.spec.validate(node.param);
+      marker("image", parents, node.param, true);
+    } else throw Error(`Unsupported Wordgard inline node: ${node.name}`);
   };
   const block = (node, parents, implicit = false, listType = null) => {
     if (node.type === OpaqueBlock) {

@@ -18,6 +18,8 @@ const output = path.resolve(
   process.env.PAGES_E2E_OUTPUT || path.join(app, "test-results", `sharing-${Date.now()}`),
 );
 const domainView = process.argv.includes("--domain-view");
+const images = process.argv.includes("--images");
+if (domainView && images) throw new Error("Choose one qualification: --domain-view or --images");
 const children = new Set();
 let canceled = false;
 async function stop(child) {
@@ -151,6 +153,7 @@ try {
       .filter((key) => process.env[key] !== undefined)
       .map((key) => [key, process.env[key]]),
   );
+  if (images) hostEnv.CELLD_MAX_REQUEST_BODY_BYTES = String(6 * 1024 * 1024);
   const version = parseRuntimeVersion(
     execFileSync(process.env.CELLD_BIN || "celld", ["--version"], {
       encoding: "utf8",
@@ -163,6 +166,8 @@ try {
     throw new Error(`Sharing fixture requires ${CELLD_RELEASE.version}; found ${version}`);
   host = start(
     process.env.CELLD_BIN || "celld",
+    // celld dev 0.6.3 opens a real private local fleet bucket beneath
+    // runtime/.celld/dev, including R2 objects; no cloud credentials are used.
     ["dev", runtime, "--host", "127.0.0.1", "--port", String(port), "--no-watch", "--logs"],
     { cwd: scratch, env: hostEnv, stdio: ["ignore", "pipe", "pipe"] },
   );
@@ -189,7 +194,13 @@ try {
   }
   await run(
     process.execPath,
-    [domainView ? "scripts/domain-sharing-smoke.mjs" : "scripts/sharing-smoke.mjs"],
+    [
+      images
+        ? "scripts/images-smoke.mjs"
+        : domainView
+          ? "scripts/domain-sharing-smoke.mjs"
+          : "scripts/sharing-smoke.mjs",
+    ],
     {
       env: {
         ...process.env,

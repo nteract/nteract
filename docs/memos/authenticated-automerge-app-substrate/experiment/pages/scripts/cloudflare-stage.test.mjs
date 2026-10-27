@@ -35,6 +35,9 @@ test("Cloudflare staging separates native modules from browser assets and exclud
   );
   assert.equal(config.main, "worker/index.js");
   assert.equal(config.d1_databases[0].database_id, id);
+  assert.deepEqual(config.r2_buckets, [
+    { binding: "PAGES_ASSETS", bucket_name: "nteract-pages-images" },
+  ]);
   assert.equal(config.routes, undefined, "domain reassignment is a separate verified action");
   assert.equal(config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI, "https://preview.runt.run/oidc");
   assert.equal(

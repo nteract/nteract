@@ -19,7 +19,7 @@ const SCHEMA = [
     code_hash TEXT PRIMARY KEY, context TEXT NOT NULL, client_id TEXT NOT NULL,
     redirect_uri TEXT NOT NULL, resource TEXT NOT NULL, scope TEXT NOT NULL,
     challenge TEXT NOT NULL, identity_json TEXT NOT NULL, expires_at INTEGER NOT NULL,
-    consumed_by TEXT
+    consumed_by TEXT, allow_refresh INTEGER NOT NULL DEFAULT 0
   )`,
   `CREATE INDEX IF NOT EXISTS pages_oauth_codes_expiry ON pages_oauth_codes(expires_at)`,
   `CREATE TABLE IF NOT EXISTS pages_oauth_grants (
@@ -98,6 +98,9 @@ function authorizationRequest(env, input) {
     scope,
     codeChallenge: input.codeChallenge,
     ...(input.state !== undefined && { state: boundedString(input.state) }),
+    // This is server-recorded consent policy, never an OAuth scope or a value
+    // accepted from the client's authorization query or consent form.
+    ...(input.allowRefresh === true && { allowRefresh: true }),
   };
 }
 function identitySnapshot(identity) {
@@ -134,7 +137,26 @@ async function database(env) {
     throw new Error("Pages OAuth requires transactional database storage");
   let ready = schemas.get(db);
   if (!ready) {
-    ready = db.batch(SCHEMA.map((sql) => db.prepare(sql))).catch((error) => {
+    ready = (async () => {
+      await db.batch(SCHEMA.map((sql) => db.prepare(sql)));
+      const hasRefreshConsent = async () => {
+        const result = await db.prepare("PRAGMA table_info(pages_oauth_codes)").all();
+        return result.results?.some((column) => column.name === "allow_refresh") ?? false;
+      };
+      if (!(await hasRefreshConsent())) {
+        try {
+          // Old codes keep the permissions approved on their original screen.
+          await db
+            .prepare(
+              "ALTER TABLE pages_oauth_codes ADD COLUMN allow_refresh INTEGER NOT NULL DEFAULT 0",
+            )
+            .run();
+        } catch (error) {
+          // Another isolate may have completed the same additive migration.
+          if (!(await hasRefreshConsent())) throw error;
+        }
+      }
+    })().catch((error) => {
       schemas.delete(db);
       throw error;
     });
@@ -247,8 +269,8 @@ export async function issueAuthorizationCode(env, input, { now } = {}) {
   await statement(
     db,
     `INSERT INTO pages_oauth_codes
-    (code_hash, context, client_id, redirect_uri, resource, scope, challenge, identity_json, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    (code_hash, context, client_id, redirect_uri, resource, scope, challenge, identity_json, expires_at, allow_refresh)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     await secretHash(code),
     contextFor(env),
     value.clientId,
@@ -258,15 +280,14 @@ export async function issueAuthorizationCode(env, input, { now } = {}) {
     value.codeChallenge,
     JSON.stringify(identity),
     now + CODE_SECONDS,
+    value.allowRefresh === true ? 1 : 0,
   ).run();
   return { code, expiresAt: now + CODE_SECONDS };
 }
 
-async function newTokens(scope, now, absoluteExpiry) {
+async function newTokens(allowRefresh, now, absoluteExpiry) {
   const accessToken = `pages_at_${randomSecret()}`;
-  const refreshToken = scope.split(" ").includes("offline_access")
-    ? `pages_rt_${randomSecret()}`
-    : null;
+  const refreshToken = allowRefresh ? `pages_rt_${randomSecret()}` : null;
   return {
     accessToken,
     accessHash: await secretHash(accessToken),
@@ -308,9 +329,11 @@ export async function exchangeAuthorizationCode(env, input, { now } = {}) {
   )
     invalid();
   const grantId = randomSecret();
-  const absoluteExpiry =
-    now + (row.scope.split(" ").includes("offline_access") ? REFRESH_SECONDS : ACCESS_SECONDS);
-  const tokens = await newTokens(row.scope, now, absoluteExpiry);
+  // Legacy offline_access requests already received the persistent-connection
+  // disclosure. Other old codes must not gain a longer grant after deployment.
+  const allowRefresh = row.allow_refresh === 1 || row.scope.split(" ").includes("offline_access");
+  const absoluteExpiry = now + (allowRefresh ? REFRESH_SECONDS : ACCESS_SECONDS);
+  const tokens = await newTokens(allowRefresh, now, absoluteExpiry);
   // All client, redirect, resource and PKCE bindings were checked before this
   // transaction. A correctly bound replay revokes the issued family, including
   // when another exchanger consumed the code after our read. Claim markers gate
@@ -394,7 +417,7 @@ export async function rotateRefreshToken(env, input, { now } = {}) {
   // Validate client/resource/scope before any consume or replay revocation.
   const scope = narrowedScope(input.scope, row.token_scope);
   const claim = randomSecret(),
-    tokens = await newTokens(scope, now, row.expires_at);
+    tokens = await newTokens(true, now, row.expires_at);
   const batch = [
     // Retained consumed hashes detect replay, including a race that lost after
     // reading an unconsumed row. This revokes newly issued descendants too.

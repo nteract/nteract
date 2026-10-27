@@ -51,6 +51,7 @@ import {
   Redo2,
   MessageSquare,
   Link as LinkIcon,
+  ImagePlus,
 } from "lucide-react";
 import {
   createWordgardBinding,
@@ -68,6 +69,12 @@ import { wordgardWidgets, wordgardCodeLanguages } from "./wordgard-widgets.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination } from "./rich-links.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
+import {
+  IMAGE_ACCEPT,
+  captureImageInsertion,
+  createImageUploader,
+  imageFiles,
+} from "./image-upload.mjs";
 import "./wordgard.css";
 
 const styles = [
@@ -121,13 +128,17 @@ export function WordgardEditor(props) {
     view = useRef(null),
     binding = useRef(null),
     collaboration = useRef(null),
-    toolbar = useRef(null);
+    toolbar = useRef(null),
+    imageInput = useRef(null),
+    imageUploader = useRef(null),
+    imageTarget = useRef(null);
   const permissions = useRef(new GardState.Compartment());
   const [format, setFormat] = useState(null),
     [floating, setFloating] = useState(null),
     [remoteCarets, setRemoteCarets] = useState([]),
     [link, setLink] = useState(null),
-    [editingLink, setEditingLink] = useState(false);
+    [editingLink, setEditingLink] = useState(false),
+    [imageStatus, setImageStatus] = useState(null);
   const [generation, reset] = useState(0);
   const pendingLink = useRef(null),
     refresh = useRef(() => {}),
@@ -239,6 +250,24 @@ export function WordgardEditor(props) {
       getTarget: () => latest.current.commentTarget,
     });
     collaboration.current = collab;
+    const acceptImages = (files, position) => {
+      if (!files.length) return false;
+      if (!latest.current.editable || replica.canWrite === false) {
+        setImageStatus({
+          pending: false,
+          message: "You need edit access to add images.",
+          retryable: false,
+        });
+        return true;
+      }
+      try {
+        const target = captureImageInsertion(replica, id, editor, bound.current.map, position);
+        imageUploader.current?.start(files, target);
+      } catch (error) {
+        setImageStatus({ pending: false, message: error.message, retryable: false });
+      }
+      return true;
+    };
     const editor = Wordgard.create({
       parent: mount.current,
       doc: bound.current.doc,
@@ -277,6 +306,15 @@ export function WordgardEditor(props) {
         wordgardListStarts,
         history(),
         permissions.current.of(editConfig(latest.current.editable)),
+        Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),
+        Wordgard.domEventHandler("drop", (event) => {
+          const files = imageFiles(event.dataTransfer);
+          if (!files.length) return false;
+          return acceptImages(
+            files,
+            editor.posAtCoords({ x: event.clientX, y: event.clientY }).pos,
+          );
+        }),
         KeyBinding.of({
           key: "Mod-k",
           run: () => {
@@ -308,6 +346,22 @@ export function WordgardEditor(props) {
       ],
     });
     view.current = editor;
+    setImageStatus(null);
+    imageTarget.current = null;
+    const uploader = createImageUploader({
+      replica,
+      getEditor: () => editor,
+      getMap: () => bound.current.map,
+      isCurrent: () =>
+        alive &&
+        view.current === editor &&
+        binding.current === bound &&
+        latest.current.replica === replica &&
+        latest.current.id === id &&
+        latest.current.editable,
+      onState: setImageStatus,
+    });
+    imageUploader.current = uploader;
     editor.dom.classList.add("wordgard-document");
     let caretFrame = null;
     const measureCarets = () => {
@@ -320,10 +374,15 @@ export function WordgardEditor(props) {
         const next = collab.carets().flatMap((peer) => {
           try {
             const rect = editor.coordsAtPos(peer.position);
+            const visibleLeft = Math.max(0, bounds.left),
+              visibleRight = Math.min(innerWidth, bounds.right),
+              labelOnLeft = rect.left - visibleLeft > visibleRight - rect.left;
             if (
               rect.bottom <= rect.top ||
               rect.bottom < Math.max(0, bounds.top) ||
-              rect.top > Math.min(innerHeight, bounds.bottom)
+              rect.top > Math.min(innerHeight, bounds.bottom) ||
+              rect.left < visibleLeft ||
+              rect.left > visibleRight
             )
               return [];
             return [
@@ -332,6 +391,11 @@ export function WordgardEditor(props) {
                 left: rect.left - origin.left,
                 top: rect.top - origin.top,
                 height: rect.height,
+                labelOnLeft,
+                labelWidth: Math.min(
+                  220,
+                  labelOnLeft ? rect.left - visibleLeft : visibleRight - rect.left,
+                ),
               },
             ];
           } catch {
@@ -530,6 +594,9 @@ export function WordgardEditor(props) {
     reset((n) => n + 1);
     return () => {
       alive = false;
+      uploader.destroy();
+      imageUploader.current = null;
+      imageTarget.current = null;
       clearInterval(timer);
       if (caretFrame !== null) cancelAnimationFrame(caretFrame);
       document.removeEventListener("scroll", measureCarets, true);
@@ -555,6 +622,7 @@ export function WordgardEditor(props) {
   useEffect(() => {
     const editor = view.current;
     if (!editor) return;
+    if (!editable) imageUploader.current?.cancel();
     editor.dispatch({
       effects: permissions.current.reconfigure(editConfig(editable)),
       annotations: remoteAnnotations(),
@@ -675,6 +743,16 @@ export function WordgardEditor(props) {
       report(error);
     }
   }
+  function chooseImage() {
+    const editor = view.current;
+    if (!editor || !editable || imageStatus?.pending) return;
+    try {
+      imageTarget.current = captureImageInsertion(replica, id, editor, binding.current.current.map);
+      imageInput.current?.click();
+    } catch (error) {
+      setImageStatus({ pending: false, message: error.message, retryable: false });
+    }
+  }
   function toolbarKeys(event) {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -748,6 +826,16 @@ export function WordgardEditor(props) {
               editable={editable}
               onError={report}
             />
+            <button
+              className="toolbar-button"
+              aria-label="Insert image"
+              title="Insert image"
+              disabled={!editable || imageStatus?.pending}
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={chooseImage}
+            >
+              <ImagePlus size={18} aria-hidden="true" />
+            </button>
             {controls.slice(2).map(([name, label, Icon]) => (
               <button
                 key={name}
@@ -765,15 +853,43 @@ export function WordgardEditor(props) {
           </div>,
           toolbarHost,
         )}
+      <input
+        ref={imageInput}
+        type="file"
+        accept={IMAGE_ACCEPT}
+        aria-label="Choose image"
+        hidden
+        onChange={(event) => {
+          const files = Array.from(event.target.files ?? []),
+            target = imageTarget.current;
+          event.target.value = "";
+          imageTarget.current = null;
+          if (files.length && target) imageUploader.current?.start(files, target);
+        }}
+      />
+      {imageStatus && (
+        <div className="image-upload-status" role="status" aria-live="polite">
+          <span>{imageStatus.message}</span>
+          {imageStatus.retryable && editable && (
+            <button type="button" onClick={() => imageUploader.current?.retry()}>
+              Retry
+            </button>
+          )}
+          <button type="button" onClick={() => imageUploader.current?.cancel()}>
+            {imageStatus.pending ? "Cancel" : "Dismiss"}
+          </button>
+        </div>
+      )}
       <div ref={mount} />
       <div ref={caretLayer} className="wordgard-caret-layer" aria-hidden="true">
         {remoteCarets.map((peer) => (
           <span
             key={peer.session}
             className="peer-caret"
+            data-label-side={peer.labelOnLeft ? "left" : "right"}
             style={{ left: peer.left, top: peer.top, height: peer.height }}
           >
-            <span>{peer.displayName}</span>
+            <span style={{ maxWidth: peer.labelWidth }}>{peer.displayName}</span>
           </span>
         ))}
       </div>

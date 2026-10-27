@@ -131,6 +131,8 @@ await writeFile(
       d1_databases: [
         { binding: "DB", database_name: "pages-next-auth", database_id: "pages-next-auth" },
       ],
+      // celld scopes this bucket beneath the deployment's fleet prefix.
+      r2_buckets: [{ binding: "PAGES_ASSETS", bucket_name: "pages-images" }],
       vars: { NOTEBOOK_CLOUD_OIDC_FLOW: "server" },
     },
     null,
