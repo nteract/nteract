@@ -55,7 +55,8 @@ Files load whole or fail; defaults are 16 MiB, 100,000 rows, and 256 columns.
 Parquet can also be read by byte range through a `ByteSource` (footer first,
 then one row group at a time), which drops the 16 MiB input cap. With
 `overflow: 'truncate'` it shows the leading rows that fit the row and memory
-budget instead of failing; see the embedding guide. Every summary labels what
+budget instead of failing, and `autoLoad` pauses at a soft budget with a
+"Load more" button; see the embedding guide. Every summary labels what
 its numbers cover (`scope`): histograms are over loaded rows, while range and
 null count come from Parquet footer statistics for the whole file when present.
 CSV and TSV go through [`@nteract/sift-csv`](https://www.npmjs.com/package/@nteract/sift-csv), a separate WASM

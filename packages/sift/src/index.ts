@@ -52,6 +52,7 @@ export type {
   ArrowStreamManifest,
   ArrowStreamManifestChunk,
   ArrowStreamSummary,
+  SiftAutoLoad,
   SiftLoadMilestone,
   SiftSource,
   SiftTableHandle,

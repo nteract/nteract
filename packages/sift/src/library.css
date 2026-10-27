@@ -1154,6 +1154,29 @@
   color: var(--sift-ink);
 }
 
+/* "Load more" for a load paused at its autoLoad budget. Sits before the scope
+   note so a narrow footer squeezes the note, not the control. */
+.sift-load-more {
+  margin-left: 8px;
+  background: none;
+  border: 1px solid var(--sift-rule);
+  border-radius: 4px;
+  color: var(--sift-accent);
+  font: 500 11px/1.2 var(--sift-font);
+  padding: 1px 8px;
+  cursor: pointer;
+  vertical-align: baseline;
+}
+
+.sift-load-more:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--sift-accent) 8%, transparent);
+}
+
+.sift-load-more:disabled {
+  color: var(--sift-muted);
+  cursor: progress;
+}
+
 /* Scope note after the preview label: the full sentence on wide footers, a
    short badge where the footer is narrow. Exactly one is shown at a time. */
 .sift-preview-scope-short {

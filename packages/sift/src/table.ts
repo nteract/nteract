@@ -62,6 +62,8 @@ export type DatasetCoverage = {
   /** Row groups in the source file, when the source has them. */
   rowGroups?: number;
   truncated: boolean;
+  /** True while a load is paused at a soft budget and more rows can be requested. */
+  resumable?: boolean;
 };
 
 /** Per-column statistics read from Parquet footer metadata at open. */
@@ -193,6 +195,13 @@ export type TableEngineOptions = {
   onChange?: (state: TableEngineState) => void;
   /** Optional control rendered in the stats/footer bar before built-in buttons. */
   footerControl?: HTMLElement;
+  /**
+   * Called when the viewport reaches the last loaded rows: the last visible
+   * view row is within the overscan of the end and streaming is not active.
+   * Fires once per row count, so a paused load gets one call per pause and is
+   * re-armed when rows arrive.
+   */
+  onScrollNearEnd?: () => void;
 };
 
 export type ReplaceDataOptions = {
@@ -220,6 +229,12 @@ export type TableEngine = {
   onBatchAppended(): void;
   /** Signal that all batches have been loaded and streaming is complete. */
   setStreamingDone(): void;
+  /**
+   * Re-arm the streaming guard after `setStreamingDone()`: casts are blocked
+   * again and the status indicator shows loading until the next
+   * `setStreamingDone()`. Used when a paused load resumes.
+   */
+  resumeStreaming(): void;
   replaceData(newData: TableData, options?: ReplaceDataOptions): void;
   /**
    * Show `control` in the footer from now on, as
@@ -820,6 +835,8 @@ export function createTable(
 
   // Streaming state — progress bar is appended after stats bar below
   let streaming = true;
+  // Row count at which `onScrollNearEnd` last fired; -1 means armed.
+  let scrollNearEndRowCount = -1;
   const progressBar = document.createElement("div");
   progressBar.className = "sift-progress-bar";
   progressBar.innerHTML = '<div class="sift-progress-bar-fill"></div>';
@@ -1672,6 +1689,19 @@ export function createTable(
     const visFirst = rowAtOffset(scrollTop);
     const visLast = Math.min(rowAtOffset(scrollTop + viewportH), filteredCount - 1);
 
+    // Near the end of the loaded rows while at rest: tell the host once per
+    // row count. A paused load re-arms this when it appends more rows.
+    if (
+      options?.onScrollNearEnd &&
+      !streaming &&
+      filteredCount > 0 &&
+      visLast >= filteredCount - 1 - OVERSCAN &&
+      scrollNearEndRowCount !== rowCount
+    ) {
+      scrollNearEndRowCount = rowCount;
+      options.onScrollNearEnd();
+    }
+
     const first = Math.max(0, visFirst - OVERSCAN);
     const last = Math.min(visLast + OVERSCAN, filteredCount - 1);
 
@@ -2181,6 +2211,10 @@ export function createTable(
     // re-armed stream shows the indicator without it.
   }
 
+  function resumeStreaming() {
+    setStreamingState(true);
+  }
+
   function setFooterControl(control: HTMLElement | null) {
     const next = control ?? undefined;
     if (next === footerControl) return;
@@ -2207,6 +2241,9 @@ export function createTable(
     // host UIs that size their container based on row count want to settle
     // on the final value rather than the first batch.
     notifyChange();
+    // The near-end check only runs while at rest, so a viewport already parked
+    // at the last loaded rows needs one render now to report it.
+    if (options?.onScrollNearEnd) scheduleRender();
   }
 
   function findSurvivingColumnIndices(newColumns: Column[]): Map<number, number> {
@@ -2987,6 +3024,7 @@ export function createTable(
   const api: TableEngine = {
     onBatchAppended,
     setStreamingDone,
+    resumeStreaming,
     replaceData,
     setFooterControl,
     destroy,

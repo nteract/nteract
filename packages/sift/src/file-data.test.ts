@@ -108,6 +108,7 @@ describe("loadTableFile", () => {
       parquet_row_group_ranges: vi.fn(() => Float64Array.from([0, 4])),
       parquet_append_row_group: vi.fn(() => 2),
       parquet_file_budget: vi.fn(() => ({ exhausted: false, truncated: false })),
+      parquet_file_usage: vi.fn(() => ({ rows: 0, decoded_bytes: 0 })),
       parquet_close: vi.fn(),
       finish_arrow_stream_store: vi.fn(),
       col_timezone: vi.fn(() => null),

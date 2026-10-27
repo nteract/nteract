@@ -80,6 +80,9 @@ export type ParquetRowGroupResult = ParquetAppendResult & {
   exhausted: boolean;
 };
 
+/** Rows and retained Arrow bytes an open file has committed to its store. */
+export type ParquetFileUsage = { rows: number; decodedBytes: number };
+
 export type OpenParquetFile = {
   /** Row count from the footer. */
   readonly rowCount: number;
@@ -93,6 +96,14 @@ export type OpenParquetFile = {
   readonly loadedRows: number;
   /** True once the budget stopped loading before the last row in the file. */
   readonly truncated: boolean;
+  /** Rows and retained Arrow bytes committed to the store so far. */
+  readonly usage: ParquetFileUsage;
+  /**
+   * Mark the load as paused at a soft budget, with row groups still unread.
+   * While paused, `tableData.coverage` reports `truncated` and `resumable`.
+   * The next append or `finish()` clears it.
+   */
+  setPaused(paused: boolean): void;
   /**
    * Fetch the row group's column chunks and decode them into the store.
    * Append row groups in file order, one at a time. Updates `tableData`'s
@@ -288,6 +299,10 @@ export async function openParquetFile(
     let loadedRows = 0;
     let exhausted = false;
     let truncated = false;
+    let paused = false;
+    // Set once a load pauses, so `coverage.resumable` reports the flip to false.
+    let everPaused = false;
+    let usage: ParquetFileUsage = { rows: 0, decodedBytes: 0 };
     let finished = false;
     let appending = false;
 
@@ -300,7 +315,9 @@ export async function openParquetFile(
         source: "metadata",
       },
       rowGroups: info.num_row_groups,
-      truncated,
+      // A paused load holds a prefix too; the difference is that it can go on.
+      truncated: truncated || paused,
+      ...(everPaused ? { resumable: paused } : {}),
     });
     // Coverage is set before summaries so the summary adapter can label the
     // metrics it computes against the dataset total.
@@ -358,6 +375,15 @@ export async function openParquetFile(
       get truncated() {
         return truncated;
       },
+      get usage() {
+        return usage;
+      },
+      setPaused(next) {
+        if (paused === next) return;
+        paused = next;
+        if (next) everPaused = true;
+        tableData.recomputeSummaries?.();
+      },
       async appendRowGroup(index) {
         if (!fileOpen || finished) throw new Error("Parquet file is closed");
         if (appending) throw new Error("Append one Parquet row group at a time");
@@ -388,6 +414,9 @@ export async function openParquetFile(
           const rowsAppended = mod.parquet_append_row_group(file, storeHandle, index, flat, data);
           loadedRows += rowsAppended;
           ({ exhausted, truncated } = mod.parquet_file_budget(file));
+          const committed = mod.parquet_file_usage(file);
+          usage = { rows: committed.rows, decodedBytes: committed.decoded_bytes };
+          paused = false;
           const replaced = refresh();
           return { rowsAppended, replaced, exhausted };
         } finally {
@@ -397,6 +426,7 @@ export async function openParquetFile(
       finish() {
         if (finished) return { rowsAppended: 0, replaced: null };
         finished = true;
+        paused = false;
         mod.finish_arrow_stream_store(storeHandle);
         const replaced = refresh();
         closeFile();

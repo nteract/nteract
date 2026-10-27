@@ -77,7 +77,13 @@ export type SiftSource =
    * shows its leading rows and notes the preview in the footer. Arrow IPC is
    * read whole and ignores both.
    */
-  | { kind: "url"; url: string; limits?: TableFileLimits; overflow?: TableLimitOverflow }
+  | {
+      kind: "url";
+      url: string;
+      limits?: TableFileLimits;
+      overflow?: TableLimitOverflow;
+      autoLoad?: SiftAutoLoad;
+    }
   | { kind: "arrow-stream-manifest"; manifest: ArrowStreamManifest }
   /**
    * A Parquet file read by byte range. Sift reads the footer, mounts after
@@ -95,7 +101,26 @@ export type SiftSource =
        * and notes the preview in its footer.
        */
       overflow?: TableLimitOverflow;
+      /** Pause below the hard budget and let the user load more. Needs `overflow: "truncate"`. */
+      autoLoad?: SiftAutoLoad;
     };
+
+/**
+ * Pause a Parquet load at a soft budget below the hard `limits`; the user
+ * loads more on demand. Each resume extends the budget by the same amounts.
+ */
+export type SiftAutoLoad = {
+  /** Rows to load before pausing. Default: no pause. */
+  rows?: number;
+  /** Decoded Arrow bytes to load before pausing. Default: no pause. */
+  decodedBytes?: number;
+  /**
+   * What resumes loading. `"manual"`: the footer "Load more" button only.
+   * `"scroll"`: also when the viewport scrolls within the overscan of the last
+   * loaded row. Default `"manual"`.
+   */
+  trigger?: "manual" | "scroll";
+};
 
 export type SiftLoadMilestone = {
   source: SiftSource["kind"];
@@ -109,6 +134,11 @@ export type SiftLoadMilestone = {
   totalRowCount?: number;
   /** Whether the budget stopped loading early. Set on Parquet `streaming-complete`. */
   truncated?: boolean;
+  /**
+   * Set on Parquet `streaming-complete`: true when the load paused at an
+   * `autoLoad` budget and more rows can be requested, false when it finished.
+   */
+  resumable?: boolean;
   byteLength?: number;
   format?: "arrow-ipc" | "parquet";
 };
@@ -338,6 +368,8 @@ type ProgressiveParquetArgs = {
   source: ByteSource;
   limits: ParquetFileLimits;
   overflow?: TableLimitOverflow;
+  /** Soft budget to pause at; absent means load to the hard budget. */
+  autoLoad?: Pick<SiftAutoLoad, "rows" | "decodedBytes">;
   columnOverrides?: Record<string, Partial<Column>>;
   signal: AbortSignal;
   emit: (milestone: Omit<SiftLoadMilestone, "elapsedMs" | "source">) => void;
@@ -349,80 +381,210 @@ type ProgressiveParquetArgs = {
    */
   mount: (tableData: TableData, streaming: boolean) => void;
   engine: () => TableEngine | null;
+  /** Called when the load pauses at the soft budget, with the rows shown so far. */
+  onPause?: (preview: ParquetPreview) => void;
 };
 
-/** Rows a finished Parquet stream holds against the file's footer total. */
+/** Rows a Parquet stream holds against the file's footer total. */
 type ParquetPreview = { loadedRows: number; totalRows: number };
+
+/** Handle on a running Parquet load. */
+type ParquetStream = {
+  /**
+   * Settles when the store is complete: the file ended, the hard budget cut it
+   * short, or the load failed. Resolves with the loaded and total rows when
+   * the hard budget cut the file short, null otherwise. Rejects with the loader
+   * error; an aborted signal rejects with its reason.
+   */
+  done: Promise<ParquetPreview | null>;
+  /** Continue a load paused at the soft budget. No-op unless paused. */
+  resume(): void;
+  /** True while the load waits at the soft budget for `resume()`. */
+  readonly paused: boolean;
+};
 
 /**
  * Open a Parquet file by byte range, mount the table after the first row
  * group, then append the remaining groups one at a time, yielding to the
  * event loop between them. A truncating load stops at the row group that
- * spends the budget. Resolves when the store is complete, with the loaded
- * and total rows when the budget cut the file short and null otherwise.
- * Rejects with the loader error; an aborted signal rejects with its reason.
+ * spends the hard budget. With `autoLoad`, the load pauses once the rows or
+ * decoded bytes committed reach the soft budget while row groups remain; the
+ * table is at rest (`setStreamingDone`) until `resume()` extends the soft
+ * budget by the same amounts and loading goes on.
  */
-async function streamParquetIntoEngine(
-  args: ProgressiveParquetArgs,
-): Promise<ParquetPreview | null> {
-  const { source, limits, overflow, columnOverrides, signal, emit, onOpen, mount, engine } = args;
+function streamParquetIntoEngine(args: ProgressiveParquetArgs): ParquetStream {
+  const {
+    source,
+    limits,
+    overflow,
+    autoLoad,
+    columnOverrides,
+    signal,
+    emit,
+    onOpen,
+    mount,
+    engine,
+    onPause,
+  } = args;
   const format = "parquet";
-  const file = await openParquetFile(source, { limits, overflow, columnOverrides, signal });
-  onOpen(file);
-  emit({ phase: "wasm-ready", format, byteLength: source.byteLength });
-  emit({
-    phase: "table-data-created",
-    format,
-    rowCount: file.rowCount,
-    chunkCount: file.rowGroupCount,
-  });
+  let resumeWaiting: (() => void) | null = null;
 
-  let exhausted = false;
-  if (file.rowGroupCount > 0) {
-    ({ exhausted } = await file.appendRowGroup(0));
-    emit({ phase: "first-chunk-fetched", format, chunkIndex: 0, chunkCount: file.rowGroupCount });
-  }
-  emit({ phase: "summaries-ready", format, rowCount: file.tableData.rowCount });
-  signal.throwIfAborted();
-  mount(file.tableData, file.rowGroupCount > 1 && !exhausted);
-  emit({ phase: "engine-mounted", format, rowCount: file.tableData.rowCount });
+  const stream: ParquetStream = {
+    done: run(),
+    resume() {
+      const wake = resumeWaiting;
+      resumeWaiting = null;
+      wake?.();
+    },
+    get paused() {
+      return resumeWaiting !== null;
+    },
+  };
+  return stream;
 
-  for (let group = 1; group < file.rowGroupCount && !exhausted; group++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+  async function run(): Promise<ParquetPreview | null> {
+    const file = await openParquetFile(source, { limits, overflow, columnOverrides, signal });
+    onOpen(file);
+    emit({ phase: "wasm-ready", format, byteLength: source.byteLength });
+    emit({
+      phase: "table-data-created",
+      format,
+      rowCount: file.rowCount,
+      chunkCount: file.rowGroupCount,
+    });
+
+    // Soft budget, extended by the same amounts on every resume.
+    let softRows = autoLoad?.rows ?? Number.POSITIVE_INFINITY;
+    let softBytes = autoLoad?.decodedBytes ?? Number.POSITIVE_INFINITY;
+    const preview = (): ParquetPreview => ({
+      loadedRows: file.loadedRows,
+      totalRows: file.rowCount,
+    });
+
+    /**
+     * After an append: when row groups remain and the soft budget is spent,
+     * settle the table and wait for `resume()`. Returns once loading may go on.
+     */
+    async function pauseIfOverSoftBudget(nextGroup: number, exhausted: boolean) {
+      if (exhausted || nextGroup >= file.rowGroupCount) return;
+      const { usage } = file;
+      if (usage.rows < softRows && usage.decodedBytes < softBytes) return;
+
+      file.setPaused(true);
+      engine()?.setStreamingDone();
+      emit({
+        phase: "streaming-complete",
+        format,
+        rowCount: file.tableData.rowCount,
+        totalRowCount: file.rowCount,
+        truncated: true,
+        resumable: true,
+      });
+      onPause?.(preview());
+
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => {
+          resumeWaiting = null;
+          reject(signal.reason);
+        };
+        if (signal.aborted) return abort();
+        signal.addEventListener("abort", abort, { once: true });
+        resumeWaiting = () => {
+          signal.removeEventListener("abort", abort);
+          resolve();
+        };
+      });
+
+      softRows = usage.rows + (autoLoad?.rows ?? Number.POSITIVE_INFINITY);
+      softBytes = usage.decodedBytes + (autoLoad?.decodedBytes ?? Number.POSITIVE_INFINITY);
+      file.setPaused(false);
+      engine()?.resumeStreaming();
+      emit({ phase: "streaming-resumed", format, rowCount: file.tableData.rowCount });
+    }
+
+    let exhausted = false;
+    if (file.rowGroupCount > 0) {
+      ({ exhausted } = await file.appendRowGroup(0));
+      emit({
+        phase: "first-chunk-fetched",
+        format,
+        chunkIndex: 0,
+        chunkCount: file.rowGroupCount,
+      });
+    }
+    emit({ phase: "summaries-ready", format, rowCount: file.tableData.rowCount });
     signal.throwIfAborted();
-    const appended = await file.appendRowGroup(group);
-    const { replaced } = appended;
-    exhausted = appended.exhausted;
+    mount(file.tableData, file.rowGroupCount > 1 && !exhausted);
+    emit({ phase: "engine-mounted", format, rowCount: file.tableData.rowCount });
+    await pauseIfOverSoftBudget(1, exhausted);
+
+    for (let group = 1; group < file.rowGroupCount && !exhausted; group++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      signal.throwIfAborted();
+      const appended = await file.appendRowGroup(group);
+      const { replaced } = appended;
+      exhausted = appended.exhausted;
+      signal.throwIfAborted();
+      if (replaced) {
+        engine()?.replaceData(replaced, { streaming: true });
+      } else {
+        engine()?.onBatchAppended();
+      }
+      emit({
+        phase: "chunk-appended",
+        format,
+        chunkIndex: group,
+        chunkCount: file.rowGroupCount,
+        rowCount: file.tableData.rowCount,
+      });
+      await pauseIfOverSoftBudget(group + 1, exhausted);
+    }
+
     signal.throwIfAborted();
+    const { replaced } = file.finish();
     if (replaced) {
-      engine()?.replaceData(replaced, { streaming: true });
+      engine()?.replaceData(replaced, { streaming: false });
     } else {
-      engine()?.onBatchAppended();
+      engine()?.setStreamingDone();
     }
     emit({
-      phase: "chunk-appended",
+      phase: "streaming-complete",
       format,
-      chunkIndex: group,
-      chunkCount: file.rowGroupCount,
       rowCount: file.tableData.rowCount,
+      totalRowCount: file.rowCount,
+      truncated: file.truncated,
+      resumable: false,
     });
+    return file.truncated ? preview() : null;
   }
+}
 
-  signal.throwIfAborted();
-  const { replaced } = file.finish();
-  if (replaced) {
-    engine()?.replaceData(replaced, { streaming: false });
-  } else {
-    engine()?.setStreamingDone();
+/** Reject `autoLoad` settings the loader cannot honor. */
+function validateAutoLoad(
+  autoLoad: SiftAutoLoad | undefined,
+  overflow: TableLimitOverflow,
+): Pick<SiftAutoLoad, "rows" | "decodedBytes"> | undefined {
+  if (!autoLoad) return undefined;
+  if (overflow !== "truncate") {
+    throw new Error('autoLoad requires overflow: "truncate"; an erroring load cannot pause');
   }
-  emit({
-    phase: "streaming-complete",
-    format,
-    rowCount: file.tableData.rowCount,
-    totalRowCount: file.rowCount,
-    truncated: file.truncated,
-  });
-  return file.truncated ? { loadedRows: file.loadedRows, totalRows: file.rowCount } : null;
+  for (const key of ["rows", "decodedBytes"] as const) {
+    const value = autoLoad[key];
+    if (value !== undefined && (!Number.isFinite(value) || value <= 0)) {
+      throw new Error(`autoLoad.${key} must be a positive number`);
+    }
+  }
+  if (
+    autoLoad.trigger !== undefined &&
+    autoLoad.trigger !== "manual" &&
+    autoLoad.trigger !== "scroll"
+  ) {
+    throw new Error(
+      `autoLoad.trigger must be "manual" or "scroll", got ${String(autoLoad.trigger)}`,
+    );
+  }
+  if (autoLoad.rows === undefined && autoLoad.decodedBytes === undefined) return undefined;
+  return { rows: autoLoad.rows, decodedBytes: autoLoad.decodedBytes };
 }
 
 // --- Component ---
@@ -451,6 +613,12 @@ export function SiftTable({
   const byteSourceMaxColumns = byteSourceLimits?.maxColumns;
   const byteSourceMaxDecodedBytes = byteSourceLimits?.maxDecodedBytes;
   const byteSourceOverflow = source?.kind === "byte-source" ? source.overflow : undefined;
+  const autoLoad =
+    source?.kind === "byte-source" || source?.kind === "url" ? source.autoLoad : undefined;
+  const hasAutoLoad = autoLoad !== undefined;
+  const autoLoadRows = autoLoad?.rows;
+  const autoLoadDecodedBytes = autoLoad?.decodedBytes;
+  const autoLoadTrigger = autoLoad?.trigger;
   const urlLimits = source?.kind === "url" ? source.limits : undefined;
   const urlMaxRows = urlLimits?.maxRows;
   const urlMaxColumns = urlLimits?.maxColumns;
@@ -468,6 +636,32 @@ export function SiftTable({
     parquetPreviewSource && parquetPreview?.source === parquetPreviewSource
       ? parquetPreview.preview
       : null;
+  /**
+   * A Parquet load waiting at its `autoLoad` budget. `loading` is true from
+   * the user's request until the loader pauses again or finishes. Keyed by
+   * source like the preview.
+   */
+  const [pausedLoad, setPausedLoad] = useState<{
+    source: ByteSource | string;
+    resume: () => void;
+    loading: boolean;
+  } | null>(null);
+  const currentPausedLoad =
+    parquetPreviewSource && pausedLoad?.source === parquetPreviewSource ? pausedLoad : null;
+  const currentPausedLoadRef = useRef(currentPausedLoad);
+  currentPausedLoadRef.current = currentPausedLoad;
+  const loadMore = useCallback(() => {
+    const current = currentPausedLoadRef.current;
+    if (!current || current.loading) return;
+    current.resume();
+    setPausedLoad({ ...current, loading: true });
+  }, []);
+  // The engine gets one stable callback; the active Parquet effect decides
+  // whether a near-end scroll should load more.
+  const onScrollNearEndRef = useRef<(() => void) | null>(null);
+  const stableOnScrollNearEnd = useCallback(() => {
+    onScrollNearEndRef.current?.();
+  }, []);
   const previewNotice = useMemo(
     () => arrowStreamPreviewNotice(manifestSource) ?? parquetPreviewNotice(currentParquetPreview),
     [manifestSource, currentParquetPreview],
@@ -617,6 +811,17 @@ export function SiftTable({
             aria-label={`${previewNotice.label}. ${previewNotice.title}`}
           >
             <span>{previewNotice.label}</span>
+            {currentPausedLoad && (
+              <button
+                type="button"
+                className="sift-load-more"
+                disabled={currentPausedLoad.loading}
+                aria-busy={currentPausedLoad.loading}
+                onClick={loadMore}
+              >
+                {currentPausedLoad.loading ? "Loading…" : "Load more"}
+              </button>
+            )}
             {/* The stylesheet shows one of these by viewport width: the full
                 sentence on wide footers, the short badge on narrow ones. */}
             <span className="sift-preview-scope sift-preview-scope-full" aria-hidden="true">
@@ -630,7 +835,15 @@ export function SiftTable({
         {footerControl}
       </>,
     );
-  }, [footerControl, getFooterControlElement, hasFooterControl, loadFailure, previewNotice]);
+  }, [
+    currentPausedLoad,
+    footerControl,
+    getFooterControlElement,
+    hasFooterControl,
+    loadFailure,
+    loadMore,
+    previewNotice,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -681,6 +894,7 @@ export function SiftTable({
         applyColumnOverrides(loaded.columns, columnOverrides);
         engineRef.current = createTable(engineDiv, loaded, {
           onChange: stableOnChange,
+          onScrollNearEnd: stableOnScrollNearEnd,
           footerControl: getFooterControlElement(),
         });
         pendingData = undefined;
@@ -732,24 +946,33 @@ export function SiftTable({
     setError(null);
     setLoadFailure(null);
     setParquetPreview(null);
+    setPausedLoad(null);
     emitLoadMilestone(startedAt, { source: "byte-source", phase: "load-start" });
 
     let limits: ParquetFileLimits;
+    let softBudget: Pick<SiftAutoLoad, "rows" | "decodedBytes"> | undefined;
     try {
       limits = resolveTableFileLimits({
         maxRows: byteSourceMaxRows,
         maxColumns: byteSourceMaxColumns,
         maxDecodedBytes: byteSourceMaxDecodedBytes,
       });
+      softBudget = validateAutoLoad(
+        hasAutoLoad
+          ? { rows: autoLoadRows, decodedBytes: autoLoadDecodedBytes, trigger: autoLoadTrigger }
+          : undefined,
+        byteSourceOverflow ?? "error",
+      );
     } catch (cause) {
       reportLoadError(cause);
       return;
     }
 
-    streamParquetIntoEngine({
+    const stream = streamParquetIntoEngine({
       source: byteSource,
       limits,
       overflow: byteSourceOverflow,
+      autoLoad: softBudget,
       columnOverrides,
       signal: controller.signal,
       emit: (milestone) => emitLoadMilestone(startedAt, { ...milestone, source: "byte-source" }),
@@ -767,6 +990,7 @@ export function SiftTable({
           if (!engineDiv) return;
           engineRef.current = createTable(engineDiv, tableData, {
             onChange: stableOnChange,
+            onScrollNearEnd: stableOnScrollNearEnd,
             footerControl: getFooterControlElement(),
           });
         }
@@ -774,15 +998,31 @@ export function SiftTable({
         setStatus("ready");
       },
       engine: () => engineRef.current,
-    }).then(
+      onPause: (preview) => {
+        if (cancelled) return;
+        setParquetPreview({ source: byteSource, preview });
+        setPausedLoad({ source: byteSource, resume: stream.resume, loading: false });
+      },
+    });
+    if (autoLoadTrigger === "scroll") {
+      onScrollNearEndRef.current = () => {
+        if (cancelled || !stream.paused) return;
+        stream.resume();
+        setPausedLoad((current) => (current ? { ...current, loading: true } : current));
+      };
+    }
+    stream.done.then(
       (preview) => {
-        if (!cancelled) setParquetPreview(preview ? { source: byteSource, preview } : null);
+        if (cancelled) return;
+        setParquetPreview(preview ? { source: byteSource, preview } : null);
+        setPausedLoad(null);
       },
       (cause: unknown) => {
         if (cancelled) return;
         if (openFile && !mounted) openFile.dispose();
         else openFile?.close();
         openFile = null;
+        setPausedLoad(null);
         // A failure after mount leaves the rows already loaded in place. End the
         // streaming state so the status dot and cast guard do not wait forever.
         if (mounted) engineRef.current?.setStreamingDone();
@@ -793,6 +1033,7 @@ export function SiftTable({
     return () => {
       cancelled = true;
       controller.abort();
+      onScrollNearEndRef.current = null;
       // Once mounted the engine owns the store; only the footer metadata is ours.
       if (openFile && !mounted) openFile.dispose();
       else openFile?.close();
@@ -804,6 +1045,11 @@ export function SiftTable({
     byteSourceMaxColumns,
     byteSourceMaxDecodedBytes,
     byteSourceOverflow,
+    hasAutoLoad,
+    autoLoadRows,
+    autoLoadDecodedBytes,
+    autoLoadTrigger,
+    stableOnScrollNearEnd,
     columnOverrides,
     stableOnChange,
     getEngineElement,
@@ -842,6 +1088,7 @@ export function SiftTable({
 
     engineRef.current = createTable(engineDiv, dataSource, {
       onChange: stableOnChange,
+      onScrollNearEnd: stableOnScrollNearEnd,
       footerControl: getFooterControlElement(),
     });
     engineRef.current.setStreamingDone();
@@ -878,6 +1125,7 @@ export function SiftTable({
       if (!engineDiv) return;
       engineRef.current = createTable(engineDiv, tableData, {
         onChange: stableOnChange,
+        onScrollNearEnd: stableOnScrollNearEnd,
         footerControl: getFooterControlElement(),
       });
       disposePendingStore = null;
@@ -1179,6 +1427,7 @@ export function SiftTable({
       if (!engineDiv) return;
       engineRef.current = createTable(engineDiv, tableData, {
         onChange: stableOnChange,
+        onScrollNearEnd: stableOnScrollNearEnd,
         footerControl: getFooterControlElement(),
       });
       disposePendingStore = null;
@@ -1193,10 +1442,17 @@ export function SiftTable({
         maxColumns: urlMaxColumns,
         maxDecodedBytes: urlMaxDecodedBytes ?? URL_PARQUET_LIMITS.maxDecodedBytes,
       });
-      const preview = await streamParquetIntoEngine({
+      const softBudget = validateAutoLoad(
+        hasAutoLoad
+          ? { rows: autoLoadRows, decodedBytes: autoLoadDecodedBytes, trigger: autoLoadTrigger }
+          : undefined,
+        urlOverflow,
+      );
+      const stream = streamParquetIntoEngine({
         source: byteSourceFromBytes(parquetBytes),
         limits,
         overflow: urlOverflow,
+        autoLoad: softBudget,
         columnOverrides,
         signal: controller.signal,
         emit: (milestone) => emitLoadMilestone(startedAt, { ...milestone, source: "url" }),
@@ -1210,8 +1466,25 @@ export function SiftTable({
           setStatus("ready");
         },
         engine: () => engineRef.current,
+        onPause: (preview) => {
+          if (cancelled) return;
+          setParquetPreview({ source: sourceUrl, preview });
+          setPausedLoad({ source: sourceUrl, resume: stream.resume, loading: false });
+        },
       });
-      if (!cancelled) setParquetPreview(preview ? { source: sourceUrl, preview } : null);
+      if (autoLoadTrigger === "scroll") {
+        onScrollNearEndRef.current = () => {
+          if (cancelled || !stream.paused) return;
+          stream.resume();
+          setPausedLoad((current) => (current ? { ...current, loading: true } : current));
+        };
+      }
+      try {
+        const preview = await stream.done;
+        if (!cancelled) setParquetPreview(preview ? { source: sourceUrl, preview } : null);
+      } finally {
+        if (!cancelled) setPausedLoad(null);
+      }
     }
 
     async function loadArrowIpc(source: Response | ReadableStream<Uint8Array>) {
@@ -1302,6 +1575,7 @@ export function SiftTable({
       setError(null);
       setLoadFailure(null);
       setParquetPreview(null);
+      setPausedLoad(null);
       emitLoadMilestone(startedAt, { source: "url", phase: "load-start" });
 
       const response = await tableResponse(sourceUrl);
@@ -1346,6 +1620,7 @@ export function SiftTable({
     return () => {
       cancelled = true;
       controller.abort();
+      onScrollNearEndRef.current = null;
       disposePendingStore?.();
       disposePendingStore = null;
       openFile?.close();
@@ -1357,6 +1632,11 @@ export function SiftTable({
     urlMaxColumns,
     urlMaxDecodedBytes,
     urlOverflow,
+    hasAutoLoad,
+    autoLoadRows,
+    autoLoadDecodedBytes,
+    autoLoadTrigger,
+    stableOnScrollNearEnd,
     typeOverrides,
     columnOverrides,
     stableOnChange,

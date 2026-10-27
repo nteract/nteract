@@ -125,6 +125,8 @@ type PredicateModule = {
   parquet_file_column_stats(file: number): unknown;
   /** Budget state of a truncating load. Both flags stay false in error mode. */
   parquet_file_budget(file: number): { exhausted: boolean; truncated: boolean };
+  /** Rows and retained Arrow bytes committed to the store so far. */
+  parquet_file_usage(file: number): { rows: number; decoded_bytes: number };
   parquet_file_column_hints(file: number): ParquetColumnHint[];
   parquet_create_store(file: number): number;
   /** Flat `[offset, length, ...]` per column chunk of one row group. */

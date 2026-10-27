@@ -15,3 +15,8 @@ export function parquet_file_column_stats(_file) {
 export function store_null_counts(_handle) {
   return new Uint32Array(0);
 }
+
+// Rows and retained Arrow bytes an open Parquet file has committed so far.
+export function parquet_file_usage(_file) {
+  return { rows: 0, decoded_bytes: 0 };
+}

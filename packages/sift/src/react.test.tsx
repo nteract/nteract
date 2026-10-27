@@ -44,6 +44,7 @@ const predicateModule = vi.hoisted(() => ({
   parquet_row_group_ranges: vi.fn(() => Float64Array.from([4, 4])),
   parquet_append_row_group: vi.fn(() => 2),
   parquet_file_budget: vi.fn(() => ({ exhausted: false, truncated: false })),
+  parquet_file_usage: vi.fn(() => ({ rows: 0, decoded_bytes: 0 })),
   parquet_close: vi.fn(),
   has_original_column: vi.fn(() => false),
   store_viewport_cells: vi.fn(() => ({
@@ -81,6 +82,51 @@ function parquetFixture(): Uint8Array {
   return bytes;
 }
 
+/**
+ * Let the mocked store grow by two rows per appended row group, with the
+ * footer answering for `rowGroups` groups. Returns a restore function.
+ */
+function stubParquetStore(options: { truncateAfterGroups?: number; rowGroups?: number } = {}) {
+  const rowGroups = options.rowGroups ?? 2;
+  let loaded = 0;
+  let groups = 0;
+  predicateModule.parquet_file_info.mockImplementation(() => ({
+    num_rows: rowGroups * 2,
+    num_row_groups: rowGroups,
+    row_group_rows: Array.from({ length: rowGroups }, () => 2),
+    column_names: ["id", "name"],
+  }));
+  predicateModule.num_rows.mockImplementation(() => loaded);
+  predicateModule.parquet_append_row_group.mockImplementation(() => {
+    loaded += 2;
+    groups += 1;
+    return 2;
+  });
+  predicateModule.parquet_file_usage.mockImplementation(() => ({
+    rows: loaded,
+    decoded_bytes: loaded * 100,
+  }));
+  predicateModule.parquet_file_budget.mockImplementation(() => {
+    const cut = options.truncateAfterGroups !== undefined && groups >= options.truncateAfterGroups;
+    return { exhausted: cut, truncated: cut };
+  });
+  return () => {
+    predicateModule.parquet_file_info.mockImplementation(() => ({
+      num_rows: 4,
+      num_row_groups: 2,
+      row_group_rows: [2, 2],
+      column_names: ["id", "name"],
+    }));
+    predicateModule.num_rows.mockImplementation(() => 2);
+    predicateModule.parquet_append_row_group.mockImplementation(() => 2);
+    predicateModule.parquet_file_usage.mockImplementation(() => ({ rows: 0, decoded_bytes: 0 }));
+    predicateModule.parquet_file_budget.mockImplementation(() => ({
+      exhausted: false,
+      truncated: false,
+    }));
+  };
+}
+
 /** Serve `parquetFixture` from fetch and let the mocked store grow per row group. */
 function stubParquetUrl(options: { truncateAfterGroups?: number } = {}) {
   vi.stubGlobal("fetch", () =>
@@ -90,25 +136,15 @@ function stubParquetUrl(options: { truncateAfterGroups?: number } = {}) {
       arrayBuffer: async () => parquetFixture().buffer,
     }),
   );
-  let loaded = 0;
-  let groups = 0;
-  predicateModule.num_rows.mockImplementation(() => loaded);
-  predicateModule.parquet_append_row_group.mockImplementation(() => {
-    loaded += 2;
-    groups += 1;
-    return 2;
-  });
-  predicateModule.parquet_file_budget.mockImplementation(() => {
-    const cut = options.truncateAfterGroups !== undefined && groups >= options.truncateAfterGroups;
-    return { exhausted: cut, truncated: cut };
-  });
-  return () => {
-    predicateModule.num_rows.mockImplementation(() => 2);
-    predicateModule.parquet_append_row_group.mockImplementation(() => 2);
-    predicateModule.parquet_file_budget.mockImplementation(() => ({
-      exhausted: false,
-      truncated: false,
-    }));
+  return stubParquetStore(options);
+}
+
+/** A `ByteSource` over `parquetFixture`, for the byte-source Parquet path. */
+function parquetByteSource() {
+  const bytes = parquetFixture();
+  return {
+    byteLength: bytes.byteLength,
+    read: vi.fn(async (offset: number, length: number) => bytes.slice(offset, offset + length)),
   };
 }
 
@@ -574,6 +610,256 @@ describe("SiftTable", () => {
     } finally {
       restore();
     }
+  });
+
+  describe("autoLoad", () => {
+    const streamingComplete = (milestones: SiftLoadMilestone[]) =>
+      milestones.filter((m) => m.phase === "streaming-complete");
+
+    it("pauses at the soft budget, offers Load more, and finishes on demand", async () => {
+      vi.useRealTimers();
+      const restore = stubParquetStore({ rowGroups: 3 });
+      const milestones: SiftLoadMilestone[] = [];
+      const source = parquetByteSource();
+      try {
+        const { container, unmount } = render(
+          <SiftTable
+            source={{
+              kind: "byte-source",
+              source,
+              overflow: "truncate",
+              autoLoad: { rows: 3 },
+            }}
+            onLoadMilestone={(milestone) => milestones.push(milestone)}
+          />,
+        );
+
+        // Group 0 holds 2 rows (< 3), so group 1 loads too and the stream
+        // pauses at 4 rows with one group left.
+        await waitFor(() => {
+          expect(container.querySelector(".sift-load-more")).not.toBeNull();
+        });
+        expect(predicateModule.parquet_append_row_group).toHaveBeenCalledTimes(2);
+        expect(predicateModule.finish_arrow_stream_store).not.toHaveBeenCalled();
+        expect(streamingComplete(milestones)).toEqual([
+          expect.objectContaining({
+            source: "byte-source",
+            rowCount: 4,
+            totalRowCount: 6,
+            truncated: true,
+            resumable: true,
+          }),
+        ]);
+        expect(container.querySelector(".sift-status-indicator")?.className).toContain(
+          "sift-status-ready",
+        );
+        const hint = container.querySelector(".sift-preview-hint");
+        expect(hint?.firstElementChild?.textContent).toBe("Showing first 4 of 6 rows");
+        const button = container.querySelector<HTMLButtonElement>(".sift-load-more");
+        expect(button?.textContent).toBe("Load more");
+        expect(button?.disabled).toBe(false);
+        // The button comes before the scope badge so a narrow footer squeezes the badge.
+        expect(button?.nextElementSibling?.className).toContain("sift-preview-scope");
+        const paused = vi.mocked(createTable).mock.calls.at(-1)?.[1];
+        expect(paused?.coverage).toMatchObject({ loadedRows: 4, truncated: true, resumable: true });
+
+        button!.click();
+        await waitFor(() => {
+          expect(streamingComplete(milestones)).toHaveLength(2);
+        });
+        expect(milestones.map((m) => m.phase)).toContain("streaming-resumed");
+        expect(milestones.find((m) => m.phase === "streaming-resumed")?.rowCount).toBe(4);
+        expect(predicateModule.parquet_append_row_group).toHaveBeenCalledTimes(3);
+        expect(predicateModule.finish_arrow_stream_store).toHaveBeenCalledTimes(1);
+        expect(streamingComplete(milestones)[1]).toMatchObject({
+          rowCount: 6,
+          totalRowCount: 6,
+          truncated: false,
+          resumable: false,
+        });
+        await waitFor(() => {
+          expect(container.querySelector(".sift-load-more")).toBeNull();
+          expect(container.querySelector(".sift-preview-hint")).toBeNull();
+        });
+        expect(paused?.coverage).toMatchObject({
+          loadedRows: 6,
+          truncated: false,
+          resumable: false,
+        });
+        expect(container.querySelector(".sift-status-indicator")?.getAttribute("title")).toBe(
+          "All data loaded",
+        );
+        unmount();
+      } finally {
+        restore();
+      }
+    });
+
+    it("shows Loading… while a resume is in flight and pauses again at the next budget", async () => {
+      vi.useRealTimers();
+      const restore = stubParquetStore({ rowGroups: 3 });
+      const source = parquetByteSource();
+      let releaseRead: (() => void) | null = null;
+      const originalRead = source.read.getMockImplementation()!;
+      try {
+        render(
+          <SiftTable
+            source={{ kind: "byte-source", source, overflow: "truncate", autoLoad: { rows: 2 } }}
+          />,
+        );
+        // Pause after group 0 (2 rows).
+        await waitFor(() => {
+          expect(document.querySelector(".sift-load-more")?.textContent).toBe("Load more");
+        });
+
+        // Hold the next range read so the resume stays in flight.
+        source.read.mockImplementation(
+          (offset, length) =>
+            new Promise((resolve) => {
+              releaseRead = () => resolve(originalRead(offset, length));
+            }),
+        );
+        document.querySelector<HTMLButtonElement>(".sift-load-more")!.click();
+        await waitFor(() => {
+          const button = document.querySelector<HTMLButtonElement>(".sift-load-more");
+          expect(button?.textContent).toBe("Loading…");
+          expect(button?.disabled).toBe(true);
+        });
+        expect(releaseRead).not.toBeNull();
+        source.read.mockImplementation(originalRead);
+        releaseRead!();
+
+        // Group 1 lands (4 rows >= 2 + 2) with one group left: paused again.
+        await waitFor(() => {
+          const button = document.querySelector<HTMLButtonElement>(".sift-load-more");
+          expect(button?.textContent).toBe("Load more");
+          expect(button?.disabled).toBe(false);
+        });
+        expect(document.querySelector(".sift-preview-hint")?.firstElementChild?.textContent).toBe(
+          "Showing first 4 of 6 rows",
+        );
+        expect(predicateModule.finish_arrow_stream_store).not.toHaveBeenCalled();
+      } finally {
+        restore();
+      }
+    });
+
+    it("closes the footer when unmounted while paused", async () => {
+      vi.useRealTimers();
+      const restore = stubParquetStore({ rowGroups: 3 });
+      try {
+        const { unmount } = render(
+          <SiftTable
+            source={{
+              kind: "byte-source",
+              source: parquetByteSource(),
+              overflow: "truncate",
+              autoLoad: { rows: 2 },
+            }}
+          />,
+        );
+        await waitFor(() => {
+          expect(document.querySelector(".sift-load-more")).not.toBeNull();
+        });
+        expect(predicateModule.parquet_close).not.toHaveBeenCalled();
+        unmount();
+        expect(predicateModule.parquet_close).toHaveBeenCalledWith(11);
+        // The engine owned the store; unmount frees it once.
+        expect(predicateModule.free).toHaveBeenCalledWith(9);
+      } finally {
+        restore();
+      }
+    });
+
+    it("rejects autoLoad without overflow: truncate", async () => {
+      vi.useRealTimers();
+      const restore = stubParquetStore();
+      const onLoadError = vi.fn();
+      try {
+        const { container } = render(
+          <SiftTable
+            source={{ kind: "byte-source", source: parquetByteSource(), autoLoad: { rows: 2 } }}
+            onLoadError={onLoadError}
+          />,
+        );
+        await waitFor(() => {
+          expect(container.querySelector(".sift-loading")?.textContent).toContain(
+            'overflow: "truncate"',
+          );
+        });
+        expect(onLoadError).toHaveBeenCalledTimes(1);
+        expect(predicateModule.parquet_open).not.toHaveBeenCalled();
+      } finally {
+        restore();
+      }
+    });
+
+    it("resumes from the engine's near-end scroll callback with trigger: scroll", async () => {
+      vi.useRealTimers();
+      const restore = stubParquetStore({ rowGroups: 3 });
+      const milestones: SiftLoadMilestone[] = [];
+      try {
+        render(
+          <SiftTable
+            source={{
+              kind: "byte-source",
+              source: parquetByteSource(),
+              overflow: "truncate",
+              autoLoad: { rows: 3, trigger: "scroll" },
+            }}
+            onLoadMilestone={(milestone) => milestones.push(milestone)}
+          />,
+        );
+        await waitFor(() => {
+          expect(document.querySelector(".sift-load-more")).not.toBeNull();
+        });
+        const options = vi.mocked(createTable).mock.calls.at(-1)?.[2];
+        expect(options?.onScrollNearEnd).toBeTypeOf("function");
+
+        options!.onScrollNearEnd!();
+        await waitFor(() => {
+          expect(streamingComplete(milestones)).toHaveLength(2);
+        });
+        expect(milestones.some((m) => m.phase === "streaming-resumed")).toBe(true);
+        expect(streamingComplete(milestones)[1]).toMatchObject({ resumable: false });
+        // The button is gone with the preview; nothing to load.
+        await waitFor(() => {
+          expect(document.querySelector(".sift-load-more")).toBeNull();
+        });
+      } finally {
+        restore();
+      }
+    });
+
+    it("applies autoLoad to url Parquet too", async () => {
+      vi.useRealTimers();
+      const restore = stubParquetUrl();
+      const milestones: SiftLoadMilestone[] = [];
+      try {
+        const { container } = render(
+          <SiftTable
+            source={{
+              kind: "url",
+              url: "http://127.0.0.1:9000/big.parquet",
+              autoLoad: { rows: 2 },
+            }}
+            onLoadMilestone={(milestone) => milestones.push(milestone)}
+          />,
+        );
+        await waitFor(() => {
+          expect(container.querySelector(".sift-load-more")).not.toBeNull();
+        });
+        expect(streamingComplete(milestones)[0]).toMatchObject({
+          source: "url",
+          rowCount: 2,
+          totalRowCount: 4,
+          truncated: true,
+          resumable: true,
+        });
+      } finally {
+        restore();
+      }
+    });
   });
 
   it("rejects invalid url limits before mounting", async () => {

@@ -663,6 +663,103 @@ describe("createTable", () => {
     });
   });
 
+  describe("load more on demand", () => {
+    // Fake-timer rAF fires on the frame clock, not at +0 ms.
+    const flushFrame = () => vi.advanceTimersByTimeAsync(20);
+
+    async function castMenuText(root: HTMLElement): Promise<string> {
+      await act(async () => {
+        root
+          .querySelector<HTMLElement>(".sift-th")!
+          .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      });
+      return document.getElementById("column-context-menu-root")?.textContent ?? "";
+    }
+
+    it("resumeStreaming blocks casts again until setStreamingDone", async () => {
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      const local = createTable(root, makeTableData(makeRows(4)));
+      const status = () => root.querySelector(".sift-status-indicator")?.className ?? "";
+      try {
+        await act(async () => {
+          local.setStreamingDone();
+        });
+        expect(status()).toContain("sift-status-ready");
+        expect(await castMenuText(root)).toContain("Treat as…");
+
+        await act(async () => {
+          local.resumeStreaming();
+        });
+        expect(status()).toContain("sift-status-streaming");
+        expect(status()).not.toContain("sift-status-ready");
+        expect(await castMenuText(root)).toContain("Some operations hidden while loading");
+
+        await act(async () => {
+          local.setStreamingDone();
+        });
+        expect(status()).toContain("sift-status-ready");
+        expect(await castMenuText(root)).toContain("Treat as…");
+      } finally {
+        local.destroy();
+        root.remove();
+      }
+    });
+
+    it("fires onScrollNearEnd once per row count, only while at rest", async () => {
+      const onScrollNearEnd = vi.fn();
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      const rows200 = makeRows(200);
+      const data200 = makeTableData(rows200);
+      const local = createTable(root, data200, { onScrollNearEnd });
+      const viewport = root.querySelector<HTMLElement>(".sift-viewport")!;
+      Object.defineProperty(viewport, "clientHeight", { value: 400, configurable: true });
+      try {
+        // Top of a 200-row table: far from the end.
+        viewport.dispatchEvent(new Event("scroll"));
+        await flushFrame();
+        expect(onScrollNearEnd).not.toHaveBeenCalled();
+
+        // Scroll to the end while still streaming: nothing.
+        viewport.scrollTop = 200 * 36;
+        viewport.dispatchEvent(new Event("scroll"));
+        await flushFrame();
+        expect(onScrollNearEnd).not.toHaveBeenCalled();
+
+        // At rest at the end: one call, not one per frame.
+        local.setStreamingDone();
+        await flushFrame();
+        expect(onScrollNearEnd).toHaveBeenCalledTimes(1);
+        viewport.dispatchEvent(new Event("scroll"));
+        await flushFrame();
+        viewport.dispatchEvent(new Event("scroll"));
+        await flushFrame();
+        expect(onScrollNearEnd).toHaveBeenCalledTimes(1);
+
+        // Resuming without new rows does not re-arm it.
+        local.resumeStreaming();
+        local.setStreamingDone();
+        await flushFrame();
+        expect(onScrollNearEnd).toHaveBeenCalledTimes(1);
+
+        // More rows re-arm it; a resumed stream holds it until done.
+        local.resumeStreaming();
+        for (let i = 200; i < 220; i++) rows200.push([i + 1, `Person ${i}`, 1, true]);
+        data200.rowCount = rows200.length;
+        local.onBatchAppended();
+        await flushFrame();
+        expect(onScrollNearEnd).toHaveBeenCalledTimes(1);
+        local.setStreamingDone();
+        await flushFrame();
+        expect(onScrollNearEnd).toHaveBeenCalledTimes(2);
+      } finally {
+        local.destroy();
+        root.remove();
+      }
+    });
+  });
+
   describe("state API", () => {
     it("getSort returns null initially", () => {
       expect(engine.getSort()).toBeNull();

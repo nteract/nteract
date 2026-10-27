@@ -225,6 +225,49 @@ The budget is a loading guardrail, like the other limits, not isolation from
 hostile files. Page decompression and one decoder batch allocate before a
 batch is measured. Load untrusted files in a Worker you can terminate.
 
+### Load more on demand
+
+A truncating load can also stop early on purpose. `autoLoad` sets a soft budget
+below `limits`: Sift loads row groups until the committed rows or decoded bytes
+reach it, then pauses with the rows loaded so far and lets the user ask for
+more.
+
+```tsx
+<SiftTable
+  source={{
+    kind: 'byte-source',
+    source,
+    limits: { maxRows: 5_000_000, maxDecodedBytes: 1024 * 1024 * 1024 },
+    overflow: 'truncate',
+    autoLoad: { rows: 100_000, decodedBytes: 64 * 1024 * 1024, trigger: 'scroll' },
+  }}
+/>
+```
+
+- `autoLoad` needs `overflow: 'truncate'`; with `'error'` the source is
+  rejected before anything is read. It applies to `byte-source` and to Parquet
+  behind a `url` source. `rows` and `decodedBytes` are each optional; the pause
+  comes at whichever is reached first.
+- At a pause the table is at rest: the status indicator settles, casts are
+  allowed again, and the footer reads "Showing first N of M rows" with a
+  `Load more` button (`.sift-load-more`). Each press extends the soft budget by
+  the same `rows` and `decodedBytes` and loads until it is reached again, the
+  hard budget is spent, or the file ends. While a resume is in flight the button
+  reads "Loading…" and is disabled. With `trigger: 'scroll'`, scrolling within
+  the overscan of the last loaded row also resumes; the button stays.
+- Milestones: a pause emits `streaming-complete` with `truncated: true` and
+  `resumable: true`, so hosts that clear their loading state on
+  `streaming-complete` keep doing so. A resume emits `streaming-resumed` with
+  `rowCount`, then the usual `chunk-appended` milestones, then
+  `streaming-complete` again: `resumable: true` for another pause, or
+  `resumable: false` once the file finished or the hard budget cut it, with
+  `truncated` meaning what it means for any truncating load.
+- `TableData.coverage` reports `truncated: true` and `resumable: true` while
+  paused, and `resumable: false` once the load finished. Summaries, sort, and
+  filters cover the loaded rows throughout.
+- Unmounting or changing the source while paused closes the footer and aborts a
+  resume in flight, as for any streaming load.
+
 Only Parquet can be read this way. A `ByteSource` with `format: 'arrow-ipc'` is
 read whole and goes through the bytes path with its `maxBytes` check.
 

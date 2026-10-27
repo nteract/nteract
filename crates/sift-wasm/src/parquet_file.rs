@@ -344,6 +344,30 @@ fn budget_state(file: u32) -> Result<BudgetState, String> {
     with_file(file, |file| Ok(file.budget))
 }
 
+/// Rows and retained Arrow bytes committed to the store so far, as
+/// `{ rows, decoded_bytes }` JS numbers. Lets a host pause a load at a soft
+/// budget below the hard `max_decoded_bytes` without guessing at batch sizes.
+#[wasm_bindgen]
+pub fn parquet_file_usage(file: u32) -> Result<JsValue, JsValue> {
+    let usage = file_usage(file).map_err(js_err)?;
+    serde_wasm_bindgen::to_value(&usage).map_err(js_err)
+}
+
+#[derive(Serialize)]
+struct FileUsageJs {
+    rows: f64,
+    decoded_bytes: f64,
+}
+
+fn file_usage(file: u32) -> Result<FileUsageJs, String> {
+    with_file(file, |file| {
+        Ok(FileUsageJs {
+            rows: file.usage.rows as f64,
+            decoded_bytes: file.usage.memory.bytes as f64,
+        })
+    })
+}
+
 /// Whole-file column statistics merged from the footer, one entry per
 /// top-level column: `{ num_rows, num_row_groups, columns: [{ null_count, min,
 /// max, bounded_row_groups, bounds_exact, has_infinite }] }`. Absent values
@@ -1111,6 +1135,10 @@ mod tests {
         append_row_group(handle, store, 0, &ranges0, &fetch_ranges(&file, &ranges0)).unwrap();
         let ledger = with_file(handle, |f| Ok((f.usage.rows, f.usage.memory.bytes))).unwrap();
         assert_eq!(ledger.0, 200);
+        // The host-facing usage mirrors the ledger exactly.
+        let usage = file_usage(handle).unwrap();
+        assert_eq!(usage.rows, 200.0);
+        assert_eq!(usage.decoded_bytes, ledger.1 as f64);
 
         // The footer sizes alone show the second group cannot fit, so the
         // host is told before it fetches anything.

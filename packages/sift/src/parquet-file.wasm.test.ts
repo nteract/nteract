@@ -265,6 +265,37 @@ describe.skipIf(!existsSync(wasmPath))("byte-range Parquet with real WASM", () =
     }
   });
 
+  it("tracks committed rows and bytes across appends, and pausing marks coverage", async () => {
+    const file = await openParquetFile(recordingSource(parquet), { limits: DEFAULT_LIMITS });
+    try {
+      expect(file.usage).toEqual({ rows: 0, decodedBytes: 0 });
+      await file.appendRowGroup(0);
+      const first = file.usage;
+      expect(first.rows).toBe(ROWS_PER_GROUP);
+      expect(first.decodedBytes).toBeGreaterThan(0);
+
+      file.setPaused(true);
+      expect(file.tableData.coverage).toMatchObject({
+        loadedRows: ROWS_PER_GROUP,
+        truncated: true,
+        resumable: true,
+      });
+      expect(file.truncated).toBe(false);
+      file.setPaused(false);
+      expect(file.tableData.coverage).toMatchObject({ truncated: false, resumable: false });
+
+      await file.appendRowGroup(1);
+      expect(file.usage.rows).toBe(2 * ROWS_PER_GROUP);
+      expect(file.usage.decodedBytes).toBeGreaterThan(first.decodedBytes);
+      await file.appendRowGroup(2);
+      file.finish();
+      expect(file.usage.rows).toBe(GROUPS * ROWS_PER_GROUP);
+      expect(file.tableData.coverage).toMatchObject({ truncated: false, resumable: false });
+    } finally {
+      file.dispose();
+    }
+  });
+
   it("reads footer statistics at open and scopes summaries as row groups land", async () => {
     const totalRows = ROWS_PER_GROUP * GROUPS;
     // Mirrors the `i % 97 === 3` null pattern in the fixture.
