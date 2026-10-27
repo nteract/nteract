@@ -121,6 +121,9 @@ function identitySnapshot(identity) {
       principalNamespace: namespace,
       identityVerifiedAt: proof.identityVerifiedAt,
       verifiedEmailBinding: boundedString(proof.verifiedEmailBinding, 512),
+      ...(typeof proof.verifiedEmailDomainBinding === "string" && {
+        verifiedEmailDomainBinding: boundedString(proof.verifiedEmailDomainBinding, 512),
+      }),
     };
   }
   return snapshot;

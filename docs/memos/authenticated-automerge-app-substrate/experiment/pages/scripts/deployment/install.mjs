@@ -174,6 +174,7 @@ config.vars = {
   ...(profile.asyncPersistence ? { PAGES_ASYNC_PERSISTENCE: "true" } : {}),
   ...(profile.compactRecords ? { PAGES_COMPACT_RECORDS: "true" } : {}),
   ...(profile.editor ? { PAGES_EDITOR: profile.editor } : {}),
+  ...(profile.companyViewDomains ? { PAGES_COMPANY_VIEW_DOMAINS: profile.companyViewDomains } : {}),
   NOTEBOOK_CLOUD_OIDC_FLOW: "server",
   NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://" + expected.hostname,
   NOTEBOOK_CLOUD_OIDC_REDIRECT_URI: "https://" + expected.hostname + "/oidc",

@@ -4,6 +4,7 @@ import {
   codexHeaderHelper,
   keyFile,
   kiloConfig,
+  kiloApiKeyConfig,
   saveKeyCommand,
   setupPrompt,
 } from "./agent-client-setup.mjs";
@@ -65,8 +66,21 @@ export function connectAgentResponse(request, env) {
     <p>Follow the client's sign-in link, check your Pages account and permissions, then approve access. You don't need to create or transfer an API key.</p>
     <p class="setup-note">This deployment supports the ChatGPT OAuth client. Client metadata and permissions are discovered automatically. If your client asks for manual details or reports a different callback, follow the <a href="/llms.txt">agent guide</a>. Other OAuth clients need deployment support.</p>
   </section>
+  <section aria-labelledby="setup-kilo" id="kilo"><h2 id="setup-kilo">Kilo Desktop / CLI</h2>
+    <p>Use browser sign-in. Your agent can prepare this configuration while you authorize the connection.</p>
+    <details class="setup-details"><summary>Set up Kilo with OAuth</summary>
+      <p>Merge into <code>~/.config/kilo/kilo.jsonc</code> (or your customized XDG config directory), preserving other settings.</p>
+      <pre class="setup-value"><code id="kilo-config">${escapeHtml(kiloConfig(setup.origin))}</code></pre>
+      <button type="button" class="setup-copy" data-copy="kilo-config" data-copy-message="Kilo OAuth config copied. Merge it into global config, then run kilo mcp auth pages." hidden>Copy Kilo config</button>
+      <p>For an existing Pages connection, remove its <code>Authorization</code> header and replace <code>oauth: false</code> with the OAuth settings above. Keep <code>X-Pages-Driver</code>. Leave the old key file alone; other clients may use it.</p>
+      <pre class="setup-value"><code id="kilo-login">kilo mcp auth pages</code></pre>
+      <button type="button" class="setup-copy" data-copy="kilo-login" data-copy-message="Login command copied. Run it and follow the browser sign-in link." hidden>Copy login command</button>
+      <p>Complete the browser sign-in and approve access. Reload the Pages server or restart Kilo Desktop, then ask it to list your Pages.</p>
+      <p class="setup-note">Use the configured client ID shown above; no client secret or API key is needed. <a href="/llms.txt">Full recipe and troubleshooting</a></p>
+    </details>
+  </section>
   <h2>Clients using an API key</h2>
-  <p>For the Kilo and Codex recipes below, create and save a key first. Your agent can prepare a config draft while you do this; tell it when the key is ready. Keep the key out of chat.</p>
+  <p>For Codex’s local recipe, Kilo’s API-key fallback, or another client using bearer headers, create and save a key first. Your agent can prepare a config draft while you do this; tell it when the key is ready. Keep the key out of chat.</p>
   <section aria-labelledby="setup-key"><h2 id="setup-key"><span>1</span> Create an API key</h2>${keyInstructions}</section>
   <section aria-labelledby="setup-save"><h2 id="setup-save"><span>2</span> Save it privately</h2>
     <p>Kilo and Codex can use the same local key file: <code>${keyFile}</code>. Your agent configures the connection; you enter the key.</p>
@@ -80,10 +94,10 @@ export function connectAgentResponse(request, env) {
   </section>
   <section aria-labelledby="setup-client"><h2 id="setup-client"><span>3</span> Connect your client</h2>
     <p>Your agent can apply the matching recipe below after the key is saved. It should preserve your other settings.</p>
-    <details class="setup-details" id="kilo"><summary>Kilo Desktop / CLI</summary>
+    <details class="setup-details" id="kilo-api-key"><summary>Kilo API-key fallback</summary>
       <p>Merge into <code>~/.config/kilo/kilo.jsonc</code>, the global config (or your customized XDG config directory). Use this after the key file exists and is nonempty.</p>
-      <pre class="setup-value"><code id="kilo-config">${escapeHtml(kiloConfig(setup.origin))}</code></pre>
-      <button type="button" class="setup-copy" data-copy="kilo-config" data-copy-message="Kilo config copied. Merge it into global config after saving your key." hidden>Copy Kilo config</button>
+      <pre class="setup-value"><code id="kilo-api-key-config">${escapeHtml(kiloApiKeyConfig(setup.origin))}</code></pre>
+      <button type="button" class="setup-copy" data-copy="kilo-api-key-config" data-copy-message="Kilo config copied. Merge it into global config after saving your key." hidden>Copy API-key config</button>
       <p><code>oauth: false</code> keeps this recipe on API-key authentication. Don't use <code>kilo mcp auth</code> with this recipe. Reload the server or restart Kilo, then ask it to list your Pages.</p>
       <p class="setup-note">This is the Desktop/CLI format. Project configs and the older VS Code extension use different rules. <a href="https://kilo.ai/docs/automate/mcp/using-in-cli">Kilo configuration reference</a></p>
     </details>
@@ -108,7 +122,7 @@ export function connectAgentResponse(request, env) {
   </section>
   <section aria-labelledby="setup-try"><h2 id="setup-try"><span>4</span> Check the connection</h2>
     <p>Ask your agent: <q>List my Pages.</q> A successful response, even an empty list, means you're connected. A config file or a client status label alone doesn't verify access.</p>
-    <p class="setup-note">If authentication fails, check that the key is saved, unexpired, and belongs to this deployment's Anaconda environment. Missing access to one Page can also mean it hasn't been shared with that account.</p>
+    <p class="setup-note">If OAuth needs authorization, repeat the client’s browser sign-in. For an API-key connection, check that the key is saved, unexpired, and belongs to this deployment's Anaconda environment. Missing access to one Page can also mean it hasn't been shared with that account.</p>
     <p class="setup-note">For CLI setup, tool details, and troubleshooting, read the <a href="/llms.txt">agent guide</a>.</p>
   </section>
   <p class="setup-copy-status" role="status" aria-live="polite"></p>

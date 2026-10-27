@@ -48,6 +48,13 @@ export class DocumentPolicy {
     return access;
   }
 
+  leaseExpiresAt(identity) {
+    const access = this.account(identity);
+    return access.source === "domain"
+      ? Math.min(identity.expiresAt, identity.domainAccess.expiresAt)
+      : identity.expiresAt;
+  }
+
   bindingGeneration(binding) {
     // Pre-ACL deployments admitted only the immutable owner.
     return binding.generation ?? (binding.principal === this.metadata()?.owner ? 0 : -1);
@@ -234,7 +241,7 @@ export class DocumentPolicy {
           }
           if (previous.credentialKind === "api-key") {
             session.identity = renewed;
-            session.onRenewal(renewed.expiresAt);
+            session.onRenewal(this.leaseExpiresAt(renewed));
           }
           // OIDC retains the original absolute session deadline.
           session.checkedAt = checkedAt;

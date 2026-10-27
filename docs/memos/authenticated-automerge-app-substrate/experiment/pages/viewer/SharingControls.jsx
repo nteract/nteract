@@ -1,8 +1,9 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import { Share2 } from "lucide-react";
 import { SharingPanel } from "../../../../../../src/components/sharing/SharingPanel.tsx";
 import "../../../../../../src/components/sharing/sharing-panel.css";
 import { request } from "./session.mjs";
+import { domainSharingProjection } from "./sharing-projection.mjs";
 
 function projection(value) {
   const rows = [];
@@ -65,6 +66,7 @@ export function SharingControls({ session }) {
     [busy, setBusy] = useState(null),
     [error, setError] = useState(""),
     [message, setMessage] = useState("");
+  const domainId = useId();
   const root = useRef(null),
     button = useRef(null),
     epoch = useRef(0);
@@ -138,6 +140,7 @@ export function SharingControls({ session }) {
     }
   }
   const manage = !loading && !!session.canManageAccess && !!value?.access.canManageAccess;
+  const domainSharing = manage ? domainSharingProjection(value) : null;
   return (
     <div className="page-sharing" ref={root}>
       <button
@@ -147,6 +150,10 @@ export function SharingControls({ session }) {
         aria-haspopup="dialog"
         onClick={() => {
           setBusy(null);
+          if (!open) {
+            setValue(null);
+            setLoading(true);
+          }
           setOpen(!open);
         }}
       >
@@ -210,6 +217,40 @@ export function SharingControls({ session }) {
             publicEnabled={false}
             showInitialAccessLoading={loading}
           />
+          {domainSharing && (
+            <section className="page-domain-sharing" aria-labelledby={domainId}>
+              <label id={domainId} htmlFor={`${domainId}-select`}>
+                Link access
+              </label>
+              <select
+                id={`${domainId}-select`}
+                value={domainSharing.selected}
+                disabled={!!busy}
+                onChange={(event) =>
+                  void mutate(
+                    { action: "set_domain_view", domain: event.target.value || null },
+                    "domain-view",
+                  )
+                }
+              >
+                {domainSharing.options.map(({ value, label }) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+              <p>
+                {domainSharing.selected ? (
+                  <>
+                    <strong>Can view.</strong> Sign in with a verified {domainSharing.selected}{" "}
+                    email.
+                  </>
+                ) : (
+                  "Only you and invited people can open this Page."
+                )}
+              </p>
+            </section>
+          )}
         </div>
       )}
     </div>

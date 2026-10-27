@@ -323,6 +323,12 @@ resource, and scopes are validated before the existing Anaconda browser sign-in
 and a separate consent screen. Public client authentication is `none`; dynamic
 registration and arbitrary client-metadata fetching are not enabled. Authorization
 responses include the issuer (`iss`) so ChatGPT can use its stable callback.
+Kilo uses the predefined public client `pages-kilo` and exact loopback callback
+`http://127.0.0.1:19876/mcp/oauth/callback`, with the same PKCE and resource checks.
+Its configuration requests `pages:read pages:write offline_access`. The initial
+401 challenge deliberately omits a scope hint: Kilo otherwise replaces its
+configured scopes with that hint, dropping write access. Supported scopes remain
+in discovery; insufficient-scope errors still request the required scope.
 
 The SQL database holds session-bound consent requests and hashes of single-use
 codes and opaque Pages access/refresh tokens. Access tokens last ten minutes; optional
@@ -335,8 +341,10 @@ authorize `/mcp` only: they do not authorize the HTTP sharing API or native sync
 and deletion where the account's Page role permits it. `offline_access` requests
 a refresh token. Token refresh does not renew verified-email invitation proof.
 
-`/connect` and `/llms.txt` describe OAuth for ChatGPT and API-key recipes for
-Kilo, Codex, and other bearer-header clients. The generic setup prompt points to
+`/connect` and `/llms.txt` describe OAuth for ChatGPT and Kilo, plus API-key recipes
+for Codex, Kilo fallback, and other bearer-header clients. Migrating Kilo removes
+the Pages Authorization header and replaces `oauth: false`; it does not delete
+the key file. The generic setup prompt points to
 the agent guide. Agents can prepare non-secret settings while the human completes
 authorization; a successful `list_pages` call is the connection check.
 
@@ -396,6 +404,24 @@ trust contract: the authenticated Anaconda whoami endpoint supplies server-verif
 account email. Client headers cannot supply this proof. The service does not send email. A pending invite never
 authorizes a socket, and an older invite cannot override a newer explicit role
 change. There is no anonymous/public sharing or separate commenter role in this pass.
+
+An owner can optionally enable company-domain viewing by link, independently of
+their own email address. The deployment must enable `PAGES_COMPANY_VIEW_DOMAINS`;
+this experiment only recognizes `anaconda.com`. The UI offers Restricted or the
+approved company audience, never a free-form domain or a consumer email provider.
+Page7 exposes the option but existing Pages remain Restricted. This grants read
+access only, never editing, sharing management, or implicit company membership.
+Individual editor invitations continue to work; an explicit revoked member stays
+denied even when their domain is allowed.
+
+Domain admission requires provider-bound, verified email evidence. Browser sessions
+and OAuth grants retain a domain-separated HMAC proof with the original verification
+time; refreshing an OAuth token does not refresh that proof. Domain-only access
+expires after six hours without fresh identity verification, including active
+native sockets. API-key identities use the provider's verified email contract.
+Removing the audience or disabling it in deployment configuration revokes fallback
+access without turning domain viewers into permanent members. Ownership transfer
+is unnecessary and remains unsupported.
 
 `GET /api/access?page=UUID` returns effective access and, for owners, the member and
 invite ledger. Owner writes POST `action`, `expected_revision`, and `idempotency_key`.

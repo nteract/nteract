@@ -47,6 +47,7 @@ class SqliteD1 {
 }
 const origin = "https://page7.example";
 const callback = "https://chatgpt.com/connector_platform_oauth_redirect";
+const kiloCallback = "http://127.0.0.1:19876/mcp/oauth/callback";
 const metadataUrl = "https://chatgpt.com/oauth/client.json";
 const verifier = "v".repeat(43);
 function fixture(t, extra = {}) {
@@ -209,6 +210,7 @@ test("metadata and challenge use configured public origin; unknown OAuth routes 
     challenged.headers.get("www-authenticate"),
     /^Bearer resource_metadata="https:\/\/page7.example\//,
   );
+  assert.doesNotMatch(challenged.headers.get("www-authenticate"), /scope=/);
   const forbidden = new Response(null, { status: 403 });
   assert.equal(mcpAuthChallenge(env, forbidden), forbidden);
   assert.equal((await handleOAuth(get("/oauth/register"), env)).status, 404);
@@ -664,4 +666,94 @@ test("successful CIMD validation is cached briefly, honors cache directives, coa
   now += 1_000_000;
   status = 503;
   assert.equal((await perform()).status, 503);
+});
+
+test("preconfigured Kilo grants requested read/write/offline scopes only to its exact loopback callback", async (t) => {
+  const env = fixture(t),
+    login = await session(env);
+  t.mock.method(globalThis, "fetch", () => {
+    throw new Error("Preconfigured Kilo must not fetch metadata or register a client");
+  });
+  const options = {
+    client_id: "pages-kilo",
+    redirect_uri: kiloCallback,
+    scope: "pages:read pages:write offline_access",
+  };
+  const screen = await consent(env, login, options);
+  assert.match(screen.text, /Connect Kilo to Pages/);
+  assert.match(screen.text, /kilo.ai/);
+  assert.match(screen.text, /delete Pages you own/);
+  assert.equal(
+    screen.result.headers.get("content-security-policy").match(/form-action ([^;]+)/)[1],
+    "'self' " + kiloCallback,
+  );
+  assert.doesNotMatch(screen.result.headers.get("content-security-policy"), /chatgpt.com/);
+  const approved = await approve(env, login, screen.fields);
+  const target = new URL(approved.headers.get("location"));
+  assert.equal(target.origin + target.pathname, kiloCallback);
+  assert.equal(target.searchParams.get("iss"), origin);
+  assert.equal(target.searchParams.get("state"), "client-state");
+  const grant = target.searchParams.get("code");
+  // A code issued to this public client cannot be redeemed through another
+  // allowed client, or redirected to another loopback service.
+  assert.equal((await exchange(env, grant)).status, 400);
+  assert.equal(
+    (
+      await exchange(env, grant, {
+        ...options,
+        redirect_uri: "http://127.0.0.1:19877/mcp/oauth/callback",
+      })
+    ).status,
+    400,
+  );
+  const exchanged = await exchange(env, grant, options);
+  assert.equal(exchanged.status, 200);
+  const tokens = await exchanged.json();
+  assert.equal(tokens.scope, "offline_access pages:read pages:write");
+  assert.match(tokens.refresh_token, /^pages_rt_/);
+  const access = await readAccessToken(env, tokens.access_token, { resource: origin + "/mcp" });
+  assert.equal(access.clientId, "pages-kilo");
+  assert.equal(access.identity.principal, "user:anaconda:person");
+  const cancel = await consent(env, login, options);
+  const denied = new URL(
+    (await approve(env, login, { ...cancel.fields, decision: "cancel" })).headers.get("location"),
+  );
+  assert.equal(denied.origin + denied.pathname, kiloCallback);
+  assert.equal(denied.searchParams.get("error"), "access_denied");
+  assert.equal(denied.searchParams.get("iss"), origin);
+});
+
+test("Kilo never accepts alternate loopback hosts, ports, paths or private-network callbacks", async (t) => {
+  const env = fixture(t);
+  t.mock.method(globalThis, "fetch", () => {
+    throw new Error("Invalid callback must not trigger network activity");
+  });
+  for (const redirect_uri of [
+    "http://localhost:19876/mcp/oauth/callback",
+    "http://[::1]:19876/mcp/oauth/callback",
+    "https://127.0.0.1:19876/mcp/oauth/callback",
+    "http://127.0.0.1:19877/mcp/oauth/callback",
+    "http://127.0.0.2:19876/mcp/oauth/callback",
+    "http://127.0.0.1:19876/other",
+    "http://127.0.0.1:19876/mcp/oauth/callback/",
+    "http://127.0.0.1:19876/mcp/oauth/callback?next=evil",
+    "http://127.0.0.1:19876/mcp/oauth/callback#fragment",
+    "http://127.0.0.1:19876@evil.example/mcp/oauth/callback",
+    "http://192.168.1.1:19876/mcp/oauth/callback",
+    "http://169.254.169.254/latest/meta-data",
+    callback,
+  ]) {
+    const result = await handleOAuth(
+      get(
+        "/oauth/authorize?" + (await authorization(env, { client_id: "pages-kilo", redirect_uri })),
+      ),
+      env,
+    );
+    assert.equal(result.status, 400, redirect_uri);
+    assert.equal(result.headers.get("location"), null);
+    assert.equal(
+      result.headers.get("content-security-policy").match(/form-action ([^;]+)/)[1],
+      "'self'",
+    );
+  }
 });

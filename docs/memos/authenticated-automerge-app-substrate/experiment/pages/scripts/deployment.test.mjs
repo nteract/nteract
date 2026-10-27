@@ -1192,5 +1192,9 @@ test("compaction maintenance is enabled only for the new page7 deployment", (t) 
     const config = JSON.parse(f.read(f.release + "/wrangler.json"));
     assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, "true");
     assert.equal(config.vars.PAGES_COMPACT_RECORDS, target === "page7" ? "true" : undefined);
+    assert.equal(
+      config.vars.PAGES_COMPANY_VIEW_DOMAINS,
+      target === "page7" ? "anaconda.com" : undefined,
+    );
   }
 });

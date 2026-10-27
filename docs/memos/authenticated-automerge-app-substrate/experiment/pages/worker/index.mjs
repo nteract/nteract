@@ -583,16 +583,24 @@ export class Page {
     }
   }
 
-  cacheTitle() {
+  cacheTitle(identity) {
     const title = catalogTitle(this.handle.doc().title);
-    if (this.cachedTitle === title) return;
+    const observedReader =
+      identity && pageAccess(this.metadata, identity).source === "domain"
+        ? identity.principal
+        : null;
+    if (this.cachedTitle === title && !observedReader) return;
+    const recipients =
+      this.cachedTitle === title
+        ? [observedReader]
+        : [
+            this.metadata.owner,
+            ...Object.entries(this.metadata.acl?.members ?? {})
+              .filter(([, value]) => ["viewer", "editor"].includes(value.role))
+              .map(([principal]) => principal),
+            ...(observedReader ? [observedReader] : []),
+          ];
     this.cachedTitle = title;
-    const recipients = [
-      this.metadata.owner,
-      ...Object.entries(this.metadata.acl?.members ?? {})
-        .filter(([, value]) => ["viewer", "editor"].includes(value.role))
-        .map(([principal]) => principal),
-    ];
     const tasks = recipients.map((principal) =>
       this.env.CATALOGS.getByName(principal).fetch(
         new Request("https://pages.internal/internal/projection", {
@@ -798,15 +806,24 @@ export class Page {
         });
       if (url.pathname === "/internal/access") {
         const args = await readJson(request);
-        if (args.read) return json(sharingProjection(this.metadata, identity));
-        const result = await proposeSharingMutation(this.metadata, identity, args);
+        if (args.read) return json(sharingProjection(this.metadata, identity, this.env));
+        const result = await proposeSharingMutation(
+          this.metadata,
+          identity,
+          args,
+          Date.now(),
+          this.env,
+        );
         // Replays repeat persistence: an earlier barrier may have failed after
         // installing the in-memory ACL and receipt.
         await this.installAccess(result.metadata);
-        return json({ ...sharingProjection(this.metadata, identity), receipt: result.receipt });
+        return json({
+          ...sharingProjection(this.metadata, identity, this.env),
+          receipt: result.receipt,
+        });
       }
       if (url.pathname === "/api/connect" && request.method === "GET") {
-        this.cacheTitle(request);
+        this.cacheTitle(identity);
         return json({
           page_id: this.metadata.pageId,
           documentId: this.metadata.documentId,
@@ -830,13 +847,13 @@ export class Page {
         this.policy.account(await authenticate(request, this.env));
         const durableHeads = A.getHeads(this.handle.doc());
         await this.flush();
-        this.cacheTitle(request);
+        this.cacheTitle();
         return json({ durableHeads });
       }
       if (url.pathname === "/internal/tool") {
         const body = await readJson(request);
         if (body.operation === "read_page") {
-          this.cacheTitle(request);
+          this.cacheTitle(identity);
           return json({
             ...projectPage(this.handle.doc()),
             heads: A.getHeads(this.handle.doc()),
@@ -874,7 +891,7 @@ export class Page {
           },
           flush: () => this.flush(),
         });
-        this.cacheTitle(request);
+        this.cacheTitle();
         this.handle.broadcast({
           kind: "tool-edit",
           identity: publicIdentity(identity),
@@ -1039,12 +1056,13 @@ export class Page {
           });
           wire.onDisconnect(release);
           clearTimeout(handshakeTimer);
-          armExpiry(identity.expiresAt);
+          const leaseExpiresAt = this.policy.leaseExpiresAt(identity);
+          armExpiry(leaseExpiresAt);
           leaseTimer = setInterval(
             () => {
               void this.policy.active(key).catch(() => wire.disconnect());
             },
-            Math.min(15_000, Math.max(1, identity.expiresAt - Date.now())),
+            Math.min(15_000, Math.max(1, leaseExpiresAt - Date.now())),
           );
           wire.onDisconnect(() => {
             clearInterval(leaseTimer);

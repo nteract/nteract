@@ -3,10 +3,11 @@ import { appSessionHasFreshVerifiedEmail } from "@cloud/app-session.ts";
 import { pageAccess, proposeAccessUpdate } from "./access.mjs";
 import { HttpError } from "./auth.mjs";
 import { fingerprint, mutationKey } from "./mutations.mjs";
+import { companyViewDomains, configuredDomainView } from "./domain-access.mjs";
 
 const lifetime = 7 * 24 * 60 * 60 * 1000;
 const roleValid = (role) => ["viewer", "editor"].includes(role);
-export function sharingProjection(metadata, identity) {
+export function sharingProjection(metadata, identity, env = {}) {
   const access = pageAccess(metadata, identity);
   if (!access.canRead) throw new HttpError(403, "You no longer have access to this Page");
   if (!access.canManageAccess) return { access };
@@ -14,6 +15,8 @@ export function sharingProjection(metadata, identity) {
   return {
     access,
     owner: { principal: metadata.owner, displayName: metadata.ownerName },
+    domainOptions: companyViewDomains(env),
+    domainView: configuredDomainView(metadata, env),
     members: Object.entries(acl.members ?? {})
       .filter(([, member]) => roleValid(member.role))
       .map(([principal, member]) => ({ principal, ...member })),
@@ -72,7 +75,7 @@ export async function claimInvitation(metadata, identity, env, now = Date.now())
   }
   return null;
 }
-export async function proposeSharingMutation(metadata, identity, args, now = Date.now()) {
+export async function proposeSharingMutation(metadata, identity, args, now = Date.now(), env = {}) {
   if (!pageAccess(metadata, identity, { now }).canManageAccess)
     throw new HttpError(403, "Only the owner can manage sharing");
   const key = mutationKey(args).replace("host/operation/", "");
@@ -92,7 +95,20 @@ export async function proposeSharingMutation(metadata, identity, args, now = Dat
   acl.invites = Object.fromEntries(
     Object.entries(acl.invites ?? {}).filter(([, invite]) => invite.expiresAt > now),
   );
-  if (args.action === "set_role") {
+  if (args.action === "set_domain_view") {
+    if (args.domain !== null && !companyViewDomains(env).includes(args.domain))
+      throw new HttpError(400, "Choose a supported company domain");
+    if (args.role !== undefined && args.role !== "viewer")
+      throw new HttpError(400, "Company domain access is view-only");
+    acl.domainView =
+      args.domain === null
+        ? null
+        : {
+            domain: args.domain,
+            namespace: env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE.trim(),
+          };
+    acl.revision++;
+  } else if (args.action === "set_role") {
     const update = proposeAccessUpdate(metadata, identity, args, { now });
     acl = structuredClone(update.acl);
     if (!update.changed) {

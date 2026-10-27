@@ -44,13 +44,30 @@ export function pageGrant(metadata, principal) {
 export function pageAccess(metadata, identity, { now = Date.now() } = {}) {
   const grant = pageGrant(metadata, identity?.principal);
   const authenticated = Number.isFinite(identity?.expiresAt) && identity.expiresAt > now;
-  const role = authenticated ? grant.role : "none";
+  const domain = metadata?.acl?.domainView;
+  const evidence = identity?.domainAccess;
+  // Explicit grants, invalid member rows and removal tombstones all take
+  // precedence. Domain viewing never creates a durable principal membership.
+  const domainViewer =
+    authenticated &&
+    !metadata?.deleted &&
+    grant.role === "none" &&
+    !own(metadata?.acl?.members, identity.principal) &&
+    domain &&
+    evidence &&
+    domain.domain === evidence.domain &&
+    domain.namespace === evidence.namespace &&
+    identity.namespace === evidence.namespace &&
+    Number.isFinite(evidence.expiresAt) &&
+    evidence.expiresAt > now;
+  const role = authenticated ? (domainViewer ? "viewer" : grant.role) : "none";
   const canRead = role !== "none";
   const canWrite = !!identity?.canWrite && (role === "owner" || role === "editor");
   const canManageAccess = canWrite && role === "owner";
   return {
     ...grant,
     role,
+    ...(domainViewer && { source: "domain" }),
     canRead,
     canWrite,
     canComment: canWrite,
@@ -125,8 +142,21 @@ export function restrictAccessDuringCommit(previous, proposed) {
   ])) {
     const before = pageGrant(previous, principal),
       after = pageGrant(proposed, principal);
-    if (ranks[after.role] < ranks[before.role])
+    if (
+      ranks[after.role] < ranks[before.role] ||
+      (after.role === "none" && own(proposed.acl?.members, principal))
+    )
       members[principal] = proposed.acl.members[principal];
   }
-  return { ...previous, acl: { ...previous.acl, members } };
+  const beforeDomain = previous.acl?.domainView,
+    afterDomain = proposed.acl?.domainView;
+  const lostDomain =
+    beforeDomain &&
+    (!afterDomain ||
+      beforeDomain.domain !== afterDomain.domain ||
+      beforeDomain.namespace !== afterDomain.namespace);
+  return {
+    ...previous,
+    acl: { ...previous.acl, members, ...(lostDomain && { domainView: null }) },
+  };
 }

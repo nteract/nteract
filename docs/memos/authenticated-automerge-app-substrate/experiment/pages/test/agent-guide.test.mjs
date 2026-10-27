@@ -29,7 +29,9 @@ test("GET llms.txt is readable without authentication and explains the supported
   const guide = await response.text();
   assert.ok(guide.startsWith("# Pages\n"));
   for (const { name } of tools) assert.ok(guide.includes(name), name);
-  assert.ok(guide.indexOf("ask the human immediately") < guide.indexOf("### Kilo Desktop"));
+  assert.ok(
+    guide.indexOf("Ask the human for their step early") < guide.indexOf("### Kilo Desktop"),
+  );
   assert.ok(guide.includes(kiloConfig(origin)));
   assert.ok(guide.includes(codexConfig(origin)));
   assert.ok(guide.includes(saveKeyCommand));

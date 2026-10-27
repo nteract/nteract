@@ -2,6 +2,7 @@ import { authenticateAnacondaApiKeyRequest } from "@cloud/identity.ts";
 import { readServerAppSession } from "@cloud/oidc-session-store.ts";
 import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { readAccessToken } from "./oauth-store.mjs";
+import { domainAccessForIdentity } from "./domain-access.mjs";
 
 export class HttpError extends Error {
   constructor(status, message, code) {
@@ -46,6 +47,11 @@ export function requireSameOrigin(request, env) {
     throw new HttpError(403, "Origin is required");
 }
 
+async function withDomainAccess(identity, env) {
+  const domainAccess = await domainAccessForIdentity(env, identity);
+  return Object.freeze({ ...identity, ...(domainAccess && { domainAccess }) });
+}
+
 export async function authenticate(request, env) {
   requireSameOrigin(request, env);
   const driver = driverLabel(request);
@@ -73,21 +79,26 @@ export async function authenticate(request, env) {
       const scopes = new Set(grant.scope.split(" "));
       if (!scopes.has("pages:read"))
         throw new HttpError(403, "Pages read permission is required", "oauth_insufficient_scope");
-      return Object.freeze({
-        principal: grant.identity.principal,
-        displayName: grant.identity.displayName || grant.identity.principal,
-        driver:
-          request.headers.has("x-pages-driver") || new URL(request.url).searchParams.has("driver")
-            ? driver
-            : ["pages-chatgpt", "https://chatgpt.com/oauth/client.json"].includes(grant.clientId)
-              ? "ChatGPT"
-              : "MCP",
-        canWrite: scopes.has("pages:write"),
-        credentialKind: "oauth",
-        namespace: grant.identity.namespace,
-        emailProof: grant.identity.emailProof,
-        expiresAt: grant.expiresAt * 1000,
-      });
+      return withDomainAccess(
+        {
+          principal: grant.identity.principal,
+          displayName: grant.identity.displayName || grant.identity.principal,
+          driver:
+            request.headers.has("x-pages-driver") || new URL(request.url).searchParams.has("driver")
+              ? driver
+              : ["pages-chatgpt", "https://chatgpt.com/oauth/client.json"].includes(grant.clientId)
+                ? "ChatGPT"
+                : grant.clientId === "pages-kilo"
+                  ? "Kilo"
+                  : "MCP",
+          canWrite: scopes.has("pages:write"),
+          credentialKind: "oauth",
+          namespace: grant.identity.namespace,
+          emailProof: grant.identity.emailProof,
+          expiresAt: grant.expiresAt * 1000,
+        },
+        env,
+      );
     }
     // Caller identity/scope/operator headers are never forwarded to the verifier.
     const verify = (scope) =>
@@ -109,38 +120,46 @@ export async function authenticate(request, env) {
       if (error.message !== "Anaconda API key scopes do not allow requested scope") throw error;
       identity = await verify("viewer");
     }
-    return Object.freeze({
-      principal: identity.principal,
-      displayName: identity.metadata.displayName || identity.principal,
-      driver,
-      canWrite: identity.scope === "editor",
-      credentialKind: "api-key",
-      namespace: identity.metadata.principalNamespace,
-      // Same trust contract as notebook invite resolution: the authenticated
-      // Anaconda whoami endpoint returns server-verified account email.
-      verifiedEmail: identity.metadata.emailVerified === true ? identity.metadata.email : undefined,
-      expiresAt: Date.now() + 60_000,
-    });
+    return withDomainAccess(
+      {
+        principal: identity.principal,
+        displayName: identity.metadata.displayName || identity.principal,
+        driver,
+        canWrite: identity.scope === "editor",
+        credentialKind: "api-key",
+        namespace: identity.metadata.principalNamespace,
+        // Same trust contract as notebook invite resolution: the authenticated
+        // Anaconda whoami endpoint returns server-verified account email.
+        verifiedEmail:
+          identity.metadata.emailVerified === true ? identity.metadata.email : undefined,
+        expiresAt: Date.now() + 60_000,
+      },
+      env,
+    );
   }
   if (!request.headers.has("cookie")) throw new HttpError(401, "Sign in to Pages");
   const session = await readServerAppSession(env, request, Math.floor(Date.now() / 1000));
   if (!session) throw new HttpError(401, "Sign in to Pages");
-  return Object.freeze({
-    principal: session.principal,
-    displayName: session.displayName || session.principal,
-    driver,
-    canWrite: true,
-    credentialKind: "oidc",
-    namespace: session.principalNamespace,
-    // Kept inside the host; publicIdentity never forwards this proof.
-    emailProof: {
-      provider: "app-session",
-      principalNamespace: session.principalNamespace,
-      identityVerifiedAt: session.identityVerifiedAt,
-      verifiedEmailBinding: session.verifiedEmailBinding,
+  return withDomainAccess(
+    {
+      principal: session.principal,
+      displayName: session.displayName || session.principal,
+      driver,
+      canWrite: true,
+      credentialKind: "oidc",
+      namespace: session.principalNamespace,
+      // Kept inside the host; publicIdentity never forwards this proof.
+      emailProof: {
+        provider: "app-session",
+        principalNamespace: session.principalNamespace,
+        identityVerifiedAt: session.identityVerifiedAt,
+        verifiedEmailBinding: session.verifiedEmailBinding,
+        verifiedEmailDomainBinding: session.verifiedEmailDomainBinding,
+      },
+      expiresAt: session.expiresAt * 1000,
     },
-    expiresAt: session.expiresAt * 1000,
-  });
+    env,
+  );
 }
 
 export function requireWrite(identity) {

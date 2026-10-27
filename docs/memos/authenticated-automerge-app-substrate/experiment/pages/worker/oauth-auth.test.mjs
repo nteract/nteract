@@ -3,7 +3,8 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { secretHash } from "@cloud/oidc-session-store.ts";
-import worker, { Page } from "./index.mjs";
+import worker, { Page, Catalog } from "./index.mjs";
+import { createServerAppSession } from "@cloud/app-session.ts";
 import { authenticate } from "./auth.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { createPageData } from "../model/page.mjs";
@@ -61,11 +62,15 @@ function database(t) {
     },
   };
 }
-async function fixture(t, scope = "pages:read pages:write offline_access") {
+async function fixture(
+  t,
+  scope = "pages:read pages:write offline_access",
+  { identity = person, env: extraEnv = {} } = {},
+) {
   t.mock.method(globalThis, "fetch", () =>
     assert.fail("Pages OAuth must not send tokens to an external provider"),
   );
-  const env = { ...environment(), DB: database(t) };
+  const env = { ...environment(), DB: database(t), ...extraEnv };
   const verifier = "v".repeat(43);
   const { code } = await issueAuthorizationCode(env, {
     clientId,
@@ -73,7 +78,7 @@ async function fixture(t, scope = "pages:read pages:write offline_access") {
     resource,
     scope,
     codeChallenge: await secretHash(verifier),
-    identity: person,
+    identity,
   });
   const tokens = await exchangeAuthorizationCode(env, {
     code,
@@ -123,7 +128,7 @@ test("unauthenticated MCP discovers OAuth without Origin, DB, or provider traffi
   assert.equal(response.status, 401);
   assert.equal(
     response.headers.get("www-authenticate"),
-    `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp", scope="pages:read"`,
+    `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`,
   );
   assert.equal(response.headers.get("cache-control"), "no-store");
   for (const headers of [
@@ -366,4 +371,116 @@ test("a live Page ACL downgrade and revocation override an existing OAuth write 
   assert.equal(deniedRead.isError, true);
   assert.match(deniedRead.content[0].text, /Document access denied/);
   assert.equal(deniedRead._meta, undefined, "revoked sharing must not prompt scope escalation");
+});
+
+test("OAuth domain viewing rechecks company policy, explicit denial, and proof expiry across Page and catalog reads", async (t) => {
+  let clock = Math.floor(Date.now() / 1000) * 1000;
+  t.mock.method(Date, "now", () => clock);
+  const companyEnv = {
+    ...environment(),
+    PAGES_COMPANY_VIEW_DOMAINS: "anaconda.com",
+    NOTEBOOK_CLOUD_APP_SESSION_SECRET: "domain-oauth-test-secret-".repeat(2),
+  };
+  const verifiedAt = clock / 1000 - 6 * 3600 + 5;
+  const session = await createServerAppSession(
+    companyEnv,
+    {
+      principal: person.principal,
+      metadata: {
+        provider: "oidc",
+        principalNamespace: person.namespace,
+        email: "employee@anaconda.com",
+        emailVerified: true,
+      },
+    },
+    "domain-session",
+    clock / 1000 + 600,
+    verifiedAt,
+  );
+  const f = await fixture(t, undefined, {
+    env: companyEnv,
+    identity: { ...person, emailProof: { ...session, provider: "app-session" } },
+  });
+  const document = A.from(createPageData({ pageId, title: "Company-only Page" }));
+  t.after(() => A.free(document));
+  const jobs = [],
+    catalogues = new Map(),
+    storage = new Storage();
+  f.env.CATALOGS = {
+    getByName(principal) {
+      if (!catalogues.has(principal))
+        catalogues.set(
+          principal,
+          new Catalog({ id: { name: principal }, storage: new Storage() }, f.env),
+        );
+      return catalogues.get(principal);
+    },
+  };
+  const page = Object.assign(Object.create(Page.prototype), {
+    env: f.env,
+    ready: Promise.resolve(),
+    tail: Promise.resolve(),
+    ctx: { storage, waitUntil: (promise) => jobs.push(promise) },
+    metadata: {
+      pageId,
+      owner: "user:anaconda:other",
+      deleted: false,
+      acl: {
+        revision: 1,
+        members: {},
+        invites: {},
+        domainView: { domain: "anaconda.com", namespace: person.namespace },
+      },
+    },
+    handle: { doc: () => document },
+  });
+  page.policy = new DocumentPolicy({ storage, metadata: () => page.metadata });
+  f.env.PAGES = {
+    getByName() {
+      return page;
+    },
+  };
+  const reader = await authenticate(request("/mcp", f.tokens.access_token), f.env);
+  assert.equal(reader.domainAccess.expiresAt, clock + 5000);
+  const read = await call(f, "read_page", { page_id: pageId });
+  assert.equal(read.isError, undefined);
+  await Promise.all(jobs);
+  assert.deepEqual(
+    page.metadata.acl.members,
+    {},
+    "domain access never becomes permanent membership",
+  );
+  const listed = await call(f, "list_pages");
+  assert.equal(JSON.parse(listed.content[0].text).pages[0].page_id, pageId);
+  const write = await call(f, "edit_page", {
+    page_id: pageId,
+    operations: [{ op: "set_title", title: "Denied" }],
+  });
+  assert.equal(write.isError, true);
+  assert.match(write.content[0].text, /Page is read-only/);
+  assert.equal(write._meta, undefined);
+  f.env.PAGES_COMPANY_VIEW_DOMAINS = "";
+  assert.equal((await call(f, "read_page", { page_id: pageId })).isError, true);
+  assert.deepEqual(JSON.parse((await call(f, "list_pages")).content[0].text).pages, []);
+  f.env.PAGES_COMPANY_VIEW_DOMAINS = "anaconda.com";
+  assert.equal((await call(f, "read_page", { page_id: pageId })).isError, undefined);
+  await Promise.all(jobs);
+  page.metadata.acl.members[person.principal] = { role: "none", generation: 1 };
+  assert.equal((await call(f, "read_page", { page_id: pageId })).isError, true);
+  assert.deepEqual(JSON.parse((await call(f, "list_pages")).content[0].text).pages, []);
+  page.metadata.acl.members = {};
+  clock += 5000;
+  f.tokens = await rotateRefreshToken(f.env, {
+    refreshToken: f.tokens.refresh_token,
+    clientId,
+    resource,
+  });
+  const refreshed = await authenticate(request("/mcp", f.tokens.access_token), f.env);
+  assert.equal(refreshed.emailProof.identityVerifiedAt, verifiedAt);
+  assert.equal(
+    refreshed.domainAccess,
+    undefined,
+    "OAuth refresh cannot renew company identity proof",
+  );
+  assert.equal((await call(f, "read_page", { page_id: pageId })).isError, true);
 });

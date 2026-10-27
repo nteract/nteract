@@ -12,6 +12,9 @@ export function generateFixtureKeys() {
     ["reader", "alice@localhost", ["cloud:read"]],
     ["viewer", "bob@localhost", ["cloud:read", "cloud:write"]],
     ["unscoped", "alice@localhost", []],
+    ["employee", "employee@anaconda.com", ["cloud:read", "cloud:write"]],
+    ["blockedEmployee", "blocked@anaconda.com", ["cloud:read", "cloud:write"]],
+    ["consumer", "outsider@gmail.com", ["cloud:read", "cloud:write"]],
   ]) {
     // Deliberately untrusted JWT claims. The actual production validator must
     // obtain the account and scopes from whoami, not from this token payload.

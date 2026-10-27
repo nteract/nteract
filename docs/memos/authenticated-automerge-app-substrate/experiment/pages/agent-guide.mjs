@@ -3,6 +3,7 @@ import {
   codexHeaderHelper,
   keyFile,
   kiloConfig,
+  kiloApiKeyConfig,
   saveKeyCommand,
 } from "./agent-client-setup.mjs";
 
@@ -31,9 +32,11 @@ Choose the client section below before investigating authentication:
 
 - ChatGPT / cloud clients using the ChatGPT OAuth client: add the endpoint and
   complete browser authorization. No API key is needed for this flow.
-- Kilo Desktop / CLI and Codex Desktop / CLI: use the API-key recipes below.
+- Kilo Desktop / CLI: use the OAuth recipe below and ask the human to complete
+  browser sign-in. No API key is needed.
+- Codex Desktop / CLI: use the local API-key recipe below.
 - Other clients: use an Anaconda API key if they support bearer headers. This
-  prototype accepts the ChatGPT OAuth client; arbitrary OAuth client registration
+  prototype accepts the ChatGPT and configured Kilo OAuth clients; arbitrary registration
   is not enabled. Ask for client support instead of trying unrelated login flows.
 
 Ask the human for their step early, and prepare non-secret configuration in
@@ -67,6 +70,38 @@ OAuth credentials work on /mcp only, not the JSON API, sharing API, or native sy
 After authorization, call list_pages from the actual connected chat. Dot's
 availability depends on its connection UI; a configured plugin alone isn't proof.
 
+### Kilo Desktop / CLI (OAuth, recommended)
+
+Ask the human early to complete browser authorization. Meanwhile, merge this
+non-secret configuration into GLOBAL ~/.config/kilo/kilo.jsonc (respect
+XDG_CONFIG_HOME if customized). Preserve all other servers and settings. This
+is the Desktop/CLI format, not the older VS Code extension's mcpServers format.
+
+\`\`\`json
+${kiloConfig(origin)}
+\`\`\`
+
+If migrating the existing Pages entry, remove its Authorization header and
+replace oauth: false with the oauth object above. Keep X-Pages-Driver and any
+unrelated headers/settings. Do not delete the old key file: removing the header
+is enough to stop this connection using it, and other clients may still need it.
+
+Run kilo mcp auth pages. The human follows the browser link, signs in, checks the
+account and permissions, and approves. If no browser opens, give the human the
+link Kilo prints; do not retrieve browser cookies or search for credentials.
+Reload the Pages server or restart Kilo Desktop, then call list_pages from the
+actual chat. kilo mcp list is a diagnostic, not proof of authenticated tool use.
+If authorization reports a callback mismatch, report the URL without tokens;
+do not substitute a guessed client ID or silently fall back to an old key.
+
+This deployment's public client is pages-kilo, with exact callback
+http://127.0.0.1:19876/mcp/oauth/callback, PKCE S256, and no client secret.
+The explicit clientId is required; dynamic registration is not enabled. Request
+pages:read pages:write offline_access for editing and reconnect after expiry.
+Configuration and the OAuth exchange were checked with Kilo CLI 7.4.21 and
+Desktop's bundled CLI 7.8.17. Do not inspect binaries to set up this recipe.
+Official configuration: https://kilo.ai/docs/automate/mcp/using-in-cli
+
 ### API-key connection: first ask the human
 
 For clients using the API-key recipes, follow this order:
@@ -83,7 +118,7 @@ For clients using the API-key recipes, follow this order:
    client config, and the non-secret Codex helper if needed. Check the client
    version and preserve its existing settings. Wait for the key before merging
    an active secret reference, enabling MCP, or attempting authentication.
-   Browser sign-in does not authenticate MCP. Do not create an empty key file,
+   A browser session alone does not configure an API-key client. Do not create an empty key file,
    enable a connection without a key, install an Anaconda CLI just for setup,
    inspect client binaries, or search app/keyring storage to find credentials.
 3. After the human saves the key, merge the client recipe below into their
@@ -96,8 +131,7 @@ For clients using the API-key recipes, follow this order:
 
 Do not paste keys into chat, print resolved config/headers, or put credentials in
 URLs. For 401, check key presence, expiry, and provider environment once, then ask
-the human to replace the key through /connect. Do not switch an API-key recipe
-to MCP OAuth login. For
+the human to replace the key through /connect. For Kilo, use the separate OAuth migration recipe above if switching methods. For
 403, check User Resources scopes and Page sharing permissions. Do not retry in a loop.
 
 ### Save the key privately (human step, macOS/Linux)
@@ -113,7 +147,7 @@ file and enter the key yourself; no CLI installation is required.
 ${saveKeyCommand}
 \`\`\`
 
-### Kilo Desktop / CLI
+### Kilo Desktop / CLI (API-key fallback)
 
 Once the key file is nonempty, merge this into the GLOBAL
 ~/.config/kilo/kilo.jsonc (respect XDG_CONFIG_HOME if customized). This is the
@@ -123,7 +157,7 @@ The file contains the raw key only. oauth: false keeps this recipe on API-key
 authentication; kilo mcp auth is not the setup path for this recipe.
 
 \`\`\`json
-${kiloConfig(origin)}
+${kiloApiKeyConfig(origin)}
 \`\`\`
 
 Reload the Pages server in Kilo or restart the desktop app. kilo mcp list is a
@@ -167,7 +201,10 @@ Official configuration: https://developers.openai.com/codex/mcp
 
 Realtime documents for people and agents. Markdown tools, comments, and browser
 edits use the same document. Pages start private. The owner can invite signed-in
-people as viewers or editors; document links alone do not grant access. Editors
+people as viewers or editors. If enabled by the deployment, the owner can also
+allow signed-in people with a verified company email domain to view by link.
+Pages stay Restricted until the owner chooses that audience. Personal email
+providers are never offered, and ownership need not move to a company account. Editors
 can write and comment, viewers can read, and only the owner can manage access or
 delete a Page. Credential scope further limits the account's Page permissions.
 
@@ -243,14 +280,20 @@ Open a shared Page link once while signed in to accept its pending email invitat
 The email must be verified by the configured identity provider. Accepted access is
 bound to the account ID and works through browser, native sync, and MCP. Invitations
 expire after seven days. The service does not send email; the owner shares the link.
-list_pages includes owned Pages and accepted shared Pages. No anonymous link access
+list_pages includes owned Pages, accepted shared Pages, and company-shared Pages
+the account has opened by link while access is still allowed. No anonymous link access
 or Space inheritance is implemented in this pass.
 
 GET ${origin}/api/access?page=<page_id> returns your effective access; owners also
-receive members and pending invitations. Owners may POST to the same endpoint with
+receive members, pending invitations, and the host's domainOptions/domainView.
+Owners may POST to the same endpoint with
 an action, expected_revision from access.revision, and a new idempotency_key.
 Actions are invite (email, role: viewer or editor), set_role (principal, role: viewer,
-editor or null to remove), and revoke_invite (invite_id). A 409 requires reading
+editor or null to remove), revoke_invite (invite_id), and set_domain_view (domain
+from domainOptions, or null for Restricted). Company access is always view-only;
+individual editor grants still work, and explicit removals override the domain.
+Browser/OAuth company proof expires after six hours without fresh sign-in;
+refreshing an OAuth token does not renew that identity proof. A 409 requires reading
 access again. An uncertain request can be retried with its identical key and body.
 
 ## JSON tools

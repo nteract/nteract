@@ -42,7 +42,9 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
   const callback = origin + "/oauth/test/callback";
   const clientId = "pages-local-e2e";
   const chatgptCallback = "https://chatgpt.com/connector_platform_oauth_redirect";
+  const kiloCallback = "http://127.0.0.1:19876/mcp/oauth/callback";
   let interceptedChatgptCallbacks = 0;
+  let interceptedKiloCallbacks = 0;
   const fullScope = "pages:read pages:write offline_access";
   // Reject unexpected destinations rather than accidentally exercising a public provider.
   const localFetch = (input, options = {}) => {
@@ -79,18 +81,21 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
       try {
         const url = new URL(request.url);
         const destination = url.origin + url.pathname;
-        if (destination === callback || destination === chatgptCallback) {
+        if ([callback, chatgptCallback, kiloCallback].includes(destination)) {
           assert.equal(request.method, "GET");
           assert.equal(resourceType, "Document");
           if (destination === chatgptCallback) interceptedChatgptCallbacks++;
+          if (destination === kiloCallback) interceptedKiloCallbacks++;
           await network.send("Fetch.fulfillRequest", {
             requestId,
             responseCode: 200,
             responseHeaders: [{ name: "Content-Type", value: "text/html" }],
             body: Buffer.from(
-              destination === chatgptCallback
-                ? "<h1>Intercepted ChatGPT callback</h1>"
-                : "<h1>Local OAuth callback received</h1>",
+              destination === kiloCallback
+                ? "<h1>Intercepted Kilo callback</h1>"
+                : destination === chatgptCallback
+                  ? "<h1>Intercepted ChatGPT callback</h1>"
+                  : "<h1>Local OAuth callback received</h1>",
             ).toString("base64"),
           });
         } else if (url.origin === origin) {
@@ -111,9 +116,10 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
     });
     return page;
   }
-  function provider(scope, { external = false } = {}) {
-    const redirectUrl = external ? chatgptCallback : callback;
-    const id = external ? "pages-chatgpt" : clientId;
+  function provider(scope, { external = false, kilo = false } = {}) {
+    assert.equal(external && kilo, false);
+    const redirectUrl = kilo ? kiloCallback : external ? chatgptCallback : callback;
+    const id = kilo ? "pages-kilo" : external ? "pages-chatgpt" : clientId;
     const data = { state: crypto.randomUUID() };
     return {
       data,
@@ -148,10 +154,10 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
   async function startGrant(
     page,
     scope,
-    { fresh = false, cancel = false, screenshots = false, external = false } = {},
+    { fresh = false, cancel = false, screenshots = false, external = false, kilo = false } = {},
   ) {
-    const client = provider(scope, { external });
-    const callbackCount = interceptedChatgptCallbacks;
+    const client = provider(scope, { external, kilo });
+    const callbackCount = kilo ? interceptedKiloCallbacks : interceptedChatgptCallbacks;
     const result = await auth(client, { serverUrl: endpoint, scope, fetchFn: localFetch });
     assert.equal(result, "REDIRECT");
     assert.equal(client.data.authorization.searchParams.get("resource"), endpoint);
@@ -163,7 +169,11 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
     }
     await expect(
       page.getByRole("heading", {
-        name: external ? "Connect ChatGPT to Pages" : "Connect Local test client to Pages",
+        name: kilo
+          ? "Connect Kilo to Pages"
+          : external
+            ? "Connect ChatGPT to Pages"
+            : "Connect Local test client to Pages",
       }),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Allow access", exact: true })).toBeVisible();
@@ -194,10 +204,15 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
       waitUntil: "domcontentloaded",
       timeout: 15000,
     });
-    if (external) {
-      assert.equal(interceptedChatgptCallbacks, callbackCount + 1);
+    if (external || kilo) {
+      assert.equal(
+        kilo ? interceptedKiloCallbacks : interceptedChatgptCallbacks,
+        callbackCount + 1,
+      );
       await expect(
-        page.getByRole("heading", { name: "Intercepted ChatGPT callback" }),
+        page.getByRole("heading", {
+          name: kilo ? "Intercepted Kilo callback" : "Intercepted ChatGPT callback",
+        }),
       ).toBeVisible();
     }
     const returned = new URL(page.url());
@@ -385,6 +400,21 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
     };
     complete(
       "Chromium Allow and Cancel navigate to exact ChatGPT callback under CSP; callback requests intercepted locally",
+    );
+    const kiloGrant = await startGrant(owner, fullScope, { kilo: true });
+    const kiloClient = await sdkConnection(kiloGrant);
+    await call(kiloClient, "read_page", { page_id: pageId });
+    await startGrant(owner, "pages:read", { kilo: true, cancel: true });
+    assert.equal(interceptedKiloCallbacks, 2);
+    report.kiloCallbacks = {
+      intercepted: interceptedKiloCallbacks,
+      allowed: 1,
+      canceled: 1,
+      callback: kiloCallback,
+      qualification: "Local HTTP Pages origin; deployed HTTPS origin remains unverified",
+    };
+    complete(
+      "Chromium Allow and Cancel navigate to exact Kilo loopback callback under CSP; intercepted locally, SDK exchange and MCP read pass",
     );
     // Return the authenticated tab to Pages before using browser-session APIs.
     await owner.goto(callback, { waitUntil: "domcontentloaded" });

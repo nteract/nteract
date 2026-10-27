@@ -1152,6 +1152,33 @@ dialog::backdrop {
   border-radius: 12px;
   box-shadow: 0 8px 32px #0002;
 }
+.page-domain-sharing {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border-top: 1px solid var(--line);
+}
+.page-domain-sharing label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.page-domain-sharing select {
+  min-width: 0;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: white;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+.page-domain-sharing p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
 @media (max-width: 640px) {
   .page-sharing-popover {
     position: fixed;

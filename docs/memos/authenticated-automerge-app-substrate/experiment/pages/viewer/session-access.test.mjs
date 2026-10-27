@@ -354,3 +354,61 @@ test("trusted profile rosters replace stale peers and untrusted rosters cannot",
   assert.equal(session.peers.has("active"), true);
   assert.equal(notified, 1);
 });
+
+test("reopening a denied local copy checks once and stays read-only while authorization is unresolved", async (t) => {
+  const { session, doc } = fixture();
+  session.pauseForAccess("Removed", { denied: true });
+  await session.cacheTail;
+  let requests = 0,
+    finish;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    requests++;
+    assert.equal(url, `/api/connect?page=${session.pageId}`);
+    return new Promise((resolve) => {
+      finish = resolve;
+    });
+  });
+  t.after(() => session.close());
+  const reconnect = session.retryConnection({ recheckDeniedAccess: true });
+  while (!finish) await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(session.accessDenied, true);
+  assert.equal(session.canWrite, false);
+  assert.equal(session.doc, doc);
+  finish(Response.json({ error: "Still private" }, { status: 403 }));
+  await reconnect;
+  await session.cacheTail;
+  assert.equal(session.accessDenied, true);
+  assert.equal(session.canWrite, false);
+  assert.equal(session.retryTimer, undefined);
+  await session.retryConnection();
+  session.scheduleReconnect();
+  assert.equal(requests, 1, "ordinary reconnect must not poll a denied Page");
+  assert.equal(session.retryTimer, undefined);
+  assert.equal(session.exportRecovery().title, doc.title);
+});
+
+test("restored access with a new generation cannot publish the denied copy's unsynced history", async (t) => {
+  const { session, auth, doc } = fixture();
+  session.pauseForAccess("Removed", { denied: true });
+  await session.cacheTail;
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    requests++;
+    return Response.json({
+      identity: auth.identity,
+      documentId: session.localPage.document_id,
+      access: access("editor", 3, 4),
+    });
+  });
+  t.after(() => session.close());
+  await session.retryConnection({ recheckDeniedAccess: true });
+  assert.equal(requests, 1);
+  assert.equal(session.accessDenied, false);
+  assert.equal(session.accessReloadRequired, true);
+  assert.equal(session.canWrite, false);
+  assert.equal(session.replicaKey, "1:writer");
+  assert.equal(session.doc, doc);
+  assert.equal(session.retryTimer, undefined);
+  assert.equal(session.connection, undefined);
+  assert.equal(session.exportRecovery().title, doc.title);
+});

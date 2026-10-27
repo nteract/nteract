@@ -175,6 +175,7 @@ const targets = Object.freeze({
     firewallComment: "nteract/preview-infra standalone-page7",
     asyncPersistence: true,
     compactRecords: true,
+    companyViewDomains: "anaconda.com",
     editor: "wordgard",
     tunnelService: "cloudflared-page7.service",
     frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5", "page6"]),

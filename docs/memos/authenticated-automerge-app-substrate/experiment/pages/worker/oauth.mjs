@@ -13,6 +13,7 @@ import {
 
 const CHATGPT_CLIENT = "https://chatgpt.com/oauth/client.json";
 const CHATGPT_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
+const KILO_REDIRECT = "http://127.0.0.1:19876/mcp/oauth/callback";
 const READ = "pages:read";
 const WRITE = "pages:write";
 const OFFLINE = "offline_access";
@@ -60,10 +61,11 @@ function json(body, status = 200) {
 }
 function html(title, body, status = 200, consentRedirect) {
   // Chromium checks form-action across a form POST's redirects too. Permit the
-  // one registered external callback only on the consent page, never a client-
-  // supplied URL or the entire ChatGPT origin. Local fixtures use 'self'.
+  // registered callback for this client only on the consent page, never a
+  // caller-supplied URL or an entire external origin. Local fixtures use 'self'.
   const formAction =
-    "'self'" + (consentRedirect === CHATGPT_REDIRECT ? " " + CHATGPT_REDIRECT : "");
+    "'self'" +
+    ([CHATGPT_REDIRECT, KILO_REDIRECT].includes(consentRedirect) ? " " + consentRedirect : "");
   return response(
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)} · Pages</title><link rel="stylesheet" href="/app.css"></head><body><header class="app-header"><a class="brand" href="/">Pages</a></header><main class="agent-setup"><h1>${escape(title)}</h1>${body}</main></body></html>`,
     {
@@ -123,9 +125,11 @@ export function oauthAuthorizationServerMetadata(env) {
 export function mcpAuthChallenge(env, original) {
   if (original.status !== 401) return original;
   const headers = new Headers(original.headers);
+  // A scope hint here overrides the client's requested scopes in Kilo's MCP
+  // SDK. Advertise capabilities in metadata and let consent enforce the request.
   headers.set(
     "WWW-Authenticate",
-    `Bearer resource_metadata="${pagesPublicOrigin(env)}/.well-known/oauth-protected-resource/mcp", scope="${READ}"`,
+    `Bearer resource_metadata="${pagesPublicOrigin(env)}/.well-known/oauth-protected-resource/mcp"`,
   );
   headers.set("Cache-Control", "no-store");
   return new Response(original.body, {
@@ -135,7 +139,7 @@ export function mcpAuthChallenge(env, original) {
   });
 }
 
-// Only this explicit public client and a loopback-only fixture are recognized.
+// Only these explicit public clients and a loopback-only fixture are recognized.
 // Arbitrary client URLs, redirects, dynamic registration, and metadata redirects
 // are deliberately unsupported. Metadata never controls a network destination.
 function knownClient(clientId, env) {
@@ -145,6 +149,13 @@ function knownClient(clientId, env) {
       name: "ChatGPT",
       site: "https://chatgpt.com/",
       redirectUri: CHATGPT_REDIRECT,
+    };
+  if (clientId === "pages-kilo")
+    return {
+      id: clientId,
+      name: "Kilo",
+      site: "https://kilo.ai/",
+      redirectUri: KILO_REDIRECT,
     };
   const origin = pagesPublicOrigin(env);
   if (
@@ -373,6 +384,7 @@ function consentIdentity(session) {
       principalNamespace: session.principalNamespace,
       identityVerifiedAt: session.identityVerifiedAt,
       verifiedEmailBinding: session.verifiedEmailBinding,
+      verifiedEmailDomainBinding: session.verifiedEmailDomainBinding,
     },
   };
 }

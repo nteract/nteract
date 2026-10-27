@@ -476,7 +476,12 @@ export class PageSession {
     this.onlineListener = () => void this.retryConnection();
     globalThis.addEventListener?.("online", this.onlineListener);
     if (this.connection) this.queueSaved();
-    else void this.retryConnection();
+    else {
+      // Reopening a denied local copy must check the host once: the owner may
+      // have restored access since this checkpoint. The draft stays read-only
+      // until acceptPageAccess verifies the new grant and replica generation.
+      void this.retryConnection({ recheckDeniedAccess: this.accessDenied });
+    }
   }
   async initializeLocal(key = replicaKey(this.access, this.canWrite)) {
     this.replicaKey = key;
@@ -660,21 +665,27 @@ export class PageSession {
     if (this.problem === this.connectionProblem) this.problem = "";
     this.connectionProblem = "";
   }
-  connect(refresh = true) {
+  connect(refresh = true, recheckDeniedAccess = false) {
     if (!this.alive || this.accessReloadRequired) return Promise.resolve();
     if (!this.connecting)
-      this.connecting = this.openConnection(refresh).finally(() => {
+      this.connecting = this.openConnection(refresh, recheckDeniedAccess).finally(() => {
         this.connecting = undefined;
       });
     return this.connecting;
   }
-  async openConnection(refresh) {
+  async openConnection(refresh, recheckDeniedAccess = false) {
     if (refresh) await this.refreshAuthentication();
     if (!this.alive || this.accessReloadRequired) return;
     await this.disconnectSockets();
     if (!this.alive) return;
     await this.registerDraft();
-    if (!this.alive || this.authRequired || this.accessDenied || this.accessReloadRequired) return;
+    if (
+      !this.alive ||
+      this.authRequired ||
+      (this.accessDenied && !recheckDeniedAccess) ||
+      this.accessReloadRequired
+    )
+      return;
     try {
       const connection = await request(`/api/connect?page=${encodeURIComponent(this.pageId)}`);
       if (!this.alive) return;
@@ -761,11 +772,11 @@ export class PageSession {
       void this.retryConnection();
     }, delay);
   }
-  async retryConnection() {
+  async retryConnection({ recheckDeniedAccess = false } = {}) {
     clearTimeout(this.retryTimer);
     this.retryTimer = undefined;
     try {
-      await this.connect();
+      await this.connect(true, recheckDeniedAccess);
     } catch (error) {
       if (!this.alive || this.accessReloadRequired || this.accessDenied) return;
       if (error.code === "PAGE_ACCESS_CHANGED") return;

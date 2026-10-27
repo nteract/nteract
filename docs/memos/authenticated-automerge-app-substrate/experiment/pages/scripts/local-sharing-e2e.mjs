@@ -17,6 +17,7 @@ const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = path.resolve(
   process.env.PAGES_E2E_OUTPUT || path.join(app, "test-results", `sharing-${Date.now()}`),
 );
+const domainView = process.argv.includes("--domain-view");
 const children = new Set();
 let canceled = false;
 async function stop(child) {
@@ -86,7 +87,13 @@ try {
   const keyFile = path.join(scratch, "fixture-keys.json");
   await writeFile(keyFile, JSON.stringify(keys), { mode: 0o600 });
   await build({
-    entryPoints: [path.join(app, "scripts/fixtures/local-sharing-worker.mjs")],
+    entryPoints: [
+      path.join(
+        app,
+        "scripts/fixtures",
+        domainView ? "local-domain-sharing-worker.mjs" : "local-sharing-worker.mjs",
+      ),
+    ],
     bundle: true,
     format: "esm",
     platform: "browser",
@@ -118,6 +125,7 @@ try {
     path.join(runtime, ".dev.vars"),
     Object.entries({
       PAGES_E2E_ONLY: "true",
+      ...(domainView ? { PAGES_COMPANY_VIEW_DOMAINS: "anaconda.com" } : {}),
       PAGES_EDITOR: "wordgard",
       PAGES_ASYNC_PERSISTENCE: "true",
       PAGES_COMPACT_RECORDS: "true",
@@ -179,14 +187,18 @@ try {
       throw new Error(`Local celld did not become ready; see ${output}/celld.log`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  await run(process.execPath, ["scripts/sharing-smoke.mjs"], {
-    env: {
-      ...process.env,
-      PAGES_ORIGIN: origin,
-      PAGES_SCREENSHOTS: output,
-      PAGES_E2E_KEY_FILE: keyFile,
+  await run(
+    process.execPath,
+    [domainView ? "scripts/domain-sharing-smoke.mjs" : "scripts/sharing-smoke.mjs"],
+    {
+      env: {
+        ...process.env,
+        PAGES_ORIGIN: origin,
+        PAGES_SCREENSHOTS: output,
+        PAGES_E2E_KEY_FILE: keyFile,
+      },
     },
-  });
+  );
   const result = JSON.parse(await readFile(path.join(output, "report.json"), "utf8"));
   if (!result.cleaned || result.failure)
     throw new Error("Sharing qualification did not complete cleanly");

@@ -3,7 +3,12 @@ import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import { JSDOM } from "jsdom";
-import { codexHeaderHelper, kiloConfig, saveKeyCommand } from "../agent-client-setup.mjs";
+import {
+  codexHeaderHelper,
+  kiloConfig,
+  kiloApiKeyConfig,
+  saveKeyCommand,
+} from "../agent-client-setup.mjs";
 import { connectAgentResponse } from "../connect-agent.mjs";
 
 test("private key recipe keeps secrets out of output and rejects empty input without overwriting", () => {
@@ -63,8 +68,18 @@ with tempfile.TemporaryDirectory() as directory:
   assert.equal(result.status, 0, result.stderr);
 });
 
-test("Kilo recipe uses static bearer auth and a file reference rather than an empty credential", () => {
+test("Kilo OAuth recipe binds the supported public client without a static credential", () => {
   const { pages } = JSON.parse(kiloConfig("https://page7.runtimed.run")).mcp;
+  assert.equal(pages.url, "https://page7.runtimed.run/mcp");
+  assert.deepEqual(pages.oauth, {
+    clientId: "pages-kilo",
+    scope: "pages:read pages:write offline_access",
+  });
+  assert.deepEqual(pages.headers, { "X-Pages-Driver": "Kilo" });
+});
+
+test("Kilo API-key fallback uses static bearer auth and a file reference rather than an empty credential", () => {
+  const { pages } = JSON.parse(kiloApiKeyConfig("https://page7.runtimed.run")).mcp;
   assert.equal(pages.oauth, false);
   assert.equal(pages.headers.Authorization, "Bearer {file:~/.config/pages/anaconda-api-key}");
 });

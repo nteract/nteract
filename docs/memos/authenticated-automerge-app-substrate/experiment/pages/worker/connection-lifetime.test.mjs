@@ -6,7 +6,16 @@ import { DocumentPolicy } from "./policy.mjs";
 
 const drain = () => new Promise(setImmediate);
 
-function fixture(t, failure, { credentialKind = "session", reauthenticate } = {}) {
+function fixture(
+  t,
+  failure,
+  {
+    credentialKind = "session",
+    reauthenticate,
+    identity: identityOptions = {},
+    metadata = { owner: "user:owner" },
+  } = {},
+) {
   t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 1000 });
   const events = [],
     background = [],
@@ -83,8 +92,11 @@ function fixture(t, failure, { credentialKind = "session", reauthenticate } = {}
     signer: {},
     wires: new Set(),
     wirePrincipals: new Map(),
-    metadata: { owner: "user:owner" },
+    metadata,
     policy: {
+      leaseExpiresAt(identity) {
+        return identity.expiresAt;
+      },
       async bind(_key, _senderId, _identity, options) {
         events.push("bind");
         bindings.push(options);
@@ -129,18 +141,19 @@ function fixture(t, failure, { credentialKind = "session", reauthenticate } = {}
   t.after(async () => {
     for (const wire of page.wires) await wire.disconnect();
   });
-  const open = (principal = "user:owner") => {
+  const open = (principal = identityOptions.principal ?? "user:owner") => {
     const response = page.connect(
       new Request("http://localhost/api/sync?page=fixture", {
         headers: { upgrade: "websocket" },
       }),
       {
-        principal,
         credentialKind,
         driver: "fixture-browser",
         namespace: "fixture-provider",
         canWrite: true,
         expiresAt: 61000,
+        ...identityOptions,
+        principal,
       },
     );
     assert.equal(response.status, 101);
@@ -346,6 +359,48 @@ test("OIDC sessions retain their original hard expiry despite successful periodi
   assert.equal(f.page.wires.size, 0);
   assert.equal(f.socket.closeCalls, 1);
   assert.deepEqual(f.writes, []);
+});
+
+test("real policy closes domain viewer sockets at the earlier proof deadline", async (t) => {
+  let checks = 0;
+  const domainView = { domain: "anaconda.com", namespace: "fixture-provider" };
+  const f = fixture(t, undefined, {
+    credentialKind: "oidc",
+    identity: {
+      principal: "user:employee",
+      domainAccess: { ...domainView, expiresAt: 21000 },
+    },
+    metadata: {
+      owner: "user:owner",
+      acl: { revision: 1, members: {}, domainView },
+    },
+    reauthenticate: async (identity) => {
+      checks++;
+      return { ...identity, expiresAt: Date.now() + 60000 };
+    },
+  });
+  await drain();
+  assert.equal(f.page.wires.size, 1);
+  const binding = await f.page.ctx.storage.get(`host/binding/${"0".repeat(64)}`);
+  assert.equal(binding.writer, false, "company viewing admits a reader signing key");
+  f.writes.length = 0;
+  t.mock.timers.tick(15000);
+  await drain();
+  assert.equal(checks, 1);
+  assert.equal(f.page.wires.size, 1);
+  t.mock.timers.tick(4999);
+  await drain();
+  assert.equal(f.page.wires.size, 1);
+  t.mock.timers.tick(1);
+  await f.background;
+  assert.equal(Date.now(), 21000, "the original credential remains valid until 61000");
+  assert.equal(f.page.wires.size, 0);
+  assert.equal(f.page.policy.sessions.size, 0);
+  assert.equal(f.socket.closeCalls, 1);
+  t.mock.timers.tick(120000);
+  await drain();
+  assert.equal(checks, 1, "proof expiry cancels further authorization checks");
+  assert.deepEqual(f.writes, [], "proof expiry never changes the durable reader binding");
 });
 
 for (const ending of ["disconnect", "expiry"]) {

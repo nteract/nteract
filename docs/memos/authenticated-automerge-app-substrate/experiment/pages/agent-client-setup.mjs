@@ -28,6 +28,27 @@ export function kiloConfig(origin) {
         pages: {
           type: "remote",
           url: origin + "/mcp",
+          oauth: {
+            clientId: "pages-kilo",
+            scope: "pages:read pages:write offline_access",
+          },
+          enabled: true,
+          headers: { "X-Pages-Driver": "Kilo" },
+        },
+      },
+    },
+    null,
+    2,
+  );
+}
+
+export function kiloApiKeyConfig(origin) {
+  return JSON.stringify(
+    {
+      mcp: {
+        pages: {
+          type: "remote",
+          url: origin + "/mcp",
           oauth: false,
           enabled: true,
           headers: {
