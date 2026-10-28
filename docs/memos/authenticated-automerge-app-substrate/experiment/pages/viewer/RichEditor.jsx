@@ -295,22 +295,20 @@ export function RichEditor({
       setContextualToolbar(false);
       return;
     }
-    // Keep the same controls and DOM focus when the toolbar moves. Touch devices
-    // retain the stable row so the native selection handles/menu have room.
-    const media = matchMedia("(min-width: 901px) and (hover: hover) and (pointer: fine)");
+    // Keep the same controls and DOM focus when the toolbar moves. Measure the
+    // wrapped touch controls too, so the overlay never covers a short selection.
     let frame = null;
     let dragging = false;
     const position = () => {
       frame = null;
+      // A selection gesture must not move either the toolbar or the text.
+      if (dragging) return;
       let next = null;
       const { from, to, empty } = view.state.selection;
-      const contextual = dragging
-        ? contextualToolbar
-        : !empty &&
-          !view.composing &&
-          (view.hasFocus() || element.contains(document.activeElement));
+      const contextual =
+        !empty && !view.composing && (view.hasFocus() || element.contains(document.activeElement));
       setContextualToolbar(contextual);
-      if (media.matches && contextual && !toolbarOpen && !dragging) {
+      if (contextual && !toolbarOpen) {
         const viewport = window.visualViewport;
         const bounds = element.getBoundingClientRect();
         const headerBottom =
@@ -348,7 +346,6 @@ export function RichEditor({
     updateToolbarPosition.current = schedule;
     const resize = new ResizeObserver(schedule);
     resize.observe(element);
-    media.addEventListener("change", schedule);
     window.addEventListener("resize", schedule);
     window.addEventListener("scroll", schedule, true);
     window.visualViewport?.addEventListener("resize", schedule);
@@ -362,7 +359,6 @@ export function RichEditor({
       if (frame !== null) cancelAnimationFrame(frame);
       updateToolbarPosition.current = () => {};
       resize.disconnect();
-      media.removeEventListener("change", schedule);
       window.removeEventListener("resize", schedule);
       window.removeEventListener("scroll", schedule, true);
       window.visualViewport?.removeEventListener("resize", schedule);
@@ -372,7 +368,7 @@ export function RichEditor({
       document.removeEventListener("pointerup", pointerUp, true);
       document.removeEventListener("pointercancel", pointerUp, true);
     };
-  }, [toolbarHost, toolbarOpen, contextualToolbar, editable, replica, id, generation]);
+  }, [toolbarHost, toolbarOpen, editable, replica, id, generation]);
   function run(command, restoreFocus = true) {
     const view = editor.current;
     if (!view || !writable.current) return;
@@ -468,7 +464,7 @@ export function RichEditor({
       {toolbarHost &&
         createPortal(
           <div
-            className={`rich-toolbar${floating ? " is-floating" : ""}`}
+            className={`rich-toolbar ${toolbarOpen ? "is-pinned" : "is-contextual"}${floating ? " is-floating" : ""}`}
             hidden={!editable || (!toolbarOpen && !contextualToolbar)}
             style={floating || undefined}
             ref={toolbar}

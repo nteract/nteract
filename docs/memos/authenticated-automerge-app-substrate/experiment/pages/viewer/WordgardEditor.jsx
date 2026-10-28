@@ -660,24 +660,24 @@ export function WordgardEditor(props) {
       setContextualToolbar(false);
       return;
     }
-    const media = matchMedia("(min-width: 901px) and (hover: hover) and (pointer: fine)");
     let frame = null,
       dragging = false;
     const position = () => {
       frame = null;
+      // Freeze the overlay while the pointer is choosing a new range. Moving it
+      // into a dock here shifts the text underneath the selection gesture.
+      if (dragging) return;
       let next = null;
       const selection = editor.state.selection;
-      // Do not resize the dock under an in-progress native selection drag.
-      const contextual = dragging
-        ? contextualToolbar
-        : !selection.empty &&
-          !selectedImage(editor.state) &&
-          !editor.composing &&
-          (editor.hasFocus ||
-            element.contains(document.activeElement) ||
-            !!element.querySelector('[aria-expanded="true"]'));
+      const contextual =
+        !selection.empty &&
+        !selectedImage(editor.state) &&
+        !editor.composing &&
+        (editor.hasFocus ||
+          element.contains(document.activeElement) ||
+          !!element.querySelector('[aria-expanded="true"]'));
       setContextualToolbar(contextual);
-      if (media.matches && contextual && !toolbarOpen && !dragging) {
+      if (contextual && !toolbarOpen) {
         const viewport = window.visualViewport,
           box = element.getBoundingClientRect();
         next = selectionToolbarPosition({
@@ -727,16 +727,14 @@ export function WordgardEditor(props) {
       [window.visualViewport, "scroll", schedule],
     ];
     listeners.forEach(([target, name, fn]) => target?.addEventListener(name, fn, true));
-    media.addEventListener("change", schedule);
     schedule();
     return () => {
       if (frame !== null) cancelAnimationFrame(frame);
       observer.disconnect();
       listeners.forEach(([target, name, fn]) => target?.removeEventListener(name, fn, true));
-      media.removeEventListener("change", schedule);
       positionToolbar.current = () => {};
     };
-  }, [toolbarHost, toolbarOpen, contextualToolbar, editable, generation]);
+  }, [toolbarHost, toolbarOpen, editable, generation]);
   function run(name) {
     const editor = view.current;
     if (!editor || !editable) return;
@@ -808,7 +806,7 @@ export function WordgardEditor(props) {
         createPortal(
           <div
             ref={toolbar}
-            className={`rich-toolbar${floating ? " is-floating" : ""}`}
+            className={`rich-toolbar ${toolbarOpen ? "is-pinned" : "is-contextual"}${floating ? " is-floating" : ""}`}
             hidden={!editable || (!toolbarOpen && !contextualToolbar)}
             style={floating || undefined}
             role="toolbar"

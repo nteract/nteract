@@ -153,6 +153,135 @@ async function assertQuietBlock(page) {
     `focused editor has no rendered surrounding outline: ${JSON.stringify(outlines)}`,
   );
 }
+async function assertStableSelectionToolbar(page) {
+  const text = "The fox crossed";
+  const geometry = async (from, to) =>
+    content(page)
+      .first()
+      .evaluate(
+        (element, { text, from, to }) => {
+          const nodes = [];
+          const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+          let joined = "",
+            node;
+          while ((node = walker.nextNode())) {
+            nodes.push({ node, start: joined.length });
+            joined += node.textContent;
+          }
+          const start = joined.indexOf(text);
+          if (start < 0) throw Error("Selection fixture text missing");
+          const point = (offset) => {
+            const entry = nodes.find(
+              ({ node, start }) => offset >= start && offset < start + node.textContent.length,
+            );
+            const range = document.createRange();
+            range.setStart(entry.node, offset - entry.start);
+            range.setEnd(entry.node, offset - entry.start + 1);
+            const rect = range.getBoundingClientRect();
+            return { x: rect.left + 1, y: rect.top + rect.height / 2 };
+          };
+          return { start: point(start + from), end: point(start + to) };
+        },
+        { text, from, to },
+      );
+  for (const width of [1280, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.getByRole("textbox", { name: "Page title" }).focus();
+    await page.evaluate(() => {
+      getSelection().removeAllRanges();
+      scrollTo(0, 0);
+    });
+    const toolbar = page.locator("[role='toolbar'][aria-label='Text formatting']");
+    await expect(toolbar).not.toBeVisible();
+    assert.equal(
+      await toolbar.evaluate((element) => {
+        const control = element.querySelector("button:not(:disabled),select:not(:disabled)");
+        control?.focus();
+        return document.activeElement === control;
+      }),
+      false,
+      "hidden formatting controls cannot take focus",
+    );
+    await page.evaluate(() => {
+      const editor = document.querySelector("wg-content");
+      const node = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT).nextNode();
+      const first = document.createRange();
+      first.setStart(node, 0);
+      first.setEnd(node, 1);
+      const toolbar = document.querySelector("[role='toolbar'][aria-label='Text formatting']");
+      const records = [];
+      let running = true;
+      const sample = () => {
+        const style = getComputedStyle(toolbar);
+        records.push({
+          y: first.getBoundingClientRect().top + scrollY,
+          inFlow: !toolbar.hidden && style.visibility !== "hidden" && style.position !== "fixed",
+        });
+      };
+      const tick = () => {
+        if (!running) return;
+        sample();
+        requestAnimationFrame(tick);
+      };
+      const observer = new MutationObserver(sample);
+      observer.observe(toolbar, {
+        attributes: true,
+        attributeFilter: ["hidden", "class", "style"],
+      });
+      sample();
+      requestAnimationFrame(tick);
+      window.stopSelectionToolbarTrace = () => {
+        running = false;
+        observer.disconnect();
+        sample();
+        return records;
+      };
+    });
+    for (const [from, to] of [
+      [0, text.length],
+      [4, text.length],
+    ]) {
+      const { start, end } = await geometry(from, to);
+      assert.equal(
+        await page.evaluate(
+          ({ x, y }) => !!document.elementFromPoint(x, y)?.closest("wg-content"),
+          start,
+        ),
+        true,
+        "contextual formatting must not intercept the text being reselected",
+      );
+      await page.mouse.move(start.x, start.y);
+      await page.mouse.down();
+      // Keep the pointer down across a frame: the old implementation briefly
+      // put the floating toolbar back into document flow during reselection.
+      await page.waitForTimeout(50);
+      await page.mouse.move(end.x, end.y, { steps: 8 });
+      await page.mouse.up();
+      await expect
+        .poll(() => page.evaluate(() => getSelection().toString()))
+        .toBe(text.slice(from, to));
+      await expect(toolbar).toBeVisible();
+      await page.waitForTimeout(50);
+    }
+    const records = await page.evaluate(() => window.stopSelectionToolbarTrace());
+    report.selectionToolbarFrames ??= [];
+    report.selectionToolbarFrames.push({ width, records });
+    assert.ok(
+      records.every((record) => Math.abs(record.y - records[0].y) <= 1),
+      "selection does not shift document text",
+    );
+    assert.ok(
+      records.every((record) => !record.inFlow),
+      "automatic formatting never flashes in document flow",
+    );
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByRole("textbox", { name: "Page title" }).focus();
+}
 async function insertAfter(page, anchor, text, block = 0) {
   await selectText(page, anchor, true, block);
   await page.keyboard.insertText(text);
@@ -377,12 +506,19 @@ try {
       "wordgard",
     );
   }
-  await create(
+  const proseFixture = await create(
     "The **fox** crossed the garden.\n\nSecond writer starts here.\n\nOpen [Pages implementation notes](/llms.txt).",
     "Wordgard prose fixture " + Date.now(),
   );
   await expect(content(a)).toContainText("The fox crossed the garden");
   checkpoint("Wordgard boot with local OIDC and two contexts");
+
+  stage = "contextual formatting preserves pointer selection and document layout";
+  const selectionBefore = await call(a, "read_page", { page_id: proseFixture.page_id });
+  await assertStableSelectionToolbar(a);
+  const selectionAfter = await call(a, "read_page", { page_id: proseFixture.page_id });
+  assert.deepEqual(selectionAfter.heads.slice().sort(), selectionBefore.heads.slice().sort());
+  checkpoint(stage);
 
   stage = "quiet editor and comments list without automatic composition";
   await selectText(a, "fox");
