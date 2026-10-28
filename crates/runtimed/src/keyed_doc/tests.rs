@@ -371,6 +371,49 @@ fn refused_writes_resync_and_leave_the_hub_unchanged() {
 }
 
 #[test]
+fn missing_dependencies_request_a_full_resend_without_losing_peer_edits() {
+    let room = Room::new();
+    let mut peer = Peer::new(alice(), ALICE);
+    let opening = peer.opening_frame("doc-1");
+    peer.send(&room.hub, &room.state, &opening);
+    peer.sync(&room.hub, &room.state, "doc-1");
+    kv_put(&mut peer.doc, "b", "first unsynced edit");
+    kv_put(&mut peer.doc, "c", "second unsynced edit");
+    let child = peer.doc.get_last_local_change().unwrap().clone();
+    let _full_frame = peer.frame("doc-1").unwrap();
+    // Model a Bloom false positive that omits the parent from this frame.
+    let partial = sync::Message {
+        heads: vec![child.hash()],
+        need: vec![],
+        have: vec![],
+        changes: vec![child.raw_bytes().to_vec()].into(),
+        flags: None,
+        version: sync::MessageVersion::V1,
+    };
+    let frame = KeyedDocFrameHeader::new(TEST_KV, "doc-1", 0).encode_frame(&partial.encode());
+    peer.send(&room.hub, &room.state, &frame);
+    assert!(peer.resyncs.is_empty(), "do not discard the peer's replica");
+    assert_eq!(peer.value("b").as_deref(), Some("first unsynced edit"));
+    assert_eq!(peer.value("c").as_deref(), Some("second unsynced edit"));
+    assert_eq!(room.hub_value("doc-1", "b"), None);
+    assert_eq!(room.hub_value("doc-1", "c"), None);
+    assert!(room
+        .hub
+        .with_doc(&key("doc-1"), |_, doc| doc.get_missing_deps(&[]).is_empty())
+        .unwrap());
+    peer.sync(&room.hub, &room.state, "doc-1");
+    assert!(peer.resyncs.is_empty());
+    assert_eq!(
+        room.hub_value("doc-1", "b").as_deref(),
+        Some("first unsynced edit")
+    );
+    assert_eq!(
+        room.hub_value("doc-1", "c").as_deref(),
+        Some("second unsynced edit")
+    );
+}
+
+#[test]
 fn writes_are_refused_while_the_record_does_not_accept_them() {
     let room = Room::new();
     room.kind.set_record("doc-1", 0, false);

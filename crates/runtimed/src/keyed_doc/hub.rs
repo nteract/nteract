@@ -25,7 +25,7 @@ use runtime_doc::{
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-use super::admission::{check_change_actors, preview_receive};
+use super::admission::{check_change_actors, full_sync_request, has_missing_deps, preview_receive};
 use super::kind::{KeyedDocKind, RoomKindCtx};
 use crate::blob_store::BlobStore;
 use crate::notebook_sync_server::RoomConnectionIdentity;
@@ -411,20 +411,29 @@ impl KeyedDocHub {
             current_epoch: current,
         };
         let heads_before = hub_doc.doc.get_heads();
-        let rejection = size_check
-            .and_then(|()| {
-                admit_peer_message(
-                    kind.as_ref(),
-                    hub_doc,
-                    states.for_epoch(&key, current),
-                    body,
-                    &header,
-                    &ctx,
-                    record.as_ref(),
-                    identity,
-                )
-            })
-            .err();
+        let admission = size_check.and_then(|()| {
+            admit_peer_message(
+                kind.as_ref(),
+                hub_doc,
+                states.for_epoch(&key, current),
+                body,
+                &header,
+                &ctx,
+                record.as_ref(),
+                identity,
+            )
+        });
+        let rejection = match admission {
+            Ok(Some(request)) => {
+                reply.frames.push(
+                    KeyedDocFrameHeader::new(key.kind.clone(), key.id.clone(), current)
+                        .encode_frame(&request.encode()),
+                );
+                return reply;
+            }
+            Ok(None) => None,
+            Err(rejection) => Some(rejection),
+        };
         let changed = hub_doc.doc.get_heads() != heads_before;
         if let Some(rejection) = rejection {
             debug!(
@@ -591,7 +600,7 @@ fn admit_peer_message(
     ctx: &KeyedWriteContext,
     record: Option<&runtime_doc::KeyedDocRecord>,
     identity: &RoomConnectionIdentity,
-) -> Result<(), KeyedDocRejection> {
+) -> Result<Option<sync::Message>, KeyedDocRejection> {
     ctx.check_frame_epoch(header.epoch)?;
     let mut message = sync::Message::decode(body).map_err(|_| KeyedDocRejection::Undecodable)?;
     let mut refused = None;
@@ -609,11 +618,23 @@ fn admit_peer_message(
     };
     match permission {
         Some(KeyedWritePermission::Validated) => {
-            let preview = preview_receive(&hub_doc.doc, state, message, "keyed-doc-peer-preview")
-                .map_err(|error| {
-                warn!("[keyed-doc] Peer preview for {} failed: {error}", header.id);
-                KeyedDocRejection::Undecodable
-            })?;
+            let preview =
+                match preview_receive(&hub_doc.doc, state, message, "keyed-doc-peer-preview") {
+                    Ok(preview) => preview,
+                    Err(error) if has_missing_deps(&error) => {
+                        return full_sync_request(&mut hub_doc.doc, state).map_err(|error| {
+                            warn!(
+                                "[keyed-doc] Full sync request for {} failed: {error}",
+                                header.id
+                            );
+                            KeyedDocRejection::Undecodable
+                        });
+                    }
+                    Err(error) => {
+                        warn!("[keyed-doc] Peer preview for {} failed: {error}", header.id);
+                        return Err(KeyedDocRejection::Undecodable);
+                    }
+                };
             check_change_actors(identity, &preview.new_changes)
                 .map_err(|foreign| KeyedDocRejection::UnauthorizedActor(foreign.reason))?;
             kind.validate_peer_changes(&hub_doc.doc, &preview.new_changes, ctx)?;
@@ -631,7 +652,7 @@ fn admit_peer_message(
             })?;
         }
     }
-    refused.map_or(Ok(()), Err)
+    refused.map_or(Ok(None), Err)
 }
 
 fn generate(key: &KeyedDocKey, doc: &mut HubDoc, states: &mut KeyedSyncStates) -> Option<Vec<u8>> {

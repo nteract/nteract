@@ -36,6 +36,28 @@ pub(crate) fn preview_receive(
     })
 }
 
+pub(crate) fn has_missing_deps(error: &AutomergeOperationError) -> bool {
+    matches!(error, AutomergeOperationError::Automerge { source, .. }
+        if matches!(source.as_ref(), automerge::AutomergeError::MissingDeps))
+}
+
+/// Ask for a complete resend without discarding either replica. A legitimate
+/// Bloom-filter false positive can omit a dependency too. Empty advertised
+/// heads clear the sender's sent-hash cache; an empty Bloom filter makes V1
+/// peers resend the complete history, while V2 peers send their document.
+pub(crate) fn full_sync_request(
+    doc: &mut AutoCommit,
+    state: &mut sync::State,
+) -> Result<Option<sync::Message>, AutomergeOperationError> {
+    Ok(catch_automerge_panic("peer-full-sync-request", || {
+        *state = sync::State::new();
+        let mut request = doc.sync().generate_sync_message(state)?;
+        request.heads.clear();
+        request.have = vec![sync::Have::default()];
+        Some(request)
+    })?)
+}
+
 /// `preview_receive` with the receive step injectable, so tests can force
 /// the recoverable error.
 fn preview_receive_with(
@@ -236,6 +258,63 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(preview.new_changes.len(), 2);
         assert!(check_change_actors(&identity, &preview.new_changes).is_ok());
+    }
+
+    #[test]
+    fn full_resend_preserves_unsynced_edits_for_v1_and_v2_peers() {
+        for supports_v2 in [false, true] {
+            let mut host = doc_with_actor("runtimed:kernel");
+            host.put(ROOT, "base", 0).unwrap();
+            host.commit();
+            let before = host.get_heads();
+            let mut writer = host.fork().with_actor(automerge::ActorId::from(
+                "user:dev:alice/browser:a".as_bytes(),
+            ));
+            writer.put(ROOT, "k", 1).unwrap();
+            writer.commit();
+            writer.put(ROOT, "k", 2).unwrap();
+            writer.commit();
+            let writer_heads = writer.get_heads();
+            let mut writer_state = sync::State::new();
+            writer_state.in_flight = true;
+            writer_state.have_responded = true;
+            writer_state.last_sent_heads = writer_heads.clone();
+            writer_state
+                .sent_hashes
+                .extend(writer.get_changes(&[]).iter().map(|c| c.hash()));
+            let mut host_state = sync::State::new();
+            let mut request = full_sync_request(&mut host, &mut host_state)
+                .unwrap()
+                .unwrap();
+            if !supports_v2 {
+                request.flags = None;
+            }
+            writer
+                .sync()
+                .receive_sync_message(&mut writer_state, request)
+                .unwrap();
+            assert_eq!(writer.get_heads(), writer_heads, "local edits are retained");
+            assert_eq!(
+                host.get_heads(),
+                before,
+                "the host retains its admitted data"
+            );
+            let complete = writer
+                .sync()
+                .generate_sync_message(&mut writer_state)
+                .unwrap();
+            let preview = preview_receive(&host, &host_state, complete, "resend-test").unwrap();
+            assert_eq!(preview.new_changes.len(), 2);
+            let identity = RoomConnectionIdentity::hosted_bridged(
+                "user:dev:alice",
+                Some("browser:a".into()),
+                ConnectionScope::Editor,
+            )
+            .unwrap();
+            assert!(check_change_actors(&identity, &preview.new_changes).is_ok());
+            let mut admitted = preview.doc;
+            assert_eq!(admitted.get_heads(), writer_heads);
+        }
     }
 
     #[test]

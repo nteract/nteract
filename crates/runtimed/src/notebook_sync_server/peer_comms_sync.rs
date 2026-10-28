@@ -10,7 +10,9 @@ use notebook_protocol::connection::{self, NotebookFrameType};
 
 use super::peer_writer::PeerWriter;
 use super::{NotebookRoom, RoomConnectionIdentity, STATE_SYNC_COMPACT_THRESHOLD};
-use crate::keyed_doc::admission::{check_change_actors, preview_receive};
+use crate::keyed_doc::admission::{
+    check_change_actors, full_sync_request, has_missing_deps, preview_receive,
+};
 
 pub(super) async fn send_initial_comms_doc_sync<W>(
     writer: &mut W,
@@ -74,6 +76,11 @@ pub(super) async fn handle_comms_doc_frame(
                 "comms-auth-preview",
             ) {
                 Ok(preview) => preview,
+                Err(e) if has_missing_deps(&e) => {
+                    return full_sync_request(comms_doc.doc_mut(), comms_peer_state)
+                        .map(|request| request.map(|request| request.encode()))
+                        .map_err(Into::into);
+                }
                 Err(e) => {
                     warn!("[notebook-sync] CommsDoc auth preview failed: {}", e);
                     return Err(e.into());
@@ -246,7 +253,7 @@ mod tests {
             flags: None,
             version: sync::MessageVersion::V1,
         };
-        assert!(handle_comms_doc_frame(
+        handle_comms_doc_frame(
             &room,
             &mut sync::State::new(),
             &writer,
@@ -254,7 +261,7 @@ mod tests {
             &identity,
         )
         .await
-        .is_err());
+        .unwrap();
         assert_eq!(heads(), heads_before);
         assert!(room
             .comms
