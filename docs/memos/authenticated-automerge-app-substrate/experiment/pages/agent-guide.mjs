@@ -470,8 +470,10 @@ renew or clear only that session; do not copy the token into a Page or comment.
 Separate agents using one account have separate sessions.
 
 Optionally target up to three passages with targets:[{block_id,match_text}], using
-literal visible text from a fresh read and its heads as expected_heads. The match
-must be unique within a text segment; context_before/context_after can disambiguate.
+literal visible text from a fresh read and its heads as expected_heads. The passage
+and optional context_before/context_after must identify exactly one occurrence in
+the selected block. Neither the match nor its context may cross a paragraph or
+embed boundary.
 Targets follow native cursors through edits. Deleted or replaced passages become
 detached rather than matching unrelated text elsewhere. On renewal, omit targets
 to retain them or pass [] to remove them.

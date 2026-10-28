@@ -140,7 +140,7 @@ const matchProperties = {
     minLength: 1,
     maxLength: 262144,
     description:
-      "Exact visible text, without Markdown markup. Must match once within a paragraph or code block; cannot cross block/embed boundaries.",
+      "Exact visible text, without Markdown markup. Together with optional context, must identify exactly one occurrence in the selected block. Neither the match nor its context may cross a paragraph or embed boundary.",
   },
   replacement: {
     ...string,
