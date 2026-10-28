@@ -275,6 +275,7 @@ describe.skipIf(!existsSync(wasmPath))("byte-range Parquet with real WASM", () =
       expect(first.rows).toBe(ROWS_PER_GROUP);
       expect(first.decodedBytes).toBeGreaterThan(0);
 
+      const summaries = file.tableData.columnSummaries;
       file.setPaused(true);
       expect(file.tableData.coverage).toMatchObject({
         loadedRows: ROWS_PER_GROUP,
@@ -282,8 +283,11 @@ describe.skipIf(!existsSync(wasmPath))("byte-range Parquet with real WASM", () =
         resumable: true,
       });
       expect(file.truncated).toBe(false);
+      expect(file.tableData.columnSummaries).toBe(summaries);
+      expect(summaries[0]?.scope?.distribution.scope).toBe("loaded");
       file.setPaused(false);
       expect(file.tableData.coverage).toMatchObject({ truncated: false, resumable: false });
+      expect(file.tableData.columnSummaries).toBe(summaries);
 
       await file.appendRowGroup(1);
       expect(file.usage.rows).toBe(2 * ROWS_PER_GROUP);
@@ -292,6 +296,13 @@ describe.skipIf(!existsSync(wasmPath))("byte-range Parquet with real WASM", () =
       file.finish();
       expect(file.usage.rows).toBe(GROUPS * ROWS_PER_GROUP);
       expect(file.tableData.coverage).toMatchObject({ truncated: false, resumable: false });
+      expect(file.tableData.columnSummaries[0]?.scope?.distribution.scope).toBe("dataset");
+      // If all rows are resident (for example before trailing empty groups),
+      // changing truncation must still refresh the summary's coverage label.
+      file.setPaused(true);
+      expect(file.tableData.columnSummaries[0]?.scope?.distribution.scope).toBe("loaded");
+      file.setPaused(false);
+      expect(file.tableData.columnSummaries[0]?.scope?.distribution.scope).toBe("dataset");
     } finally {
       file.dispose();
     }
