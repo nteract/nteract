@@ -45,6 +45,7 @@ from typing import Any
 from IPython.core.formatters import BaseFormatter
 from traitlets import ObjectName, Unicode
 
+import nteract_kernel_launcher._bokeh_handlers as _bokeh_handlers
 import nteract_kernel_launcher._buffer_hook as _buffer_hook
 import nteract_kernel_launcher._output_redaction as _output_redaction
 import nteract_kernel_launcher._panel as _panel
@@ -835,6 +836,9 @@ def load_ipython_extension(ip: Any) -> None:
     _run_bootstrap_step("buffer hook install", lambda: _install_buffer_hooks(ip))
     _run_bootstrap_step("output redaction install", lambda: _output_redaction.install(ip))
     _run_bootstrap_step("third-party renderer enable", _enable_third_party_renderers)
+    _run_bootstrap_step(
+        "Bokeh session handler install", lambda: _bokeh_handlers.install_kernel_hooks(ip)
+    )
 
     # Traceback install goes last so earlier failures can't prevent it.
     # The wrapper itself is bulletproof — see `_traceback.install`.
@@ -847,6 +851,7 @@ def unload_ipython_extension(ip: Any) -> None:
     this defined keeps ``%reload_ext nteract_kernel_launcher._bootstrap``
     well-behaved during dev iteration.
     """
+    _bokeh_handlers.uninstall_kernel_hooks(ip)
     _panel.uninstall(ip)
     try:
         for pub in (ip.display_pub, ip.displayhook):

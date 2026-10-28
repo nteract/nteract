@@ -54,6 +54,12 @@ pub const LAUNCHER_FILES: &[(&str, &str)] = &[
         ),
     ),
     (
+        "_bokeh_handlers.py",
+        include_str!(
+            "../../../python/nteract-kernel-launcher/nteract_kernel_launcher/_bokeh_handlers.py"
+        ),
+    ),
+    (
         "_bokeh_session.py",
         include_str!(
             "../../../python/nteract-kernel-launcher/nteract_kernel_launcher/_bokeh_session.py"
@@ -233,6 +239,28 @@ mod tests {
         for (name, contents) in LAUNCHER_FILES {
             assert!(!contents.trim().is_empty(), "empty launcher file: {name}");
         }
+    }
+
+    #[test]
+    fn launcher_files_cover_every_package_module() {
+        let pkg_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../python/nteract-kernel-launcher")
+            .join(LAUNCHER_PKG);
+        let mut on_disk: Vec<String> = std::fs::read_dir(&pkg_dir)
+            .unwrap_or_else(|err| panic!("read {pkg_dir:?}: {err}"))
+            .map(|entry| entry.expect("package dir entry").path())
+            .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "py"))
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        on_disk.sort();
+        let mut embedded: Vec<String> = LAUNCHER_FILES
+            .iter()
+            .map(|(name, _)| (*name).to_string())
+            .collect();
+        embedded.sort();
+        // A module missing here is never vendored, so kernels importing it
+        // fail to start while launcher pytest (which imports from source) passes.
+        assert_eq!(embedded, on_disk);
     }
 
     #[test]

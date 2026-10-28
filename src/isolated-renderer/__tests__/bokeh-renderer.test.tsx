@@ -7,7 +7,7 @@ import {
   NTERACT_BOKEH_SESSION_MIME_TYPE,
 } from "@/components/outputs/bokeh-mime";
 import type { RendererProps } from "@/lib/renderer-registry";
-import { NTERACT_BOKEH_SESSION_STATE } from "@/components/isolated/rpc-methods";
+import { NTERACT_BOKEH_SESSION_STATE } from "@/components/isolated/bokeh-session-rpc";
 import { install } from "../bokeh-renderer";
 
 function installBokehRenderer(

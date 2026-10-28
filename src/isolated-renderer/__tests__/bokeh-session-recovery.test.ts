@@ -11,7 +11,7 @@ import {
   type NteractBokehResolvedPatchEvent,
   type NteractBokehSessionSnapshot,
   type NteractBokehSessionStatus,
-} from "@/components/isolated/rpc-methods";
+} from "@/components/isolated/bokeh-session-rpc";
 import {
   BokehSessionController,
   type BokehRuntime,

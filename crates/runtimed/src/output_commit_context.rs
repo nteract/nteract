@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 
 use crate::blob_store::BlobStore;
 use crate::output_blob_publisher::OutputBlobPublisher;
+use crate::output_hooks::OutputHookRegistry;
 use crate::output_prep::LifecycleSignal;
 use crate::output_redaction::OutputRedactor;
 
@@ -24,6 +25,7 @@ pub(crate) struct OutputCommitContext {
     pub(crate) kernel_id: String,
     pub(crate) lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
     pub(crate) redactor: Arc<OutputRedactor>,
+    pub(crate) output_hooks: OutputHookRegistry,
 }
 
 impl OutputCommitContext {
@@ -44,6 +46,13 @@ impl OutputCommitContext {
             kernel_id,
             lifecycle_tx,
             redactor,
+            output_hooks: crate::extensions::agent_output_hooks(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_output_hooks(mut self, output_hooks: OutputHookRegistry) -> Self {
+        self.output_hooks = output_hooks;
+        self
     }
 }

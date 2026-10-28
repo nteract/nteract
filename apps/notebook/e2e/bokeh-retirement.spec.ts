@@ -27,7 +27,9 @@ test("Bokeh callbacks survive viewer reload and stop after output retirement", a
     await waitForKernelStatus(page, "idle", 120_000);
     mcp = await McpPeer.start();
     await mcp.connectNotebook(notebookId);
-    await mcp.manageDependencies(["panel==1.9.4", "bokeh==3.9.1"]);
+    await mcp.manageDependencies(
+      (process.env.NTERACT_E2E_PANEL_DEPENDENCIES ?? "panel==1.9.4,bokeh==3.9.1").split(","),
+    );
     const displayCode = [
       "import panel as pn",
       "from IPython.display import display",

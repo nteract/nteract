@@ -26,12 +26,46 @@ enum ContentRef {
     Blob { blob: String, size: u64 },
 }
 
+/// Top-level MIME payload keys that may differ between a durable execution
+/// record and a saved output, e.g. live state written only at save time.
+/// Fields must be static per MIME so a payload cannot widen its own exemption.
+/// Only JSON MIME types (`application/json`, `*+json`) are exempted; others
+/// stay byte-strict whatever they declare.
+pub trait ReplayFieldPolicy: Sync {
+    fn mutable_fields(&self, mime: &str) -> &'static [&'static str];
+}
+
+/// Every payload key is compared.
+pub struct StrictReplayFields;
+
+impl ReplayFieldPolicy for StrictReplayFields {
+    fn mutable_fields(&self, _mime: &str) -> &'static [&'static str] {
+        &[]
+    }
+}
+
 /// Compare output manifests, resolving unequal content references as needed.
 /// Equal blob references require no read: their hash and size already agree.
 pub async fn compare_outputs<F, Fut>(
     left: &[Value],
     right: &[Value],
     resolve: F,
+) -> OutputComparison
+where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = io::Result<Option<Vec<u8>>>>,
+{
+    compare_outputs_with_policy(left, right, resolve, &StrictReplayFields).await
+}
+
+/// [`compare_outputs`], ignoring the top-level keys `policy` declares mutable
+/// for each JSON MIME of `display_data`/`execute_result` payloads. Everything else,
+/// including other keys of the same payload, stays strict.
+pub async fn compare_outputs_with_policy<F, Fut>(
+    left: &[Value],
+    right: &[Value],
+    resolve: F,
+    policy: &dyn ReplayFieldPolicy,
 ) -> OutputComparison
 where
     F: Fn(String) -> Fut,
@@ -69,7 +103,14 @@ where
                         return OutputComparison::Different;
                     }
                     for (mime, a) in a {
-                        let result = compare_content(a, &b[mime], mime, &resolve).await;
+                        let result = compare_content(
+                            a,
+                            &b[mime],
+                            mime,
+                            policy.mutable_fields(mime),
+                            &resolve,
+                        )
+                        .await;
                         match result {
                             OutputComparison::Different => return OutputComparison::Different,
                             OutputComparison::Unavailable(reason) => {
@@ -81,10 +122,10 @@ where
                     OutputComparison::Equivalent
                 }
                 (Some("stream"), "text") => {
-                    compare_content(value, other, "text/plain", &resolve).await
+                    compare_content(value, other, "text/plain", &[], &resolve).await
                 }
                 (Some("error"), "traceback") => {
-                    compare_content(value, other, "application/json", &resolve).await
+                    compare_content(value, other, "application/json", &[], &resolve).await
                 }
                 _ if value == other => OutputComparison::Equivalent,
                 _ => OutputComparison::Different,
@@ -119,6 +160,7 @@ async fn compare_content<F, Fut>(
     left: &Value,
     right: &Value,
     mime: &str,
+    mutable_fields: &[&str],
     resolve: &F,
 ) -> OutputComparison
 where
@@ -149,7 +191,12 @@ where
         Ok(b) => b,
         Err(result) => return result,
     };
-    let equal = if mime == "application/json" || mime.ends_with("+json") {
+    let is_json = mime == "application/json" || mime.ends_with("+json");
+    let equal = if !is_json {
+        a == b
+    } else if let Some(equal) = equal_except_fields(&a, &b, mutable_fields) {
+        equal
+    } else {
         match (
             serde_json::from_slice::<Value>(&a),
             serde_json::from_slice::<Value>(&b),
@@ -163,14 +210,30 @@ where
             }
             _ => a == b,
         }
-    } else {
-        a == b
     };
     if equal {
         OutputComparison::Equivalent
     } else {
         OutputComparison::Different
     }
+}
+
+/// `None` when there is nothing to exempt or either side is not a JSON object;
+/// the caller then compares strictly.
+fn equal_except_fields(a: &[u8], b: &[u8], fields: &[&str]) -> Option<bool> {
+    if fields.is_empty() {
+        return None;
+    }
+    let (Ok(Value::Object(mut a)), Ok(Value::Object(mut b))) =
+        (serde_json::from_slice(a), serde_json::from_slice(b))
+    else {
+        return None;
+    };
+    for field in fields {
+        a.remove(*field);
+        b.remove(*field);
+    }
+    Some(a == b)
 }
 
 async fn resolve_content<F, Fut>(
@@ -445,5 +508,128 @@ mod tests {
         let mut b = a.clone();
         b[0]["execution_count"] = json!(2);
         assert_eq!(compare(&a, &b).await, OutputComparison::Different);
+    }
+
+    const SESSION_MIME: &str = "application/x.test-session+json";
+
+    struct SnapshotMutable;
+    impl ReplayFieldPolicy for SnapshotMutable {
+        fn mutable_fields(&self, mime: &str) -> &'static [&'static str] {
+            if mime == SESSION_MIME {
+                &["snapshot"]
+            } else {
+                &[]
+            }
+        }
+    }
+
+    async fn compare_mutable(a: &[Value], b: &[Value]) -> OutputComparison {
+        compare_outputs_with_policy(a, b, |_| async { Ok(None) }, &SnapshotMutable).await
+    }
+
+    fn session_payload() -> Value {
+        json!({"session_id":"s1","document":{"roots":[0]},"extra":1})
+    }
+
+    #[tokio::test]
+    async fn declared_replay_fields_are_ignored_only_for_their_mime() {
+        let recorded = output(SESSION_MIME, inline(&session_payload()));
+        let mut live = session_payload();
+        live["snapshot"] = json!({"document":{"roots":[1]}});
+        let saved = output(SESSION_MIME, inline(&live));
+        assert_eq!(
+            compare_mutable(&recorded, &saved).await,
+            OutputComparison::Equivalent
+        );
+        assert_eq!(
+            compare(&recorded, &saved).await,
+            OutputComparison::Different
+        );
+
+        let blob = live.to_string().into_bytes();
+        let size = blob.len() as u64;
+        let saved_blob = output(SESSION_MIME, json!({"blob":"live","size":size}));
+        assert_eq!(
+            compare_outputs_with_policy(
+                &recorded,
+                &saved_blob,
+                |_| {
+                    let blob = blob.clone();
+                    async move { Ok(Some(blob)) }
+                },
+                &SnapshotMutable,
+            )
+            .await,
+            OutputComparison::Equivalent
+        );
+
+        for (key, value) in [
+            ("document", json!({"roots":[1]})),
+            ("session_id", json!("s2")),
+            ("extra", json!(2)),
+            ("future", json!(true)),
+        ] {
+            let mut changed = live.clone();
+            changed[key] = value;
+            assert_eq!(
+                compare_mutable(&recorded, &output(SESSION_MIME, inline(&changed))).await,
+                OutputComparison::Different,
+                "{key} must stay strict"
+            );
+        }
+
+        let mut metadata_changed = saved.clone();
+        metadata_changed[0]["metadata"] = json!({"snapshot":true});
+        assert_eq!(
+            compare_mutable(&recorded, &metadata_changed).await,
+            OutputComparison::Different
+        );
+
+        let other = output("application/json", inline(&session_payload()));
+        let other_live = output("application/json", inline(&live));
+        assert_eq!(
+            compare_mutable(&other, &other_live).await,
+            OutputComparison::Different
+        );
+    }
+
+    #[tokio::test]
+    async fn non_json_mimes_stay_byte_strict_even_when_declared() {
+        struct DeclaresTextFields;
+        impl ReplayFieldPolicy for DeclaresTextFields {
+            fn mutable_fields(&self, _mime: &str) -> &'static [&'static str] {
+                &["snapshot"]
+            }
+        }
+        let recorded = json!({"session_id": "s1", "snapshot": 0});
+        let saved = json!({"session_id": "s1", "snapshot": 1});
+        for (mime, expected) in [
+            ("text/x-session", OutputComparison::Different),
+            ("application/x-session", OutputComparison::Different),
+            ("application/json", OutputComparison::Equivalent),
+            (SESSION_MIME, OutputComparison::Equivalent),
+        ] {
+            assert_eq!(
+                compare_outputs_with_policy(
+                    &output(mime, inline(&recorded)),
+                    &output(mime, inline(&saved)),
+                    |_| async { Ok(None) },
+                    &DeclaresTextFields,
+                )
+                .await,
+                expected,
+                "{mime}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn non_object_payloads_fall_back_to_strict_comparison() {
+        let a = output(SESSION_MIME, inline(&json!([{"snapshot":1}])));
+        let b = output(SESSION_MIME, inline(&json!([{"snapshot":2}])));
+        assert_eq!(compare_mutable(&a, &b).await, OutputComparison::Different);
+        let a = output(SESSION_MIME, json!({"inline":"not json"}));
+        let b = output(SESSION_MIME, inline(&json!({"snapshot":2})));
+        assert_eq!(compare_mutable(&a, &b).await, OutputComparison::Different);
     }
 }
