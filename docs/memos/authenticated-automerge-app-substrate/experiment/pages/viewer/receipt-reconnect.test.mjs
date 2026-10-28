@@ -1,0 +1,473 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as A from "@automerge/automerge";
+import * as N from "@automerge/subduction";
+import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
+import { PageSession } from "./session.mjs";
+
+const drain = () => new Promise((resolve) => setImmediate(resolve));
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+// Exercise the real discovery, authentication, socket lifecycle and receipt
+// methods. Only external I/O and time are controlled; no receipt methods are mocked.
+function fixture(t) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let doc = A.from({ text: "Pending edit" });
+  const identity = { principal: "fixture-owner", displayName: "Fixture owner" };
+  const session = new PageSession("receipt-reconnect", {
+    refreshSession: async () => ({ identity, canWrite: true }),
+  });
+  const documentId = interpretAsDocumentId(generateAutomergeUrl());
+  session.identity = identity;
+  session.credentialCanWrite = true;
+  session.replicaKey = "0:writer";
+  session.handle = {
+    doc: () => doc,
+    documentId,
+    change(fn) {
+      doc = A.change(doc, fn);
+      return hooks.change?.();
+    },
+  };
+  const requests = [],
+    sockets = [],
+    hooks = {};
+  let added = 0,
+    freed = 0,
+    synchronized = 0;
+  session.repo = { flush: async () => hooks.flush?.() };
+  session.backend = {
+    async addConnection() {
+      added++;
+      await hooks.addConnection?.();
+    },
+    open() {
+      return {
+        async synchronize() {
+          synchronized++;
+        },
+        async close() {},
+      };
+    },
+  };
+  t.mock.method(session, "registerDraft", async () => {});
+  t.mock.method(session, "persistLocal", async () => {});
+  const locationBefore = Object.getOwnPropertyDescriptor(globalThis, "location");
+  Object.defineProperty(globalThis, "location", {
+    configurable: true,
+    value: { href: "http://localhost:9894/" },
+  });
+  t.mock.method(globalThis, "WebSocket", function () {
+    Object.defineProperty(this, "binaryType", { value: "blob", writable: true });
+    this.close = () => {};
+    sockets.push(this);
+  });
+  t.mock.method(N.SubductionWebSocket, "setup", async () => {
+    await hooks.setup?.();
+    return {
+      free() {
+        freed++;
+      },
+      toTransport: () => ({ free() {} }),
+    };
+  });
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    if (url.startsWith("/api/connect?"))
+      return Response.json({
+        identity,
+        documentId,
+        access: { role: "owner", generation: 0, revision: 0, canRead: true, canWrite: true },
+        serverPeerId: "00".repeat(32),
+        serverSenderId: "fixture-host",
+        peerProfiles: {},
+      });
+    assert.ok(url.startsWith("/api/saved?"), `unexpected fixture request: ${url}`);
+    const pending = { ...deferred(), heads: JSON.parse(options.body).heads };
+    requests.push(pending);
+    return hooks.receipt ? hooks.receipt(pending) : pending.promise;
+  });
+  t.after(async () => {
+    session.skipCloseCheckpoint = true;
+    await session.close();
+    if (locationBefore) Object.defineProperty(globalThis, "location", locationBefore);
+    else delete globalThis.location;
+  });
+  return {
+    session,
+    requests,
+    sockets,
+    hooks,
+    mutate(text = "New edit") {
+      doc = A.change(doc, (draft) => A.updateText(draft, ["text"], text));
+    },
+    counts: () => ({ added, freed, synchronized }),
+    async advance(ms) {
+      t.mock.timers.tick(ms);
+      await drain();
+    },
+    async start() {
+      await session.openConnection(false);
+      await this.advance(300);
+    },
+  };
+}
+
+test("same-head reconnect keeps a delayed successful or failed receipt current", async (t) => {
+  for (const status of [200, 409]) {
+    await t.test(String(status), async (t) => {
+      const f = fixture(t);
+      await f.start();
+      const revision = f.session.receiptRevision;
+      assert.equal(f.requests.length, 1);
+      for (let i = 0; i < 3; i++) await f.session.openConnection(false);
+      assert.equal(f.session.receiptRevision, revision);
+      assert.equal(f.requests.length, 1);
+      assert.equal(f.session.savedTimer, undefined);
+      f.requests[0].resolve(
+        Response.json(
+          status === 200
+            ? { durableHeads: f.requests[0].heads }
+            : { error: "Requested edits have not arrived" },
+          { status },
+        ),
+      );
+      await drain();
+      assert.equal(f.session.status, status === 200 ? "Saved" : "Unsaved");
+      assert.equal(f.session.problem, status === 200 ? "" : "Requested edits have not arrived");
+      assert.equal(f.session.receiptRetryAttempts, status === 200 ? 0 : 1);
+      await f.session.openConnection(false);
+      assert.equal(f.session.status, status === 200 ? "Saved" : "Unsaved");
+      assert.equal(f.session.problem, status === 200 ? "" : "Requested edits have not arrived");
+      if (status === 200) {
+        await f.advance(10000);
+        assert.equal(f.requests.length, 1, "already saved heads need no new receipt");
+      } else {
+        await f.advance(500);
+        assert.equal(f.counts().synchronized, 1);
+        assert.equal(f.requests.length, 2, "existing bounded retry remains scheduled");
+        f.requests[1].resolve(Response.json({ durableHeads: f.requests[1].heads }));
+        await drain();
+        assert.equal(f.session.status, "Saved");
+        assert.equal(f.session.problem, "");
+      }
+    });
+  }
+});
+
+test("duplicate notifications and reconnect do not postpone the same-head debounce", async (t) => {
+  const f = fixture(t);
+  await f.session.openConnection(false);
+  const timer = f.session.savedTimer,
+    revision = f.session.receiptRevision;
+  await f.advance(200);
+  f.session.queueSaved();
+  await f.session.openConnection(false);
+  assert.equal(f.session.savedTimer, timer);
+  assert.equal(f.session.receiptRevision, revision);
+  await f.advance(100);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.session.savedTimer, undefined);
+  const original = f.session.saveReceipt();
+  const duplicate = f.session.saveReceipt();
+  assert.equal(original, duplicate, "same receipt shares one in-flight request");
+  f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+  await original;
+  assert.equal(f.requests.length, 1);
+});
+
+test("duplicate events and a successful receipt cannot erase a failed native connection", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  f.hooks.setup = () => {
+    throw Error("Native handshake failed");
+  };
+  await f.session.retryConnection();
+  assert.equal(f.session.status, "Offline");
+  assert.equal(f.session.problem, "Native handshake failed");
+  f.session.queueSaved();
+  assert.equal(f.session.status, "Offline");
+  assert.equal(f.session.problem, "Native handshake failed");
+  assert.equal(f.requests.length, 1, "same heads retain their pending receipt");
+  f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+  await drain();
+  assert.deepEqual(f.session.savedHeads, f.requests[0].heads, "the HTTP durability proof is valid");
+  assert.equal(f.session.status, "Offline", "durability does not prove native connectivity");
+  assert.equal(f.session.connectionProblem, "Native handshake failed");
+  f.session.queueSaved();
+  assert.equal(f.session.status, "Offline");
+  assert.equal(f.session.problem, "Native handshake failed");
+});
+
+test("same-head reconnect preserves an asynchronous local change error while flush is pending", async (t) => {
+  const f = fixture(t);
+  await f.session.openConnection(false);
+  const storage = deferred(),
+    flush = deferred();
+  f.hooks.change = () => storage.promise;
+  f.hooks.flush = () => flush.promise;
+  const stored = f.session.change((draft) => A.updateText(draft, ["text"], "Local edit"));
+  await f.advance(300);
+  storage.reject(Error("Local change persistence failed"));
+  await assert.rejects(stored, /Local change persistence failed/);
+  await drain();
+  assert.equal(f.session.status, "Local save failed");
+  await f.session.openConnection(false);
+  f.session.queueSaved();
+  assert.equal(f.session.status, "Local save failed");
+  assert.equal(f.session.problem, "Local change persistence failed");
+  assert.equal(f.requests.length, 0, "the unresolved flush still gates remote receipts");
+  flush.resolve();
+  await drain();
+  assert.equal(f.requests.length, 1);
+  f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+  assert.equal(f.session.problem, "");
+});
+
+test("an older asynchronous local change error cannot replace a newer saved cycle", async (t) => {
+  const f = fixture(t);
+  await f.session.openConnection(false);
+  const storage = deferred();
+  f.hooks.change = () => storage.promise;
+  const old = f.session.change((draft) => A.updateText(draft, ["text"], "Older edit"));
+  f.hooks.change = undefined;
+  f.session.change((draft) => A.updateText(draft, ["text"], "Newer edit"));
+  await f.advance(300);
+  assert.equal(f.requests.length, 1);
+  f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+  storage.reject(Error("Stale local persistence failure"));
+  await assert.rejects(old, /Stale local persistence failure/);
+  await drain();
+  assert.equal(f.session.status, "Saved");
+  assert.equal(f.session.problem, "");
+  assert.equal(f.session.localProblem, "");
+  assert.deepEqual(f.session.savedHeads, A.getHeads(f.session.doc));
+});
+
+test("automatic reconnect preserves exhausted retry budget; explicit Retry starts a new cycle", async (t) => {
+  const f = fixture(t);
+  f.hooks.receipt = () => Response.json({ error: "Storage unavailable" }, { status: 503 });
+  await f.start();
+  const revision = f.session.receiptRevision;
+  for (const delay of [500, 1000, 2000]) {
+    const timer = f.session.receiptRetryTimer,
+      attempts = f.session.receiptRetryAttempts;
+    f.session.queueSaved();
+    await f.session.openConnection(false);
+    assert.equal(f.session.receiptRetryTimer, timer);
+    assert.equal(f.session.receiptRetryAttempts, attempts);
+    assert.equal(f.session.problem, "Storage unavailable");
+    await f.advance(delay);
+  }
+  assert.equal(f.requests.length, 4);
+  assert.equal(f.session.receiptRetryAttempts, 3);
+  for (let i = 0; i < 3; i++) await f.session.retryConnection();
+  await f.advance(10000);
+  assert.equal(f.requests.length, 4);
+  assert.equal(f.session.receiptRevision, revision);
+  assert.equal(f.session.receiptRetryTimer, undefined);
+  assert.equal(f.session.status, "Unsaved");
+  f.hooks.receipt = ({ heads }) => Response.json({ durableHeads: heads });
+  await f.session.retryConnection({ retryReceipt: true });
+  assert.ok(f.session.receiptRevision > revision);
+  await f.advance(300);
+  assert.equal(f.requests.length, 5);
+  assert.equal(f.session.status, "Saved");
+  assert.equal(f.session.problem, "");
+});
+
+test("a new edit restarts an exhausted cycle while unchanged-head reconnect does not", async (t) => {
+  const f = fixture(t);
+  f.hooks.receipt = () => Response.json({ error: "Storage unavailable" }, { status: 503 });
+  await f.start();
+  for (const delay of [500, 1000, 2000]) await f.advance(delay);
+  const revision = f.session.receiptRevision;
+  assert.equal(f.requests.length, 4);
+  await f.session.openConnection(false);
+  await f.advance(10000);
+  assert.equal(f.requests.length, 4);
+  f.mutate();
+  f.session.queueSaved();
+  assert.ok(f.session.receiptRevision > revision);
+  assert.equal(f.session.receiptRetryAttempts, 0);
+  f.hooks.receipt = ({ heads }) => Response.json({ durableHeads: heads });
+  await f.advance(300);
+  assert.equal(f.requests.length, 5);
+  assert.deepEqual(f.requests[4].heads, A.getHeads(f.session.doc));
+  assert.equal(f.session.status, "Saved");
+  assert.equal(f.session.problem, "");
+});
+
+test("explicit Retry can obtain a receipt even when native reconnect still fails", async (t) => {
+  const f = fixture(t);
+  f.hooks.receipt = () => Response.json({ error: "Storage unavailable" }, { status: 503 });
+  await f.start();
+  for (const delay of [500, 1000, 2000]) await f.advance(delay);
+  assert.equal(f.requests.length, 4);
+  f.hooks.setup = async () => {
+    throw Error("Native connection unavailable");
+  };
+  f.hooks.receipt = ({ heads }) => Response.json({ durableHeads: heads });
+  await f.session.retryConnection({ retryReceipt: true });
+  await f.advance(300);
+  assert.equal(f.requests.length, 5);
+  assert.deepEqual(f.session.savedHeads, A.getHeads(f.session.doc));
+  assert.equal(f.session.receiptRetryAttempts, 0);
+  assert.equal(
+    f.session.status,
+    "Offline",
+    "receipt success does not claim native connection success",
+  );
+  assert.equal(f.session.problem, "Native connection unavailable");
+});
+
+test("heads advancing before notification cannot let an older receipt claim the new edit", async (t) => {
+  for (const phase of ["flush", "response"]) {
+    await t.test(phase, async (t) => {
+      const f = fixture(t);
+      const gate = deferred();
+      if (phase === "flush") f.hooks.flush = () => gate.promise;
+      await f.start();
+      const oldHeads = A.getHeads(f.session.doc);
+      f.mutate(); // Intentionally do not notify queueSaved yet.
+      if (phase === "flush") {
+        f.hooks.flush = undefined;
+        gate.resolve();
+      } else {
+        f.requests[0].resolve(Response.json({ durableHeads: oldHeads }));
+      }
+      await drain();
+      assert.equal(f.session.status, "Saving");
+      assert.deepEqual(f.session.savedHeads, []);
+      await f.advance(300);
+      const latest = f.requests.at(-1);
+      assert.deepEqual(latest.heads, A.getHeads(f.session.doc));
+      latest.resolve(Response.json({ durableHeads: latest.heads }));
+      await drain();
+      assert.equal(f.session.status, "Saved");
+      assert.deepEqual(f.session.savedHeads, A.getHeads(f.session.doc));
+    });
+  }
+});
+
+test("a locally saved same-head cycle asks for a host receipt once connection is available", async (t) => {
+  const f = fixture(t);
+  f.session.localPage = { document_id: f.session.handle.documentId, pending: true };
+  await f.session.saveReceipt();
+  assert.equal(f.session.status, "Saved locally");
+  assert.equal(f.requests.length, 0);
+  await f.session.openConnection(false);
+  await f.advance(300);
+  assert.equal(f.requests.length, 1);
+  f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+});
+
+test("edits queued during expired sign-in resume after reauthentication at unchanged heads", async (t) => {
+  const f = fixture(t);
+  f.session.requireSignIn();
+  f.mutate();
+  f.session.queueSaved();
+  await f.advance(300);
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.session.status, "Sign in to sync");
+  await f.session.openConnection(true);
+  await f.advance(300);
+  assert.equal(f.requests.length, 1);
+  f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+  await drain();
+  assert.equal(f.session.status, "Saved");
+});
+
+test("pre-expiry replies stay stale after reauthentication starts a same-head request", async (t) => {
+  for (const oldStatus of [200, 503]) {
+    await t.test(String(oldStatus), async (t) => {
+      const f = fixture(t);
+      await f.start();
+      f.session.requireSignIn();
+      await f.session.openConnection(true);
+      await f.advance(300);
+      assert.equal(f.requests.length, 2);
+      assert.deepEqual(f.requests[0].heads, f.requests[1].heads);
+      f.requests[0].resolve(
+        Response.json(
+          oldStatus === 200
+            ? { durableHeads: f.requests[0].heads }
+            : { error: "Expired request failure" },
+          { status: oldStatus },
+        ),
+      );
+      await drain();
+      assert.equal(f.session.status, "Saving");
+      assert.equal(f.session.problem, "");
+      assert.deepEqual(f.session.savedHeads, []);
+      assert.equal(f.session.receiptRetryTimer, undefined);
+      f.requests[1].resolve(Response.json({ durableHeads: f.requests[1].heads }));
+      await drain();
+      assert.equal(f.session.status, "Saved");
+      assert.deepEqual(f.session.savedHeads, f.requests[1].heads);
+    });
+  }
+});
+
+test("late receipt success cannot overwrite sign-in, access, deletion or closed-session state", async (t) => {
+  for (const stop of ["sign-in", "access", "deleted", "closed"]) {
+    await t.test(stop, async (t) => {
+      const f = fixture(t);
+      await f.start();
+      if (stop === "sign-in") f.session.requireSignIn();
+      else if (stop === "access")
+        f.session.pauseForAccess("Removed", { denied: true, checkpoint: false });
+      else {
+        f.session.skipCloseCheckpoint = true;
+        if (stop === "deleted") {
+          f.session.deleted = true;
+          f.session.status = "Deleted";
+        }
+        await f.session.close();
+      }
+      const status = f.session.status;
+      f.requests[0].resolve(Response.json({ durableHeads: f.requests[0].heads }));
+      await drain();
+      assert.equal(f.session.status, status);
+      assert.deepEqual(f.session.savedHeads, []);
+      assert.equal(f.session.receiptRetryTimer, undefined);
+    });
+  }
+});
+
+test("native completion after socket loss or expired sign-in cannot announce a connection", async (t) => {
+  for (const phase of ["setup", "addConnection"]) {
+    for (const stop of ["socket", "sign-in"]) {
+      await t.test(`${phase}: ${stop}`, async (t) => {
+        const f = fixture(t);
+        const gate = deferred();
+        f.hooks[phase] = () => gate.promise;
+        const opening = f.session.openConnection(false);
+        await drain();
+        assert.equal(f.sockets.length, 1);
+        if (stop === "socket") f.session.socketDisconnected(f.sockets[0]);
+        else f.session.requireSignIn();
+        const status = f.session.status;
+        gate.resolve();
+        await opening;
+        assert.equal(f.session.status, status);
+        assert.equal(f.session.savedTimer, undefined);
+        assert.equal(f.requests.length, 0);
+        assert.equal(f.counts().added, phase === "setup" ? 0 : 1);
+        assert.equal(f.counts().freed, phase === "setup" ? 1 : 0);
+      });
+    }
+  }
+});

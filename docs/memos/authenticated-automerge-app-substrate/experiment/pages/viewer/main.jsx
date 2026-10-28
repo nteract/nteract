@@ -543,7 +543,10 @@ function App() {
               <div className="document-status">
                 <SaveStatus status={session.status} />
                 {["Unsaved", "Offline", "Saved locally"].includes(session.status) && (
-                  <button className="subtle-button" onClick={() => session.retryConnection()}>
+                  <button
+                    className="subtle-button"
+                    onClick={() => session.retryConnection({ retryReceipt: true })}
+                  >
                     Retry
                   </button>
                 )}
@@ -702,7 +705,9 @@ function App() {
                     <a href="/api/auth/login" target="_blank" rel="noopener noreferrer">
                       Sign in
                     </a>{" "}
-                    <button onClick={() => session.retryConnection()}>Retry connection</button>
+                    <button onClick={() => session.retryConnection({ retryReceipt: true })}>
+                      Retry connection
+                    </button>
                   </p>
                 )}
                 {session.accessProblem && (

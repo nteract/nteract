@@ -236,7 +236,9 @@ test("a local write requests durability even when its handle emits no visible pa
   const session = new PageSession("fixture");
   session.canWrite = true;
   session.status = "Saved";
+  const doc = A.from({ text: "unchanged" });
   session.handle = {
+    doc: () => doc,
     change(fn) {
       fn({});
       return Promise.resolve();

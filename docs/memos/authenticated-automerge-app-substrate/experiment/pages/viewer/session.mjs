@@ -754,7 +754,13 @@ export class PageSession {
       const authenticated = await N.SubductionWebSocket.setup(socket, this.signer, expected, () => {
         this.socketDisconnected(socket);
       });
-      if (!this.alive || this.accessDenied || this.accessReloadRequired) {
+      if (
+        !this.alive ||
+        this.authRequired ||
+        this.accessDenied ||
+        this.accessReloadRequired ||
+        !this.sockets.has(socket)
+      ) {
         authenticated.free();
         socket.close();
         this.sockets.delete(socket);
@@ -766,15 +772,25 @@ export class PageSession {
       } finally {
         transport.free();
       }
-      if (!this.alive || this.accessDenied || this.accessReloadRequired) return;
+      if (
+        !this.alive ||
+        this.authRequired ||
+        this.accessDenied ||
+        this.accessReloadRequired ||
+        !this.sockets.has(socket)
+      )
+        return;
       this.retryAttempts = 0;
       this.clearConnectionProblem();
-      this.status = "Connected";
-      this.emit();
       if (this.handle) this.queueSaved();
+      else {
+        this.status = "Connected";
+        this.emit();
+      }
     } catch (error) {
+      const current = this.sockets.delete(socket);
       socket.close();
-      this.sockets.delete(socket);
+      if (!current) return;
       this.clearPresence();
       throw error;
     } finally {
@@ -797,7 +813,7 @@ export class PageSession {
       void this.retryConnection();
     }, delay);
   }
-  async retryConnection({ recheckDeniedAccess = false } = {}) {
+  async retryConnection({ recheckDeniedAccess = false, retryReceipt = false } = {}) {
     clearTimeout(this.retryTimer);
     this.retryTimer = undefined;
     try {
@@ -814,10 +830,23 @@ export class PageSession {
       else {
         this.connectionProblem = error.message;
         if (!this.localProblem) this.problem = error.message;
-        this.status = "Offline";
-        this.emit();
+        if (this.receiptState) this.showReceiptState();
+        else {
+          this.status = this.localPage ? "Saved locally" : "Offline";
+          this.emit();
+        }
         if (!error.status || error.status >= 500) this.scheduleReconnect();
       }
+    } finally {
+      // HTTP receipts can recover even if native sync still cannot reconnect.
+      if (
+        retryReceipt &&
+        this.alive &&
+        !this.authRequired &&
+        !this.accessDenied &&
+        !this.accessReloadRequired
+      )
+        this.queueSaved({ restart: true });
     }
   }
   observeChange(fn) {
@@ -851,11 +880,18 @@ export class PageSession {
     try {
       const stored = this.handle.change(fn);
       this.queueSaved();
+      const receipt = this.receiptState;
       Promise.resolve(stored).catch((error) => {
+        if (
+          !this.alive ||
+          !receipt ||
+          receipt !== this.receiptState ||
+          receipt.revision !== this.receiptRevision
+        )
+          return;
         this.localProblem = error.message;
         this.problem = error.message;
-        this.status = "Local save failed";
-        this.emit();
+        this.showReceiptState();
       });
       return stored;
     } finally {
@@ -1021,21 +1057,65 @@ export class PageSession {
       return pending;
     });
   }
-  queueSaved() {
+  queueSaved({ restart = false } = {}) {
     if (!this.alive || this.deleted) return;
+    const heads = this.handle ? A.getHeads(this.doc) : [];
+    const blocked = !!(this.authRequired || this.accessDenied || this.accessReloadRequired);
+    // Native reconnects and duplicate change events don't create new edits.
+    // Keep their in-flight HTTP receipt and bounded retry budget intact.
+    if (
+      !restart &&
+      this.receiptState &&
+      this.receiptState.revision === this.receiptRevision &&
+      this.receiptState.blocked === blocked &&
+      !(this.receiptState.localOnly && this.connection) &&
+      this.sameReceiptHeads(this.receiptState.heads, heads)
+    ) {
+      this.showReceiptState();
+      return;
+    }
     this.cancelReceiptRetry();
     this.receiptRetryAttempts = 0;
     this.receiptRevision = (this.receiptRevision ?? 0) + 1;
     clearTimeout(this.savedTimer);
+    if (!blocked && !this.localProblem && this.problem === this.receiptState?.problem)
+      this.problem = "";
+    this.receiptState = {
+      revision: this.receiptRevision,
+      heads,
+      blocked,
+      status: "Saving",
+      problem: "",
+    };
+    this.showReceiptState();
+    this.savedTimer = setTimeout(() => {
+      this.savedTimer = undefined;
+      void this.saveReceipt();
+    }, 300);
+  }
+  sameReceiptHeads(left, right) {
+    return left.length === right.length && left.every((head) => right.includes(head));
+  }
+  showReceiptState() {
     this.status = this.accessDenied
       ? "Access removed"
       : this.accessReloadRequired
         ? "Access changed"
         : this.authRequired
           ? "Sign in to sync"
-          : "Saving";
+          : this.localProblem
+            ? "Local save failed"
+            : this.connectionProblem && this.receiptState.status !== "Saved locally"
+              ? "Offline"
+              : this.receiptState.status;
+    if (
+      !this.authRequired &&
+      !this.accessDenied &&
+      !this.accessReloadRequired &&
+      (this.localProblem || this.receiptState.problem || this.connectionProblem)
+    )
+      this.problem = this.localProblem || this.receiptState.problem || this.connectionProblem;
     this.emit();
-    this.savedTimer = setTimeout(() => void this.saveReceipt(), 300);
   }
   cancelReceiptRetry() {
     clearTimeout(this.receiptRetryTimer);
@@ -1084,19 +1164,54 @@ export class PageSession {
       }
     }
   }
-  async saveReceipt({ synchronize = false } = {}) {
-    if (!this.alive || !this.handle) return;
+  saveReceipt(options = {}) {
+    if (!this.alive || !this.handle) return Promise.resolve();
+    const heads = A.getHeads(this.doc);
+    if (!this.receiptState || this.receiptState.revision !== this.receiptRevision) {
+      this.receiptState = {
+        revision: this.receiptRevision,
+        heads,
+        blocked: !!(this.authRequired || this.accessDenied || this.accessReloadRequired),
+        status: "Saving",
+        problem: "",
+      };
+    } else if (!this.sameReceiptHeads(this.receiptState.heads, heads)) {
+      this.queueSaved();
+      return Promise.resolve();
+    }
+    const state = this.receiptState;
+    // Debounce, reconnect, and retry callbacks can meet at the same frontier.
+    if (this.activeReceipt?.state === state) return this.activeReceipt.promise;
+    const promise = this.performSaveReceipt(state, options).finally(() => {
+      if (this.activeReceipt?.state === state) this.activeReceipt = undefined;
+    });
+    this.activeReceipt = { state, promise };
+    return promise;
+  }
+  async performSaveReceipt(state, { synchronize = false } = {}) {
     const revision = this.receiptRevision;
-    const isCurrent = () =>
-      this.alive &&
-      !this.deleted &&
-      !this.authRequired &&
-      !this.accessDenied &&
-      !this.accessReloadRequired &&
-      revision === this.receiptRevision;
+    const isCurrent = () => {
+      if (
+        !this.alive ||
+        this.deleted ||
+        this.authRequired ||
+        this.accessDenied ||
+        this.accessReloadRequired ||
+        revision !== this.receiptRevision ||
+        state !== this.receiptState
+      )
+        return false;
+      if (!this.sameReceiptHeads(state.heads, A.getHeads(this.doc))) {
+        // A change can reach the handle before its notification reaches us.
+        this.queueSaved();
+        return false;
+      }
+      return true;
+    };
     try {
       await this.repo.flush();
       await this.persistLocal({ pending: true });
+      if (!isCurrent()) return;
       if (this.problem === this.localProblem) this.problem = "";
       this.localProblem = "";
     } catch (error) {
@@ -1108,16 +1223,18 @@ export class PageSession {
         await this.localAccessChanged();
         return;
       }
-      if (!this.alive || revision !== this.receiptRevision) return;
+      if (!isCurrent()) return;
       this.localProblem = this.problem = error.message;
-      this.status = "Local save failed";
+      state.problem = error.message;
+      state.status = this.status = "Local save failed";
       this.emit();
       return;
     }
     try {
       if (!isCurrent()) return;
       if (this.localPage && !this.connection) {
-        this.status = "Saved locally";
+        state.localOnly = true;
+        state.status = this.status = "Saved locally";
         this.emit();
         return;
       }
@@ -1136,7 +1253,7 @@ export class PageSession {
       }
       // Native catch-up is not a durability receipt; the host must still
       // acknowledge these exact heads after its storage barrier.
-      const heads = A.getHeads(this.doc);
+      const heads = state.heads;
       const result = await this.requestWithRenewal(
         `/api/saved?page=${encodeURIComponent(this.pageId)}`,
         {
@@ -1161,17 +1278,14 @@ export class PageSession {
       // The host frontier may already descend from them, so exact membership
       // in its newer durableHeads cannot decide whether this client is saved.
       this.savedHeads = heads;
-      this.clearConnectionProblem();
-      this.status = A.getHeads(this.doc).every((h) => this.savedHeads.includes(h))
-        ? "Saved"
-        : "Saving";
-      if (this.status === "Saved") {
-        this.cancelReceiptRetry();
-        this.receiptRetryAttempts = 0;
-        await this.persistLocal({ pending: false });
-      }
+      if (this.problem === state.problem) this.problem = "";
+      state.problem = "";
+      state.status = "Saved";
+      this.cancelReceiptRetry();
+      this.receiptRetryAttempts = 0;
+      await this.persistLocal({ pending: false });
       if (!isCurrent()) return;
-      this.emit();
+      this.showReceiptState();
     } catch (error) {
       if (isCurrent()) {
         if (error.code === "LOCAL_PAGE_DELETED") {
@@ -1185,16 +1299,16 @@ export class PageSession {
             { denied: true },
           );
         if (!this.authRequired && !this.accessDenied && !this.accessReloadRequired) {
-          this.connectionProblem = error.message;
+          state.problem = error.message;
           if (!this.localProblem) this.problem = error.message;
-          this.status = this.localPage ? "Saved locally" : "Unsaved";
+          state.status = this.status = this.localPage ? "Saved locally" : "Unsaved";
           if (!error.status || error.status === 409 || error.status >= 500)
             this.scheduleReceiptRetry(
               revision,
               synchronize || (error.status === 409 && error.message === MISSING_EDITS_MESSAGE),
             );
         }
-        this.emit();
+        this.showReceiptState();
       }
     }
   }
