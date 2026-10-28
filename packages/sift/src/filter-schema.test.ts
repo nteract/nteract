@@ -358,4 +358,48 @@ describe("engineStateToExplorerState", () => {
     expect(parsed.filters[0].op).toBe("in");
     expect(parsed.resultCount).toBe(10);
   });
+
+  it("omits committedQuery and counts for a file-backed table", () => {
+    const state: TableEngineState = {
+      sort: null,
+      filters: [{ column: "score", filter: { kind: "range", min: 1, max: 2 } }],
+      filteredCount: 10,
+      totalCount: 50,
+      loadedCount: 50,
+    };
+    expect(engineStateToExplorerState(state)).toEqual({
+      filters: [{ column: "score", op: "between", value: [1, 2] }],
+      sort: [],
+      resultCount: 10,
+      totalCount: 50,
+    });
+  });
+
+  it("carries the committed query and counts while legacy fields keep meaning resident rows", () => {
+    const committedQuery = {
+      casts: [],
+      filters: [{ column: "score", op: "between" as const, value: [10, 50] as [number, number] }],
+      sort: [],
+    };
+    const state: TableEngineState = {
+      sort: null,
+      filters: [{ column: "active", filter: { kind: "boolean", value: true } }],
+      filteredCount: 600,
+      totalCount: 1000,
+      loadedCount: 1000,
+      committedQuery,
+      resultCount: { kind: "exact", value: 40_000 },
+    };
+    const result = engineStateToExplorerState(state);
+    expect(result.filters).toEqual([{ column: "active", op: "eq", value: true }]);
+    expect(result.resultCount).toBe(600);
+    expect(result.totalCount).toBe(1000);
+    expect(result.committedQuery).toEqual(committedQuery);
+    expect(result.counts).toEqual({ loaded: 1000, result: { kind: "exact", value: 40_000 } });
+
+    const uncounted = engineStateToExplorerState({ ...state, resultCount: undefined });
+    expect(uncounted.counts).toEqual({ loaded: 1000 });
+    const noFilters = engineStateToExplorerState({ ...state, committedQuery: null });
+    expect(noFilters.committedQuery).toBeNull();
+  });
 });

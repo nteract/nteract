@@ -15,7 +15,16 @@ import {
   type ImageViewerItem,
   mountImageViewer,
 } from "./components/image-viewer";
+import { predicateToEnglish } from "./filter-schema";
+import { computePermutation } from "./permutation";
+import type { Count, TableQuery } from "./query";
 import { renderColumnSummary, unmountColumnSummary } from "./sparkline";
+import {
+  isWindowedTableData,
+  type QueryResult,
+  type WindowCells,
+  type WindowedTableData,
+} from "./windowed";
 // --- Types ---
 
 export type ColumnType = "numeric" | "categorical" | "timestamp" | "boolean" | "image";
@@ -30,6 +39,56 @@ export type Column = {
   timezone?: string | null;
 };
 
+// --- Metric coverage ---
+
+/** Which rows a metric describes: the resident rows, or the whole dataset. */
+export type DataScope = "loaded" | "dataset";
+/** How much to trust a metric's value. */
+export type MetricPrecision = "exact" | "estimated" | "lower-bound";
+/** Where a metric came from: resident rows, file metadata, or a pushed-down query. */
+export type MetricSource = "resident" | "metadata" | "query";
+export type Coverage = { scope: DataScope; precision: MetricPrecision; source: MetricSource };
+export type ScopedValue<T> = Coverage & { value: T };
+
+/**
+ * Per-metric coverage of a column summary. Absent means every metric is
+ * exact over resident rows, which are the whole dataset.
+ */
+export type SummaryScope = {
+  rows: { loaded: number; dataset?: ScopedValue<number> };
+  /** Covers bins / topCategories / allCategories / trueCount / falseCount. */
+  distribution: Coverage;
+  range?: ScopedValue<{ min: number; max: number }>;
+  nullCount?: ScopedValue<number>;
+  distinctCount?: ScopedValue<number>;
+};
+
+/** Whole-dataset coverage of a TableData. Absent means every row is resident. */
+export type DatasetCoverage = {
+  loadedRows: number;
+  /** Absent when the dataset size is unknown. */
+  totalRows?: ScopedValue<number>;
+  /** Row groups in the source file, when the source has them. */
+  rowGroups?: number;
+  truncated: boolean;
+  /** True while a load is paused at a soft budget and more rows can be requested. */
+  resumable?: boolean;
+};
+
+/** Per-column statistics read from Parquet footer metadata at open. */
+export type ColumnFileStats = {
+  /** Whole-file null count, or null when any row group did not record one. */
+  nullCount: number | null;
+  min: number | string | boolean | null;
+  max: number | string | boolean | null;
+  /** Row groups whose bounds were usable. Bounds cover the file only when equal to its row-group count. */
+  boundedRowGroups: number;
+  /** True when every row group's bounds are exact (not truncated strings). */
+  boundsExact: boolean;
+  /** min or max is ±Infinity. */
+  hasInfinite: boolean;
+};
+
 export type NumericColumnSummary = {
   kind: "numeric";
   min: number;
@@ -41,6 +100,7 @@ export type NumericColumnSummary = {
   isIndex?: boolean;
   /** Number of null/undefined/NaN values. */
   nullCount?: number;
+  scope?: SummaryScope;
 };
 
 export type CategoryEntry = { label: string; count: number; pct: number };
@@ -55,6 +115,9 @@ export type CategoricalColumnSummary = {
   allCategories: CategoryEntry[];
   /** Median string length across all unique values. Used for display heuristics. */
   medianTextLength: number;
+  /** Number of null values. */
+  nullCount?: number;
+  scope?: SummaryScope;
 };
 
 export type BooleanColumnSummary = {
@@ -63,6 +126,7 @@ export type BooleanColumnSummary = {
   falseCount: number;
   nullCount: number;
   total: number;
+  scope?: SummaryScope;
 };
 
 export type TimestampColumnSummary = {
@@ -73,6 +137,7 @@ export type TimestampColumnSummary = {
   /** Number of null/undefined values. */
   nullCount?: number;
   timezone?: string | null;
+  scope?: SummaryScope;
 };
 
 export type ColumnSummary =
@@ -106,6 +171,14 @@ export type TableData = {
   filterRows?: (filters: (ColumnFilter | null)[]) => Uint32Array;
   /** Optional: release backing resources when the table engine is destroyed. */
   dispose?: () => void;
+  /** Optional: how much of the dataset is resident. Absent means all of it. */
+  coverage?: DatasetCoverage;
+  /**
+   * Optional: footer statistics per column, in column order, fixed at open.
+   * Summaries fold them into `scope`; a cast column's entry is ignored since
+   * it describes the original type.
+   */
+  datasetStats?: readonly (ColumnFileStats | null)[];
 };
 
 // --- Filter types ---
@@ -120,14 +193,48 @@ export type TableEngineState = {
   sort: { column: string; direction: "asc" | "desc" } | null;
   filters: { column: string; filter: ColumnFilter }[];
   filteredCount: number;
+  /** Resident rows. The same number as `loadedCount`; kept for compatibility. */
   totalCount: number;
+  /** Resident rows; a truncated load holds fewer than the dataset. */
+  loadedCount?: number;
+  /**
+   * The query the resident rows already satisfy, when a provider answered one.
+   * `null` means a provider result with no filters; absent means the rows
+   * came from a file or stream and every filter is local.
+   */
+  committedQuery?: TableQuery | null;
+  /** Rows matching `committedQuery` in the whole dataset, when known. */
+  resultCount?: Count;
+  /**
+   * True while a windowed source is answering a filter, sort, or cast;
+   * `filteredCount` is then the last known value. Always false for resident data.
+   */
+  pending?: boolean;
+  /**
+   * A windowed data side reported a fatal error. The rows on screen stay;
+   * sort, filter, and cast controls are disabled. Always false for resident data.
+   */
+  dataFailed?: boolean;
 };
 
 export type TableEngineOptions = {
   /** Called whenever sort or filter state changes from UI interaction. */
   onChange?: (state: TableEngineState) => void;
+  /**
+   * Called when the user removes a committed filter pill. The engine never
+   * re-runs queries; the host answers `next` and swaps the result in through
+   * `replaceData(data, { committedQuery: next })`.
+   */
+  onCommittedQueryChange?: (next: TableQuery) => void;
   /** Optional control rendered in the stats/footer bar before built-in buttons. */
   footerControl?: HTMLElement;
+  /**
+   * Called when the viewport reaches the last loaded rows: the last visible
+   * view row is within the overscan of the end and streaming is not active.
+   * Fires once per row count, so a paused load gets one call per pause and is
+   * re-armed when rows arrive.
+   */
+  onScrollNearEnd?: () => void;
 };
 
 export type ReplaceDataOptions = {
@@ -144,13 +251,47 @@ export type ReplaceDataOptions = {
    * data settled on. Omit to leave the current state alone.
    */
   streaming?: boolean;
+  /**
+   * Footer control to show from now on, as `TableEngineOptions.footerControl`.
+   * `null` removes the current one; omit to keep it.
+   */
+  footerControl?: HTMLElement | null;
+  /**
+   * The new rows already satisfy this query (`null`: a provider result with no
+   * filters). Local filters and sort are reset instead of being re-applied,
+   * and committed filters render as pills the host clears through
+   * `onCommittedQueryChange`. Omit to keep the usual preservation, which also
+   * clears any committed query and result count.
+   */
+  committedQuery?: TableQuery | null;
+};
+
+/**
+ * Options the engine passes itself when a column-shape change rebuilds it.
+ * Not public: hosts set a committed query through `replaceData`.
+ * @internal
+ */
+export type InternalTableEngineOptions = TableEngineOptions & {
+  committedQuery?: TableQuery | null;
 };
 
 export type TableEngine = {
   onBatchAppended(): void;
   /** Signal that all batches have been loaded and streaming is complete. */
   setStreamingDone(): void;
-  replaceData(newData: TableData, options?: ReplaceDataOptions): void;
+  /**
+   * Re-arm the streaming guard after `setStreamingDone()`: casts are blocked
+   * again and the status indicator shows loading until the next
+   * `setStreamingDone()`. Used when a paused load resumes.
+   */
+  resumeStreaming(): void;
+  replaceData(newData: TableData | WindowedTableData, options?: ReplaceDataOptions): void;
+  /**
+   * Show `control` in the footer from now on, as
+   * `TableEngineOptions.footerControl`; `null` removes the current one. Rows,
+   * scroll position, sort, and filters are left alone.
+   */
+  setFooterControl(control: HTMLElement | null): void;
   destroy(): void;
   setFilter(colIndex: number, filter: ColumnFilter): void;
   clearFilter(colIndex: number): void;
@@ -164,6 +305,11 @@ export type TableEngine = {
   /** Get the full explorer state (sort + filters + counts) in a serializable format. */
   getState(): TableEngineState;
   /**
+   * Record how many whole-dataset rows match the committed query. Updates the
+   * footer; cleared by `replaceData` without `committedQuery`.
+   */
+  setResultCount(count: Count): void;
+  /**
    * Currently focused (expanded) data row, or `null` when every row uses the
    * collapsed text-line cap. Tracked by data row, so focus survives sort
    * changes; reset on filter changes since the focused row may filter out.
@@ -175,6 +321,26 @@ export type TableEngine = {
    */
   setFocusedDataRow(dataRow: number | null): void;
 };
+
+/**
+ * A view row and an offset into it, in virtual content pixels (the space
+ * `rowPositions` lives in, header excluded). See `captureScrollAnchor`.
+ * @internal
+ */
+export type ScrollAnchor = { row: number; offset: number };
+
+/**
+ * Engine internals for tests. Not exported from `index.ts`.
+ * @internal
+ */
+export type TableEngineTestHooks = {
+  captureScrollAnchor(): ScrollAnchor | null;
+  /** Scroll so `anchor` sits under the header's bottom edge again. */
+  restoreScrollAnchor(anchor: ScrollAnchor): void;
+};
+
+/** @internal */
+export type InternalTableEngine = TableEngine & { __test: TableEngineTestHooks };
 
 type SortState = { col: number; dir: "asc" | "desc" } | null;
 
@@ -275,11 +441,117 @@ function resolveCellFont(container: HTMLElement): string {
 
 export function createTable(
   container: HTMLElement,
-  initialData: TableData,
+  initialData: TableData | WindowedTableData,
   options?: TableEngineOptions,
 ): TableEngine {
-  let data = initialData;
+  // --- Windowed mode ---
+  //
+  // Decided once here. With a `WindowedTableData` the data side owns the
+  // permutation; the view keeps a `TableData`-shaped reader (`data`) over the
+  // cells it has received, and `viewIndices[r]` is `-1` for a view row whose
+  // data row has not arrived. Resident data takes the unchanged synchronous
+  // path: nothing below awaits unless `windowed` is true.
+  const windowed = isWindowedTableData(initialData);
+  let windowedData: WindowedTableData | null = windowed ? initialData : null;
+  /** Cells received from the data side, by data row. Windowed mode only. */
+  const windowCells = new Map<number, { strings: string[]; raws: unknown[] }>();
+  /** Non-null raw for an image cell whose bytes arrive through `requestImage`. */
+  const IMAGE_PENDING: readonly Uint8Array[] = Object.freeze([]);
+  let unsubscribeWindowed: (() => void) | null = null;
+  // Query generation: bumped by every filter, sort, cast, or append; responses
+  // tagged with an older generation are dropped.
+  let generation = 0;
+  let pending = false;
+  let windowInFlight = false;
+  let wantedWindow: { start: number; end: number } | null = null;
+  /**
+   * A query answer waiting for the window that covers the visible span. Both
+   * land together in one frame so the committed snapshot stays painted until
+   * then; a newer generation discards it.
+   */
+  let pendingCommit: {
+    generation: number;
+    result: QueryResult;
+    columns: Column[] | null;
+    scrollToTop: boolean;
+  } | null = null;
+  /** The data side reported a fatal error: keep the rows, disable the tools. */
+  let dataFailed = false;
+  const TOOLS_DISABLED_TITLE = "Data source stopped; table tools are unavailable";
+  const toolsDisabled = () => windowed && dataFailed;
+
+  /** A `TableData` reader over the cells the view holds for `w`. */
+  function viewReaderFor(w: WindowedTableData): TableData {
+    return {
+      columns: w.columns,
+      rowCount: w.rowCount,
+      getCell: (row, col) => windowCells.get(row)?.strings[col] ?? "",
+      getCellRaw: (row, col) => {
+        const cells = windowCells.get(row);
+        return cells ? cells.raws[col] : null;
+      },
+      columnSummaries: w.columns.map(() => null),
+      isColumnCast: w.isColumnCast ? (col) => w.isColumnCast!(col) : undefined,
+      coverage: w.coverage,
+      datasetStats: w.datasetStats,
+      dispose: () => w.dispose(),
+    };
+  }
+
+  /** Keep the cells of `cells` and mark their view rows resolved. */
+  function storeWindowCells(cells: WindowCells, markResolved: boolean) {
+    const cols = columns.length;
+    for (let i = 0; i < cells.dataRows.length; i++) {
+      const dataRow = cells.dataRows[i];
+      const strings: string[] = Array.from({ length: cols }, () => "");
+      const raws: unknown[] = Array.from({ length: cols }, () => null);
+      for (let c = 0; c < cols; c++) {
+        const k = i * cols + c;
+        const s = cells.strings[k] ?? "";
+        strings[c] = s;
+        if (cells.nulls[k]) {
+          raws[c] = null;
+          continue;
+        }
+        switch (columns[c].columnType) {
+          case "numeric":
+          case "timestamp":
+            raws[c] = cells.numeric[k];
+            break;
+          case "boolean":
+            raws[c] = cells.numeric[k] === 1;
+            break;
+          case "image":
+            raws[c] = IMAGE_PENDING;
+            break;
+          default:
+            raws[c] = s;
+        }
+      }
+      windowCells.set(dataRow, { strings, raws });
+      const viewRow = cells.viewStart + i;
+      if (markResolved && viewRow < filteredCount) {
+        viewIndices[viewRow] = dataRow;
+        // Measure now, so the anchored relayout that follows uses real heights
+        // for every landed row, including those above the viewport. Left to
+        // the render loop, rows above would grow after the anchor was restored
+        // and push the content down.
+        if (!cellCaches[dataRow]) cellCaches[dataRow] = prepareCellRow(dataRow);
+      }
+    }
+  }
+
+  /** Whether `head.dataRows[i] === head.viewStart + i` for every row. */
+  function isIdentityHead(head: WindowCells): boolean {
+    for (let i = 0; i < head.dataRows.length; i++) {
+      if (head.dataRows[i] !== head.viewStart + i) return false;
+    }
+    return true;
+  }
+
+  let data: TableData = windowed ? viewReaderFor(initialData) : initialData;
   let columns = data.columns;
+  let footerControl = options?.footerControl;
 
   // Mutable row count — grows as batches arrive
   let rowCount = data.rowCount;
@@ -293,6 +565,13 @@ export function createTable(
 
   // Sort state
   let sortState: SortState = null;
+
+  // Query ownership: the provider query the resident rows already satisfy, and
+  // how many whole-dataset rows match it. `undefined` means no provider.
+  let committedQuery: TableQuery | null | undefined = (
+    options as InternalTableEngineOptions | undefined
+  )?.committedQuery;
+  let resultCount: Count | undefined;
 
   // Pinned columns + visual ordering
   const pinnedColumns = new Set<number>([0]); // first column pinned by default
@@ -313,7 +592,14 @@ export function createTable(
   let rowHeights = new Float64Array(capacity);
   let rowPositions = new Float64Array(capacity + 1);
   viewIndices = new Int32Array(capacity);
-  for (let i = 0; i < rowCount; i++) viewIndices[i] = i;
+  if (windowed) {
+    // Nothing is resolved until the first query answers; the head fills the
+    // reader so auto-width and first paint have cells.
+    viewIndices.fill(-1, 0, rowCount);
+    storeWindowCells(windowedData!.head, false);
+  } else {
+    for (let i = 0; i < rowCount; i++) viewIndices[i] = i;
+  }
 
   let totalHeight = 0;
   let heightsDirty = true;
@@ -383,10 +669,21 @@ export function createTable(
 
   // --- Compute heights ---
 
+  // Estimate for a row with no prepared cells: one text line, or a thumbnail
+  // when the schema has an image column (windowed placeholders).
+  let placeholderHeight = LINE_HEIGHT + CELL_PAD_V;
+  function updatePlaceholderHeight() {
+    placeholderHeight =
+      windowed && columns.some((c) => c.columnType === "image")
+        ? IMAGE_THUMB_MAX_HEIGHT + CELL_PAD_V
+        : LINE_HEIGHT + CELL_PAD_V;
+  }
+  updatePlaceholderHeight();
+
   function computeRowHeight(sortedRow: number): number {
     const dataRow = viewIndices[sortedRow];
     const cache = cellCaches[dataRow];
-    if (!cache) return LINE_HEIGHT + CELL_PAD_V; // estimate for unprepared rows
+    if (!cache) return placeholderHeight; // estimate for unprepared rows
     const isFocused = focusedDataRow === dataRow;
     const cap = MAX_COLLAPSED_LINES * LINE_HEIGHT;
 
@@ -548,12 +845,16 @@ export function createTable(
     return lo;
   }
 
-  type ScrollAnchor = {
-    row: number;
-    offset: number;
-  };
-
   let pendingScrollAnchor: ScrollAnchor | null = null;
+
+  // Scroll anchor coordinates. The anchor point is the header's bottom edge:
+  // the sticky header covers the top `headerH` px of the viewport, and the row
+  // pool starts `headerH` below the top of the scroll content, so at DOM
+  // scroll position `s` the content under that edge is at virtual offset
+  // `V = s * scrollScale` in `rowPositions` space (header excluded). An anchor
+  // is the view row containing `V` and `V - rowPositions[row]`. Both capture
+  // paths produce that pair and `applyScrollAnchor` inverts it, so a capture
+  // and restore with no geometry change leaves `scrollTop` where it was.
 
   function captureScrollAnchor(): ScrollAnchor | null {
     if (filteredCount === 0) return null;
@@ -561,6 +862,8 @@ export function createTable(
     const viewportRect = viewport.getBoundingClientRect();
     const anchorY = viewportRect.top + headerH;
     if (viewportRect.height > 0) {
+      // A painted row's screen top is `viewportTop + headerH + rowPositions[r]
+      // - V`, so `anchorY - rowRect.top` is `V - rowPositions[r]`.
       for (const pr of pool) {
         if (pr.assignedRow === -1) continue;
         const rowRect = pr.el.getBoundingClientRect();
@@ -574,11 +877,12 @@ export function createTable(
       }
     }
 
-    const scrollTop = Math.max(0, viewport.scrollTop * scrollScale - headerH);
-    const row = Math.min(rowAtOffset(scrollTop), filteredCount - 1);
+    // No painted row under the edge (or no layout): the same point from geometry.
+    const anchorVirtual = Math.max(0, viewport.scrollTop * scrollScale);
+    const row = Math.min(rowAtOffset(anchorVirtual), filteredCount - 1);
     return {
       row,
-      offset: Math.max(0, scrollTop - rowPositions[row]),
+      offset: Math.max(0, anchorVirtual - rowPositions[row]),
     };
   }
 
@@ -589,13 +893,20 @@ export function createTable(
     heightsDirty = true;
   }
 
-  function restoreScrollAnchor(headerH: number) {
-    if (!pendingScrollAnchor) return;
+  /** Apply the pending anchor, if any; true when one was applied. */
+  function restoreScrollAnchor(): boolean {
+    if (!pendingScrollAnchor) return false;
     const anchor = pendingScrollAnchor;
     pendingScrollAnchor = null;
+    applyScrollAnchor(anchor);
+    return true;
+  }
+
+  /** Scroll so `anchor` is under the header's bottom edge: the inverse of `captureScrollAnchor`. */
+  function applyScrollAnchor(anchor: ScrollAnchor) {
     if (filteredCount === 0) return;
     const row = Math.min(anchor.row, filteredCount - 1);
-    const targetVirtual = headerH + rowPositions[row] + anchor.offset;
+    const targetVirtual = rowPositions[row] + anchor.offset;
     const targetScroll = scrollScale === 1 ? targetVirtual : targetVirtual / scrollScale;
     const maxScrollTop = Math.max(0, spacerHeight - viewport.clientHeight);
     viewport.scrollTop = Math.min(maxScrollTop, targetScroll);
@@ -604,130 +915,370 @@ export function createTable(
 
   // --- Filter + Sort ---
 
-  function rowPassesFilters(dataRow: number): boolean {
-    for (let c = 0; c < columns.length; c++) {
-      const f = filters[c];
-      if (!f) continue;
-      const raw = data.getCellRaw(dataRow, c);
-      switch (f.kind) {
-        case "range": {
-          if (raw == null) return false;
-          const v = Number(raw);
-          if (!Number.isFinite(v)) return false;
-          if (v < f.min || v > f.max) return false;
-          break;
-        }
-        case "set": {
-          if (raw == null) return false;
-          const s = data.getCell(dataRow, c);
-          if (!f.values.has(s)) return false;
-          break;
-        }
-        case "not-in": {
-          // Null is not a string category, including the empty-string category.
-          if (raw == null) break;
-          const s = data.getCell(dataRow, c);
-          // Inverted: exclude row if value IS in the exclusion set
-          if (f.values.has(s)) return false;
-          break;
-        }
-        case "boolean": {
-          if (raw == null || Boolean(raw) !== f.value) return false;
-          break;
-        }
-      }
-    }
-    return true;
-  }
-
   function hasActiveFilters(): boolean {
     return filters.some((f) => f !== null);
   }
 
   function applyFilterAndSort() {
-    // Step 1: filter
-    const filtered: number[] = [];
-    if (hasActiveFilters()) {
-      if (data.filterRows) {
-        // WASM fast path: apply all filters in Rust, no per-cell FFI
-        const wasmResult = data.filterRows(filters);
-        for (let i = 0; i < wasmResult.length; i++) filtered.push(wasmResult[i]);
-      } else {
-        for (let i = 0; i < rowCount; i++) {
-          if (rowPassesFilters(i)) filtered.push(i);
-        }
-      }
-    } else {
-      for (let i = 0; i < rowCount; i++) filtered.push(i);
+    if (windowed) {
+      // Only `replaceData` reaches this in windowed mode; it starts at the top.
+      startQuery(true);
+      return;
     }
+    const filtered = computePermutation(data, columns, filters, sortState, rowCount);
     filteredCount = filtered.length;
 
-    // Step 2: sort the filtered set
-    if (sortState) {
-      const { col, dir } = sortState;
-      if (data.sortColumn) {
-        // WASM fast path: get sorted indices for all rows, then intersect with filter
-        const sortedAll = data.sortColumn(col, dir === "asc");
-        if (hasActiveFilters()) {
-          const filterSet = new Set(filtered);
-          filtered.length = 0;
-          for (let i = 0; i < sortedAll.length; i++) {
-            if (filterSet.has(sortedAll[i])) filtered.push(sortedAll[i]);
-          }
-        } else {
-          filtered.length = 0;
-          for (let i = 0; i < sortedAll.length; i++) {
-            filtered.push(sortedAll[i]);
-          }
-        }
-      } else {
-        // JS fallback: sort the filtered set with comparators
-        const colType = columns[col].columnType;
-        const isNumeric = colType === "numeric" || colType === "timestamp";
-        filtered.sort((a, b) => {
-          let cmp: number;
-          if (isNumeric) {
-            const rawA = data.getCellRaw(a, col);
-            const rawB = data.getCellRaw(b, col);
-            const va = rawA == null ? NaN : Number(rawA);
-            const vb = rawB == null ? NaN : Number(rawB);
-            const aOk = Number.isFinite(va) || va === Infinity || va === -Infinity;
-            const bOk = Number.isFinite(vb) || vb === Infinity || vb === -Infinity;
-            if (!aOk && !bOk) cmp = 0;
-            else if (!aOk) return 1;
-            else if (!bOk) return -1;
-            else cmp = va - vb;
-          } else if (colType === "boolean") {
-            const rawA = data.getCellRaw(a, col);
-            const rawB = data.getCellRaw(b, col);
-            if (rawA == null && rawB == null) cmp = 0;
-            else if (rawA == null) return 1;
-            else if (rawB == null) return -1;
-            else cmp = (rawA ? 1 : 0) - (rawB ? 1 : 0);
-          } else {
-            const rawA = data.getCellRaw(a, col);
-            const rawB = data.getCellRaw(b, col);
-            if (rawA == null && rawB == null) cmp = 0;
-            else if (rawA == null) return 1;
-            else if (rawB == null) return -1;
-            else {
-              const sa = data.getCell(a, col);
-              const sb = data.getCell(b, col);
-              cmp = sa < sb ? -1 : sa > sb ? 1 : 0;
-            }
-          }
-          return dir === "asc" ? cmp : -cmp;
-        });
-      }
-    }
-
-    // Step 3: write to viewIndices
+    // Write to viewIndices
     if (filtered.length > capacity) growBuffers(filtered.length);
     for (let i = 0; i < filtered.length; i++) {
       viewIndices[i] = filtered[i];
     }
 
     heightsDirty = true;
+  }
+
+  // --- Windowed mode: queries and windows ---
+  //
+  // The data side answers `setQuery` with the filtered count and summaries and
+  // `requestWindow` with cells for a span of view rows. A query never clears
+  // what is painted: the committed snapshot (resolution map, cell caches,
+  // heights) stays until the answer and the window covering the visible span
+  // have both arrived for the same generation, then they commit in one frame
+  // under the scroll anchor. Rows the snapshot never resolved stay `-1` and
+  // `render()` shows placeholders there and asks for them.
+
+  /**
+   * Ask the data side for the current filters and sort. `scrollToTop` is the
+   * user-initiated sort/filter path, which has already scrolled to the top;
+   * appends and schema changes hold the viewport where it is.
+   */
+  function startQuery(scrollToTop = false, nextColumns: Column[] | null = null) {
+    const w = windowedData!;
+    const myGeneration = ++generation;
+    pending = true;
+    pendingCommit = null;
+    wantedWindow = null;
+    // The user changed what is on screen: placeholders at once, and the answer
+    // commits as soon as it arrives since nothing visible is resolved. The
+    // snapshot is kept so a refused query puts the delivered cells back.
+    const snapshot = scrollToTop ? viewIndices.slice(0, filteredCount) : null;
+    if (snapshot) {
+      viewIndices.fill(-1, 0, filteredCount);
+      heightsDirty = true;
+    }
+    const sort = sortState ? { col: sortState.col, dir: sortState.dir } : null;
+    w.setQuery({ filters: [...filters], sort }, myGeneration).then(
+      (result) => {
+        if (destroyed || myGeneration !== generation) return;
+        holdQueryResult(result, nextColumns, scrollToTop);
+      },
+      (error: unknown) => {
+        if (destroyed || myGeneration !== generation) return;
+        pending = false;
+        pendingCommit = null;
+        console.warn("Sift query failed:", error);
+        if (snapshot && snapshot.length === filteredCount) {
+          viewIndices.set(snapshot);
+          heightsDirty = true;
+          lastVisFirst = -1;
+          lastVisLast = -1;
+          scheduleRender();
+        }
+        notifyChange();
+      },
+    );
+  }
+
+  /** View rows to fetch for a `count`-row permutation around the current viewport. */
+  function commitSpan(count: number, scrollToTop: boolean): { start: number; end: number } {
+    const headerH = headerEl.offsetHeight;
+    const viewportH = viewport.clientHeight;
+    const visibleRows = Math.ceil(viewportH / placeholderHeight) + 1;
+    if (scrollToTop) return { start: 0, end: Math.min(count, visibleRows + OVERSCAN) };
+    const scrollTop = Math.max(0, viewport.scrollTop * scrollScale - headerH);
+    const visFirst = Math.min(rowAtOffset(scrollTop), Math.max(0, count - 1));
+    const start = Math.max(0, visFirst - OVERSCAN);
+    return { start, end: Math.min(count, visFirst + visibleRows + OVERSCAN) };
+  }
+
+  /** The committed view count, for the resident path's footer. */
+  function committedFilteredCount(): number {
+    return filteredCount;
+  }
+
+  /** Rows the footer and `getState()` report: the latest answer, committed or held. */
+  function reportedFilteredCount(): number {
+    return pendingCommit ? pendingCommit.result.filteredCount : filteredCount;
+  }
+
+  /** Whether the painted snapshot has any resolved row in the span `render()` would show. */
+  function snapshotVisible(scrollToTop: boolean): boolean {
+    if (filteredCount === 0) return false;
+    const span = commitSpan(filteredCount, scrollToTop);
+    for (let r = span.start; r < span.end; r++) if (viewIndices[r] >= 0) return true;
+    return false;
+  }
+
+  /**
+   * A query answered. The count and summaries are known now and are reported;
+   * the painted snapshot stays until the window covering the visible span
+   * arrives, then both commit in one frame. With nothing resolved on screen
+   * there is nothing to hold, so the answer commits at once and `render()`
+   * asks for rows as usual.
+   */
+  function holdQueryResult(
+    result: QueryResult,
+    nextColumns: Column[] | null,
+    scrollToTop: boolean,
+  ) {
+    pending = false;
+    if (nextColumns) applyColumnTypeMeta(nextColumns);
+    const hold = { generation: result.generation, result, columns: nextColumns, scrollToTop };
+    pendingCommit = hold;
+    if (result.filteredCount === 0 || !snapshotVisible(scrollToTop)) {
+      commitPending(null);
+      return;
+    }
+    updateRowCountDisplay();
+    notifyChange();
+    const span = commitSpan(result.filteredCount, scrollToTop);
+    windowedData!.requestWindow(span.start, span.end, hold.generation).then(
+      (cells) => {
+        if (destroyed || pendingCommit !== hold || hold.generation !== generation) return;
+        commitPending(cells);
+      },
+      (error: unknown) => {
+        if (destroyed || pendingCommit !== hold || hold.generation !== generation) return;
+        // The snapshot stays painted; only the count it reported is withdrawn.
+        pendingCommit = null;
+        console.warn("Sift window request failed:", error);
+        updateRowCountDisplay();
+        notifyChange();
+      },
+    );
+  }
+
+  /** Swap the map, fill the window, and keep the anchored row where it was: one frame. */
+  function commitPending(cells: WindowCells | null) {
+    const hold = pendingCommit!;
+    pendingCommit = null;
+    const { result } = hold;
+    // The anchor reads the rows still painted from the previous snapshot, so it
+    // comes before anything moves. Before the first layout there is nothing to
+    // anchor to (positions are all zero and would resolve to the last row).
+    const anchor = hold.scrollToTop || totalHeight === 0 ? null : captureScrollAnchor();
+    if (hold.columns) {
+      // Cell strings changed with the types: drop every cached cell and repaint.
+      windowCells.clear();
+      cellCaches.length = 0;
+      hidePooledRows();
+    }
+    filteredCount = result.filteredCount;
+    growBuffers(filteredCount);
+    viewIndices.fill(-1, 0, filteredCount);
+    // The head is identity-ordered, so it resolves rows at once when nothing
+    // filters or sorts. A head that is not (a data side that built it from a
+    // permutation) is skipped; `render()` asks for those rows instead.
+    const head = windowedData!.head;
+    if (!hasActiveFilters() && !sortState && isIdentityHead(head)) storeWindowCells(head, true);
+    if (cells) storeWindowCells(cells, true);
+    data.columnSummaries = result.summaries;
+    unfilteredSummaries = result.summariesAll;
+    wantedWindow = null;
+    pendingScrollAnchor = anchor;
+    heightsDirty = true;
+    lastVisFirst = -1;
+    lastVisLast = -1;
+    updateRowCountDisplay();
+    renderAllSummaries();
+    updateFilteredLabels();
+    scheduleRender();
+    notifyChange();
+  }
+
+  /** From `render()`: request the unresolved part of `[first, last]`, one request at a time. */
+  function requestWindowFor(first: number, last: number) {
+    // A query is in flight or held, or nobody will answer: the snapshot stands.
+    if (pending || pendingCommit || dataFailed) return;
+    let lo = -1;
+    let hi = -1;
+    for (let r = first; r <= last; r++) {
+      if (viewIndices[r] >= 0) continue;
+      if (lo < 0) lo = r;
+      hi = r;
+    }
+    if (lo < 0) return;
+    wantedWindow = { start: lo, end: hi + 1 };
+    if (!windowInFlight) issueWindowRequest();
+  }
+
+  function issueWindowRequest() {
+    const wanted = wantedWindow;
+    if (!wanted || destroyed) return;
+    wantedWindow = null;
+    windowInFlight = true;
+    const myGeneration = generation;
+    windowedData!.requestWindow(wanted.start, wanted.end, myGeneration).then(
+      (cells) => {
+        windowInFlight = false;
+        if (destroyed) return;
+        if (myGeneration === generation && !pending && !pendingCommit) {
+          storeWindowCells(cells, true);
+          // Measured heights replace estimates; keep the anchored row in place.
+          markHeightsDirty(true);
+          scheduleRender();
+        }
+        issueWindowRequest();
+      },
+      (error: unknown) => {
+        windowInFlight = false;
+        if (!destroyed) console.warn("Sift window request failed:", error);
+      },
+    );
+  }
+
+  /**
+   * Column types changed on the data side (cast, undo, schema refinement):
+   * metadata and icons now; cached cells are dropped when the matching query
+   * commits, so the rows stay painted until their new strings arrive.
+   */
+  function applyColumnTypeMeta(next: Column[]) {
+    for (let c = 0; c < columns.length && c < next.length; c++) {
+      columns[c].columnType = next[c].columnType;
+      columns[c].numeric = next[c].numeric;
+      const icon = headerCells[c].querySelector(".sift-type-icon");
+      if (icon) {
+        icon.textContent = typeIconChar(columns[c].columnType);
+        icon.setAttribute("title", columns[c].columnType);
+      }
+    }
+    updatePlaceholderHeight();
+  }
+
+  /** A cast or undo on the data side: a query answer with new column types. */
+  function startCast(
+    run: (
+      w: WindowedTableData,
+      generation: number,
+    ) => Promise<QueryResult & { columns: Column[] }> | undefined,
+  ) {
+    const w = windowedData!;
+    const myGeneration = ++generation;
+    const request = run(w, myGeneration);
+    if (!request) {
+      generation--;
+      return;
+    }
+    pending = true;
+    pendingCommit = null;
+    wantedWindow = null;
+    notifyChange();
+    request.then(
+      (result) => {
+        if (destroyed || myGeneration !== generation) return;
+        holdQueryResult(result, result.columns, false);
+      },
+      (error: unknown) => {
+        if (destroyed || myGeneration !== generation) return;
+        pending = false;
+        pendingCommit = null;
+        console.warn("Cast failed:", error);
+        notifyChange();
+      },
+    );
+  }
+
+  /**
+   * `rows-appended`: more resident rows under the same query. Under the
+   * identity permutation the new rows simply extend the map; every existing
+   * mapping, cached cell, and measured height stays. Otherwise the permutation
+   * can change, so a query runs and commits under the scroll anchor.
+   */
+  function onRowsAppended(newRowCount: number, summariesAll: ColumnSummary[]) {
+    growBuffers(newRowCount);
+    rowCount = newRowCount;
+    data.rowCount = newRowCount;
+    unfilteredSummaries = summariesAll;
+    if (
+      !hasActiveFilters() &&
+      !sortState &&
+      !pending &&
+      !pendingCommit &&
+      newRowCount >= filteredCount
+    ) {
+      const previous = filteredCount;
+      filteredCount = newRowCount;
+      viewIndices.fill(-1, previous, filteredCount);
+      for (let r = previous; r < filteredCount; r++) rowHeights[r] = placeholderHeight;
+      rebuildPositions();
+      data.columnSummaries = summariesAll;
+      renderAllSummaries();
+      updateRowCountDisplay();
+      // The counts are final for this append; a query append reports when it answers.
+      notifyChange();
+    } else {
+      startQuery(false);
+      updateRowCountDisplay();
+    }
+    lastVisFirst = -1;
+    lastVisLast = -1;
+    scheduleRender();
+  }
+
+  /**
+   * The data side is gone (a trap, a dead worker). Everything painted stays;
+   * nothing new can be asked for, so the sort, filter, and cast controls are
+   * disabled rather than left to fail one request at a time.
+   */
+  function onDataFailed() {
+    if (dataFailed) return;
+    dataFailed = true;
+    pending = false;
+    pendingCommit = null;
+    wantedWindow = null;
+    for (const th of headerCells) {
+      const top = th.querySelector<HTMLElement>(".sift-th-top");
+      if (!top) continue;
+      top.setAttribute("aria-disabled", "true");
+      top.title = TOOLS_DISABLED_TITLE;
+      top.style.cursor = "default";
+    }
+    container.setAttribute("aria-busy", "false");
+    notifyChange();
+  }
+
+  /** Swap to `w` as the data side; returns the reader for it. */
+  function attachWindowed(w: WindowedTableData): TableData {
+    subscribeWindowed(w);
+    windowCells.clear();
+    const reader = viewReaderFor(w);
+    storeWindowCells(w.head, false);
+    return reader;
+  }
+
+  /** Listen to `w` and route its push events. */
+  function subscribeWindowed(w: WindowedTableData) {
+    unsubscribeWindowed?.();
+    windowedData = w;
+    unsubscribeWindowed = w.subscribe((event) => {
+      if (destroyed) return;
+      switch (event.type) {
+        case "rows-appended":
+          onRowsAppended(event.rowCount, event.summariesAll);
+          break;
+        case "streaming-done":
+          setStreamingDone();
+          break;
+        case "schema-changed":
+          // Types swap with the re-query so cells and icons change in one frame.
+          startQuery(false, event.columns);
+          break;
+        case "error":
+          console.warn("Sift windowed data error:", event.message);
+          if (event.fatal) onDataFailed();
+          break;
+      }
+    });
   }
 
   // --- DOM ---
@@ -743,6 +1294,8 @@ export function createTable(
 
   // Streaming state — progress bar is appended after stats bar below
   let streaming = true;
+  // Row count at which `onScrollNearEnd` last fired; -1 means armed.
+  let scrollNearEndRowCount = -1;
   const progressBar = document.createElement("div");
   progressBar.className = "sift-progress-bar";
   progressBar.innerHTML = '<div class="sift-progress-bar-fill"></div>';
@@ -841,7 +1394,8 @@ export function createTable(
           colType: columns[c].columnType,
           isPinned: pinnedColumns.has(c),
           isCast: data.isColumnCast ? data.isColumnCast(c) : false,
-          isStreaming: streaming,
+          // A failed data side hides the cast entries too: nothing can answer.
+          isStreaming: streaming || toolsDisabled(),
           sortDirection: sortState?.col === c ? sortState.dir : null,
           x,
           y,
@@ -902,7 +1456,10 @@ export function createTable(
 
   // Create stable filter callbacks per column
   const filterCallbacks: ((filter: ColumnFilter) => void)[] = columns.map(
-    (_, c) => (filter: ColumnFilter) => setFilter(c, filter),
+    (_, c) => (filter: ColumnFilter) => {
+      if (toolsDisabled()) return;
+      setFilter(c, filter);
+    },
   );
 
   function renderSummary(c: number, visibleBins?: number[]) {
@@ -995,6 +1552,9 @@ export function createTable(
   statusIndicator.title = "Loading data…";
 
   const statRows = makeStatSpan("sift-stat-rows");
+  // Local filter over a provider result: "J of K shown rows". Hidden otherwise.
+  const statLocal = makeStatSpan("sift-stat-local");
+  statLocal.style.display = "none";
   // Debug stats (DOM rows, FPS) — hidden by default
   const debugGroup = document.createElement("span");
   debugGroup.className = "sift-debug-group";
@@ -1004,11 +1564,50 @@ export function createTable(
 
   const rowsOdometer = createOdometer(statRows);
 
+  /**
+   * Footer copy for a provider result. `K` is the resident row count; the
+   * count describes the whole dataset. These are the strings hosts and tests
+   * match on, so they live here and nowhere else.
+   */
+  const footerText = {
+    committed(query: TableQuery | null, count: Count | undefined, shown: number): string {
+      const noun =
+        query && query.filters.length > 0 ? "whole-dataset matches" : "rows in whole dataset";
+      const k = `${shown.toLocaleString()} rows shown`;
+      switch (count?.kind) {
+        case "exact":
+          return `${count.value.toLocaleString()} ${noun} · ${k}`;
+        case "estimate":
+          return `≈${count.value.toLocaleString()} ${noun} · Estimated · ${k}`;
+        case "lower-bound":
+          return `≥${count.value.toLocaleString()} ${noun} · ${k}`;
+        default:
+          return `Counting ${noun}… · ${k}`;
+      }
+    },
+    localOverCommitted(filtered: number, shown: number): string {
+      return `${filtered.toLocaleString()} of ${shown.toLocaleString()} shown rows · Filters use shown rows`;
+    },
+  };
+
   function updateRowCountDisplay() {
-    if (hasActiveFilters()) {
-      rowsOdometer.update(`${filteredCount.toLocaleString()} of ${rowCount.toLocaleString()} rows`);
+    // Windowed: a held query answer is reported before its rows commit.
+    const filteredCount = windowed ? reportedFilteredCount() : committedFilteredCount();
+    if (committedQuery !== undefined) {
+      rowsOdometer.update(footerText.committed(committedQuery, resultCount, rowCount));
+      const local = hasActiveFilters();
+      statLocal.style.display = local ? "" : "none";
+      statLocal.textContent = local ? footerText.localOverCommitted(filteredCount, rowCount) : "";
     } else {
-      rowsOdometer.update(`${rowCount.toLocaleString()} rows`);
+      statLocal.style.display = "none";
+      statLocal.textContent = "";
+      if (hasActiveFilters()) {
+        rowsOdometer.update(
+          `${filteredCount.toLocaleString()} of ${rowCount.toLocaleString()} rows`,
+        );
+      } else {
+        rowsOdometer.update(`${rowCount.toLocaleString()} rows`);
+      }
     }
     // Keep ARIA row count in sync
     container.setAttribute("aria-rowcount", String(filteredCount + 1)); // +1 for header row
@@ -1073,10 +1672,11 @@ export function createTable(
   statsEl.append(
     statusIndicator,
     statRows,
+    statLocal,
     debugGroup,
     filterPillsEl,
     statsSpacer,
-    ...(options?.footerControl ? [options.footerControl] : []),
+    ...(footerControl ? [footerControl] : []),
     debugBtn,
     fullscreenBtn,
   );
@@ -1129,8 +1729,39 @@ export function createTable(
     if (schedule) scheduleRender();
   }
 
+  /** Committed filters first: they describe the rows, local pills narrow them. */
+  function appendCommittedPills() {
+    const query = committedQuery;
+    if (!query) return;
+    query.filters.forEach((predicate, index) => {
+      const pill = document.createElement("span");
+      pill.className = "sift-filter-pill sift-filter-pill--committed";
+      pill.title = "Applied to the whole dataset";
+
+      const label = document.createElement("span");
+      label.className = "sift-filter-pill-label";
+      label.textContent = predicateToEnglish(predicate);
+
+      const closeBtn = document.createElement("button");
+      closeBtn.className = "sift-filter-pill-x";
+      closeBtn.textContent = "×";
+      closeBtn.setAttribute("aria-label", "Remove this filter from the whole-dataset query");
+      closeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        options?.onCommittedQueryChange?.({
+          ...query,
+          filters: query.filters.filter((_, i) => i !== index),
+        });
+      });
+
+      pill.append(label, closeBtn);
+      filterPillsEl.appendChild(pill);
+    });
+  }
+
   function rebuildFilterPills() {
     filterPillsEl.innerHTML = "";
+    appendCommittedPills();
     for (let c = 0; c < columns.length; c++) {
       const f = filters[c];
       if (!f) continue;
@@ -1398,7 +2029,65 @@ export function createTable(
     }
   }
 
+  /** Thumbnail strip for an image cell's byte chunks; `str` when there are none. */
+  function renderImageChunks(cellEl: HTMLDivElement, chunks: Uint8Array[], str: string) {
+    if (chunks.length === 0) {
+      cellEl.textContent = str;
+      return;
+    }
+    cellEl.classList.add("sift-cell-image");
+    const visible = chunks.slice(0, IMAGE_THUMB_CAP);
+    for (let imageIndex = 0; imageIndex < visible.length; imageIndex++) {
+      const bytes = visible[imageIndex];
+      const mime = sniffImageMime(bytes);
+      if (!mime) {
+        // Unknown payload — keep the strip dense; show a small marker
+        // so a malformed item doesn't push the rest off the row.
+        const span = document.createElement("span");
+        span.className = "sift-cell-image-fallback";
+        span.textContent = `${bytes.length}b`;
+        cellEl.appendChild(span);
+        continue;
+      }
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "sift-cell-image-thumb-button";
+      button.dataset.siftImageIndex = String(imageIndex);
+      button.setAttribute("aria-label", "Open image");
+      const img = document.createElement("img");
+      img.className = "sift-cell-image-thumb";
+      img.alt = "";
+      img.decoding = "async";
+      img.loading = "lazy";
+      const url = createImageObjectUrl(bytes, mime);
+      img.src = url;
+      img.dataset.siftBlobUrl = url;
+      button.appendChild(img);
+      cellEl.appendChild(button);
+    }
+    if (chunks.length > IMAGE_THUMB_CAP) {
+      const more = document.createElement("span");
+      more.className = "sift-cell-image-more";
+      more.textContent = `+${chunks.length - IMAGE_THUMB_CAP}`;
+      cellEl.appendChild(more);
+    }
+  }
+
+  /** A windowed cell whose data row has not arrived: one skeleton bar, no text. */
+  function renderPlaceholderCell(cellEl: HTMLDivElement) {
+    revokeCellBlobUrls(cellEl);
+    cellEl.textContent = "";
+    cellEl.className = "sift-cell sift-cell-skeleton";
+    const bar = document.createElement("span");
+    bar.className = "sift-skeleton-bar";
+    cellEl.appendChild(bar);
+  }
+
   function renderCell(cellEl: HTMLDivElement, dataRow: number, colIndex: number) {
+    if (dataRow < 0) {
+      renderPlaceholderCell(cellEl);
+      return;
+    }
     const col = columns[colIndex];
     const raw = data.getCellRaw(dataRow, colIndex);
     const str = data.getCell(dataRow, colIndex);
@@ -1441,49 +2130,26 @@ export function createTable(
         break;
       }
       case "image": {
-        // wasm-table-data normalizes both HF `Image` and `List<Image>` to
-        // an array of byte chunks; HF `Image` is just an array of length 1.
-        const chunks = getImageChunks(raw);
-        if (chunks.length === 0) {
-          cellEl.textContent = str;
+        if (windowed) {
+          // Bytes arrive separately; render the shell now and fill it only if
+          // this pooled row still shows the same data row when they land.
+          cellEl.classList.add("sift-cell-image");
+          const rowEl = cellEl.parentElement;
+          windowedData!.requestImage(dataRow, colIndex).then(
+            (chunks) => {
+              const pr = pool.find((p) => p.el === rowEl);
+              if (destroyed || !pr || pr.assignedDataRow !== dataRow) return;
+              revokeCellBlobUrls(cellEl);
+              cellEl.textContent = "";
+              renderImageChunks(cellEl, chunks ?? [], str);
+            },
+            () => {},
+          );
           break;
         }
-        cellEl.classList.add("sift-cell-image");
-        const visible = chunks.slice(0, IMAGE_THUMB_CAP);
-        for (let imageIndex = 0; imageIndex < visible.length; imageIndex++) {
-          const bytes = visible[imageIndex];
-          const mime = sniffImageMime(bytes);
-          if (!mime) {
-            // Unknown payload — keep the strip dense; show a small marker
-            // so a malformed item doesn't push the rest off the row.
-            const span = document.createElement("span");
-            span.className = "sift-cell-image-fallback";
-            span.textContent = `${bytes.length}b`;
-            cellEl.appendChild(span);
-            continue;
-          }
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "sift-cell-image-thumb-button";
-          button.dataset.siftImageIndex = String(imageIndex);
-          button.setAttribute("aria-label", "Open image");
-          const img = document.createElement("img");
-          img.className = "sift-cell-image-thumb";
-          img.alt = "";
-          img.decoding = "async";
-          img.loading = "lazy";
-          const url = createImageObjectUrl(bytes, mime);
-          img.src = url;
-          img.dataset.siftBlobUrl = url;
-          button.appendChild(img);
-          cellEl.appendChild(button);
-        }
-        if (chunks.length > IMAGE_THUMB_CAP) {
-          const more = document.createElement("span");
-          more.className = "sift-cell-image-more";
-          more.textContent = `+${chunks.length - IMAGE_THUMB_CAP}`;
-          cellEl.appendChild(more);
-        }
+        // wasm-table-data normalizes both HF `Image` and `List<Image>` to
+        // an array of byte chunks; HF `Image` is just an array of length 1.
+        renderImageChunks(cellEl, getImageChunks(raw), str);
         break;
       }
       default:
@@ -1524,7 +2190,19 @@ export function createTable(
   }
 
   function showImageViewer(dataRow: number, colIndex: number, imageIndex: number) {
-    const chunks = getImageChunks(data.getCellRaw(dataRow, colIndex));
+    if (windowed) {
+      windowedData!.requestImage(dataRow, colIndex).then(
+        (chunks) => {
+          if (!destroyed && chunks) openImageViewer(chunks, colIndex, imageIndex);
+        },
+        () => {},
+      );
+      return;
+    }
+    openImageViewer(getImageChunks(data.getCellRaw(dataRow, colIndex)), colIndex, imageIndex);
+  }
+
+  function openImageViewer(chunks: Uint8Array[], colIndex: number, imageIndex: number) {
     const items = getImageViewerItems(chunks);
     if (items.length === 0) return;
     const initialIndex = items.findIndex((item) => item.sourceIndex === imageIndex);
@@ -1569,12 +2247,14 @@ export function createTable(
   }
 
   function render() {
+    // An anchored relayout rebuilt positions and moved scrollTop together: rows
+    // kept in the pool below need their transforms rewritten in this frame.
+    let relayout = false;
     if (heightsDirty) {
       recomputeAllHeights();
       // Account for header height — row pool is absolute inside scroll-content
-      const headerH = headerEl.offsetHeight;
-      rowPool.style.top = headerH + "px";
-      restoreScrollAnchor(headerH);
+      rowPool.style.top = headerEl.offsetHeight + "px";
+      relayout = restoreScrollAnchor();
     }
 
     if (filteredCount === 0) {
@@ -1595,11 +2275,26 @@ export function createTable(
     const visFirst = rowAtOffset(scrollTop);
     const visLast = Math.min(rowAtOffset(scrollTop + viewportH), filteredCount - 1);
 
+    // Near the end of the loaded rows while at rest: tell the host once per
+    // row count. A paused load re-arms this when it appends more rows.
+    if (
+      options?.onScrollNearEnd &&
+      !streaming &&
+      filteredCount > 0 &&
+      visLast >= filteredCount - 1 - OVERSCAN &&
+      scrollNearEndRowCount !== rowCount
+    ) {
+      scrollNearEndRowCount = rowCount;
+      options.onScrollNearEnd();
+    }
+
     const first = Math.max(0, visFirst - OVERSCAN);
     const last = Math.min(visLast + OVERSCAN, filteredCount - 1);
 
     // Prefetch visible rows in batch (WASM viewport optimization)
-    if (data.prefetchViewport) {
+    if (windowed) {
+      requestWindowFor(first, last);
+    } else if (data.prefetchViewport) {
       const visibleDataRows: number[] = [];
       for (let r = first; r <= last; r++) {
         visibleDataRows.push(viewIndices[r]);
@@ -1624,8 +2319,9 @@ export function createTable(
     for (let r = first; r <= last; r++) {
       const dataRow = viewIndices[r];
 
-      // Lazy-prepare cells on first visibility
-      if (!cellCaches[dataRow]) {
+      // Lazy-prepare cells on first visibility. An unresolved windowed row
+      // (-1) keeps the estimate until its cells arrive.
+      if (dataRow >= 0 && !cellCaches[dataRow]) {
         cellCaches[dataRow] = prepareCellRow(dataRow);
         // Recompute this row's height now that we have real measurements
         rowHeights[r] = computeRowHeight(r);
@@ -1666,12 +2362,19 @@ export function createTable(
       } else {
         pr.el.classList.remove("sift-row-focused");
       }
+      if (windowed) pr.el.classList.toggle("sift-row-placeholder", dataRow < 0);
 
       for (let c = 0; c < columns.length; c++) {
         renderCell(pr.cells[c], dataRow, c);
         pr.cells[c].style.width = colWidths[c] + "px";
         applyCellPinStyle(pr.cells[c], c);
       }
+    }
+
+    if (windowed) {
+      let busy = false;
+      for (let r = visFirst; r <= visLast && !busy; r++) busy = viewIndices[r] < 0;
+      container.setAttribute("aria-busy", String(busy));
     }
 
     // Transforms depend on virtualOffset, which changes with scrollTop whenever
@@ -1685,7 +2388,11 @@ export function createTable(
       }
     }
 
-    if (lazyPrepared || (lastScrollTop === scrollTop && lastViewportHeight === viewportH)) {
+    if (
+      relayout ||
+      lazyPrepared ||
+      (lastScrollTop === scrollTop && lastViewportHeight === viewportH)
+    ) {
       for (const pr of pool) {
         if (pr.assignedRow === -1) continue;
         for (let c = 0; c < columns.length; c++) {
@@ -1751,10 +2458,12 @@ export function createTable(
   }
 
   function showDetailSheet(viewRow: number) {
+    const dataRow = viewIndices[viewRow];
+    // A windowed placeholder has nothing to show yet.
+    if (dataRow < 0) return;
+
     // Dismiss any existing sheet first
     dismissDetailSheet();
-
-    const dataRow = viewIndices[viewRow];
 
     // Backdrop
     const backdrop = document.createElement("div");
@@ -1917,6 +2626,7 @@ export function createTable(
     for (const pr of pool) {
       if (pr.el === rowEl && pr.assignedRow !== -1) {
         const dataRow = viewIndices[pr.assignedRow];
+        if (dataRow < 0) break; // windowed placeholder
         setFocusedDataRow(focusedDataRow === dataRow ? null : dataRow);
         break;
       }
@@ -2008,6 +2718,7 @@ export function createTable(
   // --- Sort ---
 
   function onSortClick(col: number) {
+    if (toolsDisabled()) return;
     if (sortState && sortState.col === col) {
       if (sortState.dir === "asc") sortState = { col, dir: "desc" };
       else sortState = null;
@@ -2016,7 +2727,8 @@ export function createTable(
     }
 
     updateSortUI();
-    applyFilterAndSort();
+    if (windowed) startQuery(true);
+    else applyFilterAndSort();
     // Reset vertical scroll but preserve horizontal position
     viewport.scrollTop = 0;
     for (const pr of pool) {
@@ -2046,6 +2758,11 @@ export function createTable(
   // --- Batch append handler ---
 
   function onBatchAppended() {
+    if (windowed) {
+      // The data side normally pushes `rows-appended`; a direct call re-reads it.
+      onRowsAppended(windowedData!.rowCount, unfilteredSummaries);
+      return;
+    }
     const newRowCount = data.rowCount;
     growBuffers(newRowCount);
 
@@ -2104,6 +2821,18 @@ export function createTable(
     // re-armed stream shows the indicator without it.
   }
 
+  function resumeStreaming() {
+    setStreamingState(true);
+  }
+
+  function setFooterControl(control: HTMLElement | null) {
+    const next = control ?? undefined;
+    if (next === footerControl) return;
+    footerControl?.remove();
+    if (next) statsEl.insertBefore(next, debugBtn);
+    footerControl = next;
+  }
+
   function setStreamingDone() {
     if (!streaming) return;
     streaming = false;
@@ -2122,6 +2851,9 @@ export function createTable(
     // host UIs that size their container based on row count want to settle
     // on the final value rather than the first batch.
     notifyChange();
+    // The near-end check only runs while at rest, so a viewport already parked
+    // at the last loaded rows needs one render now to report it.
+    if (options?.onScrollNearEnd) scheduleRender();
   }
 
   function findSurvivingColumnIndices(newColumns: Column[]): Map<number, number> {
@@ -2148,6 +2880,10 @@ export function createTable(
     sort: TableEngineState["sort"];
     filters: TableEngineState["filters"];
   } {
+    // A provider result already satisfies its query: re-applying local filters
+    // or sort would evaluate the same predicates twice and could reorder what
+    // the provider ordered.
+    if (hasCommittedQuery(replaceOptions)) return { sort: null, filters: [] };
     const survivors = findSurvivingColumnIndices(newColumns);
     const preservedFilters: TableEngineState["filters"] = [];
     if (!replaceOptions?.resetFilters) {
@@ -2192,13 +2928,35 @@ export function createTable(
     }
   }
 
-  function replaceData(newData: TableData, replaceOptions?: ReplaceDataOptions) {
+  function hasCommittedQuery(
+    replaceOptions: ReplaceDataOptions | undefined,
+  ): replaceOptions is ReplaceDataOptions & { committedQuery: TableQuery | null } {
+    return replaceOptions?.committedQuery !== undefined;
+  }
+
+  function replaceData(
+    newData: TableData | WindowedTableData,
+    replaceOptions?: ReplaceDataOptions,
+  ) {
     const replacementStreaming = replaceOptions?.streaming ?? streaming;
     const preserved = preserveStateFor(newData.columns, replaceOptions);
+    const nextFooterControl =
+      replaceOptions?.footerControl === undefined
+        ? footerControl
+        : (replaceOptions.footerControl ?? undefined);
+    const nextCommittedQuery = hasCommittedQuery(replaceOptions)
+      ? replaceOptions.committedQuery
+      : undefined;
 
-    if (!sameColumnShape(newData.columns)) {
+    // A mode change (resident ↔ windowed) rebuilds like a new column shape.
+    if (isWindowedTableData(newData) !== windowed || !sameColumnShape(newData.columns)) {
       destroy();
-      const replacement = createTable(container, newData, options);
+      const rebuildOptions: InternalTableEngineOptions = {
+        ...options,
+        footerControl: nextFooterControl,
+        committedQuery: nextCommittedQuery,
+      };
+      const replacement = createTable(container, newData, rebuildOptions);
       if (!replacementStreaming) {
         replacement.setStreamingDone();
       }
@@ -2219,13 +2977,26 @@ export function createTable(
       setStreamingState(replaceOptions.streaming);
     }
 
+    setFooterControl(nextFooterControl ?? null);
+
     const oldData = data;
-    data = newData;
+    const oldWindowedData = windowedData;
     columns = newData.columns;
+    // Same mode as construction: a windowed swap gets a fresh reader and
+    // subscription; summaries arrive with its first query.
+    data = isWindowedTableData(newData) ? attachWindowed(newData) : newData;
     rowCount = newData.rowCount;
     growBuffers(rowCount);
     filteredCount = rowCount;
-    unfilteredSummaries = [...newData.columnSummaries];
+    unfilteredSummaries = [...data.columnSummaries];
+    if (windowed) {
+      // A new source: nothing of the old snapshot is resolved any more.
+      viewIndices.fill(-1, 0, filteredCount);
+      wantedWindow = null;
+      pendingCommit = null;
+      dataFailed = false;
+      updatePlaceholderHeight();
+    }
 
     if (replaceOptions?.resetSort) {
       sortState = null;
@@ -2233,6 +3004,14 @@ export function createTable(
     if (replaceOptions?.resetFilters) {
       filters = columns.map(() => null);
     }
+    // The provider answered the query, so local state starts clean; without a
+    // committed query the rows are a file or stream again and own no count.
+    if (nextCommittedQuery !== undefined) {
+      sortState = null;
+      filters = columns.map(() => null);
+    }
+    committedQuery = nextCommittedQuery;
+    resultCount = undefined;
 
     cellCaches.length = 0;
     focusedDataRow = null;
@@ -2263,11 +3042,21 @@ export function createTable(
     viewport.scrollTop = 0;
     heightsDirty = true;
     scheduleRender();
-    if (oldData !== newData) oldData.dispose?.();
+    if (oldData !== newData && oldWindowedData !== newData) oldData.dispose?.();
     notifyChange();
   }
 
   // --- Boot ---
+
+  // Pills are otherwise built on filter changes; a rebuilt engine starts with
+  // committed filters to show.
+  if (committedQuery) rebuildFilterPills();
+
+  // Windowed: listen for pushes and ask for the first permutation and summaries.
+  if (windowed) {
+    subscribeWindowed(windowedData!);
+    startQuery();
+  }
 
   // pretext caches segment widths per font string. Widths measured before a
   // web font loads are the fallback font's, so a load has to clear that cache
@@ -2437,6 +3226,8 @@ export function createTable(
     // Clear DOM
     container.innerHTML = "";
     container.classList.remove("sift-root", "sift-table-container");
+    unsubscribeWindowed?.();
+    unsubscribeWindowed = null;
     data.dispose?.();
   }
 
@@ -2598,10 +3389,14 @@ export function createTable(
   }
 
   function onFilterChanged() {
+    // With the data side gone no query can answer; the filter state stays as
+    // the last answered query left it.
+    if (toolsDisabled()) return;
     // Filtering can hide the focused row entirely, leaving the user with no
     // visual cue for what's still expanded. Reset and let them re-pick.
     focusedDataRow = null;
-    applyFilterAndSort();
+    if (windowed) startQuery(true);
+    else applyFilterAndSort();
     // Fast path: update rows immediately, defer expensive summary recomputation
     updateRowCountDisplay();
     rebuildFilterPills();
@@ -2611,7 +3406,9 @@ export function createTable(
       : `${rowCount.toLocaleString()} rows`;
     // WASM path is fast enough to compute summaries synchronously — no flicker.
     // JS fallback still debounces since it's O(rows × cols) with per-cell access.
-    if (data.recomputeFilteredSummaries) {
+    if (windowed) {
+      // Summaries arrive with the query result.
+    } else if (data.recomputeFilteredSummaries) {
       if (summaryDebounceTimer !== null) {
         clearTimeout(summaryDebounceTimer);
         summaryDebounceTimer = null;
@@ -2633,16 +3430,19 @@ export function createTable(
   }
 
   function setFilter(colIndex: number, filter: ColumnFilter) {
+    if (toolsDisabled()) return;
     filters[colIndex] = filter;
     onFilterChanged();
   }
 
   function clearFilter(colIndex: number) {
+    if (toolsDisabled()) return;
     filters[colIndex] = null;
     onFilterChanged();
   }
 
   function clearAllFilters() {
+    if (toolsDisabled()) return;
     for (let i = 0; i < filters.length; i++) filters[i] = null;
     onFilterChanged();
   }
@@ -2655,12 +3455,14 @@ export function createTable(
   }
 
   function setSortByName(column: string, direction: "asc" | "desc") {
+    if (toolsDisabled()) return;
     const colIndex = columns.findIndex((c) => c.key === column);
     if (colIndex === -1) return;
     sortState = { col: colIndex, dir: direction };
 
     updateSortUI();
-    applyFilterAndSort();
+    if (windowed) startQuery(true);
+    else applyFilterAndSort();
     viewport.scrollTop = 0;
     for (const pr of pool) {
       releasePooledRow(pr);
@@ -2679,12 +3481,24 @@ export function createTable(
   }
 
   function getState(): TableEngineState {
-    return {
+    const state: TableEngineState = {
       sort: getSort(),
       filters: getFilters(),
-      filteredCount,
+      filteredCount: windowed ? reportedFilteredCount() : filteredCount,
       totalCount: rowCount,
+      loadedCount: rowCount,
+      pending,
+      dataFailed,
     };
+    if (committedQuery !== undefined) state.committedQuery = committedQuery;
+    if (resultCount !== undefined) state.resultCount = resultCount;
+    return state;
+  }
+
+  function setResultCount(count: Count) {
+    resultCount = count;
+    updateRowCountDisplay();
+    notifyChange();
   }
 
   function notifyChange() {
@@ -2694,6 +3508,12 @@ export function createTable(
   // --- Column context menu action handler ---
 
   function handleColumnAction(colIndex: number, action: ColumnAction) {
+    if (
+      toolsDisabled() &&
+      (action.kind === "sort" || action.kind === "cast" || action.kind === "undo-cast")
+    ) {
+      return;
+    }
     switch (action.kind) {
       case "sort":
         if (sortState?.col === colIndex && sortState.dir === action.direction) {
@@ -2702,7 +3522,8 @@ export function createTable(
           sortState = { col: colIndex, dir: action.direction };
         }
         updateSortUI();
-        applyFilterAndSort();
+        if (windowed) startQuery(true);
+        else applyFilterAndSort();
         viewport.scrollTop = 0;
         for (const pr of pool) {
           releasePooledRow(pr);
@@ -2727,6 +3548,10 @@ export function createTable(
 
       case "cast":
         if (streaming) break; // Cast blocked during streaming — schema mismatch would crash WASM
+        if (windowed) {
+          startCast((w, gen) => w.castColumn?.(colIndex, action.targetType, gen));
+          break;
+        }
         if (data.castColumn) {
           try {
             data.castColumn(colIndex, action.targetType);
@@ -2765,6 +3590,10 @@ export function createTable(
 
       case "undo-cast":
         if (streaming) break;
+        if (windowed) {
+          startCast((w, gen) => w.undoCastColumn?.(colIndex, gen));
+          break;
+        }
         if (data.undoCastColumn) {
           const restoredType = data.undoCastColumn(colIndex);
           // Update the column metadata
@@ -2892,7 +3721,9 @@ export function createTable(
   const api: TableEngine = {
     onBatchAppended,
     setStreamingDone,
+    resumeStreaming,
     replaceData,
+    setFooterControl,
     destroy,
     setFilter,
     clearFilter,
@@ -2901,8 +3732,14 @@ export function createTable(
     setSort: setSortByName,
     getFilters,
     getState,
+    setResultCount,
     getFocusedDataRow: () => focusedDataRow,
     setFocusedDataRow,
   };
+  const testHooks: TableEngineTestHooks = {
+    captureScrollAnchor,
+    restoreScrollAnchor: applyScrollAnchor,
+  };
+  (api as InternalTableEngine).__test = testHooks;
   return api;
 }

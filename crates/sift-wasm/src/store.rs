@@ -1,3 +1,4 @@
+use crate::footer_thrift::precheck_parquet_buffer;
 use arrow::array::{
     Array, BinaryArray, BinaryViewArray, BooleanArray, Float64Array, Int32Array, Int64Array,
     LargeBinaryArray, LargeListArray, LargeStringArray, ListArray, StringArray, StringViewArray,
@@ -448,11 +449,24 @@ pub(crate) fn with_stores<F, R>(f: F) -> R
 where
     F: FnOnce(&mut HashMap<u32, DataStore>) -> R,
 {
-    // wasm32 is single-threaded, so poisoning only occurs if a prior call
-    // panicked while holding the lock. Recover the inner value and carry on.
+    // Panics abort on wasm32, so a trap under this lock is terminal for the
+    // instance: no later call runs, and recovery is the host terminating the
+    // worker that owns it. Poison recovery here only matters for native
+    // builds and tests, where a panic unwinds past the guard.
     let mut guard = STORES.lock().unwrap_or_else(|e| e.into_inner());
     let stores = guard.get_or_insert_with(HashMap::new);
     f(stores)
+}
+
+/// The batches a store holds, for tests that inspect retained buffers.
+#[cfg(test)]
+pub(crate) fn batches_snapshot(handle: u32) -> Vec<RecordBatch> {
+    with_stores(|stores| {
+        stores
+            .get(&handle)
+            .map(|store| store.batches.clone())
+            .unwrap_or_default()
+    })
 }
 
 fn with_store<F, R>(handle: u32, f: F) -> Result<R, String>
@@ -591,20 +605,22 @@ pub fn load_ipc(ipc_bytes: &[u8]) -> Result<u32, JsValue> {
 /// This replaces the need for parquet-wasm — one WASM binary for everything.
 #[wasm_bindgen]
 pub fn load_parquet(parquet_bytes: &[u8]) -> Result<u32, JsValue> {
+    load_parquet_from(parquet_bytes).map_err(|e| JsValue::from_str(&e))
+}
+
+fn load_parquet_from(parquet_bytes: &[u8]) -> Result<u32, String> {
+    precheck_parquet_buffer(parquet_bytes)?;
     let bytes = bytes::Bytes::copy_from_slice(parquet_bytes);
-    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes).map_err(|e| e.to_string())?;
     let schema = builder.schema().clone();
-    let reader = builder
-        .build()
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let reader = builder.build().map_err(|e| e.to_string())?;
 
     let mut batches = Vec::new();
     for batch in reader {
-        batches.push(batch.map_err(|e| JsValue::from_str(&e.to_string()))?);
+        batches.push(batch.map_err(|e| e.to_string())?);
     }
 
-    store_batches(batches, schema).map_err(|e| JsValue::from_str(&e))
+    store_batches(batches, schema)
 }
 
 #[derive(Clone, Copy)]
@@ -629,8 +645,12 @@ pub(crate) struct FileMemory {
     pub(crate) bytes: u64,
 }
 
+/// Allocation sizes as they were before a tentative batch touched them, in
+/// touch order. `None` marks an allocation the batch introduced.
+type AllocationUndo = Vec<(usize, Option<usize>)>;
+
 impl FileMemory {
-    fn add_buffer(&mut self, buffer: &arrow::buffer::Buffer) {
+    fn add_buffer(&mut self, buffer: &arrow::buffer::Buffer, undo: Option<&mut AllocationUndo>) {
         // data_ptr identifies the allocation before any slice offset. IPC
         // columns often share one message body, and dictionaries may share
         // values across batches. Counting each slice's capacity multiplies
@@ -642,6 +662,9 @@ impl FileMemory {
         let size = buffer
             .capacity()
             .max(buffer.ptr_offset().saturating_add(buffer.len()));
+        if let Some(undo) = undo {
+            undo.push((key, self.allocations.get(&key).copied()));
+        }
         let previous = self.allocations.entry(key).or_default();
         self.bytes = self
             .bytes
@@ -650,6 +673,14 @@ impl FileMemory {
     }
 
     fn add_array(&mut self, data: &arrow::array::ArrayData) {
+        self.add_array_logged(data, None);
+    }
+
+    fn add_array_logged(
+        &mut self,
+        data: &arrow::array::ArrayData,
+        mut undo: Option<&mut AllocationUndo>,
+    ) {
         // Keep a conservative allowance for array metadata, in addition to
         // unique backing buffers. Visit children for nested/dictionary arrays.
         self.bytes = self
@@ -659,14 +690,41 @@ impl FileMemory {
             self.bytes = self
                 .bytes
                 .saturating_add(std::mem::size_of_val(buffer) as u64);
-            self.add_buffer(buffer);
+            self.add_buffer(buffer, undo.as_deref_mut());
         }
         if let Some(nulls) = data.nulls() {
-            self.add_buffer(nulls.buffer());
+            self.add_buffer(nulls.buffer(), undo.as_deref_mut());
         }
         for child in data.child_data() {
-            self.add_array(child);
+            self.add_array_logged(child, undo.as_deref_mut());
         }
+    }
+
+    /// Count `batch` only if retained bytes stay within `limit`. A refused
+    /// batch leaves the ledger exactly as it was, so the totals describe the
+    /// batches a caller actually keeps. Returns whether the batch was counted.
+    pub(crate) fn try_add_batch(&mut self, batch: &RecordBatch, limit: u64) -> bool {
+        let bytes_before = self.bytes;
+        let mut undo = AllocationUndo::new();
+        for column in batch.columns() {
+            self.add_array_logged(&column.to_data(), Some(&mut undo));
+        }
+        if self.bytes <= limit {
+            return true;
+        }
+        // Reverse order restores each allocation to its first recorded size.
+        for (key, previous) in undo.into_iter().rev() {
+            match previous {
+                Some(size) => {
+                    self.allocations.insert(key, size);
+                }
+                None => {
+                    self.allocations.remove(&key);
+                }
+            }
+        }
+        self.bytes = bytes_before;
+        false
     }
 }
 
@@ -729,18 +787,43 @@ pub(crate) fn minimum_parquet_bytes(
 ) -> Result<u64, String> {
     let rows = u64::try_from(metadata.file_metadata().num_rows())
         .map_err(|_| "Invalid negative Parquet row count")?;
-    let mut bytes = 0u64;
-    for field in schema.fields() {
-        let bits = match field.data_type() {
-            DataType::Boolean => 1,
-            DataType::FixedSizeBinary(width) => {
-                u64::try_from(*width).unwrap_or(0).saturating_mul(8)
-            }
-            data_type => data_type.primitive_width().unwrap_or(0) as u64 * 8,
-        };
-        bytes = bytes.saturating_add(rows.saturating_mul(bits).div_ceil(8));
+    Ok(minimum_fixed_width_bytes(schema, rows))
+}
+
+fn fixed_width_bits(data_type: &DataType) -> u64 {
+    match data_type {
+        DataType::Boolean => 1,
+        DataType::FixedSizeBinary(width) => u64::try_from(*width).unwrap_or(0).saturating_mul(8),
+        data_type => data_type.primitive_width().unwrap_or(0) as u64 * 8,
     }
-    Ok(bytes)
+}
+
+/// The fixed-width floor of `minimum_parquet_bytes` for `rows` rows. The
+/// decoder allocates at least this much for those rows, nulls included, so
+/// it bounds the allocation a decode of `rows` rows can request.
+pub(crate) fn minimum_fixed_width_bytes(schema: &arrow::datatypes::Schema, rows: u64) -> u64 {
+    schema.fields().iter().fold(0u64, |bytes, field| {
+        let bits = fixed_width_bits(field.data_type());
+        bytes.saturating_add(rows.saturating_mul(bits).div_ceil(8))
+    })
+}
+
+/// Most rows whose fixed-width floor fits in `budget` bytes. `u64::MAX` when
+/// the schema has no top-level fixed-width columns.
+pub(crate) fn fixed_width_rows_within(schema: &arrow::datatypes::Schema, budget: u64) -> u64 {
+    let row_bits = schema.fields().iter().fold(0u64, |bits, field| {
+        bits.saturating_add(fixed_width_bits(field.data_type()))
+    });
+    if row_bits == 0 {
+        return u64::MAX;
+    }
+    // Per-column rounding makes the floor at least `rows * row_bits / 8`, so
+    // this estimate is an upper bound; step down until the floor fits.
+    let mut rows = budget.saturating_mul(8) / row_bits;
+    while rows > 0 && minimum_fixed_width_bytes(schema, rows) > budget {
+        rows -= 1;
+    }
+    rows
 }
 
 /// Footer-only admission: row count, top-level and leaf column counts, and the
@@ -751,16 +834,9 @@ pub(crate) fn admit_parquet_footer(
     metadata: &parquet::file::metadata::ParquetMetaData,
     limits: FileLimits,
 ) -> Result<u64, String> {
-    let rows = u64::try_from(metadata.file_metadata().num_rows())
-        .map_err(|_| "Invalid negative Parquet row count")?;
+    let rows = parquet_footer_rows(metadata)?;
     check_file_limit(rows, limits.rows, "row")?;
-    check_file_limit(schema.fields().len() as u64, limits.columns, "column")?;
-    // Bound leaf columns too: one top-level struct may contain many fields.
-    check_file_limit(
-        metadata.file_metadata().schema_descr().num_columns() as u64,
-        limits.columns,
-        "leaf column",
-    )?;
+    admit_parquet_footer_columns(schema, metadata, limits)?;
     check_file_limit(
         minimum_parquet_bytes(schema, metadata)?,
         limits.decoded_bytes,
@@ -769,10 +845,51 @@ pub(crate) fn admit_parquet_footer(
     Ok(rows)
 }
 
+/// Footer row count, reconciled with the nonnegative row-group counts.
+/// Validate this before a bounded preview can treat the total as completeness.
+pub(crate) fn parquet_footer_rows(
+    metadata: &parquet::file::metadata::ParquetMetaData,
+) -> Result<u64, String> {
+    let rows = u64::try_from(metadata.file_metadata().num_rows())
+        .map_err(|_| "Invalid negative Parquet row count")?;
+    let group_rows = metadata
+        .row_groups()
+        .iter()
+        .try_fold(0u64, |total, group| {
+            let rows = u64::try_from(group.num_rows())
+                .map_err(|_| "Invalid negative Parquet row group row count")?;
+            total
+                .checked_add(rows)
+                .ok_or("Parquet row group row count sum overflows")
+        })?;
+    if rows != group_rows {
+        return Err("Parquet row count does not match the sum of row group row counts".to_string());
+    }
+    Ok(rows)
+}
+
+/// Top-level and leaf column counts. These stay hard admission checks even
+/// when rows and decoded bytes are a budget: a table with only some of its
+/// columns is not a meaningful preview.
+pub(crate) fn admit_parquet_footer_columns(
+    schema: &arrow::datatypes::Schema,
+    metadata: &parquet::file::metadata::ParquetMetaData,
+    limits: FileLimits,
+) -> Result<(), String> {
+    check_file_limit(schema.fields().len() as u64, limits.columns, "column")?;
+    // Bound leaf columns too: one top-level struct may contain many fields.
+    check_file_limit(
+        metadata.file_metadata().schema_descr().num_columns() as u64,
+        limits.columns,
+        "leaf column",
+    )
+}
+
 fn bounded_parquet_batches(
     parquet_bytes: &[u8],
     limits: FileLimits,
 ) -> Result<(Arc<arrow::datatypes::Schema>, Vec<RecordBatch>), String> {
+    precheck_parquet_buffer(parquet_bytes)?;
     let builder =
         ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::copy_from_slice(parquet_bytes))
             .map_err(|e| e.to_string())?;
@@ -1481,63 +1598,74 @@ pub fn store_value_counts(handle: u32, col: usize) -> Result<JsValue, JsValue> {
 #[wasm_bindgen]
 pub fn store_histogram(handle: u32, col: usize, num_bins: usize) -> Result<JsValue, JsValue> {
     with_store(handle, |s| {
-        let mut values: Vec<f64> = Vec::new();
-        for batch in &s.batches {
-            let column = batch.column(col);
-            for row in 0..column.len() {
-                if !cell_is_null(column.as_ref(), row) {
-                    let value = get_f64_value(column.as_ref(), row);
-                    if value.is_finite() {
-                        values.push(value);
-                    }
-                }
-            }
-        }
-        if values.is_empty() {
-            // serde_wasm_bindgen serialization won't fail for simple structs
+        let bins = histogram_for(s, col, num_bins);
+        if bins.is_empty() {
             return JsValue::from(js_sys::Array::new());
-        }
-        let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-
-        // Constant column: collapse to a single degenerate bin at `min`
-        // rather than stretching `num_bins` bins across `[min, min + num_bins]`.
-        // Without this the TS consumer reads `bins[last].x1 = min + num_bins`
-        // as the column max, producing header labels like "0.46 - 25.46" for
-        // columns where every row is 0.459. See nteract/nteract#1847.
-        if (max - min).abs() < f64::EPSILON {
-            let single = vec![HistogramBin {
-                x0: min,
-                x1: min,
-                count: u32::try_from(values.len()).unwrap_or(u32::MAX),
-            }];
-            return serde_wasm_bindgen::to_value(&single).unwrap_or(JsValue::NULL);
-        }
-
-        let bin_width = (max - min) / num_bins as f64;
-        let mut bins: Vec<HistogramBin> = (0..num_bins)
-            .map(|i| HistogramBin {
-                x0: min + i as f64 * bin_width,
-                x1: min + (i + 1) as f64 * bin_width,
-                count: 0,
-            })
-            .collect();
-        for v in &values {
-            let mut idx = ((v - min) / bin_width) as usize;
-            if idx >= num_bins {
-                idx = num_bins - 1;
-            }
-            if idx > 0 && *v < bins[idx].x0 {
-                idx -= 1;
-            } else if idx + 1 < num_bins && *v >= bins[idx + 1].x0 {
-                idx += 1;
-            }
-            bins[idx].count += 1;
         }
         // Returns Vec<HistogramBin> - simple struct with f64/u32 fields
         serde_wasm_bindgen::to_value(&bins).unwrap_or(JsValue::NULL)
     })
     .map_err(|e| JsValue::from_str(&e))
+}
+
+/// Histogram bins over a column's finite, non-null values. Empty when the
+/// column has none.
+fn histogram_for(s: &DataStore, col: usize, num_bins: usize) -> Vec<HistogramBin> {
+    let mut values: Vec<f64> = Vec::new();
+    for batch in &s.batches {
+        let column = batch.column(col);
+        for row in 0..column.len() {
+            if !cell_is_null(column.as_ref(), row) {
+                let value = get_f64_value(column.as_ref(), row);
+                if value.is_finite() {
+                    values.push(value);
+                }
+            }
+        }
+    }
+    if values.is_empty() {
+        return Vec::new();
+    }
+    let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+    // Constant column: collapse to a single degenerate bin at `min`
+    // rather than stretching `num_bins` bins across `[min, min + num_bins]`.
+    // Without this the TS consumer reads `bins[last].x1 = min + num_bins`
+    // as the column max, producing header labels like "0.46 - 25.46" for
+    // columns where every row is 0.459. See nteract/nteract#1847.
+    if (max - min).abs() < f64::EPSILON {
+        return vec![HistogramBin {
+            x0: min,
+            x1: min,
+            count: u32::try_from(values.len()).unwrap_or(u32::MAX),
+        }];
+    }
+
+    if num_bins == 0 {
+        return Vec::new();
+    }
+    let bin_width = (max - min) / num_bins as f64;
+    let mut bins: Vec<HistogramBin> = (0..num_bins)
+        .map(|i| HistogramBin {
+            x0: min + i as f64 * bin_width,
+            x1: min + (i + 1) as f64 * bin_width,
+            count: 0,
+        })
+        .collect();
+    for v in &values {
+        let mut idx = ((v - min) / bin_width) as usize;
+        if idx >= num_bins {
+            idx = num_bins - 1;
+        }
+        if idx > 0 && *v < bins[idx].x0 {
+            idx -= 1;
+        } else if idx + 1 < num_bins && *v >= bins[idx + 1].x0 {
+            idx += 1;
+        }
+        bins[idx].count += 1;
+    }
+    bins
 }
 
 /// Compute temporal histogram: bins timestamps by calendar unit (auto-detected).
@@ -1655,6 +1783,37 @@ pub fn store_bool_counts(handle: u32, col: usize) -> Result<Vec<u32>, JsValue> {
         vec![true_count, false_count, null_count]
     })
     .map_err(|e| JsValue::from_str(&e))
+}
+
+/// Null count per top-level column over resident rows. O(batches).
+///
+/// Counts the current column, so a cast column reports the nulls the user
+/// sees after the cast. A `Null`-typed column counts every row, matching
+/// `cell_is_null`.
+#[wasm_bindgen]
+pub fn store_null_counts(handle: u32) -> Result<Vec<u32>, JsValue> {
+    with_store(handle, store_null_counts_for).map_err(|e| JsValue::from_str(&e))
+}
+
+fn store_null_counts_for(s: &DataStore) -> Vec<u32> {
+    let mut counts = vec![0u64; s.num_cols];
+    for batch in &s.batches {
+        for (col, count) in counts.iter_mut().enumerate() {
+            let Some(column) = batch.columns().get(col) else {
+                continue;
+            };
+            let nulls = if matches!(column.data_type(), DataType::Null) {
+                column.len()
+            } else {
+                column.null_count()
+            };
+            *count = count.saturating_add(nulls as u64);
+        }
+    }
+    counts
+        .into_iter()
+        .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
+        .collect()
 }
 
 // --- Filtered summaries (crossfilter) ---
@@ -2159,9 +2318,13 @@ pub fn get_viewport_by_indices(handle: u32, indices: &[u32]) -> Result<Vec<u8>, 
 /// Returns [num_row_groups, total_rows] as Vec<u32>.
 #[wasm_bindgen]
 pub fn parquet_metadata(parquet_bytes: &[u8]) -> Result<Vec<u32>, JsValue> {
+    parquet_metadata_from(parquet_bytes).map_err(|e| JsValue::from_str(&e))
+}
+
+fn parquet_metadata_from(parquet_bytes: &[u8]) -> Result<Vec<u32>, String> {
+    precheck_parquet_buffer(parquet_bytes)?;
     let bytes = bytes::Bytes::copy_from_slice(parquet_bytes);
-    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes).map_err(|e| e.to_string())?;
     let metadata = builder.metadata();
     let num_row_groups = metadata.num_row_groups() as u32;
     let total_rows = metadata.file_metadata().num_rows() as u32;
@@ -2171,9 +2334,15 @@ pub fn parquet_metadata(parquet_bytes: &[u8]) -> Result<Vec<u32>, JsValue> {
 /// Extract canonical column hints from Parquet file-level metadata.
 #[wasm_bindgen]
 pub fn parquet_column_hints(parquet_bytes: &[u8]) -> Result<JsValue, JsValue> {
-    let hints = predicate_parquet_column_hints(parquet_bytes)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let hints = parquet_column_hints_from(parquet_bytes).map_err(|e| JsValue::from_str(&e))?;
     serde_wasm_bindgen::to_value(&hints).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+fn parquet_column_hints_from(
+    parquet_bytes: &[u8],
+) -> Result<Vec<nteract_predicate::parquet_features::ParquetColumnHint>, String> {
+    precheck_parquet_buffer(parquet_bytes)?;
+    predicate_parquet_column_hints(parquet_bytes).map_err(|e| e.to_string())
 }
 
 /// Extract canonical column hints from Arrow IPC schema metadata.
@@ -2205,6 +2374,7 @@ pub fn load_parquet_row_group(
     row_group: usize,
     handle: u32,
 ) -> Result<u32, JsValue> {
+    precheck_parquet_buffer(parquet_bytes).map_err(|e| JsValue::from_str(&e))?;
     let bytes = bytes::Bytes::copy_from_slice(parquet_bytes);
     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -2623,7 +2793,7 @@ fn filter_rows_in_store(
 }
 
 /// Extract an f64 from any numeric or timestamp array at the given row.
-fn get_f64_value(arr: &dyn Array, row: usize) -> f64 {
+pub(crate) fn get_f64_value(arr: &dyn Array, row: usize) -> f64 {
     match arr.data_type() {
         DataType::Float64 => arr
             .as_any()
@@ -2705,8 +2875,44 @@ fn get_f64_value(arr: &dyn Array, row: usize) -> f64 {
             .downcast_ref::<arrow::array::Date64Array>()
             .map(|a| a.value(row) as f64)
             .unwrap_or(f64::NAN),
+        DataType::Decimal128(_, scale) => arr
+            .as_any()
+            .downcast_ref::<arrow::array::Decimal128Array>()
+            .map(|a| decimal128_to_f64(a.value(row), *scale))
+            .unwrap_or(f64::NAN),
+        DataType::Decimal256(_, scale) => arr
+            .as_any()
+            .downcast_ref::<arrow::array::Decimal256Array>()
+            .map(|a| decimal256_to_f64(a.value(row), *scale))
+            .unwrap_or(f64::NAN),
         _ => f64::NAN,
     }
+}
+
+/// An unscaled Decimal128 value as `unscaled / 10^scale`. Lossy past 2^53,
+/// which is fine for summaries, ranges, and filter bounds.
+pub(crate) fn decimal128_to_f64(unscaled: i128, scale: i8) -> f64 {
+    unscaled as f64 / 10f64.powi(i32::from(scale))
+}
+
+/// An unscaled Decimal256 value as `unscaled / 10^scale`. Values beyond i128
+/// are assembled from the magnitude's two 128-bit halves; summing the signed
+/// halves directly would cancel to zero for small negatives.
+pub(crate) fn decimal256_to_f64(unscaled: arrow::datatypes::i256, scale: i8) -> f64 {
+    fn from_halves(value: arrow::datatypes::i256) -> f64 {
+        let (low, high) = value.to_parts();
+        high as f64 * 2f64.powi(128) + low as f64
+    }
+    let value = match unscaled.to_i128() {
+        Some(small) => small as f64,
+        None if unscaled.is_negative() => match unscaled.checked_neg() {
+            Some(magnitude) => -from_halves(magnitude),
+            // i256::MIN has no positive counterpart; its halves are exact.
+            None => from_halves(unscaled),
+        },
+        None => from_halves(unscaled),
+    };
+    value / 10f64.powi(i32::from(scale))
 }
 
 /// Extract a string value from any string, boolean, or dictionary-encoded column.
@@ -2789,6 +2995,79 @@ mod tests {
         writer.write(batch).unwrap();
         writer.close().unwrap();
         bytes
+    }
+
+    fn metadata_with_row_counts(
+        total: i64,
+        group_rows: &[i64],
+    ) -> parquet::file::metadata::ParquetMetaData {
+        use parquet::file::metadata::{FileMetaData, ParquetMetaData};
+        let builder = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(
+            parquet_fixture(&file_fixture()),
+        ))
+        .unwrap();
+        let metadata = builder.metadata();
+        let file = metadata.file_metadata();
+        let rewritten_file = FileMetaData::new(
+            file.version(),
+            total,
+            file.created_by().map(str::to_owned),
+            file.key_value_metadata().cloned(),
+            file.schema_descr_ptr(),
+            file.column_orders().cloned(),
+        );
+        let groups = group_rows
+            .iter()
+            .map(|&rows| {
+                metadata
+                    .row_group(0)
+                    .clone()
+                    .into_builder()
+                    .set_num_rows(rows)
+                    .build()
+                    .unwrap()
+            })
+            .collect();
+        ParquetMetaData::new(rewritten_file, groups)
+    }
+
+    #[test]
+    fn parquet_footer_requires_a_consistent_nonnegative_row_total() {
+        for (total, groups) in [(0, vec![]), (3, vec![2, 1]), (i64::MAX, vec![i64::MAX])] {
+            assert_eq!(
+                parquet_footer_rows(&metadata_with_row_counts(total, &groups)).unwrap(),
+                total as u64
+            );
+        }
+        for (total, groups, expected) in [
+            (-1, vec![1], "negative Parquet row count"),
+            (0, vec![-1], "negative Parquet row group row count"),
+            (0, vec![1], "does not match"),
+            (5, vec![10, 10, 10], "does not match"),
+            (31, vec![10, 10, 10], "does not match"),
+            (i64::MAX, vec![i64::MAX; 3], "overflows"),
+        ] {
+            let error = parquet_footer_rows(&metadata_with_row_counts(total, &groups)).unwrap_err();
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn bounded_parquet_rejects_inconsistent_footer_total_before_array_decode() {
+        let batch = RecordBatch::try_from_iter(vec![(
+            "number",
+            Arc::new(Int64Array::from_iter_values(0..30)) as ArrayRef,
+        )])
+        .unwrap();
+        let mut file = crate::test_footers::parquet_with_footer_total(&batch, 10, 31);
+        // With a permissive row budget, the metadata mismatch must still win
+        // before these damaged pages reach the array decoder.
+        file[4..20].fill(0xff);
+        let error = bounded_parquet_batches(&file, file_limits()).unwrap_err();
+        assert_eq!(
+            error,
+            "Parquet row count does not match the sum of row group row counts"
+        );
     }
 
     fn ipc_fixture(batch: &RecordBatch) -> Vec<u8> {
@@ -3428,6 +3707,154 @@ mod tests {
             filter_rows_in_store(&store, &filters, &set_lookups),
             vec![1]
         );
+    }
+
+    #[test]
+    fn whole_buffer_parquet_entry_points_reject_traps_and_load_valid_files() {
+        // parquet's footer decoder asserts INT96 statistics are 12 bytes,
+        // which aborts the module on wasm32. Each entry point must refuse the
+        // buffer before the decoder sees it.
+        let hostile = crate::test_footers::int96_file(13);
+        let expected = "Parquet footer has malformed INT96 statistics";
+        assert_eq!(
+            bounded_parquet_batches(&hostile, file_limits()).unwrap_err(),
+            expected
+        );
+        assert_eq!(load_parquet_from(&hostile).unwrap_err(), expected);
+        assert_eq!(parquet_metadata_from(&hostile).unwrap_err(), expected);
+        assert_eq!(parquet_column_hints_from(&hostile).unwrap_err(), expected);
+
+        let batch = file_fixture();
+        let valid = parquet_fixture(&batch);
+        let (_, batches) = bounded_parquet_batches(&valid, file_limits()).unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
+        let handle = load_parquet_from(&valid).unwrap();
+        assert_eq!(num_rows(handle).unwrap(), 3);
+        assert_eq!(get_cell_string(handle, 0, 1).unwrap(), "東京");
+        free(handle);
+        assert_eq!(parquet_metadata_from(&valid).unwrap(), vec![2, 3]);
+        assert_eq!(
+            parquet_column_hints_from(&valid).unwrap().len(),
+            predicate_parquet_column_hints(&valid).unwrap().len()
+        );
+        let handle = load_parquet_row_group(&valid, 1, 0).unwrap();
+        assert_eq!(num_rows(handle).unwrap(), 1);
+        free(handle);
+    }
+
+    #[test]
+    fn precheck_rejects_buffers_without_a_fitting_footer() {
+        use crate::footer_thrift::precheck_parquet_buffer;
+        let valid = parquet_fixture(&file_fixture());
+        let raw = precheck_parquet_buffer(&valid).unwrap();
+        assert_eq!(raw.row_groups.len(), 2);
+
+        assert!(precheck_parquet_buffer(b"PAR1PAR1")
+            .unwrap_err()
+            .contains("too small"));
+        let mut bad_magic = valid.clone();
+        let n = bad_magic.len();
+        bad_magic[n - 4..].copy_from_slice(b"PARE");
+        assert!(precheck_parquet_buffer(&bad_magic)
+            .unwrap_err()
+            .contains("magic"));
+        // A footer length one byte past what the buffer can hold.
+        let mut too_long = valid.clone();
+        let claim = (n - 12 + 1) as u32;
+        too_long[n - 8..n - 4].copy_from_slice(&claim.to_le_bytes());
+        assert!(precheck_parquet_buffer(&too_long)
+            .unwrap_err()
+            .contains("exceeds"));
+        let mut huge = valid;
+        huge[n - 8..n - 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(precheck_parquet_buffer(&huge)
+            .unwrap_err()
+            .contains("exceeds"));
+    }
+
+    fn decimal_store() -> u32 {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "price",
+            DataType::Decimal128(10, 2),
+            true,
+        )]));
+        let prices =
+            arrow::array::Decimal128Array::from(vec![Some(1_25), None, Some(-3_50), Some(10_00)])
+                .with_precision_and_scale(10, 2)
+                .unwrap();
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(prices)]).unwrap();
+        store_batches(vec![batch], schema).unwrap()
+    }
+
+    #[test]
+    fn decimal_columns_get_histograms_and_range_filters() {
+        let handle = decimal_store();
+        let bins = with_store(handle, |s| histogram_for(s, 0, 4)).unwrap();
+        assert_eq!(bins.len(), 4);
+        assert_eq!(bins[0].x0, -3.5);
+        assert_eq!(bins[3].x1, 10.0);
+        assert_eq!(bins.iter().map(|bin| bin.count).sum::<u32>(), 3);
+
+        let filters = vec![FilterSpec::Range {
+            col: 0,
+            min: 0.0,
+            max: 5.0,
+        }];
+        let matched = with_store(handle, |s| filter_rows_in_store(s, &filters, &[None])).unwrap();
+        assert_eq!(matched, vec![0]);
+        assert_eq!(get_cell_f64(handle, 3, 0).unwrap(), 10.0);
+        free(handle);
+    }
+
+    #[test]
+    fn decimal_scaling_handles_negative_scale_and_wide_values() {
+        assert_eq!(decimal128_to_f64(-12_345, 3), -12.345);
+        assert_eq!(decimal128_to_f64(7, -2), 700.0);
+        let wide = arrow::datatypes::i256::from_i128(i128::MAX)
+            .checked_mul(arrow::datatypes::i256::from_i128(4))
+            .unwrap();
+        let expected = i128::MAX as f64 * 4.0 / 100.0;
+        assert!((decimal256_to_f64(wide, 2) - expected).abs() / expected < 1e-12);
+        let wide_negative = wide.checked_neg().unwrap();
+        assert!((decimal256_to_f64(wide_negative, 2) + expected).abs() / expected < 1e-12);
+        let negative = arrow::datatypes::i256::from_i128(-250);
+        assert_eq!(decimal256_to_f64(negative, 2), -2.5);
+    }
+
+    #[test]
+    fn null_counts_sum_batches_and_follow_casts() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("n", DataType::Int64, true),
+            Field::new("s", DataType::Utf8, true),
+            Field::new("z", DataType::Null, true),
+        ]));
+        let first = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![Some(1), None])) as ArrayRef,
+                Arc::new(StringArray::from(vec![Some("1"), Some("x")])) as ArrayRef,
+                Arc::new(NullArray::new(2)) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let second = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![None, None, Some(3)])) as ArrayRef,
+                Arc::new(StringArray::from(vec![None, Some("2.5"), Some("3")])) as ArrayRef,
+                Arc::new(NullArray::new(3)) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let handle = store_batches(vec![first, second], schema).unwrap();
+        assert_eq!(store_null_counts(handle).unwrap(), vec![3, 1, 5]);
+
+        // "x" cannot parse as a number, so the cast column has one more null.
+        cast_column(handle, 1, "numeric").unwrap();
+        assert_eq!(store_null_counts(handle).unwrap(), vec![3, 2, 5]);
+        undo_cast_column(handle, 1).unwrap();
+        assert_eq!(store_null_counts(handle).unwrap(), vec![3, 1, 5]);
+        free(handle);
     }
 
     #[test]

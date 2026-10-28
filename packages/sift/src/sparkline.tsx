@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { NTERACT_HOST_OUTSIDE_INTERACTION_EVENT } from "./events";
@@ -7,8 +7,11 @@ import type {
   CategoricalColumnSummary,
   CategoryEntry,
   ColumnFilter,
+  DataScope,
   NumericColumnSummary,
   RangeFilter,
+  ScopedValue,
+  SummaryScope,
   TimestampColumnSummary,
 } from "./table";
 
@@ -22,6 +25,70 @@ type FilterCallback = (filter: ColumnFilter) => void;
 
 const CHART_HEIGHT = 48;
 const BRUSHING_CLASS = "sift-brushing";
+
+// --- Metric scope ---
+
+function scopeLabel(scope: DataScope): string {
+  return scope === "dataset" ? "whole file" : "loaded rows";
+}
+
+/** Every metric in `scope` describes the whole dataset, so one caption covers all of them. */
+function uniformDatasetScope(scope: SummaryScope): boolean {
+  const metrics = [scope.distribution, scope.range, scope.nullCount, scope.distinctCount];
+  return metrics.every((metric) => metric === undefined || metric.scope === "dataset");
+}
+
+/** Rows a scoped count is measured against: the dataset total or the loaded rows. */
+function scopeDenominator(scope: SummaryScope, metric: ScopedValue<number>): number {
+  return metric.scope === "dataset" ? (scope.rows.dataset?.value ?? 0) : scope.rows.loaded;
+}
+
+/**
+ * Null percentage from a scoped null count, with the matching denominator and
+ * a scope suffix unless every metric already shares dataset coverage.
+ */
+function NullCountLabel({ scope, className }: { scope: SummaryScope; className?: string }) {
+  const nullCount = scope.nullCount;
+  if (!nullCount) return null;
+  const denominator = scopeDenominator(scope, nullCount);
+  if (nullCount.value <= 0 || denominator <= 0) return null;
+  const pct = Math.round((nullCount.value / denominator) * 100);
+  const suffix = uniformDatasetScope(scope) ? "" : ` · ${scopeLabel(nullCount.scope)}`;
+  return (
+    <span
+      className={className}
+      data-scope={nullCount.scope}
+      data-precision={nullCount.precision}
+    >{`${pct}% null${suffix}`}</span>
+  );
+}
+
+/**
+ * Whole-dataset bounds from footer metadata, shown under the loaded-rows range
+ * label. Skipped when every row is resident: the range label already covers
+ * the whole file then, and repeating it would read as two different numbers.
+ */
+function DatasetRangeCaption({
+  scope,
+  format,
+}: {
+  scope: SummaryScope | undefined;
+  format: (min: number, max: number) => string;
+}) {
+  const range = scope?.range;
+  if (!range || range.scope !== "dataset") return null;
+  if (scope.distribution.scope === "dataset") return null;
+  const approx = range.precision === "exact" ? "" : "≈";
+  return (
+    <span
+      className="sift-th-range sift-th-dataset-range"
+      data-scope={range.scope}
+      data-precision={range.precision}
+    >
+      {`${approx}${format(range.value.min, range.value.max)} · ${scopeLabel(range.scope)}`}
+    </span>
+  );
+}
 
 type BrushState = {
   startX: number;
@@ -652,23 +719,40 @@ function NumericHistogram({
 }
 
 function NumericProfile({ summary }: { summary: NumericColumnSummary }) {
-  const totalInBins = summary.bins.reduce((s, b) => s + b.count, 0);
-  // Infer null count: total rows in bins is the non-null count,
-  // so nulls = explicit nullCount OR can't be computed without total rows
-  const nulls = summary.nullCount ?? 0;
-  const total = totalInBins + nulls;
-
-  const parts: string[] = [];
-  if (nulls > 0 && total > 0) {
-    const pct = Math.round((nulls / total) * 100);
-    parts.push(`${pct}% null`);
+  const parts: React.ReactNode[] = [];
+  const scopedNulls = summary.scope?.nullCount;
+  if (summary.scope && scopedNulls) {
+    // Scoped null count: the denominator follows the metric's scope.
+    const denominator = scopeDenominator(summary.scope, scopedNulls);
+    if (scopedNulls.value > 0 && denominator > 0) {
+      parts.push(<NullCountLabel key="null" scope={summary.scope} />);
+    }
+  } else {
+    const totalInBins = summary.bins.reduce((s, b) => s + b.count, 0);
+    // Infer null count: total rows in bins is the non-null count,
+    // so nulls = explicit nullCount OR can't be computed without total rows
+    const nulls = summary.nullCount ?? 0;
+    const total = totalInBins + nulls;
+    if (nulls > 0 && total > 0) {
+      const pct = Math.round((nulls / total) * 100);
+      parts.push(`${pct}% null`);
+    }
   }
   if (summary.uniqueCount !== undefined) {
     parts.push(`${summary.uniqueCount.toLocaleString()} distinct`);
   }
   if (parts.length === 0) return null;
 
-  return <span className="sift-th-profile">{parts.join(" · ")}</span>;
+  return (
+    <span className="sift-th-profile">
+      {parts.map((part, i) => (
+        <span key={i}>
+          {i > 0 ? " · " : ""}
+          {part}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 function VisibleOverlay({
@@ -722,12 +806,20 @@ function CategoryPopoverContent({
   activeSet,
   exclusionSet,
   onFilter,
+  scope,
 }: {
   allCategories: CategoryEntry[];
   activeSet: Set<string> | null;
   exclusionSet: Set<string> | null;
   onFilter: FilterCallback;
+  scope?: SummaryScope;
 }) {
+  // The checkbox domain is the resident values. When the dataset has rows that
+  // are not loaded, a note beside the controls says so; the search box and the
+  // "All" button point at it through aria-describedby so the familiar labels
+  // stay short and the caveat still reaches assistive technology.
+  const loadedOnly = scope?.distribution.scope === "loaded";
+  const scopeNoteId = useId();
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
@@ -840,12 +932,17 @@ function CategoryPopoverContent({
   }
 
   return (
-    <div className="sift-cat-popover">
+    <div
+      className="sift-cat-popover"
+      data-scope={scope?.distribution.scope}
+      data-precision={scope?.distribution.precision}
+    >
       <input
         ref={inputRef}
         className="sift-cat-popover-search"
         type="text"
         placeholder={`Search ${allCategories.length} values…`}
+        aria-describedby={loadedOnly ? scopeNoteId : undefined}
         value={searchInput}
         onChange={(e) => {
           setSearchInput(e.target.value);
@@ -853,7 +950,11 @@ function CategoryPopoverContent({
         }}
       />
       <div className="sift-cat-popover-actions">
-        <button onClick={selectAll} className="sift-cat-popover-btn">
+        <button
+          onClick={selectAll}
+          className="sift-cat-popover-btn"
+          aria-describedby={loadedOnly ? scopeNoteId : undefined}
+        >
           All
         </button>
         <button onClick={clearAll} className="sift-cat-popover-btn">
@@ -861,6 +962,14 @@ function CategoryPopoverContent({
         </button>
         <span className="sift-cat-popover-count">{selectedCount} selected</span>
       </div>
+      {loadedOnly && (
+        <p id={scopeNoteId} className="sift-cat-popover-scope" data-scope="loaded">
+          Values from loaded rows
+          {scope?.rows.dataset
+            ? ` · ${scope.rows.loaded.toLocaleString()} of ${scope.rows.dataset.value.toLocaleString()}`
+            : ""}
+        </p>
+      )}
       <div
         ref={listRef}
         className="sift-cat-popover-list"
@@ -914,11 +1023,14 @@ function CategoricalBars({
   unfilteredAllCategories,
   activeFilter,
   onFilter,
+  scope,
 }: {
   summary: CategoricalColumnSummary;
   unfilteredAllCategories?: CategoryEntry[];
   activeFilter?: ColumnFilter;
   onFilter: FilterCallback;
+  /** Coverage of the category domain shown in the popover. */
+  scope?: SummaryScope;
 }) {
   const [popoverOpen, setPopoverOpen] = useState(false);
 
@@ -1005,6 +1117,7 @@ function CategoricalBars({
           activeSet={activeSet}
           exclusionSet={exclusionSet}
           onFilter={onFilter}
+          scope={scope}
         />
       </PopoverContent>
     </Popover>
@@ -1028,9 +1141,19 @@ function BooleanRatioBar({
   const nullPct = summary.total > 0 ? (summary.nullCount / summary.total) * 100 : 0;
   const activeValue = activeFilter?.kind === "boolean" ? activeFilter.value : null;
   const hasNulls = summary.nullCount > 0;
+  // A whole-file null count has a different denominator from the loaded bar,
+  // so it gets its own line instead of a segment in the bar.
+  const datasetNulls =
+    summary.scope?.nullCount?.scope === "dataset" && summary.scope.distribution.scope !== "dataset"
+      ? summary.scope
+      : undefined;
 
   return (
-    <div className="sift-bool-summary">
+    <div
+      className="sift-bool-summary"
+      data-scope={summary.scope?.distribution.scope}
+      data-precision={summary.scope?.distribution.precision}
+    >
       <div className="sift-bool-bar">
         <div
           className="sift-bool-true sift-bool-clickable"
@@ -1061,6 +1184,7 @@ function BooleanRatioBar({
         {hasNulls && <span className="sift-bool-null-label">{nullPct.toFixed(0)}% null</span>}
         <span>No {nonNull > 0 ? falsePct.toFixed(0) : 0}%</span>
       </div>
+      {datasetNulls && <NullCountLabel scope={datasetNulls} className="sift-th-profile" />}
     </div>
   );
 }
@@ -1238,31 +1362,46 @@ function ColumnSummaryChart({
   onFilter: FilterCallback;
   timezone?: string | null;
 }) {
+  // Filtered summaries are rebuilt without footer scope; whole-file bounds do
+  // not change under a filter, so the unfiltered scope still describes them.
+  const rangeScope = summary.scope ?? unfilteredSummary?.scope;
   switch (summary.kind) {
     case "numeric": {
       const unfilteredNumeric =
         unfilteredSummary?.kind === "numeric" ? unfilteredSummary : undefined;
       return (
-        <NumericHistogram
-          summary={summary}
-          unfilteredSummary={unfilteredNumeric}
-          width={width}
-          visibleBins={visibleBins}
-          activeFilter={activeFilter?.kind === "range" ? activeFilter : null}
-          onFilter={onFilter}
-        />
+        <>
+          <NumericHistogram
+            summary={summary}
+            unfilteredSummary={unfilteredNumeric}
+            width={width}
+            visibleBins={visibleBins}
+            activeFilter={activeFilter?.kind === "range" ? activeFilter : null}
+            onFilter={onFilter}
+          />
+          <DatasetRangeCaption scope={rangeScope} format={formatNumRange} />
+        </>
       );
     }
     case "timestamp":
       return (
-        <TimestampHistogram
-          summary={summary}
-          width={width}
-          visibleBins={visibleBins}
-          activeFilter={activeFilter?.kind === "range" ? activeFilter : null}
-          onFilter={onFilter}
-          timezone={timezone}
-        />
+        <>
+          <TimestampHistogram
+            summary={summary}
+            width={width}
+            visibleBins={visibleBins}
+            activeFilter={activeFilter?.kind === "range" ? activeFilter : null}
+            onFilter={onFilter}
+            timezone={timezone}
+          />
+          <DatasetRangeCaption
+            scope={rangeScope}
+            format={(min, max) => {
+              const [minLabel, maxLabel] = formatDateRange(min, max, timezone);
+              return min === max ? minLabel : `${minLabel} – ${maxLabel}`;
+            }}
+          />
+        </>
       );
     case "boolean":
       return <BooleanRatioBar summary={summary} activeFilter={activeFilter} onFilter={onFilter} />;
@@ -1279,6 +1418,7 @@ function ColumnSummaryChart({
           unfilteredAllCategories={unfilteredCategorical?.allCategories}
           activeFilter={activeFilter}
           onFilter={onFilter}
+          scope={unfilteredCategorical?.scope ?? summary.scope}
         />
       );
     }

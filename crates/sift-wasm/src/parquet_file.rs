@@ -7,15 +7,35 @@
 //! regular `DataStore`, so everything downstream (cells, summaries, sort,
 //! filter, casts) is unchanged.
 //!
-//! Admission limits apply from the footer and cumulatively across appended
-//! row groups: every row group ends up resident in this model, so the
-//! decoded-bytes cap is a cap on the whole table.
+//! Every appended row group stays resident, so limits are cumulative: the
+//! decoded-bytes cap is a cap on the whole table. The overflow policy decides
+//! what happens when rows or decoded bytes run out:
+//!
+//! - `Error` admits the file from the footer only if it fits, and fails any
+//!   row group that would push the table past a limit.
+//! - `Truncate` treats rows and decoded bytes as a budget. The footer check
+//!   keeps only the column limits; row groups decode batch by batch and stop
+//!   at the first batch the budget cannot hold, leaving a bounded prefix of
+//!   the file. Columns stay a hard limit because a partial column set is not
+//!   a meaningful preview. The fixed-width floor still applies, scaled to the
+//!   rows a decode asks for: it bounds what the decoder allocates before a
+//!   batch can be measured.
+//!
+//! These limits are loading guardrails, not isolation from hostile files:
+//! page decompression and one decoder batch still allocate before a batch is
+//! admitted.
 
+use crate::column_stats::{file_column_stats, ParquetFileStats};
+use crate::footer_thrift::read_raw_footer;
 use crate::store::{
-    admit_parquet_footer, append_batches_to_store, collect_file_batches_into,
-    empty_streaming_store, next_handle, set_store_schema, with_stores, FileLimits, FileUsage,
-    PARQUET_BATCH_ROWS,
+    admit_parquet_footer, admit_parquet_footer_columns, append_batches_to_store, check_file_limit,
+    collect_file_batches_into, empty_streaming_store, fixed_width_rows_within,
+    minimum_fixed_width_bytes, next_handle, parquet_footer_rows, set_store_schema, with_stores,
+    FileLimits, FileUsage, PARQUET_BATCH_ROWS,
 };
+use arrow::array::{Array, ArrayData, ArrayRef, BinaryViewArray, StringViewArray};
+use arrow::datatypes::DataType;
+use arrow::record_batch::RecordBatch;
 use bytes::{Buf, Bytes};
 use nteract_predicate::parquet_features::{file_key_value_metadata, parse_parquet_column_hints};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -32,16 +52,41 @@ use wasm_bindgen::prelude::*;
 /// Smallest file that can carry a footer: leading magic, footer, trailing magic.
 const MIN_PARQUET_FILE_LEN: u64 = 4 + FOOTER_SIZE as u64;
 
+/// What a ranged load does when the rows or decoded-bytes limit runs out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LimitOverflow {
+    /// Reject the file or row group.
+    Error,
+    /// Keep what fits and stop loading.
+    Truncate,
+}
+
+/// Where a truncating load stands. Both stay false under `Error`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct BudgetState {
+    /// The budget is spent; no further row group may be fetched or appended.
+    exhausted: bool,
+    /// The budget stopped loading before the footer's last row.
+    truncated: bool,
+}
+
 struct ParquetFile {
     arrow: ArrowReaderMetadata,
     file_len: u64,
+    /// Validated once at open against the sum of every row group's count.
+    total_rows: u64,
     limits: FileLimits,
-    /// Rows and retained memory of every row group committed to the store.
+    overflow: LimitOverflow,
+    /// Rows and retained memory of every batch committed to the store.
     /// Updated only after a row group both decodes and appends, so a rejected
     /// group never shows up here.
     usage: FileUsage,
+    budget: BudgetState,
+    /// Whole-file column statistics from the footer, computed at open.
+    column_stats: ParquetFileStats,
     /// One flag per row group. A row group may be appended once per file
-    /// handle, so a retried fetch cannot duplicate rows in the store.
+    /// handle, so a retried fetch cannot duplicate rows in the store. A row
+    /// group the budget cut short counts as appended.
     appended: Vec<bool>,
 }
 
@@ -52,6 +97,15 @@ impl ParquetFile {
 
     fn remaining_decoded_bytes(&self) -> u64 {
         u64::from(self.limits.decoded_bytes).saturating_sub(self.usage.memory.bytes)
+    }
+
+    fn check_budget_open(&self) -> Result<(), String> {
+        if self.budget.exhausted {
+            return Err(
+                "Parquet preview budget is exhausted; no more row groups can be loaded".to_string(),
+            );
+        }
+        Ok(())
     }
 }
 
@@ -179,7 +233,10 @@ pub fn parquet_footer_length(tail: &[u8]) -> Result<u32, JsValue> {
 /// contain at least `parquet_footer_length(tail) + 8` bytes. `file_len` is the
 /// full file length, used to validate column chunk ranges. Admission limits
 /// are checked from the footer here and cumulatively on every appended row
-/// group. Returns a file handle; free it with `parquet_close`.
+/// group. With `truncate` set, rows and decoded bytes are a budget instead:
+/// the footer is not rejected for its row count or decoded-size floor, and
+/// appends stop once the budget is spent (see `parquet_file_budget`).
+/// Returns a file handle; free it with `parquet_close`.
 #[wasm_bindgen]
 pub fn parquet_open(
     tail: &[u8],
@@ -187,16 +244,33 @@ pub fn parquet_open(
     max_rows: u32,
     max_columns: u32,
     max_decoded_bytes: u32,
+    truncate: bool,
 ) -> Result<u32, JsValue> {
     let limits = FileLimits {
         rows: max_rows,
         columns: max_columns,
         decoded_bytes: max_decoded_bytes,
     };
-    open_parquet_file(tail, file_len_from_js(file_len).map_err(js_err)?, limits).map_err(js_err)
+    let overflow = if truncate {
+        LimitOverflow::Truncate
+    } else {
+        LimitOverflow::Error
+    };
+    open_parquet_file_with_overflow(
+        tail,
+        file_len_from_js(file_len).map_err(js_err)?,
+        limits,
+        overflow,
+    )
+    .map_err(js_err)
 }
 
-fn open_parquet_file(tail: &[u8], file_len: u64, limits: FileLimits) -> Result<u32, String> {
+fn open_parquet_file_with_overflow(
+    tail: &[u8],
+    file_len: u64,
+    limits: FileLimits,
+    overflow: LimitOverflow,
+) -> Result<u32, String> {
     let metadata_len = footer_metadata_length(tail)?;
     // The footer must leave room for the leading `PAR1` magic.
     if (metadata_len as u64) + MIN_PARQUET_FILE_LEN > file_len {
@@ -210,13 +284,33 @@ fn open_parquet_file(tail: &[u8], file_len: u64, limits: FileLimits) -> Result<u
             tail.len()
         )
     })?;
-    let metadata = ParquetMetaDataReader::decode_metadata(&tail[metadata_start..metadata_end])
-        .map_err(|e| e.to_string())?;
+    let footer = &tail[metadata_start..metadata_end];
+    // Runs first: the decoder below aborts the module on some crafted
+    // footers instead of returning an error. See `footer_thrift`.
+    let raw = read_raw_footer(footer)?;
+    raw.check_int96_statistics()?;
+    let metadata = ParquetMetaDataReader::decode_metadata(footer).map_err(|e| e.to_string())?;
     let file_end = file_len - FOOTER_SIZE as u64 - metadata_len as u64;
     validate_chunk_ranges(&metadata, file_end, usize::MAX as u64)?;
     let arrow = ArrowReaderMetadata::try_new(Arc::new(metadata), ArrowReaderOptions::default())
         .map_err(|e| e.to_string())?;
-    admit_parquet_footer(arrow.schema(), arrow.metadata(), limits)?;
+    let total_rows = match overflow {
+        LimitOverflow::Error => admit_parquet_footer(arrow.schema(), arrow.metadata(), limits)?,
+        LimitOverflow::Truncate => {
+            let rows = parquet_footer_rows(arrow.metadata())?;
+            admit_parquet_footer_columns(arrow.schema(), arrow.metadata(), limits)?;
+            // Appends shrink each decode to the rows whose fixed-width floor
+            // fits the remaining budget, so the file is unloadable only when
+            // a single row does not fit.
+            check_file_limit(
+                minimum_fixed_width_bytes(arrow.schema(), rows.min(1)),
+                limits.decoded_bytes,
+                "minimum decoded bytes",
+            )?;
+            rows
+        }
+    };
+    let column_stats = file_column_stats(arrow.metadata(), arrow.schema(), &raw);
     let appended = vec![false; arrow.metadata().num_row_groups()];
     let handle = next_handle();
     with_files(|files| {
@@ -225,13 +319,67 @@ fn open_parquet_file(tail: &[u8], file_len: u64, limits: FileLimits) -> Result<u
             ParquetFile {
                 arrow,
                 file_len,
+                total_rows,
                 limits,
+                overflow,
                 usage: FileUsage::default(),
+                budget: BudgetState::default(),
+                column_stats,
                 appended,
             },
         );
     });
     Ok(handle)
+}
+
+/// Budget state of an open file as `{ exhausted, truncated }`: `exhausted`
+/// once a truncating load can take no more rows (stop appending and finish
+/// the store), `truncated` once it stopped before the footer's last row. Both
+/// stay false under the default error policy.
+#[wasm_bindgen]
+pub fn parquet_file_budget(file: u32) -> Result<JsValue, JsValue> {
+    let state = budget_state(file).map_err(js_err)?;
+    serde_wasm_bindgen::to_value(&state).map_err(js_err)
+}
+
+fn budget_state(file: u32) -> Result<BudgetState, String> {
+    with_file(file, |file| Ok(file.budget))
+}
+
+/// Rows and retained Arrow bytes committed to the store so far, as
+/// `{ rows, decoded_bytes }` JS numbers. Lets a host pause a load at a soft
+/// budget below the hard `max_decoded_bytes` without guessing at batch sizes.
+#[wasm_bindgen]
+pub fn parquet_file_usage(file: u32) -> Result<JsValue, JsValue> {
+    let usage = file_usage(file).map_err(js_err)?;
+    serde_wasm_bindgen::to_value(&usage).map_err(js_err)
+}
+
+#[derive(Serialize)]
+struct FileUsageJs {
+    rows: f64,
+    decoded_bytes: f64,
+}
+
+fn file_usage(file: u32) -> Result<FileUsageJs, String> {
+    with_file(file, |file| {
+        Ok(FileUsageJs {
+            rows: file.usage.rows as f64,
+            decoded_bytes: file.usage.memory.bytes as f64,
+        })
+    })
+}
+
+/// Whole-file column statistics merged from the footer, one entry per
+/// top-level column: `{ num_rows, num_row_groups, columns: [{ null_count, min,
+/// max, bounded_row_groups, bounds_exact, has_infinite }] }`. Absent values
+/// are `null`. Numbers use the store's units (epoch milliseconds for temporal
+/// columns, scaled decimals). Computed at open, so it reads no bytes.
+#[wasm_bindgen]
+pub fn parquet_file_column_stats(file: u32) -> Result<JsValue, JsValue> {
+    let stats = with_file(file, |file| Ok(file.column_stats.clone())).map_err(js_err)?;
+    let serializer = serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true);
+    stats.serialize(&serializer).map_err(js_err)
 }
 
 #[derive(Serialize)]
@@ -334,6 +482,19 @@ fn row_group_ranges(file: u32, row_group: u32) -> Result<Vec<f64>, String> {
             ranges.push(offset as f64);
             ranges.push(length as f64);
         }
+        if file.overflow == LimitOverflow::Truncate {
+            file.check_budget_open()?;
+            // Decode is bounded batch by batch against the budget, so only
+            // the fetch itself needs a guard. Its bytes are transient: the
+            // store keeps decoded batches, never the compressed chunks.
+            let limit = u64::from(file.limits.decoded_bytes);
+            if compressed > limit {
+                return Err(format!(
+                    "Parquet row group {row_group} is too large to preview ({compressed} compressed bytes > {limit})"
+                ));
+            }
+            return Ok(ranges);
+        }
         // Reject before the host fetches anything it cannot keep. Compressed
         // bytes are what the fetch retains; the footer's uncompressed size is
         // the closer estimate of decoded Arrow memory when the writer is honest.
@@ -367,6 +528,8 @@ fn row_group_metadata(
 /// ranges in the same order. Ranges may be coalesced supersets of the ones
 /// returned by `parquet_row_group_ranges`, but every column chunk of the row
 /// group must lie inside a single range. Returns the number of rows appended.
+/// A truncating load may append only part of the row group; check
+/// `parquet_file_budget` afterwards.
 #[wasm_bindgen]
 pub fn parquet_append_row_group(
     file: u32,
@@ -384,9 +547,115 @@ pub fn parquet_append_row_group(
 struct AppendPlan {
     arrow: ArrowReaderMetadata,
     limits: FileLimits,
+    overflow: LimitOverflow,
     usage: FileUsage,
     expected_rows: u64,
+    total_rows: u64,
     reader: RangeSetReader,
+}
+
+/// Batches a truncating append keeps, and whether the decoded-bytes budget
+/// refused a batch before the row group ran out.
+struct BudgetedBatches {
+    batches: Vec<RecordBatch>,
+    stopped_by_bytes: bool,
+}
+
+fn has_view_type(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Utf8View | DataType::BinaryView => true,
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::FixedSizeList(field, _)
+        | DataType::ListView(field)
+        | DataType::LargeListView(field)
+        | DataType::Map(field, _) => has_view_type(field.data_type()),
+        DataType::Struct(fields) => fields.iter().any(|f| has_view_type(f.data_type())),
+        DataType::Union(fields, _) => fields.iter().any(|(_, f)| has_view_type(f.data_type())),
+        DataType::Dictionary(_, values) => has_view_type(values),
+        DataType::RunEndEncoded(_, values) => has_view_type(values.data_type()),
+        _ => false,
+    }
+}
+
+/// Copy every view array in `data`, at any depth, into buffers holding only
+/// the bytes its views reference.
+fn compact_view_data(data: ArrayData) -> Result<ArrayData, String> {
+    match data.data_type() {
+        DataType::Utf8View => Ok(StringViewArray::from(data).gc().into_data()),
+        DataType::BinaryView => Ok(BinaryViewArray::from(data).gc().into_data()),
+        data_type if !has_view_type(data_type) => Ok(data),
+        _ => {
+            let children = data
+                .child_data()
+                .iter()
+                .cloned()
+                .map(compact_view_data)
+                .collect::<Result<Vec<_>, _>>()?;
+            data.into_builder()
+                .child_data(children)
+                .build()
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// The parquet reader builds view arrays over slices of whole decompressed
+/// pages, which keep level data and other batches' values alive. The ledger
+/// can only see each slice, not the page allocation behind it, so a view
+/// batch would retain more than it is charged. Compacting copies just the
+/// referenced bytes into owned buffers, making retained memory what the
+/// ledger counts, and keeps column types the same under either policy.
+fn compact_view_arrays(batch: RecordBatch) -> Result<RecordBatch, String> {
+    if !batch
+        .schema()
+        .fields()
+        .iter()
+        .any(|field| has_view_type(field.data_type()))
+    {
+        return Ok(batch);
+    }
+    let columns = batch
+        .columns()
+        .iter()
+        .map(|column| compact_view_data(column.to_data()).map(arrow::array::make_array))
+        .collect::<Result<Vec<ArrayRef>, _>>()?;
+    RecordBatch::try_new(batch.schema(), columns).map_err(|e| e.to_string())
+}
+
+/// Keep decoded batches while the decoded-bytes budget holds them. The row
+/// budget is applied by the reader's limit. `usage` grows only by the kept
+/// batches. The first batch of the table must fit: an empty preview is an
+/// error, not a result.
+fn collect_budgeted_batches(
+    reader: impl Iterator<Item = Result<RecordBatch, arrow::error::ArrowError>>,
+    limits: FileLimits,
+    usage: &mut FileUsage,
+) -> Result<BudgetedBatches, String> {
+    let limit = u64::from(limits.decoded_bytes);
+    let mut batches = Vec::new();
+    for batch in reader {
+        let batch = compact_view_arrays(batch.map_err(|e| e.to_string())?)?;
+        check_file_limit(batch.num_columns() as u64, limits.columns, "column")?;
+        if !usage.memory.try_add_batch(&batch, limit) {
+            if usage.rows == 0 {
+                return Err(format!(
+                    "Parquet preview budget cannot hold the first {} rows (decoded bytes limit {limit})",
+                    batch.num_rows()
+                ));
+            }
+            return Ok(BudgetedBatches {
+                batches,
+                stopped_by_bytes: true,
+            });
+        }
+        usage.rows = usage.rows.saturating_add(batch.num_rows() as u64);
+        batches.push(batch);
+    }
+    Ok(BudgetedBatches {
+        batches,
+        stopped_by_bytes: false,
+    })
 }
 
 fn append_row_group(
@@ -404,6 +673,9 @@ fn append_row_group(
         if file.appended[index] {
             return Err(format!("Parquet row group {row_group} is already loaded"));
         }
+        if file.overflow == LimitOverflow::Truncate {
+            file.check_budget_open()?;
+        }
         let reader = RangeSetReader::new(file.file_len, ranges, data)?;
         for column in group.columns() {
             let (offset, length) = chunk_range(column)?;
@@ -416,11 +688,13 @@ fn append_row_group(
         Ok(AppendPlan {
             arrow: file.arrow.clone(),
             limits: file.limits,
+            overflow: file.overflow,
             // A snapshot: the registry's totals change only once the group is
             // in the store, so a rejected group leaves them describing exactly
             // what the store holds.
             usage: file.usage.clone(),
             expected_rows,
+            total_rows: file.total_rows,
             reader,
         })
     })?;
@@ -428,20 +702,81 @@ fn append_row_group(
     let AppendPlan {
         arrow,
         limits,
+        overflow,
         mut usage,
         expected_rows,
+        total_rows,
         reader,
     } = plan;
-    let batch_reader = ParquetRecordBatchReaderBuilder::new_with_metadata(reader, arrow.clone())
+    let builder = ParquetRecordBatchReaderBuilder::new_with_metadata(reader, arrow.clone())
         .with_row_groups(vec![index])
-        .with_batch_size(PARQUET_BATCH_ROWS as usize)
-        .build()
-        .map_err(|e| e.to_string())?;
-    let batches = collect_file_batches_into(batch_reader, limits, &mut usage)?;
+        .with_batch_size(PARQUET_BATCH_ROWS as usize);
+    let (batches, budget) = match overflow {
+        LimitOverflow::Error => {
+            let batch_reader = builder.build().map_err(|e| e.to_string())?;
+            let batches = collect_file_batches_into(batch_reader, limits, &mut usage)?;
+            let decoded_rows: u64 = batches.iter().map(|batch| batch.num_rows() as u64).sum();
+            if decoded_rows != expected_rows {
+                return Err("Parquet row group row count does not match its metadata".to_string());
+            }
+            (batches, BudgetState::default())
+        }
+        LimitOverflow::Truncate => {
+            let schema = arrow.schema();
+            let decoded_limit = u64::from(limits.decoded_bytes);
+            let allowed_rows = u64::from(limits.rows).saturating_sub(usage.rows);
+            // Shrink the decode so its fixed-width floor fits what is left:
+            // the decoder allocates that floor, nulls included, before a
+            // batch can be measured.
+            let floor_rows =
+                fixed_width_rows_within(schema, decoded_limit.saturating_sub(usage.memory.bytes));
+            let wanted_rows = expected_rows.min(allowed_rows).min(floor_rows);
+            if wanted_rows == 0 && expected_rows > 0 && usage.rows == 0 {
+                return Err(format!(
+                    "Parquet preview budget cannot hold one row (decoded bytes limit {decoded_limit})"
+                ));
+            }
+            // Limit the reader only when the budget cuts this group short.
+            // An uncut group decodes in full so its footer row count is
+            // checked exactly.
+            let builder = if wanted_rows < expected_rows {
+                builder.with_limit(usize::try_from(wanted_rows).unwrap_or(usize::MAX))
+            } else {
+                builder
+            };
+            let batch_reader = builder.build().map_err(|e| e.to_string())?;
+            let collected = collect_budgeted_batches(batch_reader, limits, &mut usage)?;
+            let decoded_rows: u64 = collected
+                .batches
+                .iter()
+                .map(|batch| batch.num_rows() as u64)
+                .sum();
+            // Only a refused batch may leave the group short of what the row
+            // budget allows; otherwise the footer count must hold exactly.
+            let consistent = if collected.stopped_by_bytes {
+                decoded_rows < wanted_rows
+            } else {
+                decoded_rows == wanted_rows
+            };
+            if !consistent {
+                return Err("Parquet row group row count does not match its metadata".to_string());
+            }
+            // Spent once a batch was refused, the row budget is full, or what
+            // is left cannot hold another row. Checking here keeps the host
+            // from fetching a row group that cannot add anything.
+            let remaining_bytes = decoded_limit.saturating_sub(usage.memory.bytes);
+            let exhausted = collected.stopped_by_bytes
+                || usage.rows >= u64::from(limits.rows)
+                || remaining_bytes == 0
+                || fixed_width_rows_within(schema, remaining_bytes) == 0;
+            let budget = BudgetState {
+                exhausted,
+                truncated: exhausted && usage.rows < total_rows,
+            };
+            (collected.batches, budget)
+        }
+    };
     let decoded_rows: u64 = batches.iter().map(|batch| batch.num_rows() as u64).sum();
-    if decoded_rows != expected_rows {
-        return Err("Parquet row group row count does not match its metadata".to_string());
-    }
 
     with_stores(|stores| {
         let target = stores
@@ -453,6 +788,7 @@ fn append_row_group(
     // rows, and a closed file cannot be appended to again, so that is fine.
     let _ = with_file(file, |file| {
         file.usage = usage;
+        file.budget = budget;
         file.appended[index] = true;
         Ok(())
     });
@@ -588,7 +924,9 @@ impl ChunkReader for RangeSetReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::column_stats::StatValue;
     use crate::store::{free, get_cell_string, is_null, num_rows};
+    use crate::test_footers::{int96_footer, parquet_with_footer_total, thrift_footer};
     use arrow::array::{ArrayRef, Int64Array, StringArray};
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
@@ -599,6 +937,11 @@ mod tests {
             columns: 256,
             decoded_bytes: 128 * 1024 * 1024,
         }
+    }
+
+    /// Opens with the default `error` overflow policy.
+    fn open_parquet_file(tail: &[u8], file_len: u64, limits: FileLimits) -> Result<u32, String> {
+        open_parquet_file_with_overflow(tail, file_len, limits, LimitOverflow::Error)
     }
 
     fn fixture_batch(rows: i64) -> RecordBatch {
@@ -794,6 +1137,10 @@ mod tests {
         append_row_group(handle, store, 0, &ranges0, &fetch_ranges(&file, &ranges0)).unwrap();
         let ledger = with_file(handle, |f| Ok((f.usage.rows, f.usage.memory.bytes))).unwrap();
         assert_eq!(ledger.0, 200);
+        // The host-facing usage mirrors the ledger exactly.
+        let usage = file_usage(handle).unwrap();
+        assert_eq!(usage.rows, 200.0);
+        assert_eq!(usage.decoded_bytes, ledger.1 as f64);
 
         // The footer sizes alone show the second group cannot fit, so the
         // host is told before it fetches anything.
@@ -907,6 +1254,292 @@ mod tests {
         let honest = footer_with_chunk(&file, |c| c);
         let handle = open_parquet_file(&honest, len, limits()).unwrap();
         parquet_close(handle);
+
+        // parquet's decoder asserts INT96 statistics are 12 bytes, which
+        // would abort the module. The pre-pass rejects the footer first.
+        let (tail, file_len) = int96_footer(12);
+        let handle = open_parquet_file(&tail, file_len, limits()).unwrap();
+        parquet_close(handle);
+        for length in [13, 11, 0] {
+            let (tail, file_len) = int96_footer(length);
+            let error = open_parquet_file(&tail, file_len, limits()).unwrap_err();
+            assert_eq!(
+                error, "Parquet footer has malformed INT96 statistics",
+                "{length}-byte INT96 min"
+            );
+        }
+    }
+
+    #[test]
+    fn column_stats_distrust_a_missing_null_count() {
+        // parquet 54.3.1 decodes an absent null_count as Some(0); the raw
+        // pre-pass knows it was absent.
+        let bounds = |null_count: Option<i64>| {
+            parquet::format::Statistics::new(
+                None,
+                None,
+                null_count,
+                None,
+                9i64.to_le_bytes().to_vec(),
+                (-4i64).to_le_bytes().to_vec(),
+                None,
+                None,
+            )
+        };
+        for (null_count, expected) in [(None, None), (Some(0), Some(0.0))] {
+            let (tail, file_len) = thrift_footer(parquet::format::Type::INT64, bounds(null_count));
+            let handle = open_parquet_file(&tail, file_len, limits()).unwrap();
+            let decoded_count = with_file(handle, |f| {
+                Ok(f.metadata()
+                    .row_group(0)
+                    .column(0)
+                    .statistics()
+                    .unwrap()
+                    .null_count_opt())
+            })
+            .unwrap();
+            assert_eq!(decoded_count, Some(0), "the decoder cannot tell");
+            let stats = with_file(handle, |f| Ok(f.column_stats.clone())).unwrap();
+            parquet_close(handle);
+            let column = &stats.columns[0];
+            assert_eq!(column.null_count, expected, "raw null_count {null_count:?}");
+            assert_eq!(
+                (column.min.clone(), column.max.clone()),
+                (number(-4.0), number(9.0))
+            );
+            // No column_orders in this footer, but INT64 sorts signed.
+            assert_eq!(column.bounded_row_groups, 1);
+        }
+    }
+
+    fn column_stats_of(file: &[u8]) -> ParquetFileStats {
+        let handle = open_from_tail(file, 64, limits()).unwrap();
+        let stats = with_file(handle, |f| Ok(f.column_stats.clone())).unwrap();
+        parquet_close(handle);
+        stats
+    }
+
+    fn write_parquet(
+        batch: &RecordBatch,
+        row_group_size: usize,
+        edit: impl FnOnce(
+            parquet::file::properties::WriterPropertiesBuilder,
+        ) -> parquet::file::properties::WriterPropertiesBuilder,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let properties = edit(
+            parquet::file::properties::WriterProperties::builder()
+                .set_max_row_group_size(row_group_size),
+        )
+        .build();
+        let mut writer =
+            parquet::arrow::ArrowWriter::try_new(&mut bytes, batch.schema(), Some(properties))
+                .unwrap();
+        writer.write(batch).unwrap();
+        writer.close().unwrap();
+        bytes
+    }
+
+    fn number(value: f64) -> Option<StatValue> {
+        Some(StatValue::Number(value))
+    }
+
+    #[test]
+    fn column_stats_merge_row_groups_in_store_units() {
+        use arrow::array::{BooleanArray, Decimal128Array, TimestampMillisecondArray};
+        let base = 1_700_000_000_000i64;
+        let decimals = Decimal128Array::from(vec![
+            Some(125),
+            Some(-350),
+            None,
+            Some(1000),
+            Some(0),
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+        ])
+        .with_precision_and_scale(10, 2)
+        .unwrap();
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "n",
+                Arc::new(Int64Array::from(vec![
+                    Some(5),
+                    None,
+                    Some(-2),
+                    Some(10),
+                    Some(7),
+                    None,
+                    Some(3),
+                    Some(0),
+                    Some(1),
+                ])) as ArrayRef,
+            ),
+            (
+                "s",
+                Arc::new(StringArray::from(vec![
+                    Some("m"),
+                    Some("b"),
+                    None,
+                    Some("z"),
+                    Some("a"),
+                    Some("q"),
+                    None,
+                    None,
+                    Some("c"),
+                ])) as ArrayRef,
+            ),
+            (
+                "t",
+                Arc::new(TimestampMillisecondArray::from(vec![
+                    Some(base + 4_000),
+                    Some(base),
+                    Some(base + 8_000),
+                    None,
+                    Some(base + 1_000),
+                    Some(base + 2_000),
+                    Some(base + 3_000),
+                    Some(base + 5_000),
+                    Some(base + 6_000),
+                ])) as ArrayRef,
+            ),
+            ("d", Arc::new(decimals) as ArrayRef),
+            (
+                "b",
+                Arc::new(BooleanArray::from(vec![
+                    Some(true),
+                    Some(true),
+                    None,
+                    Some(true),
+                    Some(true),
+                    Some(true),
+                    Some(false),
+                    None,
+                    Some(true),
+                ])) as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let stats = column_stats_of(&write_parquet(&batch, 3, |p| p));
+        assert_eq!(stats.num_rows, 9.0);
+        assert_eq!(stats.num_row_groups, 3);
+        let [n, s, t, d, b] = stats.columns.as_slice() else {
+            panic!("expected five columns: {stats:?}");
+        };
+
+        assert_eq!(n.null_count, Some(2.0));
+        assert_eq!((n.min.clone(), n.max.clone()), (number(-2.0), number(10.0)));
+        assert_eq!(s.null_count, Some(3.0));
+        assert_eq!(
+            (s.min.clone(), s.max.clone()),
+            (
+                Some(StatValue::Text("a".to_string())),
+                Some(StatValue::Text("z".to_string()))
+            )
+        );
+        assert_eq!(t.null_count, Some(1.0));
+        assert_eq!(
+            (t.min.clone(), t.max.clone()),
+            (number(base as f64), number((base + 8_000) as f64))
+        );
+        assert_eq!(d.null_count, Some(1.0));
+        assert_eq!((d.min.clone(), d.max.clone()), (number(-3.5), number(10.0)));
+        assert_eq!(b.null_count, Some(2.0));
+        assert_eq!(
+            (b.min.clone(), b.max.clone()),
+            (Some(StatValue::Bool(false)), Some(StatValue::Bool(true)))
+        );
+        for column in [n, s, t, d, b] {
+            assert_eq!(column.bounded_row_groups, 3, "{column:?}");
+            assert!(!column.has_infinite, "{column:?}");
+        }
+        for column in [n, t, d] {
+            assert!(column.bounds_exact, "{column:?}");
+        }
+    }
+
+    #[test]
+    fn column_stats_without_statistics_are_unknown() {
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "x",
+                Arc::new(Int64Array::from(vec![Some(1), None, Some(3), Some(4)])) as ArrayRef,
+            ),
+            (
+                "y",
+                Arc::new(Int64Array::from(vec![Some(1), Some(2), None, Some(4)])) as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let file = write_parquet(&batch, 2, |p| {
+            p.set_column_statistics_enabled(
+                parquet::schema::types::ColumnPath::from("x"),
+                parquet::file::properties::EnabledStatistics::None,
+            )
+        });
+        let stats = column_stats_of(&file);
+        let x = &stats.columns[0];
+        assert_eq!(x.null_count, None);
+        assert_eq!((x.min.clone(), x.max.clone()), (None, None));
+        assert_eq!(x.bounded_row_groups, 0);
+        assert!(!x.bounds_exact);
+        // The neighbouring column keeps its statistics.
+        let y = &stats.columns[1];
+        assert_eq!(y.null_count, Some(1.0));
+        assert_eq!((y.min.clone(), y.max.clone()), (number(1.0), number(4.0)));
+    }
+
+    #[test]
+    fn column_stats_bound_all_null_columns_by_their_null_count() {
+        let batch = RecordBatch::try_from_iter(vec![(
+            "empty",
+            Arc::new(Int64Array::from(vec![None::<i64>; 6])) as ArrayRef,
+        )])
+        .unwrap();
+        let stats = column_stats_of(&write_parquet(&batch, 3, |p| p));
+        let column = &stats.columns[0];
+        assert_eq!(column.null_count, Some(6.0));
+        assert_eq!((column.min.clone(), column.max.clone()), (None, None));
+        assert_eq!(column.bounded_row_groups, stats.num_row_groups);
+        assert_eq!(stats.num_row_groups, 2);
+    }
+
+    #[test]
+    fn column_stats_flag_infinite_bounds() {
+        let batch = RecordBatch::try_from_iter(vec![(
+            "f",
+            Arc::new(arrow::array::Float64Array::from(vec![
+                Some(1.5),
+                Some(f64::INFINITY),
+                Some(-0.5),
+                Some(f64::NAN),
+            ])) as ArrayRef,
+        )])
+        .unwrap();
+        let stats = column_stats_of(&write_parquet(&batch, 2, |p| p));
+        let column = &stats.columns[0];
+        assert!(column.has_infinite);
+        assert_eq!(column.max, number(f64::INFINITY));
+        assert_eq!(column.min, number(-0.5));
+    }
+
+    #[test]
+    fn column_stats_required_columns_have_no_nulls_without_statistics() {
+        use arrow::datatypes::{DataType, Field, Schema};
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3])) as ArrayRef],
+        )
+        .unwrap();
+        let file = write_parquet(&batch, 2, |p| {
+            p.set_statistics_enabled(parquet::file::properties::EnabledStatistics::None)
+        });
+        let column = &column_stats_of(&file).columns[0];
+        assert_eq!(column.null_count, Some(0.0));
+        assert_eq!((column.min.clone(), column.max.clone()), (None, None));
+        assert_eq!(column.bounded_row_groups, 0);
     }
 
     #[test]
@@ -984,6 +1617,478 @@ mod tests {
             RangeSetReader::new(1000, &[100.0, 0.0, 100.0, 4.0], &[7, 8, 9, 10]).unwrap();
         assert_eq!(shadowed.get_bytes(100, 4).unwrap().as_ref(), &[7, 8, 9, 10]);
         assert!(shadowed.covers(100, 0));
+    }
+
+    fn open_truncating(file: &[u8], limits: FileLimits) -> Result<u32, String> {
+        let metadata_len = footer_metadata_length(file)?;
+        let tail = &file[file.len() - metadata_len - FOOTER_SIZE..];
+        open_parquet_file_with_overflow(tail, file.len() as u64, limits, LimitOverflow::Truncate)
+    }
+
+    /// Simulates the streaming host: append row groups in order until the
+    /// budget says stop. Returns the store and the row groups fetched.
+    fn load_until_exhausted(file: &[u8], handle: u32) -> (u32, Vec<u32>) {
+        let store = create_store(handle).unwrap();
+        let groups = with_file(handle, |f| Ok(f.metadata().num_row_groups())).unwrap();
+        let mut fetched = Vec::new();
+        for group in 0..groups as u32 {
+            let ranges = row_group_ranges(handle, group).unwrap();
+            fetched.push(group);
+            append_row_group(handle, store, group, &ranges, &fetch_ranges(file, &ranges)).unwrap();
+            if budget_state(handle).unwrap().exhausted {
+                break;
+            }
+        }
+        crate::store::finish_arrow_stream_store(store).unwrap();
+        (store, fetched)
+    }
+
+    fn retained_bytes(handle: u32) -> u64 {
+        with_file(handle, |f| Ok(f.usage.memory.bytes)).unwrap()
+    }
+
+    #[test]
+    fn truncate_opens_past_the_row_limit_and_stops_at_exactly_max_rows() {
+        // 1000 rows in row groups of 128; 300 rows ends 44 rows into group 2.
+        let file = parquet_bytes(&fixture_batch(1000), 128);
+        let mut budget = limits();
+        budget.rows = 300;
+        assert!(open_from_tail(&file, 64, budget)
+            .unwrap_err()
+            .contains("row limit"));
+
+        let handle = open_truncating(&file, budget).unwrap();
+        let (store, fetched) = load_until_exhausted(&file, handle);
+        assert_eq!(fetched, vec![0, 1, 2]);
+        assert_eq!(num_rows(store).unwrap(), 300);
+        assert_eq!(
+            budget_state(handle).unwrap(),
+            BudgetState {
+                exhausted: true,
+                truncated: true
+            }
+        );
+        assert_eq!(with_file(handle, |f| Ok(f.usage.rows)).unwrap(), 300);
+        // The last resident row is row 299 of the file.
+        let whole = crate::store::load_parquet_bounded(&file, 100_000, 256, 128 << 20).unwrap();
+        for col in 0..2 {
+            assert_eq!(
+                get_cell_string(store, 299, col).unwrap(),
+                get_cell_string(whole, 299, col).unwrap()
+            );
+        }
+        // Nothing more loads once the budget is spent.
+        let more = row_group_ranges(handle, 3).unwrap_err();
+        assert!(more.contains("budget is exhausted"), "{more}");
+        free(whole);
+        free(store);
+        parquet_close(handle);
+    }
+
+    #[test]
+    fn truncate_stops_at_a_batch_boundary_within_the_decoded_budget() {
+        // Row groups of 1000 rows decode as 256-row batches.
+        let file = parquet_bytes(&fixture_batch(2000), 1000);
+        let full = open_from_tail(&file, 64, limits()).unwrap();
+        let store = create_store(full).unwrap();
+        let ranges = row_group_ranges(full, 0).unwrap();
+        append_row_group(full, store, 0, &ranges, &fetch_ranges(&file, &ranges)).unwrap();
+        let one_group = retained_bytes(full);
+        free(store);
+        parquet_close(full);
+
+        let compressed: u64 = ranges.chunks_exact(2).map(|p| p[1] as u64).sum();
+        let mut budget = limits();
+        budget.decoded_bytes = (one_group * 3 / 4) as u32;
+        assert!(compressed < u64::from(budget.decoded_bytes));
+
+        let handle = open_truncating(&file, budget).unwrap();
+        let (store, fetched) = load_until_exhausted(&file, handle);
+        assert_eq!(fetched, vec![0], "later row groups are never fetched");
+        let rows = num_rows(store).unwrap();
+        assert!(rows > 0 && rows < 1000, "{rows}");
+        assert_eq!(u64::from(rows) % PARQUET_BATCH_ROWS, 0);
+        assert!(retained_bytes(handle) <= u64::from(budget.decoded_bytes));
+        assert_eq!(
+            with_file(handle, |f| Ok(f.usage.rows)).unwrap(),
+            u64::from(rows)
+        );
+        assert_eq!(
+            budget_state(handle).unwrap(),
+            BudgetState {
+                exhausted: true,
+                truncated: true
+            }
+        );
+        free(store);
+        parquet_close(handle);
+    }
+
+    #[test]
+    fn truncate_rejects_a_row_group_too_large_to_fetch() {
+        let file = parquet_bytes(&fixture_batch(500), 500);
+        let handle = open_truncating(&file, limits()).unwrap();
+        let ranges = row_group_ranges(handle, 0).unwrap();
+        parquet_close(handle);
+        let compressed: u64 = ranges.chunks_exact(2).map(|p| p[1] as u64).sum();
+
+        let mut budget = limits();
+        budget.decoded_bytes = (compressed - 1) as u32;
+        let handle = open_truncating(&file, budget).unwrap();
+        let error = row_group_ranges(handle, 0).unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "Parquet row group 0 is too large to preview ({compressed} compressed bytes > {})",
+                compressed - 1
+            )
+        );
+        parquet_close(handle);
+    }
+
+    #[test]
+    fn truncate_errors_when_not_even_the_first_batch_fits() {
+        let file = parquet_bytes(&fixture_batch(256), 256);
+        let handle = open_truncating(&file, limits()).unwrap();
+        let ranges = row_group_ranges(handle, 0).unwrap();
+        parquet_close(handle);
+        let compressed: u64 = ranges.chunks_exact(2).map(|p| p[1] as u64).sum();
+
+        let mut budget = limits();
+        budget.decoded_bytes = compressed as u32;
+        let handle = open_truncating(&file, budget).unwrap();
+        let store = create_store(handle).unwrap();
+        let ranges = row_group_ranges(handle, 0).unwrap();
+        let error =
+            append_row_group(handle, store, 0, &ranges, &fetch_ranges(&file, &ranges)).unwrap_err();
+        assert!(error.contains("cannot hold the first"), "{error}");
+        assert_eq!(num_rows(store).unwrap(), 0);
+        assert_eq!(retained_bytes(handle), 0);
+        free(store);
+        parquet_close(handle);
+    }
+
+    #[test]
+    fn truncate_still_rejects_too_many_columns() {
+        let file = parquet_bytes(&fixture_batch(50), 10);
+        let mut budget = limits();
+        budget.columns = 1;
+        assert!(open_truncating(&file, budget)
+            .unwrap_err()
+            .contains("column limit"));
+    }
+
+    #[test]
+    fn truncate_loads_a_file_that_fits_completely() {
+        let file = parquet_bytes(&fixture_batch(1000), 128);
+        let handle = open_truncating(&file, limits()).unwrap();
+        let (store, fetched) = load_until_exhausted(&file, handle);
+        assert_eq!(fetched.len(), 8);
+        assert_eq!(num_rows(store).unwrap(), 1000);
+        assert_eq!(budget_state(handle).unwrap(), BudgetState::default());
+        free(store);
+        parquet_close(handle);
+
+        // A row budget equal to the file fills on the last row: spent, but
+        // nothing was cut off.
+        let mut exact = limits();
+        exact.rows = 1000;
+        let handle = open_truncating(&file, exact).unwrap();
+        let (store, fetched) = load_until_exhausted(&file, handle);
+        assert_eq!(fetched.len(), 8);
+        assert_eq!(num_rows(store).unwrap(), 1000);
+        assert_eq!(
+            budget_state(handle).unwrap(),
+            BudgetState {
+                exhausted: true,
+                truncated: false
+            }
+        );
+        free(store);
+        parquet_close(handle);
+    }
+
+    /// Bytes a view array's data buffers hold, and bytes its non-inline
+    /// values reference. Equal only when the buffers carry nothing else.
+    fn view_bytes(data: &arrow::array::ArrayData) -> (usize, usize) {
+        let held = data.buffers()[1..].iter().map(|b| b.len()).sum();
+        let views = data.buffers()[0].typed_data::<u128>();
+        let referenced = views[data.offset()..data.offset() + data.len()]
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| data.is_valid(*i))
+            .map(|(_, view)| *view as u32 as usize)
+            .filter(|len| *len > 12)
+            .sum();
+        (held, referenced)
+    }
+
+    /// Visit every view array in `data`, including nested children.
+    fn each_view_array(
+        data: &arrow::array::ArrayData,
+        visit: &mut impl FnMut(&arrow::array::ArrayData),
+    ) {
+        use arrow::datatypes::DataType;
+        if matches!(data.data_type(), DataType::Utf8View | DataType::BinaryView) {
+            visit(data);
+        }
+        for child in data.child_data() {
+            each_view_array(child, visit);
+        }
+    }
+
+    #[test]
+    fn truncate_retains_only_the_view_bytes_it_charges() {
+        use arrow::array::{BinaryViewArray, ListArray, StringViewArray, StructArray};
+        use arrow::datatypes::{DataType, Field, Int32Type};
+        let rows = 600usize;
+        // Values past 12 bytes live in data buffers rather than inline.
+        let text = StringViewArray::from_iter(
+            (0..rows).map(|i| (i % 9 != 4).then(|| format!("string-view-value-{i:05}-padding"))),
+        );
+        let blob = BinaryViewArray::from_iter((0..rows).map(|i| {
+            (i % 7 != 1).then(|| format!("binary-view-value-{i:05}-padding").into_bytes())
+        }));
+        let tags_item = Arc::new(Field::new("item", DataType::Utf8View, true));
+        let tags_values = StringViewArray::from_iter(
+            (0..rows * 2).map(|i| (i % 5 != 2).then(|| format!("nested-view-tag-{i:06}"))),
+        );
+        let offsets = arrow::buffer::OffsetBuffer::from_lengths(std::iter::repeat_n(2, rows));
+        let tags = ListArray::new(tags_item, offsets, Arc::new(tags_values), None);
+        let inner = StructArray::from(vec![(
+            Arc::new(Field::new("label", DataType::Utf8View, true)),
+            Arc::new(StringViewArray::from_iter((0..rows).map(|i| {
+                (i % 3 != 0).then(|| format!("struct-view-label-{i:05}"))
+            }))) as ArrayRef,
+        )]);
+        let ids = arrow::array::PrimitiveArray::<Int32Type>::from_iter_values(0..rows as i32);
+        let batch = RecordBatch::try_from_iter(vec![
+            ("id", Arc::new(ids) as ArrayRef),
+            ("text", Arc::new(text) as ArrayRef),
+            ("blob", Arc::new(blob) as ArrayRef),
+            ("tags", Arc::new(tags) as ArrayRef),
+            ("inner", Arc::new(inner) as ArrayRef),
+        ])
+        .unwrap();
+        let file = parquet_bytes(&batch, rows);
+
+        let handle = open_truncating(&file, limits()).unwrap();
+        let (store, _) = load_until_exhausted(&file, handle);
+        assert_eq!(num_rows(store).unwrap() as usize, rows);
+        let mut seen = 0;
+        for batch in crate::store::batches_snapshot(store) {
+            for column in batch.columns() {
+                each_view_array(&column.to_data(), &mut |data| {
+                    seen += 1;
+                    let (held, referenced) = view_bytes(data);
+                    assert!(referenced > 0);
+                    assert_eq!(
+                        held,
+                        referenced,
+                        "{:?} holds bytes it does not use",
+                        data.data_type()
+                    );
+                });
+            }
+        }
+        // Four view columns (text, blob, tags.item, inner.label) per batch.
+        assert_eq!(seen % 4, 0);
+        assert!(seen >= 4);
+        free(store);
+        parquet_close(handle);
+    }
+
+    /// A Parquet file with one optional FIXED_LEN_BYTE_ARRAY column of
+    /// `width` bytes and `rows` nulls, written without an Arrow schema. Null
+    /// rows carry no value bytes, so the file stays tiny whatever the width.
+    fn null_fixed_width_file(width: i32, rows: usize, rows_per_group: usize) -> Vec<u8> {
+        use parquet::data_type::FixedLenByteArrayType;
+        use parquet::file::writer::SerializedFileWriter;
+        let schema = Arc::new(
+            parquet::schema::parser::parse_message_type(&format!(
+                "message hostile {{ optional fixed_len_byte_array({width}) wide; }}"
+            ))
+            .unwrap(),
+        );
+        let properties = Arc::new(
+            parquet::file::properties::WriterProperties::builder()
+                .set_statistics_enabled(parquet::file::properties::EnabledStatistics::None)
+                .build(),
+        );
+        let mut bytes = Vec::new();
+        let mut writer = SerializedFileWriter::new(&mut bytes, schema, properties).unwrap();
+        let mut written = 0;
+        while written < rows {
+            let group = rows_per_group.min(rows - written);
+            let mut row_group = writer.next_row_group().unwrap();
+            let mut column = row_group.next_column().unwrap().unwrap();
+            column
+                .typed::<FixedLenByteArrayType>()
+                .write_batch(&[], Some(&vec![0i16; group]), None)
+                .unwrap();
+            column.close().unwrap();
+            row_group.close().unwrap();
+            written += group;
+        }
+        writer.close().unwrap();
+        bytes
+    }
+
+    #[test]
+    fn truncate_rejects_a_fixed_width_column_no_row_of_which_fits() {
+        // Decoding two null rows would ask for 2 x i32::MAX zeroed bytes.
+        let file = null_fixed_width_file(i32::MAX, 2, 2);
+        let mut budget = limits();
+        budget.rows = 2;
+        assert!(open_from_tail(&file, 64, budget)
+            .unwrap_err()
+            .contains("minimum decoded bytes"));
+        let error = open_truncating(&file, budget).unwrap_err();
+        assert!(error.contains("minimum decoded bytes"), "{error}");
+    }
+
+    #[test]
+    fn truncate_caps_a_row_group_to_the_rows_its_fixed_widths_allow() {
+        // 300 null rows of 64 KiB each: a 256-row batch would allocate 16 MiB.
+        let width = 64 * 1024;
+        let file = null_fixed_width_file(width, 300, 300);
+        let mut budget = limits();
+        budget.decoded_bytes = 100 * width as u32 + 4096;
+        let handle = open_truncating(&file, budget).unwrap();
+        let (store, fetched) = load_until_exhausted(&file, handle);
+        assert_eq!(fetched, vec![0]);
+        assert_eq!(num_rows(store).unwrap(), 100);
+        assert!(retained_bytes(handle) <= u64::from(budget.decoded_bytes));
+        assert_eq!(
+            budget_state(handle).unwrap(),
+            BudgetState {
+                exhausted: true,
+                truncated: true
+            }
+        );
+        free(store);
+        parquet_close(handle);
+    }
+
+    /// Re-encode a file's footer with row group 0's row count replaced.
+    fn footer_with_group_rows(file: &[u8], rows: i64) -> Vec<u8> {
+        use parquet::file::metadata::ParquetMetaDataWriter;
+        let metadata_len = footer_metadata_length(file).unwrap();
+        let start = file.len() - FOOTER_SIZE - metadata_len;
+        let metadata =
+            ParquetMetaDataReader::decode_metadata(&file[start..file.len() - FOOTER_SIZE]).unwrap();
+        let mut groups = metadata.row_groups().to_vec();
+        let group = groups.remove(0);
+        groups.insert(0, group.into_builder().set_num_rows(rows).build().unwrap());
+        let rewritten = ParquetMetaData::new(metadata.file_metadata().clone(), groups);
+        let mut out = Vec::new();
+        ParquetMetaDataWriter::new(&mut out, &rewritten)
+            .finish()
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn ranged_open_rejects_inconsistent_footer_totals() {
+        let mut budget = limits();
+        budget.rows = 5;
+        for rows in [5, 0, 31] {
+            let file = parquet_with_footer_total(&fixture_batch(30), 10, rows);
+            let tail = &file[file.len() - FOOTER_SIZE - footer_metadata_length(&file).unwrap()..];
+            for overflow in [LimitOverflow::Truncate, LimitOverflow::Error] {
+                let result =
+                    open_parquet_file_with_overflow(tail, file.len() as u64, budget, overflow);
+                if let Ok(handle) = result {
+                    parquet_close(handle);
+                }
+                let error = result.expect_err("must reject before any row group is loaded");
+                assert!(error.contains("does not match"), "{overflow:?}: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn consistent_footer_reports_a_five_row_preview_of_thirty_rows() {
+        let file = parquet_with_footer_total(&fixture_batch(30), 10, 30);
+        let mut budget = limits();
+        budget.rows = 5;
+        let handle = open_truncating(&file, budget).unwrap();
+        let (store, fetched) = load_until_exhausted(&file, handle);
+        assert_eq!(fetched, vec![0]);
+        assert_eq!(num_rows(store).unwrap(), 5);
+        assert_eq!(
+            budget_state(handle).unwrap(),
+            BudgetState {
+                exhausted: true,
+                truncated: true,
+            }
+        );
+        assert!(row_group_ranges(handle, 1)
+            .unwrap_err()
+            .contains("budget is exhausted"));
+        free(store);
+        parquet_close(handle);
+    }
+
+    #[test]
+    fn truncate_still_rejects_a_row_group_that_understates_its_rows() {
+        let file = parquet_bytes(&fixture_batch(30), 10);
+        let tail = footer_with_group_rows(&file, 9);
+        for overflow in [LimitOverflow::Error, LimitOverflow::Truncate] {
+            let handle =
+                open_parquet_file_with_overflow(&tail, file.len() as u64, limits(), overflow)
+                    .unwrap();
+            let store = create_store(handle).unwrap();
+            let ranges = row_group_ranges(handle, 0).unwrap();
+            let error = append_row_group(handle, store, 0, &ranges, &fetch_ranges(&file, &ranges))
+                .unwrap_err();
+            assert!(error.contains("does not match"), "{overflow:?}: {error}");
+            assert_eq!(num_rows(store).unwrap(), 0);
+            free(store);
+            parquet_close(handle);
+        }
+    }
+
+    #[test]
+    fn truncate_stops_fetching_once_a_row_group_spends_the_budget_exactly() {
+        let file = parquet_bytes(&fixture_batch(1000), 250);
+        let measure = open_truncating(&file, limits()).unwrap();
+        let store = create_store(measure).unwrap();
+        let ranges = row_group_ranges(measure, 0).unwrap();
+        append_row_group(measure, store, 0, &ranges, &fetch_ranges(&file, &ranges)).unwrap();
+        let one_group = retained_bytes(measure);
+        free(store);
+        parquet_close(measure);
+
+        let mut budget = limits();
+        budget.decoded_bytes = one_group as u32;
+        let handle = open_truncating(&file, budget).unwrap();
+        let (store, fetched) = load_until_exhausted(&file, handle);
+        assert_eq!(fetched, vec![0]);
+        assert_eq!(num_rows(store).unwrap(), 250);
+        assert_eq!(retained_bytes(handle), one_group);
+        assert_eq!(
+            budget_state(handle).unwrap(),
+            BudgetState {
+                exhausted: true,
+                truncated: true
+            }
+        );
+        free(store);
+        parquet_close(handle);
+    }
+
+    #[test]
+    fn error_mode_never_reports_a_spent_budget() {
+        let file = parquet_bytes(&fixture_batch(300), 100);
+        let mut exact = limits();
+        exact.rows = 300;
+        let handle = open_from_tail(&file, 64, exact).unwrap();
+        let store = load_all_groups(&file, handle);
+        assert_eq!(num_rows(store).unwrap(), 300);
+        assert_eq!(budget_state(handle).unwrap(), BudgetState::default());
+        free(store);
+        parquet_close(handle);
     }
 
     #[test]

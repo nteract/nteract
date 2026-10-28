@@ -20,7 +20,7 @@
 // for loadTableFile. Keeping the parser out of this package keeps its WASM
 // to Parquet and Arrow.
 export { loadTableFile } from "./file-data";
-export type { TableFileOptions } from "./file-data";
+export type { TableFileLimits, TableFileOptions, TableLimitOverflow } from "./file-data";
 // Byte-range Parquet: hosts implement ByteSource over a file, IPC call, or
 // Range-capable URL and pass it to loadTableFile or a `byte-source` SiftSource.
 export type { ByteSource } from "./parquet-file";
@@ -46,31 +46,54 @@ export {
   predicateToPandas,
   predicateToSQL,
 } from "./filter-schema";
+// Query seam: hosts implement TableQuerySession over their own data source
+// and pass it to a `query-session` SiftSource.
+export type {
+  Count,
+  QueryCapabilities,
+  QueryPage,
+  QuerySupport,
+  RequestContext,
+  TableQuery,
+  TableQuerySession,
+  WindowRequest,
+} from "./query";
+export { supportsQuery } from "./query";
 export type { SiftFocusStatusProps, SiftScrollHandoffCueProps } from "./handoff";
 export { SiftFocusStatus, SiftScrollHandoffCue } from "./handoff";
 export type {
   ArrowStreamManifest,
   ArrowStreamManifestChunk,
   ArrowStreamSummary,
+  SiftAutoLoad,
   SiftLoadMilestone,
+  SiftQueryState,
   SiftSource,
   SiftTableHandle,
   SiftTableProps,
 } from "./react";
 // React component
-export { SiftTable, useSiftEngine } from "./react";
+export { SiftTable, URL_PARQUET_LIMITS, useSiftEngine } from "./react";
 export type {
   BooleanColumnSummary,
   BooleanFilter,
   CategoricalColumnSummary,
   Column,
+  ColumnFileStats,
   ColumnFilter,
   ColumnSummary,
   ColumnType,
+  Coverage,
+  DataScope,
+  DatasetCoverage,
+  MetricPrecision,
+  MetricSource,
   NumericColumnSummary,
   RangeFilter,
   ReplaceDataOptions,
+  ScopedValue,
   SetFilter,
+  SummaryScope,
   TableData,
   TableEngine,
   TableEngineOptions,
@@ -79,5 +102,18 @@ export type {
 } from "./table";
 // Imperative engine
 export { createTable } from "./table";
+// Windowed data (experimental): the async view↔data protocol and the
+// main-thread adapter over a TableData.
+export type { DataEvent, QueryResult, ViewQuery, WindowCells, WindowedTableData } from "./windowed";
+export type { ResidentWindowedData } from "./windowed-resident";
+export { createResidentWindowedData } from "./windowed-resident";
+// Data worker (experimental): the host registers how to spawn
+// `@nteract/sift/worker`; `worker: true` on a byte-source then loads there.
+export { setWorkerFactory, type WorkerFactory } from "./worker/factory";
+export {
+  createWorkerWindowedData,
+  type WorkerWindowedData,
+  type WorkerWindowedDataOptions,
+} from "./worker/client";
 // WASM configuration
 export { setWasmUrl } from "./predicate";

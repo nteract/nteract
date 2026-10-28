@@ -1,6 +1,7 @@
 import { layout, prepare } from "@chenglou/pretext";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import type { TableQuery } from "./query";
 import { type Column, createTable, type TableData, type TableEngine } from "./table";
 
 // --- Test helpers ---
@@ -184,6 +185,64 @@ describe("createTable", () => {
         { streaming: false },
       );
       expect(statusClass(root)).toContain("sift-status-ready");
+
+      local.destroy();
+      root.remove();
+    });
+  });
+
+  describe("footer control across data swaps", () => {
+    function slot(text: string): HTMLElement {
+      const el = document.createElement("span");
+      el.className = "test-footer-slot";
+      el.textContent = text;
+      return el;
+    }
+
+    it("adds, keeps, and removes the footer control on replaceData", () => {
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      const local = createTable(root, makeTableData(makeRows(4)));
+      expect(root.querySelector(".test-footer-slot")).toBeNull();
+
+      local.replaceData(makeTableData(makeRows(4)), { footerControl: slot("first") });
+      expect(root.querySelector(".sift-stats .test-footer-slot")?.textContent).toBe("first");
+
+      local.replaceData(makeTableData(makeRows(4)));
+      expect(root.querySelectorAll(".test-footer-slot")).toHaveLength(1);
+
+      local.replaceData(makeTableData(makeRows(4)), { footerControl: null });
+      expect(root.querySelector(".test-footer-slot")).toBeNull();
+
+      local.destroy();
+      root.remove();
+    });
+
+    it("swaps the footer control in place without touching the data", () => {
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      const data = makeTableData(makeRows(4));
+      const dispose = vi.fn();
+      data.dispose = dispose;
+      const local = createTable(root, data);
+      local.setFooterControl(slot("notice"));
+      expect(root.querySelector(".sift-stats .test-footer-slot")?.textContent).toBe("notice");
+      local.setFooterControl(null);
+      expect(root.querySelector(".test-footer-slot")).toBeNull();
+      expect(dispose).not.toHaveBeenCalled();
+
+      local.destroy();
+      root.remove();
+    });
+
+    it("carries a new footer control through a rebuild for a new column shape", () => {
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      const local = createTable(root, makeTableData(makeRows(4)));
+      local.replaceData(makeTableDataWithColumns([[1, "Alice"]], makeColumns().slice(0, 2)), {
+        footerControl: slot("rebuilt"),
+      });
+      expect(root.querySelector(".test-footer-slot")?.textContent).toBe("rebuilt");
 
       local.destroy();
       root.remove();
@@ -605,6 +664,297 @@ describe("createTable", () => {
     });
   });
 
+  describe("load more on demand", () => {
+    // Fake-timer rAF fires on the frame clock, not at +0 ms.
+    const flushFrame = () => vi.advanceTimersByTimeAsync(20);
+
+    async function castMenuText(root: HTMLElement): Promise<string> {
+      await act(async () => {
+        root
+          .querySelector<HTMLElement>(".sift-th")!
+          .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      });
+      return document.getElementById("column-context-menu-root")?.textContent ?? "";
+    }
+
+    it("resumeStreaming blocks casts again until setStreamingDone", async () => {
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      const local = createTable(root, makeTableData(makeRows(4)));
+      const status = () => root.querySelector(".sift-status-indicator")?.className ?? "";
+      try {
+        await act(async () => {
+          local.setStreamingDone();
+        });
+        expect(status()).toContain("sift-status-ready");
+        expect(await castMenuText(root)).toContain("Treat as…");
+
+        await act(async () => {
+          local.resumeStreaming();
+        });
+        expect(status()).toContain("sift-status-streaming");
+        expect(status()).not.toContain("sift-status-ready");
+        expect(await castMenuText(root)).toContain("Some operations hidden while loading");
+
+        await act(async () => {
+          local.setStreamingDone();
+        });
+        expect(status()).toContain("sift-status-ready");
+        expect(await castMenuText(root)).toContain("Treat as…");
+      } finally {
+        local.destroy();
+        root.remove();
+      }
+    });
+
+    it("fires onScrollNearEnd once per row count, only while at rest", async () => {
+      const onScrollNearEnd = vi.fn();
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      const rows200 = makeRows(200);
+      const data200 = makeTableData(rows200);
+      const local = createTable(root, data200, { onScrollNearEnd });
+      const viewport = root.querySelector<HTMLElement>(".sift-viewport")!;
+      Object.defineProperty(viewport, "clientHeight", { value: 400, configurable: true });
+      try {
+        // Top of a 200-row table: far from the end.
+        viewport.dispatchEvent(new Event("scroll"));
+        await flushFrame();
+        expect(onScrollNearEnd).not.toHaveBeenCalled();
+
+        // Scroll to the end while still streaming: nothing.
+        viewport.scrollTop = 200 * 36;
+        viewport.dispatchEvent(new Event("scroll"));
+        await flushFrame();
+        expect(onScrollNearEnd).not.toHaveBeenCalled();
+
+        // At rest at the end: one call, not one per frame.
+        local.setStreamingDone();
+        await flushFrame();
+        expect(onScrollNearEnd).toHaveBeenCalledTimes(1);
+        viewport.dispatchEvent(new Event("scroll"));
+        await flushFrame();
+        viewport.dispatchEvent(new Event("scroll"));
+        await flushFrame();
+        expect(onScrollNearEnd).toHaveBeenCalledTimes(1);
+
+        // Resuming without new rows does not re-arm it.
+        local.resumeStreaming();
+        local.setStreamingDone();
+        await flushFrame();
+        expect(onScrollNearEnd).toHaveBeenCalledTimes(1);
+
+        // More rows re-arm it; a resumed stream holds it until done.
+        local.resumeStreaming();
+        for (let i = 200; i < 220; i++) rows200.push([i + 1, `Person ${i}`, 1, true]);
+        data200.rowCount = rows200.length;
+        local.onBatchAppended();
+        await flushFrame();
+        expect(onScrollNearEnd).toHaveBeenCalledTimes(1);
+        local.setStreamingDone();
+        await flushFrame();
+        expect(onScrollNearEnd).toHaveBeenCalledTimes(2);
+      } finally {
+        local.destroy();
+        root.remove();
+      }
+    });
+  });
+
+  describe("committed query", () => {
+    const scoreQuery: TableQuery = {
+      casts: [],
+      filters: [{ column: "score", op: "between", value: [10, 50] }],
+      sort: [],
+    };
+    const footer = () => container.querySelector<HTMLElement>(".sift-stat-rows")!.dataset.value;
+    const localFooter = () => container.querySelector<HTMLElement>(".sift-stat-local")!;
+
+    it("replaceData with committedQuery drops local filters and sort instead of re-applying them", async () => {
+      engine.setFilter(2, { kind: "range", min: 0, max: 10 });
+      engine.setSort("name", "desc");
+      await flushRAF();
+      expect(engine.getState().filteredCount).toBeLessThan(50);
+
+      // Four rows, none in the old local range; the provider says they match.
+      const result = makeTableData([
+        [1, "A", 99, true],
+        [2, "B", 98, false],
+        [3, "C", 97, true],
+        [4, "D", 96, false],
+      ]);
+      engine.replaceData(result, { committedQuery: scoreQuery });
+      const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
+      Object.defineProperty(viewport, "clientHeight", { value: 400, configurable: true });
+      viewport.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(20);
+      const state = engine.getState();
+      expect(state.filters).toEqual([]);
+      expect(state.sort).toBeNull();
+      expect(state.filteredCount).toBe(4);
+      expect(state.totalCount).toBe(4);
+      expect(state.committedQuery).toEqual(scoreQuery);
+      expect(state.resultCount).toBeUndefined();
+      // Rows render in the provider's order, not sorted by name descending.
+      const names = [...container.querySelectorAll<HTMLElement>(".sift-row")].map(
+        (row) => row.querySelectorAll(".sift-cell")[1]?.textContent,
+      );
+      expect(names).toEqual(["A", "B", "C", "D"]);
+    });
+
+    it("replaceData without committedQuery keeps preserving local state and clears the query", async () => {
+      engine.replaceData(makeTableData(makeRows(4)), { committedQuery: scoreQuery });
+      engine.setResultCount({ kind: "exact", value: 7 });
+      engine.setFilter(3, { kind: "boolean", value: true });
+      await flushRAF();
+      expect(engine.getState().committedQuery).toEqual(scoreQuery);
+
+      engine.replaceData(makeTableData(makeRows(6)));
+      await flushRAF();
+      const state = engine.getState();
+      expect(state.filters).toEqual([
+        { column: "active", filter: { kind: "boolean", value: true } },
+      ]);
+      expect(state.committedQuery).toBeUndefined();
+      expect(state.resultCount).toBeUndefined();
+      expect(footer()).toBe("4 of 6 rows");
+      expect(container.querySelector(".sift-filter-pill--committed")).toBeNull();
+    });
+
+    it("renders committed pills and clearing one asks the host for the reduced query", async () => {
+      const onCommittedQueryChange = vi.fn();
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      const local = createTable(root, makeTableData(makeRows(4)), { onCommittedQueryChange });
+      try {
+        const query: TableQuery = {
+          ...scoreQuery,
+          filters: [...scoreQuery.filters, { column: "active", op: "eq", value: true }],
+        };
+        local.replaceData(makeTableData(makeRows(4)), { committedQuery: query });
+        local.setFilter(1, { kind: "set", values: new Set(["Person 1"]) });
+        await flushRAF();
+
+        const pills = [...root.querySelectorAll<HTMLElement>(".sift-filter-pill")];
+        expect(pills.map((pill) => pill.classList.contains("sift-filter-pill--committed"))).toEqual(
+          [true, true, false],
+        );
+        expect(pills[0].title).toBe("Applied to the whole dataset");
+        expect(pills[0].querySelector(".sift-filter-pill-label")?.textContent).toBe(
+          "score is between 10 and 50",
+        );
+        expect(pills[1].querySelector(".sift-filter-pill-label")?.textContent).toBe(
+          "active is true",
+        );
+        expect(pills[2].querySelector(".sift-filter-pill-label")?.textContent).toBe(
+          "Name: Person 1",
+        );
+
+        pills[0].querySelector<HTMLButtonElement>(".sift-filter-pill-x")!.click();
+        expect(onCommittedQueryChange).toHaveBeenCalledWith({
+          ...query,
+          filters: [{ column: "active", op: "eq", value: true }],
+        });
+        // The engine does not change anything itself; the host answers.
+        expect(local.getState().committedQuery).toEqual(query);
+        expect(root.querySelectorAll(".sift-filter-pill--committed")).toHaveLength(2);
+
+        // Local pills still clear locally.
+        pills[2].querySelector<HTMLButtonElement>(".sift-filter-pill-x")!.click();
+        expect(local.getState().filters).toEqual([]);
+        expect(onCommittedQueryChange).toHaveBeenCalledTimes(1);
+      } finally {
+        local.destroy();
+        root.remove();
+      }
+    });
+
+    it("carries the committed query through a rebuild for a new column shape", async () => {
+      const onCommittedQueryChange = vi.fn();
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      const local = createTable(root, makeTableData(makeRows(4)), { onCommittedQueryChange });
+      try {
+        local.setFilter(0, { kind: "range", min: 0, max: 2 });
+        local.replaceData(makeTableDataWithColumns([[1, "Alice"]], makeColumns().slice(0, 2)), {
+          committedQuery: scoreQuery,
+        });
+        await flushRAF();
+        expect(local.getState()).toMatchObject({
+          filters: [],
+          filteredCount: 1,
+          committedQuery: scoreQuery,
+        });
+        const pill = root.querySelector<HTMLElement>(".sift-filter-pill--committed");
+        expect(pill?.textContent).toContain("score is between 10 and 50");
+        pill!.querySelector<HTMLButtonElement>(".sift-filter-pill-x")!.click();
+        expect(onCommittedQueryChange).toHaveBeenCalledWith({ ...scoreQuery, filters: [] });
+        expect(root.querySelector<HTMLElement>(".sift-stat-rows")!.dataset.value).toBe(
+          "Counting whole-dataset matches… · 1 rows shown",
+        );
+      } finally {
+        local.destroy();
+        root.remove();
+      }
+    });
+
+    it("footer names the whole-dataset count for every Count kind", async () => {
+      engine.replaceData(makeTableData(makeRows(4)), { committedQuery: scoreQuery });
+      await flushRAF();
+      expect(footer()).toBe("Counting whole-dataset matches… · 4 rows shown");
+      expect(localFooter().style.display).toBe("none");
+
+      engine.setResultCount({ kind: "unknown" });
+      expect(footer()).toBe("Counting whole-dataset matches… · 4 rows shown");
+      engine.setResultCount({ kind: "exact", value: 1234 });
+      expect(footer()).toBe("1,234 whole-dataset matches · 4 rows shown");
+      engine.setResultCount({ kind: "estimate", value: 1200, method: "sample" });
+      expect(footer()).toBe("≈1,200 whole-dataset matches · Estimated · 4 rows shown");
+      engine.setResultCount({ kind: "lower-bound", value: 1000 });
+      expect(footer()).toBe("≥1,000 whole-dataset matches · 4 rows shown");
+      expect(engine.getState().resultCount).toEqual({ kind: "lower-bound", value: 1000 });
+
+      // A local filter on top keeps the primary line and adds the shown-rows line.
+      engine.setFilter(3, { kind: "boolean", value: true });
+      await flushRAF();
+      expect(footer()).toBe("≥1,000 whole-dataset matches · 4 rows shown");
+      expect(localFooter().style.display).toBe("");
+      const shown = engine.getState().filteredCount;
+      expect(localFooter().textContent).toBe(`${shown} of 4 shown rows · Filters use shown rows`);
+      engine.clearAllFilters();
+      await flushRAF();
+      expect(localFooter().style.display).toBe("none");
+
+      // No filters in the committed query: rows, not matches.
+      engine.replaceData(makeTableData(makeRows(4)), { committedQuery: null });
+      await flushRAF();
+      expect(footer()).toBe("Counting rows in whole dataset… · 4 rows shown");
+      engine.setResultCount({ kind: "exact", value: 100_000 });
+      expect(footer()).toBe("100,000 rows in whole dataset · 4 rows shown");
+      expect(engine.getState().committedQuery).toBeNull();
+    });
+
+    it("setResultCount notifies onChange with the count", () => {
+      const onChange = vi.fn();
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      const local = createTable(root, makeTableData(makeRows(4)), { onChange });
+      try {
+        local.replaceData(makeTableData(makeRows(4)), { committedQuery: null });
+        local.setResultCount({ kind: "exact", value: 9 });
+        expect(onChange).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            committedQuery: null,
+            resultCount: { kind: "exact", value: 9 },
+          }),
+        );
+      } finally {
+        local.destroy();
+        root.remove();
+      }
+    });
+  });
+
   describe("state API", () => {
     it("getSort returns null initially", () => {
       expect(engine.getSort()).toBeNull();
@@ -638,7 +988,84 @@ describe("createTable", () => {
       expect(state.sort).toEqual({ column: "score", direction: "desc" });
       expect(state.filters).toHaveLength(1);
       expect(state.totalCount).toBe(50);
+      expect(state.loadedCount).toBe(50);
       expect(state.filteredCount).toBeLessThanOrEqual(50);
+    });
+
+    it("getState reports loadedCount alongside totalCount as rows arrive", () => {
+      expect(engine.getState()).toMatchObject({ totalCount: 50, loadedCount: 50 });
+      rows.push([51, "Person 50", 7, true]);
+      data.rowCount = 51;
+      engine.onBatchAppended();
+      expect(engine.getState()).toMatchObject({ totalCount: 51, loadedCount: 51 });
+    });
+
+    it("renders scoped summaries and keeps them through replaceData", async () => {
+      const scoped: TableData = {
+        ...makeTableData(makeRows(4)),
+        coverage: {
+          loadedRows: 4,
+          totalRows: { value: 400, scope: "dataset", precision: "exact", source: "metadata" },
+          rowGroups: 2,
+          truncated: true,
+        },
+      };
+      scoped.columnSummaries[2] = {
+        kind: "numeric",
+        min: 0,
+        max: 100,
+        bins: [
+          { x0: 0, x1: 50, count: 2 },
+          { x0: 50, x1: 100, count: 2 },
+        ],
+        scope: {
+          rows: { loaded: 4, dataset: scoped.coverage!.totalRows },
+          distribution: { scope: "loaded", precision: "exact", source: "resident" },
+          range: {
+            value: { min: -10, max: 250 },
+            scope: "dataset",
+            precision: "exact",
+            source: "metadata",
+          },
+          nullCount: { value: 80, scope: "dataset", precision: "exact", source: "metadata" },
+        },
+      };
+      engine.destroy();
+      engine = createTable(container, scoped);
+      await flushRAF();
+      await act(async () => {});
+
+      const caption = () => container.querySelector(".sift-th-dataset-range");
+      expect(caption()?.textContent).toBe("-10 – 250 · whole file");
+      expect(caption()?.getAttribute("data-scope")).toBe("dataset");
+      expect(container.querySelector(".sift-th-profile")?.textContent).toBe(
+        "20% null · whole file",
+      );
+
+      // Same columns, new lease: the summaries ride on the new TableData.
+      const next: TableData = {
+        ...makeTableData(makeRows(4)),
+        coverage: scoped.coverage,
+        columnSummaries: scoped.columnSummaries,
+      };
+      engine.replaceData(next);
+      await flushRAF();
+      await act(async () => {});
+      expect(caption()?.textContent).toBe("-10 – 250 · whole file");
+
+      // A summary without scope drops the caption again.
+      const unscoped = makeTableData(makeRows(4));
+      unscoped.columnSummaries[2] = {
+        kind: "numeric",
+        min: 0,
+        max: 100,
+        bins: [{ x0: 0, x1: 100, count: 4 }],
+      };
+      engine.replaceData(unscoped);
+      await flushRAF();
+      await act(async () => {});
+      expect(caption()).toBeNull();
+      expect(container.querySelector(".sift-th-profile")).toBeNull();
     });
 
     it("onChange callback fires on filter change", async () => {
