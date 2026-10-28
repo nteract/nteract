@@ -7,6 +7,7 @@ import { tableResponse } from "./table-response";
  */
 
 import type { ParquetColumnHint } from "./parquet-features";
+import type { ColumnFileStats } from "./table";
 
 /** Filter spec passed to WASM store_filter_rows. */
 export type FilterSpecJson =
@@ -30,7 +31,59 @@ export type ParquetFileInfo = {
   column_names: string[];
 };
 
-type PredicateModule = {
+/** One column's footer statistics, as serialized by `parquet_file_column_stats`. */
+export type ColumnFileStatsJson = {
+  null_count: number | null;
+  min: number | string | boolean | null;
+  max: number | string | boolean | null;
+  bounded_row_groups: number;
+  bounds_exact: boolean;
+  has_infinite: boolean;
+};
+
+/** Footer statistics returned by `parquet_file_column_stats`. */
+export type ParquetFileStatsJson = {
+  num_rows: number;
+  num_row_groups: number;
+  /** One per top-level column, in schema order. */
+  columns: ColumnFileStatsJson[];
+};
+
+/**
+ * Map the snake_case wire shape onto `ColumnFileStats`. A column whose stats
+ * are missing or malformed maps to `null` so a bad footer entry degrades to
+ * "no footer stats" rather than failing the open.
+ */
+export function columnFileStatsFromWasm(
+  stats: unknown,
+  numCols: number,
+): (ColumnFileStats | null)[] {
+  const out: (ColumnFileStats | null)[] = Array.from({ length: numCols }, () => null);
+  if (!stats || typeof stats !== "object") return out;
+  const columns = (stats as Partial<ParquetFileStatsJson>).columns;
+  if (!Array.isArray(columns)) return out;
+  for (let c = 0; c < numCols && c < columns.length; c++) {
+    const entry = columns[c] as Partial<ColumnFileStatsJson> | null | undefined;
+    if (!entry || typeof entry !== "object") continue;
+    out[c] = {
+      nullCount: typeof entry.null_count === "number" ? entry.null_count : null,
+      min: statValue(entry.min),
+      max: statValue(entry.max),
+      boundedRowGroups: typeof entry.bounded_row_groups === "number" ? entry.bounded_row_groups : 0,
+      boundsExact: entry.bounds_exact === true,
+      hasInfinite: entry.has_infinite === true,
+    };
+  }
+  return out;
+}
+
+function statValue(value: unknown): number | string | boolean | null {
+  return typeof value === "number" || typeof value === "string" || typeof value === "boolean"
+    ? value
+    : null;
+}
+
+export type PredicateModule = {
   // Data store
   load_ipc(ipc_bytes: Uint8Array): number;
   load_ipc_bounded(
@@ -65,13 +118,23 @@ type PredicateModule = {
     max_rows: number,
     max_columns: number,
     max_decoded_bytes: number,
+    truncate: boolean,
   ): number;
   parquet_file_info(file: number): ParquetFileInfo;
+  /** Per-column footer statistics, computed at open. See `ParquetFileStatsJson`. */
+  parquet_file_column_stats(file: number): unknown;
+  /** Budget state of a truncating load. Both flags stay false in error mode. */
+  parquet_file_budget(file: number): { exhausted: boolean; truncated: boolean };
+  /** Rows and retained Arrow bytes committed to the store so far. */
+  parquet_file_usage(file: number): { rows: number; decoded_bytes: number };
   parquet_file_column_hints(file: number): ParquetColumnHint[];
   parquet_create_store(file: number): number;
   /** Flat `[offset, length, ...]` per column chunk of one row group. */
   parquet_row_group_ranges(file: number, row_group: number): Float64Array;
-  /** Decode one row group from `data`, the concatenation of `ranges`. Returns rows appended. */
+  /**
+   * Decode one row group from `data`, the concatenation of `ranges`. Returns
+   * rows appended; a truncating load may append only part of the group.
+   */
   parquet_append_row_group(
     file: number,
     store: number,
@@ -106,6 +169,16 @@ type PredicateModule = {
   get_cell_image_bytes_at(handle: number, row: number, col: number, idx: number): Uint8Array;
   is_null(handle: number, row: number, col: number): boolean;
   store_viewport_cells(handle: number, rows: Uint32Array): ViewportCells;
+  /** Arrow IPC → Parquet with at most `maxRowGroupRows` rows per row group. Demo and tests. */
+  write_parquet_ipc_row_groups(ipc: Uint8Array, maxRowGroupRows?: number | null): Uint8Array;
+  // Allocation accounting (counting global allocator). Optional until every
+  // shipped binary carries it; callers guard on presence.
+  /** Cap on live heap bytes for this instance; 0 removes it. Over-cap allocations trap. */
+  set_allocation_cap?(bytes: number): void;
+  /** Live heap bytes right now. */
+  allocated_bytes?(): number;
+  /** Highest live heap bytes seen since the instance started. */
+  peak_allocated_bytes?(): number;
   // Store-based summaries (operates on handle, iterates in Rust)
   store_value_counts(handle: number, col: number): { label: string; count: number }[];
   store_histogram(
@@ -118,6 +191,8 @@ type PredicateModule = {
     col: number,
   ): { x0: number; x1: number; count: number }[];
   store_bool_counts(handle: number, col: number): Uint32Array;
+  /** Null count per top-level column over resident rows, after casts. */
+  store_null_counts(handle: number): Uint32Array;
   store_sort_indices(handle: number, col: number, ascending: boolean): Uint32Array;
   // Store-based filtered summaries (crossfilter — takes byte mask)
   store_filtered_value_counts(
@@ -178,6 +253,27 @@ export function setWasmUrl(url: string, fallbackUrl?: string): void {
   configuredWasmFallbackUrl = fallbackUrl;
 }
 
+/** The URL `setWasmUrl` configured, if any. A worker is told it at `open`. */
+export function getWasmUrl(): string | undefined {
+  return configuredWasmUrl;
+}
+
+export function getWasmFallbackUrl(): string | undefined {
+  return configuredWasmFallbackUrl;
+}
+
+let wasmMemory: WebAssembly.Memory | null = null;
+
+/** Linear memory of the initialized module, for size reporting between calls. */
+export function getWasmMemory(): WebAssembly.Memory | null {
+  return wasmMemory;
+}
+
+function rememberMemory(output: unknown) {
+  const memory = (output as { memory?: unknown } | undefined)?.memory;
+  if (memory instanceof WebAssembly.Memory) wasmMemory = memory;
+}
+
 export async function ensureModule(): Promise<PredicateModule> {
   if (mod) return mod;
   initializing ??= initializeModule().catch((error: unknown) => {
@@ -193,7 +289,7 @@ async function initializeModule(): Promise<PredicateModule> {
     const input = configuredWasmUrl?.startsWith("data:")
       ? await (await tableResponse(configuredWasmUrl)).arrayBuffer()
       : configuredWasmUrl;
-    await wasm.default({ module_or_path: input });
+    rememberMemory(await wasm.default({ module_or_path: input }));
   } catch (error) {
     if (!configuredWasmFallbackUrl || configuredWasmFallbackUrl === configuredWasmUrl) {
       throw error;
@@ -202,7 +298,7 @@ async function initializeModule(): Promise<PredicateModule> {
       `[sift] wasm load failed from ${configuredWasmUrl}; falling back to ${configuredWasmFallbackUrl}`,
       error,
     );
-    await wasm.default({ module_or_path: configuredWasmFallbackUrl });
+    rememberMemory(await wasm.default({ module_or_path: configuredWasmFallbackUrl }));
   }
   mod = wasm as unknown as PredicateModule;
   return mod;
@@ -226,6 +322,7 @@ export function _resetPredicateModuleForTests(): void {
   initializing = null;
   configuredWasmUrl = undefined;
   configuredWasmFallbackUrl = undefined;
+  wasmMemory = null;
 }
 
 /**

@@ -46,14 +46,36 @@ Every source ends as a `TableData` the engine reads by `(row, col)`:
    React source → `openParquetFile` (`parquet-file.ts`) → `parquet_open` from
    the footer, then `parquet_append_row_group` per row group over host-fetched
    ranges (`crates/sift-wasm/src/parquet_file.rs`). The `url` source's Parquet
-   branch uses the same loader over the buffered response.
+   branch uses the same loader over the buffered response. `overflow:
+   "truncate"` turns rows and decoded bytes into a budget: loading stops at
+   the first batch that does not fit and the table shows that prefix.
 3. **CSV/TSV**: `@nteract/sift-csv` (`crates/sift-csv-wasm`) converts text to Arrow IPC
    bytes, which take path 1. Sift itself has no CSV parser.
 4. **Hosted URLs and Arrow manifests**: the `url` and `manifest` sources in
    `react.tsx`, used by the notebook renderer.
+5. **Query sessions**: a host `TableQuerySession` (`query.ts`) answers a
+   `TableQuery` with one bounded Arrow IPC stream; the `query-session` source
+   loads it through path 1 and `replaceData(…, { committedQuery })` tells the
+   engine not to re-filter it. `query-fake.ts` is the in-memory session for
+   tests and `?dataset=query-fake`.
+6. **Windowed data (experimental)**: `createTable` over a `WindowedTableData`
+   (`windowed.ts`) asks the data side for `setQuery` / `requestWindow` /
+   `requestImage` and shows placeholders meanwhile; `viewIndices[r] === -1`
+   marks an unresolved view row. `windowed-resident.ts` adapts a `TableData`
+   (permutation logic shared through `permutation.ts`); `windowed: true` on
+   `byte-source`/`url` and `?windowed=1` in the demo mount through it.
+7. **Data worker (experimental)**: `src/worker/host.ts` runs the resident
+   adapter behind a `MessagePort` (`protocol.ts` is the versioned wire format;
+   `entry.ts` is the `@nteract/sift/worker` bundle). `client.ts` is the
+   main-thread `WindowedTableData`; `factory.ts` holds the host-registered
+   spawn (`setWorkerFactory`). `worker: true` on `byte-source` and `?worker=1`
+   in the demo use it. A WASM trap is fatal: terminate, keep loaded rows.
 
 Column types come from the Arrow schema with data-driven refinement; summaries
 for WASM sources are computed in Rust (`wasm-summaries.ts` adapts them).
+Byte-range Parquet reads footer column statistics once at open
+(`parquet_file_column_stats` → `TableData.datasetStats`); `wasm-summaries.ts`
+folds them with `TableData.coverage` into each summary's per-metric `scope`.
 
 ### Rendering
 

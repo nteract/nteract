@@ -228,6 +228,17 @@ pub(super) async fn observe_execution_with_progress(
         result = tokio::time::timeout_at(deadline, terminal) => result.ok().flatten(),
         unavailable = unavailable => return Ok((unavailable?, None)),
     };
+    let progress = progress.or_else(|| {
+        // The deadline may have ended output settling after completion was
+        // already observed. Keep that terminal status instead of reporting a
+        // still-pending execution; genuinely pending work remains timed out.
+        let progress = watcher.timeout()?;
+        if progress.terminal_reason == Some(ExecutionTerminalReason::Timeout) {
+            return None;
+        }
+        on_progress(&progress);
+        Some(progress)
+    });
     let mut latest = observer
         .read(Some(after.unwrap_or(&initial.cursor)))
         .map_err(sync_error)?;
@@ -521,6 +532,32 @@ mod tests {
         let text = serde_json::to_string(&result.content).unwrap();
         assert!(text.contains("trailing"));
         assert!(!text.contains("print('new run')"));
+    }
+
+    #[tokio::test]
+    async fn execution_wait_keeps_done_when_output_grace_reaches_deadline() {
+        let fixture = fixture();
+        fixture.runtime.send_modify(|state| {
+            state.executions.insert(
+                "silent-run".into(),
+                serde_json::from_value(json!({"status":"done","success":true,"outputs":[]}))
+                    .unwrap(),
+            );
+        });
+        let mut params = params();
+        params.execution_id = Some("silent-run".into());
+        let result = run_wait(
+            &server(),
+            &params,
+            "notebook",
+            &fixture.owner.reader(),
+            Duration::from_millis(25),
+        )
+        .await
+        .unwrap();
+        let payload = result.structured_content.unwrap();
+        assert_eq!(payload["outcome"], "completed");
+        assert_eq!(payload["execution_status"], "done");
     }
 
     #[tokio::test]

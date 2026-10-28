@@ -391,6 +391,30 @@ describe("TrustDialog", () => {
       expect(screen.getByText("rich")).toBeInTheDocument();
     });
 
+    it("renders long direct references in full so their suffixes can be compared", () => {
+      const prefix =
+        "demo @ file:///Users/someone/projects/very/long/path/to/a/local/wheelhouse/directory/";
+      const a = `${prefix}demo-1.0.0-py3-none-any.whl`;
+      const b = `${prefix}demo-1.0.1-py3-none-any.whl`;
+      render(
+        <TrustDialog
+          {...defaultProps}
+          trustInfo={makeTrustInfo({
+            uv_dependencies: [a, b],
+            approved_uv_dependencies: [a],
+          })}
+        />,
+      );
+
+      const specs = screen.getAllByTestId("trust-dependency-spec");
+      expect(specs.map((el) => el.textContent)).toEqual([a, b]);
+      for (const spec of specs) {
+        expect(spec).not.toHaveClass("truncate");
+        expect(spec).toHaveClass("break-all");
+      }
+      expect(screen.getByText("approved")).toBeInTheDocument();
+    });
+
     it("hides PyPI section when no UV dependencies", () => {
       render(
         <TrustDialog

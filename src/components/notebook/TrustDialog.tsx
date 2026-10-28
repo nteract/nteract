@@ -27,7 +27,13 @@ export interface TrustDialogProps {
   approvalError?: string | null;
 }
 
-/** Package list item with optional allowlist and typosquat status */
+/**
+ * Package list item with optional allowlist and typosquat status.
+ *
+ * The spec always renders in full and wraps at any character: two direct
+ * references can share a long URL prefix and differ only near the end, and
+ * that suffix must be readable before approval without hover or expansion.
+ */
 function PackageItem({
   pkg,
   warning,
@@ -41,20 +47,25 @@ function PackageItem({
 }) {
   const Icon = kind === "channel" ? GlobeIcon : PackageIcon;
   return (
-    <div className="flex items-center gap-2 py-1.5 px-2">
+    <div className="flex flex-wrap items-start gap-x-2 gap-y-1 py-1.5 px-2">
       {approved ? (
-        <CheckIcon className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+        <CheckIcon className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
       ) : (
-        <Icon className="size-4 shrink-0 text-muted-foreground" />
+        <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
       )}
-      <span className="font-mono text-sm truncate">{pkg}</span>
+      <span
+        className="min-w-0 flex-1 basis-48 font-mono text-sm break-all"
+        data-testid="trust-dependency-spec"
+      >
+        {pkg}
+      </span>
       {approved && (
-        <span className="text-xs text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/30 px-1.5 py-0.5 rounded">
+        <span className="shrink-0 text-xs text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/30 px-1.5 py-0.5 rounded">
           approved
         </span>
       )}
       {warning && (
-        <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/30 px-1.5 py-0.5 rounded">
+        <span className="inline-flex shrink-0 items-center gap-1 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/30 px-1.5 py-0.5 rounded">
           <AlertTriangleIcon className="size-3" />
           Similar to "{warning.similar_to}"
         </span>

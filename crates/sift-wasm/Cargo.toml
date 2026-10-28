@@ -6,6 +6,10 @@ description = "WASM bindings for nteract-predicate — used by @nteract/sift"
 repository = "https://github.com/nteract/nteract"
 license = "BSD-3-Clause"
 publish = false
+# build.rs caps wasm32 linear memory with `--max-memory`. It lives there, not
+# in `.cargo/config.toml`, because a target-wide rustflag would also apply to
+# runtimed-wasm and sift-csv-wasm, which have their own memory needs.
+build = "build.rs"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

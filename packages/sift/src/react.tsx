@@ -23,7 +23,13 @@ import {
   applyParquetColumnHints,
   pandasIndexColumnsFromHints,
 } from "./parquet-features";
-import { resolveTableFileLimits, type TableFileOptions } from "./file-data";
+import {
+  loadTableFile,
+  resolveTableFileLimits,
+  type TableFileLimits,
+  type TableLimitOverflow,
+} from "./file-data";
+import { columnFiltersToPredicates, type FilterPredicate } from "./filter-schema";
 import {
   type ByteSource,
   byteSourceFromBytes,
@@ -33,10 +39,18 @@ import {
 } from "./parquet-file";
 import { ensureModule, getModuleSync, loadIpc } from "./predicate";
 import {
+  type Count,
+  type QuerySupport,
+  supportsQuery,
+  type TableQuery,
+  type TableQuerySession,
+} from "./query";
+import {
   type Column,
   type ColumnFilter,
   type ColumnType,
   createTable,
+  type InternalTableEngineOptions,
   type ReplaceDataOptions,
   type TableData,
   type TableEngine,
@@ -45,6 +59,10 @@ import {
 import { createWasmTableData } from "./wasm-table-data";
 import { tableResponse } from "./table-response";
 import { updateWasmSummaries } from "./wasm-summaries";
+import type { WindowedTableData } from "./windowed";
+import { createResidentWindowedData, type ResidentWindowedData } from "./windowed-resident";
+import { createWorkerWindowedData } from "./worker/client";
+import { getWorkerFactory } from "./worker/factory";
 
 // --- Props ---
 
@@ -70,7 +88,22 @@ export type SiftSource =
   | { kind: "table-data"; data: TableData }
   /** Memoize the loader; each call must return a fresh, independently disposable table. */
   | { kind: "loader"; load: () => Promise<TableData> }
-  | { kind: "url"; url: string }
+  /**
+   * A hosted Arrow IPC or Parquet file; the format is detected from the
+   * response. Parquet streams row groups like `byte-source`, with `limits` and
+   * `overflow` defaulting to `URL_PARQUET_LIMITS` and `"truncate"`: a large file
+   * shows its leading rows and notes the preview in the footer. Arrow IPC is
+   * read whole and ignores both.
+   */
+  | {
+      kind: "url";
+      url: string;
+      limits?: TableFileLimits;
+      overflow?: TableLimitOverflow;
+      autoLoad?: SiftAutoLoad;
+      /** Experimental: see the `byte-source` option. Parquet only. */
+      windowed?: boolean;
+    }
   | { kind: "arrow-stream-manifest"; manifest: ArrowStreamManifest }
   /**
    * A Parquet file read by byte range. Sift reads the footer, mounts after
@@ -81,8 +114,74 @@ export type SiftSource =
   | {
       kind: "byte-source";
       source: ByteSource;
-      limits?: Pick<TableFileOptions, "maxRows" | "maxColumns" | "maxDecodedBytes">;
+      limits?: TableFileLimits;
+      /**
+       * What to do when the rows or decoded-bytes budget runs out. Default
+       * `"error"`. With `"truncate"`, Sift shows the leading rows that fit
+       * and notes the preview in its footer.
+       */
+      overflow?: TableLimitOverflow;
+      /** Pause below the hard budget and let the user load more. Needs `overflow: "truncate"`. */
+      autoLoad?: SiftAutoLoad;
+      /**
+       * Experimental: run the engine over a `WindowedTableData` adapter so cells
+       * and the permutation arrive asynchronously. Off by default; a seam for
+       * the worker-backed data side.
+       */
+      windowed?: boolean;
+      /**
+       * Experimental: decode and hold the file in the Sift data worker. Needs
+       * `setWorkerFactory`; without one the source fails at validation, it
+       * never falls back to the main thread. Implies `windowed`. `autoLoad`
+       * does not apply: the worker loads to the hard budget.
+       */
+      worker?: boolean;
+      /** Live WASM heap bytes allowed in the worker; default `2 × maxDecodedBytes`. */
+      allocationCap?: number;
+    }
+  /**
+   * A host-owned query provider. Sift asks it for the head of the result,
+   * shows those rows, and keeps brushes local until the user applies them to
+   * the whole dataset, which runs one new query. Memoize `session`; a new
+   * identity re-queries from `initialQuery`. The session is closed on unmount
+   * or source change.
+   */
+  | {
+      kind: "query-session";
+      session: TableQuerySession;
+      /** Starting query; missing parts default to no casts, filters, or sort. */
+      initialQuery?: Partial<TableQuery>;
+      /** Decoded-memory and column limits for each result; `maxRows` is `headRows`. */
+      limits?: Partial<TableFileLimits>;
+      /** Rows requested per query. Default 10,000. */
+      headRows?: number;
     };
+
+/** What a `query-session` source has committed and whether a query is in flight. */
+export type SiftQueryState = {
+  /** Increments per query; a response from an older generation is dropped. */
+  generation: number;
+  pending: boolean;
+  committedQuery: TableQuery;
+  resultCount: Count;
+};
+
+/**
+ * Pause a Parquet load at a soft budget below the hard `limits`; the user
+ * loads more on demand. Each resume extends the budget by the same amounts.
+ */
+export type SiftAutoLoad = {
+  /** Rows to load before pausing. Default: no pause. */
+  rows?: number;
+  /** Decoded Arrow bytes to load before pausing. Default: no pause. */
+  decodedBytes?: number;
+  /**
+   * What resumes loading. `"manual"`: the footer "Load more" button only.
+   * `"scroll"`: also when the viewport scrolls within the overscan of the last
+   * loaded row. Default `"manual"`.
+   */
+  trigger?: "manual" | "scroll";
+};
 
 export type SiftLoadMilestone = {
   source: SiftSource["kind"];
@@ -90,7 +189,17 @@ export type SiftLoadMilestone = {
   elapsedMs: number;
   chunkIndex?: number;
   chunkCount?: number;
+  /** Rows loaded so far (resident rows, not the file total). */
   rowCount?: number;
+  /** Footer row count of a Parquet file. Set on Parquet `streaming-complete`. */
+  totalRowCount?: number;
+  /** Whether the budget stopped loading early. Set on Parquet `streaming-complete`. */
+  truncated?: boolean;
+  /**
+   * Set on Parquet `streaming-complete`: true when the load paused at an
+   * `autoLoad` budget and more rows can be requested, false when it finished.
+   */
+  resumable?: boolean;
   byteLength?: number;
   format?: "arrow-ipc" | "parquet";
 };
@@ -112,10 +221,18 @@ export type SiftTableProps = {
   onLoadMilestone?: (milestone: SiftLoadMilestone) => void;
   /**
    * Called when a `loader`, `url`, `byte-source` or manifest source fails to
-   * load. Sift still renders its own error state; this lets the host log or
-   * surface the failure without wrapping the loader.
+   * load; this lets the host log or surface the failure without wrapping the
+   * loader. Sift shows its own error state too.
+   *
+   * A streaming Parquet source (`byte-source`, or a Parquet `url`) can fail
+   * after rows have mounted. Sift then keeps those rows, notes the failure in
+   * its footer instead of the blocking error box, and still calls this. A host
+   * can tell the two cases apart by whether it saw the `engine-mounted`
+   * milestone for this load.
    */
   onLoadError?: (error: Error) => void;
+  /** Called as a `query-session` source starts and finishes each query. */
+  onQueryStateChange?: (state: SiftQueryState) => void;
   /** Optional control rendered in Sift's footer before built-in buttons. */
   footerControl?: ReactNode;
   /** CSS class name for the container div. */
@@ -158,6 +275,14 @@ type ArrowStreamPreviewNotice = {
   label: string;
   title: string;
 };
+
+function parquetPreviewNotice(preview: ParquetPreview | null): ArrowStreamPreviewNotice | null {
+  if (!preview) return null;
+  return {
+    label: `Showing first ${preview.loadedRows.toLocaleString()} of ${preview.totalRows.toLocaleString()} rows`,
+    title: "Sorting, filtering, and column summaries use only the rows shown in this preview.",
+  };
+}
 
 function arrowStreamPreviewNotice(
   manifest: ArrowStreamManifest | undefined,
@@ -292,17 +417,25 @@ async function detectFormat(
 
 // --- Progressive Parquet ---
 
-/** Largest limits the WASM API accepts (u32). Used where no cap is wanted. */
-const UNBOUNDED_LIMITS: ParquetFileLimits = {
-  maxRows: 0xffff_ffff,
-  maxColumns: 0xffff_ffff,
-  maxDecodedBytes: 0xffff_ffff,
-};
+/**
+ * Default budget for Parquet behind a `url` source. The response is already
+ * buffered, so these bound decoded memory, not the download. Hosts raise them
+ * through `limits`; `maxColumns` keeps the `loadTableFile` default.
+ */
+export const URL_PARQUET_LIMITS: Readonly<TableFileLimits> = Object.freeze({
+  maxRows: 1_000_000,
+  maxDecodedBytes: 512 * 1024 * 1024,
+});
 
 type ProgressiveParquetArgs = {
   source: ByteSource;
   limits: ParquetFileLimits;
+  overflow?: TableLimitOverflow;
+  /** Soft budget to pause at; absent means load to the hard budget. */
+  autoLoad?: Pick<SiftAutoLoad, "rows" | "decodedBytes">;
   columnOverrides?: Record<string, Partial<Column>>;
+  /** Mount a `WindowedTableData` adapter over the store instead of the store itself. */
+  windowed?: boolean;
   signal: AbortSignal;
   emit: (milestone: Omit<SiftLoadMilestone, "elapsedMs" | "source">) => void;
   /** Called once the file is open so cleanup can close or dispose it. */
@@ -311,65 +444,249 @@ type ProgressiveParquetArgs = {
    * Mount the first lease; later leases go through `engine().replaceData`.
    * `streaming` is true when more row groups follow.
    */
-  mount: (tableData: TableData, streaming: boolean) => void;
+  mount: (tableData: TableData | WindowedTableData, streaming: boolean) => void;
   engine: () => TableEngine | null;
+  /** Called when the load pauses at the soft budget, with the rows shown so far. */
+  onPause?: (preview: ParquetPreview) => void;
+};
+
+/** Rows a Parquet stream holds against the file's footer total. */
+type ParquetPreview = { loadedRows: number; totalRows: number };
+
+/** Handle on a running Parquet load. */
+type ParquetStream = {
+  /**
+   * Settles when the store is complete: the file ended, the hard budget cut it
+   * short, or the load failed. Resolves with the loaded and total rows when
+   * the hard budget cut the file short, null otherwise. Rejects with the loader
+   * error; an aborted signal rejects with its reason.
+   */
+  done: Promise<ParquetPreview | null>;
+  /** Continue a load paused at the soft budget. No-op unless paused. */
+  resume(): void;
+  /** True while the load waits at the soft budget for `resume()`. */
+  readonly paused: boolean;
 };
 
 /**
  * Open a Parquet file by byte range, mount the table after the first row
  * group, then append the remaining groups one at a time, yielding to the
- * event loop between them. Resolves when the store is complete. Rejects with
- * the loader error; an aborted signal rejects with its reason.
+ * event loop between them. A truncating load stops at the row group that
+ * spends the hard budget. With `autoLoad`, the load pauses once the rows or
+ * decoded bytes committed reach the soft budget while row groups remain; the
+ * table is at rest (`setStreamingDone`) until `resume()` extends the soft
+ * budget by the same amounts and loading goes on.
  */
-async function streamParquetIntoEngine(args: ProgressiveParquetArgs): Promise<void> {
-  const { source, limits, columnOverrides, signal, emit, onOpen, mount, engine } = args;
+function streamParquetIntoEngine(args: ProgressiveParquetArgs): ParquetStream {
+  const {
+    source,
+    limits,
+    overflow,
+    autoLoad,
+    columnOverrides,
+    windowed,
+    signal,
+    emit,
+    onOpen,
+    mount,
+    engine,
+    onPause,
+  } = args;
   const format = "parquet";
-  const file = await openParquetFile(source, { limits, columnOverrides, signal });
-  onOpen(file);
-  emit({ phase: "wasm-ready", format, byteLength: source.byteLength });
-  emit({
-    phase: "table-data-created",
-    format,
-    rowCount: file.rowCount,
-    chunkCount: file.rowGroupCount,
-  });
+  let resumeWaiting: (() => void) | null = null;
+  /** The adapter the engine is mounted on, in windowed mode. */
+  let adapter: ResidentWindowedData | null = null;
+  const dataFor = (tableData: TableData): TableData | WindowedTableData => {
+    if (!windowed) return tableData;
+    adapter = createResidentWindowedData(tableData);
+    return adapter;
+  };
+  const notifyAppended = () => (adapter ? adapter.notifyAppended() : engine()?.onBatchAppended());
+  const done = () => (adapter ? adapter.notifyStreamingDone() : engine()?.setStreamingDone());
 
-  if (file.rowGroupCount > 0) {
-    await file.appendRowGroup(0);
-    emit({ phase: "first-chunk-fetched", format, chunkIndex: 0, chunkCount: file.rowGroupCount });
-  }
-  emit({ phase: "summaries-ready", format, rowCount: file.tableData.rowCount });
-  signal.throwIfAborted();
-  mount(file.tableData, file.rowGroupCount > 1);
-  emit({ phase: "engine-mounted", format, rowCount: file.tableData.rowCount });
+  const stream: ParquetStream = {
+    done: run(),
+    resume() {
+      const wake = resumeWaiting;
+      resumeWaiting = null;
+      wake?.();
+    },
+    get paused() {
+      return resumeWaiting !== null;
+    },
+  };
+  return stream;
 
-  for (let group = 1; group < file.rowGroupCount; group++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+  async function run(): Promise<ParquetPreview | null> {
+    const file = await openParquetFile(source, { limits, overflow, columnOverrides, signal });
+    onOpen(file);
+    emit({ phase: "wasm-ready", format, byteLength: source.byteLength });
+    emit({
+      phase: "table-data-created",
+      format,
+      rowCount: file.rowCount,
+      chunkCount: file.rowGroupCount,
+    });
+
+    // Soft budget, extended by the same amounts on every resume.
+    let softRows = autoLoad?.rows ?? Number.POSITIVE_INFINITY;
+    let softBytes = autoLoad?.decodedBytes ?? Number.POSITIVE_INFINITY;
+    const preview = (): ParquetPreview => ({
+      loadedRows: file.loadedRows,
+      totalRows: file.rowCount,
+    });
+
+    /**
+     * After an append: when row groups remain and the soft budget is spent,
+     * settle the table and wait for `resume()`. Returns once loading may go on.
+     */
+    async function pauseIfOverSoftBudget(nextGroup: number, exhausted: boolean) {
+      if (exhausted || nextGroup >= file.rowGroupCount) return;
+      const { usage } = file;
+      if (usage.rows < softRows && usage.decodedBytes < softBytes) return;
+
+      file.setPaused(true);
+      done();
+      emit({
+        phase: "streaming-complete",
+        format,
+        rowCount: file.tableData.rowCount,
+        totalRowCount: file.rowCount,
+        truncated: true,
+        resumable: true,
+      });
+      onPause?.(preview());
+
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => {
+          resumeWaiting = null;
+          reject(signal.reason);
+        };
+        if (signal.aborted) return abort();
+        signal.addEventListener("abort", abort, { once: true });
+        resumeWaiting = () => {
+          signal.removeEventListener("abort", abort);
+          resolve();
+        };
+      });
+
+      softRows = usage.rows + (autoLoad?.rows ?? Number.POSITIVE_INFINITY);
+      softBytes = usage.decodedBytes + (autoLoad?.decodedBytes ?? Number.POSITIVE_INFINITY);
+      file.setPaused(false);
+      engine()?.resumeStreaming();
+      emit({ phase: "streaming-resumed", format, rowCount: file.tableData.rowCount });
+    }
+
+    let exhausted = false;
+    if (file.rowGroupCount > 0) {
+      ({ exhausted } = await file.appendRowGroup(0));
+      emit({
+        phase: "first-chunk-fetched",
+        format,
+        chunkIndex: 0,
+        chunkCount: file.rowGroupCount,
+      });
+    }
+    emit({ phase: "summaries-ready", format, rowCount: file.tableData.rowCount });
     signal.throwIfAborted();
-    const { replaced } = await file.appendRowGroup(group);
+    mount(dataFor(file.tableData), file.rowGroupCount > 1 && !exhausted);
+    emit({ phase: "engine-mounted", format, rowCount: file.tableData.rowCount });
+    await pauseIfOverSoftBudget(1, exhausted);
+
+    for (let group = 1; group < file.rowGroupCount && !exhausted; group++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      signal.throwIfAborted();
+      const appended = await file.appendRowGroup(group);
+      const { replaced } = appended;
+      exhausted = appended.exhausted;
+      signal.throwIfAborted();
+      if (replaced) {
+        engine()?.replaceData(dataFor(replaced), { streaming: true });
+      } else {
+        notifyAppended();
+      }
+      emit({
+        phase: "chunk-appended",
+        format,
+        chunkIndex: group,
+        chunkCount: file.rowGroupCount,
+        rowCount: file.tableData.rowCount,
+      });
+      await pauseIfOverSoftBudget(group + 1, exhausted);
+    }
+
     signal.throwIfAborted();
+    const { replaced } = file.finish();
     if (replaced) {
-      engine()?.replaceData(replaced, { streaming: true });
+      engine()?.replaceData(dataFor(replaced), { streaming: false });
     } else {
-      engine()?.onBatchAppended();
+      done();
     }
     emit({
-      phase: "chunk-appended",
+      phase: "streaming-complete",
       format,
-      chunkIndex: group,
-      chunkCount: file.rowGroupCount,
       rowCount: file.tableData.rowCount,
+      totalRowCount: file.rowCount,
+      truncated: file.truncated,
+      resumable: false,
     });
+    return file.truncated ? preview() : null;
   }
+}
 
-  signal.throwIfAborted();
-  const { replaced } = file.finish();
-  if (replaced) {
-    engine()?.replaceData(replaced, { streaming: false });
-  } else {
-    engine()?.setStreamingDone();
+// --- Query sessions ---
+
+/** Default IPC byte budget per query result. */
+const QUERY_MAX_IPC_BYTES = 64 * 1024 * 1024;
+const QUERY_DEFAULT_HEAD_ROWS = 10_000;
+
+function completeQuery(partial: Partial<TableQuery> | undefined): TableQuery {
+  return {
+    casts: partial?.casts ?? [],
+    filters: partial?.filters ?? [],
+    sort: partial?.sort ?? [],
+  };
+}
+
+/** The committed query plus the engine's local filters, as one query. */
+function mergeLocalFilters(committed: TableQuery, local: FilterPredicate[]): TableQuery {
+  return { ...committed, filters: [...committed.filters, ...local] };
+}
+
+/** Portable predicates for the engine's current local filters. */
+function localPredicates(state: TableEngineState): FilterPredicate[] {
+  return columnFiltersToPredicates(
+    state.filters.map((entry) => ({ key: entry.column })),
+    state.filters.map((entry) => entry.filter),
+  );
+}
+
+/** Reject `autoLoad` settings the loader cannot honor. */
+function validateAutoLoad(
+  autoLoad: SiftAutoLoad | undefined,
+  overflow: TableLimitOverflow,
+): Pick<SiftAutoLoad, "rows" | "decodedBytes"> | undefined {
+  if (!autoLoad) return undefined;
+  if (overflow !== "truncate") {
+    throw new Error('autoLoad requires overflow: "truncate"; an erroring load cannot pause');
   }
-  emit({ phase: "streaming-complete", format, rowCount: file.tableData.rowCount });
+  for (const key of ["rows", "decodedBytes"] as const) {
+    const value = autoLoad[key];
+    if (value !== undefined && (!Number.isFinite(value) || value <= 0)) {
+      throw new Error(`autoLoad.${key} must be a positive number`);
+    }
+  }
+  if (
+    autoLoad.trigger !== undefined &&
+    autoLoad.trigger !== "manual" &&
+    autoLoad.trigger !== "scroll"
+  ) {
+    throw new Error(
+      `autoLoad.trigger must be "manual" or "scroll", got ${String(autoLoad.trigger)}`,
+    );
+  }
+  if (autoLoad.rows === undefined && autoLoad.decodedBytes === undefined) return undefined;
+  return { rows: autoLoad.rows, decodedBytes: autoLoad.decodedBytes };
 }
 
 // --- Component ---
@@ -383,11 +700,21 @@ export function SiftTable({
   onChange,
   onLoadMilestone,
   onLoadError,
+  onQueryStateChange,
   footerControl,
   className,
   style,
 }: SiftTableProps) {
   const dataSource = source?.kind === "table-data" ? source.data : data;
+  const querySession = source?.kind === "query-session" ? source.session : undefined;
+  // Read once per session: a new initial query means a new session.
+  const queryInitialRef = useRef<Partial<TableQuery> | undefined>(undefined);
+  if (source?.kind === "query-session") queryInitialRef.current = source.initialQuery;
+  const queryHeadRows =
+    (source?.kind === "query-session" ? source.headRows : undefined) ?? QUERY_DEFAULT_HEAD_ROWS;
+  const queryLimits = source?.kind === "query-session" ? source.limits : undefined;
+  const queryMaxColumns = queryLimits?.maxColumns;
+  const queryMaxDecodedBytes = queryLimits?.maxDecodedBytes;
   const urlSource = source?.kind === "url" ? source.url : url;
   const manifestSource = source?.kind === "arrow-stream-manifest" ? source.manifest : undefined;
   const loadSource = source?.kind === "loader" ? source.load : undefined;
@@ -397,7 +724,98 @@ export function SiftTable({
   const byteSourceMaxRows = byteSourceLimits?.maxRows;
   const byteSourceMaxColumns = byteSourceLimits?.maxColumns;
   const byteSourceMaxDecodedBytes = byteSourceLimits?.maxDecodedBytes;
-  const previewNotice = useMemo(() => arrowStreamPreviewNotice(manifestSource), [manifestSource]);
+  const byteSourceOverflow = source?.kind === "byte-source" ? source.overflow : undefined;
+  const autoLoad =
+    source?.kind === "byte-source" || source?.kind === "url" ? source.autoLoad : undefined;
+  const hasAutoLoad = autoLoad !== undefined;
+  const windowedSource =
+    (source?.kind === "byte-source" || source?.kind === "url") && source.windowed === true;
+  const workerSource = source?.kind === "byte-source" && source.worker === true;
+  const workerAllocationCap = source?.kind === "byte-source" ? source.allocationCap : undefined;
+  const autoLoadRows = autoLoad?.rows;
+  const autoLoadDecodedBytes = autoLoad?.decodedBytes;
+  const autoLoadTrigger = autoLoad?.trigger;
+  const urlLimits = source?.kind === "url" ? source.limits : undefined;
+  const urlMaxRows = urlLimits?.maxRows;
+  const urlMaxColumns = urlLimits?.maxColumns;
+  const urlMaxDecodedBytes = urlLimits?.maxDecodedBytes;
+  const urlOverflow: TableLimitOverflow =
+    (source?.kind === "url" ? source.overflow : undefined) ?? "truncate";
+  // Keyed by source so a preview never outlives the byte source or URL that
+  // produced it.
+  const [parquetPreview, setParquetPreview] = useState<{
+    source: ByteSource | string;
+    preview: ParquetPreview;
+  } | null>(null);
+  const parquetPreviewSource = byteSource ?? urlSource;
+  const currentParquetPreview =
+    parquetPreviewSource && parquetPreview?.source === parquetPreviewSource
+      ? parquetPreview.preview
+      : null;
+  /**
+   * A Parquet load waiting at its `autoLoad` budget. `loading` is true from
+   * the user's request until the loader pauses again or finishes. Keyed by
+   * source like the preview.
+   */
+  const [pausedLoad, setPausedLoad] = useState<{
+    source: ByteSource | string;
+    resume: () => void;
+    loading: boolean;
+  } | null>(null);
+  const currentPausedLoad =
+    parquetPreviewSource && pausedLoad?.source === parquetPreviewSource ? pausedLoad : null;
+  const currentPausedLoadRef = useRef(currentPausedLoad);
+  currentPausedLoadRef.current = currentPausedLoad;
+  const loadMore = useCallback(() => {
+    const current = currentPausedLoadRef.current;
+    if (!current || current.loading) return;
+    current.resume();
+    setPausedLoad({ ...current, loading: true });
+  }, []);
+  // The engine gets one stable callback; the active Parquet effect decides
+  // whether a near-end scroll should load more.
+  const onScrollNearEndRef = useRef<(() => void) | null>(null);
+  const stableOnScrollNearEnd = useCallback(() => {
+    onScrollNearEndRef.current?.();
+  }, []);
+  /**
+   * The query-session source's committed state, keyed by session so a stale
+   * run never describes a new session. `runQuery` is set by the active effect.
+   */
+  const [queryRun, setQueryRun] = useState<
+    (SiftQueryState & { session: TableQuerySession }) | null
+  >(null);
+  const currentQueryRun = querySession && queryRun?.session === querySession ? queryRun : null;
+  const runQueryRef = useRef<((q: TableQuery) => void) | null>(null);
+  /** A session whose close is deferred past a possible StrictMode replay. */
+  const pendingSessionCloseRef = useRef<{
+    session: TableQuerySession;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  /** Local filters the engine reported, as portable predicates. Query sessions only. */
+  const [queryLocalFilters, setQueryLocalFilters] = useState<FilterPredicate[]>([]);
+  const querySessionRef = useRef(querySession);
+  querySessionRef.current = querySession;
+  const applyQuery: { merged: TableQuery; support: QuerySupport } | null = useMemo(() => {
+    if (!currentQueryRun || !querySession || queryLocalFilters.length === 0) return null;
+    const merged = mergeLocalFilters(currentQueryRun.committedQuery, queryLocalFilters);
+    return { merged, support: supportsQuery(querySession.capabilities, merged) };
+  }, [currentQueryRun, querySession, queryLocalFilters]);
+  const applyToWholeDataset = useCallback(() => {
+    if (!applyQuery?.support.ok) return;
+    runQueryRef.current?.(applyQuery.merged);
+  }, [applyQuery]);
+  const onQueryStateChangeRef = useRef(onQueryStateChange);
+  onQueryStateChangeRef.current = onQueryStateChange;
+  useEffect(() => {
+    if (!currentQueryRun) return;
+    const { session: _session, ...state } = currentQueryRun;
+    onQueryStateChangeRef.current?.(state);
+  }, [currentQueryRun]);
+  const previewNotice = useMemo(
+    () => arrowStreamPreviewNotice(manifestSource) ?? parquetPreviewNotice(currentParquetPreview),
+    [manifestSource, currentParquetPreview],
+  );
   const isBoundedPreview = previewNotice !== null;
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<TableEngine | null>(null);
@@ -408,7 +826,16 @@ export function SiftTable({
   const footerControlRootRef = useRef<Root | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
-  const hasFooterControl = footerControl != null || manifestSource != null;
+  /** Message of a streaming failure after rows mounted. Shown in the footer. */
+  const [loadFailure, setLoadFailure] = useState<string | null>(null);
+  // The footer slot is created with the engine, so a source that may report a
+  // preview later needs it from the start.
+  const hasFooterControl =
+    footerControl != null ||
+    manifestSource != null ||
+    querySession != null ||
+    (byteSource != null && byteSourceOverflow === "truncate") ||
+    (urlSource != null && urlOverflow === "truncate");
 
   // Stable callback ref to avoid re-mounting engine when onChange identity changes
   const onChangeRef = useRef(onChange);
@@ -419,16 +846,55 @@ export function SiftTable({
   onLoadErrorRef.current = onLoadError;
 
   const stableOnChange = useCallback((state: TableEngineState) => {
+    // Only a query session needs the local filters in React state, for Apply.
+    // Brushing reports every step, so unchanged predicates keep their identity.
+    if (querySessionRef.current) {
+      const next = localPredicates(state);
+      setQueryLocalFilters((current) =>
+        JSON.stringify(current) === JSON.stringify(next) ? current : next,
+      );
+    }
     onChangeRef.current?.(state);
   }, []);
-
-  /** Switch to the error state and tell the host. */
-  const reportLoadError = useCallback((cause: unknown) => {
-    const error = cause instanceof Error ? cause : new Error(String(cause));
-    setError(error.message);
-    setStatus("error");
-    onLoadErrorRef.current?.(error);
+  // The engine gets one stable callback; the active query effect answers it.
+  const stableOnCommittedQueryChange = useCallback((next: TableQuery) => {
+    runQueryRef.current?.(next);
   }, []);
+
+  /**
+   * The footer slot element, created on first use. Stable, so code that needs
+   * the slot for a one-off notice does not re-run the source effects, which
+   * list `getFooterControlElement` as a dependency.
+   */
+  const ensureFooterSlot = useCallback(() => {
+    if (!footerControlRef.current) {
+      footerControlRef.current = document.createElement("div");
+      footerControlRef.current.className = "sift-footer-slot";
+      footerControlRootRef.current = createRoot(footerControlRef.current);
+    }
+    return footerControlRef.current;
+  }, []);
+
+  /**
+   * Tell the host about a load failure. Before mount, switch to the blocking
+   * error state. After mount the loaded rows stay usable, so the failure is a
+   * footer notice instead; the slot is attached for it even when this source
+   * has no footer otherwise.
+   */
+  const reportLoadError = useCallback(
+    (cause: unknown, afterMount = false) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      if (afterMount && engineRef.current) {
+        engineRef.current.setFooterControl(ensureFooterSlot());
+        setLoadFailure(error.message);
+      } else {
+        setError(error.message);
+        setStatus("error");
+      }
+      onLoadErrorRef.current?.(error);
+    },
+    [ensureFooterSlot],
+  );
 
   const emitLoadMilestone = useCallback(
     (startedAt: number, milestone: Omit<SiftLoadMilestone, "elapsedMs">) => {
@@ -440,15 +906,10 @@ export function SiftTable({
     [],
   );
 
-  const getFooterControlElement = useCallback(() => {
-    if (!hasFooterControl) return undefined;
-    if (!footerControlRef.current) {
-      footerControlRef.current = document.createElement("div");
-      footerControlRef.current.className = "sift-footer-slot";
-      footerControlRootRef.current = createRoot(footerControlRef.current);
-    }
-    return footerControlRef.current;
-  }, [hasFooterControl]);
+  const getFooterControlElement = useCallback(
+    () => (hasFooterControl ? ensureFooterSlot() : undefined),
+    [ensureFooterSlot, hasFooterControl],
+  );
 
   const getEngineElement = useCallback(() => {
     const container = containerRef.current;
@@ -462,11 +923,37 @@ export function SiftTable({
     return engineDivRef.current;
   }, []);
 
-  const markPreviewLoaded = useCallback(() => {
-    if (!isBoundedPreview) return;
+  const isBoundedPreviewRef = useRef(isBoundedPreview);
+  isBoundedPreviewRef.current = isBoundedPreview;
+  const loadFailureRef = useRef(loadFailure);
+  loadFailureRef.current = loadFailure;
+
+  /**
+   * Bring the engine's status indicator in line with what SiftTable knows and
+   * the engine does not: a bounded preview, or a failure after mount. Acts
+   * only once the engine has settled (`sift-status-ready`), except that a
+   * cleared failure must lose its stopped styling even during a replacement
+   * stream. While streaming, the engine owns the glyph and tooltip.
+   */
+  const syncStatusIndicator = useCallback(() => {
     const indicator = engineDivRef.current?.querySelector<HTMLElement>(".sift-status-indicator");
-    if (indicator) indicator.title = "Preview loaded";
-  }, [isBoundedPreview]);
+    if (!indicator) return;
+    const failure = loadFailureRef.current;
+    if (!failure) indicator.classList.remove("sift-status-stopped");
+    if (!indicator.classList.contains("sift-status-ready")) return;
+    if (failure) {
+      indicator.classList.add("sift-status-stopped");
+      indicator.textContent = "!";
+      indicator.title = `Stopped loading: ${failure}`;
+      return;
+    }
+    indicator.textContent = "✓";
+    indicator.title = isBoundedPreviewRef.current ? "Preview loaded" : "All data loaded";
+  }, []);
+
+  useEffect(() => {
+    syncStatusIndicator();
+  }, [isBoundedPreview, loadFailure, status, syncStatusIndicator]);
 
   useEffect(() => {
     if (hasFooterControl) {
@@ -474,6 +961,11 @@ export function SiftTable({
     }
     footerControlRootRef.current?.render(
       <>
+        {loadFailure && (
+          <span className="sift-preview-hint sift-load-failure" role="status" title={loadFailure}>
+            {`Stopped loading: ${loadFailure} · Showing loaded rows`}
+          </span>
+        )}
         {previewNotice && (
           <span
             className="sift-preview-hint"
@@ -482,15 +974,54 @@ export function SiftTable({
             aria-label={`${previewNotice.label}. ${previewNotice.title}`}
           >
             <span>{previewNotice.label}</span>
-            <span className="sift-preview-scope" aria-hidden="true">
+            {currentPausedLoad && (
+              <button
+                type="button"
+                className="sift-load-more"
+                disabled={currentPausedLoad.loading}
+                aria-busy={currentPausedLoad.loading}
+                onClick={loadMore}
+              >
+                {currentPausedLoad.loading ? "Loading…" : "Load more"}
+              </button>
+            )}
+            {/* The stylesheet shows one of these by viewport width: the full
+                sentence on wide footers, the short badge on narrow ones. */}
+            <span className="sift-preview-scope sift-preview-scope-full" aria-hidden="true">
               {" · Table tools use shown rows"}
             </span>
+            <span className="sift-preview-scope sift-preview-scope-short" aria-hidden="true">
+              {" · Shown rows"}
+            </span>
           </span>
+        )}
+        {applyQuery && currentQueryRun && (
+          <button
+            type="button"
+            className="sift-apply-query"
+            disabled={currentQueryRun.pending || !applyQuery.support.ok}
+            aria-busy={currentQueryRun.pending}
+            title={applyQuery.support.ok ? undefined : applyQuery.support.reason}
+            onClick={applyToWholeDataset}
+          >
+            {currentQueryRun.pending ? "Querying…" : "Apply filters to whole dataset"}
+          </button>
         )}
         {footerControl}
       </>,
     );
-  }, [footerControl, getFooterControlElement, hasFooterControl, previewNotice]);
+  }, [
+    applyQuery,
+    applyToWholeDataset,
+    currentPausedLoad,
+    currentQueryRun,
+    footerControl,
+    getFooterControlElement,
+    hasFooterControl,
+    loadFailure,
+    loadMore,
+    previewNotice,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -520,6 +1051,7 @@ export function SiftTable({
     storeRef.current = null;
     setStatus("loading");
     setError(null);
+    setLoadFailure(null);
     emitLoadMilestone(startedAt, { source: "loader", phase: "load-start" });
 
     Promise.resolve()
@@ -540,6 +1072,8 @@ export function SiftTable({
         applyColumnOverrides(loaded.columns, columnOverrides);
         engineRef.current = createTable(engineDiv, loaded, {
           onChange: stableOnChange,
+          onScrollNearEnd: stableOnScrollNearEnd,
+          onCommittedQueryChange: stableOnCommittedQueryChange,
           footerControl: getFooterControlElement(),
         });
         pendingData = undefined;
@@ -573,6 +1107,186 @@ export function SiftTable({
     reportLoadError,
   ]);
 
+  // Query session: ask the provider for the head of the result, mount it as a
+  // committed query, and re-query on Apply or when a committed pill is cleared.
+  useEffect(() => {
+    if (!querySession || !containerRef.current) return;
+    const session = querySession;
+    const caps = session.capabilities;
+    const pendingClose = pendingSessionCloseRef.current;
+    if (pendingClose) {
+      clearTimeout(pendingClose.timer);
+      pendingSessionCloseRef.current = null;
+      if (pendingClose.session !== session) pendingClose.session.close().catch(() => {});
+    }
+    // See the `data` effect: this source takes over the engine.
+    storeRef.current = null;
+    setLoadFailure(null);
+    setQueryLocalFilters([]);
+
+    let generation = 0;
+    let controller: AbortController | null = null;
+    let cancelled = false;
+    let limits: ParquetFileLimits;
+    try {
+      limits = resolveTableFileLimits({
+        maxRows: queryHeadRows,
+        maxColumns: queryMaxColumns,
+        maxDecodedBytes: queryMaxDecodedBytes,
+      });
+    } catch (cause) {
+      reportLoadError(cause);
+      return;
+    }
+    const stale = (myGeneration: number) => cancelled || myGeneration !== generation;
+
+    function runQuery(q: TableQuery) {
+      controller?.abort();
+      const myController = new AbortController();
+      controller = myController;
+      const myGeneration = ++generation;
+      const startedAt = performance.now();
+      const emit = (milestone: Omit<SiftLoadMilestone, "elapsedMs" | "source">) =>
+        emitLoadMilestone(startedAt, { ...milestone, source: "query-session" });
+      const ctx = {
+        requestId: `sift-query-${myGeneration}`,
+        signal: myController.signal,
+        budget: { maxIpcBytes: QUERY_MAX_IPC_BYTES, maxDecodedBytes: limits.maxDecodedBytes },
+      };
+      setQueryRun({
+        session,
+        generation: myGeneration,
+        pending: true,
+        committedQuery: q,
+        resultCount: { kind: "unknown" },
+      });
+      setStatus((current) => (current === "ready" ? current : "loading"));
+      setError(null);
+      emit({ phase: "load-start" });
+
+      (async () => {
+        const page = await session.query(
+          { ...q, window: { mode: "head", limit: limits.maxRows } },
+          ctx,
+        );
+        if (stale(myGeneration)) return;
+        await ensureModule();
+        if (stale(myGeneration)) return;
+        emit({ phase: "wasm-ready", format: "arrow-ipc", byteLength: page.ipc.byteLength });
+        const tableData = await loadTableFile(page.ipc, {
+          format: "arrow-ipc",
+          maxRows: limits.maxRows,
+          maxColumns: limits.maxColumns,
+          maxDecodedBytes: limits.maxDecodedBytes,
+          maxBytes: QUERY_MAX_IPC_BYTES,
+        });
+        if (stale(myGeneration)) {
+          tableData.dispose?.();
+          return;
+        }
+        // The result is a window over the query's matches, so coverage speaks
+        // of them: the total is the matched count when the provider knows it.
+        tableData.coverage = {
+          loadedRows: page.returnedRows,
+          totalRows:
+            page.matchedCount.kind === "exact"
+              ? {
+                  value: page.matchedCount.value,
+                  scope: "dataset",
+                  precision: "exact",
+                  source: "query",
+                }
+              : undefined,
+          truncated: page.continuation.kind !== "end",
+        };
+        tableData.recomputeSummaries?.();
+        applyColumnOverrides(tableData.columns, columnOverrides);
+        emit({ phase: "table-data-created", format: "arrow-ipc", rowCount: tableData.rowCount });
+
+        let engine = engineRef.current;
+        if (engine) {
+          engine.replaceData(tableData, {
+            committedQuery: q,
+            streaming: false,
+            footerControl: getFooterControlElement() ?? null,
+          });
+        } else {
+          const engineDiv = getEngineElement();
+          if (!engineDiv) {
+            tableData.dispose?.();
+            return;
+          }
+          const engineOptions: InternalTableEngineOptions = {
+            onChange: stableOnChange,
+            onScrollNearEnd: stableOnScrollNearEnd,
+            onCommittedQueryChange: stableOnCommittedQueryChange,
+            footerControl: getFooterControlElement(),
+            committedQuery: q,
+          };
+          engine = createTable(engineDiv, tableData, engineOptions);
+          engineRef.current = engine;
+          engine.setStreamingDone();
+        }
+        engine.setResultCount(page.matchedCount);
+        setStatus("ready");
+        emit({ phase: "engine-mounted", format: "arrow-ipc", rowCount: tableData.rowCount });
+
+        let count = page.matchedCount;
+        if (count.kind === "unknown" && caps.counts.length > 0) {
+          setQueryRun((current) =>
+            current?.generation === myGeneration ? { ...current, pending: false } : current,
+          );
+          count = await session.count(q, "cheap", ctx);
+          if (stale(myGeneration)) return;
+          engine.setResultCount(count);
+        }
+        setQueryRun((current) =>
+          current?.generation === myGeneration
+            ? { ...current, pending: false, resultCount: count }
+            : current,
+        );
+        emit({ phase: "complete", format: "arrow-ipc", rowCount: tableData.rowCount });
+      })().catch((cause: unknown) => {
+        if (stale(myGeneration)) return;
+        setQueryRun((current) =>
+          current?.generation === myGeneration ? { ...current, pending: false } : current,
+        );
+        reportLoadError(cause, engineRef.current !== null);
+      });
+    }
+
+    runQueryRef.current = runQuery;
+    runQuery(completeQuery(queryInitialRef.current));
+
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      if (runQueryRef.current === runQuery) runQueryRef.current = null;
+      // Deferred one tick: StrictMode replays the effect with the same session,
+      // and a closed session could not answer the replay.
+      pendingSessionCloseRef.current = {
+        session,
+        timer: setTimeout(() => {
+          pendingSessionCloseRef.current = null;
+          session.close().catch(() => {});
+        }, 0),
+      };
+    };
+  }, [
+    querySession,
+    queryHeadRows,
+    queryMaxColumns,
+    queryMaxDecodedBytes,
+    columnOverrides,
+    stableOnChange,
+    stableOnScrollNearEnd,
+    stableOnCommittedQueryChange,
+    getEngineElement,
+    getFooterControlElement,
+    emitLoadMilestone,
+    reportLoadError,
+  ]);
+
   // Stream a byte-range Parquet source: footer, first row group, mount, rest.
   useEffect(() => {
     if (!byteSource || !containerRef.current) return;
@@ -589,24 +1303,126 @@ export function SiftTable({
 
     setStatus("loading");
     setError(null);
+    setLoadFailure(null);
+    setParquetPreview(null);
+    setPausedLoad(null);
     emitLoadMilestone(startedAt, { source: "byte-source", phase: "load-start" });
 
     let limits: ParquetFileLimits;
+    let softBudget: Pick<SiftAutoLoad, "rows" | "decodedBytes"> | undefined;
     try {
       limits = resolveTableFileLimits({
         maxRows: byteSourceMaxRows,
         maxColumns: byteSourceMaxColumns,
         maxDecodedBytes: byteSourceMaxDecodedBytes,
       });
+      softBudget = validateAutoLoad(
+        hasAutoLoad
+          ? { rows: autoLoadRows, decodedBytes: autoLoadDecodedBytes, trigger: autoLoadTrigger }
+          : undefined,
+        byteSourceOverflow ?? "error",
+      );
     } catch (cause) {
       reportLoadError(cause);
       return;
     }
 
-    streamParquetIntoEngine({
+    if (workerSource) {
+      if (!getWorkerFactory()) {
+        reportLoadError(
+          new Error(
+            "worker: true needs a worker factory. Call setWorkerFactory(() => new Worker(...)) first; Sift does not fall back to the main thread.",
+          ),
+        );
+        return;
+      }
+      let data: (WindowedTableData & { terminate(): void }) | null = null;
+      let unsubscribe: (() => void) | null = null;
+      createWorkerWindowedData({
+        source: byteSource,
+        limits,
+        overflow: byteSourceOverflow,
+        columnOverrides,
+        allocationCap: workerAllocationCap,
+        signal: controller.signal,
+        emit: (milestone) => emitLoadMilestone(startedAt, { ...milestone, source: "byte-source" }),
+      }).then(
+        (opened) => {
+          if (cancelled) {
+            opened.dispose();
+            return;
+          }
+          data = opened;
+          unsubscribe = opened.subscribe((event) => {
+            if (cancelled) return;
+            if (event.type === "streaming-done") {
+              // A budget that stopped early gets the same notice as the
+              // main-thread loader.
+              const { loadedRows, totalRows, truncated } = event;
+              setParquetPreview(
+                truncated && loadedRows !== undefined && totalRows !== undefined
+                  ? { source: byteSource, preview: { loadedRows, totalRows } }
+                  : null,
+              );
+              return;
+            }
+            if (event.type !== "error") return;
+            // An error after mount keeps the loaded rows; the footer says why.
+            // Fatal: the worker is gone. Non-fatal: it stopped appending and
+            // still answers for the rows it has; no `streaming-done` follows.
+            engineRef.current?.setStreamingDone();
+            reportLoadError(new Error(event.message), mounted);
+          });
+          const streaming = opened.rowGroupCount > 1;
+          if (engineRef.current) {
+            engineRef.current.replaceData(opened, {
+              streaming,
+              footerControl: getFooterControlElement() ?? null,
+            });
+          } else {
+            const engineDiv = getEngineElement();
+            if (!engineDiv) {
+              opened.dispose();
+              return;
+            }
+            engineRef.current = createTable(engineDiv, opened, {
+              onChange: stableOnChange,
+              onScrollNearEnd: stableOnScrollNearEnd,
+              onCommittedQueryChange: stableOnCommittedQueryChange,
+              footerControl: getFooterControlElement(),
+            });
+            if (!streaming) engineRef.current.setStreamingDone();
+          }
+          mounted = true;
+          setStatus("ready");
+          emitLoadMilestone(startedAt, {
+            source: "byte-source",
+            phase: "engine-mounted",
+            format: "parquet",
+            rowCount: opened.rowCount,
+          });
+        },
+        (cause: unknown) => {
+          if (cancelled) return;
+          reportLoadError(cause, mounted);
+        },
+      );
+      return () => {
+        cancelled = true;
+        controller.abort();
+        unsubscribe?.();
+        // Once mounted the engine owns the data and closes the worker on destroy.
+        if (data && !mounted) data.dispose();
+      };
+    }
+
+    const stream = streamParquetIntoEngine({
       source: byteSource,
       limits,
+      overflow: byteSourceOverflow,
+      autoLoad: softBudget,
       columnOverrides,
+      windowed: windowedSource,
       signal: controller.signal,
       emit: (milestone) => emitLoadMilestone(startedAt, { ...milestone, source: "byte-source" }),
       onOpen: (file) => {
@@ -614,12 +1430,17 @@ export function SiftTable({
       },
       mount: (tableData, streaming) => {
         if (engineRef.current) {
-          engineRef.current.replaceData(tableData, { streaming });
+          engineRef.current.replaceData(tableData, {
+            streaming,
+            footerControl: getFooterControlElement() ?? null,
+          });
         } else {
           const engineDiv = getEngineElement();
           if (!engineDiv) return;
           engineRef.current = createTable(engineDiv, tableData, {
             onChange: stableOnChange,
+            onScrollNearEnd: stableOnScrollNearEnd,
+            onCommittedQueryChange: stableOnCommittedQueryChange,
             footerControl: getFooterControlElement(),
           });
         }
@@ -627,20 +1448,42 @@ export function SiftTable({
         setStatus("ready");
       },
       engine: () => engineRef.current,
-    }).catch((cause: unknown) => {
-      if (cancelled) return;
-      if (openFile && !mounted) openFile.dispose();
-      else openFile?.close();
-      openFile = null;
-      // A failure after mount leaves the rows already loaded in place. End the
-      // streaming state so the status dot and cast guard do not wait forever.
-      if (mounted) engineRef.current?.setStreamingDone();
-      reportLoadError(cause);
+      onPause: (preview) => {
+        if (cancelled) return;
+        setParquetPreview({ source: byteSource, preview });
+        setPausedLoad({ source: byteSource, resume: stream.resume, loading: false });
+      },
     });
+    if (autoLoadTrigger === "scroll") {
+      onScrollNearEndRef.current = () => {
+        if (cancelled || !stream.paused) return;
+        stream.resume();
+        setPausedLoad((current) => (current ? { ...current, loading: true } : current));
+      };
+    }
+    stream.done.then(
+      (preview) => {
+        if (cancelled) return;
+        setParquetPreview(preview ? { source: byteSource, preview } : null);
+        setPausedLoad(null);
+      },
+      (cause: unknown) => {
+        if (cancelled) return;
+        if (openFile && !mounted) openFile.dispose();
+        else openFile?.close();
+        openFile = null;
+        setPausedLoad(null);
+        // A failure after mount leaves the rows already loaded in place. End the
+        // streaming state so the status dot and cast guard do not wait forever.
+        if (mounted) engineRef.current?.setStreamingDone();
+        reportLoadError(cause, mounted);
+      },
+    );
 
     return () => {
       cancelled = true;
       controller.abort();
+      onScrollNearEndRef.current = null;
       // Once mounted the engine owns the store; only the footer metadata is ours.
       if (openFile && !mounted) openFile.dispose();
       else openFile?.close();
@@ -651,8 +1494,18 @@ export function SiftTable({
     byteSourceMaxRows,
     byteSourceMaxColumns,
     byteSourceMaxDecodedBytes,
+    byteSourceOverflow,
+    hasAutoLoad,
+    autoLoadRows,
+    autoLoadDecodedBytes,
+    autoLoadTrigger,
+    windowedSource,
+    workerSource,
+    workerAllocationCap,
+    stableOnScrollNearEnd,
     columnOverrides,
     stableOnChange,
+    stableOnCommittedQueryChange,
     getEngineElement,
     getFooterControlElement,
     emitLoadMilestone,
@@ -668,9 +1521,13 @@ export function SiftTable({
     // it supersedes, so the ref must not outlive it: a later manifest that
     // looked like an extension would otherwise append to a freed handle.
     storeRef.current = null;
+    setLoadFailure(null);
 
     if (engineRef.current) {
-      engineRef.current.replaceData(dataSource, { streaming: false });
+      engineRef.current.replaceData(dataSource, {
+        streaming: false,
+        footerControl: getFooterControlElement() ?? null,
+      });
       emitLoadMilestone(startedAt, {
         source: "table-data",
         phase: "engine-data-replaced",
@@ -685,6 +1542,8 @@ export function SiftTable({
 
     engineRef.current = createTable(engineDiv, dataSource, {
       onChange: stableOnChange,
+      onScrollNearEnd: stableOnScrollNearEnd,
+      onCommittedQueryChange: stableOnCommittedQueryChange,
       footerControl: getFooterControlElement(),
     });
     engineRef.current.setStreamingDone();
@@ -712,6 +1571,7 @@ export function SiftTable({
         // manifest settled on, so an open stream re-arms the guard here.
         engineRef.current.replaceData(tableData, {
           streaming: manifest.complete === false,
+          footerControl: getFooterControlElement() ?? null,
         });
         disposePendingStore = null;
         return;
@@ -720,6 +1580,8 @@ export function SiftTable({
       if (!engineDiv) return;
       engineRef.current = createTable(engineDiv, tableData, {
         onChange: stableOnChange,
+        onScrollNearEnd: stableOnScrollNearEnd,
+        onCommittedQueryChange: stableOnCommittedQueryChange,
         footerControl: getFooterControlElement(),
       });
       disposePendingStore = null;
@@ -825,7 +1687,7 @@ export function SiftTable({
         } else {
           engineRef.current?.setStreamingDone();
         }
-        markPreviewLoaded();
+        syncStatusIndicator();
         emitLoadMilestone(startedAt, {
           source: "arrow-stream-manifest",
           phase: "streaming-complete",
@@ -838,6 +1700,7 @@ export function SiftTable({
     async function loadFromManifest() {
       setStatus("loading");
       setError(null);
+      setLoadFailure(null);
 
       const chunks = manifest.chunks;
       if (chunks.length === 0) {
@@ -948,6 +1811,7 @@ export function SiftTable({
           // A previous run may have failed a chunk fetch and left the error
           // showing. This attempt supersedes it; a fresh failure re-sets it.
           setError(null);
+          setLoadFailure(null);
           setStatus("ready");
           return appendRemainingChunks(existing);
         })()
@@ -981,7 +1845,7 @@ export function SiftTable({
     getFooterControlElement,
     getEngineElement,
     emitLoadMilestone,
-    markPreviewLoaded,
+    syncStatusIndicator,
     reportLoadError,
   ]);
 
@@ -1006,9 +1870,12 @@ export function SiftTable({
     let openFile: OpenParquetFile | null = null;
     let parquetMounted = false;
 
-    function mountEngine(tableData: TableData, streaming?: boolean) {
+    function mountEngine(tableData: TableData | WindowedTableData, streaming?: boolean) {
       if (engineRef.current) {
-        engineRef.current.replaceData(tableData, { streaming });
+        engineRef.current.replaceData(tableData, {
+          streaming,
+          footerControl: getFooterControlElement() ?? null,
+        });
         disposePendingStore = null;
         return;
       }
@@ -1016,6 +1883,8 @@ export function SiftTable({
       if (!engineDiv) return;
       engineRef.current = createTable(engineDiv, tableData, {
         onChange: stableOnChange,
+        onScrollNearEnd: stableOnScrollNearEnd,
+        onCommittedQueryChange: stableOnCommittedQueryChange,
         footerControl: getFooterControlElement(),
       });
       disposePendingStore = null;
@@ -1023,13 +1892,26 @@ export function SiftTable({
 
     async function loadParquet(parquetBytes: Uint8Array) {
       // The response is already buffered; the ranged loader still removes the
-      // per-row-group file copy and shares its progressive mount with the
-      // byte-source path. Hosted URLs carry no admission limits (the notebook
-      // renderer has no way to raise them), so the loader gets the maxima.
-      await streamParquetIntoEngine({
+      // per-row-group file copy and shares its progressive mount, budget, and
+      // preview footer with the byte-source path.
+      const limits = resolveTableFileLimits({
+        maxRows: urlMaxRows ?? URL_PARQUET_LIMITS.maxRows,
+        maxColumns: urlMaxColumns,
+        maxDecodedBytes: urlMaxDecodedBytes ?? URL_PARQUET_LIMITS.maxDecodedBytes,
+      });
+      const softBudget = validateAutoLoad(
+        hasAutoLoad
+          ? { rows: autoLoadRows, decodedBytes: autoLoadDecodedBytes, trigger: autoLoadTrigger }
+          : undefined,
+        urlOverflow,
+      );
+      const stream = streamParquetIntoEngine({
         source: byteSourceFromBytes(parquetBytes),
-        limits: UNBOUNDED_LIMITS,
+        limits,
+        overflow: urlOverflow,
+        autoLoad: softBudget,
         columnOverrides,
+        windowed: windowedSource,
         signal: controller.signal,
         emit: (milestone) => emitLoadMilestone(startedAt, { ...milestone, source: "url" }),
         onOpen: (file) => {
@@ -1042,7 +1924,25 @@ export function SiftTable({
           setStatus("ready");
         },
         engine: () => engineRef.current,
+        onPause: (preview) => {
+          if (cancelled) return;
+          setParquetPreview({ source: sourceUrl, preview });
+          setPausedLoad({ source: sourceUrl, resume: stream.resume, loading: false });
+        },
       });
+      if (autoLoadTrigger === "scroll") {
+        onScrollNearEndRef.current = () => {
+          if (cancelled || !stream.paused) return;
+          stream.resume();
+          setPausedLoad((current) => (current ? { ...current, loading: true } : current));
+        };
+      }
+      try {
+        const preview = await stream.done;
+        if (!cancelled) setParquetPreview(preview ? { source: sourceUrl, preview } : null);
+      } finally {
+        if (!cancelled) setPausedLoad(null);
+      }
     }
 
     async function loadArrowIpc(source: Response | ReadableStream<Uint8Array>) {
@@ -1131,6 +2031,9 @@ export function SiftTable({
     async function loadFromUrl() {
       setStatus("loading");
       setError(null);
+      setLoadFailure(null);
+      setParquetPreview(null);
+      setPausedLoad(null);
       emitLoadMilestone(startedAt, { source: "url", phase: "load-start" });
 
       const response = await tableResponse(sourceUrl);
@@ -1163,7 +2066,7 @@ export function SiftTable({
           // Rows already mounted stay; end the streaming state so the status
           // dot and cast guard do not wait for groups that will never come.
           if (parquetMounted) engineRef.current?.setStreamingDone();
-          reportLoadError(err);
+          reportLoadError(err, parquetMounted);
         }
       })
       .finally(() => {
@@ -1175,6 +2078,7 @@ export function SiftTable({
     return () => {
       cancelled = true;
       controller.abort();
+      onScrollNearEndRef.current = null;
       disposePendingStore?.();
       disposePendingStore = null;
       openFile?.close();
@@ -1182,6 +2086,16 @@ export function SiftTable({
     };
   }, [
     urlSource,
+    urlMaxRows,
+    urlMaxColumns,
+    urlMaxDecodedBytes,
+    urlOverflow,
+    hasAutoLoad,
+    autoLoadRows,
+    autoLoadDecodedBytes,
+    autoLoadTrigger,
+    windowedSource,
+    stableOnScrollNearEnd,
     typeOverrides,
     columnOverrides,
     stableOnChange,

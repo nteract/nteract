@@ -105,7 +105,7 @@
           # The Nix workflow updates this only after matching pnpmDeps.drvPath.
           # For a lockfile change, run `nix build .#pnpmDeps --no-link` and copy
           # that derivation's "got:" hash here; keep pnpm_11's hash unchanged.
-          hash = "sha256-/1Gtk3uknQFxj/XGrTy0TJLoeWvUu1JeSqP52c29+eY=";
+          hash = "sha256-Q9HqfVdkaUt2uN/TskXRe2HPQ0nK7H28KI/5+CMLrbw=";
         };
 
         jsBuild = pkgs.stdenv.mkDerivation {

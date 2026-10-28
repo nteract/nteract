@@ -12479,6 +12479,114 @@ async fn project_file_watcher_refreshes_context_on_external_edit() {
     room.file_binding.shutdown_project_file_watcher().await;
 }
 
+/// Poll `project_context` until `matches` accepts it, for up to 15s.
+async fn wait_for_project_context(
+    room: &NotebookRoom,
+    matches: impl Fn(&runtime_doc::ProjectContext) -> bool,
+) -> runtime_doc::ProjectContext {
+    let mut last = None;
+    for _ in 0..150 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let ctx = room.state.with_doc(|sd| Ok(sd.project_context())).unwrap();
+        if matches(&ctx) {
+            return ctx;
+        }
+        last = Some(ctx);
+    }
+    panic!("project_context did not converge; last = {last:?}");
+}
+
+fn detected_kind(ctx: &runtime_doc::ProjectContext) -> Option<runtime_doc::ProjectFileKind> {
+    match ctx {
+        runtime_doc::ProjectContext::Detected { project_file, .. } => Some(project_file.kind),
+        _ => None,
+    }
+}
+
+/// A manifest created after detection found nothing is discovered
+/// without reopening the notebook.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_file_watcher_discovers_manifest_created_after_not_found() {
+    use runtime_doc::{ProjectContext, ProjectFileKind};
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+    let notebook_path = tmp.path().join("demo.ipynb");
+    std::fs::write(&notebook_path, "{}").unwrap();
+
+    let (room, _) = test_room_with_path(&tmp, "demo.ipynb");
+    let room = std::sync::Arc::new(room);
+    super::project_context::refresh_project_context_async(&room, Some(notebook_path.as_path()))
+        .await;
+
+    let first = room.state.with_doc(|sd| Ok(sd.project_context())).unwrap();
+    assert!(
+        matches!(first, ProjectContext::NotFound { .. }),
+        "{first:?}"
+    );
+    assert!(room.file_binding.has_project_file_watcher_for_test().await);
+
+    std::fs::write(
+        tmp.path().join("environment.yml"),
+        "name: rankings\ndependencies:\n  - python=3.11\n",
+    )
+    .unwrap();
+
+    let ctx = wait_for_project_context(&room, |ctx| {
+        detected_kind(ctx) == Some(ProjectFileKind::EnvironmentYml)
+    })
+    .await;
+    let ProjectContext::Detected { parsed, .. } = ctx else {
+        unreachable!();
+    };
+    assert_eq!(parsed.requires_python.as_deref(), Some("3.11.*"));
+
+    // Deleting it again returns to NotFound, still without a reopen.
+    std::fs::remove_file(tmp.path().join("environment.yml")).unwrap();
+    wait_for_project_context(&room, |ctx| matches!(ctx, ProjectContext::NotFound { .. })).await;
+
+    room.file_binding.shutdown_project_file_watcher().await;
+}
+
+/// A manifest created closer to the notebook than the detected one wins
+/// without reopening the notebook.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_file_watcher_prefers_closer_manifest_created_later() {
+    use runtime_doc::ProjectFileKind;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+    std::fs::write(
+        tmp.path().join("pyproject.toml"),
+        "[project]\nname = \"outer\"\ndependencies = [\"pandas\"]\n",
+    )
+    .unwrap();
+    let sub = tmp.path().join("analysis");
+    std::fs::create_dir_all(&sub).unwrap();
+    let notebook_path = sub.join("demo.ipynb");
+    std::fs::write(&notebook_path, "{}").unwrap();
+
+    let (room, _) = test_room_with_path(&tmp, "analysis/demo.ipynb");
+    let room = std::sync::Arc::new(room);
+    super::project_context::refresh_project_context_async(&room, Some(notebook_path.as_path()))
+        .await;
+    let first = room.state.with_doc(|sd| Ok(sd.project_context())).unwrap();
+    assert_eq!(detected_kind(&first), Some(ProjectFileKind::PyprojectToml));
+
+    std::fs::write(sub.join("environment.yml"), "dependencies:\n  - numpy\n").unwrap();
+
+    let ctx = wait_for_project_context(&room, |ctx| {
+        detected_kind(ctx) == Some(ProjectFileKind::EnvironmentYml)
+    })
+    .await;
+    let runtime_doc::ProjectContext::Detected { project_file, .. } = ctx else {
+        unreachable!();
+    };
+    assert_eq!(project_file.relative_to_notebook, "environment.yml");
+
+    room.file_binding.shutdown_project_file_watcher().await;
+}
+
 /// Kernel launch can fail before the kernel ever connects to the
 /// daemon — e.g. the subprocess exits with status 1 because a required
 /// module isn't installed. The failure arms in

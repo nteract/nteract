@@ -554,6 +554,14 @@
   margin-left: auto;
 }
 
+/* Scope caveat for the checkbox domain; the search box and "All" reference it. */
+.sift-cat-popover-scope {
+  margin: 0;
+  padding: 0 8px 6px;
+  font: 11px/1.3 var(--sift-font);
+  color: var(--sift-muted);
+}
+
 .sift-cat-popover-list {
   overflow-y: auto;
   overflow-x: hidden;
@@ -1039,6 +1047,12 @@
   opacity: 0.6;
 }
 
+.sift-status-ready.sift-status-stopped {
+  color: var(--sift-bool-false);
+  font-weight: 700;
+  opacity: 1;
+}
+
 @keyframes sift-status-pulse {
   0%,
   100% {
@@ -1104,6 +1118,50 @@
   opacity: 1;
 }
 
+/* A filter the provider applied to the whole dataset, not a local brush. */
+.sift-filter-pill--committed {
+  background: color-mix(in srgb, var(--sift-ink) 8%, transparent);
+  border-color: color-mix(in srgb, var(--sift-ink) 25%, transparent);
+  border-style: dashed;
+  color: var(--sift-ink);
+}
+
+.sift-filter-pill--committed .sift-filter-pill-x {
+  color: var(--sift-ink);
+}
+
+/* Local filter over a provider result; the engine shows it only then. */
+.sift-stat-local::before {
+  content: " · ";
+}
+
+/* "Apply filters to whole dataset" for a query-session source. */
+.sift-apply-query {
+  margin-left: 8px;
+  background: none;
+  border: 1px solid var(--sift-rule);
+  border-radius: 4px;
+  color: var(--sift-accent);
+  font: 500 11px/1.2 var(--sift-font);
+  padding: 1px 8px;
+  cursor: pointer;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
+.sift-apply-query:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--sift-accent) 8%, transparent);
+}
+
+.sift-apply-query:disabled {
+  color: var(--sift-muted);
+  cursor: default;
+}
+
+.sift-apply-query[aria-busy="true"] {
+  cursor: progress;
+}
+
 .sift-debug-group {
   display: inline;
 }
@@ -1136,10 +1194,53 @@
   white-space: nowrap;
 }
 
+.sift-load-failure {
+  color: var(--sift-ink);
+}
+
+/* "Load more" for a load paused at its autoLoad budget. Sits before the scope
+   note so a narrow footer squeezes the note, not the control. */
+.sift-load-more {
+  margin-left: 8px;
+  background: none;
+  border: 1px solid var(--sift-rule);
+  border-radius: 4px;
+  color: var(--sift-accent);
+  font: 500 11px/1.2 var(--sift-font);
+  padding: 1px 8px;
+  cursor: pointer;
+  vertical-align: baseline;
+}
+
+.sift-load-more:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--sift-accent) 8%, transparent);
+}
+
+.sift-load-more:disabled {
+  color: var(--sift-muted);
+  cursor: progress;
+}
+
+/* Scope note after the preview label: the full sentence on wide footers, a
+   short badge where the footer is narrow. Exactly one is shown at a time. */
+.sift-preview-scope-short {
+  display: none;
+}
+
 @media (max-width: 700px) {
-  .sift-preview-scope {
+  .sift-preview-scope-full {
     display: none;
   }
+
+  .sift-preview-scope-short {
+    display: inline;
+  }
+}
+
+/* Whole-file bounds under a loaded-rows range label. */
+.sift-th-dataset-range {
+  margin-top: 0;
+  font-style: italic;
 }
 
 .sift-focus-hint {
