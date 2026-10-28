@@ -41,6 +41,8 @@ const RATCHET_RAW_PALETTE_FILES = [
   "src/components/outputs/json-output.tsx",
   "src/components/outputs/media-router.tsx",
   "src/components/outputs/traceback-output.tsx",
+  // Existing cloud sharing colors move intact with the shared panel extraction.
+  "src/components/sharing/SharingPanel.tsx",
   "src/components/widgets/controls/box-widget.tsx",
   "src/components/widgets/controls/button-style-utils.ts",
   "src/components/widgets/controls/controller-widget.tsx",
