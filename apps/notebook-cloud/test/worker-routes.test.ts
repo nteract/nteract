@@ -5,6 +5,9 @@ import worker, { snapshotBlobRefsOverCap } from "../src/index.ts";
 import {
   NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME,
   createCloudAppSessionCookie,
+  readCloudAppSession,
+  appSessionConnectionIdentity,
+  appSessionHasFreshVerifiedEmailDomain,
 } from "../src/app-session.ts";
 import {
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -1465,6 +1468,66 @@ describe("Worker artifact routes", () => {
     assert.equal(response.status, 200);
     const html = await response.text();
     assert.doesNotMatch(html, /nteract-cloud-bootstrap|Hidden Private Title/);
+  });
+
+  it("does not grant notebook access or change ACLs for a fresh verified domain", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "domain-proof-user",
+      email: "member@example.test",
+      extraPayload: { email_verified: true },
+    });
+    const env = fakeEnv({ ...oidcEnv, NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET });
+    seedNotebook(env, "private-domain-proof");
+    seedAcl(env, {
+      notebookId: "private-domain-proof",
+      subject: "user:anaconda:owner",
+      scope: "owner",
+    });
+    const originalAcl = structuredClone(env.DB.acl);
+    const cookie = await oidcAppSessionCookie(env, token);
+    const session = await readCloudAppSession(
+      env,
+      new Request("https://cloud.test", { headers: { Cookie: cookie } }),
+    );
+    assert.ok(session);
+    assert.equal(
+      await appSessionHasFreshVerifiedEmailDomain(
+        env,
+        appSessionConnectionIdentity(session, "browser:test", "owner"),
+        "example.test",
+      ),
+      true,
+    );
+    const listing = await worker.fetch(
+      new Request("https://cloud.test/api/n", { headers: { Cookie: cookie } }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(listing.status, 200);
+    assert.deepEqual((await listing.json()).notebooks, []);
+    const edit = await worker.fetch(
+      new Request("https://cloud.test/api/n/private-domain-proof", {
+        method: "PATCH",
+        headers: {
+          Cookie: cookie,
+          Origin: "https://cloud.test",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ title: "Unauthorized change" }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(edit.status, 403);
+    const join = await worker.fetch(
+      new Request("https://cloud.test/n/private-domain-proof/sync?scope=owner", {
+        headers: { Cookie: cookie, Origin: "https://cloud.test", Upgrade: "websocket" },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(join.status, 403);
+    assert.deepEqual(env.DB.acl, originalAcl);
   });
 
   it("uses app session cookies for first-party browser notebook APIs", async () => {

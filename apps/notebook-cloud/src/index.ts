@@ -174,6 +174,7 @@ import {
   NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME,
   NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
   appSessionConfigured,
+  appSessionConnectionIdentity,
   appSessionAccountKey,
   APP_SESSION_ACCOUNT_KEY_HEADER,
   appSessionHasFreshVerifiedEmail,
@@ -1305,31 +1306,6 @@ async function appSessionResponse(
     ...(canonicalPrincipal
       ? { account_key: await appSessionAccountKey(env, session, canonicalPrincipal) }
       : {}),
-  };
-}
-
-function appSessionConnectionIdentity(
-  session: CloudAppSession,
-  operator: string,
-  scope: Exclude<ConnectionScope, "runtime_peer">,
-): AuthenticatedConnection {
-  return {
-    principal: session.principal,
-    operator,
-    actorLabel: `${session.principal}/${operator}`,
-    scope,
-    metadata: {
-      provider: "app-session",
-      transport: "app-session-cookie",
-      principalNamespace: session.principalNamespace,
-      ...(session.displayName ? { displayName: session.displayName } : {}),
-      ...(session.identityVerifiedAt !== undefined
-        ? { identityVerifiedAt: session.identityVerifiedAt }
-        : {}),
-      ...(session.verifiedEmailBinding
-        ? { verifiedEmailBinding: session.verifiedEmailBinding }
-        : {}),
-    },
   };
 }
 
