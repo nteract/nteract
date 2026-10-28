@@ -282,6 +282,10 @@ jobs:
         shell: bash
         run: node scripts/ci/smoke-windows-node-addon.cjs ${{ matrix.arch }} "packages/runtimed-node/npm/${{ matrix.target }}/runtimed-node.${{ matrix.target }}.node"
       - uses: oven-sh/setup-bun@v2
+        env:
+          # Mitigate PowerShell startup crashes during ZIP extraction.
+          # https://github.com/actions/runner-images/issues/15107#issuecomment-6436292048
+          DOTNET_GCgen0size: "4000000" # Hexadecimal: 64 MiB; setup step only.
         with:
           bun-version: "1.4.1"
       - name: Load addon in Bun
