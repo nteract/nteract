@@ -845,12 +845,27 @@ pub(crate) fn admit_parquet_footer(
     Ok(rows)
 }
 
-/// Footer row count, rejecting a negative value.
+/// Footer row count, reconciled with the nonnegative row-group counts.
+/// Validate this before a bounded preview can treat the total as completeness.
 pub(crate) fn parquet_footer_rows(
     metadata: &parquet::file::metadata::ParquetMetaData,
 ) -> Result<u64, String> {
-    u64::try_from(metadata.file_metadata().num_rows())
-        .map_err(|_| "Invalid negative Parquet row count".to_string())
+    let rows = u64::try_from(metadata.file_metadata().num_rows())
+        .map_err(|_| "Invalid negative Parquet row count")?;
+    let group_rows = metadata
+        .row_groups()
+        .iter()
+        .try_fold(0u64, |total, group| {
+            let rows = u64::try_from(group.num_rows())
+                .map_err(|_| "Invalid negative Parquet row group row count")?;
+            total
+                .checked_add(rows)
+                .ok_or("Parquet row group row count sum overflows")
+        })?;
+    if rows != group_rows {
+        return Err("Parquet row count does not match the sum of row group row counts".to_string());
+    }
+    Ok(rows)
 }
 
 /// Top-level and leaf column counts. These stay hard admission checks even
@@ -2980,6 +2995,79 @@ mod tests {
         writer.write(batch).unwrap();
         writer.close().unwrap();
         bytes
+    }
+
+    fn metadata_with_row_counts(
+        total: i64,
+        group_rows: &[i64],
+    ) -> parquet::file::metadata::ParquetMetaData {
+        use parquet::file::metadata::{FileMetaData, ParquetMetaData};
+        let builder = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(
+            parquet_fixture(&file_fixture()),
+        ))
+        .unwrap();
+        let metadata = builder.metadata();
+        let file = metadata.file_metadata();
+        let rewritten_file = FileMetaData::new(
+            file.version(),
+            total,
+            file.created_by().map(str::to_owned),
+            file.key_value_metadata().cloned(),
+            file.schema_descr_ptr(),
+            file.column_orders().cloned(),
+        );
+        let groups = group_rows
+            .iter()
+            .map(|&rows| {
+                metadata
+                    .row_group(0)
+                    .clone()
+                    .into_builder()
+                    .set_num_rows(rows)
+                    .build()
+                    .unwrap()
+            })
+            .collect();
+        ParquetMetaData::new(rewritten_file, groups)
+    }
+
+    #[test]
+    fn parquet_footer_requires_a_consistent_nonnegative_row_total() {
+        for (total, groups) in [(0, vec![]), (3, vec![2, 1]), (i64::MAX, vec![i64::MAX])] {
+            assert_eq!(
+                parquet_footer_rows(&metadata_with_row_counts(total, &groups)).unwrap(),
+                total as u64
+            );
+        }
+        for (total, groups, expected) in [
+            (-1, vec![1], "negative Parquet row count"),
+            (0, vec![-1], "negative Parquet row group row count"),
+            (0, vec![1], "does not match"),
+            (5, vec![10, 10, 10], "does not match"),
+            (31, vec![10, 10, 10], "does not match"),
+            (i64::MAX, vec![i64::MAX; 3], "overflows"),
+        ] {
+            let error = parquet_footer_rows(&metadata_with_row_counts(total, &groups)).unwrap_err();
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn bounded_parquet_rejects_inconsistent_footer_total_before_array_decode() {
+        let batch = RecordBatch::try_from_iter(vec![(
+            "number",
+            Arc::new(Int64Array::from_iter_values(0..30)) as ArrayRef,
+        )])
+        .unwrap();
+        let mut file = crate::test_footers::parquet_with_footer_total(&batch, 10, 31);
+        // With a permissive row budget, the metadata mismatch must still win
+        // before these damaged pages reach the array decoder.
+        file[4..20].fill(0xff);
+        let error = bounded_parquet_batches(&file, file_limits()).unwrap_err();
+        assert_eq!(
+            error,
+            "Parquet row count does not match the sum of row group row counts"
+        );
     }
 
     fn ipc_fixture(batch: &RecordBatch) -> Vec<u8> {

@@ -1,6 +1,39 @@
 //! Hand-built Parquet footers for tests. They are serialized straight from
 //! thrift, so their statistics can say what no writer would.
 
+/// Keep valid row-group bytes/counts, but replace the declared global total.
+pub(crate) fn parquet_with_footer_total(
+    batch: &arrow::record_batch::RecordBatch,
+    row_group_size: usize,
+    rows: i64,
+) -> Vec<u8> {
+    use parquet::file::metadata::ParquetMetaDataReader;
+    use parquet::file::FOOTER_SIZE;
+    use parquet::thrift::{TCompactOutputProtocol, TSerializable};
+    let properties = parquet::file::properties::WriterProperties::builder()
+        .set_max_row_group_size(row_group_size)
+        .build();
+    let mut file = Vec::new();
+    let mut writer =
+        parquet::arrow::ArrowWriter::try_new(&mut file, batch.schema(), Some(properties)).unwrap();
+    writer.write(batch).unwrap();
+    let mut metadata = writer.close().unwrap();
+    let footer = ParquetMetaDataReader::decode_footer_tail(
+        file[file.len() - FOOTER_SIZE..].try_into().unwrap(),
+    )
+    .unwrap();
+    let footer_start = file.len() - FOOTER_SIZE - footer.metadata_length();
+    file.truncate(footer_start);
+    metadata.num_rows = rows;
+    metadata
+        .write_to_out_protocol(&mut TCompactOutputProtocol::new(&mut file))
+        .unwrap();
+    let metadata_len = (file.len() - footer_start) as u32;
+    file.extend_from_slice(&metadata_len.to_le_bytes());
+    file.extend_from_slice(b"PAR1");
+    file
+}
+
 /// A footer with one optional INT96 column whose `min_value` statistic is
 /// `min_length` bytes, serialized straight from thrift so the length can
 /// be wrong. Returns the tail and a file length that fits its one chunk.

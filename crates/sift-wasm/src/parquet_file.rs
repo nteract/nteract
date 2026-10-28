@@ -73,6 +73,8 @@ pub(crate) struct BudgetState {
 struct ParquetFile {
     arrow: ArrowReaderMetadata,
     file_len: u64,
+    /// Validated once at open against the sum of every row group's count.
+    total_rows: u64,
     limits: FileLimits,
     overflow: LimitOverflow,
     /// Rows and retained memory of every batch committed to the store.
@@ -292,10 +294,8 @@ fn open_parquet_file_with_overflow(
     validate_chunk_ranges(&metadata, file_end, usize::MAX as u64)?;
     let arrow = ArrowReaderMetadata::try_new(Arc::new(metadata), ArrowReaderOptions::default())
         .map_err(|e| e.to_string())?;
-    match overflow {
-        LimitOverflow::Error => {
-            admit_parquet_footer(arrow.schema(), arrow.metadata(), limits)?;
-        }
+    let total_rows = match overflow {
+        LimitOverflow::Error => admit_parquet_footer(arrow.schema(), arrow.metadata(), limits)?,
         LimitOverflow::Truncate => {
             let rows = parquet_footer_rows(arrow.metadata())?;
             admit_parquet_footer_columns(arrow.schema(), arrow.metadata(), limits)?;
@@ -307,8 +307,9 @@ fn open_parquet_file_with_overflow(
                 limits.decoded_bytes,
                 "minimum decoded bytes",
             )?;
+            rows
         }
-    }
+    };
     let column_stats = file_column_stats(arrow.metadata(), arrow.schema(), &raw);
     let appended = vec![false; arrow.metadata().num_row_groups()];
     let handle = next_handle();
@@ -318,6 +319,7 @@ fn open_parquet_file_with_overflow(
             ParquetFile {
                 arrow,
                 file_len,
+                total_rows,
                 limits,
                 overflow,
                 usage: FileUsage::default(),
@@ -692,7 +694,7 @@ fn append_row_group(
             // what the store holds.
             usage: file.usage.clone(),
             expected_rows,
-            total_rows: parquet_footer_rows(file.metadata())?,
+            total_rows: file.total_rows,
             reader,
         })
     })?;
@@ -924,7 +926,7 @@ mod tests {
     use super::*;
     use crate::column_stats::StatValue;
     use crate::store::{free, get_cell_string, is_null, num_rows};
-    use crate::test_footers::{int96_footer, thrift_footer};
+    use crate::test_footers::{int96_footer, parquet_with_footer_total, thrift_footer};
     use arrow::array::{ArrayRef, Int64Array, StringArray};
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
@@ -1984,6 +1986,48 @@ mod tests {
             .finish()
             .unwrap();
         out
+    }
+
+    #[test]
+    fn ranged_open_rejects_inconsistent_footer_totals() {
+        let mut budget = limits();
+        budget.rows = 5;
+        for rows in [5, 0, 31] {
+            let file = parquet_with_footer_total(&fixture_batch(30), 10, rows);
+            let tail = &file[file.len() - FOOTER_SIZE - footer_metadata_length(&file).unwrap()..];
+            for overflow in [LimitOverflow::Truncate, LimitOverflow::Error] {
+                let result =
+                    open_parquet_file_with_overflow(tail, file.len() as u64, budget, overflow);
+                if let Ok(handle) = result {
+                    parquet_close(handle);
+                }
+                let error = result.expect_err("must reject before any row group is loaded");
+                assert!(error.contains("does not match"), "{overflow:?}: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn consistent_footer_reports_a_five_row_preview_of_thirty_rows() {
+        let file = parquet_with_footer_total(&fixture_batch(30), 10, 30);
+        let mut budget = limits();
+        budget.rows = 5;
+        let handle = open_truncating(&file, budget).unwrap();
+        let (store, fetched) = load_until_exhausted(&file, handle);
+        assert_eq!(fetched, vec![0]);
+        assert_eq!(num_rows(store).unwrap(), 5);
+        assert_eq!(
+            budget_state(handle).unwrap(),
+            BudgetState {
+                exhausted: true,
+                truncated: true,
+            }
+        );
+        assert!(row_group_ranges(handle, 1)
+            .unwrap_err()
+            .contains("budget is exhausted"));
+        free(store);
+        parquet_close(handle);
     }
 
     #[test]
