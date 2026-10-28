@@ -79,6 +79,7 @@ export interface AuthenticatedConnectionMetadata {
   emailVerified?: boolean;
   identityVerifiedAt?: number;
   verifiedEmailBinding?: string;
+  verifiedEmailDomainBinding?: string;
   workstationCredentialId?: string;
   workstationPairingCodeId?: string;
 }

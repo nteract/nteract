@@ -10,7 +10,13 @@ import type {
   D1Value,
   Env,
 } from "../src/cloudflare-types.ts";
-import { readCloudAppSession, appSessionAccountKey } from "../src/app-session.ts";
+import {
+  readCloudAppSession,
+  appSessionAccountKey,
+  appSessionConnectionIdentity,
+  appSessionHasFreshVerifiedEmailDomain,
+  NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS,
+} from "../src/app-session.ts";
 import {
   beginServerOidcLogin,
   completeServerOidcLogin,
@@ -931,6 +937,15 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     const original = await readCloudAppSession(f.env, request);
     assert.ok(original);
     assert.ok(original.identityVerifiedAt);
+    assert.ok(original.verifiedEmailDomainBinding);
+    assert.equal(
+      await appSessionHasFreshVerifiedEmailDomain(
+        f.env,
+        appSessionConnectionIdentity(original, "browser:test", "viewer"),
+        "example.com",
+      ),
+      true,
+    );
     const originalRow = f.db.sqlite.prepare("SELECT * FROM oidc_server_sessions").get()!;
     const nearIdleExpiry = Number(originalRow.idle_expires_at) - 30;
     t.mock.method(Date, "now", () => nearIdleExpiry * 1000);
@@ -953,6 +968,19 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     assert.equal(updated.issuedAt, original.issuedAt);
     assert.equal(updated.identityVerifiedAt, original.identityVerifiedAt);
     assert.equal(updated.verifiedEmailBinding, original.verifiedEmailBinding);
+    assert.equal(updated.verifiedEmailDomainBinding, original.verifiedEmailDomainBinding);
+    const proofExpiry = original.identityVerifiedAt + NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS;
+    const stillActive = await readCloudAppSession(f.env, request, proofExpiry);
+    assert.ok(stillActive);
+    assert.equal(
+      await appSessionHasFreshVerifiedEmailDomain(
+        f.env,
+        appSessionConnectionIdentity(stillActive, "browser:test", "viewer"),
+        "example.com",
+        proofExpiry,
+      ),
+      false,
+    );
     assert.equal(
       f.calls.length,
       1,
