@@ -636,7 +636,12 @@ try {
   await expect(content(a)).toHaveAttribute("contenteditable", "true");
   await saved(a);
   await content(a).focus();
+  // A collapsed caret intentionally hides contextual formatting. Open the
+  // keyboard-accessible dock to inspect history without changing the selection.
+  await a.keyboard.press("Alt+F10");
   await expect(a.getByRole("button", { name: "Undo", exact: true })).toBeEnabled();
+  await a.keyboard.press("Escape");
+  await expect(content(a)).toBeFocused();
   await a.keyboard.press("ControlOrMeta+z");
   for (const page of [a, b]) {
     await expect.poll(() => textOf(page)).not.toContain("History survives.");
@@ -969,7 +974,8 @@ try {
   await expect(content(reader).first()).toHaveAttribute("contenteditable", "false");
   await expect(reader.locator(".wordgard-diagram svg.pele")).toHaveCount(2, { timeout: 30000 });
   await expect(reader.locator(".preserved-table table")).toBeVisible();
-  await expect(reader.getByRole("button", { name: "Bold", exact: true })).toBeDisabled();
+  await expect(reader.getByRole("toolbar", { name: "Text formatting" })).toHaveCount(0);
+  await expect(reader.locator(".rich-toolbar")).toBeHidden();
   await expect(reader.locator("select.wg-code-language:enabled")).toHaveCount(0);
   await expect(reader.getByRole("button", { name: "Edit diagram", exact: true })).toHaveCount(0);
   await expect(reader.getByRole("button", { name: "Preview diagram", exact: true })).toHaveCount(0);

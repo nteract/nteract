@@ -67,6 +67,7 @@ export function RichEditor({
   onComment,
   onRevealComment,
   toolbarHost,
+  toolbarOpen = false,
   onActivate,
   threads,
   commentTarget,
@@ -95,6 +96,7 @@ export function RichEditor({
   const [formatting, setFormatting] = useState(null);
   const [tabStop, setTabStop] = useState("style");
   const [floating, setFloating] = useState(null);
+  const [contextualToolbar, setContextualToolbar] = useState(false);
   const [canComment, setCanComment] = useState(false);
   const [linkTarget, setLinkTarget] = useState(null);
   const [editingLink, setEditingLink] = useState(false);
@@ -290,6 +292,7 @@ export function RichEditor({
     const element = toolbar.current;
     if (!toolbarHost || !view || !element || !editable) {
       setFloating(null);
+      setContextualToolbar(false);
       return;
     }
     // Keep the same controls and DOM focus when the toolbar moves. Touch devices
@@ -301,13 +304,13 @@ export function RichEditor({
       frame = null;
       let next = null;
       const { from, to, empty } = view.state.selection;
-      if (
-        media.matches &&
-        !dragging &&
-        !empty &&
-        !view.composing &&
-        (view.hasFocus() || element.contains(document.activeElement))
-      ) {
+      const contextual = dragging
+        ? contextualToolbar
+        : !empty &&
+          !view.composing &&
+          (view.hasFocus() || element.contains(document.activeElement));
+      setContextualToolbar(contextual);
+      if (media.matches && contextual && !toolbarOpen && !dragging) {
         const viewport = window.visualViewport;
         const bounds = element.getBoundingClientRect();
         const headerBottom =
@@ -369,7 +372,7 @@ export function RichEditor({
       document.removeEventListener("pointerup", pointerUp, true);
       document.removeEventListener("pointercancel", pointerUp, true);
     };
-  }, [toolbarHost, editable, replica, id, generation]);
+  }, [toolbarHost, toolbarOpen, contextualToolbar, editable, replica, id, generation]);
   function run(command, restoreFocus = true) {
     const view = editor.current;
     if (!view || !writable.current) return;
@@ -466,6 +469,7 @@ export function RichEditor({
         createPortal(
           <div
             className={`rich-toolbar${floating ? " is-floating" : ""}`}
+            hidden={!editable || (!toolbarOpen && !contextualToolbar)}
             style={floating || undefined}
             ref={toolbar}
             role="toolbar"

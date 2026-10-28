@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Check, MessageSquare, RotateCcw, X } from "lucide-react";
 import { resolveCommentDraft } from "./comment-draft.mjs";
+import "./comments.css";
 
 function CommentAuthor({ author }) {
   const name = author?.displayName?.trim() || "Collaborator";
@@ -27,7 +28,8 @@ export function CommentsPanel({
 }) {
   const dialog = useRef(null),
     composerElement = useRef(null),
-    previousComposer = useRef(null);
+    previousComposer = useRef(null),
+    resolvedDisclosure = useRef(null);
   const [mobile, setMobile] = useState(() => matchMedia("(max-width: 900px)").matches);
   const [drafts, setDrafts] = useState({});
   const [problem, setProblem] = useState("");
@@ -53,11 +55,20 @@ export function CommentsPanel({
   }, []);
   useEffect(() => {
     const element = dialog.current;
+    const focused = element.contains(document.activeElement) ? document.activeElement : null;
+    const selection =
+      focused?.tagName === "TEXTAREA"
+        ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection]
+        : null;
     // Keep the same forms mounted when the viewport changes. Only modality changes.
     if (element.open) element.close();
     if (open) {
       if (mobile) element.showModal();
       else element.show();
+      if (focused?.isConnected && element.contains(focused)) {
+        focused.focus({ preventScroll: true });
+        if (selection) focused.setSelectionRange(...selection);
+      }
     }
   }, [open, mobile]);
   useEffect(() => {
@@ -72,9 +83,10 @@ export function CommentsPanel({
   useEffect(() => {
     if (!open || !target?.id) return;
     const frame = requestAnimationFrame(() => {
-      dialog.current
-        ?.querySelector(`[data-thread-id="${CSS.escape(target.id)}"]`)
-        ?.scrollIntoView({ block: "nearest" });
+      const thread = dialog.current?.querySelector(`[data-thread-id="${CSS.escape(target.id)}"]`);
+      const disclosure = thread?.closest("details");
+      if (disclosure) disclosure.open = true;
+      thread?.scrollIntoView({ block: "nearest" });
     });
     return () => cancelAnimationFrame(frame);
   }, [open, target]);
@@ -95,10 +107,32 @@ export function CommentsPanel({
   async function changeThread(thread) {
     setProblem("");
     setChanging(thread.id);
+    const focused = document.activeElement;
+    const openThreads = threads.filter((item) => item.state === "open");
+    const index = openThreads.findIndex((item) => item.id === thread.id);
+    const nextId =
+      thread.state === "resolved"
+        ? thread.id
+        : (openThreads[index + 1] ?? openThreads[index - 1])?.id;
     try {
       await session.comment({
         action: thread.state === "open" ? "resolve" : "reopen",
         thread_id: thread.id,
+      });
+      requestAnimationFrame(() => {
+        if (!dialog.current?.open) return;
+        if (![focused, document.body, dialog.current].includes(document.activeElement)) return;
+        const next =
+          nextId &&
+          dialog.current.querySelector(
+            `.comments-body > [data-thread-id="${CSS.escape(nextId)}"] button`,
+          );
+        (
+          next ||
+          dialog.current.querySelector(".comments-body > .thread button") ||
+          resolvedDisclosure.current?.querySelector("summary") ||
+          dialog.current.querySelector(".comments-heading button")
+        )?.focus({ preventScroll: true });
       });
     } catch (error) {
       setProblem(error.message);
@@ -113,69 +147,21 @@ export function CommentsPanel({
     } else onReveal(thread);
   }
   function renderThread(thread) {
-    const blockId =
-      thread.target.kind === "selection" ? thread.target.anchor.blockId : thread.target.blockId;
-    const blockSurvives = Object.hasOwn(session.doc.blocks, blockId);
     return (
-      <section
-        className={
-          "thread" +
-          (thread.state === "resolved" ? " resolved" : "") +
-          (target?.id === thread.id ? " thread-active" : "")
-        }
+      <CommentThread
         key={thread.id}
-        data-thread-id={thread.id}
-        aria-label="Comment thread"
-        onFocusCapture={() => {
+        thread={thread}
+        session={session}
+        selected={target?.id === thread.id}
+        changing={changing === thread.id}
+        value={drafts[thread.id] || ""}
+        onChange={(body) => changeDraft(thread.id, body)}
+        onReveal={() => reveal(thread)}
+        onSelect={() => {
           if (target?.id !== thread.id) onSelect?.(thread.id);
         }}
-      >
-        {thread.selectionContext?.text ? (
-          <button className="quote" onClick={() => reveal(thread)} title="Show passage">
-            {thread.selectionContext.text}
-          </button>
-        ) : blockSurvives &&
-          (thread.target.kind === "block" || thread.selectionContext?.status === "detached") ? (
-          <button className="quote" onClick={() => reveal(thread)}>
-            Show block
-          </button>
-        ) : null}
-        {thread.selectionContext?.status === "detached" && <p className="muted">Passage removed</p>}
-        {thread.messages.map((message) =>
-          message.deletedAt ? null : (
-            <div className="message" key={message.id}>
-              <CommentAuthor author={message.author} />
-              <p>{message.body}</p>
-            </div>
-          ),
-        )}
-        {session.canWrite && (
-          <>
-            <div className="thread-actions">
-              <button
-                className="subtle-button"
-                disabled={changing === thread.id}
-                onClick={() => changeThread(thread)}
-              >
-                {thread.state === "open" ? (
-                  <Check size={15} aria-hidden="true" />
-                ) : (
-                  <RotateCcw size={15} aria-hidden="true" />
-                )}
-                {thread.state === "open" ? "Resolve" : "Reopen"}
-              </button>
-            </div>
-            {thread.state === "open" && (
-              <CommentForm
-                label="Reply"
-                value={drafts[thread.id] || ""}
-                onChange={(body) => changeDraft(thread.id, body)}
-                submit={(body) => session.comment({ action: "reply", thread_id: thread.id, body })}
-              />
-            )}
-          </>
-        )}
-      </section>
+        onChangeThread={() => changeThread(thread)}
+      />
     );
   }
   const unresolved = threads.filter((thread) => thread.state === "open");
@@ -255,7 +241,7 @@ export function CommentsPanel({
         )}
         {unresolved.map(renderThread)}
         {resolved.length > 0 && (
-          <details className="resolved-threads">
+          <details className="resolved-threads" ref={resolvedDisclosure}>
             <summary>Resolved ({resolved.length})</summary>
             {resolved.map(renderThread)}
           </details>
@@ -265,7 +251,179 @@ export function CommentsPanel({
   );
 }
 
-function CommentForm({ label, value, onChange, submit, disabled = false, onSuccess, onCancel }) {
+function CommentThread({
+  thread,
+  session,
+  selected,
+  changing,
+  value,
+  onChange,
+  onReveal,
+  onSelect,
+  onChangeThread,
+}) {
+  const [repliesExpanded, setRepliesExpanded] = useState(false);
+  const [replying, setReplying] = useState(false);
+  const [pending, setPending] = useState(false);
+  const replyButton = useRef(null),
+    form = useRef(null),
+    pointerFocus = useRef(false);
+  const repliesId = useId();
+  const messages = thread.messages.filter((message) => !message.deletedAt);
+  const [first, ...replies] = messages;
+  const blockId =
+    thread.target.kind === "selection" ? thread.target.anchor.blockId : thread.target.blockId;
+  const blockSurvives = Object.hasOwn(session.doc.blocks, blockId);
+  useEffect(() => {
+    if (!session.canWrite) setPending(false);
+  }, [session.canWrite]);
+  useEffect(() => {
+    if (!replying) return;
+    const frame = requestAnimationFrame(() =>
+      form.current?.querySelector("textarea")?.focus({ preventScroll: true }),
+    );
+    return () => cancelAnimationFrame(frame);
+  }, [replying]);
+  function hideReply(restoreFocus = true) {
+    setReplying(false);
+    if (restoreFocus)
+      requestAnimationFrame(() => replyButton.current?.focus({ preventScroll: true }));
+  }
+  return (
+    <section
+      className={
+        "thread" +
+        (thread.state === "resolved" ? " resolved" : "") +
+        (selected ? " thread-active" : "")
+      }
+      data-thread-id={thread.id}
+      aria-label="Comment thread"
+      onPointerDownCapture={() => {
+        pointerFocus.current = true;
+      }}
+      onPointerUpCapture={() => {
+        pointerFocus.current = false;
+      }}
+      onPointerCancelCapture={() => {
+        pointerFocus.current = false;
+      }}
+      onKeyDownCapture={() => {
+        pointerFocus.current = false;
+      }}
+      onFocusCapture={() => {
+        // Expanding a quote on pointer focus moves its controls before the click.
+        // Keyboard focus can reveal immediately; pointer selection waits for click.
+        if (!pointerFocus.current) onSelect();
+      }}
+      onClickCapture={() => {
+        pointerFocus.current = false;
+        onSelect();
+      }}
+    >
+      {thread.selectionContext?.text ? (
+        <button className="quote" onClick={onReveal} title="Show passage">
+          {thread.selectionContext.text}
+        </button>
+      ) : blockSurvives &&
+        (thread.target.kind === "block" || thread.selectionContext?.status === "detached") ? (
+        <button className="quote" onClick={onReveal}>
+          Show block
+        </button>
+      ) : null}
+      {thread.selectionContext?.status === "detached" && (
+        <p className="muted thread-detached">Passage removed</p>
+      )}
+      <div className="thread-heading">
+        {first && <CommentAuthor author={first.author} />}
+        {session.canWrite && (
+          <button
+            className="icon-button thread-state-action"
+            aria-label={thread.state === "open" ? "Resolve" : "Reopen"}
+            title={thread.state === "open" ? "Resolve thread" : "Reopen thread"}
+            disabled={changing || pending}
+            onClick={onChangeThread}
+          >
+            {thread.state === "open" ? (
+              <Check size={16} aria-hidden="true" />
+            ) : (
+              <RotateCcw size={16} aria-hidden="true" />
+            )}
+          </button>
+        )}
+      </div>
+      {first && (
+        <div className="message">
+          <p>{first.body}</p>
+        </div>
+      )}
+      <div className="thread-conversation-actions">
+        {replies.length > 0 && (
+          <button
+            type="button"
+            className="subtle-button thread-replies-toggle"
+            aria-expanded={repliesExpanded}
+            aria-controls={repliesId}
+            onClick={() => setRepliesExpanded((value) => !value)}
+          >
+            {repliesExpanded ? "Hide " : ""}
+            {replies.length} {replies.length === 1 ? "reply" : "replies"}
+          </button>
+        )}
+        {session.canWrite && thread.state === "open" && (
+          <button
+            ref={replyButton}
+            type="button"
+            className="subtle-button thread-reply-button"
+            hidden={replying}
+            onClick={() => setReplying(true)}
+          >
+            {value ? "Continue reply" : "Reply"}
+          </button>
+        )}
+      </div>
+      <div id={repliesId} className="thread-replies" hidden={!repliesExpanded}>
+        {replies.map((message) => (
+          <div className="message" key={message.id}>
+            <CommentAuthor author={message.author} />
+            <p>{message.body}</p>
+          </div>
+        ))}
+      </div>
+      {session.canWrite && thread.state === "open" && (
+        <div ref={form} hidden={!replying}>
+          <CommentForm
+            label="Reply"
+            compact
+            value={value}
+            onChange={onChange}
+            submit={(body) => session.comment({ action: "reply", thread_id: thread.id, body })}
+            onBusyChange={setPending}
+            onSuccess={() => {
+              const restoreFocus = form.current?.contains(document.activeElement);
+              setRepliesExpanded(true);
+              hideReply(restoreFocus);
+            }}
+            onCancel={() => hideReply()}
+            cancelLabel="Hide reply"
+          />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CommentForm({
+  label,
+  value,
+  onChange,
+  submit,
+  disabled = false,
+  onSuccess,
+  onCancel,
+  compact = false,
+  cancelLabel = "Cancel",
+  onBusyChange,
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const mounted = useRef(true);
@@ -277,10 +435,12 @@ function CommentForm({ label, value, onChange, submit, disabled = false, onSucce
   }, []);
   return (
     <form
+      className={compact ? "comment-reply-form" : undefined}
       onSubmit={async (event) => {
         event.preventDefault();
         if (busy || disabled || !value.trim()) return;
         setBusy(true);
+        onBusyChange?.(true);
         setError("");
         try {
           await submit(value);
@@ -290,13 +450,17 @@ function CommentForm({ label, value, onChange, submit, disabled = false, onSucce
         } catch (error) {
           if (mounted.current) setError(error.message);
         } finally {
-          if (mounted.current) setBusy(false);
+          if (mounted.current) {
+            setBusy(false);
+            onBusyChange?.(false);
+          }
         }
       }}
     >
       <label>
-        {label}
+        <span className={compact ? "sr-only" : undefined}>{label}</span>
         <textarea
+          placeholder={compact ? "Write a reply…" : undefined}
           value={value}
           onChange={(event) => onChange(event.target.value)}
           rows={2}
@@ -315,7 +479,7 @@ function CommentForm({ label, value, onChange, submit, disabled = false, onSucce
         </button>
         {onCancel && (
           <button type="button" className="subtle-button" onClick={onCancel} disabled={busy}>
-            Cancel
+            {cancelLabel}
           </button>
         )}
       </div>

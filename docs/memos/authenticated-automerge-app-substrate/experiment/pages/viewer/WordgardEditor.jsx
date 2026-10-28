@@ -124,7 +124,7 @@ const editConfig = (editable) => [
 ];
 
 export function WordgardEditor(props) {
-  const { replica, id, editable, toolbarHost, threads, commentTarget } = props;
+  const { replica, id, editable, toolbarHost, toolbarOpen = false, threads, commentTarget } = props;
   const latest = useRef(props);
   latest.current = props;
   const mount = useRef(null),
@@ -139,6 +139,7 @@ export function WordgardEditor(props) {
   const permissions = useRef(new GardState.Compartment());
   const [format, setFormat] = useState(null),
     [floating, setFloating] = useState(null),
+    [contextualToolbar, setContextualToolbar] = useState(false),
     [remoteCarets, setRemoteCarets] = useState([]),
     [link, setLink] = useState(null),
     [editingLink, setEditingLink] = useState(false),
@@ -656,6 +657,7 @@ export function WordgardEditor(props) {
       element = toolbar.current;
     if (!editor || !element || !toolbarHost || !editable) {
       setFloating(null);
+      setContextualToolbar(false);
       return;
     }
     const media = matchMedia("(min-width: 901px) and (hover: hover) and (pointer: fine)");
@@ -665,14 +667,17 @@ export function WordgardEditor(props) {
       frame = null;
       let next = null;
       const selection = editor.state.selection;
-      if (
-        media.matches &&
-        !dragging &&
-        !selection.empty &&
-        !selectedImage(editor.state) &&
-        !editor.composing &&
-        (editor.hasFocus || element.contains(document.activeElement))
-      ) {
+      // Do not resize the dock under an in-progress native selection drag.
+      const contextual = dragging
+        ? contextualToolbar
+        : !selection.empty &&
+          !selectedImage(editor.state) &&
+          !editor.composing &&
+          (editor.hasFocus ||
+            element.contains(document.activeElement) ||
+            !!element.querySelector('[aria-expanded="true"]'));
+      setContextualToolbar(contextual);
+      if (media.matches && contextual && !toolbarOpen && !dragging) {
         const viewport = window.visualViewport,
           box = element.getBoundingClientRect();
         next = selectionToolbarPosition({
@@ -731,7 +736,7 @@ export function WordgardEditor(props) {
       media.removeEventListener("change", schedule);
       positionToolbar.current = () => {};
     };
-  }, [toolbarHost, editable, generation]);
+  }, [toolbarHost, toolbarOpen, contextualToolbar, editable, generation]);
   function run(name) {
     const editor = view.current;
     if (!editor || !editable) return;
@@ -804,6 +809,7 @@ export function WordgardEditor(props) {
           <div
             ref={toolbar}
             className={`rich-toolbar${floating ? " is-floating" : ""}`}
+            hidden={!editable || (!toolbarOpen && !contextualToolbar)}
             style={floating || undefined}
             role="toolbar"
             aria-label={format?.image ? "Image actions" : "Text formatting"}

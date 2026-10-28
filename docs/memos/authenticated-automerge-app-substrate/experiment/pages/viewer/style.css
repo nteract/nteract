@@ -21,6 +21,7 @@
   --warning-soft: color-mix(in srgb, var(--warning) 12%, var(--surface));
   --error-soft: color-mix(in srgb, var(--destructive) 10%, var(--surface));
   --success: #22734a;
+  --page-header-height: 64px;
 }
 :root.dark {
   --warning: #dec179;
@@ -135,6 +136,7 @@ summary svg {
   letter-spacing: -0.035em;
   text-decoration: none;
   color: var(--primary);
+  flex-shrink: 0;
 }
 .brand svg {
   width: 23px;
@@ -1138,8 +1140,25 @@ dialog::backdrop {
 }
 
 @media (max-width: 600px) {
+  :root {
+    --page-header-height: 96px;
+  }
   .app-header {
     gap: 0.3rem;
+  }
+  .has-document .app-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    padding: 4px 12px;
+  }
+  .has-document .header-navigation,
+  .has-document .header-actions {
+    min-height: 44px;
+    width: 100%;
+  }
+  .has-document .document-meta {
+    flex: 1;
   }
   .header-actions,
   .document-meta,
@@ -1150,7 +1169,7 @@ dialog::backdrop {
     font-size: 0.85rem;
   }
   .has-document .pages-trigger {
-    max-width: 36vw;
+    max-width: calc(100% - 60px);
     padding-inline: 0.4rem;
     gap: 0.3rem;
   }
@@ -1275,6 +1294,12 @@ dialog::backdrop {
     right: 12px;
     top: 70px;
     width: auto;
+  }
+}
+@media (max-width: 600px) {
+  .page-sharing-popover {
+    top: calc(var(--page-header-height) + 6px);
+    max-height: calc(100dvh - var(--page-header-height) - 18px);
   }
 }
 

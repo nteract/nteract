@@ -13,6 +13,7 @@ import {
   Plus,
   Plug,
   Search,
+  Type,
   Trash2,
   UserRound,
 } from "lucide-react";
@@ -38,6 +39,7 @@ import { writingContinuation } from "./writing-continuation.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
 import "./style.css";
+import "./formatting-toolbar.css";
 
 function App() {
   const accountDisclosure = useDismissibleDisclosure(),
@@ -53,6 +55,7 @@ function App() {
     [notice, setNotice] = useState(""),
     [libraryQuery, setLibraryQuery] = useState("");
   const [toolbar, setToolbar] = useState(null),
+    [toolbarOpen, setToolbarOpen] = useState(false),
     [active, setActive] = useState(null),
     [commentsOpen, setCommentsOpen] = useState(false),
     [composer, setComposer] = useState(null),
@@ -99,6 +102,28 @@ function App() {
   function activateBlock(id) {
     setActive(id);
   }
+  function showFormatting(open, focus = false) {
+    setToolbarOpen(open);
+    if (documentDisclosure.current) documentDisclosure.current.open = false;
+    if (focus && open)
+      requestAnimationFrame(() => {
+        toolbar?.querySelector("select:not(:disabled),button:not(:disabled)")?.focus();
+      });
+  }
+  function formattingShortcut(event) {
+    if (
+      session?.canWrite &&
+      event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      event.key === "F10"
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      showFormatting(true, true);
+    }
+  }
   function nextGeneration() {
     openingRequest.current?.abort();
     openingRequest.current = null;
@@ -106,6 +131,7 @@ function App() {
   }
   function resetDocumentUI() {
     setActive(null);
+    setToolbarOpen(false);
     composerId.current = null;
     setComposer(null);
     setTarget(null);
@@ -539,6 +565,22 @@ function App() {
                       <MoreHorizontal size={20} aria-hidden="true" />
                     </summary>
                     <div className="menu-popover">
+                      {session.canWrite && (
+                        <button
+                          aria-expanded={toolbarOpen}
+                          aria-controls="page-formatting"
+                          aria-keyshortcuts="Alt+F10"
+                          onClick={() => {
+                            showFormatting(!toolbarOpen, !toolbarOpen);
+                            if (toolbarOpen)
+                              documentDisclosure.current?.querySelector("summary")?.focus();
+                          }}
+                        >
+                          <Type size={16} aria-hidden="true" />
+                          {toolbarOpen ? "Hide formatting" : "Show formatting"}
+                          <kbd>Alt F10</kbd>
+                        </button>
+                      )}
                       <button onClick={() => copyLink()}>
                         <Link size={16} aria-hidden="true" /> Copy link
                       </button>
@@ -634,7 +676,7 @@ function App() {
             <main
               className={commentsOpen ? "workspace document with-comments" : "workspace document"}
             >
-              <article ref={article}>
+              <article ref={article} onKeyDownCapture={formattingShortcut}>
                 {session.authRequired && (
                   <p className="error" role="alert">
                     {session.authProblem}{" "}
@@ -673,7 +715,7 @@ function App() {
                     }}
                   />
                 </div>
-                <div className="toolbar-host" ref={setToolbar} />
+                <div id="page-formatting" className="toolbar-host" ref={setToolbar} />
                 {page.blocks.map((block) => (
                   <section className="page-block" data-block-id={block.id} key={block.id}>
                     {block.format === "automerge-rich-text-v1" ? (
@@ -685,6 +727,7 @@ function App() {
                         onComment={(selected) => startComment(block.id, selected)}
                         onRevealComment={selectComment}
                         toolbarHost={active === block.id ? toolbar : null}
+                        toolbarOpen={toolbarOpen}
                         onActivate={() => activateBlock(block.id)}
                         threads={threads}
                         commentTarget={target}

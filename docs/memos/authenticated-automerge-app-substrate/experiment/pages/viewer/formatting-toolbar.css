@@ -1,0 +1,46 @@
+/* The editor owns one toolbar. Keep reading quiet until a passage is selected
+   or the user explicitly opens formatting through Document actions / Alt-F10. */
+.toolbar-host {
+  top: var(--page-header-height, 64px);
+}
+.rich-toolbar[hidden] {
+  display: none;
+}
+.toolbar-host:not(:has(.rich-toolbar:not([hidden]))) {
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.document-actions kbd {
+  margin-left: auto;
+  padding-left: 12px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+/* Touch users keep native selection handles and a stable dock. Wrapping exposes
+   every command; no invisible horizontal scroll is required to reach comments. */
+@media (max-width: 900px), (hover: none), (pointer: coarse) {
+  .rich-toolbar {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 2px;
+    overflow: visible;
+    white-space: normal;
+  }
+  .rich-toolbar .toolbar-button {
+    flex: 0 0 44px;
+    min-width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+  .rich-toolbar .toolbar-select {
+    height: 44px;
+    width: 124px;
+  }
+  .rich-toolbar .toolbar-separator,
+  .rich-toolbar .toolbar-comment > span {
+    display: none;
+  }
+}
