@@ -61,12 +61,15 @@ import { readRegistration, requireRegistrationAccount, validPageId } from "./reg
 import { handleImageAssets, requireStoredImageAsset } from "./image-assets.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
 import { readTool } from "./tool-reads.mjs";
+import { PageActivity } from "./page-activity.mjs";
 
 const operations = new Set([
   "list_pages",
   "create_page",
   "read_page",
   "list_page_comments",
+  "read_page_presence",
+  "report_page_progress",
   "import_page_image",
   "edit_page",
   "patch_page",
@@ -114,7 +117,7 @@ async function invoke(request, env, operation, args = {}) {
   if (!operations.has(operation) || !args || typeof args !== "object" || Array.isArray(args))
     throw new HttpError(400, "Unknown operation or invalid arguments");
   const identity = await authenticate(request, env);
-  if (!["list_pages", "read_page", "list_page_comments"].includes(operation))
+  if (!["list_pages", "read_page", "list_page_comments", "read_page_presence"].includes(operation))
     requireWrite(identity);
   if (["list_pages", "create_page", "delete_page"].includes(operation)) {
     return env.CATALOGS.getByName(identity.principal).fetch(
@@ -465,6 +468,7 @@ export class Page {
       if (creation && !this.metadata?.deleted) await this.finishCreation(creation);
       if (!this.handle && this.metadata?.documentId && !this.metadata.deleted) {
         this.handle = await this.repo.find(this.metadata.documentId);
+        this.observeActivity();
         try {
           await recoverDocumentMutations(
             ctx.storage,
@@ -591,6 +595,7 @@ export class Page {
   async finishCreation(intent) {
     this.handle = await this.repo.import(intent.bytes, { docId: intent.metadata.documentId });
     this.metadata = intent.metadata;
+    this.observeActivity();
     this.admission ??= new DocumentAdmission(
       this.backend,
       documentIdToBinary(this.metadata.documentId),
@@ -610,6 +615,34 @@ export class Page {
         driver: "API",
       },
     };
+  }
+
+  activityState() {
+    this.activity ??= new PageActivity({
+      pageId: this.metadata.pageId,
+      access: (identity) => this.policy.account(identity, true),
+      profiles: () => this.policy.profiles(),
+      onChange: (snapshot) => this.broadcastActivity(snapshot),
+    });
+    return this.activity;
+  }
+
+  observeActivity() {
+    const activity = this.activityState();
+    if (this.activityHandle === this.handle) return;
+    if (this.activityHandle) this.activityHandle.off?.("ephemeral-message", this.activityListener);
+    this.activityHandle = this.handle;
+    this.activityListener = (event) => activity.receive(event);
+    this.handle.on?.("ephemeral-message", this.activityListener);
+  }
+
+  broadcastActivity(snapshot = this.activity?.snapshot()) {
+    if (!this.handle || !snapshot) return;
+    try {
+      this.handle.broadcast(snapshot);
+    } catch (error) {
+      logFailure(error, "page-activity");
+    }
   }
 
   broadcastProfiles() {
@@ -673,6 +706,7 @@ export class Page {
       ...restrictAccessDuringCommit(this.policyMetadata ?? this.metadata, metadata),
       aclCommitting: true,
     };
+    this.activity?.prune();
     // Do not persist retired signer rows ahead of their grant generation. If
     // this host record never commits, restart may legitimately retain old access.
     await this.policy.refreshAccess({ persist: false });
@@ -681,6 +715,7 @@ export class Page {
     this.metadata = metadata;
     this.policyMetadata = undefined;
     await this.policy.refreshAccess();
+    this.activity?.prune();
     this.pendingAccess = undefined;
     this.cachedTitle = undefined;
     this.cacheTitle();
@@ -820,6 +855,7 @@ export class Page {
           };
         }
         this.recordMaintenance?.stop();
+        this.activity?.close();
         // Persist again on retry: a previous storage failure may have occurred
         // after admission stopped, but before the tombstone reached storage.
         await this.ctx.storage.put("host/document", this.metadata);
@@ -883,6 +919,7 @@ export class Page {
           },
           ...(this.recoveryBlocked && { recovery: this.recoveryBlocked }),
           peerProfiles: this.profiles(),
+          activity: this.activityState().snapshot(),
         });
       }
       if (url.pathname === "/api/sync" && request.method === "GET")
@@ -898,10 +935,23 @@ export class Page {
       }
       if (url.pathname === "/internal/tool") {
         const body = await readJson(request);
+        if (body.operation === "read_page_presence") {
+          const args = body.arguments;
+          if (
+            !args ||
+            typeof args !== "object" ||
+            Array.isArray(args) ||
+            args.page_id !== this.metadata.pageId ||
+            Object.keys(args).some((key) => key !== "page_id")
+          )
+            throw new HttpError(400, "Invalid presence arguments");
+          return json(this.activityState().read(this.handle.doc()));
+        }
         if (["read_page", "list_page_comments"].includes(body.operation)) {
           this.cacheTitle(identity);
           const result = await readTool(this.handle.doc(), body.operation, body.arguments ?? {}, {
             recovery: this.recoveryBlocked,
+            getPresence: (doc) => this.activityState().read(doc),
             issueAuthority: () =>
               issueRetryToken(this.ctx.storage, {
                 scope: `page:${this.metadata.pageId}`,
@@ -911,6 +961,8 @@ export class Page {
           return json(result.body, result.status);
         }
         this.policy.account(identity, true);
+        if (body.operation === "report_page_progress")
+          return json(this.activityState().report(this.handle.doc(), identity, body.arguments));
         if (
           !["edit_page", "patch_page", "manage_page_comment", "reply_page_comment"].includes(
             body.operation,
@@ -1064,6 +1116,19 @@ export class Page {
   connect(request, identity) {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket")
       throw new HttpError(426, "WebSocket upgrade required");
+    const epochs = new URL(request.url).searchParams.getAll("activity_epoch");
+    if (epochs.length) {
+      if (
+        epochs.length !== 1 ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(epochs[0])
+      )
+        throw new HttpError(400, "Invalid activity_epoch");
+      // Discovery and native admission must refer to the same resident host.
+      // Reject before allocating a socket so the browser rediscovers after a
+      // restart instead of permanently rejecting the new host's snapshots.
+      if (epochs[0] !== this.activityState().epoch)
+        throw new HttpError(409, "Page activity session changed; reconnect");
+    }
     if (this.wires.size >= 24) throw new HttpError(429, "Too many connected peers");
     const principals = [...this.wirePrincipals.values()];
     if (principals.filter((principal) => principal === identity.principal).length >= 4)
@@ -1101,6 +1166,7 @@ export class Page {
       release();
       this.wires.delete(wire);
       this.wirePrincipals.delete(wire);
+      this.activity?.prune();
       this.broadcastProfiles();
     });
     this.ctx.waitUntil(
@@ -1140,6 +1206,7 @@ export class Page {
           });
           await this.backend.addConnection(transport);
           this.broadcastProfiles();
+          this.broadcastActivity();
         } finally {
           transport.free();
         }

@@ -23,7 +23,8 @@ function fixture(
     writes = [],
     bindings = [],
     records = new Map();
-  let socket,
+  let pairs = 0,
+    socket,
     released = false;
   class Socket extends EventTarget {
     closeCalls = 0;
@@ -36,6 +37,7 @@ function fixture(
   const globals = {
     WebSocketPair: class {
       constructor() {
+        pairs++;
         this[0] = new Socket();
         this[1] = socket = new Socket();
       }
@@ -141,9 +143,11 @@ function fixture(
   t.after(async () => {
     for (const wire of page.wires) await wire.disconnect();
   });
-  const open = (principal = identityOptions.principal ?? "user:owner") => {
+  const open = (principal = identityOptions.principal ?? "user:owner", activityEpoch) => {
+    const url = new URL("http://localhost/api/sync?page=fixture");
+    if (activityEpoch !== undefined) url.searchParams.set("activity_epoch", activityEpoch);
     const response = page.connect(
-      new Request("http://localhost/api/sync?page=fixture", {
+      new Request(url, {
         headers: { upgrade: "websocket" },
       }),
       {
@@ -166,6 +170,7 @@ function fixture(
     events,
     broadcasts,
     writes,
+    pairCount: () => pairs,
     renewal: (expiresAt) => {
       assert.equal(
         typeof bindings[0]?.onRenewal,
@@ -181,6 +186,55 @@ function fixture(
     released: () => released,
   };
 }
+
+test("native admission rejects a discovery epoch from an earlier host before allocating a socket", async (t) => {
+  const f = fixture(t);
+  await drain();
+  const discoveredEpoch = crypto.randomUUID(),
+    currentEpoch = crypto.randomUUID();
+  t.mock.method(f.page, "activityState", () => ({ epoch: currentEpoch }));
+  const pairs = f.pairCount(),
+    wires = f.page.wires.size,
+    backgrounds = f.backgrounds.length;
+  assert.throws(() => f.open("user:owner", discoveredEpoch), {
+    status: 409,
+    message: "Page activity session changed; reconnect",
+  });
+  assert.equal(f.pairCount(), pairs);
+  assert.equal(f.page.wires.size, wires);
+  assert.equal(f.backgrounds.length, backgrounds);
+  const fresh = f.open("user:owner", currentEpoch);
+  await drain();
+  assert.equal(f.pairCount(), pairs + 1);
+  assert.equal(f.page.wires.size, wires + 1);
+  fresh.socket.close();
+  await fresh.background;
+});
+
+test("legacy admission may omit the activity epoch but malformed or repeated values are rejected", async (t) => {
+  const f = fixture(t);
+  await drain();
+  // fixture's first socket deliberately uses the legacy URL without an epoch.
+  assert.equal(f.page.wires.size, 1);
+  const currentEpoch = crypto.randomUUID();
+  t.mock.method(f.page, "activityState", () => ({ epoch: currentEpoch }));
+  const pairs = f.pairCount();
+  for (const invalid of ["", "not-a-uuid", "a".repeat(36), `${currentEpoch}suffix`])
+    assert.throws(() => f.open("user:owner", invalid), { status: 400 });
+  assert.throws(
+    () =>
+      f.page.connect(
+        new Request(
+          `http://localhost/api/sync?page=fixture&activity_epoch=${currentEpoch}&activity_epoch=${currentEpoch}`,
+          { headers: { upgrade: "websocket" } },
+        ),
+        { principal: "user:owner" },
+      ),
+    { status: 400 },
+  );
+  assert.equal(f.pairCount(), pairs);
+  assert.equal(f.page.wires.size, 1);
+});
 
 test("native admission keeps its context until the socket closes, then releases it", async (t) => {
   const f = fixture(t);

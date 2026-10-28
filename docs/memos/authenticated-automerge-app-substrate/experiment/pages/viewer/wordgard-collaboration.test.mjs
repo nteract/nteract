@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { Decoration } from "wordgard/editor";
 import { applyComment, projectComments } from "../model/comments.mjs";
+import { createProgressTargets } from "../model/presence.mjs";
 import { enableRich, textPath } from "../model/richtext.mjs";
 import { captureCommentDraft, resolveCommentDraft } from "./comment-draft.mjs";
 import { decode } from "./wordgard-model.mjs";
@@ -340,4 +341,49 @@ test("illumination ignores own changes and does not attach to surviving text aft
   h.replica.doc = A.change(h.replica.doc, (d) => A.splice(d, textPath("first"), at, 4, ""));
   assert.equal(entries(h.collaboration.ranges()).length, 0);
   h.collaboration.destroy();
+});
+
+test("agent progress decorates anchored Wordgard text without publishing a caret or changing content", () => {
+  const h = harness(fixture("Hello **world** and goodbye."));
+  const targets = createProgressTargets(
+    h.replica.doc,
+    [{ block_id: "first", match_text: "world" }],
+    A.getHeads(h.replica.doc),
+  );
+  const progress = {
+    progress_id: "agent",
+    displayName: "Kyle",
+    driver: "ChatGPT",
+    message: "Reviewing this passage",
+    targets,
+    until: 2000,
+  };
+  h.replica.agentProgress = new Map([["agent", progress]]);
+  const heads = A.getHeads(h.replica.doc);
+  const ranges = entries(h.collaboration.ranges());
+  assert.equal(ranges.length, 1);
+  assert.ok(
+    ranges[0].value.eq(
+      Decoration.Range.wrapper("span", {
+        attributes: {
+          class: "agent-progress-passage",
+          title: "ChatGPT on behalf of Kyle: Reviewing this passage",
+          "data-progress-id": "agent",
+          "data-progress-target": "0",
+        },
+      }),
+    ),
+  );
+  assert.deepEqual(h.collaboration.carets(), []);
+  assert.deepEqual(h.publications, []);
+  assert.deepEqual(A.getHeads(h.replica.doc), heads);
+  h.replica.doc = A.change(h.replica.doc, (d) => A.splice(d, textPath("first"), 0, 0, "Prefix "));
+  assert.ok(entries(h.collaboration.ranges())[0].from > ranges[0].from);
+  h.setTime(2000);
+  assert.equal(entries(h.collaboration.ranges()).length, 0);
+  h.setTime(1000);
+  h.replica.doc = A.change(h.replica.doc, (d) => {
+    d.blocks.first.richText = "Replacement";
+  });
+  assert.equal(entries(h.collaboration.ranges()).length, 0);
 });

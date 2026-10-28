@@ -191,6 +191,96 @@ summary svg {
   background: var(--accent-soft);
   color: var(--primary);
 }
+.page-activity {
+  position: relative;
+}
+.page-activity > summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  min-height: 40px;
+  cursor: pointer;
+  list-style: none;
+}
+.page-activity > summary::-webkit-details-marker {
+  display: none;
+}
+.activity-count {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+.activity-popover {
+  position: absolute;
+  z-index: 35;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  width: min(24rem, calc(100vw - 2rem));
+  max-height: min(32rem, calc(100dvh - var(--page-header-height) - 2rem));
+  overflow-y: auto;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: var(--surface);
+  box-shadow: 0 8px 24px #00000014;
+  overflow-wrap: anywhere;
+}
+.activity-heading {
+  display: block;
+  font-size: 0.875rem;
+  margin-bottom: 0.25rem;
+}
+.activity-popover ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.activity-popover li {
+  padding: 0.75rem 0;
+}
+.activity-popover li + li {
+  border-top: 1px solid var(--line);
+}
+.activity-identity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.4rem;
+  font-size: 0.8125rem;
+}
+.activity-popover p {
+  margin: 0.4rem 0 0;
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+.activity-passage {
+  display: block;
+  width: 100%;
+  padding: 0.5rem;
+  margin-top: 0.5rem;
+  text-align: left;
+  font-size: 0.8125rem;
+  border: 1px solid var(--line);
+}
+.activity-passage span {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+.activity-passage q {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--muted-foreground);
+}
+@media (max-width: 600px) {
+  .activity-popover {
+    position: fixed;
+    top: calc(var(--page-header-height) + 0.25rem);
+    left: 1rem;
+    right: 1rem;
+    width: auto;
+  }
+}
 details.account-actions,
 details.document-actions {
   position: relative;
@@ -858,6 +948,10 @@ dialog::backdrop {
 }
 .peer-selection {
   background: #8263ac2b;
+}
+.agent-progress-passage {
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+  border-bottom: 1px dotted color-mix(in srgb, var(--primary) 45%, transparent);
 }
 .remote-edit {
   border-bottom: 2px solid var(--warning);

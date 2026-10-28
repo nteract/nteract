@@ -3,6 +3,7 @@ import { Plugin } from "prosemirror-state";
 import { Decoration, DecorationSet } from "prosemirror-view";
 import { pmRangeToAmRange, amSpliceIdxToPmIdx } from "@automerge/prosemirror/dist/traversal.js";
 import { adapter, textPath } from "../model/richtext.mjs";
+import { activityIdentity, progressPassages } from "./activity.mjs";
 
 // These traversal APIs are pinned to the same binding version as rich-binding.
 export function publishRichSelection(replica, id, view) {
@@ -69,6 +70,20 @@ export function richPresence(replica, id) {
           } catch {
             /* Deleted/unavailable cursors stay hidden until the next presence message. */
           }
+        }
+        for (const passage of progressPassages(replica)) {
+          if (passage.block_id !== id) continue;
+          const from = amSpliceIdxToPmIdx(adapter, spans, passage.start_utf16);
+          const to = amSpliceIdxToPmIdx(adapter, spans, passage.end_utf16);
+          if (from === null || to === null || from >= to || to > state.doc.content.size) continue;
+          decorations.push(
+            Decoration.inline(from, to, {
+              class: "agent-progress-passage",
+              title: `${activityIdentity(passage.progress).label}: ${passage.progress.message}`,
+              "data-progress-id": passage.progress.progress_id,
+              "data-progress-target": String(passage.index),
+            }),
+          );
         }
         return DecorationSet.create(state.doc, decorations);
       },

@@ -1,6 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import { Decoration } from "wordgard/editor";
 import { selectionContext } from "../model/comments.mjs";
+import { activityIdentity, progressPassages } from "./activity.mjs";
 
 const pathFor = (id) => ["blocks", id, "richText"];
 const presenceTTL = 30000;
@@ -176,6 +177,19 @@ export function createWordgardCollaboration({
     };
     for (const peer of peers())
       add(peer.from, peer.to, { class: "peer-selection", title: peer.displayName });
+    for (const passage of progressPassages(replica, now())) {
+      if (passage.block_id !== id) continue;
+      const map = getCurrent()?.map;
+      const from = mapped(map?.amToWg, passage.start_utf16);
+      const to = mapped(map?.amToWg, passage.end_utf16);
+      if (from === null || to === null) continue;
+      add(from, to, {
+        class: "agent-progress-passage",
+        title: `${activityIdentity(passage.progress).label}: ${passage.progress.message}`,
+        "data-progress-id": passage.progress.progress_id,
+        "data-progress-target": String(passage.index),
+      });
+    }
     for (const range of commentRanges()) {
       if (range.state !== "open" && range.id !== activeId()) continue;
       add(range.from, range.to, {

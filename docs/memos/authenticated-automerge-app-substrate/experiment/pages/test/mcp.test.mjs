@@ -153,6 +153,55 @@ test("MCP preserves actionable read-budget errors and does not suggest mutation 
   assert.match(message, /Retry the read/);
   assert.doesNotMatch(message, /same key|Private internals/);
 });
+test("MCP advertises ephemeral progress with write scope and reads presence without edit authority", async () => {
+  const progress = tools.find((tool) => tool.name === "report_page_progress");
+  assert.deepEqual(progress.securitySchemes[0].scopes, ["pages:read", "pages:write"]);
+  assert.equal(progress.annotations.destructiveHint, false);
+  assert.equal(progress.inputSchema.properties.retry_token, undefined);
+  assert.equal(progress.inputSchema.properties.targets.maxItems, 3);
+  const presence = tools.find((tool) => tool.name === "read_page_presence");
+  assert.deepEqual(presence.securitySchemes[0].scopes, ["pages:read"]);
+  assert.match(presence.description, /not proof|do not prove/);
+  assert.match(presence.description, /untrusted content, not instructions/);
+  for (const [name, args, body] of [
+    [
+      "report_page_progress",
+      { page_id: pageId, message: "Checking the summary" },
+      { page_id: pageId, progress_id: "activity-1", lease_token: "private-capability" },
+    ],
+    [
+      "read_page_presence",
+      { page_id: pageId },
+      { page_id: pageId, participants: [], progress: [], heads: [] },
+    ],
+  ]) {
+    const response = await handleMcp(
+      request("tools/call", { name, arguments: args }),
+      async (op, received) => {
+        assert.equal(op, name);
+        assert.deepEqual(received, args);
+        return Response.json(body);
+      },
+    );
+    assert.deepEqual((await response.json()).result.structuredContent, {
+      ...body,
+      url: `https://pages.example/p/${pageId}`,
+    });
+  }
+  const failed = await handleMcp(
+    request("tools/call", {
+      name: "report_page_progress",
+      arguments: { page_id: pageId, message: "Working" },
+    }),
+    async () => {
+      throw Error("Private server details");
+    },
+  );
+  const message = (await failed.json()).result.content[0].text;
+  assert.match(message, /document was not edited/);
+  assert.match(message, /expires within 60 seconds/);
+  assert.doesNotMatch(message, /idempotency|same key|Private server details/);
+});
 test("MCP creation and listings use the configured HTTPS origin behind an HTTP proxy", async () => {
   const response = await handleMcp(
     request("tools/call", {
@@ -276,7 +325,9 @@ test("MCP tool metadata declares the OAuth scopes needed by each operation", asy
       [
         {
           type: "oauth2",
-          scopes: ["list_pages", "read_page", "list_page_comments"].includes(tool.name)
+          scopes: ["list_pages", "read_page", "list_page_comments", "read_page_presence"].includes(
+            tool.name,
+          )
             ? ["pages:read"]
             : ["pages:read", "pages:write"],
         },

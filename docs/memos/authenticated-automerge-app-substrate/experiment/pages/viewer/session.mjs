@@ -19,6 +19,7 @@ import { BACKEND_LIMITS } from "../model/limits.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { request } from "./request.mjs";
+import { activitySnapshot } from "./activity.mjs";
 export { request } from "./request.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const ownerAccess = () => ({
@@ -44,6 +45,12 @@ export function tool(operation, args = {}) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ operation, arguments: args }),
   });
+}
+export function pageSyncAddress(pageId, href, activityEpoch) {
+  const address = new URL(`/api/sync?page=${encodeURIComponent(pageId)}`, href);
+  address.protocol = address.protocol === "https:" ? "wss:" : "ws:";
+  if (activityEpoch) address.searchParams.set("activity_epoch", activityEpoch);
+  return address;
 }
 async function exclusiveIdentity(scope) {
   const key = `pages-native:${scope}`;
@@ -71,6 +78,10 @@ export class PageSession {
   observers = new Set();
   presenceObservers = new Set();
   peers = new Map();
+  agentProgress = new Map();
+  activityEpoch = null;
+  activityRevision = -1;
+  presencePaused = false;
   profiles = {};
   actorNames = new Map();
   toolHints = [];
@@ -211,6 +222,7 @@ export class PageSession {
     );
   }
   disconnectSockets() {
+    this.clearPresence();
     const sockets = [...this.sockets];
     this.sockets.clear();
     for (const socket of sockets) socket.close();
@@ -220,6 +232,7 @@ export class PageSession {
     // Intentional teardown removes the socket before close() can fire. A late
     // callback from that retired connection must not reconnect its successor.
     if (!this.sockets.delete(socket)) return;
+    this.clearPresence();
     if (!this.alive || this.authRequired || this.accessDenied || this.accessReloadRequired) return;
     this.status = "Reconnecting";
     this.emit();
@@ -726,9 +739,12 @@ export class PageSession {
     }
     if (!this.alive) return;
     this.replacePeerProfiles(this.connection.peerProfiles);
+    this.presencePaused = false;
+    this.receiveActivity(this.connection.activity, { initial: true });
     const expected = new N.PeerId(bytes(this.connection.serverPeerId));
-    const address = new URL(`/api/sync?page=${encodeURIComponent(this.pageId)}`, location.href);
-    address.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    // Pin admission to the host snapshot we just discovered. If that host
+    // restarts before the upgrade, reconnect must discover its new epoch.
+    const address = pageSyncAddress(this.pageId, location.href, this.activityEpoch);
     // Keep the browser socket itself: toTransport consumes the native wrapper,
     // whereas the raw socket remains cancellable when account/page access changes.
     const socket = new WebSocket(address);
@@ -759,6 +775,7 @@ export class PageSession {
     } catch (error) {
       socket.close();
       this.sockets.delete(socket);
+      this.clearPresence();
       throw error;
     } finally {
       expected.free();
@@ -857,13 +874,72 @@ export class PageSession {
   }
   publishPresence(value) {
     this.presenceValue = value;
-    if (this.handle && !this.accessDenied && !this.accessReloadRequired)
+    if (
+      this.handle &&
+      this.alive &&
+      !this.authRequired &&
+      !this.presencePaused &&
+      !this.accessDenied &&
+      !this.accessReloadRequired
+    )
       try {
         this.handle.broadcast({ kind: "selection", value });
       } catch (error) {
         this.problem = error.message;
         this.emit();
       }
+  }
+  clearPresence() {
+    this.presencePaused = true;
+    this.peers.clear();
+    this.profiles = {};
+    this.agentProgress.clear();
+    this.activityEpoch = null;
+    this.activityRevision = -1;
+    clearTimeout(this.activityTimer);
+    this.activityTimer = undefined;
+    this.notify(this.presenceObservers);
+  }
+  receiveActivity(message, { initial = false } = {}) {
+    if (
+      !this.alive ||
+      this.authRequired ||
+      this.presencePaused ||
+      this.accessDenied ||
+      this.accessReloadRequired
+    )
+      return false;
+    const snapshot = activitySnapshot(message);
+    if (
+      !snapshot ||
+      (!initial &&
+        (snapshot.epoch !== this.activityEpoch || snapshot.revision <= this.activityRevision))
+    )
+      return false;
+    this.activityEpoch = snapshot.epoch;
+    this.activityRevision = snapshot.revision;
+    this.agentProgress = snapshot.progress;
+    this.expireActivity();
+    this.notify(this.presenceObservers);
+    return true;
+  }
+  expireActivity() {
+    clearTimeout(this.activityTimer);
+    this.activityTimer = undefined;
+    const now = Date.now();
+    let removed = false;
+    for (const [id, progress] of this.agentProgress) {
+      if (progress.until <= now) {
+        this.agentProgress.delete(id);
+        removed = true;
+      }
+    }
+    if (removed) this.notify(this.presenceObservers);
+    if (this.agentProgress.size) {
+      const next = Math.min(...[...this.agentProgress.values()].map((item) => item.until));
+      this.activityTimer = setTimeout(() => this.expireActivity(), Math.max(1, next - now));
+      this.activityTimer.unref?.();
+    }
   }
   replacePeerProfiles(profiles) {
     this.profiles = { ...profiles };
@@ -876,8 +952,21 @@ export class PageSession {
     if (removed) this.notify(this.presenceObservers);
   }
   ephemeral({ senderId, message }) {
-    if (!message || typeof message !== "object") return;
+    if (
+      !this.alive ||
+      this.authRequired ||
+      this.presencePaused ||
+      this.accessDenied ||
+      this.accessReloadRequired ||
+      !message ||
+      typeof message !== "object"
+    )
+      return;
     if (senderId === this.connection?.serverSenderId) {
+      if (message.kind === "page-activity") {
+        this.receiveActivity(message);
+        return;
+      }
       if (message.kind === "identity-profiles") {
         this.replacePeerProfiles(message.peerProfiles);
         return;
@@ -909,6 +998,7 @@ export class PageSession {
         value,
         at: Date.now(),
         displayName: [profile.displayName, profile.driver].filter(Boolean).join(" · "),
+        profile: { displayName: profile.displayName, driver: profile.driver },
       });
     } else if (value === null) this.peers.delete(senderId);
     this.notify(this.presenceObservers);
@@ -1114,6 +1204,7 @@ export class PageSession {
   }
   async finishClose() {
     this.alive = false;
+    this.clearPresence();
     this.cancelReceiptRetry();
     clearTimeout(this.savedTimer);
     clearTimeout(this.retryTimer);

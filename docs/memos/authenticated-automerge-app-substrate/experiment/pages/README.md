@@ -592,7 +592,26 @@ Explicit read options use a 128 KiB default response budget (caller-adjustable f
 it never silently truncates document content. These are read projections only and
 do not change CRDT state, comment anchors, mutation guards or journal receipts.
 
-API mutations require the exact `base_heads` from `read_page` and an
+Agent activity stays in host memory and travels through the authenticated native
+ephemeral channel. `report_page_progress` creates an independent, short-lived session;
+only its caller receives the private lease token needed to update or clear it.
+Statuses expire within 60 seconds, require current edit access, and do not create
+document changes, comments, journal receipts or storage writes. Optional literal
+passage targets require current heads and become native cursor anchors; deleted or
+replaced passages detach. Session counts, message lengths, targets and total wire
+bytes are bounded. Restart clears activity; explicit access changes prune it.
+Credential revocation outside Pages is only observed on a subsequent authentication
+check, so the TTL bounds a stale indication rather than promising instant revocation.
+
+`read_page_presence` returns recent browser selections and agent activity without
+the body or edit authority. `read_page({include_presence:true,...})` can include the
+same projection. Selection identity comes from the authenticated native peer; only
+current profiles are visible, and causal heads/text-object identity govern resolved
+UTF-16 positions. A selection is not proof of typing. Client labels and progress text
+are not verified vendor identities or claims of completed edits. The header's quiet
+activity disclosure makes this distinction and clears on connection or access loss.
+
+Document API mutations require the exact `base_heads` from `read_page` and an
 `idempotency_key`. Read again after a stale-head rejection. Retry an uncertain
 request with the identical key and payload. The host records a bounded write
 intent with encoded incremental changes, so replay applies the same CRDT change

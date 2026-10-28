@@ -35,6 +35,7 @@ import { SharingControls } from "./SharingControls.jsx";
 import { AppearanceControls } from "./AppearanceControls.jsx";
 import { CommentsPanel } from "./CommentsPanel.jsx";
 import { SaveStatus } from "./SaveStatus.jsx";
+import { PageActivity } from "./PageActivity.jsx";
 import { captureCommentDraft } from "./comment-draft.mjs";
 import { writingContinuation } from "./writing-continuation.mjs";
 import { retryKey } from "../model/retry-key.mjs";
@@ -45,7 +46,8 @@ import { focusCreatedPageTitle, titleHandsOffToBody } from "./title-navigation.m
 
 function App() {
   const accountDisclosure = useDismissibleDisclosure(),
-    documentDisclosure = useDismissibleDisclosure();
+    documentDisclosure = useDismissibleDisclosure(),
+    activityDisclosure = useDismissibleDisclosure();
   const [editorKind, setEditorKind] = useState("prosemirror");
   const PageEditor = editorKind === "wordgard" ? WordgardEditor : RichEditor;
   const [account, setAccount] = useState(undefined),
@@ -501,6 +503,13 @@ function App() {
       setError(error.message);
     }
   }
+  function revealProgress(passage) {
+    const marker = `[data-progress-id="${CSS.escape(passage.progress.progress_id)}"][data-progress-target="${passage.index}"]`;
+    const element =
+      article.current?.querySelector(marker) ??
+      article.current?.querySelector(`[data-block-id="${CSS.escape(passage.block_id)}"]`);
+    element?.scrollIntoView({ block: "center", inline: "nearest" });
+  }
   useEffect(() => {
     document.title = page ? `${page.title || "Untitled"} · Pages` : "Pages · nteract";
   }, [page?.title]);
@@ -546,7 +555,12 @@ function App() {
                 )}
               </div>
               <div className="document-controls">
-                <EditingPresence session={session} />
+                <PageActivity
+                  key={session.pageId}
+                  session={session}
+                  disclosure={activityDisclosure}
+                  onReveal={revealProgress}
+                />
                 <SharingControls key={session.pageId} session={session} />
                 <button
                   ref={commentsButton}
@@ -869,40 +883,4 @@ function useDismissibleDisclosure() {
   return disclosure;
 }
 
-function EditingPresence({ session }) {
-  const [, update] = useState(0);
-  useEffect(() => {
-    const paint = () => update((value) => value + 1);
-    const stop = session.watchPresence(paint);
-    const timer = setInterval(paint, 1000);
-    return () => {
-      stop();
-      clearInterval(timer);
-    };
-  }, [session]);
-  const peers = [...session.peers].filter(([, peer]) => Date.now() - peer.at <= 30000);
-  if (!peers.length) return null;
-  return (
-    <div
-      className="peer-avatars"
-      role="group"
-      aria-label={
-        "Editing: " + peers.map(([, peer]) => peer.displayName || "Collaborator").join(", ")
-      }
-    >
-      <span className="presence-label">Editing</span>
-      {peers.slice(0, 3).map(([id, peer]) => (
-        <span
-          className="avatar"
-          key={id}
-          title={peer.displayName || "Collaborator"}
-          aria-label={peer.displayName || "Collaborator"}
-        >
-          {(peer.displayName || "C").slice(0, 1).toLocaleUpperCase()}
-        </span>
-      ))}
-      {peers.length > 3 && <span className="avatar">+{peers.length - 3}</span>}
-    </div>
-  );
-}
 createRoot(document.getElementById("root")).render(<App />);

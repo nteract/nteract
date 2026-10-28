@@ -42,13 +42,11 @@ function textSegments(block) {
   return segments;
 }
 
-/** Replace one visible text range, preserving every untouched CRDT character.
- * Context is searched in the gaps between occurrences, as in notebook tools,
- * and cannot cross a paragraph, code block, or embedded-node boundary.
+/** Resolve one visible range without changing the document. Context is searched
+ * between occurrences and cannot cross a paragraph or embedded-node boundary.
  */
-export function replaceMatch(doc, id, input) {
+export function findUniqueVisibleRange(doc, id, input) {
   const match = literal(input.match_text, "match_text");
-  const replacement = literal(input.replacement, "replacement");
   const before = literal(input.context_before, "context_before", true);
   const after = literal(input.context_after, "context_after", true);
   if (!match) throw Error("match_text must not be empty");
@@ -77,8 +75,15 @@ export function replaceMatch(doc, id, input) {
   const path = textPath(id);
   const start = matches[0];
   const end = start + match.length;
+  return { path, start, end };
+}
+
+/** Replace one visible text range, preserving every untouched CRDT character. */
+export function replaceMatch(doc, id, input) {
+  const replacement = literal(input.replacement, "replacement");
+  const { path, start, end } = findUniqueVisibleRange(doc, id, input);
   const commonMarks = A.marks(doc, path).filter((mark) => mark.start <= start && mark.end >= end);
-  A.splice(doc, path, start, match.length, replacement);
+  A.splice(doc, path, start, end - start, replacement);
   if (replacement.length) {
     const range = { start, end: start + replacement.length };
     const actual = A.marks(doc, path).filter((mark) => mark.start < range.end && mark.end > start);

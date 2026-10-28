@@ -26,6 +26,46 @@ function fixture(t, markdown = "# First\n\nKeep this passage.\n\n# Second\n\nOth
 const read = (doc, args = {}, op = "read_page") =>
   readTool(doc, op, args, { issueAuthority: async () => authority });
 
+test("presence is opt-in, captured before async authority, and counted in the read budget", async (t) => {
+  const { doc } = fixture(t);
+  const heads = A.getHeads(doc);
+  const events = [];
+  const presence = { heads, observed_at: 123, participants: [], progress: [] };
+  const result = await readTool(
+    doc,
+    "read_page",
+    { include_content: false, include_presence: true },
+    {
+      getPresence(captured) {
+        events.push("presence");
+        assert.equal(captured, doc);
+        return presence;
+      },
+      async issueAuthority() {
+        events.push("authority");
+        return authority;
+      },
+    },
+  );
+  assert.deepEqual(events, ["presence", "authority"]);
+  assert.deepEqual(result.body.presence, presence);
+  assert.deepEqual(result.body.heads, heads);
+  assert.deepEqual(A.getHeads(doc), heads);
+  const tooBig = await readTool(
+    doc,
+    "read_page",
+    { include_content: false, include_presence: true, max_bytes: 4096 },
+    {
+      getPresence: () => ({ progress: [{ message: "x".repeat(10000) }] }),
+      issueAuthority: async () => authority,
+    },
+  );
+  assert.equal(tooBig.status, 413);
+  assert.equal(tooBig.body.presence, undefined);
+  assert.equal((await read(doc, { include_presence: "yes" })).status, 400);
+  assert.equal((await read(doc, { include_presence: false })).body.presence, undefined);
+});
+
 test("unfiltered reads preserve the old shape; explicit body reads exclude comments and preserve heads", async (t) => {
   const { doc } = fixture(t);
   const before = A.getHeads(doc);

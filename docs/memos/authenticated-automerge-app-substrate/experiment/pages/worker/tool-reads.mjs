@@ -14,6 +14,7 @@ const selectorKeys = [
   "context_nodes",
   "node_range",
   "include_content",
+  "include_presence",
   "comments",
   "outline_offset",
   "outline_limit",
@@ -55,6 +56,8 @@ function validate(operation, args) {
   const limit = integer(args.outline_limit, 100, 1, 100, "outline_limit");
   if (args.comments !== undefined && !["none", "summary", "open", "all"].includes(args.comments))
     invalid("comments must be none, summary, open or all");
+  if (args.include_presence !== undefined && typeof args.include_presence !== "boolean")
+    invalid("include_presence must be a boolean");
   return { maxBytes, offset, limit };
 }
 function checkRevision(args, heads, offset) {
@@ -90,7 +93,12 @@ function outlinePage(entries, offset, limit) {
 }
 
 /** One captured CRDT revision supplies content, comments and heads across token issuance. */
-export async function readTool(doc, operation, args, { issueAuthority, recovery } = {}) {
+export async function readTool(
+  doc,
+  operation,
+  args,
+  { issueAuthority, recovery, getPresence } = {},
+) {
   const heads = A.getHeads(doc);
   let settings = { maxBytes: DEFAULT_READ_BYTES, offset: 0, limit: 100 },
     legacy = false,
@@ -132,6 +140,7 @@ export async function readTool(doc, operation, args, { issueAuthority, recovery 
                 include_messages: mode !== "summary",
               }),
         ...(content.selection && { selection: content.selection }),
+        ...(args.include_presence && { presence: getPresence(doc) }),
       };
     }
   } catch (error) {
