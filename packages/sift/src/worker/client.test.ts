@@ -51,6 +51,8 @@ function scriptedWorker(
     terminate,
     reply,
     crash: (message: string) => dispatch("error", { message } as never),
+    dispatchError: (detail: { message: string; filename?: string }) =>
+      dispatch("error", detail as never),
   };
 }
 
@@ -195,6 +197,122 @@ describe("createWorkerWindowedData lifecycle", () => {
     for (const promise of later) await expect(promise).rejects.toBe(first);
     // Nothing reached the dead worker after the fatal reply.
     expect(scripted.posted.map((m) => m.t)).toEqual(["open", "window"]);
+  });
+
+  it("reports a worker that errors before any reply as a failed start, not a crash", async () => {
+    // A CSP-blocked worker URL: `new Worker` returns, then `error` fires.
+    for (const [detail, expected] of [
+      [{ message: "" }, "error event before any reply"],
+      [{ message: "", filename: "blob:harness://app/1234" }, "blob:harness://app/1234"],
+      [{ message: "Refused to load" }, "Refused to load"],
+    ] as const) {
+      const scripted = scriptedWorker((message) => {
+        if (message.t === "open") scripted.dispatchError(detail);
+      });
+      const error = await open(scripted.worker).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(WorkerDataError);
+      expect(error).toMatchObject({
+        code: "open",
+        message: `Sift worker failed to start; the host's Content-Security-Policy may block this worker URL (${expected})`,
+      });
+      expect(scripted.terminate).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("keeps the crash message for a worker that dies after it has answered", async () => {
+    const scripted = openingWorker();
+    const data = await open(scripted.worker);
+    const events: DataEvent[] = [];
+    data.subscribe((event) => events.push(event));
+    const inFlight = data.requestWindow(0, 1, 1);
+    scripted.dispatchError({ message: "" });
+    await expect(inFlight).rejects.toMatchObject({
+      code: "terminated",
+      message: "Sift worker terminated: Sift worker crashed",
+    });
+    expect(events).toEqual([{ type: "error", message: "Sift worker crashed", fatal: true }]);
+  });
+
+  it("posts resume and maps pause and resume events to milestones and coverage", async () => {
+    const coverage = { loadedRows: 2, truncated: false };
+    const scripted = scriptedWorker((message, reply) => {
+      if (message.t === "open") {
+        reply({
+          t: "opened",
+          id: message.id,
+          columns: [],
+          rowCount: 2,
+          coverage,
+          head,
+          rowGroupCount: 3,
+        });
+      }
+      if (message.t === "close") reply({ t: "closed" });
+    });
+    const milestones: Record<string, unknown>[] = [];
+    const data = await createWorkerWindowedData({
+      source,
+      limits,
+      overflow: "truncate",
+      autoLoad: { rows: 2, decodedBytes: 1024 },
+      signal: new AbortController().signal,
+      emit: (m) => milestones.push(m),
+      worker: scripted.worker,
+    });
+    expect(scripted.posted[0]).toMatchObject({
+      t: "open",
+      autoLoad: { rows: 2, decodedBytes: 1024 },
+    });
+    const events: DataEvent[] = [];
+    data.subscribe((event) => events.push(event));
+
+    scripted.reply({
+      t: "event",
+      event: {
+        type: "streaming-done",
+        loadedRows: 2,
+        totalRows: 6,
+        truncated: true,
+        resumable: true,
+      },
+    });
+    expect(data.coverage).toMatchObject({ loadedRows: 2, truncated: true, resumable: true });
+    expect(milestones.at(-1)).toEqual({
+      phase: "streaming-complete",
+      format: "parquet",
+      rowCount: 2,
+      totalRowCount: 6,
+      truncated: true,
+      resumable: true,
+    });
+
+    data.resume();
+    expect(scripted.posted.at(-1)).toEqual({ t: "resume" });
+    scripted.reply({ t: "event", event: { type: "streaming-resumed", rowCount: 2 } });
+    expect(data.coverage).toMatchObject({ truncated: false, resumable: false });
+    expect(milestones.at(-1)).toEqual({
+      phase: "streaming-resumed",
+      format: "parquet",
+      rowCount: 2,
+    });
+    expect(events.map((e) => e.type)).toEqual(["streaming-done", "streaming-resumed"]);
+
+    // Disposing while paused closes without waiting for a resume.
+    scripted.reply({
+      t: "event",
+      event: {
+        type: "streaming-done",
+        loadedRows: 4,
+        totalRows: 6,
+        truncated: true,
+        resumable: true,
+      },
+    });
+    data.dispose();
+    expect(scripted.terminate).toHaveBeenCalledTimes(1);
+    const posts = scripted.posted.length;
+    data.resume();
+    expect(scripted.posted).toHaveLength(posts);
   });
 
   it("fans a non-fatal error nobody is waiting on out to subscribers", async () => {

@@ -2250,10 +2250,13 @@ export function createTable(
     // An anchored relayout rebuilt positions and moved scrollTop together: rows
     // kept in the pool below need their transforms rewritten in this frame.
     let relayout = false;
+    /** The anchor this frame restored; rows measured below re-apply it. */
+    let anchor: ScrollAnchor | null = null;
     if (heightsDirty) {
       recomputeAllHeights();
       // Account for header height — row pool is absolute inside scroll-content
       rowPool.style.top = headerEl.offsetHeight + "px";
+      anchor = pendingScrollAnchor;
       relayout = restoreScrollAnchor();
     }
 
@@ -2315,7 +2318,18 @@ export function createTable(
       }
     }
 
+    // The row under the header's bottom edge, from live geometry, for frames
+    // with no restored anchor. Off the top only: at scrollTop 0 nothing above
+    // can push the content, and before the first layout positions are all zero.
+    let edge: ScrollAnchor | null = null;
+    if (!anchor && viewport.scrollTop > 0 && totalHeight > 0) {
+      const edgeVirtual = viewport.scrollTop * scrollScale;
+      const row = Math.min(rowAtOffset(edgeVirtual), filteredCount - 1);
+      edge = { row, offset: Math.max(0, edgeVirtual - rowPositions[row]) };
+    }
+
     let lazyPrepared = false;
+    let measuredAboveEdge = false;
     for (let r = first; r <= last; r++) {
       const dataRow = viewIndices[r];
 
@@ -2326,6 +2340,7 @@ export function createTable(
         // Recompute this row's height now that we have real measurements
         rowHeights[r] = computeRowHeight(r);
         lazyPrepared = true;
+        if (edge && r < edge.row) measuredAboveEdge = true;
       }
     }
 
@@ -2334,6 +2349,13 @@ export function createTable(
     // some rows use measured heights and others still use estimated offsets.
     if (lazyPrepared) {
       rebuildPositions();
+      // Overscan rows above the viewport measured for the first time would
+      // push the row under the header down. Hold it: the restored anchor in
+      // an anchored frame, otherwise the edge row captured above. Each render
+      // after a jump measures more rows above, so without this the content
+      // creeps down one render at a time.
+      if (anchor) applyScrollAnchor(anchor);
+      else if (edge && measuredAboveEdge) applyScrollAnchor(edge);
     }
 
     for (let r = first; r <= last; r++) {
@@ -2764,6 +2786,10 @@ export function createTable(
       return;
     }
     const newRowCount = data.rowCount;
+    // Hold the row under the header across the relayout: captured from the
+    // rows painted now, restored after the next render rebuilds positions for
+    // the grown row count. Before the first layout there is nothing to hold.
+    if (totalHeight > 0) markHeightsDirty(true);
     growBuffers(newRowCount);
 
     // Cells will be lazy-prepared when they enter the viewport

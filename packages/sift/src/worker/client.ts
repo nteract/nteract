@@ -35,8 +35,17 @@ export type WorkerWindowedDataOptions = {
   columnOverrides?: Record<string, Partial<Column>>;
   /** Rows in `head`. Default 100. */
   headRows?: number;
-  /** Live WASM heap bytes allowed in the worker; default `limits.maxDecodedBytes * 2`. */
+  /**
+   * Live WASM heap bytes allowed in the worker; default `limits.maxDecodedBytes
+   * * DEFAULT_ALLOCATION_CAP_FACTOR` (2.5).
+   */
   allocationCap?: number;
+  /**
+   * Soft budget: the worker pauses once the committed rows or decoded bytes
+   * reach it while row groups remain (a `streaming-done` with `resumable:
+   * true`) and continues on `resume()`. Needs `overflow: "truncate"`.
+   */
+  autoLoad?: { rows?: number; decodedBytes?: number };
   signal: AbortSignal;
   /** Load milestones, in the same vocabulary as the main-thread loaders. */
   emit?: (milestone: Omit<SiftLoadMilestone, "elapsedMs" | "source">) => void;
@@ -47,6 +56,11 @@ export type WorkerWindowedDataOptions = {
 export type WorkerWindowedData = WindowedTableData & {
   /** Kill the worker now. `dispose()` asks it to close first. */
   terminate(): void;
+  /**
+   * Continue a load paused at the `autoLoad` budget. No-op unless paused; a
+   * `streaming-resumed` event follows when the worker picks it up.
+   */
+  resume(): void;
   readonly rowGroupCount: number;
 };
 
@@ -124,6 +138,8 @@ export function createWorkerWindowedData(
   let closing: ReturnType<typeof setTimeout> | null = null;
   let opened: ((reply: Extract<FromWorker, { t: "opened" }>) => void) | null = null;
   let openFailed: ((error: Error) => void) | null = null;
+  /** Any message from the worker has arrived; an `error` before then means it never started. */
+  let heardFromWorker = false;
   let rowGroupCount = 0;
   let lastTotalRows = 0;
 
@@ -276,11 +292,16 @@ export function createWorkerWindowedData(
       close(new WorkerDataError("closed", "Sift worker is closed"));
     },
     terminate,
+    resume() {
+      if (stopped) return;
+      post({ t: "resume" });
+    },
   };
 
   const onMessage = (event: Event) => {
     const message = (event as MessageEvent).data as FromWorker;
     if (!message || typeof message !== "object" || killed) return;
+    heardFromWorker = true;
     // Once stopped, only the close ack matters; every wait has been rejected.
     if (stopped && message.t !== "closed") return;
     switch (message.t) {
@@ -332,9 +353,11 @@ export function createWorkerWindowedData(
           const done = message.event;
           if (done.loadedRows !== undefined) data.rowCount = done.loadedRows;
           if (done.totalRows !== undefined) lastTotalRows = done.totalRows;
-          const truncated = done.truncated ?? data.coverage?.truncated ?? false;
+          const resumable = done.resumable === true;
+          // A pause is a preview of the file until the user loads more.
+          const truncated = resumable || (done.truncated ?? data.coverage?.truncated ?? false);
           if (data.coverage) {
-            data.coverage = { ...data.coverage, loadedRows: data.rowCount, truncated };
+            data.coverage = { ...data.coverage, loadedRows: data.rowCount, truncated, resumable };
           }
           emit({
             phase: "streaming-complete",
@@ -342,8 +365,15 @@ export function createWorkerWindowedData(
             rowCount: data.rowCount,
             totalRowCount: lastTotalRows || data.rowCount,
             truncated,
-            resumable: false,
+            resumable,
           });
+        }
+        if (message.event.type === "streaming-resumed") {
+          data.rowCount = message.event.rowCount;
+          if (data.coverage) {
+            data.coverage = { ...data.coverage, truncated: false, resumable: false };
+          }
+          emit({ phase: "streaming-resumed", format: "parquet", rowCount: data.rowCount });
         }
         emitEvent(message.event);
         return;
@@ -395,9 +425,33 @@ export function createWorkerWindowedData(
   };
   worker.addEventListener("message", onMessage);
   worker.addEventListener("error", (event) => {
-    fatal((event as ErrorEvent).message || "Sift worker crashed");
+    const detail = (event as ErrorEvent).message || (event as ErrorEvent).filename || "";
+    if (!heardFromWorker && openFailed) {
+      // The script never ran: a CSP-blocked `blob:` or cross-origin worker URL
+      // does not throw from `new Worker`, it fires `error` before any reply.
+      failToStart(detail);
+      return;
+    }
+    fatal(detail || "Sift worker crashed");
   });
-  worker.addEventListener("messageerror", () => fatal("Sift worker sent an unreadable message"));
+  worker.addEventListener("messageerror", () => {
+    if (!heardFromWorker && openFailed) {
+      failToStart("unreadable message");
+      return;
+    }
+    fatal("Sift worker sent an unreadable message");
+  });
+
+  function failToStart(detail: string) {
+    const suffix = ` (${detail || "error event before any reply"})`;
+    stop(
+      new WorkerDataError(
+        "open",
+        `Sift worker failed to start; the host's Content-Security-Policy may block this worker URL${suffix}`,
+      ),
+    );
+    kill();
+  }
 
   const openId = nextId++;
   return new Promise<WorkerWindowedData>((resolve, reject) => {
@@ -431,6 +485,7 @@ export function createWorkerWindowedData(
       wasmUrl: getWasmUrl(),
       wasmFallbackUrl: getWasmFallbackUrl(),
       allocationCap: opts.allocationCap,
+      autoLoad: opts.autoLoad,
     });
   });
 }

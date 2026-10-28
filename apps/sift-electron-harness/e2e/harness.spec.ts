@@ -175,12 +175,13 @@ test("2. a blob: worker is refused under the app-origin CSP", async () => {
 
   // The same refusal through Sift's factory: a blob shim that imports the
   // real worker bundle. The constructor returns, the worker never runs, and
-  // Sift reports a dead worker in its error state, not "Worker factory threw".
+  // Sift says it failed to start (not "Worker factory threw", not "crashed").
   const blob = await launch(SMALL, { worker: 1, spawn: "blob" });
   await expect(blob.page.locator('[role="alert"]')).toContainText(
-    "Sift worker terminated: Sift worker crashed",
+    "Sift worker failed to start; the host's Content-Security-Policy may block this worker URL",
     { timeout: 30_000 },
   );
+  await expect(blob.page.locator('[role="alert"]')).not.toContainText("crashed");
   await expect(blob.page.getByTestId("worker-state")).toHaveText("terminated");
   expect(await harnessState(blob.page, (s) => s.cspViolations)).toEqual(["worker-src blob"]);
   expect(blob.pageErrors).toEqual([]);
@@ -269,11 +270,12 @@ function sampleAnchorWhileStreaming(page: Page, phase: string, fromEnd: number) 
 
 const spread = (values: number[]) => Math.max(...values) - Math.min(...values);
 
-test("4. autoLoad scroll: pauses at 64 MiB, resumes near the end without a scroll jump", async () => {
-  // The worker loads to the hard budget and ignores autoLoad, so the pause and
-  // resume run on the main-thread loader over the same ranged IPC source.
-  const h = await launch(BIG, { worker: 0, autoLoad: "scroll" });
-  const { page } = h;
+/**
+ * Load the big fixture with `autoLoad: scroll`, check the pause at the 64 MiB
+ * soft budget, then scroll to the last loaded rows and sample every frame
+ * while the resumed row groups append below. Returns the sample.
+ */
+async function pauseThenResumeNearEnd(page: Page) {
   await page.waitForSelector(".sift-table-container");
   const paused = page.locator(".sift-preview-hint", { hasText: "Showing first" });
   await expect(paused).toBeVisible({ timeout: 60_000 });
@@ -290,43 +292,53 @@ test("4. autoLoad scroll: pauses at 64 MiB, resumes near the end without a scrol
     `Showing first ${firstStop.toLocaleString("en-US")} of ${BIG_ROWS.toLocaleString("en-US")} rows`,
   );
   expect(Number(await page.getByTestId("loaded-count").textContent())).toBe(firstStop);
-  // Resident data (no worker): no placeholders, no aria-busy.
+  expect((await milestones(page)).map((m) => m.phase)).not.toContain("streaming-resumed");
+  // Polls: windowed rows may still be placeholders. Resident rows set no aria-busy.
   await expect(page.locator(".sift-row").first().locator(".sift-cell").first()).toHaveText("1");
 
   // Scroll to the last loaded rows; the resumed row groups append below.
-  const resident = await sampleAnchorWhileStreaming(page, "streaming-resumed", 200);
-  expect(resident.sawPhaseAt, "streaming-resumed after scrolling near the end").toBeGreaterThan(0);
-  expect(resident.topRows.length).toBeGreaterThan(0);
-  expect(spread(resident.scrollTops), "scrollTop during resumed appends").toBe(0);
+  const sample = await sampleAnchorWhileStreaming(page, "streaming-resumed", 200);
+  expect(sample.sawPhaseAt, "streaming-resumed after scrolling near the end").toBeGreaterThan(0);
+  expect(sample.topRows.length).toBeGreaterThan(0);
   await expect(page.getByTestId("loaded-count")).toHaveText(String(BIG_ROWS), { timeout: 30_000 });
   await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", "98,304 rows");
   await expect(paused).toHaveCount(0);
-  expect(h.pageErrors).toEqual([]);
-  // Resident appends hold scrollTop but not the anchor row: the row-height
-  // estimate for unmeasured rows above moves with each append. Recorded, not
-  // asserted; the anchor contract is the windowed one, checked below.
-  test.info().annotations.push({
-    type: "resident anchor drift (rows)",
-    description: String(spread(resident.topRows)),
-  });
-  await h.app.close();
+  return sample;
+}
 
-  // The same scroll while the worker (windowed) streams: the anchor row holds.
-  const w = await launch(BIG, { worker: 1, autoLoad: "off", readDelayMs: 40 });
-  await expect
-    .poll(
-      async () => (await milestones(w.page)).filter((m) => m.phase === "chunk-appended").length,
-      { timeout: 60_000 },
-    )
-    .toBeGreaterThanOrEqual(20);
-  const windowed = await sampleAnchorWhileStreaming(w.page, "chunk-appended", 200);
-  expect(windowed.topRows.length).toBeGreaterThan(30);
+test("4. autoLoad scroll with the worker: pauses at 64 MiB, resumes near the end, holds the anchor row", async () => {
+  const h = await launch(BIG, { worker: 1, autoLoad: "scroll" });
+  const sample = await pauseThenResumeNearEnd(h.page);
   // The row at the top of the viewport stays put (±1 for a partially shown row).
-  expect(spread(windowed.topRows), "anchor row during worker appends").toBeLessThanOrEqual(1);
-  await expect(w.page.getByTestId("loaded-count")).toHaveText(String(BIG_ROWS), {
-    timeout: 30_000,
+  expect(spread(sample.topRows), "anchor row during resumed worker appends").toBeLessThanOrEqual(1);
+  await expect(h.page.getByTestId("worker-state")).toHaveText("spawned");
+  const phases = (await milestones(h.page)).map((m) => m.phase);
+  expect(phases).toContain("streaming-resumed");
+  expect(
+    (await milestones(h.page)).filter((m) => m.phase === "streaming-complete").at(-1),
+  ).toMatchObject({ resumable: false, rowCount: BIG_ROWS, totalRowCount: BIG_ROWS });
+  expect(h.pageErrors).toEqual([]);
+});
+
+test("4b. autoLoad scroll on the main thread: resumed appends hold the anchor row", async () => {
+  const h = await launch(BIG, { worker: 0, autoLoad: "scroll" });
+  const sample = await pauseThenResumeNearEnd(h.page);
+  await expect(h.page.getByTestId("worker-state")).toHaveText("none");
+  // The per-frame series is the evidence when this fails: one spike is a
+  // transient frame, a staircase is drift.
+  test.info().annotations.push({
+    type: "resident top rows per frame",
+    description: `${sample.topRows.join(",")} | scrollTop ${sample.scrollTops.join(",")} | resumed@${sample.sawPhaseAt}`,
   });
-  expect(w.pageErrors).toEqual([]);
+  // scrollTop may move to hold the row; the row itself does not.
+  expect(spread(sample.topRows), "anchor row during resumed resident appends").toBeLessThanOrEqual(
+    1,
+  );
+  test.info().annotations.push({
+    type: "resident scrollTop movement (px)",
+    description: String(spread(sample.scrollTops)),
+  });
+  expect(h.pageErrors).toEqual([]);
 });
 
 test("5. a tiny allocation cap traps the worker and keeps painted rows", async () => {

@@ -6,7 +6,7 @@
  *   file       absolute path the main process allowed
  *   worker     1 (default) | 0
  *   autoLoad   scroll (default) | manual | off
- *   cap        worker allocationCap in bytes (default 2 × maxDecodedBytes)
+ *   cap        worker allocationCap in bytes (default: Sift's, 2.5 × maxDecodedBytes)
  *   maxDecoded limits.maxDecodedBytes (default 512 MiB)
  *   spawn      module (default) | blob: how the factory creates the worker
  *   origin     informational; the origin itself decides the CSP
@@ -208,7 +208,9 @@ function Table({ file }: { file: OpenedFile }) {
           ? undefined
           : { rows: 100_000, decodedBytes: 64 * MiB, trigger: autoLoadMode },
       worker: useWorker,
-      allocationCap: cap ?? 2 * maxDecodedBytes,
+      // Leave Sift's default (2.5 × maxDecodedBytes) in force unless ?cap= overrides it,
+      // so the harness exercises the shipped default rather than its own.
+      allocationCap: cap,
     };
   }, [file]);
 

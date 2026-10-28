@@ -65,9 +65,10 @@ suite skips. `HARNESS_MEASURE=1` adds the `allocationCap` sweep below.
 | # | Check | Asserts |
 |---|---|---|
 | 1 | Module worker, app origin | table mounts, rows paint, worker `spawned`, `.wasm` served as `application/wasm`, no CSP console errors, `securitypolicyviolation` events, or page errors |
-| 2 | `blob:` worker, app origin | refused with a `worker-src blob` violation; Sift through a blob shim shows "Sift worker terminated: Sift worker crashed" |
+| 2 | `blob:` worker, app origin | refused with a `worker-src blob` violation; Sift through a blob shim shows "Sift worker failed to start; the host's Content-Security-Policy may block this worker URL (…)" |
 | 3 | Embedded origin | as 1; a raw `blob:` worker runs; Sift through a blob shim mounts |
-| 4 | `autoLoad` scroll | main-thread load pauses at 64 MiB with "Showing first N of 98,304 rows" and `Load more`; scrolling near the end emits `streaming-resumed` and loads the rest with `scrollTop` unchanged; the worker path holds the anchor row during appends |
+| 4 | `autoLoad` scroll, worker | the worker pauses at 64 MiB with "Showing first N of 98,304 rows" and `Load more`; scrolling near the end emits `streaming-resumed` and loads the rest; the row under the header holds (±1) during the resumed appends |
+| 4b | `autoLoad` scroll, main thread | the same on the main-thread loader; the anchor row holds (±1), `scrollTop` may move to hold it |
 | 5 | `allocationCap` trap | `cap=8000000`: "Stopped loading: row group N exceeded the worker memory limit …", worker `terminated`, `dataFailed`, rows stay, no page error |
 | 6 | Revision conflict | file touched mid-load: "The file changed on disk while the table was loading.", worker stays up, `dataFailed` false, rows stay |
 
@@ -98,27 +99,33 @@ Electron 45.0.0 (Chromium 156), Sift 0.6.0 `lib/`.
   `new Worker(blob:…)`, logs "Creating a worker from 'blob:…' violates …
   Note that 'worker-src' was not explicitly set, so 'script-src' is used as a
   fallback", and fires `error`. Sift's factory therefore never sees a
-  `SecurityError`; the load fails as "Sift worker terminated: Sift worker
-  crashed", not "Worker factory threw: …". Under the embedded policy a one-line
-  module shim (`import "<worker asset URL>"` at a `blob:` URL) runs Sift fine.
-- **`autoLoad` does not apply to `worker: true`.** The worker loads to the
-  hard budget, so the pause/resume check runs on the main-thread loader. On
-  that path resumed appends keep `scrollTop` fixed but the row under the
-  header drifts (about 23 rows over the first six appends on the 78 MB file)
-  as the height estimate for unmeasured rows above changes. The worker
-  (windowed) path holds the anchor row exactly.
-- **The default `allocationCap` (2 × `maxDecodedBytes`) traps falsely at the
-  budget edge.** At a 64 MiB decoded budget on the 78 MB fixture
-  (worker, `overflow: "truncate"`):
+  `SecurityError`. Sift treats an `error` before the worker's first reply as a
+  failed start: "Sift worker failed to start; the host's
+  Content-Security-Policy may block this worker URL (…)". A worker that dies
+  after answering still reports "Sift worker terminated: …". Under the
+  embedded policy a one-line module shim (`import "<worker asset URL>"` at a
+  `blob:` URL) runs Sift fine.
+- **`autoLoad` pauses the worker.** The worker stops at the soft budget, waits
+  for `resume`, and the footer `Load more` and the scroll trigger work as on
+  the main thread. Both loaders hold the row under the header during resumed
+  appends. On the main-thread loader each append's render measures overscan
+  rows above the viewport for the first time; the engine re-applies the scroll
+  anchor after that relayout. Without it, `scrollTop` stays fixed and the row
+  under the header drifts (23 rows on this fixture; test 4b).
+- **A 2 × `maxDecodedBytes` `allocationCap` traps falsely at the budget
+  edge.** At a 64 MiB decoded budget on the 78 MB fixture (worker,
+  `overflow: "truncate"`):
 
   | cap | result |
   |---|---|
   | 1.0× – 1.5× | trap at row group 40 – 60 |
-  | 2.0× (default) | trap at row group 80; 81,920 rows; worker dead, tools disabled |
-  | 2.25×, 2.5×, 3×, 4× | clean truncated preview, 83,456 rows |
+  | 2.0× | trap at row group 80; 81,920 rows; worker dead, tools disabled |
+  | 2.25×, 2.5× (default), 3×, 4× | clean truncated preview, 83,456 rows |
 
   Post-group live heap peaks at 1.01× the budget; each trap fires when live
   heap is about half the cap, so decoding a row group transiently needs about
-  2× the retained heap. Use at least 2.5 × `maxDecodedBytes` to keep the
-  budget, not the cap, as what ends a large preview.
+  2× the retained heap. Sift's default is 2.5 × `maxDecodedBytes`, so the
+  budget, not the cap, ends a large preview. The harness renderer leaves that
+  default in force unless `?cap=` overrides it, so the shipped default is what
+  the e2e runs exercise (512 MiB default budget, so no trap on the fixture).
 - **No console warnings** from the renderer page in any passing run.
