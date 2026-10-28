@@ -69,7 +69,15 @@ export type DataEvent =
       loadedRows?: number;
       totalRows?: number;
       truncated?: boolean;
+      /**
+       * True when the load paused at a soft budget with row groups left: the
+       * table is at rest, and a `streaming-resumed` follows if more rows are
+       * requested. False or absent when loading has finished.
+       */
+      resumable?: boolean;
     }
+  /** A paused load continues; `rows-appended` events follow. */
+  | { type: "streaming-resumed"; rowCount: number }
   | { type: "error"; message: string; fatal: boolean };
 
 export type WindowedTableData = {

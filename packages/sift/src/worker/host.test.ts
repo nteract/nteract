@@ -386,6 +386,98 @@ describe.skipIf(!existsSync(wasmPath))("worker host + client over MessageChannel
     data.dispose();
   });
 
+  /** Open the three-group fixture with a soft budget of `rows`. */
+  async function openAutoLoad(rows: number) {
+    channel = new MessageChannel();
+    host = createWorkerHost(channel.port1 as never);
+    const hostMessages: FromWorker[] = [];
+    channel.port2.on("message", (message: FromWorker) => hostMessages.push(message));
+    const milestones: Record<string, unknown>[] = [];
+    const data = await createWorkerWindowedData({
+      source: recordingSource(parquet).source,
+      limits,
+      overflow: "truncate",
+      headRows: 2,
+      autoLoad: { rows },
+      signal: new AbortController().signal,
+      emit: (m) => milestones.push(m),
+      worker: workerOver(channel.port2),
+    });
+    const events: Record<string, unknown>[] = [];
+    data.subscribe((event) => {
+      if (event.type !== "schema-changed") events.push(event as never);
+    });
+    return { data, events, milestones, hostMessages };
+  }
+
+  it("pauses at the autoLoad budget after each group and resumes on request", async () => {
+    // One group's worth of rows: pause after group 0, then after group 1.
+    const { data, events, milestones } = await openAutoLoad(4);
+    const types = () => events.map((e) => e.type);
+    await until(() => types().includes("streaming-done"), "first pause");
+    for (let i = 0; i < 10; i++) await tick(); // nothing more arrives while paused
+    expect(events).toEqual([
+      { type: "streaming-done", loadedRows: 4, totalRows: 12, truncated: true, resumable: true },
+    ]);
+    expect(data.rowCount).toBe(4);
+    expect(milestones.at(-1)).toMatchObject({
+      phase: "streaming-complete",
+      rowCount: 4,
+      totalRowCount: 12,
+      truncated: true,
+      resumable: true,
+    });
+    // Queries still answer while paused.
+    const paused = await data.setQuery({ filters: [null, null, null], sort: null }, 1);
+    expect(paused.filteredCount).toBe(4);
+
+    data.resume();
+    await until(() => types().filter((t) => t === "streaming-done").length === 2, "second pause");
+    expect(events.slice(1)).toEqual([
+      { type: "streaming-resumed", rowCount: 4 },
+      expect.objectContaining({ type: "rows-appended", rowCount: 8 }),
+      { type: "streaming-done", loadedRows: 8, totalRows: 12, truncated: true, resumable: true },
+    ]);
+
+    data.resume();
+    await until(() => types().filter((t) => t === "streaming-done").length === 3, "final");
+    expect(events.slice(4)).toEqual([
+      { type: "streaming-resumed", rowCount: 8 },
+      expect.objectContaining({ type: "rows-appended", rowCount: 12 }),
+      { type: "streaming-done", loadedRows: 12, totalRows: 12, truncated: false, resumable: false },
+    ]);
+    expect(data.rowCount).toBe(12);
+    expect(milestones.map((m) => m.phase)).toEqual([
+      "wasm-ready",
+      "table-data-created",
+      "streaming-complete",
+      "streaming-resumed",
+      "chunk-appended",
+      "streaming-complete",
+      "streaming-resumed",
+      "chunk-appended",
+      "streaming-complete",
+    ]);
+    expect(milestones.at(-1)).toMatchObject({ truncated: false, resumable: false });
+    // A resume after the load finished changes nothing.
+    data.resume();
+    for (let i = 0; i < 10; i++) await tick();
+    expect(events).toHaveLength(7);
+    data.dispose();
+  });
+
+  it("closes cleanly while paused", async () => {
+    const { data, events, hostMessages } = await openAutoLoad(4);
+    await until(() => events.some((e) => e.type === "streaming-done"), "pause");
+    data.dispose();
+    await until(() => hostMessages.some((m) => m.t === "closed"), "closed ack");
+    for (let i = 0; i < 10; i++) await tick();
+    // The paused load woke on close and returned: no append, no final done.
+    expect(hostMessages.at(-1)).toEqual({ t: "closed" });
+    expect(events.map((e) => e.type)).toEqual(["streaming-done"]);
+    await expect(data.requestWindow(0, 1, 1)).rejects.toMatchObject({ code: "closed" });
+  });
+
   it("after a trap, every method rejects at once with the same terminated error", async () => {
     let trap = false;
     const { data: opening } = openWith(parquet, {

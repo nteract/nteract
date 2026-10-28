@@ -1,0 +1,32 @@
+{
+  "name": "@nteract/sift-electron-harness",
+  "private": true,
+  "type": "module",
+  "description": "Dev-only Electron harness: Sift's worker path under Kilo Desktop's app scheme, CSP, and ranged IPC reads. Never packaged.",
+  "main": "dist/main/main.cjs",
+  "scripts": {
+    "build": "pnpm run build:renderer && pnpm run build:main",
+    "build:renderer": "tsc --noEmit && vp build",
+    "build:main": "vp build --config vite.main.config.ts && HARNESS_ENTRY=preload vp build --config vite.main.config.ts",
+    "predev": "node scripts/install-electron.mjs && pnpm run build",
+    "dev": "node scripts/dev.mjs",
+    "pretest:e2e": "node scripts/install-electron.mjs && pnpm run build",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@nteract/sift": "workspace:*",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@types/node": "^24.12.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "electron": "^45.0.0",
+    "typescript": "~5.9.3",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

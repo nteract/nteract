@@ -14,6 +14,7 @@ import { ensureModule, getWasmMemory, type PredicateModule, setWasmUrl } from ".
 import type { TableData } from "../table";
 import { createResidentWindowedData, type ResidentWindowedData } from "../windowed-resident";
 import {
+  DEFAULT_ALLOCATION_CAP_FACTOR,
   type FromWorker,
   isFatalWasmError,
   type OpenRequest,
@@ -56,6 +57,8 @@ export function createWorkerHost(port: HostPort, options: WorkerHostOptions = {}
   let nextReadId = 1;
   /** Row group being decoded, for the fatal message; -1 between groups. */
   let loadingRowGroup = -1;
+  /** Set while the load waits at the `autoLoad` budget; calling it continues. */
+  let resumeWaiting: (() => void) | null = null;
   const pendingReads = new Map<
     number,
     { resolve: (bytes: Uint8Array) => void; reject: (error: Error) => void }
@@ -88,7 +91,15 @@ export function createWorkerHost(port: HostPort, options: WorkerHostOptions = {}
     }
   }
 
+  function wakePaused() {
+    const wake = resumeWaiting;
+    resumeWaiting = null;
+    wake?.();
+  }
+
   function releaseAll() {
+    // A load paused at the soft budget wakes, sees `closed` or `fatal`, and returns.
+    wakePaused();
     for (const pending of pendingReads.values()) pending.reject(new Error("Worker closed"));
     pendingReads.clear();
     unsubscribeAdapter?.();
@@ -139,6 +150,7 @@ export function createWorkerHost(port: HostPort, options: WorkerHostOptions = {}
           loadedRows: file.loadedRows,
           totalRows: file.rowCount,
           truncated: file.truncated,
+          resumable: false,
         };
       }
       post({ t: "event", event });
@@ -192,7 +204,8 @@ export function createWorkerHost(port: HostPort, options: WorkerHostOptions = {}
     }
     if (request.wasmUrl) setWasmUrl(request.wasmUrl, request.wasmFallbackUrl);
     mod = await ensureModule();
-    allocationCap = request.allocationCap ?? request.limits.maxDecodedBytes * 2;
+    allocationCap =
+      request.allocationCap ?? request.limits.maxDecodedBytes * DEFAULT_ALLOCATION_CAP_FACTOR;
     if (typeof mod.set_allocation_cap === "function") mod.set_allocation_cap(allocationCap);
 
     const source = relaySource(request.source.byteLength);
@@ -222,7 +235,7 @@ export function createWorkerHost(port: HostPort, options: WorkerHostOptions = {}
       rowGroupCount: file.rowGroupCount,
     });
     try {
-      await stream(file, exhausted, request.headRows);
+      await stream(file, exhausted, request.headRows, request.autoLoad);
     } catch (error) {
       if (closed || fatal) return;
       // A trap still ends the instance (the caller posts it as fatal).
@@ -248,10 +261,55 @@ export function createWorkerHost(port: HostPort, options: WorkerHostOptions = {}
     }
   }
 
-  /** Row groups after the first, then the final refinement. Runs after `opened`. */
-  async function stream(parquet: OpenParquetFile, exhausted: boolean, headRows: number) {
+  /**
+   * Row groups after the first, then the final refinement. Runs after
+   * `opened`. With `autoLoad`, the same pause rule as the main-thread loader
+   * (`streamParquetIntoEngine` in `react.tsx`): after an append, when row
+   * groups remain and the committed rows or decoded bytes reach the soft
+   * budget, post a resumable `streaming-done` and wait for `resume`, which
+   * extends the budget by the same amounts.
+   */
+  async function stream(
+    parquet: OpenParquetFile,
+    exhausted: boolean,
+    headRows: number,
+    autoLoad: OpenRequest["autoLoad"],
+  ) {
+    let softRows = autoLoad?.rows ?? Number.POSITIVE_INFINITY;
+    let softBytes = autoLoad?.decodedBytes ?? Number.POSITIVE_INFINITY;
+
+    /** Returns once loading may go on; the caller rechecks `closed` and `fatal`. */
+    async function pauseIfOverSoftBudget(nextGroup: number, done: boolean) {
+      if (done || nextGroup >= parquet.rowGroupCount) return;
+      const { usage } = parquet;
+      if (usage.rows < softRows && usage.decodedBytes < softBytes) return;
+
+      parquet.setPaused(true);
+      post({
+        t: "event",
+        event: {
+          type: "streaming-done",
+          loadedRows: parquet.loadedRows,
+          totalRows: parquet.rowCount,
+          truncated: true,
+          resumable: true,
+        },
+      });
+      await new Promise<void>((resolve) => {
+        resumeWaiting = resolve;
+      });
+      if (closed || fatal) return;
+
+      softRows = usage.rows + (autoLoad?.rows ?? Number.POSITIVE_INFINITY);
+      softBytes = usage.decodedBytes + (autoLoad?.decodedBytes ?? Number.POSITIVE_INFINITY);
+      parquet.setPaused(false);
+      post({ t: "event", event: { type: "streaming-resumed", rowCount: parquet.loadedRows } });
+    }
+
     progress("chunk", 0);
     overCap(0);
+    await pauseIfOverSoftBudget(1, exhausted);
+    if (closed || fatal) return;
 
     for (let group = 1; group < parquet.rowGroupCount && !exhausted; group++) {
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -265,6 +323,8 @@ export function createWorkerHost(port: HostPort, options: WorkerHostOptions = {}
       progress("chunk", group);
       overCap(group);
       loadingRowGroup = -1;
+      await pauseIfOverSoftBudget(group + 1, exhausted);
+      if (closed || fatal) return;
     }
     const { replaced } = parquet.finish();
     if (replaced) swapLease(replaced, headRows);
@@ -292,6 +352,9 @@ export function createWorkerHost(port: HostPort, options: WorkerHostOptions = {}
         pending?.reject(new Error(message.message));
         return;
       }
+      case "resume":
+        wakePaused();
+        return;
       case "close":
         closed = true;
         releaseAll();

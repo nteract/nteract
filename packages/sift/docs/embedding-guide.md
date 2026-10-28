@@ -245,8 +245,9 @@ more.
 ```
 
 - `autoLoad` needs `overflow: 'truncate'`; with `'error'` the source is
-  rejected before anything is read. It applies to `byte-source` and to Parquet
-  behind a `url` source. `rows` and `decodedBytes` are each optional; the pause
+  rejected before anything is read. It applies to `byte-source` (including
+  `worker: true`, where the worker pauses and waits) and to Parquet behind a
+  `url` source. `rows` and `decodedBytes` are each optional; the pause
   comes at whichever is reached first.
 - At a pause the table is at rest: the status indicator settles, casts are
   allowed again, and the footer reads "Showing first N of M rows" with a
@@ -491,7 +492,7 @@ worker memory limit … · Showing loaded rows" in the footer, and fires
 row-group quarantine is a follow-up. What it does not contain: the renderer
 process's memory (a dedicated worker lives in it) and the host's own I/O. The
 allocation cap is what bounds memory: the worker calls `set_allocation_cap`
-with `allocationCap` (default `2 × maxDecodedBytes`) before loading, so a
+with `allocationCap` (default `2.5 × maxDecodedBytes`) before loading, so a
 decompression bomb traps in Rust before the process pays for it. Between row
 groups the host also compares live heap bytes against the cap and stops a load
 that has already exceeded it.
@@ -512,9 +513,19 @@ With `overflow: 'truncate'`, a load the budget stops early shows the same
 main-thread loader, and the `streaming-complete` milestone carries `rowCount`,
 `totalRowCount`, and `truncated`.
 
-Not in this version: `autoLoad` pause/resume in the worker (it loads to the
-hard budget), `url` and manifest sources, a request-latency watchdog, and
-respawn.
+`autoLoad` works the same as on the main thread: the worker pauses at the soft
+budget and waits, the footer offers `Load more`, and `trigger: 'scroll'`
+resumes near the end. The milestones match (`streaming-complete` with
+`resumable: true`, then `streaming-resumed`).
+
+A worker that never starts (its script is refused, as with a `blob:` URL under
+a CSP without `worker-src blob:`) fails the open with "Sift worker failed to
+start; the host's Content-Security-Policy may block this worker URL (…)"
+(`WorkerDataError` code `open`). A worker that dies after answering reports
+"Sift worker terminated: …".
+
+Not in this version: `url` and manifest sources, a request-latency watchdog,
+and respawn.
 
 ## Lifecycle and host controls
 
@@ -626,3 +637,29 @@ Sift. The JavaScript in `lib/` is first-party; every npm dependency is
 installed by the host under its own license. Building and
 verifying the package from source is covered in `packages/sift/AGENTS.md` in
 the nteract repository.
+
+## Verified in an Electron harness
+
+The worker path (see "Running the data side in a worker") has been run in
+Electron 45 under Kilo Desktop's renderer policy: a custom standard scheme
+registered `secure` with fetch and CORS privileges, `script-src 'self'
+'wasm-unsafe-eval'` with no `worker-src`, and Parquet read over a ranged IPC
+`ByteSource`. What an embedder in that setup needs to know:
+
+- `new Worker(new URL('@nteract/sift/worker', import.meta.url), { type: 'module' })`
+  resolves under Vite and runs with no `worker-src` and no CSP warnings. Set
+  `worker: { format: 'es' }`; the worker bundle code-splits.
+- The worker needs `'wasm-unsafe-eval'`. Its script response carries your
+  CSP, and it instantiates the WASM itself.
+- Serve `.wasm` as `application/wasm` and `.js` as `text/javascript`.
+- A `blob:` worker blocked by CSP does not throw from `new Worker`; Chromium
+  fires `error` instead, and Sift reports "Sift worker failed to start; the
+  host's Content-Security-Policy may block this worker URL (…)" rather than
+  "Worker factory threw: …".
+- `autoLoad` pauses and resumes the worker. On both loaders, resumed appends
+  keep the row under the header in place; `scrollTop` may move to do it.
+- `allocationCap` defaults to 2.5 × `maxDecodedBytes`. Decoding a row group
+  briefly needs about twice the retained heap, so a 2× cap can trap on the last
+  row group that fits a truncating budget instead of ending in a clean preview.
+
+The harness is `apps/sift-electron-harness` in the nteract repository.

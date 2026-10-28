@@ -61,7 +61,7 @@ import { tableResponse } from "./table-response";
 import { updateWasmSummaries } from "./wasm-summaries";
 import type { WindowedTableData } from "./windowed";
 import { createResidentWindowedData, type ResidentWindowedData } from "./windowed-resident";
-import { createWorkerWindowedData } from "./worker/client";
+import { createWorkerWindowedData, type WorkerWindowedData } from "./worker/client";
 import { getWorkerFactory } from "./worker/factory";
 
 // --- Props ---
@@ -133,10 +133,10 @@ export type SiftSource =
        * Experimental: decode and hold the file in the Sift data worker. Needs
        * `setWorkerFactory`; without one the source fails at validation, it
        * never falls back to the main thread. Implies `windowed`. `autoLoad`
-       * does not apply: the worker loads to the hard budget.
+       * pauses and resumes the worker's load like the main-thread loader.
        */
       worker?: boolean;
-      /** Live WASM heap bytes allowed in the worker; default `2 × maxDecodedBytes`. */
+      /** Live WASM heap bytes allowed in the worker; default `2.5 × maxDecodedBytes`. */
       allocationCap?: number;
     }
   /**
@@ -1336,14 +1336,29 @@ export function SiftTable({
         );
         return;
       }
-      let data: (WindowedTableData & { terminate(): void }) | null = null;
+      let data: WorkerWindowedData | null = null;
       let unsubscribe: (() => void) | null = null;
+      /** The worker waits at the `autoLoad` budget and has not been asked to resume. */
+      let paused = false;
+      const resume = () => {
+        if (cancelled || !paused || !data) return;
+        paused = false;
+        data.resume();
+      };
+      if (autoLoadTrigger === "scroll") {
+        onScrollNearEndRef.current = () => {
+          if (cancelled || !paused) return;
+          resume();
+          setPausedLoad((current) => (current ? { ...current, loading: true } : current));
+        };
+      }
       createWorkerWindowedData({
         source: byteSource,
         limits,
         overflow: byteSourceOverflow,
         columnOverrides,
         allocationCap: workerAllocationCap,
+        autoLoad: softBudget,
         signal: controller.signal,
         emit: (milestone) => emitLoadMilestone(startedAt, { ...milestone, source: "byte-source" }),
       }).then(
@@ -1356,20 +1371,29 @@ export function SiftTable({
           unsubscribe = opened.subscribe((event) => {
             if (cancelled) return;
             if (event.type === "streaming-done") {
-              // A budget that stopped early gets the same notice as the
-              // main-thread loader.
-              const { loadedRows, totalRows, truncated } = event;
+              // A budget that stopped early, or a pause at the soft budget,
+              // gets the same notice as the main-thread loader.
+              const { loadedRows, totalRows, truncated, resumable } = event;
               setParquetPreview(
-                truncated && loadedRows !== undefined && totalRows !== undefined
+                (truncated || resumable) && loadedRows !== undefined && totalRows !== undefined
                   ? { source: byteSource, preview: { loadedRows, totalRows } }
                   : null,
               );
+              paused = resumable === true;
+              setPausedLoad(paused ? { source: byteSource, resume, loading: false } : null);
+              return;
+            }
+            if (event.type === "streaming-resumed") {
+              // The engine settled on the pause; appends follow.
+              engineRef.current?.resumeStreaming();
               return;
             }
             if (event.type !== "error") return;
             // An error after mount keeps the loaded rows; the footer says why.
             // Fatal: the worker is gone. Non-fatal: it stopped appending and
             // still answers for the rows it has; no `streaming-done` follows.
+            paused = false;
+            setPausedLoad(null);
             engineRef.current?.setStreamingDone();
             reportLoadError(new Error(event.message), mounted);
           });
@@ -1410,6 +1434,7 @@ export function SiftTable({
       return () => {
         cancelled = true;
         controller.abort();
+        onScrollNearEndRef.current = null;
         unsubscribe?.();
         // Once mounted the engine owns the data and closes the worker on destroy.
         if (data && !mounted) data.dispose();

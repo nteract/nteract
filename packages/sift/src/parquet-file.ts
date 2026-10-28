@@ -382,7 +382,12 @@ export async function openParquetFile(
         if (paused === next) return;
         paused = next;
         if (next) everPaused = true;
-        tableData.recomputeSummaries?.();
+        tableData.coverage = coverage();
+        // A partial preview's distributions and their "loaded" scope do not
+        // change when it pauses. Avoid rescanning every resident column just
+        // to toggle the coverage flags. With all rows resident, truncation can
+        // change the summary scope between loaded and dataset, so refresh it.
+        if (loadedRows === info.num_rows) tableData.recomputeSummaries?.();
       },
       async appendRowGroup(index) {
         if (!fileOpen || finished) throw new Error("Parquet file is closed");
