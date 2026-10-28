@@ -9,6 +9,7 @@ on:
       - packages/runtimed/src/scope-capabilities.ts
       - src/components/markdown/mermaid-renderer.ts
       - src/components/sharing/**
+      - src/styles/notebook-tokens.css
       - .github/workflows/authenticated-automerge-spike.yml
   push:
     branches: [main]
@@ -19,6 +20,7 @@ on:
       - packages/runtimed/src/scope-capabilities.ts
       - src/components/markdown/mermaid-renderer.ts
       - src/components/sharing/**
+      - src/styles/notebook-tokens.css
       - .github/workflows/authenticated-automerge-spike.yml
   workflow_dispatch:
 
@@ -48,6 +50,7 @@ jobs:
             packages/local-oidc/src
             src/components/markdown
             src/components/sharing
+            src/styles
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
