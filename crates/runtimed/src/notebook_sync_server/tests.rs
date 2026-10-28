@@ -756,13 +756,13 @@ async fn file_backed_initial_load_reaches_ready_without_streaming_replies() {
                 .expect("daemon should keep bootstrap connection open");
             match frame.frame_type {
                 NotebookFrameType::AutomergeSync => sync_payloads.push(frame.payload),
-                NotebookFrameType::SessionControl => {
+                NotebookFrameType::SessionControl
                     if decode_sync_status(&frame).is_some_and(|status| {
                         status.initial_load
                             == notebook_protocol::protocol::InitialLoadPhaseWire::Ready
-                    }) {
-                        return sync_payloads;
-                    }
+                    }) =>
+                {
+                    return sync_payloads;
                 }
                 _ => {}
             }

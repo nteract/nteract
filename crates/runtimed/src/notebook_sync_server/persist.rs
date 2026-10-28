@@ -1381,7 +1381,7 @@ async fn widget_state_metadata_from_comms(
         .iter()
         .filter(|(_, entry)| entry.target_name == JUPYTER_WIDGET_TARGET)
         .collect();
-    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    entries.sort_by_key(|(comm_id, _)| *comm_id);
 
     let mut state = serde_json::Map::new();
     for (comm_id, entry) in entries {

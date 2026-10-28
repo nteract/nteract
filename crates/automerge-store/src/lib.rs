@@ -670,7 +670,9 @@ fn decode_heads(document_id: DocumentId, bytes: &[u8]) -> Result<Vec<ChangeHash>
         });
     }
     let mut heads = bytes
-        .chunks_exact(HASH_BYTES)
+        .as_chunks::<HASH_BYTES>()
+        .0
+        .iter()
         .map(|chunk| {
             let mut hash = [0_u8; HASH_BYTES];
             hash.copy_from_slice(chunk);

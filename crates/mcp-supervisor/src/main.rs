@@ -1902,6 +1902,10 @@ struct SupervisorRestartParams {
     target: String,
 }
 
+#[allow(
+    dead_code,
+    reason = "Default for the retained supervisor restart parameter schema"
+)]
 fn default_restart_target() -> String {
     "child".to_string()
 }
@@ -2585,17 +2589,13 @@ impl Supervisor {
                         .and_then(|di| di.version),
                     expected_daemon_version(&project_root),
                 ) {
-                    (Some(running), Some(expected)) => {
-                        if running != expected {
-                            warn!(
-                                "Daemon version mismatch after rebuild: running={running}, expected={expected}"
-                            );
-                            false
-                        } else {
-                            true
-                        }
+                    (Some(running), Some(expected)) if running != expected => {
+                        warn!(
+                            "Daemon version mismatch after rebuild: running={running}, expected={expected}"
+                        );
+                        false
                     }
-                    _ => true, // can't determine — assume ok
+                    _ => true, // matching or can't determine — assume ok
                 };
 
                 // 4. Clear circuit breaker and restart child MCP server

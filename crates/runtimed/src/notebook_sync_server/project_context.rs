@@ -565,10 +565,8 @@ fn extract_quoted_entry(line: &str) -> Option<String> {
     let trimmed = line.trim().trim_end_matches(',').trim();
     let (quote, rest) = if let Some(rest) = trimmed.strip_prefix('"') {
         ('"', rest)
-    } else if let Some(rest) = trimmed.strip_prefix('\'') {
-        ('\'', rest)
     } else {
-        return None;
+        ('\'', trimmed.strip_prefix('\'')?)
     };
     let end = rest.find(quote)?;
     Some(rest[..end].to_string())

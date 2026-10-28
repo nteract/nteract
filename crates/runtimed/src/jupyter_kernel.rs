@@ -4327,8 +4327,7 @@ mod tests {
 
     #[test]
     fn parses_deno_kernel_info_without_codemirror_version() {
-        // Deno omits the CodeMirror version. The upstream parser now handles
-        // this reply directly, so startup no longer needs a parse-error bypass.
+        // Deno omits the CodeMirror version; the upstream parser accepts that shape.
         let reply: jupyter_protocol::KernelInfoReply =
             serde_json::from_value(deno_kernel_info_reply()).unwrap();
 

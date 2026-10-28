@@ -3781,7 +3781,7 @@ async fn diagnostics_command(output_dir: Option<PathBuf>) -> Result<()> {
                 Some((e.path(), mtime))
             })
             .collect();
-        log_files.sort_by(|a, b| b.1.cmp(&a.1)); // newest first
+        log_files.sort_by_key(|entry| std::cmp::Reverse(entry.1)); // newest first
         let selected: Vec<_> = log_files.into_iter().take(10).collect();
 
         if selected.is_empty() {
@@ -4772,7 +4772,7 @@ async fn env_list() -> anyhow::Result<()> {
         }
 
         // Sort by last-used descending
-        entries.sort_by(|a, b| b.2.cmp(&a.2));
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.2));
 
         println!("{}  ({})", dir.label, dir.path.display());
         for (name, size, last_used) in &entries {
@@ -4921,7 +4921,7 @@ async fn env_clean(
                     let size = calculate_dir_size(&path);
                     candidates.push((path, last_used, size));
                 }
-                candidates.sort_by(|a, b| b.1.cmp(&a.1));
+                candidates.sort_by_key(|entry| std::cmp::Reverse(entry.1));
                 let now = std::time::SystemTime::now();
                 for (i, (path, last_used, size)) in candidates.iter().enumerate() {
                     let age = now.duration_since(*last_used).unwrap_or_default();

@@ -322,7 +322,7 @@ async fn widget_comms_from_notebook_metadata(
     };
 
     let mut entries: Vec<_> = models.iter().collect();
-    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    entries.sort_by_key(|(comm_id, _)| *comm_id);
 
     let mut comms = Vec::new();
     for (seq, (comm_id, model)) in entries.into_iter().enumerate() {
