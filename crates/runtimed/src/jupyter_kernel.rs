@@ -106,19 +106,6 @@ fn content_with_mpl_canvas_image_mode(
     content
 }
 
-fn is_tolerated_kernel_info_reply_parse_error(error: &jupyter_zmq_client::RuntimeError) -> bool {
-    match error {
-        jupyter_zmq_client::RuntimeError::ParseError { msg_type, source } => {
-            // Deno kernels can report a CodeMirror mode shape that the current
-            // upstream jupyter_protocol enum does not model. `shell.read()` has
-            // already consumed that kernel_info_reply frame before returning the
-            // parse error, so this narrow case is enough to prove liveness.
-            msg_type == "kernel_info_reply" && source.to_string().contains("CodeMirrorMode")
-        }
-        _ => false,
-    }
-}
-
 #[cfg(unix)]
 fn ipc_path_prefix(kernel_id: &str) -> PathBuf {
     crate::ipc_socket_dir().join(format!("kernel-{}-ipc", kernel_id))
@@ -2833,21 +2820,8 @@ impl KernelConnection for JupyterKernel {
         let reply = tokio::select! {
             result = await_result_with_timeout(shell.read(), std::time::Duration::from_secs(30)) => {
                 match result {
-                    TimedResult::Completed(msg) => Ok(Some(msg.header.msg_type)),
-                    TimedResult::Failed(e) => {
-                        if is_tolerated_kernel_info_reply_parse_error(&e) {
-                            warn!(
-                                "[jupyter-kernel] Kernel info reply used tolerated parse fallback: kernel_id={} kernel_info_elapsed_ms={} launch_elapsed_ms={} error={}",
-                                kernel_id,
-                                kernel_info_started.elapsed().as_millis(),
-                                launch_started.elapsed().as_millis(),
-                                e
-                            );
-                            Ok(None)
-                        } else {
-                            Err(anyhow::anyhow!("Kernel did not respond: {}", e))
-                        }
-                    },
+                    TimedResult::Completed(msg) => Ok(msg.header.msg_type),
+                    TimedResult::Failed(e) => Err(anyhow::anyhow!("Kernel did not respond: {}", e)),
                     TimedResult::TimedOut => Err(anyhow::anyhow!("Kernel did not respond within 30s")),
                 }
             }
@@ -2858,18 +2832,10 @@ impl KernelConnection for JupyterKernel {
         };
 
         match reply {
-            Ok(Some(msg_type)) => {
+            Ok(msg_type) => {
                 info!(
                     "[jupyter-kernel] Kernel alive: got {} reply (kernel_id={} kernel_info_elapsed_ms={} launch_elapsed_ms={})",
                     msg_type,
-                    kernel_id,
-                    kernel_info_started.elapsed().as_millis(),
-                    launch_started.elapsed().as_millis()
-                );
-            }
-            Ok(None) => {
-                info!(
-                    "[jupyter-kernel] Kernel alive: accepted kernel_info_reply with tolerated parse fallback (kernel_id={} kernel_info_elapsed_ms={} launch_elapsed_ms={})",
                     kernel_id,
                     kernel_info_started.elapsed().as_millis(),
                     launch_started.elapsed().as_millis()
@@ -4343,47 +4309,42 @@ mod tests {
                 && value == &Some(OsStr::new("ok"))));
     }
 
-    fn codemirror_mode_parse_error() -> serde_json::Error {
-        serde_json::from_value::<jupyter_protocol::CodeMirrorMode>(serde_json::json!({
-            "name": "typescript",
-            "version": "5.0"
-        }))
-        .expect_err("string version should not match the upstream CodeMirrorMode enum")
-    }
-
-    fn plain_parse_error() -> serde_json::Error {
-        serde_json::from_value::<usize>(serde_json::json!("not-a-number"))
-            .expect_err("string should not parse as usize")
-    }
-
-    #[test]
-    fn tolerates_kernel_info_codemirror_mode_parse_error() {
-        let error = jupyter_zmq_client::RuntimeError::ParseError {
-            msg_type: "kernel_info_reply".to_string(),
-            source: codemirror_mode_parse_error(),
-        };
-
-        assert!(is_tolerated_kernel_info_reply_parse_error(&error));
+    fn deno_kernel_info_reply() -> serde_json::Value {
+        serde_json::json!({
+            "status": "ok",
+            "protocol_version": "5.3",
+            "implementation": "deno",
+            "implementation_version": "2.9.8",
+            "language_info": {
+                "name": "typescript",
+                "version": "5.9.2",
+                "mimetype": "text/typescript",
+                "file_extension": ".ts",
+                "codemirror_mode": { "name": "typescript" }
+            }
+        })
     }
 
     #[test]
-    fn does_not_tolerate_other_kernel_info_parse_errors() {
-        let error = jupyter_zmq_client::RuntimeError::ParseError {
-            msg_type: "kernel_info_reply".to_string(),
-            source: plain_parse_error(),
-        };
+    fn parses_deno_kernel_info_without_codemirror_version() {
+        // Deno omits the CodeMirror version. The upstream parser now handles
+        // this reply directly, so startup no longer needs a parse-error bypass.
+        let reply: jupyter_protocol::KernelInfoReply =
+            serde_json::from_value(deno_kernel_info_reply()).unwrap();
 
-        assert!(!is_tolerated_kernel_info_reply_parse_error(&error));
+        assert_eq!(reply.implementation, "deno");
+        assert!(matches!(
+            reply.language_info.codemirror_mode,
+            Some(jupyter_protocol::CodeMirrorMode::Simple(name)) if name == "typescript"
+        ));
     }
 
     #[test]
-    fn does_not_tolerate_codemirror_errors_on_other_messages() {
-        let error = jupyter_zmq_client::RuntimeError::ParseError {
-            msg_type: "execute_reply".to_string(),
-            source: codemirror_mode_parse_error(),
-        };
+    fn malformed_codemirror_version_is_still_a_kernel_info_error() {
+        let mut reply = deno_kernel_info_reply();
+        reply["language_info"]["codemirror_mode"]["version"] = serde_json::json!("5.0");
 
-        assert!(!is_tolerated_kernel_info_reply_parse_error(&error));
+        assert!(serde_json::from_value::<jupyter_protocol::KernelInfoReply>(reply).is_err());
     }
 
     #[test]

@@ -92,9 +92,9 @@ jobs:
           key: nteract-pr-preview-pnpm-v1-${{ runner.os }}-${{ runner.arch }}-node22-pnpm11.9.0-${{ hashFiles('source/pnpm-lock.yaml', 'source/pnpm-workspace.yaml', 'source/.npmrc') }}
       - name: Install Rust and the WASM builder
         run: |
-          rustup toolchain install 1.94.0 --profile minimal --target wasm32-unknown-unknown
-          echo "CARGO=$(rustup which --toolchain 1.94.0 cargo)" >> "$GITHUB_ENV"
-          echo "RUSTC=$(rustup which --toolchain 1.94.0 rustc)" >> "$GITHUB_ENV"
+          rustup toolchain install 1.99.1 --profile minimal --target wasm32-unknown-unknown
+          echo "CARGO=$(rustup which --toolchain 1.99.1 cargo)" >> "$GITHUB_ENV"
+          echo "RUSTC=$(rustup which --toolchain 1.99.1 rustc)" >> "$GITHUB_ENV"
           curl --fail --location --show-error --retry 5 --output "$RUNNER_TEMP/wasm-pack.tar.gz" \
             https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz
           echo "c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a  $RUNNER_TEMP/wasm-pack.tar.gz" | sha256sum --check
@@ -109,7 +109,7 @@ jobs:
           # prefix so even a lockfile fallback cannot cross those settings.
           key: cloud-wasm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('source/rust-toolchain.toml', 'source/.cargo/config.toml') }}
           workspaces: source -> target
-          cmd-format: rustup run 1.94.0 {0}
+          cmd-format: rustup run 1.99.1 {0}
           cache-workspace-crates: false
           cache-all-crates: false
           cache-bin: false

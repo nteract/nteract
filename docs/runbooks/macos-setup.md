@@ -66,7 +66,7 @@ nvm install 22
 git lfs install
 
 # Rust toolchain pinned by rust-toolchain.toml (or let the first cargo command trigger it)
-rustup toolchain install 1.94.0
+rustup toolchain install 1.99.1
 
 # Cargo tools
 cargo install tauri-cli --version "^2" --locked
