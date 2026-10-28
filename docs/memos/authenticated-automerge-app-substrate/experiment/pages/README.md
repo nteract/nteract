@@ -135,6 +135,16 @@ this surface. Those controls should use the same guarded operations and
 attribution as other clients; they do not need a second document store. Presence,
 comments, and edit illumination belong to the document experience. Sharing UI reflects host-enforced permissions; copying a link does not grant access.
 
+The Share popover offers **Copy as Markdown** to anyone who can read the Page.
+It exports the current title and document content, including tables, task lists,
+diagram source, and existing private image references. Copying does not publish
+the Page or change access to its images.
+
+The account menu offers **System / Light / Dark** appearance using nteract's
+shared theme tokens. Preferences belong to the browser and follow other tabs on
+the same origin; they never change the Page. The small theme bootstrap runs
+before the editor loads so saved dark mode does not start with a light canvas.
+
 The active implementation is PR #4469. The earlier PR #4451 and m.runtimed.run
 remain historical comparison material. celld and Cloudflare run the same
 application API with separate deployment configuration and data. A host name

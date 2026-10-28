@@ -45,6 +45,15 @@ test("setup is public, uses configured destinations, and never reflects credenti
   ])
     assert.equal(html.includes(forbidden), false, forbidden);
   const dom = new JSDOM(html).window.document;
+  const theme = dom.head.querySelector('script[src="/theme.js"]');
+  assert.ok(theme);
+  assert.equal(
+    theme.hasAttribute("defer") || theme.hasAttribute("async") || theme.hasAttribute("type"),
+    false,
+  );
+  assert.ok(html.indexOf("/theme.js") < html.indexOf("/app.css"));
+  assert.match(response.headers.get("content-security-policy"), /script-src 'self';/);
+  assert.doesNotMatch(response.headers.get("content-security-policy"), /unsafe-inline|unsafe-eval/);
   assert.equal(dom.getElementById("mcp-endpoint").textContent, origin + "/mcp");
   assert.equal(dom.getElementById("mcp-headers").textContent, agentConnectionSetup(env).headers);
   assert.equal(

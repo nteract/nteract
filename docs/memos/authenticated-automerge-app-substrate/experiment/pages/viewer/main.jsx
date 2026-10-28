@@ -1,3 +1,4 @@
+import "../../../../../../src/styles/notebook-tokens.css";
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import * as A from "@automerge/automerge";
@@ -30,6 +31,7 @@ import { WordgardEditor } from "./WordgardEditor.jsx";
 import { PagePicker } from "./PagePicker.jsx";
 import { matchingPages } from "./page-list.mjs";
 import { SharingControls } from "./SharingControls.jsx";
+import { AppearanceControls } from "./AppearanceControls.jsx";
 import { CommentsPanel } from "./CommentsPanel.jsx";
 import { captureCommentDraft } from "./comment-draft.mjs";
 import { writingContinuation } from "./writing-continuation.mjs";
@@ -567,6 +569,7 @@ function App() {
               </summary>
               <div className="menu-popover">
                 <p className="account-name">{account.displayName || "Your workspace"}</p>
+                <AppearanceControls />
                 <a
                   href="/connect"
                   target="_blank"

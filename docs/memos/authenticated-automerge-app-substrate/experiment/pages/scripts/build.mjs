@@ -47,6 +47,15 @@ await build({
   ],
 });
 await build({
+  entryPoints: [path.join(app, "viewer/theme-bootstrap.mjs")],
+  bundle: true,
+  format: "iife",
+  platform: "browser",
+  target: "es2022",
+  minify: true,
+  outfile: path.join(dist, "public/theme.js"),
+});
+await build({
   entryPoints: [path.join(app, "viewer/main.jsx")],
   // Shared UI source lives outside this npm workspace. Resolve one React
   // instance for both the Page shell and shared components.

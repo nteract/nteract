@@ -262,7 +262,9 @@ function priorConfig(config, target) {
     ? config.replace("|connect|connect[.]js|", "|")
     : target === "page7"
       ? config.replace(imagePaths, "")
-      : config.replace("|mermaid[.]js|", "|");
+      : target === "page8"
+        ? config.replace("|theme[.]js|", "|")
+        : config.replace("|mermaid[.]js|", "|");
 }
 function previousInstallation(f, { pending = false, newConfig = false } = {}) {
   const plan = isolatedPublicationPlan(inputFor(f.target));
@@ -302,6 +304,32 @@ test("page3 admits the exact Mermaid asset path; existing pages-next routes stay
     assert.equal(current.test(path), false, path);
 });
 
+test("Page8 admits only the exact theme asset while every older route receipt stays frozen", () => {
+  const frozen = {
+    "pages-next": "2dbfabe3e649e0f79afc9df766e0a19c52177b76667d89ad8e45acaaf523e5f3",
+    page3: "db474e430d27227ee9bf407beee948ad6cf7f601fafd55c60bbf34effa38200a",
+    page4: "9c5872feed6898ee236a96dc70226c625d5c3a299c3c3866b351b0f4b41f47de",
+    page5: "4bda4497169b48213638b5085f4ce5e2b9c335cf483d501f965e1c7f8fd8321c",
+    page6: "5240e6014b88bddb73115809c273da72b7e15e5516b67f43db8ed66ad82a12ac",
+    page7: "ed30a9fe9aef61a9f8f42451d81bea1c7fb399181b529081d138a91d259730a8",
+  };
+  for (const [target, expected] of Object.entries(frozen)) {
+    assert.equal(digest(routesFor(target)), expected, target);
+    const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
+    assert.equal(route.test("/theme.js"), false, target);
+  }
+  const current = routesFor("page8");
+  assert.equal(
+    digest(priorConfig(current, "page8")),
+    "e0a13fdeda80d2edfd1ec8d341045929def65b8e2eba35c1da4cdc8c4be28af7",
+    "the permitted migration must start from Page8's exact deployed route bytes",
+  );
+  const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
+  assert.equal(route.test("/theme.js"), true);
+  for (const pathname of ["/themeXjs", "/theme.js/", "/theme.js/private", "/theme.css"])
+    assert.equal(route.test(pathname), false, pathname);
+});
+
 test("OAuth and private images publish only exact Page7 and Page8 routes while previous targets remain closed", () => {
   for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8"]) {
     const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
@@ -333,7 +361,7 @@ test("OAuth and private images publish only exact Page7 and Page8 routes while p
   }
 });
 
-for (const target of ["page3", "page5", "page7"]) {
+for (const target of ["page3", "page5", "page7", "page8"]) {
   test(`${target} known route upgrade restarts only its dedicated connector then becomes a no-op`, (t) => {
     const f = fixture(t, { target });
     const expected = previousInstallation(f);
@@ -948,6 +976,8 @@ for (const misroutePath of [
   imageAssetPath,
   imageAssetPath + "/" + "a".repeat(64),
   imageAssetPath + "/private",
+  "/theme.js",
+  "/theme.js/private",
 ])
   test(`Page8 does not activate a connector with misrouted asset path ${misroutePath}`, (t) => {
     const f = fixture(t, { target: "page8", misroutePath });

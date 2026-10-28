@@ -1,9 +1,10 @@
 import React, { useEffect, useId, useRef, useState } from "react";
-import { Share2 } from "lucide-react";
+import { Copy, Share2 } from "lucide-react";
 import { SharingPanel } from "../../../../../../src/components/sharing/SharingPanel.tsx";
 import "../../../../../../src/components/sharing/sharing-panel.css";
 import { request } from "./session.mjs";
 import { domainSharingProjection } from "./sharing-projection.mjs";
+import { pageMarkdown } from "../model/markdown-export.mjs";
 
 function projection(value) {
   const rows = [];
@@ -65,7 +66,8 @@ export function SharingControls({ session }) {
     [role, setRole] = useState("viewer"),
     [busy, setBusy] = useState(null),
     [error, setError] = useState(""),
-    [message, setMessage] = useState("");
+    [message, setMessage] = useState(""),
+    [copyMessage, setCopyMessage] = useState("");
   const domainId = useId();
   const root = useRef(null),
     button = useRef(null),
@@ -78,6 +80,7 @@ export function SharingControls({ session }) {
     setValue(null);
     setError("");
     setMessage("");
+    setCopyMessage("");
     request(endpoint)
       .then((result) => {
         if (epoch.current === revision) setValue(result);
@@ -139,6 +142,17 @@ export function SharingControls({ session }) {
       if (revision === epoch.current) setBusy(null);
     }
   }
+  async function copyMarkdown() {
+    const revision = epoch.current;
+    setCopyMessage("");
+    try {
+      if (!session.access?.canRead || session.accessDenied) throw Error("Page access changed");
+      await navigator.clipboard.writeText(pageMarkdown(session.snapshot()));
+      if (revision === epoch.current) setCopyMessage("Markdown copied.");
+    } catch {
+      if (revision === epoch.current) setCopyMessage("Could not copy the Markdown. Try again.");
+    }
+  }
   const manage = !loading && !!session.canManageAccess && !!value?.access.canManageAccess;
   const domainSharing = manage ? domainSharingProjection(value) : null;
   return (
@@ -166,11 +180,13 @@ export function SharingControls({ session }) {
             resourceLabel="Page"
             title="Share Page"
             description={
-              manage
-                ? "Invite by email, then share the link."
-                : session.access?.role === "viewer"
-                  ? "You can view this Page. Only the owner can invite people."
-                  : "Only the owner can invite people."
+              loading
+                ? "Loading sharing settings…"
+                : manage
+                  ? "Invite by email, then share the link."
+                  : session.access?.role === "viewer"
+                    ? "You can view this Page. Only the owner can invite people."
+                    : "Only the owner can invite people."
             }
             sections={{
               publicAccess: false,
@@ -251,6 +267,19 @@ export function SharingControls({ session }) {
               </p>
             </section>
           )}
+          <div className="page-sharing-export">
+            <button
+              type="button"
+              className="subtle-button"
+              disabled={!session.access?.canRead || session.accessDenied}
+              onClick={copyMarkdown}
+            >
+              <Copy size={16} aria-hidden="true" /> Copy as Markdown
+            </button>
+            <p className="copy-status" role="status" aria-live="polite" aria-atomic="true">
+              {copyMessage}
+            </p>
+          </div>
         </div>
       )}
     </div>

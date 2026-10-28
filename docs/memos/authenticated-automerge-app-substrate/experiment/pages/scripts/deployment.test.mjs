@@ -206,6 +206,14 @@ test("release staging copies only built artifacts, never development credentials
     assert.deepEqual(files(destination).sort(), [...releaseArtifacts].sort());
     for (const artifact of releaseArtifacts)
       assert.equal(readFileSync(path.join(destination, artifact), "utf8"), "artifact:" + artifact);
+    assert.equal(
+      readFileSync(path.join(destination, "public/theme.js"), "utf8"),
+      "artifact:public/theme.js",
+    );
+    rmSync(path.join(dist, "public/theme.js"));
+    assert.throws(() => stageArtifacts(dist, path.join(root, "missing-theme")), /theme[.]js/);
+    assert.throws(() => readdirSync(path.join(root, "missing-theme")));
+    write("public/theme.js", "artifact:public/theme.js");
     rmSync(path.join(dist, "index.js"));
     symlinkSync(path.join(dist, ".dev.vars"), path.join(dist, "index.js"));
     assert.throws(() => stageArtifacts(dist, path.join(root, "rejected")), /regular file/);

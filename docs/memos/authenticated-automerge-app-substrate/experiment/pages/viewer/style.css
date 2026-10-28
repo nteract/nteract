@@ -7,23 +7,36 @@
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-  color: #262626;
-  background: #ffffff;
+  color: var(--foreground);
+  background: var(--background);
   font-synthesis: none;
   font-size: 16px;
-  --surface: #ffffff;
-  --canvas: #ffffff;
-  --line: #e8e8e8;
-  --muted: #737373;
-  --accent: #262626;
-  --accent-soft: #f0f0f0;
-  --focus: #707070;
+  --surface: var(--background);
+  --canvas: var(--background);
+  --paper: var(--card);
+  --line: var(--border);
+  --accent-soft: var(--accent);
+  --focus: var(--ring);
+  --warning: #947022;
+  --warning-soft: color-mix(in srgb, var(--warning) 12%, var(--surface));
+  --error-soft: color-mix(in srgb, var(--destructive) 10%, var(--surface));
+  --success: #22734a;
+}
+:root.dark {
+  --warning: #dec179;
+  --success: #8bcba9;
 }
 * {
   box-sizing: border-box;
 }
 body {
   margin: 0;
+}
+input,
+textarea,
+select {
+  color: var(--foreground);
+  background: var(--surface);
 }
 button,
 input,
@@ -50,7 +63,7 @@ button {
 }
 button:hover:not(:disabled),
 summary:hover {
-  background: #f5f5f5;
+  background: var(--accent);
 }
 button:disabled {
   opacity: 0.4;
@@ -121,7 +134,7 @@ summary svg {
   font-weight: 650;
   letter-spacing: -0.035em;
   text-decoration: none;
-  color: var(--accent);
+  color: var(--primary);
 }
 .brand svg {
   width: 23px;
@@ -135,15 +148,15 @@ summary svg {
   font-size: 0.85rem;
 }
 .header-actions > span {
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 .primary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.45rem;
-  background: var(--accent);
-  color: white;
+  background: var(--primary);
+  color: var(--primary-foreground);
   font-weight: 550;
   text-decoration: none;
   padding: 0.65rem 1rem;
@@ -151,7 +164,7 @@ summary svg {
   border-radius: 0.5rem;
 }
 .primary:hover:not(:disabled) {
-  background: #404040;
+  background: color-mix(in srgb, var(--primary) 85%, var(--surface));
 }
 .avatar {
   display: inline-flex;
@@ -161,7 +174,7 @@ summary svg {
   height: 32px;
   border-radius: 50%;
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--primary);
   font-size: 0.75rem;
   font-weight: 650;
   flex-shrink: 0;
@@ -172,9 +185,9 @@ summary svg {
   gap: 0.25rem;
 }
 .peer-avatars .avatar {
-  border: 2px solid white;
-  background: #eee7f6;
-  color: #66498c;
+  border: 2px solid var(--surface);
+  background: var(--accent-soft);
+  color: var(--primary);
 }
 details.account-actions,
 details.document-actions {
@@ -203,10 +216,39 @@ details.document-actions > div {
   z-index: 10;
   min-width: 180px;
   padding: 0.35rem;
-  background: white;
+  background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 0.65rem;
   box-shadow: 0 8px 24px #00000012;
+}
+.appearance-controls {
+  min-width: min(260px, calc(100vw - 64px));
+  margin: 0.4rem 0 0.6rem;
+  padding: 0.5rem;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+}
+.appearance-controls legend {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+.appearance-modes {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--muted);
+}
+.appearance-modes button {
+  flex: 1;
+  justify-content: center;
+  padding: 8px 6px;
+  font-size: 0.75rem;
+}
+.appearance-modes button[aria-pressed="true"] {
+  background: var(--card);
+  box-shadow: 0 1px 3px #0002;
 }
 details.account-actions > div button,
 details.account-actions > div a,
@@ -232,7 +274,7 @@ details.document-actions > div button {
 }
 .welcome p,
 .page-library > p {
-  color: var(--muted);
+  color: var(--muted-foreground);
   line-height: 1.6;
 }
 .library-heading {
@@ -248,7 +290,7 @@ details.document-actions > div button {
 .picker-search.library-search {
   margin: 0 0 1.5rem;
   padding: 0.7rem 0.85rem;
-  background: #fafafa;
+  background: var(--accent);
 }
 .page-list {
   list-style: none;
@@ -260,12 +302,12 @@ details.document-actions > div button {
   align-items: center;
   min-width: 0;
   padding: 0 0.5rem;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--border);
   border-radius: 0.5rem;
 }
 .page-row:hover,
 .page-row:focus-within {
-  background: #fafafa;
+  background: var(--accent);
 }
 .page-card {
   display: flex;
@@ -277,7 +319,7 @@ details.document-actions > div button {
   gap: 0.85rem;
 }
 .page-card > svg {
-  color: var(--muted);
+  color: var(--muted-foreground);
   flex-shrink: 0;
 }
 .page-card-title {
@@ -290,11 +332,11 @@ details.document-actions > div button {
 .page-card-meta {
   margin-left: auto;
   flex-shrink: 0;
-  color: var(--muted);
+  color: var(--muted-foreground);
   font-size: 0.75rem;
 }
 .page-row-action {
-  color: var(--muted);
+  color: var(--muted-foreground);
   opacity: 0;
 }
 .page-row:hover .page-row-action,
@@ -322,7 +364,7 @@ details.document-actions > div button {
   align-items: center;
   justify-content: space-between;
   gap: 0.6rem;
-  color: var(--muted);
+  color: var(--muted-foreground);
   font-size: 0.75rem;
   min-height: 40px;
 }
@@ -338,7 +380,7 @@ details.document-actions > div button {
 }
 .document-meta [aria-expanded="true"] {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--primary);
 }
 .document-meta button {
   white-space: nowrap;
@@ -352,7 +394,7 @@ details.document-actions > div button {
   border: 0;
   border-bottom: 2px solid transparent;
   background: transparent;
-  color: #262626;
+  color: var(--foreground);
   font-size: clamp(2rem, 4vw, 2.4rem);
   font-weight: 600;
   line-height: 1.2;
@@ -363,7 +405,7 @@ details.document-actions > div button {
 }
 .title:focus-visible {
   outline: none;
-  border-bottom-color: #a3a3a3;
+  border-bottom-color: var(--ring);
 }
 .toolbar-host {
   position: sticky;
@@ -413,7 +455,7 @@ details.document-actions > div button {
   width: 1px;
   height: 22px;
   margin: 0 0.35rem;
-  background: #e5e5e5;
+  background: var(--border);
   flex-shrink: 0;
 }
 .toolbar-button {
@@ -432,14 +474,14 @@ details.document-actions > div button {
 }
 .toolbar-button[aria-pressed="true"],
 .toolbar-button.is-active {
-  background: #ebebeb;
-  color: #171717;
-  box-shadow: inset 0 0 0 1px #d4d4d4;
+  background: var(--accent);
+  color: var(--foreground);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 .toolbar-button[aria-pressed="mixed"] {
-  background: #f5f5f5;
-  color: #404040;
-  box-shadow: inset 0 -2px #a3a3a3;
+  background: var(--accent);
+  color: var(--foreground);
+  box-shadow: inset 0 -2px var(--ring);
 }
 .toolbar-select {
   height: 36px;
@@ -454,7 +496,7 @@ details.document-actions > div button {
   cursor: pointer;
 }
 .toolbar-select:hover {
-  background: #f5f5f5;
+  background: var(--accent);
 }
 .ProseMirror {
   outline: none;
@@ -463,7 +505,7 @@ details.document-actions > div button {
   min-height: 70px;
   font-size: 17px;
   overflow-wrap: anywhere;
-  caret-color: #262626;
+  caret-color: var(--foreground);
 }
 .ProseMirror p {
   margin: 0.75em 0;
@@ -471,14 +513,14 @@ details.document-actions > div button {
 .ProseMirror > p:only-child:has(> br.ProseMirror-trailingBreak:only-child)::before {
   content: "Start writing…";
   float: left;
-  color: #929292;
+  color: var(--muted-foreground);
   pointer-events: none;
   height: 0;
 }
 .ProseMirror pre,
 .opaque pre {
-  background: #f7f7f7;
-  border: 1px solid #e8e8e8;
+  background: var(--muted);
+  border: 1px solid var(--border);
   border-radius: 0.45rem;
   padding: 0.85rem 1rem;
   overflow: auto;
@@ -489,22 +531,22 @@ details.document-actions > div button {
   font-size: 0.88em;
 }
 .ProseMirror p code {
-  background: #f3f3f3;
+  background: var(--muted);
   padding: 0.12em 0.3em;
   border-radius: 0.25rem;
 }
 .ProseMirror blockquote {
-  border-left: 3px solid #d4d4d4;
+  border-left: 3px solid var(--border);
   margin: 1.2rem 0;
   padding: 0.1rem 1.25rem;
-  color: #666666;
+  color: var(--muted-foreground);
 }
 .ProseMirror img {
   max-width: 100%;
   border-radius: 0.35rem;
 }
 .ProseMirror a {
-  color: #404040;
+  color: var(--foreground);
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
@@ -544,17 +586,17 @@ details.document-actions > div button {
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: var(--muted);
+  color: var(--muted-foreground);
   font: inherit;
   text-align: left;
   cursor: text;
 }
 .writing-continuation:hover:not(:disabled) {
   background: transparent;
-  color: var(--accent);
+  color: var(--primary);
 }
 .writing-continuation:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--primary);
   outline-offset: 2px;
 }
 dialog {
@@ -567,11 +609,11 @@ dialog::backdrop {
 .page-picker {
   width: min(520px, calc(100vw - 2rem));
   max-height: min(76dvh, 660px);
-  border: 1px solid #e5e5e5;
+  border: 1px solid var(--border);
   border-radius: 1rem;
   padding: 0;
   box-shadow: 0 24px 100px #00000024;
-  background: white;
+  background: var(--surface);
 }
 .picker-heading {
   display: flex;
@@ -590,9 +632,9 @@ dialog::backdrop {
   gap: 0.65rem;
   margin: 0.5rem 1.2rem 1rem;
   padding: 0.65rem 0.8rem;
-  border: 1px solid #e5e5e5;
+  border: 1px solid var(--border);
   border-radius: 0.55rem;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 .picker-search input {
   width: 100%;
@@ -631,10 +673,10 @@ dialog::backdrop {
 }
 .picker-page svg {
   flex-shrink: 0;
-  color: #737373;
+  color: var(--muted-foreground);
 }
 .picker-page[aria-current="page"] {
-  color: #262626;
+  color: var(--foreground);
   background: var(--accent-soft);
 }
 .comments {
@@ -645,9 +687,9 @@ dialog::backdrop {
   max-height: calc(100dvh - 104px);
   margin: 0;
   padding: 0;
-  border: 1px solid #e5e5e5;
+  border: 1px solid var(--border);
   border-radius: 0.8rem;
-  background: #ffffff;
+  background: var(--surface);
   box-shadow: 0 2px 8px #00000007;
   font-size: 0.875rem;
   overflow: hidden;
@@ -684,8 +726,8 @@ dialog::backdrop {
   width: 100%;
   resize: vertical;
   min-height: 80px;
-  border: 1px solid #d4d4d4;
-  background: white;
+  border: 1px solid var(--border);
+  background: var(--surface);
   border-radius: 0.5rem;
   padding: 0.65rem;
   margin: 0.6rem 0;
@@ -694,7 +736,7 @@ dialog::backdrop {
 }
 .comments label {
   font-size: 0.8rem;
-  color: #737373;
+  color: var(--muted-foreground);
 }
 .comments form > button {
   display: flex;
@@ -702,28 +744,28 @@ dialog::backdrop {
   justify-content: center;
   gap: 0.35rem;
   margin-left: auto;
-  background: var(--accent);
-  color: white;
+  background: var(--primary);
+  color: var(--primary-foreground);
   font-size: 0.8rem;
 }
 .comments form > button:hover:not(:disabled) {
-  background: #404040;
+  background: color-mix(in srgb, var(--primary) 85%, var(--surface));
 }
 .comment-composer {
   padding-bottom: 1rem;
 }
 .composer-context {
-  border-left: 2px solid #bba56d;
+  border-left: 2px solid var(--warning);
   padding: 0.35rem 0.65rem;
-  color: #737373;
+  color: var(--muted-foreground);
   font-size: 0.8rem;
   max-height: 100px;
   overflow-y: auto;
   white-space: pre-wrap;
 }
 .thread {
-  background: white;
-  border: 1px solid #e5e5e5;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 0.65rem;
   margin: 0 0 1rem;
   padding: 0.9rem;
@@ -744,7 +786,7 @@ dialog::backdrop {
 .quote {
   display: block;
   width: 100%;
-  border-left: 2px solid #c6b174;
+  border-left: 2px solid var(--warning);
   text-align: left;
   border-radius: 0;
   padding: 0.3rem 0.6rem;
@@ -752,8 +794,8 @@ dialog::backdrop {
   overflow: auto;
   margin-bottom: 0.8rem;
   font-size: 0.8rem;
-  color: #626c54;
-  background: #faf8ef;
+  color: var(--foreground);
+  background: var(--warning-soft);
 }
 .thread-actions {
   display: flex;
@@ -764,24 +806,24 @@ dialog::backdrop {
 }
 .thread-actions button {
   font-size: 0.75rem;
-  color: #737373;
+  color: var(--muted-foreground);
 }
 .resolved {
-  background: #fafafa;
+  background: var(--accent);
 }
 .resolved-threads > summary {
   padding: 0.5rem 0.25rem;
   margin-bottom: 0.7rem;
-  color: var(--muted);
+  color: var(--muted-foreground);
   cursor: pointer;
   font-size: 0.8rem;
 }
 .muted {
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 .error {
-  background: #fff0e8;
-  color: #8b3c25;
+  background: var(--error-soft);
+  color: var(--destructive);
   padding: 0.7rem 1rem;
   border-radius: 0.5rem;
   white-space: pre-wrap;
@@ -814,22 +856,22 @@ dialog::backdrop {
   background: #8263ac2b;
 }
 .remote-edit {
-  border-bottom: 2px solid #b9914b;
+  border-bottom: 2px solid var(--warning);
   animation: illumination 2s ease-out;
 }
 .comment-passage {
-  background: #e9d69535;
-  border-bottom: 1px solid #d6bc71;
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border-bottom: 1px solid var(--warning);
 }
 .comment-passage-active {
-  background: #e9d69588;
+  background: color-mix(in srgb, var(--warning) 24%, transparent);
 }
 .opaque small {
-  color: #737373;
+  color: var(--muted-foreground);
 }
 @keyframes illumination {
   from {
-    background: #f2d39377;
+    background: color-mix(in srgb, var(--warning) 24%, transparent);
   }
   to {
     background: transparent;
@@ -904,7 +946,7 @@ dialog::backdrop {
     max-width: 100%;
     max-height: min(78dvh, 680px);
     border: 0;
-    border-top: 1px solid #e5e5e5;
+    border-top: 1px solid var(--border);
     border-radius: 1rem 1rem 0 0;
     box-shadow: 0 -12px 48px #00000026;
     padding-bottom: env(safe-area-inset-bottom);
@@ -982,7 +1024,7 @@ dialog::backdrop {
   flex: 1;
 }
 .pages-trigger {
-  color: var(--muted);
+  color: var(--muted-foreground);
   font-size: 0.85rem;
   min-width: 0;
   max-width: 360px;
@@ -998,10 +1040,10 @@ dialog::backdrop {
 .account-name {
   margin: 0.55rem 0.6rem;
   font-size: 0.8rem;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 .danger {
-  color: #9e3f31;
+  color: var(--destructive);
 }
 .comment-count {
   display: inline-flex;
@@ -1011,7 +1053,7 @@ dialog::backdrop {
   justify-content: center;
   border-radius: 50%;
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--primary);
   font-size: 0.7rem;
 }
 .presence-label {
@@ -1050,8 +1092,8 @@ dialog::backdrop {
   font-size: 0.8rem;
 }
 .thread.thread-active {
-  border-color: #c6b67c;
-  box-shadow: 0 0 0 2px #f2eccf;
+  border-color: var(--warning);
+  box-shadow: 0 0 0 2px var(--warning-soft);
 }
 .comments-empty {
   font-size: 0.85rem;
@@ -1091,7 +1133,7 @@ dialog::backdrop {
 .app-notice {
   margin: 0.5rem auto;
   text-align: center;
-  color: var(--muted);
+  color: var(--muted-foreground);
   font-size: 0.875rem;
 }
 
@@ -1155,10 +1197,49 @@ dialog::backdrop {
   width: min(520px, calc(100vw - 24px));
   max-height: calc(100dvh - 100px);
   overflow: auto;
-  background: white;
+  background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 12px;
   box-shadow: 0 8px 32px #0002;
+}
+.page-sharing-popover .sharing-panel[data-appearance="native"] {
+  --sharing-muted: var(--muted-foreground);
+}
+.page-sharing-popover [data-sharing-invite] button[type="submit"]:not(:disabled) {
+  background: color-mix(in srgb, var(--primary) 14%, var(--surface));
+  border-color: color-mix(in srgb, var(--primary) 40%, var(--border));
+  color: var(--foreground);
+  font-weight: 600;
+}
+.page-sharing-popover [data-sharing-invite] button[type="submit"]:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary) 22%, var(--surface));
+}
+.page-sharing-popover .sharing-panel :is([role="alert"], [data-kind="error"]) {
+  color: var(--destructive);
+  background: var(--error-soft);
+}
+.page-sharing-popover .sharing-panel [data-tone="success"] {
+  color: var(--success);
+}
+.page-sharing-popover .sharing-panel [data-tone="pending"] {
+  color: var(--warning);
+}
+.page-sharing-export {
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+}
+.page-sharing-export > button {
+  width: 100%;
+  justify-content: flex-start;
+  font-size: 0.85rem;
+}
+.page-sharing-export .copy-status {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--muted-foreground);
+}
+.page-sharing-export .copy-status:not(:empty) {
+  padding: 4px 8px;
 }
 .page-domain-sharing {
   display: grid;
@@ -1176,7 +1257,7 @@ dialog::backdrop {
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: white;
+  background: var(--surface);
   color: inherit;
   font: inherit;
   font-size: 13px;
@@ -1185,7 +1266,7 @@ dialog::backdrop {
   margin: 0;
   font-size: 12px;
   line-height: 1.5;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 @media (max-width: 640px) {
   .page-sharing-popover {
@@ -1200,8 +1281,8 @@ dialog::backdrop {
 .access-notice {
   margin: 12px 0 24px;
   padding: 12px;
-  background: #faf8ef;
-  border: 1px solid #e6dfc2;
+  background: var(--warning-soft);
+  border: 1px solid var(--warning);
   border-radius: 8px;
 }
 .access-notice p {
@@ -1219,7 +1300,7 @@ details.account-actions > div a {
   white-space: nowrap;
 }
 details.account-actions > div a:hover {
-  background: #f5f5f5;
+  background: var(--accent);
 }
 .agent-setup {
   width: min(100%, 760px);
@@ -1235,7 +1316,7 @@ details.account-actions > div a:hover {
 }
 .agent-setup .setup-intro {
   font-size: 1.1rem;
-  color: var(--muted);
+  color: var(--muted-foreground);
   margin-bottom: 2.5rem;
 }
 .agent-setup section {
@@ -1248,7 +1329,7 @@ details.account-actions > div a:hover {
   margin: 0 0 1rem;
 }
 .agent-setup h2 > span {
-  color: var(--muted);
+  color: var(--muted-foreground);
   margin-right: 0.7rem;
   font-size: 0.9rem;
 }
@@ -1269,7 +1350,7 @@ details.account-actions > div a:hover {
   margin: 0;
 }
 .setup-permissions dd span {
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 .setup-action {
   display: inline-flex;
@@ -1277,7 +1358,7 @@ details.account-actions > div a:hover {
   gap: 0.65rem;
 }
 .agent-setup .setup-note {
-  color: var(--muted);
+  color: var(--muted-foreground);
   font-size: 0.875rem;
 }
 .setup-guide-link {
@@ -1303,7 +1384,7 @@ details.account-actions > div a:hover {
 }
 .setup-value {
   margin: 0;
-  background: #f6f6f6;
+  background: var(--muted);
   padding: 1rem;
   border-radius: 0.5rem;
   white-space: pre-wrap;
@@ -1314,10 +1395,10 @@ details.account-actions > div a:hover {
   min-height: 1.5em;
   font-size: 0.85rem;
   margin: 0;
-  color: var(--accent);
+  color: var(--primary);
   position: sticky;
   bottom: 0;
-  background: white;
+  background: var(--surface);
   padding: 0.75rem 0;
   border-top: 1px solid var(--line);
 }

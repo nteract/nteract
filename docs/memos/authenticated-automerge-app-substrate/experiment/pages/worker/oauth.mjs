@@ -67,12 +67,12 @@ function html(title, body, status = 200, consentRedirect) {
     "'self'" +
     ([CHATGPT_REDIRECT, KILO_REDIRECT].includes(consentRedirect) ? " " + consentRedirect : "");
   return response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)} · Pages</title><link rel="stylesheet" href="/app.css"></head><body><header class="app-header"><a class="brand" href="/">Pages</a></header><main class="agent-setup"><h1>${escape(title)}</h1>${body}</main></body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)} · Pages</title><script src="/theme.js"></script><link rel="stylesheet" href="/app.css"></head><body><header class="app-header"><a class="brand" href="/">Pages</a></header><main class="agent-setup"><h1>${escape(title)}</h1>${body}</main></body></html>`,
     {
       status,
       headers: {
         "Content-Type": "text/html; charset=utf-8",
-        "Content-Security-Policy": `default-src 'none'; style-src 'self'; base-uri 'none'; form-action ${formAction}; frame-ancestors 'none'`,
+        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action ${formAction}; frame-ancestors 'none'`,
         "X-Frame-Options": "DENY",
         // Chromium sends Origin:null for form POSTs under no-referrer. Keep
         // same-origin consent requests verifiable without leaking cross-site.

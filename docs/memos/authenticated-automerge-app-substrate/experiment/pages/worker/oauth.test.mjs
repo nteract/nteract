@@ -254,6 +254,13 @@ test("explicit consent escapes identity, grants only Pages tokens, rotates, narr
   assert.match(screen.text, /delete Pages you own/);
   assert.match(screen.text, /Keep this connection active for up to 30 days/);
   assert.match(screen.text, /Your Anaconda password and API key are not shared/);
+  assert.match(screen.text, /<script src="\/theme[.]js"><\/script>/);
+  assert.ok(screen.text.indexOf("/theme.js") < screen.text.indexOf("/app.css"));
+  assert.match(screen.result.headers.get("content-security-policy"), /script-src 'self';/);
+  assert.doesNotMatch(
+    screen.result.headers.get("content-security-policy"),
+    /unsafe-inline|unsafe-eval/,
+  );
   assert.equal(screen.result.headers.get("referrer-policy"), "same-origin");
   assert.match(screen.result.headers.get("content-security-policy"), /frame-ancestors 'none'/);
   assert.equal(

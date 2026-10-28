@@ -8,7 +8,7 @@
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);
-  color: var(--accent);
+  color: var(--foreground);
   box-shadow: 0 6px 24px #00000014;
   font-size: 13px;
 }
@@ -75,7 +75,7 @@
 }
 .link-popover .link-error {
   margin: 8px 0;
-  color: #a03627;
+  color: var(--destructive);
 }
 .toolbar-comment {
   gap: 5px;

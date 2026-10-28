@@ -187,6 +187,48 @@ test("an eager Mermaid source import fails the browser build instead of growing 
   );
 });
 
+test("the blocking theme asset applies preferences without loading the editor", async () => {
+  const result = await build({
+    entryPoints: [path.join(app, "viewer/theme-bootstrap.mjs")],
+    bundle: true,
+    write: false,
+    platform: "browser",
+    format: "iife",
+    target: "es2022",
+    minify: true,
+    metafile: true,
+  });
+  const output = result.outputFiles[0].text;
+  assert.ok(Buffer.byteLength(output) < 8192, "first paint must not wait for the editor bundle");
+  assert.deepEqual(
+    Object.keys(result.metafile.inputs)
+      .map((file) => path.basename(file))
+      .sort(),
+    ["theme-bootstrap.mjs", "theme.mjs"],
+  );
+  const classes = new Set();
+  const root = {
+    classList: { toggle: (name, enabled) => (enabled ? classes.add(name) : classes.delete(name)) },
+    dataset: {},
+    style: {},
+  };
+  vm.runInNewContext(output, {
+    window: {
+      document: { documentElement: root },
+      localStorage: { getItem: (key) => (key === "nteract.pages.theme" ? "dark" : null) },
+    },
+  });
+  assert.equal(root.dataset.theme, "dark");
+  assert.equal(root.dataset.colorTheme, undefined);
+  assert.equal(root.style.colorScheme, "dark");
+  assert.deepEqual([...classes], ["dark"]);
+  const html = readFileSync(path.join(app, "viewer/index.html"), "utf8");
+  const script = '<script src="/theme.js"></script>';
+  assert.ok(html.includes(script));
+  assert.ok(html.indexOf(script) < html.indexOf('<link rel="stylesheet"'));
+  assert.ok(html.indexOf(script) < html.indexOf("</head>"));
+});
+
 test("shared renderer resolves ESM imports through fixture paths without a root install", async (t) => {
   const root = mkdtempSync(path.join(tmpdir(), "pages-renderer-dependencies-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

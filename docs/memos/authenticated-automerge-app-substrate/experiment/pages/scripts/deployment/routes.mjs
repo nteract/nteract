@@ -8,6 +8,7 @@ export const imagePaths =
 export function routesFor(target = "pages-next", legacy = false) {
   const { hostname, listen } = deploymentProfile(target).deployment;
   const renderer = deploymentProfile(target).tunnelService ? "mermaid[.]js|" : "";
+  const theme = target === "page8" ? "theme[.]js|" : "";
   // Frozen deployments retain their exact route receipts. Sharing targets expose
   // only the public setup page, its script, and the authenticated access API.
   const sharing = ["page5", "page6", "page7", "page8"].includes(target);
@@ -17,6 +18,7 @@ export function routesFor(target = "pages-next", legacy = false) {
   const paths = legacy
     ? "index[.]html|app[.](js|css)|(automerge|subduction)[.]wasm|health|mcp|api/(tools|connect|sync|saved|auth/(login|logout|session))|oidc"
     : "index[.]html|app[.](js|css)|" +
+      theme +
       renderer +
       connect +
       (authenticatedAssets ? oauthPaths : "") +

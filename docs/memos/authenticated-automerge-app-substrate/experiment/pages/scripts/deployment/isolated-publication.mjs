@@ -191,7 +191,9 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
         ? plan.config.replace("|connect|connect[.]js|", "|")
         : target === "page7"
           ? plan.config.replace(imagePaths, "")
-          : null;
+          : target === "page8"
+            ? plan.config.replace("|theme[.]js|", "|")
+            : null;
   const previousReceipt = previousConfig === null ? null : receiptFor(previousConfig);
   const pendingReceipt =
     previousConfig === null
@@ -273,6 +275,10 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
       ["/mermaid.js", plan.listen],
       ["/mermaid.js/private", "http_status:404"],
       ["/mermaidXjs", "http_status:404"],
+      ["/theme.js", target === "page8" ? plan.listen : "http_status:404"],
+      ["/theme.js/private", "http_status:404"],
+      ["/themeXjs", "http_status:404"],
+      ["/theme.js/", "http_status:404"],
       ["/api/sync", plan.listen],
       ["/api/access", sharing ? plan.listen : "http_status:404"],
       ["/api/access/private", "http_status:404"],
