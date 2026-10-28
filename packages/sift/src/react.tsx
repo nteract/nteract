@@ -931,23 +931,23 @@ export function SiftTable({
   /**
    * Bring the engine's status indicator in line with what SiftTable knows and
    * the engine does not: a bounded preview, or a failure after mount. Acts
-   * only once the engine has settled (`sift-status-ready`); while streaming,
-   * the engine's own state is the truth.
+   * only once the engine has settled (`sift-status-ready`), except that a
+   * cleared failure must lose its stopped styling even during a replacement
+   * stream. While streaming, the engine owns the glyph and tooltip.
    */
   const syncStatusIndicator = useCallback(() => {
     const indicator = engineDivRef.current?.querySelector<HTMLElement>(".sift-status-indicator");
-    if (!indicator || !indicator.classList.contains("sift-status-ready")) return;
+    if (!indicator) return;
     const failure = loadFailureRef.current;
+    if (!failure) indicator.classList.remove("sift-status-stopped");
+    if (!indicator.classList.contains("sift-status-ready")) return;
     if (failure) {
       indicator.classList.add("sift-status-stopped");
       indicator.textContent = "!";
       indicator.title = `Stopped loading: ${failure}`;
       return;
     }
-    if (indicator.classList.contains("sift-status-stopped")) {
-      indicator.classList.remove("sift-status-stopped");
-      indicator.textContent = "✓";
-    }
+    indicator.textContent = "✓";
     indicator.title = isBoundedPreviewRef.current ? "Preview loaded" : "All data loaded";
   }, []);
 

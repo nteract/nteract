@@ -1,4 +1,5 @@
 import { cleanup, render, waitFor } from "@testing-library/react";
+import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { SiftFocusStatus, SiftScrollHandoffCue } from "./handoff";
 import { ensureModule, loadIpc } from "./predicate";
@@ -950,6 +951,93 @@ describe("SiftTable", () => {
       unmount();
     });
   });
+
+  it.each([false, true])(
+    "clears stopped styling when a replacement stream starts before React settles (windowed: %s)",
+    async (windowed) => {
+      vi.useRealTimers();
+      let restore = stubParquetStore();
+      const onLoadError = vi.fn();
+      const milestones: SiftLoadMilestone[] = [];
+      const failedSource = parquetByteSource();
+      const append = predicateModule.parquet_append_row_group.getMockImplementation()!;
+      predicateModule.parquet_append_row_group
+        .mockImplementationOnce(append)
+        .mockImplementationOnce(() => {
+          throw new Error("row group read failed");
+        });
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      const root = createRoot(container);
+      let releaseLastGroup = () => {};
+      try {
+        root.render(
+          <SiftTable
+            source={{ kind: "byte-source", source: failedSource, overflow: "truncate", windowed }}
+            onLoadError={onLoadError}
+          />,
+        );
+        await waitFor(() => {
+          expect(container.querySelector(".sift-load-failure")?.textContent).toContain(
+            "row group read failed",
+          );
+          expect(container.querySelector(".sift-status-stopped")).not.toBeNull();
+        });
+        const engine = lastEngine();
+        const indicator = container.querySelector<HTMLElement>(".sift-status-indicator")!;
+        restore();
+        restore = stubParquetStore();
+        const lastGroupReady = new Promise<void>((resolve) => {
+          releaseLastGroup = resolve;
+        });
+        const successfulSource = parquetByteSource();
+        const read = successfulSource.read.getMockImplementation()!;
+        let groupReads = 0;
+        successfulSource.read.mockImplementation(async (offset, length) => {
+          if (offset === 4 && ++groupReads === 2) await lastGroupReady;
+          return read(offset, length);
+        });
+        // Keep browser-style concurrent scheduling here. RTL's act-wrapped
+        // rerender flushes the failure-clear effect before the first async
+        // read can mount, hiding the stopped + streaming ordering.
+        root.render(
+          <SiftTable
+            source={{
+              kind: "byte-source",
+              source: successfulSource,
+              overflow: "truncate",
+              windowed,
+            }}
+            onLoadError={onLoadError}
+            onLoadMilestone={(milestone) => milestones.push(milestone)}
+          />,
+        );
+        await waitFor(() => {
+          expect(groupReads).toBe(2);
+          expect(indicator.classList.contains("sift-status-streaming")).toBe(true);
+          expect(container.querySelector(".sift-load-failure")).toBeNull();
+          expect(indicator.classList.contains("sift-status-stopped")).toBe(false);
+        });
+        releaseLastGroup();
+        await waitFor(() => {
+          expect(milestones.some((m) => m.phase === "streaming-complete")).toBe(true);
+          expect(indicator.classList.contains("sift-status-ready")).toBe(true);
+        });
+        expect(lastEngine()).toBe(engine);
+        expect(engine.getState().totalCount).toBe(4);
+        expect(onLoadError).toHaveBeenCalledTimes(1);
+        expect(container.querySelector(".sift-load-failure")).toBeNull();
+        expect(indicator.title).toBe("All data loaded");
+        expect(indicator.textContent).toBe("✓");
+        expect(indicator.classList.contains("sift-status-stopped")).toBe(false);
+      } finally {
+        releaseLastGroup();
+        root.unmount();
+        container.remove();
+        restore();
+      }
+    },
+  );
 
   describe("autoLoad", () => {
     const streamingComplete = (milestones: SiftLoadMilestone[]) =>
