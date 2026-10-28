@@ -766,7 +766,7 @@ describe("useNotebookActionPolicy", () => {
     const projectTrustMessage =
       "The project folder is not trusted on this machine. Trust it or use the notebook environment to launch.";
 
-    async function renderBlockedLaunch(kind: "cell" | "all" = "cell") {
+    async function renderBlockedLaunch(kind: "cell" | "all" = "cell", approveOnly = false) {
       const options = createPolicyOptions({
         checkTrust: vi.fn()
           .mockResolvedValueOnce({ status: "untrusted" })
@@ -782,7 +782,10 @@ describe("useNotebookActionPolicy", () => {
       });
       expect(options.launchKernel).not.toHaveBeenCalled();
       expect(hook.result.current.trustDialogOpen).toBe(true);
-      await act(async () => { await hook.result.current.handleTrustApprove(); });
+      await act(async () => {
+        if (approveOnly) await hook.result.current.handleTrustApproveOnly();
+        else await hook.result.current.handleTrustApprove();
+      });
       expect(options.approveTrust).toHaveBeenCalledExactlyOnceWith({ observedHeads: ["head-1"] });
       expect(options.executeCellGuarded).not.toHaveBeenCalled();
       expect(options.runAllCellsGuarded).not.toHaveBeenCalled();
@@ -817,6 +820,114 @@ describe("useNotebookActionPolicy", () => {
       act(() => result.current.setTrustActionNotice("Environment selection changed"));
       await act(async () => { await result.current.handleProjectTrustUseNotebookEnv("/work/proj", false); });
       expect(result.current.trustActionNotice).toBe("Environment selection changed");
+    });
+
+    it.each(["cell", "all"] as const)("retires a canceled launch notice before a fresh %s run", async (kind) => {
+      let heads = ["declined-head"];
+      const options = createPolicyOptions({
+        getObservedHeads: () => heads,
+        checkTrust: vi.fn()
+          .mockResolvedValueOnce({ status: "untrusted" })
+          .mockResolvedValueOnce({ status: "untrusted" })
+          .mockResolvedValue({ status: "trusted" }),
+        launchKernel: vi.fn()
+          .mockResolvedValueOnce({ result: "error", error: projectTrustMessage })
+          .mockResolvedValue(response("kernel_launched")),
+      });
+      const { result, rerender } = renderHook(() => useNotebookActionPolicy(options));
+      await act(async () => { await result.current.handleRunAllCells(); });
+      act(() => {
+        result.current.handleTrustDecline();
+        result.current.handleTrustDialogOpenChange(false);
+      });
+      expect(options.launchKernel).not.toHaveBeenCalled();
+
+      heads = ["canceled-head"];
+      await act(async () => { await result.current.handleExecuteCell("cell-1"); });
+      await act(async () => { await result.current.handleTrustApprove(); });
+      expect(result.current.trustActionNotice).toBe(projectTrustMessage);
+      expect(options.approveTrust).toHaveBeenCalledExactlyOnceWith({ observedHeads: ["canceled-head"] });
+      options.kernelStatus = KERNEL_STATUS.AWAITING_PROJECT_TRUST;
+      rerender();
+      act(() => result.current.clearProjectTrustError());
+      expect(result.current.pendingTrustAction).toBeNull();
+      expect(options.executeCellGuarded).not.toHaveBeenCalled();
+      expect(options.runAllCellsGuarded).not.toHaveBeenCalled();
+
+      heads = ["fresh-head"];
+      await act(async () => {
+        if (kind === "cell") await result.current.handleExecuteCell("cell-1");
+        else await result.current.handleRunAllCells();
+      });
+      await act(async () => { await result.current.handleProjectTrustUseNotebookEnv("/work/proj", false); });
+      expect(result.current.trustActionNotice).toBeNull();
+      expect(options.launchKernel).toHaveBeenCalledTimes(2);
+      expect(options.declineProjectTrust).toHaveBeenCalledExactlyOnceWith("/work/proj", false);
+      expect(options.approveProjectTrust).not.toHaveBeenCalled();
+      if (kind === "cell") {
+        expect(options.executeCellGuarded).toHaveBeenCalledExactlyOnceWith("cell-1", { observed_heads: ["fresh-head"] });
+        expect(options.runAllCellsGuarded).not.toHaveBeenCalled();
+      } else {
+        expect(options.runAllCellsGuarded).toHaveBeenCalledExactlyOnceWith({ observed_heads: ["fresh-head"] });
+        expect(options.executeCellGuarded).not.toHaveBeenCalled();
+      }
+      expect(options.executeCell).not.toHaveBeenCalled();
+      expect(options.runAllCells).not.toHaveBeenCalled();
+    });
+
+    it.each(["New failure", projectTrustMessage])("preserves an unrelated notice when canceling project review: %s", async (newMessage) => {
+      const { result } = await renderBlockedLaunch();
+      act(() => result.current.setTrustActionNotice(newMessage));
+      act(() => result.current.clearProjectTrustError());
+      expect(result.current.trustActionNotice).toBe(newMessage);
+      expect(result.current.pendingTrustAction).toBeNull();
+    });
+
+    it.each([false, true])("does not treat a null-owned launch notice as a canceled run's notice (new run: %s)", async (newRun) => {
+      const { result, options, rerender } = await renderBlockedLaunch("cell", true);
+      expect(result.current.pendingTrustAction).toBeNull();
+      options.kernelStatus = KERNEL_STATUS.AWAITING_PROJECT_TRUST;
+      rerender();
+      if (newRun) await act(async () => { await result.current.handleExecuteCell("cell-1"); });
+      act(() => result.current.clearProjectTrustError());
+      expect(result.current.trustActionNotice).toBe(projectTrustMessage);
+      expect(options.executeCellGuarded).not.toHaveBeenCalled();
+      expect(options.runAllCellsGuarded).not.toHaveBeenCalled();
+    });
+
+    it.each(["request", "launch"] as const)("retires a canceled run's notice during %s and preserves a later error", async (stage) => {
+      const { result, options } = await renderBlockedLaunch();
+      const pending = deferred<NotebookResponse>();
+      const reached = deferred<void>();
+      vi.mocked(stage === "request" ? options.declineProjectTrust : options.launchKernel)
+        .mockImplementationOnce(() => { reached.resolve(); return pending.promise; });
+      let operation!: Promise<boolean>;
+      await act(async () => {
+        operation = result.current.handleProjectTrustUseNotebookEnv("/work/proj", false);
+        await reached.promise;
+      });
+      act(() => result.current.clearProjectTrustError());
+      expect(result.current.trustActionNotice).toBeNull();
+      expect(result.current.pendingTrustAction).toBeNull();
+      act(() => result.current.setTrustActionNotice("New failure"));
+      await act(async () => {
+        pending.resolve({ result: "error", error: "Canceled recovery failed" });
+        expect(await operation).toBe(false);
+      });
+      expect(result.current.trustActionNotice).toBe("New failure");
+      expect(options.executeCellGuarded).not.toHaveBeenCalled();
+      expect(options.runAllCellsGuarded).not.toHaveBeenCalled();
+    });
+
+    it("does not clear an earlier launch's notice when canceling a different run", async () => {
+      const { result, options, rerender } = await renderBlockedLaunch();
+      options.kernelStatus = KERNEL_STATUS.AWAITING_PROJECT_TRUST;
+      rerender();
+      await act(async () => { await result.current.handleRunAllCells(); });
+      act(() => result.current.clearProjectTrustError());
+      expect(result.current.trustActionNotice).toBe(projectTrustMessage);
+      expect(options.executeCellGuarded).not.toHaveBeenCalled();
+      expect(options.runAllCellsGuarded).not.toHaveBeenCalled();
     });
 
     it("does not clear an earlier launch's notice when a different run recovers", async () => {

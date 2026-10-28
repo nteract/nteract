@@ -12,6 +12,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./handoff": "./src/handoff.tsx",
+    "./worker": "./src/worker/entry.ts",
     "./style.css": "./src/style.css",
     "./handoff.css": "./src/handoff.css",
     "./sift.wasm": "./public/wasm/sift_wasm_bg.wasm"
@@ -27,6 +28,10 @@
       "./handoff": {
         "types": "./lib/types/packages/sift/src/handoff.d.ts",
         "import": "./lib/handoff.js"
+      },
+      "./worker": {
+        "types": "./lib/types/packages/sift/src/worker/entry.d.ts",
+        "import": "./lib/worker.js"
       },
       "./style.css": "./lib/style.css",
       "./handoff.css": "./lib/handoff.css",
@@ -73,7 +78,7 @@
     "@nteract/odometer": "workspace:*"
   },
   "dependencies": {
-    "@chenglou/pretext": ">=0.0.6",
+    "@chenglou/pretext": "^1.0.0",
     "@radix-ui/react-popover": "^1.1.15",
     "@radix-ui/react-slot": "^1.2.4",
     "class-variance-authority": "^0.7.1",

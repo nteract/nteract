@@ -62,6 +62,9 @@ export default defineConfig({
       entry: {
         index: resolve(__dirname, "src/index.ts"),
         handoff: resolve(__dirname, "src/handoff.tsx"),
+        // The data worker: ESM, no React, no DOM. Shares chunks with index.js
+        // and reaches the glue through the same `./wasm/sift_wasm.js` rewrite.
+        worker: resolve(__dirname, "src/worker/entry.ts"),
       },
       formats: ["es"],
       fileName: (_format, entryName) => `${entryName}.js`,

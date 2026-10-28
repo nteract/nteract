@@ -77,7 +77,20 @@
   --sift-accent: var(--sift-color-accent, oklch(0.546 0.245 262.881));
   --sift-bool-true: var(--sift-color-true, #22c55e);
   --sift-bool-false: var(--sift-color-false, #ef4444);
-  --sift-font: var(--sift-font-family, Inter, ui-sans-serif, system-ui, sans-serif);
+  /* Named families first: text is measured in canvas for row heights, and
+     canvas measures system-ui differently from how macOS paints it. Matches
+     DEFAULT_FONT_FAMILY in auto-width.ts. */
+  --sift-font: var(
+    --sift-font-family,
+    Inter,
+    "Helvetica Neue",
+    "Segoe UI",
+    Helvetica,
+    Arial,
+    ui-sans-serif,
+    system-ui,
+    sans-serif
+  );
   --sift-radius: var(--sift-radius-base, var(--radius, 0.5rem));
 
   /* Derived from the inputs, so they follow light and dark automatically. */

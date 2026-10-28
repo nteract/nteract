@@ -64,7 +64,7 @@ HTMLCanvasElement.prototype.getContext = canvasStub.getContext as never;
 // --- document.fonts polyfill ---
 
 Object.defineProperty(document, "fonts", {
-  value: { ready: Promise.resolve() },
+  value: Object.assign(new EventTarget(), { ready: Promise.resolve() }),
   writable: false,
 });
 
@@ -75,16 +75,10 @@ HTMLElement.prototype.requestFullscreen = vi.fn(() => Promise.resolve());
 // --- Mock @chenglou/pretext (requires real canvas font measurement) ---
 
 vi.mock("@chenglou/pretext", () => ({
-  prepare: vi.fn(() => ({ __brand: "PreparedText" })),
-  prepareWithSegments: vi.fn((text: string) => ({
-    __brand: "PreparedTextWithSegments",
-    widths: [text.length * 7], // rough estimate: 7px per char
-    segments: [text],
-  })),
+  prepare: vi.fn((text: string) => ({ __brand: "PreparedText", text })),
   layout: vi.fn(() => ({ lineCount: 1, height: 20 })),
-  measureNaturalWidth: vi.fn((prepared: { widths: number[] }) => {
-    let w = 0;
-    for (let i = 0; i < prepared.widths.length; i++) w += prepared.widths[i];
-    return w;
-  }),
+  // Rough estimate: 7px per char. Handles from a test's own `prepare` mock
+  // may omit `text`; they measure 0 wide.
+  measureNaturalWidth: vi.fn((prepared: { text?: string }) => (prepared.text?.length ?? 0) * 7),
+  clearCache: vi.fn(),
 }));

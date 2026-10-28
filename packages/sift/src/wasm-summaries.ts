@@ -1,8 +1,102 @@
 import { looksLikeIndexColumnName } from "./parquet-features";
 import type { getModuleSync } from "./predicate";
-import type { Column, TableData } from "./table";
+import type {
+  Column,
+  ColumnFileStats,
+  ColumnSummary,
+  Coverage,
+  DatasetCoverage,
+  SummaryScope,
+  TableData,
+} from "./table";
 
 // --- WASM summary computation ---
+
+const RESIDENT_EXACT: Coverage = { scope: "loaded", precision: "exact", source: "resident" };
+const DATASET_EXACT_RESIDENT: Coverage = {
+  scope: "dataset",
+  precision: "exact",
+  source: "resident",
+};
+
+/**
+ * Resident rows are the whole dataset: no coverage was declared, or nothing
+ * was cut and the known total matches what is loaded. An unknown total is
+ * not a claim about the dataset.
+ */
+function residentIsDataset(coverage: DatasetCoverage | undefined): boolean {
+  if (!coverage) return true;
+  if (coverage.truncated) return false;
+  return coverage.totalRows !== undefined && coverage.totalRows.value === coverage.loadedRows;
+}
+
+type ScopeInputs = {
+  numRows: number;
+  coverage: DatasetCoverage | undefined;
+  /** Footer stats for this column, or null when absent or the column is cast. */
+  stats: ColumnFileStats | null;
+  /** Null count over resident rows. */
+  loadedNullCount: number;
+  /** Distinct count over resident rows, where the summary tracks one. */
+  uniqueCount?: number;
+};
+
+/**
+ * Assemble per-metric coverage for one column. The distribution (bins,
+ * categories, true/false) is always over resident rows; range and null count
+ * come from footer metadata when the footer has usable numbers for the whole
+ * file, and from resident rows otherwise.
+ */
+export function buildSummaryScope({
+  numRows,
+  coverage,
+  stats,
+  loadedNullCount,
+  uniqueCount,
+}: ScopeInputs): SummaryScope {
+  const allResident = residentIsDataset(coverage);
+  const rows: SummaryScope["rows"] = { loaded: numRows };
+  if (coverage?.totalRows) rows.dataset = coverage.totalRows;
+
+  const scope: SummaryScope = {
+    rows,
+    distribution: allResident ? DATASET_EXACT_RESIDENT : RESIDENT_EXACT,
+  };
+
+  const fallback: Coverage = allResident ? DATASET_EXACT_RESIDENT : RESIDENT_EXACT;
+  if (stats && stats.nullCount !== null) {
+    scope.nullCount = {
+      value: stats.nullCount,
+      scope: "dataset",
+      precision: "exact",
+      source: "metadata",
+    };
+  } else {
+    scope.nullCount = { value: loadedNullCount, ...fallback };
+  }
+
+  const rowGroups = coverage?.rowGroups;
+  if (
+    stats &&
+    rowGroups !== undefined &&
+    stats.boundedRowGroups === rowGroups &&
+    typeof stats.min === "number" &&
+    typeof stats.max === "number"
+  ) {
+    scope.range = {
+      value: { min: stats.min, max: stats.max },
+      scope: "dataset",
+      precision: stats.boundsExact ? "exact" : "estimated",
+      source: "metadata",
+    };
+  }
+
+  if (uniqueCount !== undefined) {
+    scope.distinctCount = { value: uniqueCount, ...fallback };
+  }
+
+  return scope;
+}
 
 export function updateWasmSummaries(
   mod: ReturnType<typeof getModuleSync>,
@@ -13,9 +107,26 @@ export function updateWasmSummaries(
 ) {
   const numRows = mod.num_rows(handle);
   const BIN_COUNT = 25;
+  const nullCounts = mod.store_null_counts(handle);
+  const { coverage, datasetStats } = tableData;
+
+  const scopeFor = (c: number, uniqueCount?: number): SummaryScope => {
+    // Footer stats describe the stored type; a cast column shows different
+    // values, so its footer entry is ignored. The cast check is a WASM call,
+    // so it runs only for columns that have footer stats to hide.
+    let stats = datasetStats?.[c] ?? null;
+    if (stats && tableData.isColumnCast?.(c)) stats = null;
+    return buildSummaryScope({
+      numRows,
+      coverage,
+      stats,
+      loadedNullCount: nullCounts[c] ?? 0,
+      uniqueCount,
+    });
+  };
 
   tableData.rowCount = numRows;
-  tableData.columnSummaries = columns.map((col, c) => {
+  tableData.columnSummaries = columns.map((col, c): ColumnSummary => {
     switch (col.columnType) {
       // No header chart for image columns yet.
       case "image":
@@ -43,6 +154,8 @@ export function updateWasmSummaries(
           othersPct,
           allCategories,
           medianTextLength,
+          nullCount: nullCounts[c] ?? 0,
+          scope: scopeFor(c, counts.length),
         };
       }
       case "boolean": {
@@ -53,6 +166,7 @@ export function updateWasmSummaries(
           falseCount,
           nullCount,
           total: numRows,
+          scope: scopeFor(c),
         };
       }
       case "timestamp": {
@@ -67,6 +181,8 @@ export function updateWasmSummaries(
           min: bins[0].x0,
           max: bins[bins.length - 1].x1,
           bins,
+          nullCount: nullCounts[c] ?? 0,
+          scope: scopeFor(c),
         };
       }
       case "numeric": {
@@ -85,6 +201,8 @@ export function updateWasmSummaries(
           max: bins[bins.length - 1].x1,
           bins,
           isIndex: isIndex ? true : undefined,
+          nullCount: nullCounts[c] ?? 0,
+          scope: scopeFor(c),
         };
       }
     }

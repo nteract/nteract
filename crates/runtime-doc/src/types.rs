@@ -167,6 +167,12 @@ pub enum ProjectFileExtras {
         channels: Vec<String>,
         #[serde(default)]
         pip: Vec<String>,
+        /// Top-level `name:`, which selects an existing named conda env.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// Top-level `prefix:`, an explicit env path used instead of `name:`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prefix: Option<String>,
     },
 }
 

@@ -829,6 +829,14 @@ export function useNotebookActionPolicy({
     setProjectTrustError(null);
     // Called when the user dismisses the project dialog. A later approval
     // must not replay a run from a dismissed prompt.
+    const action = pendingTrustActionRef.current;
+    // Retire the canceled run's notice before its action is dropped. Null is
+    // shared by actionless starts, so it cannot prove ownership of a notice.
+    setTrustActionNotice((current) =>
+      action && current && typeof current !== "string" && current.blockedLaunchAction === action
+        ? null
+        : current,
+    );
     projectTrustInFlightRef.current = null;
     setProjectTrustBusy(false);
     setBlockedTrustAction(null);

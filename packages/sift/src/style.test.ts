@@ -15,6 +15,14 @@ describe("Sift stylesheet", () => {
     );
   });
 
+  it("keeps a short scope badge on narrow footers instead of hiding the scope", () => {
+    expect(styleCss).toMatch(/\.sift-preview-scope-short\s*\{\s*display:\s*none;\s*\}/);
+    const narrow = styleCss.match(/@media \(max-width: 700px\)\s*\{([\s\S]*?)\n\}/);
+    expect(narrow?.[1]).toMatch(/\.sift-preview-scope-full\s*\{\s*display:\s*none;\s*\}/);
+    expect(narrow?.[1]).toMatch(/\.sift-preview-scope-short\s*\{\s*display:\s*inline;\s*\}/);
+    expect(narrow?.[1]).not.toMatch(/\.sift-preview-scope\s*\{/);
+  });
+
   it("gives truncated preview text a shrinkable block container", () => {
     // Ellipsis does not apply to a plain inline span, even with overflow set.
     expect(styleCss).toMatch(

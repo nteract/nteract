@@ -95,8 +95,11 @@ try {
   await writeFile(
     join(scratch, "consumer.tsx"),
     `
-    import { SiftTable, createTable, loadTableFile, setWasmUrl, type TableData } from "@nteract/sift";
+    import { SiftTable, createTable, loadTableFile, setWasmUrl, setWorkerFactory, type TableData } from "@nteract/sift";
     import { SiftFocusStatus } from "@nteract/sift/handoff";
+    // The worker entry must resolve for bundlers; there is no Worker here to run it.
+    import "@nteract/sift/worker";
+    setWorkerFactory(() => new Worker(new URL("@nteract/sift/worker", import.meta.url), { type: "module" }));
     const view = <SiftTable source={{ kind: "url", url: "/local.arrow" }} />;
     const status = <SiftFocusStatus label="Table focused" />;
     declare const data: TableData;

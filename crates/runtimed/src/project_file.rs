@@ -123,6 +123,60 @@ fn find_nearest_project_file_with_home(
     }
 }
 
+/// Whether `name` is a filename that project detection looks for.
+pub fn is_project_file_name(name: &std::ffi::OsStr) -> bool {
+    ALL_CANDIDATES
+        .iter()
+        .any(|(candidate, _)| std::ffi::OsStr::new(candidate) == name)
+}
+
+/// Directories whose direct children can change the result of
+/// [`detect_project_file`] for `start_path`.
+///
+/// This follows the same walk and stops at the same place: the directory
+/// holding the detected file, a `.git` root, or just below the home
+/// directory. Creating a manifest in any of these directories either adds
+/// a closer project file or changes the tiebreak beside the current one.
+///
+/// A walk that reaches the filesystem root without any boundary returns
+/// only the starting directory, so a notebook outside every repository and
+/// outside home never watches `/` and its system ancestors.
+pub fn project_watch_dirs(start_path: &Path) -> Vec<PathBuf> {
+    project_watch_dirs_with_home(start_path, dirs::home_dir())
+}
+
+fn project_watch_dirs_with_home(start_path: &Path, home_dir: Option<PathBuf>) -> Vec<PathBuf> {
+    let start_dir = if start_path.is_file() {
+        match start_path.parent() {
+            Some(parent) => parent,
+            None => return Vec::new(),
+        }
+    } else {
+        start_path
+    };
+
+    let mut dirs = Vec::new();
+    let mut current = start_dir.to_path_buf();
+    loop {
+        if home_dir.as_ref() == Some(&current) {
+            return dirs;
+        }
+        dirs.push(current.clone());
+
+        let has_manifest = ALL_CANDIDATES
+            .iter()
+            .any(|(filename, _)| current.join(filename).exists());
+        if has_manifest || current.join(".git").exists() {
+            return dirs;
+        }
+
+        match current.parent() {
+            Some(parent) if parent != current => current = parent.to_path_buf(),
+            _ => return vec![start_dir.to_path_buf()],
+        }
+    }
+}
+
 /// Convenience function: detect project file with all kinds enabled.
 pub fn detect_project_file(notebook_path: &Path) -> Option<DetectedProjectFile> {
     let all_kinds = vec![
@@ -397,6 +451,87 @@ mod tests {
             found.to_env_source(),
             notebook_protocol::connection::EnvSource::PixiToml
         );
+    }
+
+    #[test]
+    fn watch_dirs_stop_at_the_detected_manifest() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        let notebooks = project.join("notebooks").join("deep");
+        std::fs::create_dir_all(&notebooks).unwrap();
+        write_file(&project, "environment.yml", "dependencies:\n  - numpy\n");
+        let notebook = notebooks.join("demo.ipynb");
+        write_file(&notebooks, "demo.ipynb", "{}");
+
+        assert_eq!(
+            project_watch_dirs_with_home(&notebook, None),
+            vec![
+                notebooks.clone(),
+                project.join("notebooks"),
+                project.clone()
+            ]
+        );
+    }
+
+    #[test]
+    fn watch_dirs_without_a_manifest_stop_at_git_root_or_home() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        let notebooks = repo.join("notebooks");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(&notebooks).unwrap();
+        assert_eq!(
+            project_watch_dirs_with_home(&notebooks, None),
+            vec![notebooks.clone(), repo.clone()]
+        );
+
+        let home = temp.path().join("home");
+        let home_notebooks = home.join("notebooks");
+        std::fs::create_dir_all(&home_notebooks).unwrap();
+        assert_eq!(
+            project_watch_dirs_with_home(&home_notebooks, Some(home.clone())),
+            vec![home_notebooks.clone()]
+        );
+    }
+
+    #[test]
+    fn watch_dirs_without_any_boundary_only_watch_the_start_dir() {
+        let temp = TempDir::new().unwrap();
+        let notebooks = temp.path().join("loose");
+        std::fs::create_dir_all(&notebooks).unwrap();
+        // The temp dir sits under neither a repo nor the given home, so the
+        // walk reaches `/`; only the notebook directory itself is watched.
+        let dirs = project_watch_dirs_with_home(&notebooks, Some(temp.path().join("elsewhere")));
+        if dirs.len() == 1 {
+            assert_eq!(dirs, vec![notebooks.clone()]);
+        } else {
+            // A checkout-level `.git` or manifest above the temp dir is a
+            // legitimate boundary; the walk must still end at one.
+            let last = dirs.last().unwrap();
+            assert!(
+                last.join(".git").exists()
+                    || ALL_CANDIDATES
+                        .iter()
+                        .any(|(name, _)| last.join(name).exists()),
+                "{dirs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn project_file_names_match_detection_candidates() {
+        for name in [
+            "pyproject.toml",
+            "pixi.toml",
+            "environment.yml",
+            "environment.yaml",
+        ] {
+            assert!(is_project_file_name(std::ffi::OsStr::new(name)), "{name}");
+        }
+        assert!(!is_project_file_name(std::ffi::OsStr::new("demo.ipynb")));
+        assert!(!is_project_file_name(std::ffi::OsStr::new(
+            "environment.yml.swp"
+        )));
     }
 
     #[test]

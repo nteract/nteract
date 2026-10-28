@@ -433,6 +433,21 @@ async def async_create_cell_and_wait_for_sync(
     return cell_id
 
 
+def stream_segments(outputs):
+    """Stream outputs as ordered ``(name, text)`` pairs."""
+    return [(o.name, o.text) for o in outputs if o.output_type == "stream"]
+
+
+def saved_stream_segments(notebook, cell_id):
+    """Stream outputs of one cell in a saved ``.ipynb`` as ``(name, text)`` pairs."""
+    (cell,) = [c for c in notebook["cells"] if c.get("id") == cell_id]
+    return [
+        (o["name"], "".join(o["text"]) if isinstance(o["text"], list) else o["text"])
+        for o in cell["outputs"]
+        if o["output_type"] == "stream"
+    ]
+
+
 async def async_cleanup_session(session):
     """Release a native test session's kernel and peer connection."""
     try:
@@ -1229,31 +1244,86 @@ for i in range({line_count}):
         assert f"chunk-{line_count - 1}\n" in result.stdout
         assert result.stdout.count("chunk-") == line_count
 
-    async def test_interleaved_stdout_stderr_separate(self, session):
-        """Interleaved stdout and stderr should remain separate streams."""
+    async def test_interleaved_stdout_stderr_separate(self, session, tmp_path):
+        """Each interleaved stream segment is stored once, in IOPub order.
+
+        Stream terminals are per segment, so a stdout segment sealed by stderr
+        must not be re-emitted as a cumulative snapshot after it.
+        """
+        await async_start_kernel_with_retry(session)
+
+        # Explicit flushes pin the IOPub order to stdout -> stderr -> stdout.
+        cell_id = await async_create_cell_and_wait_for_sync(
+            session,
+            """
+import sys
+sys.stdout.write("out1\\n")
+sys.stdout.flush()
+sys.stderr.write("err1\\n")
+sys.stderr.flush()
+sys.stdout.write("out2\\n")
+sys.stdout.flush()
+""",
+        )
+        result = await session.execute_cell(cell_id)
+
+        assert result.success
+        expected = [("stdout", "out1\n"), ("stderr", "err1\n"), ("stdout", "out2\n")]
+        assert stream_segments(result.outputs) == expected
+        assert result.stdout == "out1\nout2\n"
+        assert result.stderr == "err1\n"
+
+        saved = json.loads(Path(await session.save(str(tmp_path / "streams.ipynb"))).read_text())
+        assert saved_stream_segments(saved, cell_id) == expected
+
+    async def test_print_to_stdout_then_stderr_is_not_duplicated(self, session):
+        """Two prints across streams store two outputs, each line once."""
         await async_start_kernel_with_retry(session)
 
         cell_id = await async_create_cell_and_wait_for_sync(
             session,
             """
 import sys
-print("out1")
-sys.stderr.write("err1\\n")
-sys.stderr.flush()
-print("out2")
+
+print("plain stdout")
+print("plain stderr", file=sys.stderr)
 """,
         )
         result = await session.execute_cell(cell_id)
 
         assert result.success
-        # stdout should have both stdout lines
-        assert "out1" in result.stdout
-        assert "out2" in result.stdout
-        # stderr should have the error line
-        assert "err1" in result.stderr
-        # They should not be mixed
-        assert "err1" not in result.stdout
-        assert "out1" not in result.stderr
+        # ipykernel buffers each stream separately, so the cross-stream order
+        # is not pinned here; the contents and output count are.
+        assert sorted(stream_segments(result.outputs)) == [
+            ("stderr", "plain stderr\n"),
+            ("stdout", "plain stdout\n"),
+        ]
+        assert result.stdout == "plain stdout\n"
+        assert result.stderr == "plain stderr\n"
+
+    async def test_interleaved_ansi_streams_are_not_duplicated(self, session):
+        """ANSI styling on interleaved streams does not duplicate segments."""
+        await async_start_kernel_with_retry(session)
+
+        cell_id = await async_create_cell_and_wait_for_sync(
+            session,
+            r"""
+import sys
+sys.stdout.write("\x1b[32mgreen stdout\x1b[0m\n")
+sys.stdout.flush()
+sys.stderr.write("\x1b[31mred stderr\x1b[0m\n")
+sys.stderr.flush()
+""",
+        )
+        result = await session.execute_cell(cell_id)
+
+        assert result.success
+        segments = stream_segments(result.outputs)
+        assert [name for name, _ in segments] == ["stdout", "stderr"]
+        assert result.stdout.count("green stdout") == 1
+        assert result.stderr.count("red stderr") == 1
+        assert "\x1b[" in result.stdout
+        assert "\x1b[" in result.stderr
 
     async def test_ansi_colors_preserved(self, session):
         """ANSI color codes should be preserved in output."""

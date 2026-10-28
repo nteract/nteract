@@ -249,8 +249,13 @@ export function CondaDependencyPanel({
               <span>
                 Using{" "}
                 <code className="rounded bg-muted px-1">{environmentYmlInfo.relative_path}</code>
-                {environmentYmlInfo.name && (
-                  <span className="text-muted-foreground ml-1">({environmentYmlInfo.name})</span>
+                {(environmentYmlInfo.name || environmentYmlInfo.prefix) && (
+                  <span
+                    className="ml-1 break-all text-muted-foreground"
+                    data-testid="conda-env-yml-target"
+                  >
+                    ({environmentYmlInfo.name || environmentYmlInfo.prefix})
+                  </span>
                 )}
               </span>
             </div>

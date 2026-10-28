@@ -119,7 +119,7 @@ fn main() {
         }
         "clippy" => cmd_clippy(),
         "integration" => {
-            let filter = args.iter().find(|a| !a.starts_with('-')).cloned();
+            let filter = parse_integration_filter(&args);
             cmd_integration(filter);
         }
         "wasm" => {
@@ -270,6 +270,34 @@ Other:
     );
 }
 
+fn parse_integration_filter(args: &[String]) -> Option<String> {
+    args.iter().skip(1).find(|a| !a.starts_with('-')).cloned()
+}
+
+fn integration_pytest_args(filter: Option<&str>) -> Vec<String> {
+    // dx integration tests are NOT run here — they require the real repo
+    // pyproject.toml (kernels use `env_source="uv:pyproject"` to install dx
+    // and pandas), but `cmd_integration` deliberately uses a TEMP
+    // RUNTIMED_WORKSPACE_PATH for isolation. dx integration is gated by
+    // the CI workflow `build.yml` instead, which runs from
+    // `${GITHUB_WORKSPACE}` (the real repo root).
+    let mut pytest_args = vec![
+        "run".to_string(),
+        "pytest".to_string(),
+        "python/runtimed/tests/test_daemon_integration.py".to_string(),
+        "-v".to_string(),
+        "--timeout=120".to_string(),
+        "--tb=short".to_string(),
+        "--durations=15".to_string(),
+    ];
+    if let Some(f) = filter {
+        pytest_args.push("-k".to_string());
+        pytest_args.push(f.to_string());
+    }
+
+    pytest_args
+}
+
 /// Run Python integration tests with a fresh isolated daemon.
 ///
 /// Builds the daemon binary, spawns it in a temp directory with its own
@@ -313,25 +341,7 @@ fn cmd_integration(filter: Option<String>) {
         exit(1);
     });
 
-    // dx integration tests are NOT run here — they require the real repo
-    // pyproject.toml (kernels use `env_source="uv:pyproject"` to install dx
-    // and pandas), but `cmd_integration` deliberately uses a TEMP
-    // RUNTIMED_WORKSPACE_PATH for isolation. dx integration is gated by
-    // the CI workflow `build.yml` instead, which runs from
-    // `${GITHUB_WORKSPACE}` (the real repo root).
-    let mut pytest_args = vec![
-        "run".to_string(),
-        "pytest".to_string(),
-        "python/runtimed/tests/test_daemon_integration.py".to_string(),
-        "-v".to_string(),
-        "--timeout=120".to_string(),
-        "--tb=short".to_string(),
-        "--durations=15".to_string(),
-    ];
-    if let Some(ref f) = filter {
-        pytest_args.push("-k".to_string());
-        pytest_args.push(f.clone());
-    }
+    let pytest_args = integration_pytest_args(filter.as_deref());
 
     println!("Running integration tests...");
     println!("  Daemon binary: {}", binary.display());
@@ -5873,6 +5883,41 @@ mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn integration_command_passes_filter_to_pytest() {
+        for filter in [
+            "TestDenoKernel",
+            "TestDenoKernel and not interrupt",
+            "integration",
+        ] {
+            let args = vec!["integration".to_string(), filter.to_string()];
+            let parsed = parse_integration_filter(&args);
+            let pytest_args = integration_pytest_args(parsed.as_deref());
+
+            let mut expected = integration_pytest_args(None);
+            expected.extend(["-k".to_string(), filter.to_string()]);
+            assert_eq!(pytest_args, expected);
+        }
+    }
+
+    #[test]
+    fn integration_command_without_filter_does_not_select_by_subcommand() {
+        let args = vec!["integration".to_string()];
+        let filter = parse_integration_filter(&args);
+        assert_eq!(
+            integration_pytest_args(filter.as_deref()),
+            [
+                "run",
+                "pytest",
+                "python/runtimed/tests/test_daemon_integration.py",
+                "-v",
+                "--timeout=120",
+                "--tb=short",
+                "--durations=15",
+            ]
+        );
+    }
 
     #[test]
     fn parse_dev_command_reads_launch_flags_and_path() {

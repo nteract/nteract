@@ -89,7 +89,8 @@
   --sift-accent: oklch(0.546 0.245 262.881);
   --sift-row-alt: rgba(0, 0, 0, 0.02);
   --sift-pin-shadow: rgba(0, 0, 0, 0.06);
-  --sift-font: Inter, ui-sans-serif, system-ui, sans-serif;
+  --sift-font:
+    Inter, "Helvetica Neue", "Segoe UI", Helvetica, Arial, ui-sans-serif, system-ui, sans-serif;
 
   /* Semantic colors */
   --sift-badge-true-bg: rgba(34, 197, 94, 0.12);
