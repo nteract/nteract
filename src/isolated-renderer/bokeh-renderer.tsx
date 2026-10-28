@@ -17,7 +17,7 @@ import {
   type BokehSessionResourceUrl,
   type BokehSessionResources,
 } from "@/components/outputs/bokeh-mime";
-import type { NteractBokehSessionStatus } from "@/components/isolated/rpc-methods";
+import type { NteractBokehSessionStatus } from "@/components/isolated/bokeh-session-rpc";
 import { BokehSessionController, type BokehRuntime } from "./bokeh-session-controller";
 import { measureDocumentHeight } from "./layout-measure";
 

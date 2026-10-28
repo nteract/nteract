@@ -470,10 +470,13 @@ def test_load_extension_invokes_the_install_steps(monkeypatch):
     monkeypatch.setattr(
         _bootstrap, "_enable_third_party_renderers", lambda: calls.append("renderers")
     )
+    monkeypatch.setattr(
+        _bootstrap._bokeh_handlers, "install_kernel_hooks", lambda ip: calls.append("bokeh")
+    )
     monkeypatch.setattr(_bootstrap._traceback, "install", lambda ip: calls.append("traceback"))
 
     _bootstrap.load_ipython_extension(SimpleNamespace())
-    assert calls == ["llm", "formatters", "hooks", "redact", "renderers", "traceback"]
+    assert calls == ["llm", "formatters", "hooks", "redact", "renderers", "bokeh", "traceback"]
 
 
 def test_load_extension_swallows_per_step_failures(monkeypatch):

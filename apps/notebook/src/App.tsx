@@ -11,8 +11,6 @@ import {
   resolveActorDisplay,
   splitNotebookActorPrincipalOperator,
   type ActorDisplayPeer,
-  type ApplyBokehSessionPatchOptions,
-  type BokehSessionPatchBroadcast,
   type CommentAnchor,
   type CommentThreadSnapshot,
   type CommentsProjection,
@@ -22,8 +20,13 @@ import {
   putBlob,
   type SessionStatus,
 } from "runtimed";
-import { BokehSessionRuntimeProvider, IsolationTest } from "@/components/isolated";
+import {
+  installBokehSessionPlugin,
+  IsolationTest,
+  useBokehSessionPlugin,
+} from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
+import { OutputSessionRuntimeContext } from "@/components/outputs/output-session-plugins";
 import {
   applyWidgetCommBroadcastToStore,
   applyWidgetCommChangesToStore,
@@ -172,6 +175,8 @@ import type { JupyterOutput } from "./types";
 
 /** MIME bundle type for output data */
 export type MimeBundle = Record<string, unknown>;
+
+installBokehSessionPlugin();
 
 /**
  * Module-level reference for daemon comm sending.
@@ -627,29 +632,12 @@ function AppContent() {
     [host, getHandle, getEngine],
   );
 
-  const bokehBlobResolver = useBlobResolver();
-  const bokehPatchSource = getEngine()?.bokehSessionPatchBroadcasts$ ?? null;
-  const bokehSessionTransport = useMemo(() => {
-    if (!bokehBlobResolver) return null;
-    return {
-      fetchBlob: (ref: { blob: string; size?: number; media_type?: string }) =>
-        bokehBlobResolver.fetch(ref),
-      applyPatch: (options: ApplyBokehSessionPatchOptions) =>
-        notebookClient.applyBokehSessionPatch(options),
-      subscribePatches: (listener: (broadcast: BokehSessionPatchBroadcast) => void) => {
-        if (!bokehPatchSource) return () => {};
-        const subscription = bokehPatchSource.subscribe(listener);
-        return () => subscription.unsubscribe();
-      },
-    };
-  }, [bokehBlobResolver, bokehPatchSource, notebookClient]);
-  const bokehSessionRuntime = useMemo(
-    () => ({
-      sessions: runtimeState.bokeh_sessions,
-      transport: bokehSessionTransport,
-    }),
-    [bokehSessionTransport, runtimeState.bokeh_sessions],
-  );
+  const outputSessionRuntimes = useBokehSessionPlugin({
+    sessions: runtimeState.bokeh_sessions,
+    blobResolver: useBlobResolver(),
+    patches: getEngine()?.bokehSessionPatchBroadcasts$ ?? null,
+    client: notebookClient,
+  });
 
   // Daemon-owned kernel execution
   const {
@@ -2505,7 +2493,7 @@ function AppContent() {
               onSyncNeeded={triggerSync}
               localActor={localActor}
             >
-              <BokehSessionRuntimeProvider value={bokehSessionRuntime}>
+              <OutputSessionRuntimeContext.Provider value={outputSessionRuntimes}>
                 <NotebookCommentPreview
                   projection={commentsProjection}
                   readOnly={!canMutateComments}
@@ -2541,7 +2529,7 @@ function AppContent() {
                     markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
                   />
                 </NotebookCommentPreview>
-              </BokehSessionRuntimeProvider>
+              </OutputSessionRuntimeContext.Provider>
             </CrdtBridgeProvider>
           </div>
         </NotebookDocumentShell>

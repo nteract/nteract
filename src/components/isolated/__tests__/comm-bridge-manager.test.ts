@@ -66,6 +66,7 @@ function createMockFrame(): {
   const sendCalls: unknown[] = [];
   const frame: IsolatedFrameHandle = {
     send: vi.fn((msg) => sendCalls.push(msg)),
+    notifyExtension: vi.fn(),
     render: vi.fn(),
     renderBatch: vi.fn(),
     eval: vi.fn(),

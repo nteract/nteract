@@ -9,16 +9,20 @@ import type {
 } from "runtimed";
 import type { BokehSessionMimePayload } from "@/components/outputs/bokeh-mime";
 import type { IsolatedFrameHandle } from "./isolated-frame";
-import type {
-  NteractBokehApplyPatchParams,
-  NteractBokehApplyPatchResult,
-  NteractBokehResolvedBuffer,
-  NteractBokehResolvedPatchEvent,
-  NteractBokehResolvedPatchPayload,
-  NteractBokehSessionOpenParams,
-  NteractBokehSessionSnapshot,
-} from "./rpc-methods";
-import type { BokehSessionTransport } from "./bokeh-session-context";
+import {
+  NTERACT_BOKEH_SESSION_PATCH,
+  NTERACT_BOKEH_SESSION_STATE,
+  type NteractBokehApplyPatchParams,
+  type NteractBokehApplyPatchResult,
+  type NteractBokehResolvedBuffer,
+  type NteractBokehResolvedPatchEvent,
+  type NteractBokehResolvedPatchPayload,
+  type NteractBokehSessionOpenParams,
+  type NteractBokehSessionPatchParams,
+  type NteractBokehSessionSnapshot,
+  type NteractBokehSessionStateParams,
+} from "./bokeh-session-rpc";
+import type { BokehSessionTransport } from "./bokeh-session-plugin";
 
 export interface BokehSessionOutputBinding {
   outputId: string;
@@ -197,15 +201,12 @@ export class BokehSessionBridgeManager {
         : `disconnected:${binding.payload.revision}:${binding.outputId}`;
       if (this.stateSignatures.get(sessionId) === signature) continue;
       this.stateSignatures.set(sessionId, signature);
-      this.frame.send({
-        type: "bokeh_session_state",
-        payload: {
-          sessionId,
-          outputId: binding.outputId,
-          status: session?.status ?? "disconnected",
-          headRevision: session?.head_revision ?? binding.payload.revision,
-        },
-      });
+      this.frame.notifyExtension(NTERACT_BOKEH_SESSION_STATE, {
+        sessionId,
+        outputId: binding.outputId,
+        status: session?.status ?? "disconnected",
+        headRevision: session?.head_revision ?? binding.payload.revision,
+      } satisfies NteractBokehSessionStateParams);
     }
   }
 
@@ -411,10 +412,10 @@ export class BokehSessionBridgeManager {
         if (!binding) return;
         const event = await this.resolvePatchEvent(patchEvent(broadcast.patch));
         if (this.disposed || !this.bindings.has(sessionId)) return;
-        this.frame.send({
-          type: "bokeh_session_patch",
-          payload: { outputId: binding.outputId, event },
-        });
+        this.frame.notifyExtension(NTERACT_BOKEH_SESSION_PATCH, {
+          outputId: binding.outputId,
+          event,
+        } satisfies NteractBokehSessionPatchParams);
       })
       .catch((error) => {
         console.error("[bokeh-session] Failed to deliver document patch:", error);
