@@ -626,3 +626,31 @@ Sift. The JavaScript in `lib/` is first-party; every npm dependency is
 installed by the host under its own license. Building and
 verifying the package from source is covered in `packages/sift/AGENTS.md` in
 the nteract repository.
+
+## Verified in an Electron harness
+
+The worker path (see "Running the data side in a worker") has been run in
+Electron 45 under Kilo Desktop's renderer policy: a custom standard scheme
+registered `secure` with fetch and CORS privileges, `script-src 'self'
+'wasm-unsafe-eval'` with no `worker-src`, and Parquet read over a ranged IPC
+`ByteSource`. What an embedder in that setup needs to know:
+
+- `new Worker(new URL('@nteract/sift/worker', import.meta.url), { type: 'module' })`
+  resolves under Vite and runs with no `worker-src` and no CSP warnings. Set
+  `worker: { format: 'es' }`; the worker bundle code-splits.
+- The worker needs `'wasm-unsafe-eval'`. Its script response carries your
+  CSP, and it instantiates the WASM itself.
+- Serve `.wasm` as `application/wasm` and `.js` as `text/javascript`.
+- A `blob:` worker blocked by CSP does not throw from `new Worker`; Chromium
+  fires `error` instead, and Sift reports "Sift worker terminated: Sift worker
+  crashed" rather than "Worker factory threw: …".
+- `autoLoad` does not pause the worker, so a worker load runs to the hard
+  budget. On the main-thread loader, resumed appends keep `scrollTop` but can
+  shift the visible rows; the worker path keeps the row under the header in
+  place.
+- Size `allocationCap` at 2.5 × `maxDecodedBytes` or more. Decoding a row
+  group briefly needs about twice the retained heap, so the 2× default can trap
+  on the last row group that fits a truncating budget instead of ending in a
+  clean preview.
+
+The harness is `apps/sift-electron-harness` in the nteract repository.
