@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { handleMcp as handleMcpRequest, tools } from "../mcp.mjs";
 const env = { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example" };
 const handleMcp = (request, invoke) => handleMcpRequest(request, invoke, env);
-const request = (method, params = {}) =>
+const request = (method, params = {}, id = 1) =>
   new Request("http://127.0.0.1:9477/mcp", {
     method: "POST",
     headers: {
@@ -13,7 +13,7 @@ const request = (method, params = {}) =>
       "X-Forwarded-Host": "also-untrusted.example",
       "X-Forwarded-Proto": "http",
     },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
   });
 test("MCP forwards authorized operations and preserves stale-write failure", async () => {
   const calls = [];
@@ -88,6 +88,96 @@ test("MCP refuses resource URLs outside this service before invoking tools", asy
   assert.ok((await response.json()).error);
 });
 const pageId = "1a160b47-6df1-4983-81eb-489ca5a26812";
+test("MCP change budgets count both representations, escaping and the JSON-RPC ID", async () => {
+  for (const [markdown, maxBytes, succeeds] of [
+    ["small passage", 4096, true],
+    ["a".repeat(70000), 131072, false],
+    ['"\\\n🌳'.repeat(150), 4096, false],
+  ]) {
+    const body = {
+      page_id: pageId,
+      heads: ["c".repeat(64)],
+      changes: [{ block_id: "block", node_index: 0, markdown }],
+      retry_token: "authority",
+      retry_key_prefix: "prefix_",
+    };
+    const response = await handleMcp(
+      request("tools/call", {
+        name: "read_page_changes",
+        arguments: { page_id: pageId, since_heads: ["b".repeat(64)], max_bytes: maxBytes },
+      }),
+      async () => Response.json(body),
+    );
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    assert.ok(bytes.length <= maxBytes, `Complete response ${bytes.length} exceeds ${maxBytes}`);
+    const result = JSON.parse(new TextDecoder().decode(bytes)).result;
+    assert.equal(result.isError === true, !succeeds);
+    if (succeeds) assert.equal(result.structuredContent.changes[0].markdown, markdown);
+    else {
+      const failure = JSON.parse(result.content[0].text);
+      assert.equal(failure.code, "changes_budget_exceeded");
+      assert.equal(failure.changes, undefined);
+      assert.equal(result.structuredContent, undefined);
+      assert.equal(failure.retry_token, "authority");
+    }
+  }
+  const tooLarge = await handleMcp(
+    request(
+      "tools/call",
+      { name: "read_page_changes", arguments: { max_bytes: 4096 } },
+      "x".repeat(5000),
+    ),
+    async () => Response.json({ heads: [], changes: [] }),
+  );
+  assert.equal(tooLarge.status, 413);
+  assert.equal((await tooLarge.json()).code, "mcp_request_id_too_large");
+});
+test("MCP exposes net changes and node-scoped target edits without changing exact receipts", async () => {
+  const changeTool = tools.find((tool) => tool.name === "read_page_changes");
+  assert.deepEqual(changeTool.securitySchemes[0].scopes, ["pages:read"]);
+  assert.equal(changeTool.annotations.readOnlyHint, true);
+  const patchTool = tools.find((tool) => tool.name === "patch_page");
+  assert.deepEqual(patchTool.inputSchema.properties.conflict_scope.enum, ["page", "target"]);
+  const match = patchTool.inputSchema.properties.operations.items.oneOf.find(
+    (op) => op.properties.op.const === "replace_match",
+  );
+  assert.equal(match.properties.node_index.minimum, 0);
+  const args = { page_id: pageId, since_heads: ["b".repeat(64)], comments: "none" };
+  const body = {
+    page_id: pageId,
+    heads: ["c".repeat(64)],
+    changes: [],
+    comments: [],
+    title_changed: false,
+    attribution: "unavailable",
+  };
+  const response = await handleMcp(
+    request("tools/call", { name: "read_page_changes", arguments: args }),
+    async (op, received) => {
+      assert.equal(op, "read_page_changes");
+      assert.deepEqual(received, args);
+      return Response.json(body);
+    },
+  );
+  const result = (await response.json()).result;
+  assert.deepEqual(result.structuredContent, { ...body, url: `https://pages.example/p/${pageId}` });
+  assert.equal(result.isError, undefined);
+  const conflict = {
+    code: "edit_conflict",
+    current_heads: ["c".repeat(64)],
+    conflicts: [{ block_id: "block", node_index: 2, reason: "Target changed" }],
+  };
+  const failed = await handleMcp(
+    request("tools/call", {
+      name: "patch_page",
+      arguments: { page_id: pageId, conflict_scope: "target" },
+    }),
+    async () => Response.json(conflict, { status: 409 }),
+  );
+  const failure = (await failed.json()).result;
+  assert.equal(failure.isError, true);
+  assert.deepEqual(JSON.parse(failure.content[0].text).conflicts, conflict.conflicts);
+});
 test("MCP initialization guides title authoring and successful receipts preserve advisory warnings", async () => {
   const initialization = await handleMcp(
     request("initialize", {
@@ -360,9 +450,13 @@ test("MCP tool metadata declares the OAuth scopes needed by each operation", asy
       [
         {
           type: "oauth2",
-          scopes: ["list_pages", "read_page", "list_page_comments", "read_page_presence"].includes(
-            tool.name,
-          )
+          scopes: [
+            "list_pages",
+            "read_page",
+            "read_page_changes",
+            "list_page_comments",
+            "read_page_presence",
+          ].includes(tool.name)
             ? ["pages:read"]
             : ["pages:read", "pages:write"],
         },

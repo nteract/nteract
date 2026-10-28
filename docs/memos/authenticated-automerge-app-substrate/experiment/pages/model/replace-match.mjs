@@ -1,10 +1,11 @@
 import * as A from "@automerge/automerge/slim";
-import { adapter, isRich, textPath } from "./richtext.mjs";
+import { amSpliceIdxToPmIdx, pmRangeToAmRange } from "@automerge/prosemirror/dist/traversal.js";
+import { adapter, isRich, richDoc, textPath } from "./richtext.mjs";
 
 const MAX_TEXT_LENGTH = 262144;
 const MAX_MATCHES = 10000;
 
-function literal(value, name, optional = false) {
+export function replacementLiteral(value, name, optional = false) {
   if (optional && value === undefined) return undefined;
   if (typeof value !== "string" || value.length > MAX_TEXT_LENGTH)
     throw Error(`${name} must be a string of at most ${MAX_TEXT_LENGTH} UTF-16 units`);
@@ -16,6 +17,45 @@ function literal(value, name, optional = false) {
   )
     throw Error(`${name} must not contain an unpaired surrogate`);
   return value;
+}
+
+/** The optional node index uses the same revision-bound, top-level address as
+ * read_page outlines. Containers remain intact; a match still cannot cross a
+ * native paragraph/embed marker inside a list or table.
+ */
+export function visibleNodeRange(doc, id, nodeIndex) {
+  if (!Number.isSafeInteger(nodeIndex) || nodeIndex < 0)
+    throw Error("node_index must be a nonnegative integer from the read outline");
+  const block = doc.blocks[id];
+  if (!isRich(block)) throw Error("replace_match requires a rich-text block");
+  const tree = richDoc(block);
+  if (nodeIndex >= tree.childCount) throw Error("node_index is outside this block");
+  let from = 0;
+  for (let i = 0; i < nodeIndex; i++) from += tree.child(i).nodeSize;
+  return pmRangeToAmRange(adapter, A.spans(doc, textPath(id)), {
+    from,
+    to: from + tree.child(nodeIndex).nodeSize,
+  });
+}
+
+export function visibleRangeAddress(doc, id, start, end) {
+  const spans = A.spans(doc, textPath(id));
+  const tree = richDoc(doc.blocks[id]);
+  const from = tree.resolve(amSpliceIdxToPmIdx(adapter, spans, start));
+  const last = end - (/^[\udc00-\udfff]$/.test(doc.blocks[id].richText[end - 1]) ? 2 : 1);
+  const to = tree.resolve(amSpliceIdxToPmIdx(adapter, spans, last));
+  const nodeIndex = from.index(0);
+  if (nodeIndex !== to.index(0)) throw Error("Match crosses top-level nodes");
+  const ancestry = (position) =>
+    Array.from({ length: position.depth }, (_, index) => {
+      const node = position.node(index + 1);
+      return { type: node.type.name, attrs: node.attrs };
+    });
+  return {
+    node_index: nodeIndex,
+    ...visibleNodeRange(doc, id, nodeIndex),
+    ancestry: [ancestry(from), ancestry(to)],
+  };
 }
 
 // Mark boundaries do not interrupt visible text, but rich block/embed markers
@@ -46,9 +86,10 @@ function textSegments(block) {
  * between occurrences and cannot cross a paragraph or embedded-node boundary.
  */
 export function findUniqueVisibleRange(doc, id, input) {
-  const match = literal(input.match_text, "match_text");
-  const before = literal(input.context_before, "context_before", true);
-  const after = literal(input.context_after, "context_after", true);
+  const match = replacementLiteral(input.match_text, "match_text");
+  const before = replacementLiteral(input.context_before, "context_before", true);
+  const after = replacementLiteral(input.context_after, "context_after", true);
+  const scope = input.node_index === undefined ? null : visibleNodeRange(doc, id, input.node_index);
   if (!match) throw Error("match_text must not be empty");
   const matches = [];
   let candidates = 0;
@@ -60,6 +101,11 @@ export function findUniqueVisibleRange(doc, id, input) {
     }
     for (let i = 0; i < offsets.length; i++) {
       const at = offsets[i];
+      if (
+        scope &&
+        (segment.offset + at < scope.start || segment.offset + at + match.length > scope.end)
+      )
+        continue;
       const gapStart = i ? offsets[i - 1] + match.length : 0;
       const gapEnd = offsets[i + 1] ?? segment.text.length;
       if (before !== undefined && !segment.text.slice(gapStart, at).includes(before)) continue;
@@ -80,7 +126,7 @@ export function findUniqueVisibleRange(doc, id, input) {
 
 /** Replace one visible text range, preserving every untouched CRDT character. */
 export function replaceMatch(doc, id, input) {
-  const replacement = literal(input.replacement, "replacement");
+  const replacement = replacementLiteral(input.replacement, "replacement");
   const { path, start, end } = findUniqueVisibleRange(doc, id, input);
   const commonMarks = A.marks(doc, path).filter((mark) => mark.start <= start && mark.end >= end);
   A.splice(doc, path, start, end - start, replacement);

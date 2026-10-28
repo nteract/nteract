@@ -1,6 +1,7 @@
 import * as A from "@automerge/automerge";
 import { assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
+import { guardPassageEdits } from "../model/passage-edits.mjs";
 import { inspectOperation, reserveOperation, listOperationEntries } from "./operation-journal.mjs";
 
 function reject(status, message) {
@@ -73,16 +74,38 @@ export async function documentMutation({
       });
     // Check external prerequisites only for new intents. A retry must replay
     // its original bytes/receipt even if an external service is unavailable.
-    requireHeads(handle.doc(), args.base_heads);
-    if (prepare) await prepare();
+    const targetScope = args.conflict_scope === "target";
+    if (args.conflict_scope !== undefined && !["page", "target"].includes(args.conflict_scope))
+      throw Object.assign(Error("conflict_scope must be page or target"), {
+        status: 400,
+        code: "invalid_edit_selector",
+      });
+    if (targetScope && operation !== "patch_page")
+      throw Object.assign(
+        Error("Target conflict scope is available only for patch_page replace_match batches"),
+        {
+          status: 400,
+          code: "invalid_edit_selector",
+        },
+      );
+    if (prepare) {
+      if (targetScope) guardPassageEdits(handle.doc(), args.base_heads, args.operations);
+      else requireHeads(handle.doc(), args.base_heads);
+      await prepare();
+    }
     const before = handle.doc();
-    requireHeads(before, args.base_heads);
-    let result;
+    const guarded = targetScope
+      ? guardPassageEdits(before, args.base_heads, args.operations)
+      : null;
+    if (!targetScope) requireHeads(before, args.base_heads);
+    const effectiveArgs = guarded ? { ...args, operations: guarded.operations } : args;
+    let result, after;
+    const candidate = A.clone(before);
     // No await between the head guard and immutable edit construction.
-    const after = A.change(A.clone(before), (doc) => {
-      result = apply(doc);
-    });
     try {
+      after = A.change(candidate, (doc) => {
+        result = apply(doc, effectiveArgs);
+      });
       assertDocumentLimits(after);
       // Warnings describe this exact result, including on retries after later edits.
       // Capture them before the journal budget/barrier, never from the live handle.
@@ -97,6 +120,13 @@ export async function documentMutation({
           page_id: before.page_id,
           heads: A.getHeads(after),
           result: result ?? null,
+          ...(guarded && {
+            concurrency: {
+              rebased: guarded.rebased,
+              base_heads: guarded.base_heads,
+              observed_heads: guarded.current_heads,
+            },
+          }),
           ...(warning ? { warnings: [warning] } : {}),
         },
       };
@@ -118,7 +148,7 @@ export async function documentMutation({
       else await persist();
       recorded = true;
     } finally {
-      A.free(after);
+      A.free(after ?? candidate);
     }
   }
   if (entry.pending) {

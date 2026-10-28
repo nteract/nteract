@@ -210,6 +210,9 @@ export function errorResponse(error, stage = "request") {
         "operation_receipt_capacity",
         "pending_operation_capacity",
         "page_recovery_blocked",
+        "invalid_edit_selector",
+        "edit_conflict",
+        "resync_required",
         "invalid_presence_target",
         "presence_revision_changed",
         "presence_target_not_found",
@@ -217,6 +220,18 @@ export function errorResponse(error, stage = "request") {
         "progress_capacity_exceeded",
         "progress_budget_exceeded",
       ].includes(error.code) && { code: error.code }),
+      ...(["edit_conflict", "resync_required"].includes(error.code) && {
+        ...(Array.isArray(error.details?.conflicts) && {
+          conflicts: error.details.conflicts.slice(0, 10).map((conflict) => ({
+            block_id: String(conflict.block_id ?? "").slice(0, 128),
+            ...(Number.isSafeInteger(conflict.node_index) && { node_index: conflict.node_index }),
+            reason: String(conflict.reason ?? "Target changed").slice(0, 240),
+          })),
+        }),
+        ...(Array.isArray(error.details?.current_heads) && {
+          current_heads: error.details.current_heads.slice(0, 128),
+        }),
+      }),
     },
     { status, headers: { "cache-control": "no-store" } },
   );

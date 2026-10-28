@@ -62,12 +62,14 @@ import { readRegistration, requireRegistrationAccount, validPageId } from "./reg
 import { handleImageAssets, requireStoredImageAsset } from "./image-assets.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
 import { readTool } from "./tool-reads.mjs";
+import { readChangesTool } from "./tool-changes.mjs";
 import { PageActivity } from "./page-activity.mjs";
 
 const operations = new Set([
   "list_pages",
   "create_page",
   "read_page",
+  "read_page_changes",
   "list_page_comments",
   "read_page_presence",
   "report_page_progress",
@@ -118,7 +120,15 @@ async function invoke(request, env, operation, args = {}) {
   if (!operations.has(operation) || !args || typeof args !== "object" || Array.isArray(args))
     throw new HttpError(400, "Unknown operation or invalid arguments");
   const identity = await authenticate(request, env);
-  if (!["list_pages", "read_page", "list_page_comments", "read_page_presence"].includes(operation))
+  if (
+    ![
+      "list_pages",
+      "read_page",
+      "read_page_changes",
+      "list_page_comments",
+      "read_page_presence",
+    ].includes(operation)
+  )
     requireWrite(identity);
   if (["list_pages", "create_page", "delete_page"].includes(operation)) {
     return env.CATALOGS.getByName(identity.principal).fetch(
@@ -954,9 +964,9 @@ export class Page {
             throw new HttpError(400, "Invalid presence arguments");
           return json(this.activityState().read(this.handle.doc()));
         }
-        if (["read_page", "list_page_comments"].includes(body.operation)) {
+        if (["read_page", "read_page_changes", "list_page_comments"].includes(body.operation)) {
           this.cacheTitle(identity);
-          const result = await readTool(this.handle.doc(), body.operation, body.arguments ?? {}, {
+          const options = {
             recovery: this.recoveryBlocked,
             getPresence: (doc) => this.activityState().read(doc),
             issueAuthority: () =>
@@ -964,7 +974,11 @@ export class Page {
                 scope: `page:${this.metadata.pageId}`,
                 principal: identity.principal,
               }),
-          });
+          };
+          const result =
+            body.operation === "read_page_changes"
+              ? await readChangesTool(this.handle.doc(), body.arguments ?? {}, options)
+              : await readTool(this.handle.doc(), body.operation, body.arguments ?? {}, options);
           return json(result.body, result.status);
         }
         this.policy.account(identity, true);
@@ -1007,11 +1021,11 @@ export class Page {
                 this.policy.account(await authenticate(request, this.env), true);
               }
             : undefined,
-          apply: (doc) => {
+          apply: (doc, effectiveArgs) => {
             try {
               return applyPageOperation(doc, {
                 operation: body.operation,
-                arguments: body.arguments,
+                arguments: effectiveArgs,
                 identity: publicIdentity(identity),
               });
             } catch (error) {

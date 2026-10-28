@@ -592,6 +592,18 @@ Explicit read options use a 128 KiB default response budget (caller-adjustable f
 it never silently truncates document content. These are read projections only and
 do not change CRDT state, comment anchors, mutation guards or journal receipts.
 
+`read_page_changes({page_id,since_heads})` compares a known earlier revision with
+one captured current revision. It returns a complete net delta: changed native
+nodes with current Markdown, node indexes and heading paths; address-only deletions;
+title changes; and compact changed comment threads. Historical deleted message
+bodies are never returned. Node identity uses native markers and text-object identity,
+so inserting a paragraph does not make every later paragraph look changed. This is
+not an audit/event log, and historical person/client attribution is unavailable.
+Unknown history returns `resync_required`; an oversized delta returns
+`changes_budget_exceeded`, with no partial success. Both the model and complete
+transport envelope honor the byte budget. Agents advance their saved heads only
+after consuming a successful response, or resynchronize using focused reads.
+
 Successful create/edit/patch receipts can include advisory
 `opening_heading_repeats_title` warnings. The detector examines the first nonempty
 top-level body node using the native rich-text projection. It reports an opening
@@ -622,8 +634,22 @@ UTF-16 positions. A selection is not proof of typing. Client labels and progress
 are not verified vendor identities or claims of completed edits. The header's quiet
 activity disclosure makes this distinction and clears on connection or access loss.
 
-Document API mutations require the exact `base_heads` from `read_page` and an
-`idempotency_key`. Read again after a stale-head rejection. Retry an uncertain
+Document API mutations require observed `base_heads` and an `idempotency_key`.
+The default `conflict_scope:"page"` requires exact current heads. `patch_page`
+can opt into `conflict_scope:"target"` for `replace_match`-only batches: historical
+targets are mapped by native identity and checked against current text, marks and
+node structure before constructing the edit. Optional `node_index` restricts a
+literal match to one top-level node at the supplied base revision. Unrelated newer
+edits survive, including those in the same rich-text block. Text deleted and
+reinserted with the same spelling is a different target. Formatting changed back
+to its original value has no net formatting conflict. Overlapping targets in a
+single target-scoped batch are rejected. Other structural/Markdown operations keep
+the exact-head guard. Conflicts return bounded passage addresses for a focused reread.
+The guard checks the synchronous preparation snapshot; it does not lock native
+peers while persistence awaits. Later native changes continue to merge through
+Automerge. Target-scoped receipts include immutable base/observed-head metadata.
+
+Read again after a stale-head or passage-conflict rejection. Retry an uncertain
 request with the identical key and payload. The host records a bounded write
 intent with encoded incremental changes, so replay applies the same CRDT change
 IDs rather than repeating the semantic operation. It first flushes the captured
@@ -632,7 +658,7 @@ outlive the history needed to replay it. Its exact records are reserved through
 that same native storage writer, so browser ingress cannot spend promised capacity.
 Ambiguous intent writes keep the original bytes for live retries as well as restart.
 
-`read_page` issues a principal/Page-bound `retry_token`; `list_pages` issues the
+`read_page` and `read_page_changes` issue a principal/Page-bound `retry_token`; `list_pages` issues the
 catalog token for create/delete. Each result includes `retry_key_prefix`, which
 binds the key to its token. Append a UUID to that prefix for new work and retain
 the exact token/key/payload on retry. Tokens last seven days. A durable monotonic

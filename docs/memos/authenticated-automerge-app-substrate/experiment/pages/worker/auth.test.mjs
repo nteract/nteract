@@ -193,3 +193,30 @@ test("server diagnostics identify the boundary without exposing provider errors 
   assert.equal(logs[1][1].errorType, "Error");
   assert.equal(JSON.stringify(logs).includes("token"), false);
 });
+
+test("passage-conflict transport exposes only bounded recovery addresses", async () => {
+  const error = Object.assign(Error("Target changed"), {
+    status: 409,
+    code: "edit_conflict",
+    details: {
+      current_heads: ["a".repeat(64)],
+      conflicts: Array.from({ length: 20 }, () => ({
+        block_id: "b".repeat(200),
+        node_index: 2,
+        reason: "Changed".repeat(100),
+        markdown: "Do not leak arbitrary fields",
+      })),
+      private: "hidden",
+    },
+  });
+  const response = errorResponse(error);
+  const body = await response.json();
+  assert.equal(response.status, 409);
+  assert.equal(body.code, "edit_conflict");
+  assert.equal(body.conflicts.length, 10);
+  assert.equal(body.conflicts[0].block_id.length, 128);
+  assert.equal(body.conflicts[0].reason.length, 240);
+  assert.deepEqual(body.current_heads, error.details.current_heads);
+  assert.equal(body.conflicts[0].markdown, undefined);
+  assert.equal(body.private, undefined);
+});

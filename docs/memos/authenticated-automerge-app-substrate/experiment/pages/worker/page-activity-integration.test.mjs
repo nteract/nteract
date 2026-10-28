@@ -131,6 +131,32 @@ test("viewers can read presence but cannot report progress; removed readers see 
   assert.deepEqual(f.writes, []);
 });
 
+test("change-feed gateway permits read scope and viewers but rechecks revoked Page access", async (t) => {
+  const f = await fixture(t, "viewer"),
+    heads = A.getHeads(f.doc);
+  const values = new Map();
+  f.page.ctx.storage = {
+    get: async (key) => values.get(key),
+    put: async (key, value) => values.set(key, value),
+    sync: async () => {},
+  };
+  f.page.cacheTitle = () => {};
+  const read = await f.call(
+    "read_page_changes",
+    { since_heads: heads },
+    f.apiKey({ scopes: ["cloud:read"] }),
+  );
+  assert.equal(read.status, 200, await read.clone().text());
+  const body = await read.json();
+  assert.deepEqual(body.heads, heads);
+  assert.deepEqual(body.changes, []);
+  assert.ok(body.retry_token);
+  f.page.metadata.acl.members[f.identity.principal] = { role: "none", generation: 2 };
+  const denied = await f.call("read_page_changes", { since_heads: heads });
+  assert.equal(denied.status, 403);
+  assert.deepEqual(Object.keys(await denied.json()), ["error"]);
+});
+
 test("native selection listener uses authenticated profile identity and session handshake includes a fresh snapshot", async (t) => {
   const f = await fixture(t);
   const key = "a".repeat(64),
