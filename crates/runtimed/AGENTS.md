@@ -64,6 +64,7 @@ API work is described in `docs/memos/runtime-writer-decomposition.md`.
 | Widget state | Daemon/runtime agent + frontend comm deltas | RuntimeStateDoc holds comm topology; CommsDoc holds mutable comm state; the runtime agent gates state by topology, suppresses echoes, and forwards accepted frontend deltas to the kernel |
 | RuntimeStateDoc (kernel status, queue, executions, env, trust) | Local daemon / room host / runtime peer, policy-scoped | Separate per-notebook Automerge doc synced via frame `0x05`; regular clients read it but do not author it |
 | CommsDoc (widget state) | Daemon/runtime agent + frontend comm deltas | Separate per-notebook Automerge doc synced via frame `0x09` |
+| Keyed documents (`kind`, `id`, `epoch`) | Runtime agent (producer) + validated editor/owner writes | Small per-kind Automerge docs synced via frame `0x0b`; the room's `KeyedDocHub` routes only kinds registered in `keyed_doc::room_kinds` (none on hosted-bridged rooms), peers subscribe with their first frame, and refused writes get `DocResync`. The coordinator lists routed kinds to the runtime agent in `RuntimeAgentCapabilities` and the agent sends `0x0b` only for those kinds |
 | CommentsDoc (notebook comments) | Frontend WASM + daemon | Durable sidecar per-notebook Automerge doc synced via frame `0x0a`; daemon persists to disk and validates change actor labels at ingress, stripping writes from scopes without comment authority |
 
 ## RuntimeStateDoc

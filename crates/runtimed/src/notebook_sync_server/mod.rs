@@ -73,6 +73,7 @@ mod peer_comments_sync;
 mod peer_comms_sync;
 mod peer_connection;
 mod peer_eviction;
+mod peer_keyed_doc_sync;
 mod peer_loop;
 mod peer_notebook_sync;
 mod peer_pool_sync;
@@ -85,6 +86,8 @@ mod persist;
 mod project_context;
 mod projection;
 // The journal primitive intentionally lands before room integration.
+#[cfg(test)]
+mod keyed_doc_tests;
 #[allow(dead_code)]
 pub(crate) mod recovery;
 mod registry;

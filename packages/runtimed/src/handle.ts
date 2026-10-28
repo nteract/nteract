@@ -152,6 +152,11 @@ export interface FrameEvent {
   status?: SessionStatus;
   /** Daemon-to-hosted-room bridge status from SESSION_CONTROL frames. */
   hosted_bridge_status?: HostedBridgeStatus;
+  /** Keyed document key, epoch and reason from `doc_resync` events. */
+  kind?: string;
+  id?: string;
+  epoch?: number;
+  reason?: string;
   /**
    * Per-output diff for RuntimeStateSyncApplied events. Each `changed` entry
    * is `[output_id, narrowed_manifest]` — manifests are already MIME-narrowed

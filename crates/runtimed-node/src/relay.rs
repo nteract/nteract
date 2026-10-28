@@ -100,6 +100,9 @@ pub struct RelayInfo {
     pub connection_scope: Option<String>,
     pub local_environment_selection: Option<bool>,
     pub comments_doc_id: Option<String>,
+    /// Keyed document kinds the daemon routes for this room; hosts pass them
+    /// to the ready payload so the browser only syncs supported kinds.
+    pub keyed_doc_kinds: Vec<String>,
     /// JSON encoding of the daemon-authoritative notebook reference.
     pub comments_notebook_ref_json: Option<String>,
     pub protocol: String,
@@ -414,6 +417,7 @@ fn relay_info_from_capabilities(
         connection_scope: capabilities.connection_scope,
         local_environment_selection: Some(capabilities.local_environment_selection),
         comments_doc_id: capabilities.comments_doc_id,
+        keyed_doc_kinds: capabilities.keyed_doc_kinds,
         comments_notebook_ref_json,
         protocol: capabilities.protocol,
         protocol_version: capabilities.protocol_version,

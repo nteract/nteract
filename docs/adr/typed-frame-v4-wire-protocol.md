@@ -83,6 +83,7 @@ The fact that the same protocol-version preamble gates two different framing rul
 | `0x08` | `PutBlob` | Framed binary (see Decision 6) | client → daemon |
 | `0x09` | `CommsDocSync` | Binary, raw `automerge::sync::Message` bytes (`CommsDoc`) | bidirectional |
 | `0x0a` | `CommentsDocSync` | Binary, raw `automerge::sync::Message` bytes (`CommentsDoc`) | bidirectional |
+| `0x0b` | `KeyedDocSync` | `u32 header_len` + JSON `KeyedDocFrameHeader {kind, id, epoch}` + `automerge::sync::Message` bytes for one keyed document | bidirectional, per kind: clients send it only for kinds in `ProtocolCapabilities::keyed_doc_kinds`, and a runtime agent only for kinds in the coordinator's `runtime_agent_capabilities` session-control message; a peer subscribes by sending a frame, and refused writes yield a `doc_resync` session-control message |
 
 ### Direction is policy, not encoding
 
@@ -90,6 +91,7 @@ Direction is enforced by the room peer loop and by the relay, not by anything in
 
 - The daemon's notebook peer loop (`crates/runtimed/src/notebook_sync_server/peer_loop.rs:358-362`) rejects `Response`, `Broadcast`, and `SessionControl` from clients with a `warn!`.
 - The Tauri relay (`crates/notebook-sync/src/relay_task.rs::pipe_frame`, `:321,336`) forwards `Response` outbound to the frontend, even though `crates/runtimed/tests/integration.rs:3156,3183` (`test_pipe_mode_only_pipes_allowed_frame_types`) excludes `RESPONSE` from its allowed-set. These are different paths (relay-mode vs pipe-mode CLI), but the naming overlap is misleading. The relay's behavior is the operative one: the frontend depends on receiving `Response` frames over the relay.
+- Relays (`crates/notebook/src/lib.rs` for Tauri and `crates/notebook-sync/src/relay_task.rs` for `@runtimed/node`) refuse only daemon-originated types from clients (`Response`, `Broadcast`, `SessionControl`) and forward every other type unchanged, including types they do not know, bounded by the 100 MiB outer cap. A relay built before a new type therefore passes it through instead of closing the connection.
 - The runtime-agent peer reuses `Request`/`Response` (`0x01`/`0x02`) but the payloads are `RuntimeAgentRequestEnvelope`/`RuntimeAgentResponseEnvelope`, not `NotebookRequestEnvelope`. The shared frame bytes carry different envelope schemas; the receiving peer handles the schema expected on its connection.
 
 ### Forward-compatibility behavior
@@ -100,9 +102,12 @@ discard read (`recv_typed_frame` at
 buffer at `:229-241`). The peer loop continues without allocating the unknown
 frame body. This makes the format additively forward-compatible at the receive
 path: a v5 daemon can send a v4-unknown frame type and a v4 client will skip it
-safely. The opposite direction (v4 daemon receiving v5 frame from a newer
-client) is closed off by the handshake preamble check, which fails before any
-frame is sent. The forward-compat path is therefore daemon-to-client only.
+safely. A protocol-version mismatch between client and daemon is still closed
+off by the handshake preamble check, which fails before any frame is sent.
+Within one protocol version, new frame types are added behind a capability, so
+clients only send them to daemons that advertise support, and relays forward
+types they do not know (see the relay rule above). A daemon receiving a frame
+type it does not know skips it like any other peer.
 
 ## Decision 4: Per-type size limits trade safety for headroom
 
@@ -118,6 +123,7 @@ Every frame type has a hard cap (reject) and a soft warn threshold (log, continu
 | `RuntimeStateSync` | 64 MiB | 16 MiB | Snapshots of `RuntimeStateDoc` with output manifests |
 | `CommsDocSync` | 64 MiB | 16 MiB | Mutable widget comm state snapshots and sync deltas |
 | `CommentsDocSync` | 64 MiB | 16 MiB | Notebook comments with inline text and resolved thread state |
+| `KeyedDocSync` | 16 MiB | 1 MiB | One keyed document per frame; kinds keep large values in the blob store and may set a tighter limit checked after the header is parsed |
 | `PoolStateSync` | 1 MiB | 256 KiB | Daemon pool state is small (counts, errors, env paths) |
 | `SessionControl` | 1 MiB | 256 KiB | Tiny readiness JSON |
 | `PutBlob` | 32 MiB | 8 MiB | Single-frame blob upload ceiling |
@@ -207,7 +213,7 @@ The first frame after the preamble is a JSON `Handshake`, length-prefixed but **
 |---------|---------|------------------------|
 | `Pool` | Pool IPC | Untyped JSON request/response |
 | `SettingsSync` | Global settings doc | Untyped binary Automerge sync |
-| `NotebookSync` | Per-notebook room | Typed frames (0x00 through 0x0a) |
+| `NotebookSync` | Per-notebook room | Typed frames (0x00 through 0x0b) |
 | `OpenNotebook` | Per-notebook room from file path | Typed frames |
 | `CreateNotebook` | New untitled room | Typed frames |
 | `OpenHostedNotebook` | Daemon-mediated hosted cloud room bridge | Typed frames |

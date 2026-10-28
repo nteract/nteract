@@ -43,11 +43,13 @@ interface NotebookConnectionInfoJson {
   connection_scope?: string;
   comments_doc_id?: string | null;
   comments_notebook_ref?: unknown;
+  keyed_doc_kinds?: string[];
   capabilities?: {
     actor_label?: string;
     connection_scope?: string;
     comments_doc_id?: string | null;
     comments_notebook_ref?: unknown;
+    keyed_doc_kinds?: string[];
   };
 }
 
@@ -420,6 +422,7 @@ async function handleRelayConnection(
         connection_scope: connectionScope,
         comments_doc_id: commentsDocId,
         comments_notebook_ref: commentsNotebookRef,
+        keyed_doc_kinds: info.keyed_doc_kinds ?? info.capabilities?.keyed_doc_kinds ?? [],
       },
       blob_port: daemonInfoJson?.blob_port ?? null,
       daemon: daemonInfoJson

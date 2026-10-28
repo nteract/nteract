@@ -1779,6 +1779,8 @@ pub struct NotebookRoom {
     /// Per-notebook CommsDoc handle — widget comm state keyed by comm_id.
     /// RuntimeStateDoc remains the topology/membership source of truth.
     pub comms: runtime_doc::CommsDocHandle,
+    /// Replicas of the room's keyed documents (frame `0x0b`).
+    pub(crate) keyed_docs: Arc<crate::keyed_doc::KeyedDocHub>,
     /// Per-notebook CommentsDoc handle for authored comment threads.
     pub comments: comments_doc::CommentsDocHandle,
     /// Disk-backed sidecar store for CommentsDoc persistence.
@@ -1981,6 +1983,9 @@ impl NotebookRoom {
 
     /// Mark this room as hosted. This flag is monotonic for the room lifetime.
     pub fn mark_hosted(&self) {
+        // The hosted room has no local runtime agent and does not route
+        // keyed documents, so this room must not advertise any.
+        self.keyed_docs.disable_routing();
         if !self.hosted.swap(true, Ordering::Relaxed) {
             self.broadcasts
                 .hosted_bridge_status_tx
@@ -2503,6 +2508,9 @@ impl NotebookRoom {
             project_trust_prompt: Default::default(),
             state,
             comms,
+            keyed_docs: Arc::new(crate::keyed_doc::KeyedDocHub::new(
+                crate::keyed_doc::room_kinds(),
+            )),
             comments,
             comments_store,
             runtime_agent_handle: Arc::new(Mutex::new(None)),

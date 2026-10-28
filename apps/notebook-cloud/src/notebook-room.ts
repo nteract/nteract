@@ -1241,6 +1241,20 @@ export class NotebookRoom {
       return;
     }
 
+    if (frame.type === FrameType.KEYED_DOC_SYNC) {
+      // A runtime peer treats this rejection as "kind unavailable" and keeps
+      // its kernel; closing it through the streak would undo that. Clients
+      // are told no kinds and count toward the streak as before.
+      this.rejectFrame(
+        notebookId,
+        peer,
+        frame.type,
+        `${frameTypeName(frame.type)} is not routed by cloud rooms`,
+        { countsTowardStreak: peer.identity.scope !== "runtime_peer" },
+      );
+      return;
+    }
+
     if (!isClientWritableFrame(frame.type)) {
       this.rejectFrame(
         notebookId,

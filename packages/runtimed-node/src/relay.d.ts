@@ -58,6 +58,8 @@ export interface RelayInfo {
   /** Optional daemon feature support; absent older bindings must fail closed. */
   localEnvironmentSelection?: boolean;
   commentsDocId?: string;
+  /** Keyed document kinds the daemon routes; pass as `keyed_doc_kinds` in the host ready payload. */
+  keyedDocKinds: string[];
   commentsNotebookRef: CommentsNotebookRef | null;
   protocol: string;
   protocolVersion?: number;

@@ -169,18 +169,18 @@ where
                     payload,
                     reply,
                 } => {
-                    let ft = NotebookFrameType::try_from(frame_type);
-                    let result = match ft {
-                        Ok(NotebookFrameType::SessionControl) => Err(SyncError::Protocol(
-                            "SessionControl is daemon-originated only".into(),
-                        )),
-                        Ok(ft) => connection::send_typed_frame(&mut writer, ft, &payload)
+                    // Types this build does not know are forwarded opaquely
+                    // (bounded by the outer frame cap), so a newer frontend
+                    // can use a frame type the daemon accepts without a relay
+                    // update.
+                    let result = if connection::is_daemon_originated_frame(frame_type) {
+                        Err(SyncError::Protocol(format!(
+                            "frame type 0x{frame_type:02x} is daemon-originated only"
+                        )))
+                    } else {
+                        connection::send_raw_typed_frame(&mut writer, frame_type, &payload)
                             .await
-                            .map_err(SyncError::Io),
-                        Err(_) => Err(SyncError::Protocol(format!(
-                            "Unknown frame type: 0x{:02x}",
-                            frame_type,
-                        ))),
+                            .map_err(SyncError::Io)
                     };
                     let _ = reply.send(result);
                 }
@@ -385,6 +385,7 @@ fn pipe_frame(frame_tx: &mpsc::UnboundedSender<Vec<u8>>, frame: &connection::Typ
         | NotebookFrameType::RuntimeStateSync
         | NotebookFrameType::CommsDocSync
         | NotebookFrameType::CommentsDocSync
+        | NotebookFrameType::KeyedDocSync
         | NotebookFrameType::PoolStateSync
         | NotebookFrameType::SessionControl
         | NotebookFrameType::Response => {
@@ -530,6 +531,93 @@ mod tests {
         )
         .await
         .expect("send response");
+    }
+
+    async fn recv_raw_frame_for_test(
+        daemon_read: &mut tokio::io::ReadHalf<tokio::io::DuplexStream>,
+    ) -> Vec<u8> {
+        // `recv_typed_frame` skips unknown types, so read the raw frame.
+        tokio::time::timeout(Duration::from_secs(1), connection::recv_frame(daemon_read))
+            .await
+            .expect("frame timed out")
+            .expect("read frame")
+            .expect("frame")
+    }
+
+    #[tokio::test]
+    async fn relay_forwards_unknown_outbound_frame_types_opaquely() {
+        let (handle, mut daemon_read, _daemon_write) = spawn_relay_for_test().await;
+
+        handle
+            .forward_frame(0x7f, b"future frame".to_vec())
+            .await
+            .expect("unknown type is forwarded");
+        let frame = recv_raw_frame_for_test(&mut daemon_read).await;
+        assert_eq!(frame[0], 0x7f);
+        assert_eq!(&frame[1..], b"future frame");
+
+        let keyed = connection::KeyedDocFrameHeader::new("test_kv", "doc", 1).encode_frame(b"");
+        handle
+            .forward_frame(connection::frame_types::KEYED_DOC_SYNC, keyed.clone())
+            .await
+            .expect("KeyedDocSync is forwarded");
+        let frame = recv_raw_frame_for_test(&mut daemon_read).await;
+        assert_eq!(frame[0], connection::frame_types::KEYED_DOC_SYNC);
+        assert_eq!(&frame[1..], keyed.as_slice());
+    }
+
+    #[tokio::test]
+    async fn relay_rejects_daemon_originated_outbound_frames_and_stays_open() {
+        let (handle, mut daemon_read, _daemon_write) = spawn_relay_for_test().await;
+
+        for frame_type in [
+            connection::frame_types::RESPONSE,
+            connection::frame_types::BROADCAST,
+            connection::frame_types::SESSION_CONTROL,
+        ] {
+            let err = handle
+                .forward_frame(frame_type, b"{}".to_vec())
+                .await
+                .expect_err("daemon-originated type is rejected");
+            assert!(
+                err.to_string().contains("daemon-originated"),
+                "0x{frame_type:02x}: {err}"
+            );
+        }
+
+        handle
+            .forward_frame(0x7f, b"after".to_vec())
+            .await
+            .expect("relay still forwards after a rejection");
+        let frame = recv_raw_frame_for_test(&mut daemon_read).await;
+        assert_eq!(frame, [&[0x7f][..], b"after"].concat());
+    }
+
+    #[tokio::test]
+    async fn relay_bounds_unknown_outbound_frames_by_outer_cap() {
+        let (handle, _daemon_read, _daemon_write) = spawn_relay_for_test().await;
+        let err = handle
+            .forward_frame(0x7f, vec![0; connection::MAX_FRAME_SIZE + 1])
+            .await
+            .expect_err("oversize unknown frame is rejected");
+        assert!(err.to_string().contains("too large"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn relay_pipes_inbound_keyed_doc_frames_to_frontend() {
+        let (_handle, _daemon_read, mut daemon_write, mut frame_rx) =
+            spawn_relay_for_test_with_heartbeat_interval_and_frame_rx(Duration::from_secs(60))
+                .await;
+        let keyed = connection::KeyedDocFrameHeader::new("test_kv", "doc", 2).encode_frame(b"x");
+        connection::send_typed_frame(&mut daemon_write, NotebookFrameType::KeyedDocSync, &keyed)
+            .await
+            .expect("send keyed frame");
+        let frame = tokio::time::timeout(Duration::from_secs(1), frame_rx.recv())
+            .await
+            .expect("relayed frame timed out")
+            .expect("relayed frame");
+        assert_eq!(frame[0], connection::frame_types::KEYED_DOC_SYNC);
+        assert_eq!(&frame[1..], keyed.as_slice());
     }
 
     #[tokio::test]

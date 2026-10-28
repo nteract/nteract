@@ -222,6 +222,11 @@ pub struct ProtocolCapabilities {
     /// Daemon-authoritative notebook reference stored inside the CommentsDoc.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comments_notebook_ref: Option<serde_json::Value>,
+    /// Keyed document kinds this room routes over `KeyedDocSync` (0x0b).
+    /// Missing on older daemons, which means none. Clients send 0x0b only for
+    /// listed kinds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyed_doc_kinds: Vec<String>,
 }
 
 impl ProtocolCapabilities {
@@ -245,7 +250,19 @@ impl ProtocolCapabilities {
             connection_scope: None,
             comments_doc_id: None,
             comments_notebook_ref: None,
+            // Per room: each connection builder adds the kinds its room routes.
+            keyed_doc_kinds: Vec::new(),
         }
+    }
+
+    /// Advertise the keyed document kinds this room routes.
+    pub fn with_keyed_doc_kinds(mut self, kinds: Vec<String>) -> Self {
+        self.keyed_doc_kinds = kinds;
+        self
+    }
+
+    pub fn supports_doc_kind(&self, kind: &str) -> bool {
+        self.keyed_doc_kinds.iter().any(|k| k == kind)
     }
 
     /// Attach authenticated identity metadata to this capability response.

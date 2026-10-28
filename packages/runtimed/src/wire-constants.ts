@@ -19,6 +19,7 @@ export const FrameType = {
   POOL_STATE_SYNC: 0x06,
   SESSION_CONTROL: 0x07,
   PUT_BLOB: 0x08,
+  KEYED_DOC_SYNC: 0x0b,
 } as const;
 
 export type FrameTypeName = keyof typeof FrameType;
@@ -50,6 +51,7 @@ export const FRAME_SIZE_LIMITS = {
   [FrameType.POOL_STATE_SYNC]: { cap: 1048576, warn: 262144 },
   [FrameType.SESSION_CONTROL]: { cap: 1048576, warn: 262144 },
   [FrameType.PUT_BLOB]: { cap: 33554432, warn: 8388608 },
+  [FrameType.KEYED_DOC_SYNC]: { cap: 16777216, warn: 1048576 },
 } as const satisfies Readonly<Record<FrameTypeValue, FrameSizeLimits>>;
 
 /** Return the payload size limits for a typed notebook frame. */

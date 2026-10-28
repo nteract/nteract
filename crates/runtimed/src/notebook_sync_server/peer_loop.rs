@@ -5,6 +5,7 @@ use super::peer_comments_sync::{
 use super::peer_comms_sync::{
     forward_comms_doc_broadcast, handle_comms_doc_frame, send_initial_comms_doc_sync,
 };
+use super::peer_keyed_doc_sync::{forward_keyed_doc_change, handle_keyed_doc_frame};
 use super::peer_notebook_sync::{
     finish_notebook_doc_frame, forward_notebook_doc_broadcast, handle_notebook_doc_frame,
     queue_doc_sync,
@@ -81,6 +82,7 @@ where
     let mut comms_changed_rx = room.comms.subscribe();
     let mut comments_changed_rx = room.comments.subscribe();
     let mut hosted_bridge_status_rx = room.broadcasts.hosted_bridge_status_tx.subscribe();
+    let mut keyed_changed_rx = room.keyed_docs.subscribe();
 
     // PoolDoc — global daemon pool state (UV/Conda availability, errors).
     let mut pool_changed_rx = daemon.pool_doc_changed.subscribe();
@@ -138,6 +140,8 @@ where
     let mut comms_peer_state = sync::State::new();
     let mut comments_peer_state = sync::State::new();
     let mut pool_peer_state = sync::State::new();
+    // Keyed documents this peer subscribed to by sending a frame for them.
+    let mut keyed_peer_states = crate::keyed_doc::KeyedSyncStates::new();
     let mut persisted_execution_records: std::collections::HashMap<
         String,
         runtimed_client::execution_store::ExecutionRecord,
@@ -413,6 +417,16 @@ where
                                 }
                             }
 
+                            NotebookFrameType::KeyedDocSync => {
+                                handle_keyed_doc_frame(
+                                    room,
+                                    &mut keyed_peer_states,
+                                    &peer_writer,
+                                    &frame.payload,
+                                    connection_identity,
+                                )?;
+                            }
+
                             NotebookFrameType::Response
                             | NotebookFrameType::Broadcast
                             | NotebookFrameType::SessionControl => {
@@ -497,6 +511,19 @@ where
                 )
                 .await?
                 {
+                    return Ok(());
+                }
+            }
+
+            // A keyed document changed; push it if this peer subscribed.
+            result = keyed_changed_rx.recv() => {
+                if !forward_keyed_doc_change(
+                    room,
+                    peer_id,
+                    &mut keyed_peer_states,
+                    &peer_writer,
+                    result,
+                )? {
                     return Ok(());
                 }
             }
