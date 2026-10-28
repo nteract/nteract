@@ -1,0 +1,393 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import * as A from "@automerge/automerge";
+import * as N from "@automerge/subduction";
+import { Repo } from "@automerge/automerge-repo";
+import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
+import { recordBytes } from "@automerge/automerge-repo/sedimentree";
+import { SubductionBackend } from "@automerge/automerge-repo-subduction";
+import { treeId, closePeers, createPeer, connectPeers } from "../../backend.mjs";
+import { DurableByteStore } from "./storage.mjs";
+import { BufferedRecordStore, PageRecords, RemoteRecordSink } from "./record-persistence.mjs";
+import { DocumentAdmission, isHistoryCapacityError } from "./history-admission.mjs";
+import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
+import { issueRetryToken, RETRY_LIFETIME_MS } from "./operation-journal.mjs";
+import { retryKey } from "../model/retry-key.mjs";
+
+class Storage {
+  values = new Map();
+  afterPut;
+  async get(key) {
+    return structuredClone(this.values.get(key));
+  }
+  async put(key, value) {
+    const entries = typeof key === "string" ? [[key, value]] : Object.entries(key);
+    for (const [path, data] of entries) {
+      this.values.set(path, structuredClone(data));
+      await this.afterPut?.(path, data);
+    }
+  }
+  async delete(key) {
+    for (const path of Array.isArray(key) ? key : [key]) this.values.delete(path);
+  }
+  async sync() {}
+  async list({ prefix = "", startAfter = "", limit = Infinity } = {}) {
+    return new Map(
+      [...this.values]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .filter(([key]) => key.startsWith(prefix) && key > startAfter)
+        .slice(0, limit),
+    );
+  }
+  clone() {
+    const copy = new Storage();
+    copy.values = structuredClone(this.values);
+    return copy;
+  }
+}
+function noise(length, seed = 7) {
+  return Uint8Array.from({ length }, () => {
+    seed ^= seed << 13;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    return seed & 255;
+  });
+}
+const bytes = (doc) => extractRecords(doc).reduce((sum, record) => sum + recordBytes(record), 0);
+const baseDoc = () =>
+  A.change(A.from({ page_id: "fixture", stable: { text: "same identity" } }), (doc) => {
+    doc.data = noise(4096);
+  });
+function host(mode, maxSnapshotBytes, storage = new Storage(), records = new Storage()) {
+  const owner = new PageRecords({ storage: records });
+  const recordStore =
+    mode === "buffered"
+      ? new BufferedRecordStore(new RemoteRecordSink({ fetch: (request) => owner.fetch(request) }))
+      : new DurableByteStore(storage);
+  const signer = N.MemorySigner.fromBytes(new Uint8Array(32).fill(23));
+  const backend = new SubductionBackend({ signer, storage: recordStore, maxSnapshotBytes });
+  const repo = new Repo({ backend });
+  return {
+    signer,
+    backend,
+    repo,
+    recordStore,
+    storage,
+    records,
+    async flush() {
+      await repo.flush();
+      await backend.flush();
+      await recordStore.flush?.();
+      await storage.sync();
+    },
+  };
+}
+function context(peer, handle, key = "api-intent") {
+  return {
+    storage: peer.storage,
+    handle,
+    admission: new DocumentAdmission(peer.backend, treeId(handle.documentId)),
+    operation: "edit_page",
+    args: { idempotency_key: key, base_heads: A.getHeads(handle.doc()) },
+    identity: { principal: "user:owner", driver: "test" },
+    apply: (doc) => {
+      doc.api = noise(2048, 11);
+    },
+    flush: () => peer.flush(),
+  };
+}
+
+for (const mode of ["local", "buffered"]) {
+  test(`${mode}: native admission ahead of the reservation rejects before the API intent`, async () => {
+    const base = baseDoc();
+    const candidate = A.change(A.clone(base), (doc) => {
+      doc.api = noise(2048, 11);
+    });
+    const native = A.change(A.clone(base), (doc) => {
+      doc.native = noise(2048, 12);
+    });
+    const peer = host(mode, bytes(candidate) + 32);
+    try {
+      const handle = await peer.repo.import(A.save(base));
+      await peer.flush();
+      const ctx = context(peer, handle);
+      const flush = ctx.flush;
+      let first = true;
+      ctx.flush = async () => {
+        if (first) {
+          first = false;
+          await peer.backend.storeSnapshot(treeId(handle.documentId), extractRecords(native));
+        }
+        await flush();
+      };
+      await assert.rejects(documentMutation(ctx), isHistoryCapacityError);
+      assert.equal(await peer.storage.get("host/operation/api-intent"), undefined);
+      assert.equal(handle.doc().api, undefined);
+      assert.deepEqual(handle.doc().native, native.native);
+      assert.equal(A.getObjectId(handle.doc().stable), A.getObjectId(base.stable));
+    } finally {
+      assert.deepEqual(await closePeers([peer], []), []);
+    }
+  });
+
+  for (const outcome of ["before-put", "after-put"]) {
+    test(`${mode}: ${outcome} failure retries the exact admitted intent without reauthoring`, async () => {
+      const base = baseDoc();
+      const peer = host(mode, bytes(base) + 16384);
+      try {
+        const handle = await peer.repo.import(A.save(base));
+        await peer.flush();
+        const ctx = context(peer, handle);
+        const put = peer.storage.put.bind(peer.storage);
+        let fail = true;
+        peer.storage.put = async (key, value) => {
+          if (key === "host/operation/api-intent" && value.pending && fail) {
+            fail = false;
+            if (outcome === "after-put") await put(key, value);
+            throw Error("interrupted journal");
+          }
+          return put(key, value);
+        };
+        await assert.rejects(documentMutation(ctx), /interrupted journal/);
+        const pending = ctx.admission.pending("host/operation/api-intent");
+        assert.ok(pending.pending);
+        assert.equal(handle.doc().api, undefined);
+        const exact = pending.changes;
+        ctx.apply = () => assert.fail("retry must not reauthor");
+        const receipt = await documentMutation(ctx);
+        assert.deepEqual(receipt, pending.receipt);
+        assert.deepEqual(A.getChanges(base, handle.doc()), exact);
+        assert.equal(A.getObjectId(handle.doc().stable), A.getObjectId(base.stable));
+        assert.equal((await peer.storage.get("host/operation/api-intent")).pending, false);
+        assert.equal(ctx.admission.pending("host/operation/api-intent"), undefined);
+      } finally {
+        assert.deepEqual(await closePeers([peer], []), []);
+      }
+    });
+  }
+
+  test(`${mode}: crash after intent recovers exact records before a new native writer`, async () => {
+    const base = baseDoc();
+    const cap = bytes(base) + 16384;
+    const peer = host(mode, cap);
+    const peers = [peer];
+    try {
+      const handle = await peer.repo.import(A.save(base));
+      await peer.flush();
+      const ctx = context(peer, handle);
+      const replay = ctx.admission.replay.bind(ctx.admission);
+      ctx.admission.replay = async () => {
+        throw Error("crash before record install");
+      };
+      await assert.rejects(documentMutation(ctx), /crash before record install/);
+      const pending = await peer.storage.get("host/operation/api-intent");
+      assert.ok(pending.pending);
+      assert.equal(handle.doc().api, undefined);
+      const restored = host(mode, cap, peer.storage.clone(), peer.records.clone());
+      peers.push(restored);
+      const recovered = await restored.repo.find(handle.documentId);
+      const admission = new DocumentAdmission(restored.backend, treeId(handle.documentId));
+      await recoverDocumentMutations(
+        restored.storage,
+        recovered,
+        () => restored.flush(),
+        admission,
+      );
+      assert.ok(A.hasHeads(recovered.doc(), pending.receipt.heads));
+      assert.deepEqual(A.getChanges(base, recovered.doc()), pending.changes);
+      assert.equal(A.getObjectId(recovered.doc().stable), A.getObjectId(base.stable));
+      assert.equal((await restored.storage.get("host/operation/api-intent")).pending, false);
+      ctx.admission.replay = replay;
+    } finally {
+      assert.deepEqual(await closePeers(peers, []), []);
+    }
+  });
+}
+
+for (const mode of ["local", "buffered"]) {
+  test(
+    `${mode}: incoming authenticated native records cannot consume a recorded API reservation`,
+    { timeout: 10000 },
+    async () => {
+      const base = baseDoc();
+      const candidate = A.change(A.clone(base), (doc) => {
+        doc.api = noise(2048, 11);
+      });
+      const peer = host(mode, bytes(candidate) + 32);
+      const author = createPeer();
+      const peers = [peer, author],
+        wires = [];
+      try {
+        const a = await author.repo.import(A.save(base));
+        const handle = await peer.repo.import(A.save(base), { docId: a.documentId });
+        wires.push(await connectPeers(author, peer));
+        await peer.flush();
+        const admission = new DocumentAdmission(peer.backend, treeId(handle.documentId));
+        const entry = {
+          fingerprint: "fixture",
+          pending: true,
+          changes: A.getChanges(base, candidate),
+          receipt: { heads: A.getHeads(candidate) },
+        };
+        await admission.reserve("intent", entry, candidate, async () => {
+          await peer.storage.put("host/operation/intent", entry);
+          await peer.storage.sync();
+        });
+        // Observe the actual native rejection callback, without sleeps or polling.
+        let rejected;
+        const failure = new Promise((resolve) => {
+          rejected = resolve;
+        });
+        const storageFailed = peer.backend.storageFailed.bind(peer.backend);
+        peer.backend.storageFailed = (id) => {
+          rejected();
+          storageFailed(id);
+        };
+        await a.change((doc) => {
+          doc.native = noise(2048, 12);
+        });
+        await failure;
+        assert.equal(handle.doc().native, undefined);
+        // Native failed admission remains visible to its persistence barrier.
+        await assert.rejects(peer.backend.flush());
+        await admission.replay("intent", entry, handle);
+        await peer.flush();
+        await peer.storage.put("host/operation/intent", { ...entry, pending: false });
+        await peer.storage.sync();
+        await admission.release("intent");
+        assert.deepEqual(handle.doc().api, candidate.api);
+        assert.equal(handle.doc().native, undefined);
+        assert.equal(A.getObjectId(handle.doc().stable), A.getObjectId(base.stable));
+      } finally {
+        assert.deepEqual(await closePeers(peers, wires), []);
+      }
+    },
+  );
+}
+
+test("buffered: remote prefix persistence failure recovers remaining exact history", async () => {
+  const base = baseDoc();
+  const peer = host("buffered", bytes(base) + 32768);
+  const peers = [peer];
+  try {
+    const handle = await peer.repo.import(A.save(base));
+    await peer.flush();
+    let candidate = A.change(A.clone(base), (doc) => {
+      doc.api = noise(2048, 11);
+    });
+    candidate = A.change(candidate, (doc) => {
+      doc.next = noise(2048, 13);
+    });
+    const entry = {
+      fingerprint: "fixture",
+      pending: true,
+      changes: A.getChanges(base, candidate),
+      receipt: { heads: A.getHeads(candidate) },
+    };
+    const admission = new DocumentAdmission(peer.backend, treeId(handle.documentId));
+    await admission.reserve("host/operation/prefix", entry, candidate, async () => {
+      await peer.storage.put("host/operation/prefix", entry);
+      await peer.storage.sync();
+    });
+    await admission.replay("host/operation/prefix", entry, handle);
+    let writes = 0;
+    peer.records.afterPut = (path) => {
+      if (path.includes("/commits/") && ++writes === 1) throw Error("remote prefix interrupted");
+    };
+    await assert.rejects(peer.flush(), /Could not persist records/);
+    const restored = host(
+      "buffered",
+      bytes(base) + 32768,
+      peer.storage.clone(),
+      peer.records.clone(),
+    );
+    peers.push(restored);
+    const recovered = await restored.repo.find(handle.documentId);
+    const acceptedHeads = A.getHeads(recovered.doc());
+    await recoverDocumentMutations(
+      restored.storage,
+      recovered,
+      () => restored.flush(),
+      new DocumentAdmission(restored.backend, treeId(handle.documentId)),
+    );
+    assert.ok(A.hasHeads(recovered.doc(), acceptedHeads));
+    assert.ok(A.hasHeads(recovered.doc(), entry.receipt.heads));
+    assert.deepEqual(A.getChanges(base, recovered.doc()), entry.changes);
+    assert.equal(A.getObjectId(recovered.doc().stable), A.getObjectId(base.stable));
+    assert.equal((await restored.storage.get("host/operation/prefix")).pending, false);
+    peer.records.afterPut = undefined;
+    await peer.flush();
+  } finally {
+    assert.deepEqual(await closePeers(peers, []), []);
+  }
+});
+
+for (const mode of ["local", "buffered"]) {
+  test(`${mode}: failed terminal cleanup cannot revive a pending intent after receipt retirement`, async (t) => {
+    let now = Date.parse("2026-10-25T00:00:00Z");
+    t.mock.method(Date, "now", () => now);
+    const base = baseDoc();
+    const peer = host(mode, bytes(base) + 32768);
+    const release = peer.backend.releaseReservation.bind(peer.backend);
+    let key;
+    try {
+      const handle = await peer.repo.import(A.save(base));
+      await peer.flush();
+      const ctx = context(peer, handle);
+      const tokenContext = { scope: "page:fixture", principal: ctx.identity.principal };
+      const issued = await issueRetryToken(peer.storage, tokenContext);
+      const originalKey = await retryKey(issued.retry_token, "cleanup-original");
+      key = `host/operation/${originalKey}`;
+      ctx.args = { ...ctx.args, idempotency_key: originalKey, retry_token: issued.retry_token };
+      let fail = true;
+      peer.backend.releaseReservation = async (tree, requestKey) => {
+        if (requestKey === key && fail) {
+          fail = false;
+          assert.equal((await peer.storage.get(key)).pending, false);
+          throw Error("terminal cleanup interrupted");
+        }
+        return release(tree, requestKey);
+      };
+      await assert.rejects(documentMutation(ctx), /terminal cleanup interrupted/);
+      assert.equal(ctx.admission.pending(key), undefined);
+      assert.equal(ctx.admission.hasPending, false);
+      const completed = await peer.storage.get(key);
+      assert.equal(completed.pending, false);
+      assert.ok(A.hasHeads(handle.doc(), completed.receipt.heads));
+
+      // A new request must work despite the old bridge cleanup failure. It
+      // also retires the expired terminal receipt under the durable floor.
+      now += RETRY_LIFETIME_MS + 1;
+      const fresh = await issueRetryToken(peer.storage, tokenContext);
+      await documentMutation({
+        ...ctx,
+        args: {
+          idempotency_key: await retryKey(fresh.retry_token, "cleanup-next-request"),
+          retry_token: fresh.retry_token,
+          base_heads: A.getHeads(handle.doc()),
+        },
+        apply: (doc) => {
+          doc.afterCleanup = true;
+        },
+      });
+      assert.equal(handle.doc().afterCleanup, true);
+      assert.equal(await peer.storage.get(key), undefined);
+      const heads = A.getHeads(handle.doc());
+      await assert.rejects(
+        documentMutation({
+          ...ctx,
+          apply: () => assert.fail("an expired operation must not be reauthored"),
+        }),
+        { status: 410, code: "retry_expired" },
+      );
+      assert.deepEqual(A.getHeads(handle.doc()), heads);
+      assert.equal(ctx.admission.hasPending, false);
+      // The retained bridge reservation still cleans up safely; it never
+      // double-charged identities which the completed operation had stored.
+      await release(treeId(handle.documentId), key);
+    } finally {
+      peer.backend.releaseReservation = release;
+      assert.deepEqual(await closePeers([peer], []), []);
+    }
+  });
+}

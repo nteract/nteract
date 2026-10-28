@@ -1,26 +1,26 @@
-name: Authenticated Automerge spike
+name: Pages experiment
 
 on:
   pull_request:
     paths:
       - docs/memos/authenticated-automerge-app-substrate/experiment/**
-      - apps/notebook-cloud/src/identity.ts
-      - apps/notebook-cloud/src/auth-shared.ts
-      - apps/notebook-cloud/src/loopback.ts
-      - apps/notebook-cloud/src/oidc-userinfo.ts
-      - apps/notebook-cloud/src/sharing.ts
+      - apps/notebook-cloud/src/**
+      - packages/local-oidc/src/**
       - packages/runtimed/src/scope-capabilities.ts
+      - src/components/markdown/mermaid-renderer.ts
+      - src/components/sharing/**
+      - src/styles/notebook-tokens.css
       - .github/workflows/authenticated-automerge-spike.yml
   push:
     branches: [main]
     paths:
       - docs/memos/authenticated-automerge-app-substrate/experiment/**
-      - apps/notebook-cloud/src/identity.ts
-      - apps/notebook-cloud/src/auth-shared.ts
-      - apps/notebook-cloud/src/loopback.ts
-      - apps/notebook-cloud/src/oidc-userinfo.ts
-      - apps/notebook-cloud/src/sharing.ts
+      - apps/notebook-cloud/src/**
+      - packages/local-oidc/src/**
       - packages/runtimed/src/scope-capabilities.ts
+      - src/components/markdown/mermaid-renderer.ts
+      - src/components/sharing/**
+      - src/styles/notebook-tokens.css
       - .github/workflows/authenticated-automerge-spike.yml
   workflow_dispatch:
 
@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   test:
-    name: Authenticated Automerge integration fixture
+    name: Pages and authenticated Automerge integration
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:
@@ -47,14 +47,23 @@ jobs:
             docs/memos/authenticated-automerge-app-substrate/experiment
             apps/notebook-cloud/src
             packages/runtimed/src
+            packages/local-oidc/src
+            src/components/markdown
+            src/components/sharing
+            src/styles
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
           package-manager-cache: false
       # No root dependency installation: the fixture's tsx configuration resolves
       # identity.ts's capability re-export to the actual scope-capabilities source.
-      # Keep the path filters above in sync with production verifier imports.
+      # Shared Mermaid rendering and sharing UI use fixture-pinned browser dependencies.
+      # Keep checkout paths and filters in sync with imported verifier and UI sources.
       - name: Prepare pinned upstream packages and locked fixture dependencies
         run: npm run setup
       - name: Test provider fixtures and real Repo/Subduction integration
         run: npm test
+      - name: Test native Pages model, policy, and MCP
+        run: npm test --workspace @nteract/pages-native-experiment
+      - name: Build native Pages Worker and browser
+        run: npm run build --workspace @nteract/pages-native-experiment

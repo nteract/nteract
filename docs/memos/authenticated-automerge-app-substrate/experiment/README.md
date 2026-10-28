@@ -1,8 +1,12 @@
-# Authenticated Automerge integration spike
+# Authenticated Automerge integration fixture
 
-Disposable research fixture for adding nteract account authorization to upstream
-Repo 3/Subduction. It is not a deployable service or a replacement for Pages or
-the notebook room host. No production dependency or document format changes.
+Maintained integration tests and adapter patches for adding nteract account
+authorization to upstream Repo 3/Subduction. The nested
+[Pages experiment](pages/README.md) is actively maintained and exercises the same
+pinned backend in a separately deployable celld service. Start there for the
+application, editor, MCP tools, and deployment workflow. The root fixture tests
+the shared integration boundary; production notebook dependencies and document
+formats remain unchanged.
 
 The [infrastructure memo](../README.md)
 and [document-contract memo](../../extensible-automerge-document-contracts.md)
@@ -11,7 +15,7 @@ source, adapter patch, runtime evidence, and integration limits.
 
 ## Run
 
-From this directory, with Node 22.13+ (tested with 24.22), Git, and npm:
+From this directory, with Node 22.13+, Git, and npm. The focused CI job uses Node 24:
 
 ```sh
 npm run setup
@@ -52,16 +56,18 @@ The current fixture permits reader presence while rejecting reader content
 writes. A runtime-profile writer needs separate runtime authority. This is a
 role gate; it does not implement the actual RuntimeStateDoc semantic validator.
 
-## Initial results and next decisions
+## Test coverage and qualification boundaries
 
-The clean setup and 19 tests passed on Node 24.22; the isolated fixture also
-passed on Node 22.23 without root dependencies. Tests cover verified identity,
+Tests cover verified identity,
 key possession, role and scope intersections, concurrent edits, unknown-content
 preservation, live content/presence revocation, and disk failure/restart/retry.
 The typed reader fixture diagnoses unsupported content and edits known fields
 without writing its narrower projection back over the document.
+Additional suites cover binary record framing, indexed storage, snapshot imports,
+admission reservations, cleanup, and cold synchronization. The pinned upstream
+patches and their test boundaries are documented in [UPSTREAM.md](UPSTREAM.md).
 
-Two findings need further design:
+Two integration constraints remain important to consumers:
 
 - A failed write/flush is not rollback. The local optimistic edit remains and a
   later retry may persist it. Application receipts must express uncertainty and
@@ -70,9 +76,11 @@ Two findings need further design:
   conservatively blocks records by expired authors, even if relayed by a current
   writer. Durable provenance and admission must be designed before relaxing it.
 
-Browser login/state/PKCE, WebSocket transport, editor integration, actual runtime
-schema validation, concurrent migration, remote durable receipts, celld/S3/R2,
-and performance/cost remain separate qualification lanes. API-key provider
-revocation can remain cached for up to 60 seconds plus the admission lease;
+The [Pages application](pages/README.md) owns browser login, WebSocket transport,
+editor integration, and remote durable receipts, with separate tests and
+qualification boundaries. Root fixture tests do not establish actual runtime
+schema validation, concurrent migration, object-store failover durability, or
+production performance/cost. API-key provider revocation can remain cached for
+up to 60 seconds plus the admission lease;
 host ACL/key revocation is checked by policy on subsequent operations. Previously
 received data cannot be recalled.

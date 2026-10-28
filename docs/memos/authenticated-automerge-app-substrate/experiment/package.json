@@ -3,11 +3,12 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "upstream/packages/*"
+    "upstream/packages/*",
+    "pages"
   ],
   "dependencies": {
     "@automerge/automerge": "3.5.0",
-    "@automerge/subduction": "0.23.0",
+    "@automerge/subduction": "0.26.0",
     "@types/node": "22.20.0",
     "typescript": "6.0.3"
   },

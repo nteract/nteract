@@ -2,6 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { patchUpstream } from "./patch-upstream.mjs";
+import { subductionRelease, pinSubductionDependency } from "./native-version.mjs";
 
 export const revision = "afec0444191a5a662e065f24193bef58ab07122a";
 const root = fileURLToPath(new URL(".", import.meta.url));
@@ -47,6 +48,7 @@ for (const name of ["automerge-repo", "automerge-repo-subduction"]) {
     if (value === "catalog:") pkg.dependencies[key] = catalog[key];
     if (value === "workspace:*") pkg.dependencies[key] = "3.0.0-experimental.1";
   }
+  pinSubductionDependency(pkg);
   writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`);
 }
 for (const name of ["tsconfig.base.json", "tsconfig.lib.json", "LICENSE"])
@@ -54,7 +56,7 @@ for (const name of ["tsconfig.base.json", "tsconfig.lib.json", "LICENSE"])
 const patch = patchUpstream("upstream");
 writeFileSync(
   "upstream-provenance.json",
-  `${JSON.stringify({ repository: "https://github.com/automerge/automerge-repo", revision, subduction: "0.23.0", automerge: "3.5.0", patch }, null, 2)}\n`,
+  `${JSON.stringify({ repository: "https://github.com/automerge/automerge-repo", revision, subduction: subductionRelease.version, nativeRelease: subductionRelease, automerge: "3.5.0", patch }, null, 2)}\n`,
 );
 execFileSync(
   "npm",

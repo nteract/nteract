@@ -1,0 +1,108 @@
+/* Discussion stays readable; empty reply editors do not occupy every thread. */
+.comments .comments-body {
+  padding: 0 1rem 0.75rem;
+}
+.comments .thread {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+  margin: 0;
+  padding: 0.9rem 0;
+  background: transparent;
+}
+.comments .thread.thread-active {
+  border-color: var(--line);
+  box-shadow: none;
+}
+.comments .thread .quote {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0 0 0.5rem;
+  padding: 0 0 0 0.5rem;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  max-height: none;
+}
+.comments .thread-active .quote {
+  display: block;
+  max-height: 100px;
+  overflow: auto;
+  color: var(--foreground);
+}
+.comments .thread-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.4rem;
+  min-height: 28px;
+}
+.comments .message-author strong {
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+.comments .thread-state-action {
+  width: 28px;
+  height: 28px;
+  margin-top: -4px;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+.comments .message p {
+  margin: 0.15rem 0 0.5rem;
+  line-height: 1.5;
+}
+.comments .thread-conversation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.comments .thread-conversation-actions button {
+  min-height: 28px;
+  padding: 0.2rem 0.4rem;
+  margin-left: -0.4rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+.comments .thread-replies {
+  padding-left: 0.65rem;
+  margin-top: 0.5rem;
+  border-left: 1px solid var(--line);
+}
+.comments .thread-replies .message + .message {
+  margin-top: 0.65rem;
+}
+.comments [hidden] {
+  display: none;
+}
+.comments .comment-reply-form textarea {
+  min-height: 64px;
+  margin: 0.5rem 0;
+}
+.comments .thread-detached {
+  margin: 0 0 0.4rem;
+  font-size: 0.75rem;
+}
+.comments .comment-composer {
+  padding-top: 1rem;
+}
+.comments .resolved-threads > summary {
+  padding: 0.8rem 0;
+  font-size: 0.8rem;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+@media (pointer: coarse), (max-width: 900px) {
+  .comments .thread-state-action {
+    width: 40px;
+    height: 40px;
+    margin-top: -8px;
+  }
+  .comments .thread-conversation-actions button {
+    min-height: 40px;
+  }
+}

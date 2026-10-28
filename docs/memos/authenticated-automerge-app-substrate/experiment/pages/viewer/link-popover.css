@@ -1,0 +1,90 @@
+.link-popover {
+  position: fixed;
+  z-index: 100;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(400px, calc(100vw - 24px));
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--foreground);
+  box-shadow: 0 6px 24px #00000014;
+  font-size: 13px;
+}
+.link-popover-header,
+.link-popover-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.link-popover-header {
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.link-popover-header span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+  min-width: 0;
+}
+.link-popover button,
+.link-popover a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 8px;
+  border-radius: 5px;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  flex-shrink: 0;
+}
+.link-popover button:hover,
+.link-popover a:hover {
+  background: var(--accent-soft);
+}
+.link-popover :focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.link-popover label {
+  display: grid;
+  gap: 6px;
+  min-width: min(300px, calc(100vw - 48px));
+}
+.link-popover input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font: inherit;
+}
+.link-popover-actions {
+  flex-wrap: wrap;
+}
+.link-popover form .link-popover-actions {
+  margin-top: 8px;
+}
+.link-popover .link-error {
+  margin: 8px 0;
+  color: var(--destructive);
+}
+.toolbar-comment {
+  gap: 5px;
+  width: auto;
+  padding-inline: 8px;
+  flex-shrink: 0;
+}
+@media (max-width: 900px) {
+  .toolbar-comment span {
+    display: none;
+  }
+}

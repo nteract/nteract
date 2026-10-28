@@ -1,24 +1,29 @@
 # Authenticated Automerge infrastructure for applications
 
-**Status:** Research proposal, 2026-10-17. The integration spike is authorized;
-adoption, production deployment, and dependency changes remain undecided.
+**Status:** Research with an actively maintained application experiment.
+[Pages](experiment/pages/README.md) exercises the editor and authenticated backend
+in a separately deployable celld service. Its README describes current behavior,
+development, testing, and deployment. Production notebook adoption remains
+undecided.
 
 We want another application to reuse document loading, synchronization,
 persistence, presence, and authenticated attribution without rebuilding our
-notebook room host. The first experiment should connect upstream Automerge
-infrastructure to our OIDC and API-key authority, then establish which existing
-mechanisms it can replace. It should not begin by extracting another complete
-repository implementation.
+notebook room host. The initial integration fixture connected upstream Automerge
+infrastructure to our OIDC and API-key authority. Pages extends that work into an
+application where we can test which existing mechanisms it can replace.
 
-This work is independent of the [Pages prototype PR](https://github.com/nteract/nteract/pull/4451).
-Pages is a useful consumer and comparison point, not a required dependency of
-the shared infrastructure. [Extensible document contracts](../extensible-automerge-document-contracts.md)
+This memo preserves the original source evaluation and notebook-adoption
+questions. The [maintained integration fixture](experiment/README.md) and
+[upstream provenance](experiment/UPSTREAM.md) describe the current pinned
+dependencies and adapter changes. Pages is a consumer of the shared
+infrastructure. [Extensible document contracts](../extensible-automerge-document-contracts.md)
 describes the separate question of what applications may store and edit.
 
 ## What the source evaluation established
 
-The evaluation inspected pinned public sources, the nteract checkout, and
-automatic captions of the [2026 Q4 community call](https://www.youtube.com/watch?v=0rpfOFVDr7g&t=749s).
+The initial October 18, 2026 evaluation inspected pinned public sources, the
+nteract checkout, and automatic captions of the
+[2026 Q4 community call](https://www.youtube.com/watch?v=0rpfOFVDr7g&t=749s).
 Independent Kilo Opus and Fable reports informed the evaluation; source inspection
 checked their central claims. This is architectural evidence, not performance or
 production qualification. Roadmap statements in the call are not release facts.
@@ -34,14 +39,14 @@ production qualification. Roadmap statements in the call are not release facts.
   explicitly trusted peers. Its storage requires exclusive ownership and
   atomic replacement of individual records; a failed batch can be partly
   persisted and observed. It does not yet supply our application authority.
-- Current Subduction has lower-level
+- The evaluated Subduction source has lower-level
   [storage policies](https://github.com/inkandswitch/subduction/blob/239c5fc125619d345be4015d186b91ac587306ad/subduction_core/src/policy/storage.rs)
   separating fetch from put, and the requesting peer from the verified signing
   author. Its [WASM policy interface](https://github.com/inkandswitch/subduction/blob/239c5fc125619d345be4015d186b91ac587306ad/subduction_wasm/src/policy.rs)
   and [ephemeral policies](https://github.com/inkandswitch/subduction/blob/239c5fc125619d345be4015d186b91ac587306ad/subduction_wasm/src/policy/ephemeral.rs)
   expose authorization hooks. Newer Rust source alone does not establish the
-  APIs of an older published WASM package; the spike below separately verifies
-  policy forwarding with published Subduction 0.23.0.
+  APIs of an older published WASM package; the initial integration fixture
+  separately verified policy forwarding with published Subduction 0.23.0.
 - [Patchwork's integration](https://github.com/inkandswitch/patchwork-system/blob/bd12be7c10d6145cab0888f025c09b2f291612a7/core/patchwork/src/repo.ts)
   is another useful reference, but its dependency line is Repo
   `2.6.0-subduction.48` with `@automerge/automerge-subduction` 0.16.1, not
@@ -148,7 +153,7 @@ snapshot diff cannot recover discarded CRDT identity or prove authorship; large
 text diffs also need concurrent-edit testing rather than an assumption that they
 preserve user intent.
 
-The next editor fixture must demonstrate:
+For notebook adoption, an editor fixture must demonstrate:
 
 - An agent changes a paragraph while a human types elsewhere: only affected
   surviving text is illuminated, with stable selection and undo behavior.
@@ -167,18 +172,19 @@ would need record import/export compatibility with our WASM, including history
 fragments. Neither path is qualified yet. Avoid maintaining a second materialized
 document solely to reconstruct observations we already have.
 
-## Bounded spike and evidence
+## Initial integration evidence
 
-The initial [runnable spike](experiment/README.md)
-now passes a clean pinned build and 19 tests on Node 24.22. Published Subduction
-0.23.0 already has the policy interfaces: the tested Repo adapter patch forwards
-`policy` and `ephemeralPolicy` without changing WASM or the wire protocol. This
-qualifies the integration seam, not a production service.
+The initial [integration fixture](experiment/README.md) established that published
+Subduction 0.23.0 already had the policy interfaces: the tested Repo adapter patch
+forwarded `policy` and `ephemeralPolicy` without changing WASM or the wire protocol. This
+qualified the integration seam, not a production service. The table below records
+that initial evidence; it is not the current Pages qualification checklist. See
+[UPSTREAM.md](experiment/UPSTREAM.md) for the maintained adapter tests and
+[Pages](experiment/pages/README.md) for application qualification.
 
-Use disposable documents and pinned packages. First exercise the policy boundary
-with deterministic credential fixtures; then qualify browser OIDC login and live
-Node API-key admission. Fixture tests must not be reported as live provider
-qualification. Keep the Pages deployment and storage namespace untouched.
+The fixture used disposable documents, pinned packages, and deterministic
+credentials. Fixture tests must not be reported as live provider qualification;
+browser login and live provider admission need separate evidence.
 
 | Evidence | Initial spike result |
 | --- | --- |

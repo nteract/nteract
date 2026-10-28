@@ -1,0 +1,77 @@
+/* The editor owns one toolbar. Keep reading quiet until a passage is selected
+   or the user explicitly opens formatting through Document actions / Alt-F10. */
+.toolbar-host {
+  top: var(--page-header-height, 64px);
+  margin: 0;
+  padding: 0.3rem 1.5rem;
+  min-height: 0;
+}
+.toolbar-host > .rich-toolbar.is-pinned {
+  margin-inline: auto;
+}
+.rich-toolbar[hidden] {
+  display: none;
+}
+/* Automatic formatting never occupies a header row, including while its
+   selection geometry is unavailable. Only explicit pinning moves the page. */
+.rich-toolbar.is-contextual {
+  position: fixed;
+  top: calc(var(--page-header-height, 64px) + 6px);
+  left: 12px;
+  z-index: 5;
+  max-width: calc(100vw - 24px);
+  background: var(--surface);
+  border-radius: 0.7rem;
+  box-shadow:
+    inset 0 0 0 1px var(--line),
+    0 4px 24px #00000014,
+    0 1px 3px #0000000a;
+}
+/* Measure before showing it: display:none produces a zero-sized box and a
+   visible fallback frame before the first correctly positioned selection. */
+.rich-toolbar.is-contextual[hidden] {
+  display: flex;
+  visibility: hidden;
+  pointer-events: none;
+}
+.toolbar-host:not(:has(.rich-toolbar.is-pinned:not([hidden]))) {
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.document-actions kbd {
+  margin-left: auto;
+  padding-left: 12px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+/* Touch users keep native selection handles and a stable overlay. Wrapping exposes
+   every command; no invisible horizontal scroll is required to reach comments. */
+@media (max-width: 900px), (hover: none), (pointer: coarse) {
+  .toolbar-host {
+    padding-inline: 0.8rem;
+  }
+  .rich-toolbar {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 2px;
+    overflow: visible;
+    white-space: normal;
+  }
+  .rich-toolbar .toolbar-button {
+    flex: 0 0 44px;
+    min-width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+  .rich-toolbar .toolbar-select {
+    height: 44px;
+    width: 124px;
+  }
+  .rich-toolbar .toolbar-separator,
+  .rich-toolbar .toolbar-comment > span {
+    display: none;
+  }
+}
