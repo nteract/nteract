@@ -5,7 +5,7 @@ import {
   NTERACT_BOKEH_SESSION_PATCH,
   NTERACT_BOKEH_SESSION_STATE,
   type NteractBokehResolvedPatchEvent,
-} from "@/components/isolated/rpc-methods";
+} from "@/components/isolated/bokeh-session-rpc";
 import {
   BokehSessionController,
   deferExistingModelUpdates,

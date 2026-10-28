@@ -9,10 +9,6 @@ import {
   MCP_UI_RESOURCE_TEARDOWN,
   MCP_UI_SIZE_CHANGED,
   NTERACT_BRIDGE_READY,
-  NTERACT_BOKEH_APPLY_PATCH,
-  NTERACT_BOKEH_SESSION_OPEN,
-  NTERACT_BOKEH_SESSION_PATCH,
-  NTERACT_BOKEH_SESSION_STATE,
   NTERACT_CLEAR_OUTPUTS,
   NTERACT_COMM_CLOSE,
   NTERACT_COMM_MSG,
@@ -45,10 +41,6 @@ import {
   NTERACT_WIDGET_UPDATE,
   NTERACT_WHEEL_BOUNDARY,
   type NteractMeasureElementResult,
-  type NteractBokehApplyPatchParams,
-  type NteractBokehApplyPatchResult,
-  type NteractBokehSessionOpenParams,
-  type NteractBokehSessionSnapshot,
 } from "./rpc-methods";
 
 export const TYPE_TO_METHOD: Record<string, string> = {
@@ -67,8 +59,6 @@ export const TYPE_TO_METHOD: Record<string, string> = {
   widget_snapshot: NTERACT_WIDGET_SNAPSHOT,
   bridge_ready: NTERACT_BRIDGE_READY,
   widget_state: NTERACT_WIDGET_STATE,
-  bokeh_session_patch: NTERACT_BOKEH_SESSION_PATCH,
-  bokeh_session_state: NTERACT_BOKEH_SESSION_STATE,
 };
 
 export type IsolatedFrameRuntimeDiagnosticLevel = "debug" | "info" | "warn" | "error";
@@ -85,12 +75,8 @@ export interface IsolatedFrameRuntimeCallbacks {
   onDoubleClick: () => void;
   onWheelBoundary: (params: { deltaY?: number }) => void;
   onWidgetUpdate: (commId: string, state: Record<string, unknown>) => void;
-  onBokehSessionOpen?: (
-    params: NteractBokehSessionOpenParams,
-  ) => Promise<NteractBokehSessionSnapshot>;
-  onBokehApplyPatch?: (
-    params: NteractBokehApplyPatchParams,
-  ) => Promise<NteractBokehApplyPatchResult>;
+  /** Serve an iframe→host request for a method from `getExtensionMethods()`. */
+  onExtensionRequest?: (method: string, params: unknown) => Promise<unknown>;
   onError: (error: { message: string; stack?: string }) => void;
   onMessage: (message: IframeToParentMessage) => void;
   onDiagnostic: (
@@ -105,9 +91,19 @@ export interface IsolatedFrameRuntimeOptions {
   getFrameWindow: () => Window | null | undefined;
   getInitialContent?: () => RenderPayload | undefined;
   getHostContext?: () => NteractEmbedHostContext | undefined;
+  /**
+   * Iframe→host request methods to serve through `onExtensionRequest`. Read
+   * when each bootstrap generation creates its transport; any other request
+   * method is answered with JSON-RPC "method not found".
+   */
+  getExtensionMethods?: () => readonly string[];
   rendererBundle?: IsolatedFrameRendererBundle;
   callbacks: IsolatedFrameRuntimeCallbacks;
 }
+
+type PendingDelivery =
+  | { kind: "message"; message: ParentToIframeMessage }
+  | { kind: "extension"; method: string; params: unknown };
 
 export interface IsolatedFrameRendererBundle {
   rendererCode?: string;
@@ -174,9 +170,10 @@ export class IsolatedFrameRuntime {
   private readonly getFrameWindow: () => Window | null | undefined;
   private readonly getInitialContent: () => RenderPayload | undefined;
   private readonly getHostContext: () => NteractEmbedHostContext | undefined;
+  private readonly getExtensionMethods: () => readonly string[];
   private readonly callbacks: IsolatedFrameRuntimeCallbacks;
   private transport: JsonRpcTransport | null = null;
-  private pendingMessages: ParentToIframeMessage[] = [];
+  private pendingMessages: PendingDelivery[] = [];
   private bootstrapping = false;
   private hasReceivedReady = false;
   private ready = false;
@@ -193,6 +190,7 @@ export class IsolatedFrameRuntime {
     this.getFrameWindow = options.getFrameWindow;
     this.getInitialContent = options.getInitialContent ?? (() => undefined);
     this.getHostContext = options.getHostContext ?? (() => this.latestHostContext);
+    this.getExtensionMethods = options.getExtensionMethods ?? (() => []);
     this.callbacks = options.callbacks;
     this.rendererBundle = options.rendererBundle ?? {};
   }
@@ -221,10 +219,26 @@ export class IsolatedFrameRuntime {
       return;
     }
     if (!this.ready) {
-      this.pendingMessages.push(message);
+      this.pendingMessages.push({ kind: "message", message });
       return;
     }
     this.deliver(message);
+  }
+
+  /**
+   * Send an extension notification (e.g. an output-session update) to the
+   * renderer. Queued with send() messages so it keeps its order relative to
+   * renders issued before the renderer was ready.
+   */
+  notifyExtension(method: string, params: unknown): void {
+    if (this.disposed) {
+      return;
+    }
+    if (!this.ready) {
+      this.pendingMessages.push({ kind: "extension", method, params });
+      return;
+    }
+    this.deliverExtension(method, params);
   }
 
   render(payload: RenderPayload): void {
@@ -478,6 +492,15 @@ export class IsolatedFrameRuntime {
     this.postLegacy(message);
   }
 
+  private deliverExtension(method: string, params: unknown): void {
+    if (this.disposed) {
+      return;
+    }
+    // Extension renderers only listen over JSON-RPC; the bootstrap document
+    // has no legacy handler for them.
+    this.transport?.notify(method, params);
+  }
+
   private postLegacy(message: ParentToIframeMessage): void {
     this.getFrameWindow()?.postMessage(message, "*");
   }
@@ -488,7 +511,13 @@ export class IsolatedFrameRuntime {
     }
     const pending = this.pendingMessages;
     this.pendingMessages = [];
-    pending.forEach((message) => this.deliver(message));
+    for (const entry of pending) {
+      if (entry.kind === "message") {
+        this.deliver(entry.message);
+      } else {
+        this.deliverExtension(entry.method, entry.params);
+      }
+    }
   }
 
   private handleLegacyMessage(data: IframeToParentMessage): void {
@@ -594,18 +623,15 @@ export class IsolatedFrameRuntime {
   }
 
   private registerTransportHandlers(transport: JsonRpcTransport): void {
-    transport.onRequest(NTERACT_BOKEH_SESSION_OPEN, (params) => {
-      if (!this.callbacks.onBokehSessionOpen) {
-        throw new Error("Bokeh document sessions are not available in this host");
-      }
-      return this.callbacks.onBokehSessionOpen(params as NteractBokehSessionOpenParams);
-    });
-    transport.onRequest(NTERACT_BOKEH_APPLY_PATCH, (params) => {
-      if (!this.callbacks.onBokehApplyPatch) {
-        throw new Error("Bokeh document sessions are read-only in this host");
-      }
-      return this.callbacks.onBokehApplyPatch(params as NteractBokehApplyPatchParams);
-    });
+    for (const method of new Set(this.getExtensionMethods())) {
+      transport.onRequest(method, (params) => {
+        const handler = this.callbacks.onExtensionRequest;
+        if (!handler) {
+          throw new Error(`No host handler for extension method ${method}`);
+        }
+        return handler(method, params);
+      });
+    }
     transport.onNotification(NTERACT_RENDERER_READY, () => {
       this.handleRendererReady("rpc", transport);
     });

@@ -126,6 +126,17 @@ export function outputUsesPanel(
 }
 
 /**
+ * Outputs from libraries (Bokeh, Panel) that emit a sequence of HTML and
+ * JavaScript outputs sharing one iframe document.
+ */
+export function outputUsesScriptDocument(
+  output: JupyterOutput,
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): boolean {
+  return outputUsesBokeh(output, priority) || outputUsesPanel(output, priority);
+}
+
+/**
  * Outputs whose iframe must own the wheel once the user engages it: Sift's
  * crossfilter tables scroll internally, and chart surfaces like Vega/Altair
  * Plotly, Bokeh, and Panel pan or zoom. While engaged the wheel-boundary

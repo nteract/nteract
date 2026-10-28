@@ -219,11 +219,11 @@ product-safe continuation requires a session capability for the live source.
 The durable output remains the bounded preview; the capability is optional and
 expires with the kernel/output session.
 
-The transport question is answered by existing precedent. `NteractKernel`
-already extends `msg_types` with `nteract_bokeh_patch_request` and friends
-(`app.py:240`), each with a handler method on the kernel and a matching
-`nteract_bokeh_close_request` for teardown. A slice request would take the same
-form. The reserved `nteract.dx.*` comm namespace (`dx_blob_comm.rs`) is the
+The transport question is answered by existing precedent. Extensions register
+custom shell messages with `NteractKernel.register_shell_handler` (`app.py`);
+the Bokeh handlers in `_bokeh_handlers.py` register `nteract_bokeh_patch_request`
+and friends this way, with a matching `nteract_bokeh_close_request` for
+teardown. A slice request would take the same form. The reserved `nteract.dx.*` comm namespace (`dx_blob_comm.rs`) is the
 alternative, and its tests already name `nteract.dx.query` and
 `nteract.dx.stream`.
 

@@ -1008,16 +1008,41 @@ def test_uninstall_closes_live_sessions():
 
 
 class _FakeKernel:
+    """Shell-handler table and reply capture, using ``NteractKernel``'s registry."""
+
     def __init__(self):
+        from ipykernel.ipkernel import IPythonKernel
+
         self.replies = []
+        self.shell_handlers = {msg_type: Mock() for msg_type in IPythonKernel.msg_types}
+
+    def register_shell_handler(self, msg_type, handler):
+        from nteract_kernel_launcher.app import NteractKernel
+
+        return NteractKernel.register_shell_handler(cast(Any, self), msg_type, handler)
 
     def send_response(self, stream, msg_type, **kwargs):
         self.replies.append({"stream": stream, "msg_type": msg_type, **kwargs})
 
+    def dispatch(self, msg_type, ident, parent):
+        # Mirrors Kernel.dispatch_shell's table lookup and call.
+        self.shell_handlers[msg_type]("SHELL", ident, parent)
 
-def test_patch_shell_handler_captures_output_and_queues_canonical_event():
+
+@pytest.fixture
+def kernel():
+    from nteract_kernel_launcher import _bokeh_handlers
+
+    kernel = _FakeKernel()
+    ip = SimpleNamespace(kernel=kernel)
+    _bokeh_handlers.install_kernel_hooks(ip)
+    yield kernel
+    _bokeh_handlers.uninstall_kernel_hooks(ip)
+
+
+def test_patch_shell_handler_captures_output_and_queues_canonical_event(kernel):
     pn = _load_panel()
-    from nteract_kernel_launcher.app import _BOKEH_PATCH_REPLY, NteractKernel
+    from nteract_kernel_launcher._bokeh_handlers import BOKEH_PATCH_REPLY, BOKEH_PATCH_REQUEST
 
     source = pn.widgets.FloatSlider(start=0, end=10, value=1)
     target = pn.widgets.FloatSlider(start=0, end=20, value=2)
@@ -1031,11 +1056,9 @@ def test_patch_shell_handler_captures_output_and_queues_canonical_event():
     payload = data[BOKEH_SESSION_MIME]
     session = session_registry.require(payload["session_id"])
     source_model = source._models[payload["root_ids"][0]][0]
-    kernel = _FakeKernel()
 
-    NteractKernel.nteract_bokeh_patch_request(
-        cast(Any, kernel),
-        "SHELL",
+    kernel.dispatch(
+        BOKEH_PATCH_REQUEST,
         [b"client"],
         {
             "content": {
@@ -1061,7 +1084,7 @@ def test_patch_shell_handler_captures_output_and_queues_canonical_event():
 
     assert len(kernel.replies) == 1
     reply = kernel.replies[0]
-    assert reply["msg_type"] == _BOKEH_PATCH_REPLY
+    assert reply["msg_type"] == BOKEH_PATCH_REPLY
     assert reply["content"]["status"] == "ok"
     assert reply["content"]["transaction_id"] == "tx-1"
     assert reply["content"]["revision"] == 1
@@ -1075,9 +1098,9 @@ def test_patch_shell_handler_captures_output_and_queues_canonical_event():
     assert events[0].server_patch is not None
 
 
-def test_patch_shell_error_reply_is_ack_only_and_event_carries_checkpoint():
+def test_patch_shell_error_reply_is_ack_only_and_event_carries_checkpoint(kernel):
     pn = _load_panel()
-    from nteract_kernel_launcher.app import _BOKEH_PATCH_REPLY, NteractKernel
+    from nteract_kernel_launcher._bokeh_handlers import BOKEH_PATCH_REPLY, BOKEH_PATCH_REQUEST
 
     slider = pn.widgets.FloatSlider(start=0, end=10, value=1)
 
@@ -1089,11 +1112,9 @@ def test_patch_shell_error_reply_is_ack_only_and_event_carries_checkpoint():
     payload = data[BOKEH_SESSION_MIME]
     session = session_registry.require(payload["session_id"])
     slider_model = slider._models[payload["root_ids"][0]][0]
-    kernel = _FakeKernel()
 
-    NteractKernel.nteract_bokeh_patch_request(
-        cast(Any, kernel),
-        "SHELL",
+    kernel.dispatch(
+        BOKEH_PATCH_REQUEST,
         [b"client"],
         {
             "content": {
@@ -1118,7 +1139,7 @@ def test_patch_shell_error_reply_is_ack_only_and_event_carries_checkpoint():
     )
 
     reply = kernel.replies[0]
-    assert reply["msg_type"] == _BOKEH_PATCH_REPLY
+    assert reply["msg_type"] == BOKEH_PATCH_REPLY
     assert reply["content"]["status"] == "error"
     assert reply["content"]["revision"] == 1
     assert "checkpoint" not in reply["content"]
@@ -1130,7 +1151,7 @@ def test_patch_shell_error_reply_is_ack_only_and_event_carries_checkpoint():
 
 
 def test_patch_request_buffers_reject_negative_index_and_hash_mismatch():
-    from nteract_kernel_launcher.app import _request_buffers
+    from nteract_kernel_launcher._bokeh_handlers import _request_buffers
 
     descriptor = BokehBuffer("buffer-1", b"payload").descriptor(0)
     descriptor["buffer_index"] = -1
@@ -1143,21 +1164,20 @@ def test_patch_request_buffers_reject_negative_index_and_hash_mismatch():
         _request_buffers({"buffers": [b"payload"]}, {"buffers": [descriptor]})
 
 
-def test_checkpoint_and_close_shell_handlers():
+def test_checkpoint_and_close_shell_handlers(kernel):
     pn = _load_panel()
-    from nteract_kernel_launcher.app import (
-        _BOKEH_CHECKPOINT_REPLY,
-        _BOKEH_CLOSE_REPLY,
-        NteractKernel,
+    from nteract_kernel_launcher._bokeh_handlers import (
+        BOKEH_CHECKPOINT_REPLY,
+        BOKEH_CHECKPOINT_REQUEST,
+        BOKEH_CLOSE_REPLY,
+        BOKEH_CLOSE_REQUEST,
     )
 
     _ip, data, _metadata = _format_panel(pn.widgets.FloatSlider(value=3))
     session_id = data[BOKEH_SESSION_MIME]["session_id"]
-    kernel = _FakeKernel()
 
-    NteractKernel.nteract_bokeh_checkpoint_request(
-        cast(Any, kernel),
-        "SHELL",
+    kernel.dispatch(
+        BOKEH_CHECKPOINT_REQUEST,
         [],
         {
             "content": {
@@ -1168,14 +1188,13 @@ def test_checkpoint_and_close_shell_handlers():
         },
     )
     checkpoint_reply = kernel.replies.pop()
-    assert checkpoint_reply["msg_type"] == _BOKEH_CHECKPOINT_REPLY
+    assert checkpoint_reply["msg_type"] == BOKEH_CHECKPOINT_REPLY
     assert checkpoint_reply["content"]["status"] == "ok"
     assert checkpoint_reply["content"]["revision"] == 0
     assert checkpoint_reply["content"]["checkpoint"]["document"]["roots"]
 
-    NteractKernel.nteract_bokeh_close_request(
-        cast(Any, kernel),
-        "SHELL",
+    kernel.dispatch(
+        BOKEH_CLOSE_REQUEST,
         [],
         {
             "content": {
@@ -1186,7 +1205,7 @@ def test_checkpoint_and_close_shell_handlers():
         },
     )
     close_reply = kernel.replies.pop()
-    assert close_reply["msg_type"] == _BOKEH_CLOSE_REPLY
+    assert close_reply["msg_type"] == BOKEH_CLOSE_REPLY
     assert close_reply["content"]["status"] == "ok"
     assert session_registry.get(session_id) is None
 
@@ -1207,15 +1226,10 @@ def test_checkpoint_and_close_shell_handlers():
     ],
 )
 def test_checkpoint_and_close_handlers_reject_unsupported_schema(
-    handler_name, reply_type, error_match
+    kernel, handler_name, reply_type, error_match
 ):
-    from nteract_kernel_launcher.app import NteractKernel
-
-    kernel = _FakeKernel()
-
-    getattr(NteractKernel, handler_name)(
-        cast(Any, kernel),
-        "SHELL",
+    kernel.dispatch(
+        handler_name,
         [],
         {
             "content": {
@@ -1233,7 +1247,7 @@ def test_checkpoint_and_close_handlers_reject_unsupported_schema(
 
 
 def test_wire_event_offsets_server_and_checkpoint_buffers():
-    from nteract_kernel_launcher.app import _wire_bokeh_event
+    from nteract_kernel_launcher._bokeh_handlers import wire_bokeh_event
 
     event = BokehServerEvent(
         session_id="session-1",
@@ -1254,7 +1268,7 @@ def test_wire_event_offsets_server_and_checkpoint_buffers():
         ),
     )
 
-    content, buffers = _wire_bokeh_event(event)
+    content, buffers = wire_bokeh_event(event)
 
     assert content["client_patch"]["buffers"][0]["buffer_index"] == 0
     assert content["server_patch"]["buffers"][0]["buffer_index"] == 1
@@ -1313,14 +1327,16 @@ def test_bokeh_event_drain_discards_unserializable_event_and_continues(
     assert send.call_args.args[2]["session_id"] == "session-good"
 
 
-def test_nteract_kernel_registers_bokeh_shell_messages():
-    from nteract_kernel_launcher.app import (
-        _BOKEH_CHECKPOINT_REQUEST,
-        _BOKEH_CLOSE_REQUEST,
-        _BOKEH_PATCH_REQUEST,
-        NteractKernel,
-    )
+def test_bokeh_handlers_register_through_kernel_registry(kernel):
+    from ipykernel.ipkernel import IPythonKernel
+    from nteract_kernel_launcher import _bokeh_handlers
+    from nteract_kernel_launcher.app import NteractKernel
 
-    assert _BOKEH_PATCH_REQUEST in NteractKernel.msg_types
-    assert _BOKEH_CHECKPOINT_REQUEST in NteractKernel.msg_types
-    assert _BOKEH_CLOSE_REQUEST in NteractKernel.msg_types
+    assert NteractKernel.msg_types == IPythonKernel.msg_types
+    for msg_type, handler in _bokeh_handlers.SHELL_HANDLERS.items():
+        registered = kernel.shell_handlers[msg_type]
+        assert registered.func is handler
+        assert registered.args == (kernel,)
+
+    _bokeh_handlers.uninstall_kernel_hooks(SimpleNamespace(kernel=kernel))
+    assert not set(_bokeh_handlers.SHELL_HANDLERS) & set(kernel.shell_handlers)

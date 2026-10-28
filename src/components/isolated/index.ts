@@ -1,8 +1,17 @@
 export { CommBridgeManager, createCommBridgeManager } from "./comm-bridge-manager";
 export { BokehSessionBridgeManager } from "./bokeh-session-bridge-manager";
 export type { BokehSessionOutputBinding } from "./bokeh-session-bridge-manager";
-export { BokehSessionRuntimeProvider, useBokehSessionRuntime } from "./bokeh-session-context";
-export type { BokehSessionRuntime, BokehSessionTransport } from "./bokeh-session-context";
+export {
+  BOKEH_SESSION_PLUGIN_ID,
+  bokehSessionPlugin,
+  installBokehSessionPlugin,
+  useBokehSessionPlugin,
+} from "./bokeh-session-plugin";
+export type {
+  BokehSessionPluginSources,
+  BokehSessionRuntime,
+  BokehSessionTransport,
+} from "./bokeh-session-plugin";
 // Message protocol types
 export type {
   ClearMessage,
@@ -115,6 +124,7 @@ export {
   outputSegmentLane,
   outputUsesBokeh,
   outputUsesPanel,
+  outputUsesScriptDocument,
   outputUsesSift,
   outputUsesVega,
   outputUsesWheelOwningFrame,

@@ -2670,6 +2670,7 @@ fn test_room_with_path_and_store(
         preparing_kernel_env_path: std::sync::Mutex::new(None),
         evicted: AtomicBool::new(false),
         blob_store,
+        output_hooks: crate::extensions::room_output_hooks(),
         trust_state: Arc::new(RwLock::new(TrustState {
             status: runt_trust::TrustStatus::Untrusted,
             pep723_dependencies: vec![],
@@ -15983,6 +15984,186 @@ async fn assert_arrow_recovery(manifest_size: usize, conflict: Option<&str>) {
             .await
             .unwrap()
             .payload_matches(&expected));
+    }
+}
+
+// Save writes declared mutable replay state into the export while the durable
+// execution record keeps the payload the kernel produced; recovery must accept
+// exactly that difference and nothing else.
+#[tokio::test]
+async fn declared_replay_fields_survive_save_and_recovery() {
+    assert_mutable_replay_recovery(None).await;
+}
+
+#[tokio::test]
+async fn undeclared_replay_differences_still_degrade_recovery() {
+    for conflict in ["document", "session_id", "extra", "other-mime-snapshot"] {
+        assert_mutable_replay_recovery(Some(conflict)).await;
+    }
+}
+
+async fn assert_mutable_replay_recovery(conflict: Option<&str>) {
+    use crate::output_hooks::test_hooks::{saved_snapshot, MUTABLE_REPLAY_TEST_MIME as MIME};
+    use crate::output_store::{create_manifest, ContentRef, DEFAULT_INLINE_THRESHOLD};
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blobs = test_blob_store(&tmp);
+    let path = tmp.path().join("session.ipynb");
+    let docs = tmp.path().join("docs");
+    let records_dir = tmp.path().join("executions");
+    let store = runtimed_client::execution_store::ExecutionStore::new(&records_dir);
+    let id = Uuid::new_v4();
+    tokio::fs::write(
+        &path,
+        br#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[]}"#,
+    )
+    .await
+    .unwrap();
+    let source = "show_session()";
+    let initial = serde_json::json!({"session_id": "s1", "document": {"roots": [0]}, "extra": 1});
+    let original_room;
+    let mut expected = {
+        let (room, ready) =
+            arrow_recovery_room_from_disk(id, &docs, Arc::clone(&blobs), &path, &records_dir).await;
+        assert_source_ready(&ready);
+        original_room = Arc::downgrade(&room);
+        let raw = serde_json::json!({"output_type": "display_data", "metadata": {},
+            "data": {MIME: initial, "application/json": {"snapshot": 0}}});
+        let output = create_manifest(&raw, &blobs, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap()
+            .to_json();
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "viz", "code").unwrap();
+            doc.update_source("viz", source).unwrap();
+            doc.set_execution_id("viz", Some("viz-execution")).unwrap();
+        }
+        room.state
+            .with_doc(|state| {
+                state.create_execution_with_source_provenance(
+                    "viz-execution",
+                    source,
+                    1,
+                    Some("mcp:replay"),
+                    Some("viz"),
+                )?;
+                state.set_execution_count("viz-execution", 1)?;
+                state.set_outputs("viz-execution", &[output])?;
+                state.set_execution_done("viz-execution", true)?;
+                Ok(())
+            })
+            .unwrap();
+        save_notebook_to_disk(&room, None).await.unwrap();
+        super::peer_runtime_sync::persist_terminal_execution_records(
+            &room,
+            &store,
+            &mut HashMap::new(),
+        )
+        .await;
+        store.read_record("viz-execution").await.unwrap()
+    };
+    assert!(original_room.upgrade().is_none());
+
+    let saved: serde_json::Value =
+        serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+    let saved_payload = &saved["cells"][0]["outputs"][0]["data"][MIME];
+    assert_eq!(saved_payload["snapshot"], saved_snapshot());
+    assert_eq!(saved_payload["document"], initial["document"]);
+    let recorded_payload = |record: &runtimed_client::execution_store::ExecutionRecord| {
+        serde_json::from_str::<serde_json::Value>(
+            record.outputs[0]["data"][MIME]["inline"].as_str().unwrap(),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        recorded_payload(&expected),
+        initial,
+        "the durable record keeps the kernel's payload"
+    );
+
+    if let Some(conflict) = conflict {
+        let (mime, key, value) = match conflict {
+            "document" => (MIME, "document", serde_json::json!({"roots": [1]})),
+            "session_id" => (MIME, "session_id", serde_json::json!("s2")),
+            "extra" => (MIME, "extra", serde_json::json!(2)),
+            "other-mime-snapshot" => ("application/json", "snapshot", serde_json::json!(1)),
+            _ => unreachable!(),
+        };
+        let content = &mut expected.outputs[0]["data"][mime];
+        let mut payload = match content.get("inline").and_then(|v| v.as_str()) {
+            Some(inline) => serde_json::from_str::<serde_json::Value>(inline).unwrap(),
+            None => panic!("{conflict}: test payloads are inline"),
+        };
+        payload[key] = value;
+        *content = serde_json::json!({"inline": payload.to_string()});
+        store.write_record(expected.clone()).await.unwrap();
+    }
+
+    // The room's output adopts the saved payload, so the snapshot written at
+    // save time is what reopening renders.
+    let room_payload = |room: Arc<NotebookRoom>, execution_id: String| {
+        let blobs = Arc::clone(&blobs);
+        async move {
+            let outputs = room
+                .state
+                .read(|state| state.get_outputs(&execution_id))
+                .unwrap();
+            let content: ContentRef =
+                serde_json::from_value(outputs[0]["data"][MIME].clone()).unwrap();
+            serde_json::from_str::<serde_json::Value>(&content.resolve(&blobs).await.unwrap())
+                .unwrap()
+        }
+    };
+
+    // Fresh import claims the durable record by content.
+    {
+        let (fresh, ready) = arrow_recovery_room_from_disk(
+            id,
+            &tmp.path().join("fresh-docs"),
+            Arc::clone(&blobs),
+            &path,
+            &records_dir,
+        )
+        .await;
+        assert_source_ready(&ready);
+        let execution_id = fresh.doc.read().await.get_execution_id("viz").unwrap();
+        assert_eq!(
+            execution_id == "viz-execution",
+            conflict.is_none(),
+            "fresh import, conflict {conflict:?}"
+        );
+        let payload = room_payload(fresh, execution_id).await;
+        assert_eq!(
+            payload["snapshot"],
+            saved_snapshot(),
+            "fresh import, conflict {conflict:?}"
+        );
+    }
+
+    // Journal recovery verifies the exact durable record.
+    let (room, settled) =
+        arrow_recovery_room_from_disk(id, &docs, Arc::clone(&blobs), &path, &records_dir).await;
+    match conflict {
+        None => {
+            assert_source_ready(&settled);
+            let execution = room
+                .state
+                .read(|state| state.get_execution("viz-execution"))
+                .unwrap()
+                .expect("recovered execution");
+            assert_eq!(execution.source.as_deref(), Some(source));
+            let payload = room_payload(room, "viz-execution".to_string()).await;
+            assert_eq!(payload["snapshot"], saved_snapshot());
+            assert_eq!(payload["document"], initial["document"]);
+        }
+        Some(conflict) => {
+            assert!(
+                matches!(&settled, RoomSourceState::Failed(_))
+                    && format!("{settled:?}").contains("does not match"),
+                "{conflict}: {settled:?}"
+            );
+        }
     }
 }
 

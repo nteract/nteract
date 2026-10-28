@@ -1,3 +1,4 @@
+mod bokeh_session_policy;
 mod comms;
 mod doc;
 pub mod error;
