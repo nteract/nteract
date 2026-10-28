@@ -19,7 +19,11 @@
   top: calc(var(--page-header-height, 64px) + 6px);
   left: 12px;
   z-index: 5;
-  max-width: calc(100vw - 24px);
+  width: max-content;
+  /* Percentages exclude a classic scrollbar; 100vw includes it and can make
+     the toolbar too wide for selection placement in the visible viewport. */
+  max-width: calc(100% - 24px);
+  padding: 4px 6px;
   background: var(--surface);
   border-radius: 0.7rem;
   box-shadow:
@@ -33,6 +37,9 @@
   display: flex;
   visibility: hidden;
   pointer-events: none;
+}
+.rich-toolbar.is-contextual .toolbar-comment > span {
+  display: none;
 }
 .toolbar-host:not(:has(.rich-toolbar.is-pinned:not([hidden]))) {
   min-height: 0;

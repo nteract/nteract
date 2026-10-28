@@ -184,7 +184,7 @@ async function assertStableSelectionToolbar(page) {
         },
         { text, from, to },
       );
-  for (const width of [1280, 390, 320]) {
+  for (const width of [1280, 900, 863, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
     await page.getByRole("textbox", { name: "Page title" }).focus();
     await page.evaluate(() => {
@@ -261,6 +261,27 @@ async function assertStableSelectionToolbar(page) {
         .poll(() => page.evaluate(() => getSelection().toString()))
         .toBe(text.slice(from, to));
       await expect(toolbar).toBeVisible();
+      await expect(toolbar).toHaveClass(/is-floating/);
+      for (const name of [
+        "Undo",
+        "Redo",
+        "Insert table",
+        "Insert image",
+        "Bulleted list",
+        "Numbered list",
+        "Task list",
+      ])
+        await expect(toolbar.getByRole("button", { name, exact: true })).toHaveCount(0);
+      const placement = await toolbar.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        const range = getSelection().getRangeAt(0).getBoundingClientRect();
+        return { width: box.width, gap: Math.max(range.top - box.bottom, box.top - range.bottom) };
+      });
+      assert.ok(placement.width <= 420, "selection controls remain compact at half-window widths");
+      assert.ok(
+        placement.gap >= 8 && placement.gap <= 12,
+        "formatting stays beside the selected passage",
+      );
       await page.waitForTimeout(50);
     }
     const records = await page.evaluate(() => window.stopSelectionToolbarTrace());
