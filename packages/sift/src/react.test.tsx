@@ -105,24 +105,27 @@ function parquetFixture(): Uint8Array {
 }
 
 /**
- * Let the mocked store grow by two rows per appended row group, with the
+ * Let the mocked store grow by `rowsPerGroup` rows per appended row group, with the
  * footer answering for `rowGroups` groups. Returns a restore function.
  */
-function stubParquetStore(options: { truncateAfterGroups?: number; rowGroups?: number } = {}) {
+function stubParquetStore(
+  options: { truncateAfterGroups?: number; rowGroups?: number; rowsPerGroup?: number } = {},
+) {
   const rowGroups = options.rowGroups ?? 2;
+  const rowsPerGroup = options.rowsPerGroup ?? 2;
   let loaded = 0;
   let groups = 0;
   predicateModule.parquet_file_info.mockImplementation(() => ({
-    num_rows: rowGroups * 2,
+    num_rows: rowGroups * rowsPerGroup,
     num_row_groups: rowGroups,
-    row_group_rows: Array.from({ length: rowGroups }, () => 2),
+    row_group_rows: Array.from({ length: rowGroups }, () => rowsPerGroup),
     column_names: ["id", "name"],
   }));
   predicateModule.num_rows.mockImplementation(() => loaded);
   predicateModule.parquet_append_row_group.mockImplementation(() => {
-    loaded += 2;
+    loaded += rowsPerGroup;
     groups += 1;
-    return 2;
+    return rowsPerGroup;
   });
   predicateModule.parquet_file_usage.mockImplementation(() => ({
     rows: loaded,
@@ -1223,10 +1226,59 @@ describe("SiftTable", () => {
 
     it("resumes from the engine's near-end scroll callback with trigger: scroll", async () => {
       vi.useRealTimers();
-      const restore = stubParquetStore({ rowGroups: 3 });
+      // Keep the paused preview beyond the engine's near-end overscan. A tiny
+      // preview automatically resumes on the next frame, before its footer
+      // button necessarily renders; that behavior has its own test below.
+      const restore = stubParquetStore({ rowGroups: 3, rowsPerGroup: 50 });
       const milestones: SiftLoadMilestone[] = [];
       try {
         render(
+          <SiftTable
+            source={{
+              kind: "byte-source",
+              source: parquetByteSource(),
+              overflow: "truncate",
+              autoLoad: { rows: 75, trigger: "scroll" },
+            }}
+            onLoadMilestone={(milestone) => milestones.push(milestone)}
+          />,
+        );
+        await waitFor(() => {
+          expect(document.querySelector(".sift-load-more")).not.toBeNull();
+        });
+        expect(streamingComplete(milestones)).toEqual([
+          expect.objectContaining({ rowCount: 100, totalRowCount: 150, resumable: true }),
+        ]);
+        expect(milestones.some((m) => m.phase === "streaming-resumed")).toBe(false);
+        const options = vi.mocked(createTable).mock.calls.at(-1)?.[2];
+        expect(options?.onScrollNearEnd).toBeTypeOf("function");
+
+        options!.onScrollNearEnd!();
+        await waitFor(() => {
+          expect(streamingComplete(milestones)).toHaveLength(2);
+        });
+        expect(milestones.some((m) => m.phase === "streaming-resumed")).toBe(true);
+        expect(streamingComplete(milestones)[1]).toMatchObject({
+          rowCount: 150,
+          totalRowCount: 150,
+          truncated: false,
+          resumable: false,
+        });
+        // The button is gone with the preview; nothing to load.
+        await waitFor(() => {
+          expect(document.querySelector(".sift-load-more")).toBeNull();
+        });
+      } finally {
+        restore();
+      }
+    });
+
+    it("automatically resumes a paused preview already inside the near-end range", async () => {
+      vi.useRealTimers();
+      const restore = stubParquetStore({ rowGroups: 3 });
+      const milestones: SiftLoadMilestone[] = [];
+      try {
+        const { container } = render(
           <SiftTable
             source={{
               kind: "byte-source",
@@ -1237,21 +1289,28 @@ describe("SiftTable", () => {
             onLoadMilestone={(milestone) => milestones.push(milestone)}
           />,
         );
-        await waitFor(() => {
-          expect(document.querySelector(".sift-load-more")).not.toBeNull();
-        });
-        const options = vi.mocked(createTable).mock.calls.at(-1)?.[2];
-        expect(options?.onScrollNearEnd).toBeTypeOf("function");
-
-        options!.onScrollNearEnd!();
+        // The real engine reports near-end after the four-row preview settles.
+        // No scroll input or manual callback invocation is needed, and the
+        // transient Load more button is not guaranteed to appear in the DOM.
         await waitFor(() => {
           expect(streamingComplete(milestones)).toHaveLength(2);
         });
-        expect(milestones.some((m) => m.phase === "streaming-resumed")).toBe(true);
-        expect(streamingComplete(milestones)[1]).toMatchObject({ resumable: false });
-        // The button is gone with the preview; nothing to load.
+        expect(streamingComplete(milestones)).toEqual([
+          expect.objectContaining({ rowCount: 4, totalRowCount: 6, resumable: true }),
+          expect.objectContaining({
+            rowCount: 6,
+            totalRowCount: 6,
+            truncated: false,
+            resumable: false,
+          }),
+        ]);
+        expect(milestones.filter((m) => m.phase === "streaming-resumed")).toEqual([
+          expect.objectContaining({ rowCount: 4 }),
+        ]);
+        expect(predicateModule.parquet_append_row_group).toHaveBeenCalledTimes(3);
         await waitFor(() => {
-          expect(document.querySelector(".sift-load-more")).toBeNull();
+          expect(container.querySelector(".sift-load-more")).toBeNull();
+          expect(container.querySelector(".sift-preview-hint")).toBeNull();
         });
       } finally {
         restore();
