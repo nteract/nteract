@@ -267,4 +267,36 @@ test.describe("Renderer plugin fixtures", () => {
     const body = page.frameLocator('[data-testid="vanilla-remount-frame"] iframe').locator("body");
     await expect(body).toContainText("vanilla remount 1", { timeout: 30_000 });
   });
+
+  test("links inside shadow roots are forwarded instead of navigating the frame", async ({
+    page,
+  }) => {
+    await page.goto("/?scenario=shadow-link");
+    const status = page.getByTestId("shadow-link-status");
+    await expect(status).toHaveAttribute("data-rendered", "true", { timeout: 30_000 });
+
+    const frameNavigations: string[] = [];
+    page.on("framenavigated", (navigated) => {
+      if (navigated !== page.mainFrame()) frameNavigations.push(navigated.url());
+    });
+
+    const frame = page.frameLocator('[data-testid="shadow-link-frame"] iframe');
+    const link = frame.locator("#shadow-link span");
+    await expect(link).toBeVisible({ timeout: 30_000 });
+
+    const url = "https://example.invalid/shadow-link";
+    const linkClicks = (count: number) => Array(count).fill(url).join(" ");
+    await link.click();
+    await expect(status).toHaveAttribute("data-link-clicks", linkClicks(1));
+
+    // Frame messages arrive in order, so a later link click acts as a barrier
+    // proving no double-click was forwarded for the link itself.
+    await link.dblclick();
+    await frame.locator("#shadow-text").dblclick();
+    await link.click();
+    await expect(status).toHaveAttribute("data-link-clicks", linkClicks(4));
+    await expect(status).toHaveAttribute("data-double-clicks", "1");
+    await expect(link).toBeVisible();
+    expect(frameNavigations).toEqual([]);
+  });
 });

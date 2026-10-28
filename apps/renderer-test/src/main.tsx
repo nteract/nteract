@@ -416,6 +416,59 @@ function VanillaRemountScenarioApp() {
   );
 }
 
+// Bokeh and Panel render into shadow roots; the frame's document listeners
+// must still recognize anchors there.
+const SHADOW_LINK_HTML = `<div id="shadow-link-host"></div><script>
+const root = document.getElementById("shadow-link-host").attachShadow({ mode: "open" });
+root.innerHTML =
+  '<a id="shadow-link" href="https://example.invalid/shadow-link"><span>Shadow link</span></a>' +
+  '<p id="shadow-text">Shadow text</p>';
+</script>`;
+
+function ShadowLinkScenarioApp() {
+  const targetRef = useRef<HTMLDivElement>(null);
+  const [rendered, setRendered] = useState(false);
+  const [linkClicks, setLinkClicks] = useState<string[]>([]);
+  const [doubleClicks, setDoubleClicks] = useState(0);
+
+  useEffect(() => {
+    const target = targetRef.current;
+    if (!target) return;
+
+    const handle = createNteractOutputEmbed({
+      target,
+      rendererBundle: defaultRendererLoader,
+      rendererPluginLoader: loadPluginForMime,
+      output: { outputId: "shadow-link", mimeType: "text/html", data: SHADOW_LINK_HTML },
+      onLinkClick(url) {
+        setLinkClicks((prev) => [...prev, url]);
+      },
+      onMessage(message) {
+        if ((message as { type?: string }).type === "dblclick") {
+          setDoubleClicks((count) => count + 1);
+        }
+      },
+      onDiagnostic(phase) {
+        if (phase === "render-complete") setRendered(true);
+      },
+    });
+
+    return () => handle.dispose();
+  }, []);
+
+  return (
+    <div style={{ maxWidth: 900, margin: "0 auto", padding: "24px 16px" }}>
+      <div
+        data-testid="shadow-link-status"
+        data-rendered={rendered}
+        data-link-clicks={linkClicks.join(" ")}
+        data-double-clicks={doubleClicks}
+      />
+      <div data-testid="shadow-link-frame" ref={targetRef} />
+    </div>
+  );
+}
+
 function MermaidHostScenarioApp() {
   const admission = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -475,6 +528,9 @@ function App() {
   }
   if (scenario === "vanilla-remount") {
     return <VanillaRemountScenarioApp />;
+  }
+  if (scenario === "shadow-link") {
+    return <ShadowLinkScenarioApp />;
   }
   return <FixtureListApp />;
 }
