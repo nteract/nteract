@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
+import { initializePage } from "../model/page.mjs";
 import { Page } from "./index.mjs";
 
 class Storage {
@@ -60,13 +61,28 @@ for (const fault of ["metadata", "flush", "final-sync"]) {
       new Request("https://pages.invalid/internal/create", {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "x-pages-driver": "ChatGPT" },
-        body: JSON.stringify({ page_id: pageId, title: "Test", markdown: "Original content" }),
+        body: JSON.stringify({
+          page_id: pageId,
+          title: "Test",
+          markdown: "# Test\n\nOriginal content",
+        }),
       });
     assert.equal((await page.run(request())).status, 500);
     const receipt = structuredClone(page.metadata.createdReceipt);
+    assert.equal(receipt.warnings.length, 1);
+    assert.equal(receipt.warnings[0].code, "opening_heading_repeats_title");
+    assert.equal(receipt.warnings[0].heading, "Test");
+    const recordedCreation = await storage.get("host/creation");
+    assert.deepEqual(
+      recordedCreation?.metadata.createdReceipt ??
+        (await storage.get("host/document")).createdReceipt,
+      receipt,
+    );
     assert.equal((await page.run(request())).status, 500);
     doc = A.change(doc, (draft) => {
       draft.concurrentNote = "Keep this edit";
+      A.updateText(draft, ["title"], "Changed title");
+      initializePage(draft, "## Changed section\n\nKeep this later body edit.");
     });
     storage.fault = undefined;
     const retry = await page.run(request());
@@ -74,6 +90,9 @@ for (const fault of ["metadata", "flush", "final-sync"]) {
     assert.deepEqual(await retry.json(), receipt);
     assert.ok(A.hasHeads(doc, receipt.heads));
     assert.equal(doc.concurrentNote, "Keep this edit");
+    assert.equal(doc.title, "Changed title");
+    assert.match(doc.blocks[Object.keys(doc.blocks)[0]].richText, /Keep this later body edit/);
+    assert.equal(A.view(doc, receipt.heads).title, "Test");
     assert.deepEqual(await storage.get("host/document"), page.metadata);
     assert.equal(await storage.get("host/creation"), undefined);
     assert.ok(flushes >= 1);

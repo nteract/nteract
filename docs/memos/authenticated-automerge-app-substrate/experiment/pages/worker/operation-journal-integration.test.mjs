@@ -78,6 +78,200 @@ function legacyReceipts(storage) {
     });
 }
 
+function richMutationFixture(t, markdown = "## Introduction\n\nOriginal body.") {
+  const storage = new Storage();
+  let doc = A.change(A.from(createPageData({ pageId, title: "Guide" })), (draft) =>
+    initializePage(draft, markdown),
+  );
+  const blockId = Object.keys(doc.blocks)[0];
+  const handle = {
+    doc: () => doc,
+    async update(fn) {
+      doc = fn(doc);
+    },
+  };
+  const identity = {
+    principal: "user:fixture:owner",
+    displayName: "Fixture Owner",
+    driver: "ChatGPT",
+  };
+  let applications = 0;
+  const context = (args, operation = "edit_page", overrides = {}) => ({
+    storage,
+    handle,
+    operation,
+    args,
+    identity,
+    apply(draft) {
+      applications++;
+      return applyPageOperation(draft, { operation, arguments: args, identity });
+    },
+    flush: () => storage.sync(),
+    ...overrides,
+  });
+  t.after(() => A.free(doc));
+  return { storage, handle, identity, blockId, context, applications: () => applications };
+}
+
+test("opening title warnings describe receipt heads before concurrent native edits during flush", async (t) => {
+  const f = richMutationFixture(t);
+  const args = {
+    idempotency_key: "opening-title-concurrent",
+    base_heads: A.getHeads(f.handle.doc()),
+    operations: [
+      { op: "replace_block_markdown", block_id: f.blockId, markdown: "# Guide\n\nTool body." },
+    ],
+  };
+  let flushes = 0;
+  const receipt = await documentMutation(
+    f.context(args, "edit_page", {
+      async flush() {
+        if (++flushes === 1)
+          await f.handle.update((doc) =>
+            A.change(doc, (draft) => {
+              A.updateText(draft, ["title"], "Later human title");
+            }),
+          );
+        await f.storage.sync();
+      },
+    }),
+  );
+  assert.equal(receipt.warnings[0].code, "opening_heading_repeats_title");
+  assert.equal(receipt.warnings[0].heading, "Guide");
+  assert.equal(receipt.warnings[0].block_id, f.blockId);
+  assert.equal(A.view(f.handle.doc(), receipt.heads).title, "Guide");
+  assert.equal(f.handle.doc().title, "Later human title");
+  assert.notDeepEqual(A.getHeads(f.handle.doc()), receipt.heads);
+  assert.match(f.handle.doc().blocks[f.blockId].richText, /Tool body/);
+  const beforeRetry = A.save(f.handle.doc());
+  assert.deepEqual(await documentMutation(f.context(args)), receipt);
+  assert.deepEqual(A.save(f.handle.doc()), beforeRetry);
+  assert.equal(f.applications(), 1);
+});
+
+for (const recovery of ["retry", "startup"]) {
+  test(`opening title warning survives pending ${recovery}, later edits, and terminal replay`, async (t) => {
+    const f = richMutationFixture(t);
+    const operation = recovery === "startup" ? "patch_page" : "edit_page";
+    const args = {
+      idempotency_key: `opening-title-${recovery}`,
+      base_heads: A.getHeads(f.handle.doc()),
+      operations:
+        recovery === "startup"
+          ? [
+              {
+                op: "patch_block_markdown",
+                block_id: f.blockId,
+                replacements: [
+                  { old: "## Introduction", new: "# Guide" },
+                  { old: "Original body.", new: "Accepted body." },
+                ],
+              },
+            ]
+          : [
+              {
+                op: "replace_block_markdown",
+                block_id: f.blockId,
+                markdown: "# Guide\n\nAccepted body.",
+              },
+            ],
+    };
+    let flushes = 0;
+    await assert.rejects(
+      documentMutation(
+        f.context(args, operation, {
+          async flush() {
+            if (++flushes === 2) throw Error("Interrupted title warning durability");
+            await f.storage.sync();
+          },
+        }),
+      ),
+      /Interrupted title warning/,
+    );
+    const key = `host/operation/${args.idempotency_key}`;
+    const pending = await f.storage.get(key);
+    assert.equal(pending.pending, true);
+    assert.equal(pending.receipt.warnings[0].heading, "Guide");
+    await f.handle.update((doc) =>
+      A.change(doc, (draft) => {
+        A.updateText(draft, ["title"], "Later human title");
+        initializePage(draft, "## New section\n\nKeep this body.");
+      }),
+    );
+    const laterBytes = A.save(f.handle.doc());
+    if (recovery === "startup")
+      await recoverDocumentMutations(f.storage, f.handle, () => f.storage.sync());
+    const replay = f.context(args, operation, {
+      prepare: () => assert.fail("Warning retry must not repeat preparation"),
+      apply: () => assert.fail("Warning retry must not reapply semantic edits"),
+    });
+    assert.deepEqual(await documentMutation(replay), pending.receipt);
+    assert.deepEqual(await documentMutation(replay), pending.receipt);
+    assert.deepEqual((await f.storage.get(key)).receipt, pending.receipt);
+    assert.equal((await f.storage.get(key)).pending, false);
+    assert.deepEqual(A.save(f.handle.doc()), laterBytes);
+    assert.equal(f.applications(), 1);
+  });
+}
+
+test("patch removal omits warnings and comment operations do not report existing duplicate headings", async (t) => {
+  const f = richMutationFixture(t, "# Guide\n\nOriginal body.");
+  const args = {
+    idempotency_key: "opening-title-removal",
+    base_heads: A.getHeads(f.handle.doc()),
+    operations: [
+      {
+        op: "patch_block_markdown",
+        block_id: f.blockId,
+        replacements: [{ old: "# Guide", new: "## Different section" }],
+      },
+    ],
+  };
+  const removed = await documentMutation(f.context(args, "patch_page"));
+  assert.equal(Object.hasOwn(removed, "warnings"), false);
+  assert.equal(f.handle.doc().title, "Guide");
+  await f.handle.update((doc) =>
+    A.change(doc, (draft) => initializePage(draft, "# Guide\n\nOriginal body.")),
+  );
+  const bodyBefore = f.handle.doc().blocks[f.blockId].richText;
+  const comment = await documentMutation(
+    f.context(
+      {
+        idempotency_key: "opening-title-comment",
+        base_heads: A.getHeads(f.handle.doc()),
+        block_id: f.blockId,
+        body: "A comment on the existing content.",
+      },
+      "manage_page_comment",
+    ),
+  );
+  assert.equal(Object.hasOwn(comment, "warnings"), false);
+  assert.equal(f.handle.doc().blocks[f.blockId].richText, bodyBefore);
+  assert.ok(comment.result.thread_id);
+});
+
+test("old receipts without warnings are replayed unchanged despite a currently duplicate heading", async (t) => {
+  const f = richMutationFixture(t);
+  const args = {
+    idempotency_key: "opening-title-old-receipt",
+    base_heads: A.getHeads(f.handle.doc()),
+    operations: [
+      { op: "replace_block_markdown", block_id: f.blockId, markdown: "# Guide\n\nBody." },
+    ],
+  };
+  await documentMutation(f.context(args));
+  const key = `host/operation/${args.idempotency_key}`;
+  const old = await f.storage.get(key);
+  delete old.receipt.warnings;
+  await f.storage.put(key, old);
+  await f.storage.sync();
+  const bytes = A.save(f.handle.doc());
+  assert.deepEqual(await documentMutation(f.context(args)), old.receipt);
+  assert.deepEqual(await f.storage.get(key), old);
+  assert.deepEqual(A.save(f.handle.doc()), bytes);
+  assert.equal(f.applications(), 1);
+});
+
 test("documentMutation preserves exact versioned retries and rejects changed payloads or principals", async (t) => {
   t.mock.method(Date, "now", () => start);
   const f = fixture();

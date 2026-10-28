@@ -1,5 +1,6 @@
 import * as A from "@automerge/automerge";
 import { assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
+import { openingTitleWarning } from "../model/title-warning.mjs";
 import { inspectOperation, reserveOperation, listOperationEntries } from "./operation-journal.mjs";
 
 function reject(status, message) {
@@ -83,11 +84,21 @@ export async function documentMutation({
     });
     try {
       assertDocumentLimits(after);
+      // Warnings describe this exact result, including on retries after later edits.
+      // Capture them before the journal budget/barrier, never from the live handle.
+      const warning = ["edit_page", "patch_page"].includes(operation)
+        ? openingTitleWarning(after)
+        : null;
       entry = {
         fingerprint: digest,
         pending: true,
         changes: A.getChanges(before, after),
-        receipt: { page_id: before.page_id, heads: A.getHeads(after), result: result ?? null },
+        receipt: {
+          page_id: before.page_id,
+          heads: A.getHeads(after),
+          result: result ?? null,
+          ...(warning ? { warnings: [warning] } : {}),
+        },
       };
       assertIntentSize(key, entry.changes, {
         fingerprint: entry.fingerprint,

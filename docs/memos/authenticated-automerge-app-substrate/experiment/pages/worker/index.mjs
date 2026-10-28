@@ -27,6 +27,7 @@ import { connectAgentResponse } from "../connect-agent.mjs";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
 import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
+import { openingTitleWarning } from "../model/title-warning.mjs";
 import {
   authenticate,
   driverLabel,
@@ -802,6 +803,7 @@ export class Page {
               (draft) => initializePage(draft, args.markdown ?? ""),
             );
             assertDocumentLimits(doc);
+            const warning = openingTitleWarning(doc);
             const documentId = interpretAsDocumentId(generateAutomergeUrl());
             const metadata = {
               recordStorage: this.env.PAGES_ASYNC_PERSISTENCE === "true" ? "buffered" : "local",
@@ -811,7 +813,12 @@ export class Page {
               documentId,
               tree: logicalId(documentIdToBinary(documentId)),
               deleted: false,
-              createdReceipt: { page_id: args.page_id, title: doc.title, heads: A.getHeads(doc) },
+              createdReceipt: {
+                page_id: args.page_id,
+                title: doc.title,
+                heads: A.getHeads(doc),
+                ...(warning ? { warnings: [warning] } : {}),
+              },
             };
             intent = { metadata, bytes: A.save(doc) };
             assertIntentSize("host/creation", [intent.bytes], { metadata });

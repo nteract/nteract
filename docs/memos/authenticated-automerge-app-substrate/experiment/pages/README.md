@@ -592,6 +592,17 @@ Explicit read options use a 128 KiB default response budget (caller-adjustable f
 it never silently truncates document content. These are read projections only and
 do not change CRDT state, comment anchors, mutation guards or journal receipts.
 
+Successful create/edit/patch receipts can include advisory
+`opening_heading_repeats_title` warnings. The detector examines the first nonempty
+top-level body node using the native rich-text projection. It reports an opening
+heading that matches the dedicated title after conservative normalization or a
+narrow near-match check. Warnings carry the actual block ID and bounded heading
+text; content is never removed or hidden. They are captured with the immutable
+result before journaling, so retry and recovery return the original warning at
+the original heads, even after later edits. Existing receipts are not recomputed.
+Agents should read back the opening and keep intentional headings. This is an
+authoring aid, not semantic duplicate detection or import normalization.
+
 Agent activity stays in host memory and travels through the authenticated native
 ephemeral channel. `report_page_progress` creates an independent, short-lived session;
 only its caller receives the private lease token needed to update or clear it.

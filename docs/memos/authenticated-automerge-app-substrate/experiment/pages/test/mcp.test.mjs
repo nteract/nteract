@@ -88,6 +88,41 @@ test("MCP refuses resource URLs outside this service before invoking tools", asy
   assert.ok((await response.json()).error);
 });
 const pageId = "1a160b47-6df1-4983-81eb-489ca5a26812";
+test("MCP initialization guides title authoring and successful receipts preserve advisory warnings", async () => {
+  const initialization = await handleMcp(
+    request("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "title-warning-test", version: "1" },
+    }),
+    async () => {
+      throw Error("Initialization must not invoke a document tool");
+    },
+  );
+  assert.match((await initialization.json()).result.instructions, /opening_heading_repeats_title/);
+  const receipt = {
+    page_id: pageId,
+    heads: ["b".repeat(64)],
+    warnings: [
+      {
+        code: "opening_heading_repeats_title",
+        block_id: "opening-block",
+        heading: "A document title",
+        match_kind: "normalized_exact",
+        suggested_action: "Read the current opening before correcting an accidental duplicate.",
+      },
+    ],
+  };
+  for (const name of ["create_page", "edit_page", "patch_page"]) {
+    const response = await handleMcp(request("tools/call", { name, arguments: {} }), async () =>
+      Response.json(receipt),
+    );
+    const result = (await response.json()).result;
+    assert.equal(result.isError, undefined);
+    assert.deepEqual(result.structuredContent.warnings, receipt.warnings);
+    assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
+  }
+});
 test("MCP advertises and forwards selective reads and read-only compact comments", async () => {
   for (const [name, args] of [
     [
