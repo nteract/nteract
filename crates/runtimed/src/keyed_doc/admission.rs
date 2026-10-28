@@ -65,6 +65,15 @@ fn preview_receive_with(
             rebuild_from_save(&mut preview.doc)
         },
     )?;
+    // Queued orphan changes are invisible to get_changes until a later
+    // message supplies their dependencies. Never admit them under this
+    // connection and then validate them under a different peer or producer.
+    if !preview.doc.get_missing_deps(&[]).is_empty() {
+        return Err(AutomergeOperationError::automerge(
+            label,
+            automerge::AutomergeError::MissingDeps,
+        ));
+    }
     preview.new_changes = preview.doc.get_changes(&heads_before);
     Ok(preview)
 }
@@ -154,6 +163,79 @@ pub(crate) mod tests {
         assert!(host.get_heads().is_empty());
         let mut previewed = preview.doc;
         assert_eq!(previewed.get_heads().len(), 1);
+    }
+
+    #[test]
+    fn preview_rejects_orphan_changes_before_actor_validation() {
+        let mut producer = doc_with_actor("runtimed:kernel");
+        producer.put(ROOT, "parent", 1).unwrap();
+        let parent = producer.commit().unwrap();
+        let mut forged = producer.fork();
+        forged.set_actor(automerge::ActorId::from(
+            "user:dev:bob/browser:b".as_bytes(),
+        ));
+        forged.put(ROOT, "forged", true).unwrap();
+        let child = forged.commit().unwrap();
+        let message = sync::Message {
+            heads: vec![child],
+            need: vec![],
+            have: vec![],
+            changes: vec![forged
+                .get_change_by_hash(&child)
+                .unwrap()
+                .raw_bytes()
+                .to_vec()]
+            .into(),
+            flags: None,
+            version: sync::MessageVersion::V1,
+        };
+        let message = sync::Message::decode(&message.encode()).unwrap();
+
+        // Automerge accepts this frame but queues the child without exposing
+        // it to get_changes. A later producer frame could resolve its parent.
+        let mut unchecked = AutoCommit::new();
+        unchecked
+            .sync()
+            .receive_sync_message(&mut sync::State::new(), message.clone())
+            .unwrap();
+        assert!(unchecked.get_changes(&[]).is_empty());
+        assert_eq!(unchecked.get_missing_deps(&[]), vec![parent]);
+
+        let mut host = AutoCommit::new();
+        let state = sync::State::new();
+        let result = preview_receive(&host, &state, message, "orphan-test");
+        assert!(
+            result.is_err(),
+            "orphan changes must not bypass actor validation"
+        );
+        assert!(host.get_heads().is_empty());
+        assert!(host.get_missing_deps(&[]).is_empty());
+        assert!(state.shared_heads.is_empty());
+        assert!(!state.in_flight);
+    }
+
+    #[test]
+    fn preview_accepts_a_complete_causal_chain_for_actor_validation() {
+        let mut writer = doc_with_actor("user:dev:alice/browser:a");
+        writer.put(ROOT, "k", 1).unwrap();
+        writer.commit();
+        writer.put(ROOT, "k", 2).unwrap();
+        writer.commit();
+        let identity = RoomConnectionIdentity::hosted_bridged(
+            "user:dev:alice",
+            Some("browser:a".into()),
+            ConnectionScope::Editor,
+        )
+        .unwrap();
+        let preview = preview_receive(
+            &AutoCommit::new(),
+            &sync::State::new(),
+            message_with_changes(&mut writer),
+            "complete-test",
+        )
+        .unwrap();
+        assert_eq!(preview.new_changes.len(), 2);
+        assert!(check_change_actors(&identity, &preview.new_changes).is_ok());
     }
 
     #[test]

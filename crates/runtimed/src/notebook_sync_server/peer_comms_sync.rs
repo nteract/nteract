@@ -229,6 +229,39 @@ mod tests {
         );
         assert_eq!(heads(), heads_before, "the CommsDoc must not change");
 
+        // Sending only a descendant must not park an unchecked foreign
+        // change for another connection to resolve later.
+        mallory.put(ROOT, "orphan", true).unwrap();
+        let child = mallory.commit().unwrap();
+        let orphan = sync::Message {
+            heads: vec![child],
+            need: vec![],
+            have: vec![],
+            changes: vec![mallory
+                .get_change_by_hash(&child)
+                .unwrap()
+                .raw_bytes()
+                .to_vec()]
+            .into(),
+            flags: None,
+            version: sync::MessageVersion::V1,
+        };
+        assert!(handle_comms_doc_frame(
+            &room,
+            &mut sync::State::new(),
+            &writer,
+            &orphan.encode(),
+            &identity,
+        )
+        .await
+        .is_err());
+        assert_eq!(heads(), heads_before);
+        assert!(room
+            .comms
+            .with_doc(|comms| Ok(comms.doc_mut().get_missing_deps(&[])))
+            .unwrap()
+            .is_empty());
+
         let mut alice = fork("user:dev:alice/browser:a");
         handle_comms_doc_frame(
             &room,
