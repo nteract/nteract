@@ -1,12 +1,12 @@
-import React, { useEffect, useId, useRef, useState } from "react";
+import React, { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Copy, Share2 } from "lucide-react";
 import { SharingPanel } from "../../../../../../src/components/sharing/SharingPanel.tsx";
 import "../../../../../../src/components/sharing/sharing-panel.css";
-import { request } from "./session.mjs";
+import { createSharingAccess, sharingAvailable, SHARING_FRESH_MS } from "./sharing-access.mjs";
 import { domainSharingProjection } from "./sharing-projection.mjs";
 import { pageMarkdown } from "../model/markdown-export.mjs";
 
-function projection(value) {
+function projection(value, manage) {
   const rows = [];
   const row = (value) => ({
     detail: "",
@@ -34,7 +34,7 @@ function projection(value) {
         label: member.displayName || member.email || "Collaborator",
         detail: member.email || "",
         badge: member.role === "editor" ? "Can edit" : "Can view",
-        removable: true,
+        removable: manage,
       }),
     );
   for (const invite of value?.invites ?? [])
@@ -46,7 +46,7 @@ function projection(value) {
         badge: invite.role === "editor" ? "Can edit" : "Can view",
         stateLabel: "Pending",
         stateTone: "pending",
-        removable: true,
+        removable: manage,
       }),
     );
   return {
@@ -59,38 +59,56 @@ function projection(value) {
   };
 }
 export function SharingControls({ session }) {
+  return <PageSharing key={`${session.identity?.principal}:${session.pageId}`} session={session} />;
+}
+function PageSharing({ session }) {
   const [open, setOpen] = useState(false),
-    [value, setValue] = useState(null),
-    [loading, setLoading] = useState(false),
     [email, setEmail] = useState(""),
     [role, setRole] = useState("viewer"),
-    [busy, setBusy] = useState(null),
-    [error, setError] = useState(""),
+    [copyError, setCopyError] = useState(""),
     [message, setMessage] = useState(""),
     [copyMessage, setCopyMessage] = useState("");
+  const cache = useMemo(() => createSharingAccess(session), [session]);
+  const state = useSyncExternalStore(cache.subscribe, cache.getSnapshot);
+  const available = sharingAvailable(session);
+  const value =
+      available && (!state.value?.access.canManageAccess || session.canManageAccess)
+        ? state.value
+        : null,
+    busy = state.busy,
+    error = state.error?.message || copyError,
+    loading = available && !value && !state.error;
   const domainId = useId();
   const root = useRef(null),
     button = useRef(null),
     epoch = useRef(0);
-  const endpoint = `/api/access?page=${encodeURIComponent(session.pageId)}`;
+  useEffect(() => {
+    cache.activate();
+    return () => cache.dispose();
+  }, [cache]);
+  // Start before Share is opened. Re-check when session authority changes, but
+  // not on ordinary document edits or popover close/reopen.
+  useEffect(() => {
+    cache.invalidate();
+    if (available) void cache.read().catch(() => {});
+  }, [
+    cache,
+    available,
+    session.canManageAccess,
+    session.access?.revision,
+    session.access?.generation,
+  ]);
   useEffect(() => {
     if (!open) return;
-    const revision = ++epoch.current;
-    setLoading(true);
-    setValue(null);
-    setError("");
+    ++epoch.current;
+    setCopyError("");
     setMessage("");
     setCopyMessage("");
-    request(endpoint)
-      .then((result) => {
-        if (epoch.current === revision) setValue(result);
-      })
-      .catch((error) => {
-        if (epoch.current === revision) setError(error.message);
-      })
-      .finally(() => {
-        if (epoch.current === revision) setLoading(false);
-      });
+    const refresh = () => {
+      if (document.visibilityState !== "hidden") void cache.read().catch(() => {});
+    };
+    refresh();
+    const timer = setInterval(refresh, SHARING_FRESH_MS);
     const outside = (event) => {
       if (!root.current?.contains(event.target)) setOpen(false);
     };
@@ -102,44 +120,31 @@ export function SharingControls({ session }) {
     };
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", escape);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
     return () => {
       epoch.current++;
+      clearInterval(timer);
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("keydown", escape);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
     };
-  }, [open, endpoint]);
+  }, [open, cache]);
   async function mutate(action, key) {
-    if (busy || !value?.access.canManageAccess) return;
+    if (busy || !manage) return;
     const revision = epoch.current;
-    setBusy(key);
-    setError("");
+    setCopyError("");
     setMessage("");
     try {
-      const result = await request(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...action,
-          expected_revision: value.access.revision,
-          idempotency_key: crypto.randomUUID(),
-        }),
-      });
-      if (revision !== epoch.current) return;
-      setValue(result);
+      const result = await cache.mutate(action, key);
+      if (!result || revision !== epoch.current) return;
       if (key === "invite") {
         setEmail("");
         setMessage("Access updated. Copy the link to share it.");
       }
-    } catch (error) {
-      if (revision !== epoch.current) return;
-      setError(error.message);
-      if (error.status === 409)
-        try {
-          const result = await request(endpoint);
-          if (revision === epoch.current) setValue(result);
-        } catch {}
-    } finally {
-      if (revision === epoch.current) setBusy(null);
+    } catch {
+      // The resource retains the error and invalidates/reloads stale access.
     }
   }
   async function copyMarkdown() {
@@ -153,7 +158,23 @@ export function SharingControls({ session }) {
       if (revision === epoch.current) setCopyMessage("Could not copy the Markdown. Try again.");
     }
   }
-  const manage = !loading && !!session.canManageAccess && !!value?.access.canManageAccess;
+  async function copyLink() {
+    const revision = epoch.current;
+    try {
+      await navigator.clipboard.writeText(location.origin + location.pathname);
+      if (revision === epoch.current) setMessage("Link copied.");
+    } catch {
+      if (revision === epoch.current) setCopyError("Could not copy the link.");
+    }
+  }
+  const manage = available && !!session.canManageAccess && !!value?.access.canManageAccess;
+  const showInvite =
+    manage ||
+    (!value &&
+      available &&
+      !!session.canManageAccess &&
+      session.access?.role === "owner" &&
+      ![401, 403, 404].includes(state.error?.status));
   const domainSharing = manage ? domainSharingProjection(value) : null;
   return (
     <div className="page-sharing" ref={root}>
@@ -162,14 +183,7 @@ export function SharingControls({ session }) {
         className="subtle-button"
         aria-expanded={open}
         aria-haspopup="dialog"
-        onClick={() => {
-          setBusy(null);
-          if (!open) {
-            setValue(null);
-            setLoading(true);
-          }
-          setOpen(!open);
-        }}
+        onClick={() => setOpen(!open)}
       >
         <Share2 size={17} aria-hidden="true" />
         <span>Share</span>
@@ -180,35 +194,28 @@ export function SharingControls({ session }) {
             resourceLabel="Page"
             title="Share Page"
             description={
-              loading
-                ? "Loading sharing settings…"
-                : manage
-                  ? "Invite by email, then share the link."
-                  : session.access?.role === "viewer"
-                    ? "You can view this Page. Only the owner can invite people."
-                    : "Only the owner can invite people."
+              showInvite
+                ? "Invite by email, then share the link."
+                : session.access?.role === "viewer"
+                  ? "You can view this Page. Only the owner can invite people."
+                  : "Only the owner can invite people."
             }
             sections={{
               publicAccess: false,
-              invites: manage,
+              invites: showInvite,
               accessRequests: false,
               runtimeAccess: false,
             }}
             emptyAccessMessage={
               manage ? "Only you have access." : "Access is managed by the Page owner."
             }
-            accessProjection={projection(value)}
+            accessProjection={projection(value, manage)}
             busyAction={busy}
             copyLinkLabel="Copy link"
             compactCopyLinkLabel="Copy link"
-            onCopyLink={() =>
-              navigator.clipboard
-                .writeText(location.origin + location.pathname)
-                .then(() => setMessage("Link copied."))
-                .catch(() => setError("Could not copy the link."))
-            }
+            onCopyLink={copyLink}
             formError={error || null}
-            message={manage ? message || null : error || message || null}
+            message={showInvite ? message || null : error || message || null}
             messageKind={error ? "error" : "info"}
             inviteEmail={email}
             onInviteEmailChange={setEmail}
@@ -233,6 +240,15 @@ export function SharingControls({ session }) {
             publicEnabled={false}
             showInitialAccessLoading={loading}
           />
+          {state.error && available && (
+            <button
+              className="subtle-button"
+              disabled={state.refreshing || !!busy}
+              onClick={() => void cache.read({ force: true }).catch(() => {})}
+            >
+              Retry sharing settings
+            </button>
+          )}
           {domainSharing && (
             <section className="page-domain-sharing" aria-labelledby={domainId}>
               <label id={domainId} htmlFor={`${domainId}-select`}>

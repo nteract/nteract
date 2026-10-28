@@ -389,31 +389,27 @@ details.document-actions > div button {
 }
 .document-title {
   display: block;
-  flex: 1;
   min-width: 0;
-  width: 0;
-  height: 40px;
-  border: 1px solid transparent;
+  width: 100%;
+  border: 0;
+  border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--foreground);
-  font-size: 1rem;
-  font-weight: 550;
-  line-height: 1.4;
-  padding: 0.45rem 0.55rem;
-  border-radius: 0.5rem;
-  text-overflow: ellipsis;
+  font-size: clamp(2rem, 4vw, 2.4rem);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.045em;
+  padding: 0.25rem 0 0.6rem;
+  margin: 0 0 1.5rem;
+  border-radius: 0;
 }
 .document-title::placeholder {
   color: var(--muted-foreground);
   opacity: 1;
 }
-.document-title:hover:not([readonly]) {
-  background: var(--accent);
-}
 .document-title:focus-visible {
   outline: none;
-  border-color: var(--ring);
-  box-shadow: 0 0 0 1px var(--ring);
+  border-bottom-color: var(--ring);
 }
 .toolbar-host {
   position: sticky;
@@ -995,6 +991,7 @@ dialog::backdrop {
 @media print {
   .app-header,
   .toolbar-host,
+  .document-title,
   .document-meta,
   .writing-continuation,
   .comments {
@@ -1032,7 +1029,7 @@ dialog::backdrop {
 .header-navigation {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.2rem;
   min-width: 0;
   flex: 1;
 }
@@ -1053,9 +1050,9 @@ dialog::backdrop {
 .pages-trigger.document-switcher {
   flex-shrink: 0;
   gap: 0.3rem;
-  min-width: 54px;
+  min-width: 32px;
   min-height: 40px;
-  padding-inline: 0.5rem;
+  padding-inline: 0.35rem;
   border: 0;
   border-radius: 0.5rem;
 }
@@ -1188,11 +1185,8 @@ dialog::backdrop {
   .has-document .brand {
     font-size: 0.85rem;
   }
-  .has-document .document-title {
-    height: 44px;
-    padding-inline: 0.35rem;
-  }
   .has-document .document-switcher {
+    min-width: 44px;
     min-height: 44px;
   }
   .comments-toggle > span:not(.comment-count):not(.sr-only) {

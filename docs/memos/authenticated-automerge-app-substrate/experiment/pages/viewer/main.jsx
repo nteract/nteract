@@ -41,6 +41,7 @@ import { retryKey } from "../model/retry-key.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
 import "./style.css";
 import "./formatting-toolbar.css";
+import { focusCreatedPageTitle, titleHandsOffToBody } from "./title-navigation.mjs";
 
 function App() {
   const accountDisclosure = useDismissibleDisclosure(),
@@ -66,6 +67,7 @@ function App() {
     [creating, setCreating] = useState(false),
     [opening, setOpening] = useState(false),
     [focusBlock, setFocusBlock] = useState(null),
+    [titleFocusRequest, setTitleFocusRequest] = useState(null),
     [localRecoveries, setLocalRecoveries] = useState([]);
   const current = useRef(null),
     auth = useRef(null),
@@ -77,6 +79,7 @@ function App() {
     openingRequest = useRef(null),
     composerId = useRef(null),
     article = useRef(null),
+    titleInput = useRef(null),
     commentsButton = useRef(null),
     reloadingAccess = useRef(null);
   const refresh = async () => {
@@ -138,6 +141,7 @@ function App() {
     setTarget(null);
     setCommentsOpen(false);
     setFocusBlock(null);
+    setTitleFocusRequest(null);
     setLocalRecoveries([]);
   }
   function releaseCurrent() {
@@ -328,6 +332,14 @@ function App() {
   const page = session?.snapshot(),
     threads = page?.comments ?? [];
   useEffect(() => {
+    if (!titleFocusRequest) return;
+    const frame = requestAnimationFrame(() => {
+      focusCreatedPageTitle(titleInput.current, titleFocusRequest, current.current);
+      setTitleFocusRequest((request) => (request === titleFocusRequest ? null : request));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [titleFocusRequest, session]);
+  useEffect(() => {
     if (!focusBlock || !session?.canWrite) return;
     const frame = requestAnimationFrame(() => {
       if (current.current !== session || !session.canWrite) return;
@@ -366,7 +378,7 @@ function App() {
       setPickerOpen(false);
       setOpening(false);
       setNotice("");
-      await install(next, revision, { focus: true });
+      if (await install(next, revision)) setTitleFocusRequest(next);
       void refresh().catch(() => {});
     } catch (error) {
       if (revision === generation.current) {
@@ -504,23 +516,6 @@ function App() {
           <a href="/" className="brand" onClick={account ? home : undefined}>
             Pages
           </a>
-          {page && (
-            <input
-              className="document-title"
-              aria-label="Page title"
-              title={page.title || "Untitled"}
-              placeholder="Untitled"
-              value={page.title}
-              readOnly={!session.canWrite}
-              onChange={(event) => {
-                try {
-                  session.change((doc) => A.updateText(doc, ["title"], event.target.value));
-                } catch (error) {
-                  setError(error.message);
-                }
-              }}
-            />
-          )}
           {account && (
             <button
               className={`subtle-button pages-trigger${page ? " document-switcher" : ""}`}
@@ -533,11 +528,7 @@ function App() {
               aria-haspopup="dialog"
               aria-expanded={pickerOpen}
             >
-              {page ? (
-                <FileText size={16} aria-hidden="true" />
-              ) : (
-                <FolderOpen size={18} aria-hidden="true" />
-              )}
+              {!page && <FolderOpen size={18} aria-hidden="true" />}
               {!page && <span>Browse</span>}
               <ChevronDown size={14} aria-hidden="true" />
             </button>
@@ -720,6 +711,31 @@ function App() {
                     {session.problem}
                   </p>
                 )}
+                <input
+                  ref={titleInput}
+                  className="document-title"
+                  aria-label="Page title"
+                  title={page.title || "Untitled"}
+                  placeholder="Untitled"
+                  value={page.title}
+                  readOnly={!session.canWrite}
+                  onChange={(event) => {
+                    try {
+                      session.change((doc) => A.updateText(doc, ["title"], event.target.value));
+                    } catch (error) {
+                      setError(error.message);
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (!titleHandsOffToBody(event, session.canWrite)) return;
+                    event.preventDefault();
+                    const first = orderedBlockIds(session.doc)[0];
+                    if (first) {
+                      activateBlock(first);
+                      setFocusBlock(first);
+                    } else continueWriting();
+                  }}
+                />
                 {page.blocks.map((block) => (
                   <section className="page-block" data-block-id={block.id} key={block.id}>
                     {block.format === "automerge-rich-text-v1" ? (
