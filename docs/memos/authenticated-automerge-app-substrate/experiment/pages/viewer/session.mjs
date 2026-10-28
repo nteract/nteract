@@ -18,6 +18,8 @@ export { listLocalPages, forgetLocalPage } from "./local-pages.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
+import { request } from "./request.mjs";
+export { request } from "./request.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const ownerAccess = () => ({
   role: "owner",
@@ -36,16 +38,6 @@ const accessFailure = () =>
     status: 409,
   });
 const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 16));
-export async function request(url, options = {}) {
-  const response = await fetch(url, options),
-    body = await response.json();
-  if (!response.ok)
-    throw Object.assign(
-      Error(body.error?.message ?? body.error ?? `Request failed (${response.status})`),
-      { status: response.status, code: body.code },
-    );
-  return body;
-}
 export function tool(operation, args = {}) {
   return request("/api/tools", {
     method: "POST",
@@ -99,12 +91,16 @@ export class PageSession {
     try {
       await session.start();
       return session;
-    } catch (e) {
+    } catch (cause) {
       // close() invalidates the session immediately, but draining native I/O can
       // outlast a failed lookup. Surface the opening error while cleanup keeps
       // ownership of the replica and its identity lock until it has finished.
-      void session.close().catch(() => {});
-      throw e;
+      // Automatic retries must await this drain rather than treating its held
+      // lock as another tab and rotating the native signing/storage identity.
+      const error = cause instanceof Error ? cause : Error(String(cause));
+      error.cleanupPromise = session.close();
+      void error.cleanupPromise.catch(() => {});
+      throw error;
     }
   }
   static async create({ title = "Untitled" } = {}, options = {}) {
@@ -440,9 +436,21 @@ export class PageSession {
       if (!this.localPage.pending) this.savedHeads = A.getHeads(this.doc);
     } else {
       await this.connect(false);
-      this.handle = await this.repo.find(this.connection.documentId, {
-        signal: AbortSignal.timeout(15000),
-      });
+      const lookupDeadline = AbortSignal.timeout(15000);
+      try {
+        this.handle = await this.repo.find(this.connection.documentId, {
+          signal: lookupDeadline,
+        });
+      } catch (cause) {
+        // DOMException.code is the readonly numeric legacy code, so wrap only
+        // this lookup's own deadline instead of broadly retrying TimeoutErrors.
+        if (lookupDeadline.aborted && cause === lookupDeadline.reason)
+          throw Object.assign(Error("Page loading timed out. Please try again.", { cause }), {
+            name: "TimeoutError",
+            code: "REQUEST_TIMEOUT",
+          });
+        throw cause;
+      }
       const now = new Date().toISOString();
       this.localPage = {
         principal: this.identity.principal,

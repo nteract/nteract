@@ -24,6 +24,7 @@ import {
   mergePageListings,
 } from "../shared/routes.mjs";
 import { maintainBrowserSession } from "./browser-session.mjs";
+import { openPageWithRetry } from "./page-open.mjs";
 import { RichEditor } from "./RichEditor.jsx";
 import { WordgardEditor } from "./WordgardEditor.jsx";
 import { PagePicker } from "./PagePicker.jsx";
@@ -67,6 +68,7 @@ function App() {
     catalogRevision = useRef(0),
     creationPending = useRef(false),
     generation = useRef(0),
+    openingRequest = useRef(null),
     composerId = useRef(null),
     article = useRef(null),
     commentsButton = useRef(null),
@@ -94,6 +96,11 @@ function App() {
   };
   function activateBlock(id) {
     setActive(id);
+  }
+  function nextGeneration() {
+    openingRequest.current?.abort();
+    openingRequest.current = null;
+    return ++generation.current;
   }
   function resetDocumentUI() {
     setActive(null);
@@ -152,7 +159,7 @@ function App() {
   async function reloadAccess(previous = current.current) {
     if (!previous || current.current !== previous || reloadingAccess.current === previous) return;
     reloadingAccess.current = previous;
-    const revision = ++generation.current;
+    const revision = nextGeneration();
     try {
       const next = await previous.reloadForAccess();
       await install(next, revision);
@@ -179,7 +186,9 @@ function App() {
     setPickerOpen(false);
     setNotice("");
     if (current.current?.pageId === id) return;
-    const revision = ++generation.current;
+    const revision = nextGeneration();
+    const controller = new AbortController();
+    openingRequest.current = controller;
     setError("");
     setOpening(true);
     releaseCurrent();
@@ -188,14 +197,19 @@ function App() {
       // still flushing. Wait only for that same Page, never an unrelated one.
       await closingPages.current.get(authentication.current?.identity?.principal + ":" + id);
       if (revision !== generation.current) return;
-      const next = await PageSession.open(id, {
-        authentication: authentication.current,
-        refreshSession: () => auth.current.refresh(),
-      });
+      const next = await openPageWithRetry(
+        () =>
+          PageSession.open(id, {
+            authentication: authentication.current,
+            refreshSession: () => auth.current.refresh(),
+          }),
+        { signal: controller.signal },
+      );
       await install(next, revision, { focus });
     } catch (error) {
       if (revision === generation.current) setError(error.message);
     } finally {
+      if (openingRequest.current === controller) openingRequest.current = null;
       if (revision === generation.current) setOpening(false);
     }
   }
@@ -204,7 +218,7 @@ function App() {
       if (!isPlainNavigation(event)) return;
       event.preventDefault();
     }
-    generation.current++;
+    nextGeneration();
     releaseCurrent();
     setAccount(authentication.current?.identity ?? null);
     setError("");
@@ -219,7 +233,7 @@ function App() {
     if (route.kind === "page") void open(route.pageId, { historyMode: "replace" });
     else if (route.kind === "home") home(null, { historyMode: "none", refreshCatalog: false });
     else {
-      generation.current++;
+      nextGeneration();
       releaseCurrent();
       setOpening(false);
       setError("This Page link is not valid.");
@@ -240,7 +254,7 @@ function App() {
         if (["wordgard", "prosemirror"].includes(result.editor)) setEditorKind(result.editor);
         const changed = authentication.current?.identity?.principal !== result.identity?.principal;
         if (changed) {
-          generation.current++;
+          nextGeneration();
           catalogRevision.current++;
           setPages([]);
           setOpening(false);
@@ -278,7 +292,7 @@ function App() {
       maintenance.stop();
       window.removeEventListener("popstate", onPopState);
       catalogRevision.current++;
-      generation.current++;
+      nextGeneration();
       void current.current?.close();
     };
   }, []);
@@ -305,7 +319,7 @@ function App() {
     setCreating(true);
     setError("");
     setPickerError("");
-    const revision = ++generation.current;
+    const revision = nextGeneration();
     try {
       const next = await PageSession.create(
         { title: "Untitled" },
@@ -373,7 +387,7 @@ function App() {
       });
       const activeDeletion = current.current?.pageId === deleting.pageId ? current.current : null;
       if (activeDeletion || readPageRoute(location.href).pageId === deleting.pageId) {
-        generation.current++;
+        nextGeneration();
         current.current = null;
         resetDocumentUI();
         setSession(null);

@@ -1,5 +1,6 @@
 import { celldCborPlugin } from "./celld-cbor.mjs";
 import { browserMermaidPlugin, mermaidSource } from "./browser-mermaid.mjs";
+import { browserWasmPlugin } from "./browser-wasm.mjs";
 import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
 import { build } from "esbuild";
 import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
@@ -63,25 +64,7 @@ await build({
   tsconfig: path.join(app, "tsconfig.json"),
   outfile: path.join(dist, "public/app.js"),
   define: { "process.env.NODE_ENV": '"production"' },
-  plugins: [
-    browserMermaidPlugin(app),
-    {
-      name: "browser-wasm",
-      setup(b) {
-        b.onResolve({ filter: /^@automerge\/(automerge|subduction)$/ }, (args) => ({
-          path: args.path,
-          namespace: "wasm-entry",
-        }));
-        b.onLoad({ filter: /.*/, namespace: "wasm-entry" }, (args) => ({
-          contents: args.path.endsWith("/subduction")
-            ? 'import init from "@automerge/subduction/slim"; await init({module_or_path: "/subduction.wasm"}); export * from "@automerge/subduction/slim";'
-            : 'import {initializeWasm} from "@automerge/automerge/slim"; await initializeWasm(fetch("/automerge.wasm")); export * from "@automerge/automerge/slim";',
-          resolveDir: app,
-          loader: "js",
-        }));
-      },
-    },
-  ],
+  plugins: [browserMermaidPlugin(app), browserWasmPlugin(app)],
 });
 await build({
   entryPoints: [mermaidSource(app)],
@@ -95,10 +78,7 @@ await build({
   define: { "process.env.NODE_ENV": '"production"' },
 });
 await copyFile(path.join(app, "viewer/connect-agent.js"), path.join(dist, "public/connect.js"));
-await writeFile(
-  path.join(dist, "public/index.html"),
-  '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pages · nteract</title><link rel="stylesheet" href="/app.css"><link rel="describedby" type="text/plain" href="/llms.txt"></head><body><div id="root"><main class="welcome"><h1>Pages</h1><p>Realtime documents for people and agents.</p><p>Opening the editor…</p><p>Connecting an agent? Start with <a href="/connect">Connect an agent</a> and <a href="/llms.txt">the agent guide</a>. ChatGPT can authorize through OAuth; API-key clients have their own recipes. Ask the human early to authorize access or save a key privately while you prepare the settings. Never enable an empty-key connection.</p><noscript>Enable JavaScript to use the editor, or use the API guide above.</noscript></main></div><script type="module" src="/app.js"></script></body></html>',
-);
+await copyFile(path.join(app, "viewer/index.html"), path.join(dist, "public/index.html"));
 await writeFile(
   path.join(dist, "public/_headers"),
   "/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: same-origin\n  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\n",

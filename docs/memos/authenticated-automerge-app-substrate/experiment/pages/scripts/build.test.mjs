@@ -95,6 +95,10 @@ test("failed rebuild removes the previous receipt before replacing any artifacts
       readFileSync(new URL("./browser-mermaid.mjs", import.meta.url), "utf8"),
     );
     write(
+      "scripts/browser-wasm.mjs",
+      readFileSync(new URL("./browser-wasm.mjs", import.meta.url), "utf8"),
+    );
+    write(
       "scripts/source-fingerprint.mjs",
       "export const sourceFingerprint = () => ({sha256:'source-B'}); export const writeBuildReceipt = () => {throw new Error('failed build must not certify outputs');};",
     );

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Pages · nteract</title>
+    <link rel="stylesheet" href="/app.css" />
+    <link rel="describedby" type="text/plain" href="/llms.txt" />
+  </head>
+  <body>
+    <div id="root">
+      <div class="app">
+        <header class="app-header">
+          <div class="header-navigation"><a href="/" class="brand">Pages</a></div>
+        </header>
+        <main class="welcome">
+          <p role="status">Connecting…</p>
+          <noscript>
+            <p>Realtime documents for people and agents. Enable JavaScript to use the editor.</p>
+            <p>
+              Connecting an agent? Start with <a href="/connect">Connect an agent</a> and
+              <a href="/llms.txt">the agent guide</a>. ChatGPT can authorize through OAuth; API-key
+              clients have their own recipes. Ask the human early to authorize access or save a key
+              privately while you prepare the settings. Never enable an empty-key connection.
+            </p>
+          </noscript>
+        </main>
+      </div>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
