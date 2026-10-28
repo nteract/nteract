@@ -17,7 +17,6 @@ import { handleLocalOidcRequest } from "@cloud/dev-oidc.ts";
 import {
   createPageData,
   initializePage,
-  projectPage,
   applyPageOperation,
   validateImageInsertion,
 } from "../model/page.mjs";
@@ -61,11 +60,13 @@ import { catalogTitle, listCatalog, refreshCatalogTitle } from "./catalog.mjs";
 import { readRegistration, requireRegistrationAccount, validPageId } from "./registration.mjs";
 import { handleImageAssets, requireStoredImageAsset } from "./image-assets.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
+import { readTool } from "./tool-reads.mjs";
 
 const operations = new Set([
   "list_pages",
   "create_page",
   "read_page",
+  "list_page_comments",
   "import_page_image",
   "edit_page",
   "patch_page",
@@ -113,7 +114,8 @@ async function invoke(request, env, operation, args = {}) {
   if (!operations.has(operation) || !args || typeof args !== "object" || Array.isArray(args))
     throw new HttpError(400, "Unknown operation or invalid arguments");
   const identity = await authenticate(request, env);
-  if (!["list_pages", "read_page"].includes(operation)) requireWrite(identity);
+  if (!["list_pages", "read_page", "list_page_comments"].includes(operation))
+    requireWrite(identity);
   if (["list_pages", "create_page", "delete_page"].includes(operation)) {
     return env.CATALOGS.getByName(identity.principal).fetch(
       forwarded(request, "/internal/catalog", { operation, arguments: args }),
@@ -896,17 +898,17 @@ export class Page {
       }
       if (url.pathname === "/internal/tool") {
         const body = await readJson(request);
-        if (body.operation === "read_page") {
+        if (["read_page", "list_page_comments"].includes(body.operation)) {
           this.cacheTitle(identity);
-          return json({
-            ...projectPage(this.handle.doc()),
-            heads: A.getHeads(this.handle.doc()),
-            ...(this.recoveryBlocked && { recovery: this.recoveryBlocked }),
-            ...(await issueRetryToken(this.ctx.storage, {
-              scope: `page:${this.metadata.pageId}`,
-              principal: identity.principal,
-            })),
+          const result = await readTool(this.handle.doc(), body.operation, body.arguments ?? {}, {
+            recovery: this.recoveryBlocked,
+            issueAuthority: () =>
+              issueRetryToken(this.ctx.storage, {
+                scope: `page:${this.metadata.pageId}`,
+                principal: identity.principal,
+              }),
           });
+          return json(result.body, result.status);
         }
         this.policy.account(identity, true);
         if (

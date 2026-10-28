@@ -579,6 +579,19 @@ registration request, so another tab can recover pending work using its own
 native backend. Concurrent checkpoints merge Automerge history atomically.
 Browser storage eviction remains outside this prototype's guarantee.
 
+Tool reads can select blocks, an exact heading section (with an occurrence for
+duplicates), literal search hits with neighboring top-level nodes, or a revision-bound
+node range inside one rich-text block. `include_content:false` returns a paginated
+outline. Partial slices are marked explicitly and are suitable for `replace_match`,
+not whole-block replacement. Explicit `comments` modes omit raw anchor internals;
+`list_page_comments` filters threads without reading the body. The original
+`read_page({page_id})` response remains compatible and unbounded for cached clients.
+Successful reads capture content and heads once and return the existing retry authority.
+Explicit read options use a 128 KiB default response budget (caller-adjustable from
+4–256 KiB). Outline pages shrink to fit; oversized content gets an actionable outline;
+it never silently truncates document content. These are read projections only and
+do not change CRDT state, comment anchors, mutation guards or journal receipts.
+
 API mutations require the exact `base_heads` from `read_page` and an
 `idempotency_key`. Read again after a stale-head rejection. Retry an uncertain
 request with the identical key and payload. The host records a bounded write

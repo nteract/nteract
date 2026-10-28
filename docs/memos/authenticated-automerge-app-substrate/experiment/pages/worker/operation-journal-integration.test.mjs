@@ -5,7 +5,7 @@ import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { Catalog, Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { retryKey } from "../model/retry-key.mjs";
-import { createPageData } from "../model/page.mjs";
+import { applyPageOperation, createPageData, initializePage } from "../model/page.mjs";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
 import { issueRetryToken, JOURNAL_LIMITS, RETRY_LIFETIME_MS } from "./operation-journal.mjs";
 
@@ -412,13 +412,33 @@ test("a legacy-full catalog accepts a versioned operation and preserves old rece
   assert.equal((await f.storage.get("host/operation/legacy-00000")).receipt.accepted, 0);
 });
 
-async function pageFixture(t) {
+async function pageFixture(t, { readContent = false } = {}) {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   const storage = new Storage();
   let doc = A.from(createPageData({ pageId, title: "Accepted content" }));
   let updates = 0;
   const principal = `user:anaconda-fixture:${auth.subject}`;
+  const blockId = Object.keys(doc.blocks)[0];
+  let threadId;
+  if (readContent) {
+    doc = A.change(doc, (draft) => {
+      initializePage(draft, "## First section\n\nOriginal selected content.");
+      applyPageOperation(draft, {
+        operation: "edit_page",
+        arguments: {
+          operations: [
+            { op: "insert_markdown", after_block_id: blockId, markdown: "Other block." },
+          ],
+        },
+      });
+      threadId = applyPageOperation(draft, {
+        operation: "manage_page_comment",
+        arguments: { block_id: blockId, body: "Original comment." },
+        identity: { principal, displayName: "Fixture owner", driver: "Browser" },
+      }).thread_id;
+    });
+  }
   const page = Object.assign(Object.create(Page.prototype), {
     ready: Promise.resolve(),
     tail: Promise.resolve(),
@@ -458,7 +478,7 @@ async function pageFixture(t) {
         body: JSON.stringify({ operation, arguments: args }),
       }),
     );
-  return { page, request, storage, principal, updates: () => updates };
+  return { page, request, storage, principal, blockId, threadId, updates: () => updates };
 }
 
 test("actual Page read_page issues a token usable by its guarded edit path", async (t) => {
@@ -489,6 +509,167 @@ test("actual Page read_page issues a token usable by its guarded edit path", asy
   const expired = await f.request("edit_page", args);
   assert.equal(expired.status, 410);
   assert.equal((await expired.json()).code, "retry_expired");
+  assert.equal(f.updates(), 1);
+});
+
+for (const operation of ["read_page", "list_page_comments"]) {
+  test(`actual Page ${operation} partial read issues unchanged heads and usable retry authority`, async (t) => {
+    const f = await pageFixture(t, { readContent: true });
+    t.after(() => A.free(f.page.handle.doc()));
+    const heads = A.getHeads(f.page.handle.doc());
+    const response = await f.request(
+      operation,
+      operation === "read_page"
+        ? { block_ids: [f.blockId], comments: "none" }
+        : { thread_ids: [f.threadId], include_messages: false },
+    );
+    assert.equal(response.status, 200);
+    const before = await response.json();
+    assert.deepEqual(before.heads, heads);
+    assert.deepEqual(A.getHeads(f.page.handle.doc()), heads);
+    assert.equal(f.updates(), 0);
+    assert.ok(before.retry_token);
+    assert.ok(before.retry_key_prefix);
+    assert.ok(before.retry_until);
+    if (operation === "read_page") {
+      assert.deepEqual(
+        before.blocks.map((block) => block.id),
+        [f.blockId],
+      );
+      assert.doesNotMatch(JSON.stringify(before), /Other block|Original comment/);
+    } else {
+      assert.deepEqual(
+        before.comments.map((thread) => thread.id),
+        [f.threadId],
+      );
+      assert.equal(before.comments[0].messages, undefined);
+      assert.doesNotMatch(JSON.stringify(before), /Original comment|Original selected content/);
+    }
+    const args = {
+      page_id: pageId,
+      base_heads: before.heads,
+      retry_token: before.retry_token,
+      idempotency_key: await retryKey(before.retry_token, `${operation}-edit`),
+      operations: [{ op: "set_title", title: "Edited from a partial read" }],
+    };
+    const changed = await f.request("edit_page", args);
+    assert.equal(changed.status, 200);
+    const receipt = await changed.json();
+    assert.deepEqual(await (await f.request("edit_page", args)).json(), receipt);
+    assert.equal(f.updates(), 1);
+    assert.equal(f.page.handle.doc().title, "Edited from a partial read");
+  });
+}
+
+test(
+  "actual Page read captures content, comments and heads before retry-token storage awaits",
+  { timeout: 5000 },
+  async (t) => {
+    const f = await pageFixture(t, { readContent: true });
+    t.after(() => A.free(f.page.handle.doc()));
+    const heads = A.getHeads(f.page.handle.doc());
+    const entered = Promise.withResolvers();
+    const released = Promise.withResolvers();
+    t.after(() => released.resolve());
+    const get = f.storage.get.bind(f.storage);
+    let paused = false;
+    t.mock.method(f.storage, "get", async (key) => {
+      if (key === "host/retry-secret-v1" && !paused) {
+        paused = true;
+        entered.resolve();
+        await released.promise;
+      }
+      return get(key);
+    });
+    const pending = f.request("read_page", { block_ids: [f.blockId], comments: "all" });
+    await entered.promise;
+    // Native synchronization bypasses the Page HTTP queue. Advance the handle
+    // while token storage is blocked, without queueing another HTTP mutation.
+    await f.page.handle.update((doc) =>
+      A.change(doc, (draft) => {
+        A.updateText(draft, ["title"], "Concurrent native title");
+        initializePage(draft, "Concurrent native content.");
+        applyPageOperation(draft, {
+          operation: "manage_page_comment",
+          arguments: { action: "reply", thread_id: f.threadId, body: "Concurrent native reply." },
+          identity: { principal: f.principal, displayName: "Fixture owner", driver: "Browser" },
+        });
+      }),
+    );
+    assert.notDeepEqual(A.getHeads(f.page.handle.doc()), heads);
+    released.resolve();
+    const response = await pending;
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(body.heads, heads);
+    assert.equal(body.title, "Accepted content");
+    assert.match(body.blocks[0].markdown, /Original selected content/);
+    assert.match(JSON.stringify(body.comments), /Original comment/);
+    assert.doesNotMatch(JSON.stringify(body), /Concurrent native/);
+    assert.ok(body.retry_token);
+  },
+);
+
+test("actual Page rejects stale node ranges with a fresh outline instead of selected content", async (t) => {
+  const f = await pageFixture(t, { readContent: true });
+  t.after(() => A.free(f.page.handle.doc()));
+  const heads = A.getHeads(f.page.handle.doc());
+  await f.page.handle.update((doc) =>
+    A.change(doc, (draft) => {
+      initializePage(
+        draft,
+        "Inserted first paragraph.\n\n## First section\n\nOriginal selected content.",
+      );
+    }),
+  );
+  const current = A.getHeads(f.page.handle.doc());
+  const response = await f.request("read_page", {
+    node_range: { block_id: f.blockId, from: 0, to: 2 },
+    expected_heads: heads,
+    comments: "none",
+  });
+  assert.equal(response.status, 409);
+  const body = await response.json();
+  assert.equal(body.code, "read_revision_changed");
+  assert.deepEqual(body.heads, current);
+  assert.ok(Array.isArray(body.outline.entries));
+  assert.equal(body.blocks, undefined);
+  assert.equal(body.comments, undefined);
+  assert.doesNotMatch(JSON.stringify(body), /Inserted first paragraph|Original selected content/);
+  assert.equal(f.updates(), 1, "the rejected read performs no mutation");
+  const fresh = await f.request("read_page", {
+    node_range: { block_id: f.blockId, from: 0, to: 1 },
+    expected_heads: current,
+    comments: "none",
+  });
+  assert.equal(fresh.status, 200);
+  assert.match((await fresh.json()).blocks[0].markdown, /Inserted first paragraph/);
+});
+
+test("actual Page returns a bounded UTF-8 budget error without truncated content", async (t) => {
+  const f = await pageFixture(t, { readContent: true });
+  t.after(() => A.free(f.page.handle.doc()));
+  await f.page.handle.update((doc) =>
+    A.change(doc, (draft) => {
+      initializePage(draft, `## Budget section\n\n${"雪".repeat(1800)}`);
+    }),
+  );
+  const heads = A.getHeads(f.page.handle.doc());
+  const response = await f.request("read_page", {
+    block_ids: [f.blockId],
+    comments: "none",
+    max_bytes: 4096,
+  });
+  assert.equal(response.status, 413);
+  const text = await response.text();
+  assert.ok(new TextEncoder().encode(text).byteLength <= 4096);
+  const body = JSON.parse(text);
+  assert.equal(body.code, "read_budget_exceeded");
+  assert.deepEqual(body.heads, heads);
+  assert.ok(body.retry_token);
+  assert.match(JSON.stringify(body.outline.entries), /Budget section/);
+  assert.equal(body.blocks, undefined);
+  assert.doesNotMatch(text, /雪/);
   assert.equal(f.updates(), 1);
 });
 

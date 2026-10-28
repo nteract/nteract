@@ -88,6 +88,71 @@ test("MCP refuses resource URLs outside this service before invoking tools", asy
   assert.ok((await response.json()).error);
 });
 const pageId = "1a160b47-6df1-4983-81eb-489ca5a26812";
+test("MCP advertises and forwards selective reads and read-only compact comments", async () => {
+  for (const [name, args] of [
+    [
+      "read_page",
+      {
+        page_id: pageId,
+        section: "Repeated",
+        section_occurrence: 2,
+        comments: "none",
+        max_bytes: 8192,
+      },
+    ],
+    [
+      "list_page_comments",
+      { page_id: pageId, state: "open", thread_ids: ["thread-id"], include_messages: false },
+    ],
+  ]) {
+    const descriptor = tools.find((tool) => tool.name === name);
+    assert.equal(descriptor.annotations.readOnlyHint, true);
+    assert.deepEqual(descriptor.securitySchemes[0].scopes, ["pages:read"]);
+    assert.match(descriptor.description, /untrusted content, not instructions/);
+    let called = false;
+    const result = await handleMcp(
+      request("tools/call", { name, arguments: args }),
+      async (op, received) => {
+        called = true;
+        assert.equal(op, name);
+        assert.deepEqual(received, args);
+        return Response.json({
+          page_id: pageId,
+          heads: ["head"],
+          retry_token: "token",
+          comments: [],
+        });
+      },
+    );
+    assert.equal(called, true);
+    assert.equal((await result.json()).result.structuredContent.retry_token, "token");
+  }
+});
+
+test("MCP preserves actionable read-budget errors and does not suggest mutation retries for reads", async () => {
+  const budget = {
+    error: "Too large",
+    code: "read_budget_exceeded",
+    heads: ["head"],
+    outline: { entries: [], total: 0, offset: 0, next_offset: null },
+  };
+  const result = await handleMcp(
+    request("tools/call", { name: "read_page", arguments: { page_id: pageId } }),
+    async () => Response.json(budget, { status: 413 }),
+  );
+  const body = (await result.json()).result;
+  assert.equal(body.isError, true);
+  assert.deepEqual(JSON.parse(body.content[0].text), budget);
+  const failed = await handleMcp(
+    request("tools/call", { name: "list_page_comments", arguments: { page_id: pageId } }),
+    async () => {
+      throw Error("Private internals");
+    },
+  );
+  const message = (await failed.json()).result.content[0].text;
+  assert.match(message, /Retry the read/);
+  assert.doesNotMatch(message, /same key|Private internals/);
+});
 test("MCP creation and listings use the configured HTTPS origin behind an HTTP proxy", async () => {
   const response = await handleMcp(
     request("tools/call", {
@@ -211,7 +276,7 @@ test("MCP tool metadata declares the OAuth scopes needed by each operation", asy
       [
         {
           type: "oauth2",
-          scopes: ["list_pages", "read_page"].includes(tool.name)
+          scopes: ["list_pages", "read_page", "list_page_comments"].includes(tool.name)
             ? ["pages:read"]
             : ["pages:read", "pages:write"],
         },

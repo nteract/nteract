@@ -7,7 +7,8 @@ import worker, { Page, Catalog } from "./index.mjs";
 import { createServerAppSession } from "@cloud/app-session.ts";
 import { authenticate } from "./auth.mjs";
 import { DocumentPolicy } from "./policy.mjs";
-import { createPageData } from "../model/page.mjs";
+import { applyPageOperation, createPageData, initializePage } from "../model/page.mjs";
+import { retryKey } from "../model/retry-key.mjs";
 import {
   exchangeAuthorizationCode,
   issueAuthorizationCode,
@@ -308,6 +309,158 @@ class Storage {
   async sync() {}
   async list({ prefix = "" } = {}) {
     return new Map([...this.values].filter(([key]) => key.startsWith(prefix)));
+  }
+}
+
+function readPageFixture(t, f, role) {
+  const initial = A.from(createPageData({ pageId, title: "Private read fixture" }));
+  const blockId = Object.keys(initial.blocks)[0];
+  let threadId;
+  const doc = A.change(initial, (draft) => {
+    initializePage(draft, "## Selected section\n\nVisible selected passage.");
+    applyPageOperation(draft, {
+      operation: "edit_page",
+      arguments: {
+        operations: [
+          {
+            op: "insert_markdown",
+            after_block_id: blockId,
+            markdown: "Unselected body sentinel.",
+          },
+        ],
+      },
+    });
+    threadId = applyPageOperation(draft, {
+      operation: "manage_page_comment",
+      arguments: { block_id: blockId, body: "Private comment sentinel." },
+      identity: { ...person, driver: "Browser" },
+    }).thread_id;
+  });
+  t.after(() => A.free(doc));
+  const storage = new Storage();
+  const page = Object.assign(Object.create(Page.prototype), {
+    env: f.env,
+    ready: Promise.resolve(),
+    tail: Promise.resolve(),
+    ctx: { storage },
+    metadata: {
+      pageId,
+      owner: role === "owner" ? person.principal : "user:anaconda:owner",
+      deleted: false,
+      acl: {
+        revision: 1,
+        members:
+          role === "owner"
+            ? {}
+            : { [person.principal]: { role, generation: 1, changedAtRevision: 1 } },
+        invites: {},
+      },
+    },
+    handle: { doc: () => doc },
+    cacheTitle() {},
+  });
+  page.policy = new DocumentPolicy({ storage, metadata: () => page.metadata });
+  f.env.PAGES = {
+    getByName(id) {
+      assert.equal(id, pageId);
+      return page;
+    },
+  };
+  return { page, doc, blockId, threadId };
+}
+
+for (const scope of ["pages:read pages:write offline_access", "pages:read offline_access"]) {
+  for (const role of ["owner", "editor", "viewer"]) {
+    test(`selective and comment reads enforce current ${role} access with ${scope}`, async (t) => {
+      const f = await fixture(t, scope);
+      const { page, doc, blockId, threadId } = readPageFixture(t, f, role);
+      const heads = A.getHeads(doc);
+      let authority;
+      for (const [name, args, check] of [
+        [
+          "read_page",
+          { block_ids: [blockId], comments: "none" },
+          (body) => {
+            assert.deepEqual(
+              body.blocks.map((block) => block.id),
+              [blockId],
+            );
+            assert.match(body.blocks[0].markdown, /Visible selected passage/);
+            assert.doesNotMatch(
+              JSON.stringify(body),
+              /Unselected body sentinel|Private comment sentinel/,
+            );
+          },
+        ],
+        [
+          "read_page",
+          { include_content: false, comments: "none" },
+          (body) => {
+            assert.ok(Array.isArray(body.outline.entries));
+            assert.match(JSON.stringify(body.outline.entries), /Selected section/);
+            assert.doesNotMatch(
+              JSON.stringify(body),
+              /Visible selected passage|Unselected body sentinel|Private comment sentinel/,
+            );
+          },
+        ],
+        [
+          "list_page_comments",
+          { thread_ids: [threadId], include_messages: false },
+          (body) => {
+            assert.deepEqual(
+              body.comments.map((thread) => thread.id),
+              [threadId],
+            );
+            assert.equal(body.comments[0].block_id, blockId);
+            assert.equal(body.comments[0].messages, undefined);
+            assert.doesNotMatch(
+              JSON.stringify(body),
+              /Private comment sentinel|Visible selected passage/,
+            );
+          },
+        ],
+      ]) {
+        const result = await call(f, name, { page_id: pageId, ...args });
+        assert.equal(result.isError, undefined, result.content[0].text);
+        const body = JSON.parse(result.content[0].text);
+        authority = body;
+        check(body);
+        assert.deepEqual(body.heads, heads);
+        assert.ok(body.retry_token);
+        assert.deepEqual(A.getHeads(doc), heads, "read operations do not edit the document");
+      }
+
+      if (!scope.includes("pages:write") || role === "viewer") {
+        const denied = await call(f, "edit_page", {
+          page_id: pageId,
+          base_heads: authority.heads,
+          retry_token: authority.retry_token,
+          idempotency_key: await retryKey(authority.retry_token, "read-token-denied-write"),
+          operations: [{ op: "set_title", title: "Must not write" }],
+        });
+        assert.equal(denied.isError, true);
+        assert.match(denied.content[0].text, /read-only/);
+        assert.deepEqual(A.getHeads(doc), heads, "retry authority cannot grant Page write access");
+        if (scope.includes("pages:write")) assert.equal(denied._meta, undefined);
+      }
+
+      // An existing grant or retry token cannot outlive the Page's current ACL.
+      page.metadata.owner = "user:anaconda:other-owner";
+      page.metadata.acl.members[person.principal] = {
+        role: "none",
+        generation: 2,
+        changedAtRevision: 2,
+      };
+      page.metadata.acl.revision = 2;
+      for (const name of ["read_page", "list_page_comments"]) {
+        const result = await call(f, name, { page_id: pageId });
+        assert.equal(result.isError, true);
+        assert.deepEqual(JSON.parse(result.content[0].text), { error: "Document access denied" });
+        assert.equal(result.structuredContent, undefined);
+        assert.equal(result._meta, undefined, "ACL denial cannot be repaired by scope escalation");
+      }
+    });
   }
 }
 
