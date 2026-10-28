@@ -71,7 +71,7 @@ hex = "0.4"
 jiter = { version = "0.13", default-features = false, features = ["num-bigint"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 jupyter-protocol = "2.0.3"
-jupyter-zmq-client = { version = "3.0.0", default-features = false }
+jupyter-zmq-client = { version = "3.0.1", default-features = false }
 libc = "0.2"
 log = "0.4"
 loro_fractional_index = "=1.6.0"

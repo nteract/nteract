@@ -4405,9 +4405,9 @@ dependencies = [
 
 [[package]]
 name = "jupyter-zmq-client"
-version = "3.0.0"
+version = "3.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7f58bcad0824714b5f6683b8407137e151e4b561ef0461862fefe1cebea7983"
+checksum = "6fb9fa2584acd956d0044dcb1c85d94e8c9147a5b59d3f1074c842eb14d6a609"
 dependencies = [
  "aws-lc-rs",
  "bytes",
