@@ -392,9 +392,13 @@ export function RichEditor({
     "ordered_list",
     "comment",
   ];
-  const enabledControls = controlOrder.filter((name) =>
-    name === "style" ? styleEnabled : name === "comment" ? editable && canComment : enabled(name),
-  );
+  const enabledControls = controlOrder
+    .filter(
+      (name) => toolbarOpen || !["undo", "redo", "bullet_list", "ordered_list"].includes(name),
+    )
+    .filter((name) =>
+      name === "style" ? styleEnabled : name === "comment" ? editable && canComment : enabled(name),
+    );
   const currentTabStop = enabledControls.includes(tabStop) ? tabStop : enabledControls[0];
   const styleValue = textStyles.some(({ value }) => value === formatting?.style)
     ? formatting.style
@@ -477,8 +481,10 @@ export function RichEditor({
               if (name) setTabStop(name);
             }}
           >
-            {buttons(buttonGroups[0])}
-            <span className="toolbar-separator" role="separator" aria-orientation="vertical" />
+            {toolbarOpen && buttons(buttonGroups[0])}
+            {toolbarOpen && (
+              <span className="toolbar-separator" role="separator" aria-orientation="vertical" />
+            )}
             <select
               className="toolbar-select"
               aria-label="Text style"
@@ -507,8 +513,10 @@ export function RichEditor({
             <span className="toolbar-separator" role="separator" aria-orientation="vertical" />
             {buttons(buttonGroups[1])}
             <span className="toolbar-separator" role="separator" aria-orientation="vertical" />
-            {buttons(buttonGroups[2])}
-            <span className="toolbar-separator" role="separator" aria-orientation="vertical" />
+            {toolbarOpen && buttons(buttonGroups[2])}
+            {toolbarOpen && (
+              <span className="toolbar-separator" role="separator" aria-orientation="vertical" />
+            )}
             <button
               type="button"
               className="toolbar-button toolbar-comment"

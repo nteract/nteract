@@ -813,20 +813,21 @@ export function WordgardEditor(props) {
             aria-label={format?.image ? "Image actions" : "Text formatting"}
             onKeyDown={toolbarKeys}
           >
-            {controls.slice(0, 2).map(([name, label, Icon]) => (
-              <button
-                key={name}
-                className="toolbar-button"
-                aria-label={label}
-                title={label}
-                disabled={!editable || !format?.[name]}
-                onPointerDown={(event) => event.preventDefault()}
-                onClick={() => run(name)}
-              >
-                <Icon size={18} aria-hidden="true" />
-              </button>
-            ))}
-            <span className="toolbar-separator" role="separator" />
+            {toolbarOpen &&
+              controls.slice(0, 2).map(([name, label, Icon]) => (
+                <button
+                  key={name}
+                  className="toolbar-button"
+                  aria-label={label}
+                  title={label}
+                  disabled={!editable || !format?.[name]}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={() => run(name)}
+                >
+                  <Icon size={18} aria-hidden="true" />
+                </button>
+              ))}
+            {toolbarOpen && <span className="toolbar-separator" role="separator" />}
             {format?.image ? (
               <span className="image-selection-label">Image</span>
             ) : (
@@ -847,38 +848,47 @@ export function WordgardEditor(props) {
                   ))}
                 </select>
                 <span className="toolbar-separator" role="separator" />
-                <TableMenu
-                  editor={view.current}
-                  inTable={!!format?.table}
-                  editable={editable}
-                  onError={report}
-                />
-                <button
-                  className="toolbar-button"
-                  aria-label="Insert image"
-                  title="Insert image"
-                  disabled={!editable || imageStatus?.pending}
-                  onPointerDown={(event) => event.preventDefault()}
-                  onClick={chooseImage}
-                >
-                  <ImagePlus size={18} aria-hidden="true" />
-                </button>
-                {controls.slice(2).map(([name, label, Icon]) => (
+                {(toolbarOpen || format?.table) && (
+                  <TableMenu
+                    editor={view.current}
+                    inTable={!!format?.table}
+                    editable={editable}
+                    onError={report}
+                  />
+                )}
+                {toolbarOpen && (
                   <button
-                    key={name}
-                    className={`toolbar-button${format?.[name] && !["link", "comment"].includes(name) ? " is-active" : ""}`}
-                    aria-label={label}
-                    title={label}
-                    aria-pressed={
-                      !["link", "comment"].includes(name) ? !!format?.[name] : undefined
-                    }
-                    disabled={!editable || (["link", "comment"].includes(name) && !format?.[name])}
+                    className="toolbar-button"
+                    aria-label="Insert image"
+                    title="Insert image"
+                    disabled={!editable || imageStatus?.pending}
                     onPointerDown={(event) => event.preventDefault()}
-                    onClick={() => run(name)}
+                    onClick={chooseImage}
                   >
-                    <Icon size={18} aria-hidden="true" />
+                    <ImagePlus size={18} aria-hidden="true" />
                   </button>
-                ))}
+                )}
+                {controls
+                  .slice(2)
+                  .filter(([name]) => toolbarOpen || !["bullet", "ordered", "task"].includes(name))
+                  .map(([name, label, Icon]) => (
+                    <button
+                      key={name}
+                      className={`toolbar-button${format?.[name] && !["link", "comment"].includes(name) ? " is-active" : ""}`}
+                      aria-label={label}
+                      title={label}
+                      aria-pressed={
+                        !["link", "comment"].includes(name) ? !!format?.[name] : undefined
+                      }
+                      disabled={
+                        !editable || (["link", "comment"].includes(name) && !format?.[name])
+                      }
+                      onPointerDown={(event) => event.preventDefault()}
+                      onClick={() => run(name)}
+                    >
+                      <Icon size={18} aria-hidden="true" />
+                    </button>
+                  ))}
               </>
             )}
           </div>,
