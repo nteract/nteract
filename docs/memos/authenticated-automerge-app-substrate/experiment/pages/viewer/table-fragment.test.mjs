@@ -14,11 +14,7 @@ import {
   textPath,
 } from "../model/richtext.mjs";
 import { parseTableMarkdown } from "../model/table-markdown.mjs";
-import {
-  PreservedTableView,
-  preservedTablePreview,
-  tablePreviewFragment,
-} from "./table-preview.mjs";
+import { tablePreviewFragment } from "./table-fragment.mjs";
 
 const table = `Before the table.\n\n| **Choice** | Value | Notes |\n| :--- | ---: | :---: |\n| *Pages* | 12 | [Details](/llms.txt) and \`code\` |\n| Notebook | 7 | Escaped \\| pipe |\n\nAfter the table.\n`;
 const rawTable = (source) => schema.nodes.raw.create({ source, importId: "", kind: "markdown" });
@@ -115,77 +111,15 @@ test("HTML, executable links, style payloads and resource embeds remain inert", 
   assert.match(fragment.textContent, /Image: tracking/);
 });
 
-test("non-tables and instruction blocks keep the conservative preserved-source rendering", () => {
-  const plugin = preservedTablePreview();
+test("non-table Markdown does not produce a table preview", (t) => {
+  const doc = fixture(t);
   for (const source of [
     "A | B",
     "| A | B |\n| not a delimiter |\n| C | D |",
     "```\n| A |\n| --- |\n| B |\n```",
     "| A | B |\n| --- |\n| C | D |",
-  ])
+  ]) {
     assert.equal(parseTableMarkdown(source), null);
-  const instruction = schema.nodes.raw.create({ kind: "instruction", source: table });
-  assert.equal(plugin.props.nodeViews.raw(instruction), null);
-  const malformed = schema.nodes.raw.create({ kind: "markdown", source: "| not a table |" });
-  assert.equal(plugin.props.nodeViews.raw(malformed), null);
-});
-
-test("Source is exact, incoming updates keep the selected view, and listeners clean up", (t) => {
-  const doc = fixture(t);
-  const node = rawTable(table);
-  const view = new PreservedTableView(node, doc);
-  doc.body.append(view.dom);
-  assert.equal(view.source.hidden, true);
-  assert.equal(view.source.textContent, table);
-  assert.equal(view.dom.contentEditable, "false");
-  view.toggle.click();
-  assert.equal(view.source.hidden, false);
-  assert.equal(view.preview.hidden, true);
-  assert.equal(view.toggle.getAttribute("aria-expanded"), "true");
-  const updated = table.replace("12", "123");
-  assert.equal(view.update(rawTable(updated)), true);
-  assert.equal(view.source.textContent, updated);
-  assert.equal(view.source.hidden, false);
-  assert.equal(view.preview.querySelectorAll("tbody tr")[0].children[1].textContent, "123");
-  assert.equal(view.stopEvent({ type: "click", target: view.preview.querySelector("a") }), true);
-  assert.equal(
-    view.stopEvent({ type: "mousedown", target: view.preview.querySelector("td") }),
-    true,
-  );
-  assert.equal(view.stopEvent({ type: "mousedown", target: view.dom }), false);
-  assert.equal(view.stopEvent({ type: "mousedown", target: view.toolbar }), false);
-  assert.equal(view.ignoreMutation({ type: "childList", target: view.preview }), true);
-  assert.equal(view.update(schema.nodes.raw.create({ kind: "instruction", source: table })), false);
-  assert.equal(view.update(parseMarkdown("Normal prose.").firstChild), false);
-  assert.equal(
-    view.update(schema.nodes.raw.create({ kind: "markdown", source: "| incomplete |" })),
-    false,
-  );
-  view.destroy();
-  view.toggle.click();
-  assert.equal(view.source.hidden, false, "destroy removes the click listener");
-});
-
-test("preview links keep native navigation without reaching editor click handlers", (t) => {
-  const doc = fixture(t);
-  const view = new PreservedTableView(rawTable(table), doc);
-  doc.body.append(view.dom);
-  let editorClicks = 0;
-  const onEditorClick = () => editorClicks++;
-  doc.body.addEventListener("click", onEditorClick);
-  t.after(() => doc.body.removeEventListener("click", onEditorClick));
-  const link = view.preview.querySelector("a");
-  for (const detail of [0, 1]) {
-    const event = new doc.defaultView.MouseEvent("click", {
-      bubbles: true,
-      cancelable: true,
-      detail,
-    });
-    link.dispatchEvent(event);
-    assert.equal(event.defaultPrevented, false);
-    assert.equal(editorClicks, 0);
+    assert.equal(tablePreviewFragment(source, doc), null);
   }
-  view.destroy();
-  link.dispatchEvent(new doc.defaultView.MouseEvent("click", { bubbles: true }));
-  assert.equal(editorClicks, 1, "destroy removes the preview click listener");
 });

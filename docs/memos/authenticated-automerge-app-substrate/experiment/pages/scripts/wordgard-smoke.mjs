@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
 
-const origin = process.env.PAGES_ORIGIN || "http://localhost:9895";
+const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
 const output = process.env.PAGES_SCREENSHOTS || "/tmp/pages-wordgard-browser";
 await mkdir(output, { recursive: true });
@@ -1154,6 +1154,169 @@ try {
   await reader.screenshot({ path: output + "/read-only.png", fullPage: true });
   await readerContext.close();
   checkpoint(stage);
+
+  {
+    // Preserve transport/recovery coverage while exercising the shipped editor.
+    // The proxy only delays or drops real client frames; it never invents bytes.
+    let hold = false,
+      blocked = null,
+      held = 0,
+      delaying = false;
+    const delayedFrames = [];
+    await contexts[0].routeWebSocket(/\/api\/sync\?/, (ws) => {
+      const server = ws.connectToServer();
+      ws.onMessage((data) => {
+        if (delaying) {
+          delayedFrames.push({ server, data });
+          return;
+        }
+        if (hold && !blocked) blocked = ws;
+        if (ws === blocked) {
+          held++;
+          return;
+        }
+        server.send(data);
+      });
+      server.onMessage((data) => ws.send(data));
+    });
+    const transport = await create(
+      "Transport recovery fixture.",
+      "Wordgard transport fixture " + Date.now(),
+    );
+
+    stage = "duplicated tab owns a distinct signer and IndexedDB store";
+    // window.open clones sessionStorage. Web Locks must rotate the second live
+    // tab's signer and storage namespace, rather than share one database owner.
+    const popupPromise = contexts[0].waitForEvent("page");
+    await a.evaluate(() => window.open(location.href, "_blank"));
+    const duplicate = await popupPromise;
+    duplicate.on("pageerror", (error) => errors.push(error.stack ?? error.message));
+    await saved(duplicate);
+    const storageFingerprint = (page) =>
+      page.evaluate(async (pageId) => {
+        const response = await fetch("/api/auth/session");
+        if (!response.ok) throw Error("Fixture authentication unavailable");
+        const { identity } = await response.json();
+        const digest = async (value) =>
+          Array.from(
+            new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))),
+            (byte) => byte.toString(16).padStart(2, "0"),
+          ).join("");
+        const scope = await digest(`${identity.principal}\0${pageId}`);
+        const seed = sessionStorage.getItem(`pages-native:${scope}`);
+        if (!seed) throw Error("Active fixture signer is missing after Saved");
+        const database = `pages-native-${scope}-${seed.slice(0, 16)}`;
+        // Return fingerprints only, never the private signer seed.
+        return {
+          signer: await digest(seed),
+          store: await digest(database),
+          storeExists: (await indexedDB.databases()).some((entry) => entry.name === database),
+        };
+      }, transport.page_id);
+    const originalStorage = await storageFingerprint(a);
+    const duplicateStorage = await storageFingerprint(duplicate);
+    assert.notEqual(originalStorage.signer, duplicateStorage.signer, "exclusive signer");
+    assert.notEqual(originalStorage.store, duplicateStorage.store, "exclusive byte store");
+    assert.equal(originalStorage.storeExists, true, "original store exists");
+    assert.equal(duplicateStorage.storeExists, true, "duplicate store exists");
+    await duplicate.close();
+    checkpoint(stage);
+
+    stage = "delayed native frames recover after a failed save receipt without another edit";
+    // Cross the authorization recheck boundary. Fresh connections do not cover
+    // the retired-admission-context regression from the original editor smoke.
+    await a.waitForTimeout(17000);
+    await a.bringToFront();
+    const documentTimeOrigin = await a.evaluate(() => performance.timeOrigin);
+    const delayedReceipt = a.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/saved" &&
+        new URL(response.url()).searchParams.get("page") === transport.page_id &&
+        response.status() === 409,
+      { timeout: 20000 },
+    );
+    delaying = true;
+    await selectText(a, "Transport recovery fixture.", true);
+    await a.keyboard.insertText(" Returned from another tab.");
+    await expect.poll(() => delayedFrames.length).toBeGreaterThan(0);
+    const backgroundTab = await contexts[0].newPage();
+    await backgroundTab.goto("about:blank");
+    await backgroundTab.bringToFront();
+    const backgroundVisibility = await a.evaluate(() => document.visibilityState);
+    assert.equal(await backgroundTab.evaluate(() => document.visibilityState), "visible");
+    assert.equal((await textOf(b)).includes("Returned from another tab."), false);
+    assert.equal((await (await delayedReceipt).json()).error, "Requested edits have not arrived");
+    await expect(
+      a.getByRole("alert").filter({ hasText: "Requested edits have not arrived" }),
+    ).toBeVisible();
+    await a.bringToFront();
+    const returnedVisibility = await a.evaluate(() => document.visibilityState);
+    assert.equal(returnedVisibility, "visible");
+    await backgroundTab.close();
+    delaying = false;
+    for (const { server, data } of delayedFrames.splice(0)) server.send(data);
+    await expect.poll(() => textOf(b), { timeout: 20000 }).toContain("Returned from another tab.");
+    await saved(a);
+    await saved(b);
+    await expect(a.getByRole("alert")).toHaveCount(0);
+    assert.equal(await a.evaluate(() => performance.timeOrigin), documentTimeOrigin, "no reload");
+    assert.equal(await textOf(a), await textOf(b));
+    const afterReturn = await call(a, "read_page", { page_id: transport.page_id });
+    assert.match(afterReturn.blocks[0].markdown, /Returned from another tab\./);
+    report.tabReturn = {
+      background_visibility: backgroundVisibility,
+      returned_visibility: returnedVisibility,
+      // Headless Chromium can leave every tab visible: do not call that proof
+      // of background throttling, only delayed-frame and receipt recovery.
+      visibility_transition_verified: backgroundVisibility === "hidden",
+    };
+    checkpoint(stage);
+
+    stage = "pending IndexedDB edits survive reload and merge concurrent peer changes";
+    const pendingReceiptRequest = a.waitForRequest(
+      (request) =>
+        new URL(request.url()).pathname === "/api/saved" &&
+        new URL(request.url()).searchParams.get("page") === transport.page_id,
+      { timeout: 10000 },
+    );
+    hold = true;
+    await selectText(a, "Transport recovery fixture.");
+    await a.keyboard.press("ArrowLeft");
+    await a.keyboard.insertText("Pending ");
+    await expect.poll(() => held).toBeGreaterThan(0);
+    // saveReceipt awaits the repository flush and pending-marker persistence
+    // before issuing this request. Wait for that boundary, not an arbitrary delay.
+    await pendingReceiptRequest;
+    assert.equal((await textOf(b)).includes("Pending "), false);
+    await selectText(b, "Returned from another tab.", true);
+    await b.keyboard.insertText(" Concurrent");
+    await expect.poll(() => textOf(a)).toContain("Concurrent");
+    hold = false;
+    await a.reload();
+    await expect.poll(() => textOf(a), { timeout: 20000 }).toContain("Pending ");
+    await expect.poll(() => textOf(b), { timeout: 20000 }).toContain("Pending ");
+    await expect.poll(() => textOf(a)).toContain("Concurrent");
+    await saved(a);
+    await saved(b);
+    assert.equal(await textOf(a), await textOf(b));
+    // Recovery must leave both existing peers able to publish their next edit.
+    await selectText(b, "Concurrent", true);
+    await b.keyboard.insertText(" Peer after reload.");
+    await expect.poll(() => textOf(a)).toContain("Peer after reload.");
+    await selectText(a, "Peer after reload.", true);
+    await a.keyboard.insertText(" Owner after reload.");
+    await expect.poll(() => textOf(b)).toContain("Owner after reload.");
+    await saved(a);
+    await saved(b);
+    assert.equal(await textOf(a), await textOf(b));
+    const afterRecovery = await call(a, "read_page", { page_id: transport.page_id });
+    assert.match(afterRecovery.blocks[0].markdown, /^Pending Transport recovery fixture\./);
+    assert.match(
+      afterRecovery.blocks[0].markdown,
+      /Concurrent Peer after reload\. Owner after reload\./,
+    );
+    checkpoint(stage);
+  }
 
   for (const page of [a, b]) await expect(page.locator(".app > .error")).toHaveCount(0);
   assert.deepEqual(errors, [], "no unhandled page errors");

@@ -7,7 +7,7 @@
     "dev": "node scripts/dev.mjs",
     "test": "tsx --tsconfig tsconfig.json --test worker/*.test.mjs model/*.test.mjs viewer/*.test.mjs test/*.test.mjs scripts/*.test.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "smoke:editor": "node scripts/editor-smoke.mjs",
+    "smoke:editor": "node scripts/wordgard-smoke.mjs",
     "smoke:tables": "node scripts/editable-table-smoke.mjs",
     "test:e2e:sharing": "node scripts/local-sharing-e2e.mjs"
   },
@@ -24,14 +24,7 @@
     "lucide-react": "1.17.0",
     "markdown-it": "14.3.3",
     "pele": "1.5.2",
-    "prosemirror-commands": "1.7.1",
-    "prosemirror-history": "1.4.1",
-    "prosemirror-keymap": "1.2.3",
     "prosemirror-markdown": "1.13.2",
-    "prosemirror-model": "1.25.12",
-    "prosemirror-schema-list": "1.5.1",
-    "prosemirror-state": "1.4.3",
-    "prosemirror-view": "1.42.6",
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "wordgard": "0.6.2"

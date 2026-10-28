@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ExternalLink, Pencil, Unlink, X } from "lucide-react";
-import { linkDestination } from "./rich-links.mjs";
+import { linkDestination } from "./link-destination.mjs";
 import "./link-popover.css";
 
 export function LinkPopover({ view, target, editable, editing, onEdit, onChange, onClose }) {

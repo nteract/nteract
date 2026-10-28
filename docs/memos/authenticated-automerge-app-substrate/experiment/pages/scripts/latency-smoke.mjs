@@ -27,27 +27,62 @@ const output = {
 };
 const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX";
 assert.equal(chars.length, 50);
+const content = (page) => page.locator("wg-content").first();
+const saved = (page) =>
+  expect(page.getByRole("status", { name: "All changes saved", exact: true })).toBeVisible({
+    timeout: 30000,
+  });
 const cleanText = (editor) =>
   editor.evaluate((el) => {
     const c = el.cloneNode(true);
-    c.querySelectorAll(".peer-caret").forEach((n) => n.remove());
+    c.querySelectorAll(
+      ".peer-caret,.wordgard-widget,.wordgard-diagram-actions,select,button",
+    ).forEach((n) => n.remove());
     return c.textContent;
   });
-async function call(page, operation, args) {
-  return page.evaluate(
-    async ({ operation, args }) => {
-      const r = await fetch("/api/tools", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ operation, arguments: args }),
-        signal: AbortSignal.timeout(15000),
-      });
-      const body = await r.json();
-      if (!r.ok) throw Error(body.error || "fixture tool failed");
-      return body;
-    },
-    { operation, args },
-  );
+// Resolve authority once per exact mutation request, and preserve it if a caller
+// retries after an uncertain response. Reads and receipt timings stay separate.
+const requestsByPage = new WeakMap();
+async function call(page, operation, args = {}) {
+  if (args.idempotency_key && !args.retry_token) {
+    let requests = requestsByPage.get(page);
+    if (!requests) requestsByPage.set(page, (requests = new Map()));
+    const key = JSON.stringify([operation, args.idempotency_key]);
+    const fingerprint = JSON.stringify(args);
+    let request = requests.get(key);
+    if (!request) {
+      const catalog = ["create_page", "delete_page"].includes(operation);
+      const authority = await rawCall(
+        page,
+        catalog ? "list_pages" : "read_page",
+        catalog ? {} : { page_id: args.page_id },
+      );
+      assert.equal(typeof authority.retry_token, "string");
+      assert.match(authority.retry_key_prefix, /^v1_[a-f0-9]{64}_$/);
+      request = {
+        fingerprint,
+        args: structuredClone({
+          ...args,
+          retry_token: authority.retry_token,
+          idempotency_key: authority.retry_key_prefix + args.idempotency_key,
+        }),
+      };
+      requests.set(key, request);
+    }
+    assert.equal(request.fingerprint, fingerprint, "fixture retry must keep its original payload");
+    args = request.args;
+  }
+  return rawCall(page, operation, args);
+}
+async function rawCall(page, operation, args = {}) {
+  const response = await page.request.post(origin + "/api/tools", {
+    headers: { Origin: origin, "X-Pages-Driver": "Wordgard latency fixture" },
+    data: { operation, arguments: args },
+    timeout: 15000,
+  });
+  const body = await response.json();
+  if (!response.ok()) throw Error(body.error || "fixture tool failed");
+  return body;
 }
 async function calibrate(page) {
   const samples = [];
@@ -62,7 +97,8 @@ async function calibrate(page) {
 async function install(page, base) {
   await page.evaluate(
     ({ base, chars }) => {
-      const el = document.querySelector(".ProseMirror");
+      const el = document.querySelector("wg-content");
+      if (!el) throw Error("Wordgard content is not mounted");
       const state = {
         base,
         chars,
@@ -75,7 +111,9 @@ async function install(page, base) {
       const now = () => performance.timeOrigin + performance.now();
       const text = () => {
         const c = el.cloneNode(true);
-        c.querySelectorAll(".peer-caret").forEach((n) => n.remove());
+        c.querySelectorAll(
+          ".peer-caret,.wordgard-widget,.wordgard-diagram-actions,select,button",
+        ).forEach((n) => n.remove());
         return c.textContent;
       };
       let batch = 0;
@@ -221,9 +259,9 @@ async function openPair(context, pageId, expected, phase) {
     };
     initial.push(sample);
     await page.goto(origin + "/p/" + pageId);
-    await expect(page.locator(".ProseMirror")).toHaveText(expected, { timeout: 30000 });
+    await expect(content(page)).toHaveText(expected, { timeout: 30000 });
     sample.navigation_to_content_ms = epoch() - sample.navigation_at;
-    await expect(page.getByRole("status")).toHaveText("Saved", { timeout: 30000 });
+    await saved(page);
     sample.navigation_to_saved_ms = epoch() - sample.navigation_at;
     if (label === "A") sample.native_records = await nativeRecords(page, pageId);
   }
@@ -231,7 +269,7 @@ async function openPair(context, pageId, expected, phase) {
 }
 
 async function measure(name, a, b) {
-  const editors = [a.locator(".ProseMirror"), b.locator(".ProseMirror")];
+  const editors = [content(a), content(b)];
   const timeOrigins = await Promise.all(
     [a, b].map((p) => p.evaluate(() => performance.timeOrigin)),
   );
@@ -296,8 +334,8 @@ async function measure(name, a, b) {
       remote_batch: remote.seen[i]?.batch,
       dispatch_to_input_ms: li - localOffset - d.before,
       input_to_local_dom_ms: ld - li,
-      local_to_remote_dom_ms: rd - ld,
-      input_to_remote_dom_ms: rd - li,
+      local_to_remote_dom_ms: rd - remoteOffset - (ld - localOffset),
+      input_to_remote_dom_ms: rd - remoteOffset - (li - localOffset),
       first_outbound_after_input_ms: firstOut ? firstOut.at - (li - localOffset) : null,
       last_inbound_to_remote_dom_ms: lastIn ? rd - remoteOffset - lastIn.at : null,
     };
@@ -348,8 +386,7 @@ async function measure(name, a, b) {
   );
   assert.equal(converged, true);
   assert.equal(await cleanText(editors[0]), await cleanText(editors[1]));
-  for (const p of [a, b])
-    await expect(p.getByRole("status")).toHaveText("Saved", { timeout: 30000 });
+  for (const p of [a, b]) await saved(p);
   phase.saved = true;
   console.log("SAVED", JSON.stringify({ name }));
   assert.deepEqual(
@@ -378,7 +415,10 @@ try {
   await context.close();
   context = await browser.newContext();
   control = await login(context);
-  let heads = (await call(control, "read_page", { page_id: created.page_id })).heads;
+  const authority = await call(control, "read_page", { page_id: created.page_id });
+  let heads = authority.heads;
+  assert.equal(typeof authority.retry_token, "string");
+  assert.match(authority.retry_key_prefix, /^v1_[a-f0-9]{64}_$/);
   const start = epoch(),
     timings = [];
   output.aging = {
@@ -393,7 +433,8 @@ try {
     const receipt = await call(control, "edit_page", {
       page_id: created.page_id,
       base_heads: heads,
-      idempotency_key: crypto.randomUUID(),
+      retry_token: authority.retry_token,
+      idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
       operations: [{ op: "set_title", title: "Latency history " + (i % 2 === 0 ? "A" : "B") }],
     });
     assert.notDeepEqual(receipt.heads, heads, "each awaited mutation creates a distinct change");
@@ -422,13 +463,19 @@ try {
   );
   const cold = initial.find((sample) => sample.phase === "aged_history" && sample.label === "A");
   output.aging.after = cold.native_records;
+  // Record compaction can consolidate many changes into one retained snapshot.
+  // Keep physical record counts diagnostic instead of equating them with edits.
   assert.ok(
-    cold.native_records.some((replica) => replica.commit_records >= historyChanges),
-    "cold replica retains the independently persisted API changes; earlier typing may be fragmented",
+    cold.native_records.some((replica) => replica.commit_records + replica.fragment_records > 0),
+    "cold replica persisted native records",
   );
+  for (const page of [a, b])
+    await expect(page.getByRole("textbox", { name: "Page title", exact: true })).toHaveValue(
+      "Latency history " + ((historyChanges - 1) % 2 === 0 ? "A" : "B"),
+    );
   await measure("aged_history", a, b);
   output.caveat =
-    "DOM prefix times are observer observations. WebSocket nearest-frame timings are passive correlations, not decoded causal send/host/projection stages. Clock uncertainty is approximately half calibration RTT. A is cold IndexedDB at each pair opening; B can import A's shared local checkpoint. Native record counts inspect only this fixture's browser stores. Headless visibility is not background proof. This local fixture has no object-storage network latency.";
+    "DOM prefix times are observer observations; cross-page durations use calibrated clock offsets. Physical record counts are not edit counts after compaction. WebSocket nearest-frame timings are passive correlations, not decoded causal send/host/projection stages. Clock uncertainty is approximately half calibration RTT. A is cold IndexedDB at each pair opening; B can import A's shared local checkpoint. Native record counts inspect only this fixture's browser stores. Headless visibility is not background proof. This local fixture has no object-storage network latency.";
   assert.deepEqual(errors, []);
   output.complete = true;
   console.log(

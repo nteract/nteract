@@ -1,43 +1,6 @@
-.ProseMirror .preserved-table {
-  min-width: 0;
-  max-width: 100%;
-  margin: 1em 0;
-}
-.preserved-table-toolbar {
-  display: flex;
-  justify-content: flex-end;
-  min-height: 32px;
-  margin-bottom: 4px;
-}
-.preserved-table-toolbar button {
-  color: var(--muted-foreground);
-  background: transparent;
-  border: 0;
-  border-radius: 5px;
-  padding: 4px 8px;
-  font:
-    12px/1.5 ui-sans-serif,
-    system-ui,
-    sans-serif;
-}
-.preserved-table-toolbar button:hover {
-  background: var(--accent-soft);
-}
-.preserved-table-toolbar button:focus-visible,
 .markdown-table-scroll:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
-}
-.preserved-table-source[hidden],
-.preserved-table-preview[hidden] {
-  display: none !important;
-}
-.ProseMirror .preserved-table-source {
-  margin: 0;
-  max-width: 100%;
-  white-space: pre;
-  overflow-x: auto;
-  font-size: 13px;
 }
 .markdown-table-scroll {
   max-width: 100%;
@@ -80,9 +43,4 @@
 .markdown-table-scroll a {
   text-decoration: underline;
   text-underline-offset: 0.14em;
-}
-@media (max-width: 600px) {
-  .preserved-table-toolbar button {
-    min-height: 40px;
-  }
 }

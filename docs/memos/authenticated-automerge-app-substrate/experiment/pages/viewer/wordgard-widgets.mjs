@@ -3,8 +3,8 @@ import { GardState, GardSelection, Transaction } from "wordgard/state";
 import { Elt } from "wordgard/doc";
 import { OpaqueBlock, CodeBlock, CodeBlockLanguage, decode } from "./wordgard-model.mjs";
 import { nativeTableSpans } from "../model/richtext.mjs";
-import { tablePreviewFragment } from "./table-preview.mjs";
-import "./table-preview.css";
+import { tablePreviewFragment } from "./table-fragment.mjs";
+import "./table-fragment.css";
 
 const loadMermaid = () => import("../../../../../../src/components/markdown/mermaid-renderer.ts");
 const mounted = new WeakMap();

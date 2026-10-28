@@ -23,7 +23,7 @@ requires celld 0.6.3; use that runtime to qualify the current profile. From the 
 ```sh
 npm run setup
 npm run build --workspace @nteract/pages-native-experiment
-PAGES_EDITOR=wordgard PAGES_ASYNC_PERSISTENCE=true PAGES_COMPACT_RECORDS=true \
+PAGES_ASYNC_PERSISTENCE=true PAGES_COMPACT_RECORDS=true \
   npm run dev --workspace @nteract/pages-native-experiment
 ```
 
@@ -32,10 +32,11 @@ workspace dependencies, and builds the Repo packages. The separate Pages build
 must finish before `dev`; rebuild after source changes. The dev command serves
 `http://localhost:9894`. Set `PAGES_PORT` to use another port.
 
-These flags select the Wordgard editor, background record persistence, and
-lossless record cleanup used by Page8. Without them, the dev script selects
-ProseMirror and synchronous persistence. A Page records its storage mode at
-creation: changing a flag does not migrate existing local documents.
+Wordgard is the only browser editor, locally and in deployed Pages. The
+`PAGES_EDITOR` comparison flag is no longer used. These flags enable background
+record persistence and lossless record cleanup used by Page8; without them,
+local persistence is synchronous. A Page records its storage mode at creation:
+changing a persistence flag does not migrate existing local documents.
 
 Local sign-in uses a loopback-only OIDC issuer. State persists under
 `pages/dist/.celld`; local credentials and build output are ignored. The dev
@@ -82,14 +83,12 @@ Run targeted browser checks from `pages`:
 | Collaborative checkboxes | `node scripts/local-sharing-e2e.mjs --task-lists` | Starts an isolated fixture |
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
 | Passage edits and revision deltas | `PAGES_ORIGIN=http://localhost:9894 node scripts/passages-changes-smoke.mjs` | Uses the running Wordgard fixture |
-| Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running ProseMirror fixture |
-| Editing, comments, and diagrams | `PAGES_ORIGIN=http://localhost:9894 node scripts/authoring-smoke.mjs` | Uses the running ProseMirror fixture |
-| Broader editor/recovery coverage | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running ProseMirror fixture |
-| History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running ProseMirror fixture with buffered persistence |
+| Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
+| Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
+| History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture with buffered persistence |
 
-The ProseMirror comparison checks require restarting local dev with
-`PAGES_EDITOR=prosemirror`; keep `PAGES_ASYNC_PERSISTENCE=true` for the latency
-check. They do not qualify Wordgard behavior.
+Use `PAGES_ASYNC_PERSISTENCE=true` for the latency check. The editor checks
+exercise the same Wordgard path used by deployed Pages.
 
 Choose one `local-sharing-e2e.mjs` feature flag per run. Its image importer fixture
 supplies a synthetic ChatGPT download response; actual client file handoff needs
@@ -103,10 +102,13 @@ Automerge. Markdown is the import/export and tool projection. A dedicated title
 is displayed above the body; agents should not repeat it as an opening heading.
 Authoring receipts warn about likely duplicates without removing or hiding text.
 
-Wordgard applies native text splices, marks, and structural spans. ProseMirror
-supplies the shared Markdown projection and remains an alternative editor; it
-does not mediate Wordgard keystrokes. Each Pages block has its own continuous
-editor. Moves update fractional positions without recreating the block or its
+Wordgard is the sole editor and applies native text splices, marks, and
+structural spans. The shared Markdown codec still uses ProseMirror schema and
+traversal libraries for import/export, validation, and passage-address mapping.
+It does not own an editor or mediate Wordgard keystrokes. Keeping that codec
+preserves existing documents, comment anchors, and MCP operations while the
+browser editor is simplified; replacing it requires a separate compatibility
+pass. Each Pages block has its own continuous editor. Moves update fractional positions without recreating the block or its
 text object, preserving comment and selection anchors. Concurrent positions use
 block IDs as deterministic ties. Cross-Pages-block selections remain unsupported.
 The binding's upstream attribution is in [WORDGARD-NOTICE](viewer/WORDGARD-NOTICE).
