@@ -34,6 +34,7 @@ import { matchingPages } from "./page-list.mjs";
 import { SharingControls } from "./SharingControls.jsx";
 import { AppearanceControls } from "./AppearanceControls.jsx";
 import { CommentsPanel } from "./CommentsPanel.jsx";
+import { SaveStatus } from "./SaveStatus.jsx";
 import { captureCommentDraft } from "./comment-draft.mjs";
 import { writingContinuation } from "./writing-continuation.mjs";
 import { retryKey } from "../model/retry-key.mjs";
@@ -497,17 +498,34 @@ function App() {
   const libraryPages = matchingPages(listedPages, libraryQuery);
   const openComments = threads.filter((thread) => thread.state === "open").length;
   return (
-    <div className={page ? "app has-document" : "app"}>
+    <div className={page ? "app has-document" : "app"} onKeyDownCapture={formattingShortcut}>
       <header className="app-header">
         <div className="header-navigation">
           <a href="/" className="brand" onClick={account ? home : undefined}>
             Pages
           </a>
+          {page && (
+            <input
+              className="document-title"
+              aria-label="Page title"
+              title={page.title || "Untitled"}
+              placeholder="Untitled"
+              value={page.title}
+              readOnly={!session.canWrite}
+              onChange={(event) => {
+                try {
+                  session.change((doc) => A.updateText(doc, ["title"], event.target.value));
+                } catch (error) {
+                  setError(error.message);
+                }
+              }}
+            />
+          )}
           {account && (
             <button
-              className="subtle-button pages-trigger"
+              className={`subtle-button pages-trigger${page ? " document-switcher" : ""}`}
               aria-label={`${page?.title || (page ? "Untitled" : "Browse")}, switch page`}
-              title={page?.title || "Pages"}
+              title="Switch page"
               onClick={() => {
                 setPickerError("");
                 setPickerOpen(true);
@@ -520,7 +538,7 @@ function App() {
               ) : (
                 <FolderOpen size={18} aria-hidden="true" />
               )}
-              <span>{page?.title || (page ? "Untitled" : "Browse")}</span>
+              {!page && <span>Browse</span>}
               <ChevronDown size={14} aria-hidden="true" />
             </button>
           )}
@@ -529,7 +547,7 @@ function App() {
           {page && (
             <div className="document-meta">
               <div className="document-status">
-                <span role="status">{session.status}</span>
+                <SaveStatus status={session.status} />
                 {["Unsaved", "Offline", "Saved locally"].includes(session.status) && (
                   <button className="subtle-button" onClick={() => session.retryConnection()}>
                     Retry
@@ -631,6 +649,7 @@ function App() {
           )}
         </div>
       </header>
+      {page && <div id="page-formatting" className="toolbar-host" ref={setToolbar} />}
       {error && (
         <p role="alert" className="error app-error">
           {error}
@@ -676,7 +695,8 @@ function App() {
             <main
               className={commentsOpen ? "workspace document with-comments" : "workspace document"}
             >
-              <article ref={article} onKeyDownCapture={formattingShortcut}>
+              <article ref={article}>
+                <h1 className="document-print-title sr-only">{page.title || "Untitled"}</h1>
                 {session.authRequired && (
                   <p className="error" role="alert">
                     {session.authProblem}{" "}
@@ -700,22 +720,6 @@ function App() {
                     {session.problem}
                   </p>
                 )}
-                <div className="document-heading">
-                  <input
-                    className="title"
-                    aria-label="Page title"
-                    value={page.title}
-                    readOnly={!session.canWrite}
-                    onChange={(event) => {
-                      try {
-                        session.change((doc) => A.updateText(doc, ["title"], event.target.value));
-                      } catch (error) {
-                        setError(error.message);
-                      }
-                    }}
-                  />
-                </div>
-                <div id="page-formatting" className="toolbar-host" ref={setToolbar} />
                 {page.blocks.map((block) => (
                   <section className="page-block" data-block-id={block.id} key={block.id}>
                     {block.format === "automerge-rich-text-v1" ? (

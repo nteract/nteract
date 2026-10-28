@@ -346,8 +346,8 @@ details.document-actions > div button {
   opacity: 1;
 }
 .document {
-  max-width: 860px;
-  margin: 2.5rem auto 0;
+  max-width: 1056px;
+  margin: 1rem auto 0;
   padding: 0 1.5rem 6rem;
 }
 .document article {
@@ -355,10 +355,10 @@ details.document-actions > div button {
   min-width: 0;
   min-height: 68vh;
   background: var(--surface);
-  padding: 1rem 2rem 3rem;
+  padding: 1rem 1.5rem 3rem;
 }
 .document.with-comments {
-  max-width: 1180px;
+  max-width: 1392px;
   padding-right: 360px;
 }
 .document-meta {
@@ -387,27 +387,33 @@ details.document-actions > div button {
 .document-meta button {
   white-space: nowrap;
 }
-.document-heading {
-  margin-top: 0;
-}
-.title {
+.document-title {
   display: block;
-  width: 100%;
-  border: 0;
-  border-bottom: 2px solid transparent;
+  flex: 1;
+  min-width: 0;
+  width: 0;
+  height: 40px;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--foreground);
-  font-size: clamp(2rem, 4vw, 2.4rem);
-  font-weight: 600;
-  line-height: 1.2;
-  letter-spacing: -0.045em;
-  padding: 0.25rem 0 0.6rem;
-  margin: 1rem 0 1.1rem;
-  border-radius: 0;
+  font-size: 1rem;
+  font-weight: 550;
+  line-height: 1.4;
+  padding: 0.45rem 0.55rem;
+  border-radius: 0.5rem;
+  text-overflow: ellipsis;
 }
-.title:focus-visible {
+.document-title::placeholder {
+  color: var(--muted-foreground);
+  opacity: 1;
+}
+.document-title:hover:not([readonly]) {
+  background: var(--accent);
+}
+.document-title:focus-visible {
   outline: none;
-  border-bottom-color: var(--ring);
+  border-color: var(--ring);
+  box-shadow: 0 0 0 1px var(--ring);
 }
 .toolbar-host {
   position: sticky;
@@ -897,10 +903,10 @@ dialog::backdrop {
   .document.with-comments {
     margin: 0 auto;
     padding: 0 0 4rem;
-    max-width: 760px;
+    max-width: 960px;
   }
   .document article {
-    min-height: calc(100dvh - 64px);
+    min-height: calc(100dvh - var(--page-header-height));
     border: 0;
     border-radius: 0;
     padding: 1rem 1.2rem 3rem;
@@ -911,11 +917,6 @@ dialog::backdrop {
   }
   .document-meta > div {
     gap: 0.2rem;
-  }
-  .title {
-    font-size: 2rem;
-    margin-top: 1.1rem;
-    margin-bottom: 1rem;
   }
   .toolbar-host {
     top: 64px;
@@ -1010,6 +1011,16 @@ dialog::backdrop {
     border: 0;
     box-shadow: none;
   }
+  .document-print-title {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0 0 1rem;
+    overflow: visible;
+    clip: auto;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
   .remote-edit,
   .comment-passage {
     border: 0;
@@ -1038,6 +1049,15 @@ dialog::backdrop {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.pages-trigger.document-switcher {
+  flex-shrink: 0;
+  gap: 0.3rem;
+  min-width: 54px;
+  min-height: 40px;
+  padding-inline: 0.5rem;
+  border: 0;
+  border-radius: 0.5rem;
 }
 .account-name {
   margin: 0.55rem 0.6rem;
@@ -1168,13 +1188,12 @@ dialog::backdrop {
   .has-document .brand {
     font-size: 0.85rem;
   }
-  .has-document .pages-trigger {
-    max-width: calc(100% - 60px);
-    padding-inline: 0.4rem;
-    gap: 0.3rem;
+  .has-document .document-title {
+    height: 44px;
+    padding-inline: 0.35rem;
   }
-  .has-document .pages-trigger > svg:first-child {
-    display: none;
+  .has-document .document-switcher {
+    min-height: 44px;
   }
   .comments-toggle > span:not(.comment-count):not(.sr-only) {
     display: none;

@@ -2,11 +2,18 @@
    or the user explicitly opens formatting through Document actions / Alt-F10. */
 .toolbar-host {
   top: var(--page-header-height, 64px);
+  margin: 0;
+  padding: 0.3rem 1.5rem;
+  min-height: 0;
+}
+.toolbar-host > .rich-toolbar:not(.is-floating) {
+  margin-inline: auto;
 }
 .rich-toolbar[hidden] {
   display: none;
 }
-.toolbar-host:not(:has(.rich-toolbar:not([hidden]))) {
+.toolbar-host:not(:has(.rich-toolbar:not([hidden]))),
+.toolbar-host:has(.is-floating) {
   min-height: 0;
   margin: 0;
   padding: 0;
@@ -22,6 +29,9 @@
 /* Touch users keep native selection handles and a stable dock. Wrapping exposes
    every command; no invisible horizontal scroll is required to reach comments. */
 @media (max-width: 900px), (hover: none), (pointer: coarse) {
+  .toolbar-host {
+    padding-inline: 0.8rem;
+  }
   .rich-toolbar {
     width: 100%;
     flex-wrap: wrap;

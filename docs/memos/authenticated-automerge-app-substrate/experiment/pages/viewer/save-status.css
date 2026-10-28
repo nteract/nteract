@@ -1,0 +1,36 @@
+.save-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  color: var(--foreground);
+  line-height: 1.35;
+}
+.save-status svg {
+  flex-shrink: 0;
+}
+.save-status--saved {
+  width: 24px;
+  min-height: 24px;
+  color: var(--muted-foreground);
+}
+.save-status--attention {
+  color: var(--warning);
+}
+.save-status--error {
+  color: var(--destructive);
+}
+.save-status--working svg {
+  animation: save-status-spin 1s linear infinite;
+}
+@keyframes save-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .save-status--working svg {
+    animation: none;
+  }
+}
