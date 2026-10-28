@@ -1,4 +1,4 @@
-name: Authenticated Automerge spike
+name: Pages experiment
 
 on:
   pull_request:
@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   test:
-    name: Authenticated Automerge integration fixture
+    name: Pages and authenticated Automerge integration
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:

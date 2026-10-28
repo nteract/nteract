@@ -39,6 +39,7 @@ async function api(page, path, body) {
     async ({ path, body }) => {
       const response = await fetch(path, {
         method: body === undefined ? "GET" : "POST",
+        signal: AbortSignal.timeout(15000),
         headers: { "Content-Type": "application/json" },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
@@ -119,17 +120,17 @@ async function signIn(email) {
 }
 async function openSharing() {
   if (!(await owner.getByRole("dialog", { name: "Share Page" }).isVisible())) {
-    await Promise.all([
-      owner.waitForResponse(
-        (response) =>
-          response.url().includes("/api/access?") && response.request().method() === "GET",
-      ),
-      owner.getByRole("button", { name: "Share", exact: true }).click(),
-    ]);
+    // Access may already be prefetched; opening a cached panel need not fetch.
+    await owner.getByRole("button", { name: "Share", exact: true }).click();
   }
   await expect(owner.getByRole("combobox", { name: "Link access", exact: true })).toBeVisible();
 }
 async function selectDomain(domain) {
+  // Fixture API writes and invite acceptance change ACL revisions outside the
+  // owner's UI. Refresh only that browser; viewer/editor sockets stay connected
+  // so the live revocation assertions below still exercise existing access.
+  await owner.reload();
+  await expect(content(owner)).toContainText("shared garden");
   await openSharing();
   await owner.getByRole("combobox", { name: "Link access", exact: true }).selectOption(domain);
   await expect(owner.getByRole("combobox", { name: "Link access", exact: true })).toHaveValue(
@@ -187,9 +188,11 @@ try {
   excluded = await signIn("blocked@anaconda.com");
   consumer = await signIn("outsider@gmail.com");
   invited = await signIn("alice@localhost");
-  const identities = await Promise.all(
-    [owner, employee, excluded, consumer, invited].map((page) => api(page, "/api/auth/session")),
-  );
+  // Establish fixture identities serially; concurrent session-refresh timing is
+  // a separate qualification from company-domain authorization.
+  const identities = [];
+  for (const page of [owner, employee, excluded, consumer, invited])
+    identities.push(await api(page, "/api/auth/session"));
   assert.equal(new Set(identities.map((result) => result.body.identity.principal)).size, 5);
   const catalog = (await tool(owner, "list_pages")).body;
   const created = await tool(owner, "create_page", {
@@ -234,9 +237,6 @@ try {
     ).status,
     200,
   );
-  // Refresh the open panel's revision after API-side setup before the UI mutation.
-  await owner.keyboard.press("Escape");
-  await expect(owner.getByRole("dialog", { name: "Share Page" })).not.toBeVisible();
   await selectDomain("anaconda.com");
   const enabled = (await api(owner, `/api/access?page=${pageId}`)).body;
   assert.deepEqual(enabled.invites, before.invites);

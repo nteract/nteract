@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Copy, Share2 } from "lucide-react";
 import { SharingPanel } from "../../../../../../src/components/sharing/SharingPanel.tsx";
-import "../../../../../../src/components/sharing/sharing-panel.css";
+import "./sharing-panel.css";
 import { createSharingAccess, sharingAvailable, SHARING_FRESH_MS } from "./sharing-access.mjs";
 import { domainSharingProjection } from "./sharing-projection.mjs";
 import { pageMarkdown } from "../model/markdown-export.mjs";

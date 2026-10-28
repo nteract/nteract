@@ -1328,7 +1328,7 @@ dialog::backdrop {
   border-radius: 12px;
   box-shadow: 0 8px 32px #0002;
 }
-.page-sharing-popover .sharing-panel[data-appearance="native"] {
+.page-sharing-popover .sharing-panel {
   --sharing-muted: var(--muted-foreground);
 }
 .page-sharing-popover [data-sharing-invite] button[type="submit"]:not(:disabled) {

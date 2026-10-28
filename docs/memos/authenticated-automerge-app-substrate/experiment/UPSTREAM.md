@@ -1,6 +1,7 @@
 # Upstream integration lane
 
-This disposable experiment builds the two packages at Repo revision
+The maintained [integration fixture](README.md) and [Pages experiment](pages/README.md)
+build the two packages at Repo revision
 `afec0444191a5a662e065f24193bef58ab07122a`, with Automerge `3.5.0` and
 Subduction `0.26.0`. It requires Node >=22.13, Git, and npm.
 
@@ -39,8 +40,8 @@ On 0.23.0, a four-commit diamond plus a fragment covering its root incorrectly
 omits an uncovered sibling from the native sync set. Real mixed-actor Automerge
 histories reproduce missing dependencies without running our compactor. The
 regression tests exercise both the minimal graph and a complete multi-actor cold
-sync. This is a published upstream repair, not a private WASM fork. The Page7
-qualification uses a fresh namespace and does not upgrade existing deployments;
+sync. This is a published upstream repair, not a private WASM fork. The original Page7
+qualification used a fresh namespace without upgrading existing deployments;
 mixed-version peers and migration of old deployed data are not qualified here.
 
 The authorization patch forwards `policy` and `ephemeralPolicy`
@@ -207,11 +208,14 @@ causes the host to reject that relayed history while the relay remains authorize
 
 ## Remaining qualification
 
-This is Node integration evidence, not browser/IndexedDB/WebSocket deployment,
-cross-version custom WASM/editor compatibility, cost or performance benchmarking,
-S3/R2 persistence, concurrent schema migration, partial-batch recovery, or a full
-production attribution design. Unknown-field survival is shown for in-place
-edits, not every editor projection or Markdown export/import round trip.
+The Node integration fixtures do not establish browser/IndexedDB/WebSocket
+deployment, cross-version custom WASM/editor compatibility, production cost or
+performance, S3/R2 failover durability, concurrent schema migration, or a full
+production attribution design. The persistence suites above exercise partial
+writes and recovery through injected failures; they do not establish host
+power-loss durability. Application qualification is documented separately in
+[Pages](pages/README.md). Unknown-field survival here is shown for in-place edits,
+not every editor projection or Markdown export/import round trip.
 
 The policy conservatively requires current admission for both requesting peer
 and signed record author. Historical records from an expired or revoked author
@@ -237,7 +241,12 @@ export, or reauthorization workflow remains to be designed. Repo3's deprecated
 uses query progress, cancellation, policy evidence, and stored records instead.
 
 
-## Page7 measured persistence boundaries
+## Measured persistence boundaries
+
+These measurements were collected during the Page7 persistence work. They are
+bounded local evidence, not a benchmark of the current deployment. The maintained
+fixtures reproduce the workload; [Pages](pages/README.md) documents current
+application limits and deployment qualification.
 
 The deterministic fixtures in `persistence-workload.mjs` separate ordinary prose
 from an intentionally incompressible typed-value history. The latter overwrites

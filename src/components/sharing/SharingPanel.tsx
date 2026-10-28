@@ -171,11 +171,11 @@ export function SharingPanel<Row extends SharingAccessRow>({
       {sections.publicAccess !== false && (
         <section
           data-sharing-public
-          className="flex items-start justify-between gap-3 border-b border-l-2 border-b-border border-l-[color-mix(in_srgb,var(--sev-ok)_70%,transparent)] bg-[color-mix(in_srgb,var(--sev-ok)_6%,transparent)] px-4 py-3"
+          className="flex items-start justify-between gap-3 border-b border-l-2 border-b-border border-l-emerald-500/70 bg-emerald-500/[0.06] px-4 py-3"
           aria-label="Public link access"
         >
           <div className="flex min-w-0 items-start gap-2.5 [&>svg]:mt-0.5 [&>svg]:size-4 [&>svg]:shrink-0">
-            <Globe2 className="text-[var(--sev-ok)]" />
+            <Globe2 className="text-emerald-700 dark:text-emerald-300" />
             <div className="min-w-0">
               <strong className="block text-sm font-semibold">Anyone with the link</strong>
               <span className="block text-xs text-muted-foreground">
@@ -251,7 +251,7 @@ export function SharingPanel<Row extends SharingAccessRow>({
         <>
           <Separator />
           <section
-            className="border-l-2 border-[color-mix(in_srgb,var(--sev-warn)_60%,transparent)] bg-[color-mix(in_srgb,var(--sev-warn)_5%,transparent)] px-4 py-3"
+            className="border-l-2 border-amber-500/60 bg-amber-500/[0.05] px-4 py-3"
             aria-label="Edit access requests"
             data-sharing-requests
           >
@@ -366,7 +366,7 @@ export function SharingPanel<Row extends SharingAccessRow>({
               "rounded-md border px-2.5 py-2 text-xs",
               messageKind === "error"
                 ? "border-destructive/40 bg-destructive/10 text-destructive"
-                : "border-[color-mix(in_srgb,var(--sev-ok)_30%,transparent)] bg-[color-mix(in_srgb,var(--sev-ok)_8%,transparent)] text-[var(--sev-ok)]",
+                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
             )}
             data-kind={messageKind}
           >
@@ -449,8 +449,8 @@ function SharingStateLabel({
     <span
       className={classes(
         "text-xs font-semibold",
-        tone === "success" && "text-[var(--sev-ok)]",
-        tone === "pending" && "text-[var(--sev-warn)]",
+        tone === "success" && "text-emerald-700 dark:text-emerald-300",
+        tone === "pending" && "text-amber-700 dark:text-amber-300",
         !tone && "text-muted-foreground",
       )}
       data-tone={tone ?? undefined}
@@ -471,7 +471,7 @@ function SharingRowIcon({ row }: { row: SharingAccessRow }) {
     return <ServerCog className="text-muted-foreground" />;
   }
   if (row.icon === "public") {
-    return <Globe2 className="text-[var(--sev-ok)]" />;
+    return <Globe2 className="text-emerald-700 dark:text-emerald-300" />;
   }
   return <UserRound className="text-muted-foreground" />;
 }

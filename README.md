@@ -39,6 +39,15 @@ Use `nteract` for notebook, workstation, and MCP operations. CLI-only installati
 | `nteract` command | CLI for notebooks, workstations, runtime operations, and supervised MCP |
 | `runtimed` (Python) | Python bindings for the daemon (ships with the app) |
 
+## Experiments
+
+[Pages](docs/memos/authenticated-automerge-app-substrate/experiment/pages/README.md)
+is an actively maintained experiment in collaborative documents for people and
+agents. Its browser editor, HTTP API, and MCP tools work on the same Automerge
+document. It runs separately from the notebook app; its APIs and storage contracts
+are still evolving. The experiment README covers local setup, tests, and the
+current limitations.
+
 ## Runtime model
 
 nteract stores notebook content in an Automerge-backed document and keeps live kernel state in an explicit runtime state document. The daemon owns kernel processes, execution queues, output capture, and the write path for execution results.
