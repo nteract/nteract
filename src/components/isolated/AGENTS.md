@@ -152,6 +152,10 @@ JSON-RPC widget methods:
 - Parent → iframe: `nteract/bridgeReady`, `nteract/commOpen`, `nteract/commMsg`, `nteract/commClose`, `nteract/widgetSnapshot`
 - Iframe → parent: `nteract/widgetReady`, `nteract/widgetCommMsg`, `nteract/widgetCommClose`
 
+### Output-session extension methods
+
+Outputs backed by a live session (Bokeh document sessions) use extension methods declared by an output-session plugin (`src/components/outputs/output-session-plugins.ts`), not entries in `rpc-methods.ts` or `TYPE_TO_METHOD`. The plugin's `hostMethods` list is the whitelist of iframe→host requests: `OutputArea` passes the registered plugins' methods to `IsolatedFrame` as `extensionMethods`, the runtime registers a request handler only for those, and any other request gets JSON-RPC "method not found". Host→iframe updates go through `IsolatedFrameHandle.notifyExtension`. Method constants and payload types live with the plugin (e.g. `bokeh-session-rpc.ts`); the app installs the plugin and provides its runtime through `OutputSessionRuntimeContext`.
+
 ### Widget sync flow
 
 ```
@@ -173,7 +177,7 @@ Review these carefully on every change:
 1. **Sandbox configuration** — `isolated-frame.tsx` / `SANDBOX_ATTRS`.
 2. **Source validation** — `frame.html` / `event.source !== window.parent`.
 3. **Custom message forwarding** — `comm-bridge-manager.ts` / `subscribeToModelCustomMessages` (required for anywidgets like quak).
-4. **Type-guard whitelist** — `frame-bridge.ts` / `isIframeMessage` for legacy frame-bridge types; JSON-RPC methods live in `rpc-methods.ts`.
+4. **Type-guard whitelist** — `frame-bridge.ts` / `isIframeMessage` for legacy frame-bridge types; JSON-RPC methods live in `rpc-methods.ts`. Output-session requests are whitelisted by each plugin's `hostMethods` in `src/components/outputs/output-session-plugins.ts`, and `isolated-frame-runtime.ts` / `registerTransportHandlers` registers a request handler only for those methods (`getExtensionMethods`).
 
 ## Review checklist
 
@@ -181,7 +185,7 @@ Review these carefully on every change:
 - Iframe CSP keeps `frame-src 'none'` and `child-src 'none'`.
 - CSP `script-src` / `style-src` stay scoped to `127.0.0.1:*` and `https:` — no new origins.
 - Source validation is intact (`event.source !== window.parent`).
-- Any new message types are added to the whitelist (`frame-bridge.ts`) and the JSON-RPC method list.
+- Any new message types are added to the whitelist (`frame-bridge.ts`) and the JSON-RPC method list; new output-session requests are listed in their plugin's `hostMethods`.
 - Unit tests updated; `pnpm test:run` green.
 
 ## Testing

@@ -37,10 +37,12 @@ use automerge::{AutoCommit, ReadDoc, Value};
 use log::{debug, warn};
 use tokio::sync::{mpsc, oneshot, watch};
 
+use notebook_protocol::connection::{KeyedDocFrameHeader, KeyedDocKey};
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 use runtime_doc::RuntimeState;
 
 use crate::error::SyncError;
+use crate::keyed_doc::{KeyedDocEvent, KeyedReplicaView};
 use crate::shared::SharedDocState;
 use crate::snapshot::NotebookSnapshot;
 use crate::status::{
@@ -98,6 +100,9 @@ pub struct DocHandle {
 
     /// Advertised by this connection's daemon during bootstrap.
     notebook_sync_receipt: bool,
+
+    /// Keyed document kinds the room routes (`ProtocolCapabilities::keyed_doc_kinds`).
+    keyed_doc_kinds: Arc<[String]>,
 }
 
 /// Serialized notebook snapshot set suitable for hosted publish flows.
@@ -152,12 +157,24 @@ impl DocHandle {
             status_rx,
             notebook_id,
             notebook_sync_receipt: false,
+            keyed_doc_kinds: Arc::from([]),
         }
     }
 
     pub(crate) fn with_notebook_sync_receipt_capability(mut self, supported: bool) -> Self {
         self.notebook_sync_receipt = supported;
         self
+    }
+
+    /// Set the keyed document kinds this connection may sync, from the
+    /// daemon's `ProtocolCapabilities::keyed_doc_kinds`.
+    pub fn with_keyed_doc_kinds(mut self, kinds: Vec<String>) -> Self {
+        self.keyed_doc_kinds = kinds.into();
+        self
+    }
+
+    pub fn supports_doc_kind(&self, kind: &str) -> bool {
+        self.keyed_doc_kinds.iter().any(|k| k == kind)
     }
 
     /// The notebook ID this handle is connected to.
@@ -199,6 +216,75 @@ impl DocHandle {
             }
         }
         Ok(runtime_state)
+    }
+
+    // =====================================================================
+    // Keyed documents
+    // =====================================================================
+
+    fn keyed_doc_key(&self, kind: &str, id: &str) -> Result<KeyedDocKey, SyncError> {
+        if !self.supports_doc_kind(kind) {
+            return Err(SyncError::UnsupportedDocKind(kind.to_string()));
+        }
+        let header = KeyedDocFrameHeader::new(kind, id, 0);
+        header
+            .validate()
+            .map_err(|e| SyncError::InvalidKeyedDocKey(e.to_string()))?;
+        Ok(header.key())
+    }
+
+    /// Open the replica of `(kind, id)` at `epoch`, or restart it when
+    /// `epoch` is newer than the open one, and queue its opening frame. The
+    /// daemon pushes later changes until the connection ends. Returns whether
+    /// a replica was (re)started.
+    pub fn open_keyed_doc(&self, kind: &str, id: &str, epoch: u64) -> Result<bool, SyncError> {
+        let key = self.keyed_doc_key(kind, id)?;
+        let opened = {
+            let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+            let actor = state.doc.get_actor().clone();
+            state.keyed.open(&key, epoch, &actor)
+        };
+        if opened {
+            let _ = self.changed_tx.send(());
+        }
+        Ok(opened)
+    }
+
+    /// Changes and restarts of open keyed document replicas.
+    pub fn subscribe_keyed_docs(
+        &self,
+    ) -> Result<tokio::sync::broadcast::Receiver<KeyedDocEvent>, SyncError> {
+        let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        Ok(state.keyed_tx.subscribe())
+    }
+
+    /// Run `f` on an open replica; `None` when `(kind, id)` is not open.
+    /// Changes committed in `f` are sent on the next sync task turn.
+    pub fn with_keyed_doc<R>(
+        &self,
+        kind: &str,
+        id: &str,
+        f: impl FnOnce(KeyedReplicaView<'_>) -> R,
+    ) -> Result<Option<R>, SyncError> {
+        let key = self.keyed_doc_key(kind, id)?;
+        let (result, changed) = {
+            let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+            let Some(view) = state.keyed.view(&key) else {
+                return Ok(None);
+            };
+            let before = view.doc.get_heads();
+            let result = f(view);
+            // `get_heads` closes an uncommitted transaction left by `f`.
+            let changed = state
+                .keyed
+                .view(&key)
+                .is_some_and(|view| view.doc.get_heads() != before);
+            (result, changed)
+        };
+        if changed {
+            let _ = self.changed_tx.send(());
+        }
+        Ok(Some(result))
     }
 
     // =====================================================================

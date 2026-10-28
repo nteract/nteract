@@ -80,7 +80,9 @@ pub const NOTEBOOK_RESPONSE_RESULTS: &[&str] = &[
     "blob_upload_error",
 ];
 
-pub const SESSION_CONTROL_TYPES: &[&str] = &["sync_status", "hosted_bridge_status"];
+/// Session-control types a notebook client can receive. `runtime_agent_capabilities`
+/// is coordinator-to-runtime-agent only and is not part of the client contract.
+pub const SESSION_CONTROL_TYPES: &[&str] = &["sync_status", "hosted_bridge_status", "doc_resync"];
 pub const NOTEBOOK_DOC_PHASES: &[&str] = &["pending", "syncing", "interactive"];
 pub const RUNTIME_STATE_PHASES: &[&str] = &["pending", "syncing", "ready"];
 pub const INITIAL_LOAD_PHASES: &[&str] = &["not_needed", "streaming", "ready", "failed"];
@@ -97,6 +99,7 @@ const FRAME_TYPES: &[(&str, u8)] = &[
     ("POOL_STATE_SYNC", frame_types::POOL_STATE_SYNC),
     ("SESSION_CONTROL", frame_types::SESSION_CONTROL),
     ("PUT_BLOB", frame_types::PUT_BLOB),
+    ("KEYED_DOC_SYNC", frame_types::KEYED_DOC_SYNC),
 ];
 
 fn quoted_array(values: &[&str], indent: &str) -> String {
@@ -697,7 +700,8 @@ export const NOTEBOOK_RESPONSE_RESULTS_EXHAUSTIVE: MissingUnionMember<
 
 export type SessionControlMessage =
   | ({{ type: "sync_status" }} & SessionStatus)
-  | {{ type: "hosted_bridge_status"; status: HostedBridgeStatus }};
+  | {{ type: "hosted_bridge_status"; status: HostedBridgeStatus }}
+  | {{ type: "doc_resync"; kind: string; id: string; epoch: number; reason: string }};
 
 export const SESSION_CONTROL_TYPES = [
 {}

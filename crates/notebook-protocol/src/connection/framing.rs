@@ -6,8 +6,11 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use super::handshake::PROTOCOL_VERSION;
 pub use notebook_wire::{
-    frame_size_limits, typed_frame_size_limits, NotebookFrameType, TypedNotebookFrame, MAGIC,
-    MAX_CONTROL_FRAME_SIZE, MAX_FRAME_SIZE, MIN_PROTOCOL_VERSION, PREAMBLE_LEN,
+    frame_size_limits, frame_types, is_daemon_originated_frame, is_optional_frame,
+    typed_frame_size_limits, KeyedDocFrameError, KeyedDocFrameHeader, KeyedDocKey,
+    NotebookFrameType, TypedNotebookFrame, MAGIC, MAX_CONTROL_FRAME_SIZE, MAX_FRAME_SIZE,
+    MAX_KEYED_DOC_FRAME_HEADER_LEN, MAX_KEYED_DOC_ID_LEN, MAX_KEYED_DOC_KIND_LEN,
+    MIN_PROTOCOL_VERSION, PREAMBLE_LEN,
 };
 
 /// Send the connection preamble (magic bytes + protocol version).
@@ -81,7 +84,18 @@ pub async fn send_typed_frame<W: AsyncWrite + Unpin>(
     frame_type: NotebookFrameType,
     payload: &[u8],
 ) -> std::io::Result<()> {
-    let type_byte = frame_type as u8;
+    send_raw_typed_frame(writer, frame_type as u8, payload).await
+}
+
+/// Send a typed frame by its type byte, including types this build does not
+/// know. Relays use it to forward client frames opaquely; the receiving
+/// daemon decides which types it accepts. Unknown types are bounded by the
+/// outer [`MAX_FRAME_SIZE`] ceiling.
+pub async fn send_raw_typed_frame<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    type_byte: u8,
+    payload: &[u8],
+) -> std::io::Result<()> {
     let limits = frame_size_limits(type_byte);
     if payload.len() > limits.cap {
         log::error!(

@@ -545,3 +545,80 @@ describe("IsolatedFrameRuntime", () => {
     });
   });
 });
+
+describe("IsolatedFrameRuntime extension methods", () => {
+  beforeEach(() => {
+    MockJsonRpcTransport.instances = [];
+    vi.clearAllMocks();
+  });
+
+  function createExtensionRuntime(
+    getExtensionMethods: () => readonly string[],
+    onExtensionRequest?: (method: string, params: unknown) => Promise<unknown>,
+  ) {
+    const { callbacks, frameWindow } = createRuntime();
+    const runtime = new IsolatedFrameRuntime({
+      getFrameWindow: () => frameWindow,
+      getExtensionMethods,
+      callbacks: { ...callbacks, onExtensionRequest },
+    });
+    return { frameWindow, runtime };
+  }
+
+  it("registers request handlers only for the current extension methods of each bootstrap", async () => {
+    let methods: readonly string[] = ["test/echo"];
+    const onExtensionRequest = vi.fn(async (method: string, params: unknown) => ({
+      method,
+      params,
+    }));
+    const { frameWindow, runtime } = createExtensionRuntime(() => methods, onExtensionRequest);
+
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
+    const first = MockJsonRpcTransport.instances[0];
+    expect([...first.requestHandlers.keys()]).toEqual(["test/echo"]);
+    await expect(first.requestHandlers.get("test/echo")?.({ a: 1 })).resolves.toEqual({
+      method: "test/echo",
+      params: { a: 1 },
+    });
+    expect(onExtensionRequest).toHaveBeenCalledWith("test/echo", { a: 1 });
+
+    methods = ["test/other"];
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
+    const second = MockJsonRpcTransport.instances[1];
+    expect([...second.requestHandlers.keys()]).toEqual(["test/other"]);
+  });
+
+  it("rejects a registered extension method when the host has no handler", () => {
+    const { frameWindow, runtime } = createExtensionRuntime(() => ["test/echo"]);
+
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
+    const transport = MockJsonRpcTransport.instances[0];
+
+    expect(() => transport.requestHandlers.get("test/echo")?.({})).toThrow(
+      "No host handler for extension method test/echo",
+    );
+  });
+
+  it("queues extension notifications in order with renders until the renderer is ready", () => {
+    const payload: RenderPayload = { mimeType: "text/plain", data: "x", outputId: "o" };
+    const { frameWindow, runtime } = createExtensionRuntime(() => []);
+
+    runtime.render(payload);
+    runtime.notifyExtension("test/state", { revision: 1 });
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
+    const transport = MockJsonRpcTransport.instances[0];
+    expect(transport.notify).not.toHaveBeenCalledWith("test/state", expect.anything());
+
+    transport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
+    const methods = transport.notify.mock.calls.map((call) => (call as unknown[])[0]);
+    expect(methods.indexOf(NTERACT_RENDER_OUTPUT)).toBeLessThan(methods.indexOf("test/state"));
+    expect(transport.notify).toHaveBeenCalledWith("test/state", { revision: 1 });
+
+    runtime.notifyExtension("test/state", { revision: 2 });
+    expect(transport.notify).toHaveBeenLastCalledWith("test/state", { revision: 2 });
+    expect(frameWindow.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: "test/state" }),
+      "*",
+    );
+  });
+});

@@ -40,6 +40,7 @@ impl PeerEgressLane {
             | NotebookFrameType::RuntimeStateSync
             | NotebookFrameType::CommsDocSync
             | NotebookFrameType::CommentsDocSync
+            | NotebookFrameType::KeyedDocSync
             | NotebookFrameType::PoolStateSync
             | NotebookFrameType::SessionControl
             | NotebookFrameType::PutBlob => Self::Reliable,
@@ -832,6 +833,12 @@ mod tests {
         );
         assert_eq!(
             PeerEgressLane::classify(NotebookFrameType::PoolStateSync),
+            PeerEgressLane::Reliable
+        );
+        // DocResync on SessionControl must not overtake the keyed frames it
+        // invalidates, so both ride the same ordered lane.
+        assert_eq!(
+            PeerEgressLane::classify(NotebookFrameType::KeyedDocSync),
             PeerEgressLane::Reliable
         );
         assert_eq!(

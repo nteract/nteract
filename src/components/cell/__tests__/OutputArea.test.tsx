@@ -3,9 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
 import type { BokehSessionState } from "runtimed";
 import {
-  BokehSessionRuntimeProvider,
+  BOKEH_SESSION_PLUGIN_ID,
+  installBokehSessionPlugin,
   type BokehSessionRuntime,
-} from "@/components/isolated/bokeh-session-context";
+} from "@/components/isolated/bokeh-session-plugin";
+import { NTERACT_BOKEH_SESSION_STATE } from "@/components/isolated/bokeh-session-rpc";
+import {
+  OutputSessionRuntimeContext,
+  registerOutputSessionPlugin,
+} from "@/components/outputs/output-session-plugins";
 import {
   BOKEHJS_EXEC_MIME_TYPE,
   BOKEHJS_LOAD_MIME_TYPE,
@@ -18,13 +24,21 @@ import { OutputArea, type JupyterOutput } from "../OutputArea";
 let mockDarkMode = false;
 let mockColorTheme: string | undefined;
 let lastFrameMessageHandler: ((message: unknown) => void) | undefined;
+let lastFrameExtension:
+  | {
+      onExtensionRequest?: (method: string, params: unknown) => Promise<unknown>;
+      extensionMethods?: readonly string[];
+    }
+  | undefined;
 let lastFrameMouseDown: (() => void) | undefined;
 let lastFrameMouseUp: ((params: { hasSelection?: boolean }) => void) | undefined;
 let isolatedFrameMountCount = 0;
+let mockFrameAutoReady = true;
 let restoreMarkdownProjector: (() => void) | undefined;
 
 const mockFrameHandle = {
   send: vi.fn(),
+  notifyExtension: vi.fn(),
   render: vi.fn(),
   renderBatch: vi.fn(),
   eval: vi.fn(),
@@ -66,9 +80,13 @@ vi.mock("@/components/isolated", async (importOriginal) => {
       onMouseUp?: (params: { hasSelection?: boolean }) => void;
       scrollPassthrough?: boolean;
       onReady?: () => void;
+      onExtensionRequest?: (method: string, params: unknown) => Promise<unknown>;
+      extensionMethods?: readonly string[];
     }
   >(function MockIsolatedFrame(
     {
+      onExtensionRequest,
+      extensionMethods,
       allowWheelBoundaryScroll,
       autoHeight,
       forwardWheelBoundaryScroll,
@@ -83,13 +101,14 @@ vi.mock("@/components/isolated", async (importOriginal) => {
     ref,
   ) {
     React.useImperativeHandle(ref, () => mockFrameHandle);
+    lastFrameExtension = { onExtensionRequest, extensionMethods };
 
     React.useEffect(() => {
       isolatedFrameMountCount += 1;
     }, []);
 
     React.useEffect(() => {
-      onReady?.();
+      if (mockFrameAutoReady) onReady?.();
     }, [onReady]);
 
     React.useEffect(() => {
@@ -440,6 +459,7 @@ describe("OutputArea iframe theme sync", () => {
     lastFrameMouseDown = undefined;
     lastFrameMouseUp = undefined;
     isolatedFrameMountCount = 0;
+    mockFrameAutoReady = true;
     vi.mocked(injectPluginsForMimes).mockResolvedValue(undefined);
     vi.mocked(needsPlugin).mockReturnValue(false);
   });
@@ -541,13 +561,19 @@ describe("OutputArea iframe theme sync", () => {
       patch_tail: [],
     });
     const renderWithRevision = (headRevision: number) => (
-      <BokehSessionRuntimeProvider
-        value={{ sessions: { "session-1": session(headRevision) }, transport }}
+      <OutputSessionRuntimeContext.Provider
+        value={{
+          [BOKEH_SESSION_PLUGIN_ID]: {
+            sessions: { "session-1": session(headRevision) },
+            transport,
+          } satisfies BokehSessionRuntime,
+        }}
       >
         <OutputArea outputs={outputs} isolated />
-      </BokehSessionRuntimeProvider>
+      </OutputSessionRuntimeContext.Provider>
     );
 
+    const uninstall = installBokehSessionPlugin();
     mockFrameHandle.isReady = true;
     try {
       const { rerender } = render(renderWithRevision(0));
@@ -559,19 +585,143 @@ describe("OutputArea iframe theme sync", () => {
       rerender(renderWithRevision(1));
 
       await waitFor(() => {
-        expect(mockFrameHandle.send).toHaveBeenCalledWith({
-          type: "bokeh_session_state",
-          payload: {
-            sessionId: "session-1",
-            outputId: "bokeh-output",
-            status: "connected",
-            headRevision: 1,
-          },
+        expect(mockFrameHandle.notifyExtension).toHaveBeenCalledWith(NTERACT_BOKEH_SESSION_STATE, {
+          sessionId: "session-1",
+          outputId: "bokeh-output",
+          status: "connected",
+          headRevision: 1,
         });
       });
       expect(mockFrameHandle.renderBatch).toHaveBeenCalledTimes(initialRenders);
     } finally {
       mockFrameHandle.isReady = false;
+      uninstall();
+    }
+  });
+
+  it("routes extension requests to the output-session plugin claiming the output MIME", async () => {
+    const bridge = {
+      setBindings: vi.fn(),
+      updateRuntime: vi.fn(),
+      handleRequest: vi.fn(async (_method: string, params: unknown) => ({ echoed: params })),
+      notifyCurrentState: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const createBridge = vi.fn(() => bridge);
+    const uninstall = registerOutputSessionPlugin<string, { epoch: number }>({
+      id: "test-session",
+      mimeTypes: ["application/x-test-session"],
+      hostMethods: ["test/echo"],
+      bindings: (outputs) =>
+        outputs.flatMap((output) => (output.output_id ? [output.output_id] : [])),
+      createBridge,
+    });
+    const runtime = { epoch: 1 };
+    const sessionOutput: JupyterOutput[] = [
+      {
+        output_id: "session-output",
+        output_type: "display_data",
+        data: { "application/x-test-session": {} },
+        metadata: {},
+      },
+    ];
+
+    mockFrameHandle.isReady = true;
+    try {
+      const { rerender, unmount } = render(
+        <OutputSessionRuntimeContext.Provider value={{ "test-session": runtime }}>
+          <OutputArea outputs={makeMarkdownOutput()} isolated />
+        </OutputSessionRuntimeContext.Provider>,
+      );
+      await waitFor(() => {
+        expect(mockFrameHandle.renderBatch).toHaveBeenCalled();
+      });
+      expect(lastFrameExtension?.extensionMethods).toContain("test/echo");
+      expect(createBridge).not.toHaveBeenCalled();
+      await expect(lastFrameExtension?.onExtensionRequest?.("test/echo", {})).rejects.toThrow(
+        'Output session "test-session" is unavailable for this output',
+      );
+
+      rerender(
+        <OutputSessionRuntimeContext.Provider value={{ "test-session": runtime }}>
+          <OutputArea outputs={sessionOutput} isolated />
+        </OutputSessionRuntimeContext.Provider>,
+      );
+      await waitFor(() => {
+        expect(bridge.notifyCurrentState).toHaveBeenCalled();
+      });
+      expect(createBridge).toHaveBeenCalledWith({
+        frame: mockFrameHandle,
+        runtime,
+        bindings: ["session-output"],
+      });
+      expect(bridge.updateRuntime).toHaveBeenCalledWith(runtime);
+
+      await expect(
+        lastFrameExtension?.onExtensionRequest?.("test/echo", { value: 1 }),
+      ).resolves.toEqual({ echoed: { value: 1 } });
+      expect(bridge.handleRequest).toHaveBeenCalledWith("test/echo", { value: 1 });
+      await expect(lastFrameExtension?.onExtensionRequest?.("test/other", {})).rejects.toThrow(
+        "No output session plugin serves test/other",
+      );
+
+      unmount();
+      expect(bridge.dispose).toHaveBeenCalled();
+      expect(createBridge).toHaveBeenCalledTimes(1);
+    } finally {
+      mockFrameHandle.isReady = false;
+      uninstall();
+    }
+  });
+
+  it("creates output-session bridges only once the frame is ready or serves a request", async () => {
+    const bridge = {
+      setBindings: vi.fn(),
+      updateRuntime: vi.fn(),
+      handleRequest: vi.fn(async () => "served"),
+      notifyCurrentState: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const createBridge = vi.fn(() => bridge);
+    const uninstall = registerOutputSessionPlugin<string, { epoch: number }>({
+      id: "test-session",
+      mimeTypes: ["application/x-test-session"],
+      hostMethods: ["test/echo"],
+      bindings: (outputs) =>
+        outputs.flatMap((output) => (output.output_id ? [output.output_id] : [])),
+      createBridge,
+    });
+    const outputs: JupyterOutput[] = [
+      {
+        output_id: "session-output",
+        output_type: "display_data",
+        data: { "application/x-test-session": {} },
+        metadata: {},
+      },
+    ];
+    const withRuntime = (epoch: number) => (
+      <OutputSessionRuntimeContext.Provider value={{ "test-session": { epoch } }}>
+        <OutputArea outputs={outputs} isolated />
+      </OutputSessionRuntimeContext.Provider>
+    );
+
+    mockFrameAutoReady = false;
+    try {
+      const { rerender, unmount } = render(withRuntime(1));
+      rerender(withRuntime(2));
+      await act(async () => {});
+      expect(createBridge).not.toHaveBeenCalled();
+      expect(mockFrameHandle.notifyExtension).not.toHaveBeenCalled();
+
+      await expect(lastFrameExtension?.onExtensionRequest?.("test/echo", {})).resolves.toBe(
+        "served",
+      );
+      expect(createBridge).toHaveBeenCalledOnce();
+      expect(bridge.updateRuntime).toHaveBeenLastCalledWith({ epoch: 2 });
+      unmount();
+      expect(bridge.dispose).toHaveBeenCalledOnce();
+    } finally {
+      uninstall();
     }
   });
 

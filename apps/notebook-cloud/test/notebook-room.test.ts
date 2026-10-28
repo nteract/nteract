@@ -1389,6 +1389,48 @@ describe("NotebookRoom presence rewrite", () => {
     assert.equal(socket.closed, false);
   });
 
+  it("rejects keyed document frames as unrouted; only runtime peers skip the close streak", async () => {
+    const keyedFrame = encodeTypedFrame(
+      FrameType.KEYED_DOC_SYNC,
+      new Uint8Array([0, 0, 0, 2, 0x7b, 0x7d]),
+    );
+    const connect = (query: string) => {
+      const room = createRoom(fakeState(), {} as Env);
+      Object.assign(room, { runtimePeerAuthorityError: async () => null });
+      const socket = new FakeSocket();
+      const peer = {
+        id: "peer-a",
+        socket: socket.asCloudflareWebSocket(),
+        identity: authenticateDevRequest(new Request(`https://cloud.test/n/demo/sync?${query}`)),
+        connectedAt: "2026-05-22T00:00:00.000Z",
+        consecutiveRejectedFrames: 0,
+      };
+      const harness = roomHarness(room);
+      harness.peers.set(peer.id, peer);
+      return { harness, peer, socket };
+    };
+
+    const runtime = connect("user=runtime&operator=runtime:py&scope=runtime_peer");
+    for (let i = 0; i < 20; i++) {
+      await runtime.harness.handleMessage("demo", runtime.peer, keyedFrame);
+    }
+    assert.equal(runtime.socket.closed, false);
+    assert.equal(runtime.peer.consecutiveRejectedFrames, 0);
+    assert.equal(runtime.socket.sent.length, 20);
+    const rejected = decodeJsonPayload<Record<string, unknown>>(runtime.socket.sent[0].slice(1));
+    assert.equal(rejected.type, "cloud_frame_rejected");
+    assert.equal(rejected.frame_type, FrameType.KEYED_DOC_SYNC);
+    assert.equal(rejected.reason, "keyed_doc_sync is not routed by cloud rooms");
+
+    const editor = connect("user=alice&operator=desktop:a&scope=editor");
+    await editor.harness.handleMessage("demo", editor.peer, keyedFrame);
+    assert.equal(editor.peer.consecutiveRejectedFrames, 1, "clients still count toward the streak");
+    const editorRejected = decodeJsonPayload<Record<string, unknown>>(
+      editor.socket.sent[0].slice(1),
+    );
+    assert.equal(editorRejected.reason, "keyed_doc_sync is not routed by cloud rooms");
+  });
+
   it("keeps anonymous viewer presence local to the connection", async () => {
     const anonymous = authenticateAnonymousViewer(
       new Request("https://cloud.test/n/demo/sync?viewer_session=anon-a"),

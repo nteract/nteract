@@ -9,9 +9,9 @@
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
-use crate::bokeh_session::{prepare_initial_session, PreparedInitialBokehSession};
 use crate::output_blob_publisher::publish_or_warn;
 use crate::output_commit_context::OutputCommitContext;
+use crate::output_hooks::{OutputHookInput, PreparedOutput, PreparedOutputBatch};
 use crate::output_prep::LifecycleSignal;
 use crate::output_store::{self, DEFAULT_INLINE_THRESHOLD};
 use crate::task_supervisor::spawn_supervised;
@@ -61,7 +61,7 @@ struct TimedOrdinaryOutputCommit {
 
 struct PreparedOrdinaryOutput {
     manifest: serde_json::Value,
-    bokeh_session: Option<PreparedInitialBokehSession>,
+    hooks: Vec<Box<dyn PreparedOutput>>,
 }
 
 #[derive(Debug)]
@@ -263,16 +263,15 @@ async fn commit_output_batch(
         }
     }
 
-    let mut prepared_outputs = Vec::with_capacity(outputs.len());
+    let mut manifests = Vec::with_capacity(outputs.len());
+    let mut prepared_hooks = PreparedOutputBatch::default();
     for output in &outputs {
-        prepared_outputs.push(prepare_output(&output.output, context).await);
+        let prepared = prepare_output(&output.output, context).await;
+        manifests.push(prepared.manifest);
+        prepared_hooks.extend(prepared.hooks);
     }
-    let manifests = prepared_outputs
-        .iter()
-        .map(|prepared| prepared.manifest.clone())
-        .collect::<Vec<_>>();
 
-    if let Err(e) = context.state.transact_at_current_heads(
+    match context.state.transact_at_current_heads(
         Some(&context.kernel_actor_id),
         "runtime-state-iopub-output-batch-transaction",
         |sd| {
@@ -285,19 +284,11 @@ async fn commit_output_batch(
                 }
                 sd.append_outputs(execution_id, &manifests[start..index])?;
             }
-            for prepared in &prepared_outputs {
-                if let Some(session) = &prepared.bokeh_session {
-                    // Session provenance and terminal state survive delayed or
-                    // repeated publication of the same initial descriptor.
-                    if sd.get_bokeh_session(&session.session_id).is_none() {
-                        sd.put_bokeh_session(&session.session_id, &session.state)?;
-                    }
-                }
-            }
-            Ok(())
+            prepared_hooks.apply_in_txn(sd)
         },
     ) {
-        warn!("[runtime-state] {}", e);
+        Ok(created) => prepared_hooks.after_commit(&created),
+        Err(e) => warn!("[runtime-state] {}", e),
     }
     info!(
         "[output-committer-timing] ordinary output batch committed count={} display_data_count={} execute_result_count={} error_count={} max_queue_age_ms={} elapsed_ms={}",
@@ -330,8 +321,11 @@ async fn prepare_output(
         }
     };
 
+    let stored_value = context
+        .output_hooks
+        .transform_for_storage(&output.nbformat_value);
     match output_store::create_manifest_with_redactor(
-        &output.nbformat_value,
+        stored_value.as_ref().unwrap_or(&output.nbformat_value),
         &context.blob_store,
         inline_threshold,
         &context.redactor,
@@ -349,26 +343,21 @@ async fn prepare_output(
             {
                 return PreparedOrdinaryOutput {
                     manifest: blob_publish_failure_output(output.kind.label(), &error),
-                    bokeh_session: None,
+                    hooks: Vec::new(),
                 };
             }
-            let bokeh_session = match prepare_initial_session(
-                &output.execution_id,
-                &output.nbformat_value,
-                &manifest,
-                context,
-            )
-            .await
-            {
-                Ok(session) => session,
-                Err(error) => {
-                    warn!("[output-committer] Failed to prepare Bokeh document session: {error}");
-                    None
-                }
-            };
+            let hooks = context
+                .output_hooks
+                .prepare(OutputHookInput {
+                    execution_id: &output.execution_id,
+                    nbformat_value: &output.nbformat_value,
+                    manifest: &manifest,
+                    ctx: context,
+                })
+                .await;
             PreparedOrdinaryOutput {
                 manifest: manifest.to_json(),
-                bokeh_session,
+                hooks,
             }
         }
         Err(e) => {
@@ -377,10 +366,12 @@ async fn prepare_output(
                 output.kind.label(),
                 e
             );
-            let redacted = context.redactor.redact_output_value(&output.nbformat_value);
+            let redacted = context
+                .redactor
+                .redact_output_value(stored_value.as_ref().unwrap_or(&output.nbformat_value));
             PreparedOrdinaryOutput {
                 manifest: crate::notebook_sync_server::fallback_output_with_id(&redacted),
-                bokeh_session: None,
+                hooks: Vec::new(),
             }
         }
     }
@@ -565,103 +556,188 @@ mod tests {
         assert_eq!(outputs[1]["data"]["text/plain"]["inline"], "second");
     }
 
+    mod hooks {
+        use std::sync::{Arc, Mutex};
+
+        use futures::future::BoxFuture;
+        use runtime_doc::{RuntimeStateDoc, RuntimeStateError};
+
+        use crate::output_hooks::{OutputHook, OutputHookInput, PreparedOutput};
+
+        pub(super) const MIME: &str = "application/x.nteract-test-hook+json";
+        pub(super) const FAILING_MIME: &str = "application/x.nteract-test-failing-hook+json";
+
+        /// Records what each stage saw, keyed by the payload's `id`.
+        #[derive(Default)]
+        pub(super) struct RecordingHook {
+            pub(super) log: Arc<Mutex<Vec<String>>>,
+        }
+
+        struct Prepared {
+            id: String,
+            execution_id: String,
+            log: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl PreparedOutput for Prepared {
+            fn apply_in_txn(
+                &mut self,
+                state: &mut RuntimeStateDoc,
+            ) -> Result<bool, RuntimeStateError> {
+                let appended = state.get_outputs(&self.execution_id).len();
+                let created = self.id == "first";
+                self.log.lock().unwrap().push(format!(
+                    "apply:{} outputs_in_txn={appended} created={created}",
+                    self.id
+                ));
+                Ok(created)
+            }
+
+            fn after_commit(self: Box<Self>) {
+                self.log
+                    .lock()
+                    .unwrap()
+                    .push(format!("after_commit:{}", self.id));
+            }
+        }
+
+        impl OutputHook for RecordingHook {
+            fn mime(&self) -> &'static str {
+                MIME
+            }
+
+            fn transform_for_storage(
+                &self,
+                value: &serde_json::Value,
+            ) -> Option<serde_json::Value> {
+                let mut value = value.clone();
+                value["data"][MIME]["secret"] = serde_json::Value::Null;
+                Some(value)
+            }
+
+            fn prepare<'a>(
+                &'a self,
+                input: OutputHookInput<'a>,
+            ) -> BoxFuture<'a, anyhow::Result<Option<Box<dyn PreparedOutput>>>> {
+                Box::pin(async move {
+                    let payload = &input.nbformat_value["data"][MIME];
+                    let id = payload["id"].as_str().unwrap_or_default().to_string();
+                    self.log.lock().unwrap().push(format!(
+                        "prepare:{id} secret={} manifest_has_mime={}",
+                        payload["secret"],
+                        input.manifest.to_json()["data"].get(MIME).is_some()
+                    ));
+                    Ok(Some(Box::new(Prepared {
+                        id,
+                        execution_id: input.execution_id.to_string(),
+                        log: self.log.clone(),
+                    }) as Box<dyn PreparedOutput>))
+                })
+            }
+        }
+
+        pub(super) struct FailingHook;
+
+        impl OutputHook for FailingHook {
+            fn mime(&self) -> &'static str {
+                FAILING_MIME
+            }
+
+            fn prepare<'a>(
+                &'a self,
+                _input: OutputHookInput<'a>,
+            ) -> BoxFuture<'a, anyhow::Result<Option<Box<dyn PreparedOutput>>>> {
+                Box::pin(async { anyhow::bail!("prepare failed") })
+            }
+        }
+    }
+
     #[tokio::test]
-    async fn initial_bokeh_output_records_document_session_atomically() {
+    async fn output_hooks_store_transformed_payload_and_commit_with_the_batch() {
+        use crate::output_hooks::{OutputHook, OutputHookRegistry};
+
         let dir = tempfile::TempDir::new().expect("tempdir");
         let blob_store = Arc::new(BlobStore::new(dir.path().to_path_buf()));
         let state = runtime_state();
-        state
-            .with_doc(|doc| {
-                doc.create_execution_with_source_provenance(
-                    "exec-1",
-                    "panel_output",
-                    0,
-                    None,
-                    Some("cell-1"),
-                )?;
-                Ok(())
-            })
-            .expect("execution entry");
+        create_execution(&state);
         let (lifecycle_tx, _lifecycle_rx) = mpsc::unbounded_channel();
-        let handle = start_output_committer_with_capacity(
-            commit_context(state.clone(), blob_store.clone(), lifecycle_tx),
-            8,
+        let hook = Arc::new(hooks::RecordingHook::default());
+        let log = hook.log.clone();
+        let context = commit_context(state.clone(), blob_store, lifecycle_tx).with_output_hooks(
+            OutputHookRegistry::new(vec![
+                hook as Arc<dyn OutputHook>,
+                Arc::new(hooks::FailingHook),
+            ]),
         );
-        let output = serde_json::json!({
-            "output_type": "display_data",
-            "data": {
-                crate::bokeh_session::BOKEH_SESSION_MIME: {
-                    "schema_version": 1,
-                    "session_id": "session-1",
-                    "revision": 0,
-                    "producer": {"name": "panel", "version": "1.9.3"},
-                    "bokeh_version": "3.9.1",
-                    "document": {"version": "3.9.1", "roots": [{"id": "p1001"}]},
-                    "root_ids": ["p1001"],
-                    "resources": {"javascript": [], "stylesheets": []},
-                    "buffers": [],
-                },
-                "text/plain": "FloatSlider(value=4)",
-            },
-            "metadata": {},
-        });
+        let handle = start_output_committer_with_capacity(context, 8);
 
-        handle
-            .enqueue_output(OrdinaryOutputCommit {
-                execution_id: "exec-1".to_string(),
-                nbformat_value: output.clone(),
-                buffers: Vec::new(),
-                kind: OrdinaryOutputKind::DisplayData,
-            })
-            .await;
+        for (id, mime) in [
+            ("first", hooks::MIME),
+            ("second", hooks::MIME),
+            ("failing", hooks::FAILING_MIME),
+        ] {
+            handle
+                .enqueue_output(OrdinaryOutputCommit {
+                    execution_id: "exec-1".to_string(),
+                    nbformat_value: serde_json::json!({
+                        "output_type": "display_data",
+                        "data": { mime: {"id": id, "secret": "kernel-only"} },
+                        "metadata": {},
+                    }),
+                    buffers: Vec::new(),
+                    kind: OrdinaryOutputKind::DisplayData,
+                })
+                .await;
+        }
         handle.flush_for_ordering().await;
-
-        let session = state
-            .read(|doc| doc.get_bokeh_session("session-1"))
-            .expect("read state")
-            .expect("Bokeh session");
-        assert_eq!(session.cell_id, "cell-1");
-        assert_eq!(session.execution_id, "exec-1");
-        assert_eq!(session.kernel_id, "kernel-test");
-        assert_eq!(session.head_revision, 0);
-        let checkpoint = session.checkpoint.clone().expect("checkpoint");
-        assert_eq!(checkpoint.revision, 0);
-        let bytes = blob_store
-            .get(&checkpoint.content_ref.blob)
-            .await
-            .expect("read checkpoint")
-            .expect("checkpoint bytes");
-        let payload: serde_json::Value = serde_json::from_slice(&bytes).expect("checkpoint JSON");
-        assert_eq!(payload["session_id"], "session-1");
-        assert_eq!(payload["document"]["roots"][0]["id"], "p1001");
 
         let outputs = state
-            .read(|doc| doc.get_outputs("exec-1"))
+            .read(|sd| sd.get_outputs("exec-1"))
             .expect("read outputs");
-        assert_eq!(outputs.len(), 1);
-        assert_eq!(outputs[0]["output_id"], session.output_id);
-
-        let mut closed = session;
-        closed.status = runtime_doc::BokehSessionStatus::Closed;
-        closed.head_revision = 3;
-        state
-            .with_doc(|doc| doc.put_bokeh_session("session-1", &closed))
-            .unwrap();
-        handle
-            .enqueue_output(OrdinaryOutputCommit {
-                execution_id: "exec-1".to_string(),
-                nbformat_value: output,
-                buffers: Vec::new(),
-                kind: OrdinaryOutputKind::DisplayData,
-            })
-            .await;
-        handle.flush_for_ordering().await;
         assert_eq!(
-            state
-                .read(|doc| doc.get_bokeh_session("session-1"))
-                .unwrap(),
-            Some(closed),
-            "late initial output must not reopen a retired session or rewind its revision"
+            outputs.len(),
+            3,
+            "a failed prepare still commits its output"
+        );
+        let stored: serde_json::Value = serde_json::from_str(
+            outputs[0]["data"][hooks::MIME]["inline"]
+                .as_str()
+                .expect("inline payload"),
+        )
+        .unwrap();
+        assert_eq!(stored, serde_json::json!({"id": "first", "secret": null}));
+        assert!(outputs[2]["data"][hooks::FAILING_MIME]["inline"]
+            .as_str()
+            .unwrap()
+            .contains("kernel-only"));
+
+        // Batches may split; within each, apply runs after the outputs were
+        // appended in the same transaction.
+        let log: Vec<String> = log.lock().unwrap().clone();
+        let stage = |prefix: &str| -> Vec<&String> {
+            log.iter()
+                .filter(|entry| entry.starts_with(prefix))
+                .collect()
+        };
+        assert_eq!(
+            stage("prepare:"),
+            [
+                "prepare:first secret=\"kernel-only\" manifest_has_mime=true",
+                "prepare:second secret=\"kernel-only\" manifest_has_mime=true",
+            ]
+        );
+        let applies = stage("apply:");
+        assert_eq!(applies.len(), 2);
+        assert!(applies[0].starts_with("apply:first outputs_in_txn="));
+        assert!(applies[0].ends_with("created=true"));
+        assert!(applies[1].ends_with("created=false"));
+        assert!(applies
+            .iter()
+            .all(|entry| !entry.contains("outputs_in_txn=0")));
+        assert_eq!(stage("after_commit:"), ["after_commit:first"]);
+        assert!(
+            log.iter().position(|e| e == "after_commit:first")
+                > log.iter().position(|e| e.starts_with("apply:first")),
         );
     }
 

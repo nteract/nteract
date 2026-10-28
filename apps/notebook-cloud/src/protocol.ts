@@ -150,6 +150,8 @@ const CLIENT_WRITABLE_FRAME_TYPES = {
   [FrameType.POOL_STATE_SYNC]: true,
   [FrameType.SESSION_CONTROL]: false,
   [FrameType.PUT_BLOB]: true,
+  // Cloud rooms route no keyed document kinds and advertise none.
+  [FrameType.KEYED_DOC_SYNC]: false,
 } as const satisfies Readonly<Record<FrameTypeValue, boolean>>;
 
 export function frameTypeName(type: number): string {

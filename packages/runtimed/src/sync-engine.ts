@@ -67,6 +67,7 @@ import {
   type ExecutionState,
   diffExecutions,
 } from "./runtime-state";
+import { parseKeyedDocFrameHeader } from "./keyed-doc-frame";
 import { createTextAttributionEvent } from "./text-attribution-event";
 import { FrameType } from "./transport";
 import type { NotebookTransport } from "./transport";
@@ -107,6 +108,34 @@ export interface PresenceHeartbeatOptions {
   /** Encode a Presence heartbeat payload using the caller's WASM module. */
   encode: () => Uint8Array;
 }
+
+/** An inbound `0x0b KeyedDocSync` frame, routed by its header. */
+export interface KeyedDocFrame {
+  kind: string;
+  id: string;
+  epoch: number;
+  /** The typed frame, type byte included. */
+  frame: Uint8Array;
+}
+
+/**
+ * `SessionControl::DocResync`: the daemon refused this peer's writes to
+ * `(kind, id)`. Drop that replica and sync a fresh one for `epoch`.
+ */
+export interface KeyedDocResync {
+  kind: string;
+  id: string;
+  epoch: number;
+  reason: string;
+}
+
+/** Connection facts negotiated with the daemon (from `DaemonReadyPayload`). */
+export interface NegotiatedCapabilities {
+  /** Keyed document kinds this room routes; send `0x0b` only for these. */
+  keyedDocKinds: ReadonlySet<string>;
+}
+
+const NO_CAPABILITIES: NegotiatedCapabilities = { keyedDocKinds: new Set() };
 
 function initialLoadPhaseName(phase: InitialLoadPhase): InitialLoadPhase["phase"] {
   return phase.phase;
@@ -420,6 +449,24 @@ export class SyncEngine {
   /** Durable comment thread projection from CommentsDoc. */
   readonly commentsProjection$: Observable<CommentsProjection>;
 
+  /**
+   * Inbound `0x0b` keyed document frames. They bypass the notebook handle;
+   * consumers filter by `kind` and route by `(id, epoch)` to their replicas.
+   */
+  readonly keyedDocFrames$: Observable<KeyedDocFrame>;
+
+  /** Daemon refusals of this peer's keyed document writes. */
+  readonly keyedDocResyncs$: Observable<KeyedDocResync>;
+
+  /**
+   * A new connection (`resetForBootstrap`): the daemon holds no keyed
+   * document sync state for this peer, so consumers restart their replicas.
+   */
+  readonly keyedDocsReset$: Observable<void>;
+
+  /** Capabilities of the current connection. Replays the latest value. */
+  readonly negotiatedCapabilities$: Observable<NegotiatedCapabilities>;
+
   /** Ordered bootstrap/readiness status emitted by the daemon. */
   readonly sessionStatus$: Observable<SessionStatus>;
 
@@ -505,6 +552,11 @@ export class SyncEngine {
   private readonly _notebookDocChanged$ = new Subject<void>();
   private readonly _notebookDocFlushDelivered$ = new ReplaySubject<void>(1);
   private readonly _notebookSyncApplied$ = new Subject<void>();
+  private readonly _keyedDocFrames$ = new Subject<KeyedDocFrame>();
+  private readonly _keyedDocResyncs$ = new Subject<KeyedDocResync>();
+  private readonly _keyedDocsReset$ = new Subject<void>();
+  private readonly _negotiatedCapabilities$ = new ReplaySubject<NegotiatedCapabilities>(1);
+  private negotiatedCapabilities: NegotiatedCapabilities = NO_CAPABILITIES;
 
   constructor(opts: SyncEngineOptions) {
     this.opts = {
@@ -531,6 +583,11 @@ export class SyncEngine {
     this.notebookDocChanged$ = this._notebookDocChanged$.asObservable();
     this.notebookDocFlushDelivered$ = this._notebookDocFlushDelivered$.asObservable();
     this.notebookSyncApplied$ = this._notebookSyncApplied$.asObservable();
+    this.keyedDocFrames$ = this._keyedDocFrames$.asObservable();
+    this.keyedDocResyncs$ = this._keyedDocResyncs$.asObservable();
+    this.keyedDocsReset$ = this._keyedDocsReset$.asObservable();
+    this.negotiatedCapabilities$ = this._negotiatedCapabilities$.asObservable();
+    this._negotiatedCapabilities$.next(this.negotiatedCapabilities);
 
     // Typed broadcast sub-observables (derived from broadcasts$)
     this.commBroadcasts$ = this.broadcasts$.pipe(filter(isCommBroadcast));
@@ -598,6 +655,10 @@ export class SyncEngine {
     const frameEvents$ = this.frameIn$.pipe(
       mergeMap((payload) => {
         try {
+          if (payload[0] === FrameType.KEYED_DOC_SYNC) {
+            this.routeKeyedDocFrame(new Uint8Array(payload));
+            return EMPTY;
+          }
           const handle = this.opts.getHandle();
           if (!handle) {
             log.debug("[sync-engine] frame dropped: no handle");
@@ -645,6 +706,15 @@ export class SyncEngine {
             log.debug(`[sync-engine] session status: ${formatSessionStatus(next)}`);
           }
         }),
+    );
+
+    sub.add(
+      frameEvents$.pipe(filter((event) => event.type === "doc_resync")).subscribe((event) => {
+        const { kind, id, epoch, reason } = event;
+        if (kind == null || id == null || epoch == null) return;
+        log.debug(`[sync-engine] keyed document ${kind}/${id} resync at epoch ${epoch}: ${reason}`);
+        this._keyedDocResyncs$.next({ kind, id, epoch, reason: reason ?? "" });
+      }),
     );
 
     sub.add(
@@ -1666,6 +1736,50 @@ export class SyncEngine {
     this.flush();
   }
 
+  // ── Keyed documents ────────────────────────────────────────────────
+
+  private routeKeyedDocFrame(frame: Uint8Array): void {
+    const header = parseKeyedDocFrameHeader(frame.subarray(1));
+    if (!header) {
+      this.opts.logger.warn("[sync-engine] dropping KeyedDocSync frame with an invalid header");
+      return;
+    }
+    this._keyedDocFrames$.next({ ...header, frame });
+  }
+
+  /** Record what the daemon negotiated for this connection. */
+  setNegotiatedCapabilities(capabilities: NegotiatedCapabilities): void {
+    this.negotiatedCapabilities = { keyedDocKinds: new Set(capabilities.keyedDocKinds) };
+    this._negotiatedCapabilities$.next(this.negotiatedCapabilities);
+  }
+
+  supportsKeyedDocKind(kind: string): boolean {
+    return this.negotiatedCapabilities.keyedDocKinds.has(kind);
+  }
+
+  /**
+   * Send a keyed document sync payload (header-framed, no type byte).
+   * Drops and warns when `kind` is not negotiated or the payload's header
+   * names another kind; a daemon that did not advertise a kind may treat
+   * `0x0b` as an error.
+   */
+  async sendKeyedDocFrame(kind: string, payload: Uint8Array): Promise<void> {
+    if (!this.supportsKeyedDocKind(kind)) {
+      this.opts.logger.warn(
+        `[sync-engine] not sending ${kind} document frame: kind not negotiated`,
+      );
+      return;
+    }
+    const header = parseKeyedDocFrameHeader(payload);
+    if (header?.kind !== kind) {
+      this.opts.logger.warn(
+        `[sync-engine] not sending ${kind} document frame: header names ${header?.kind ?? "nothing valid"}`,
+      );
+      return;
+    }
+    await this.opts.transport.sendFrame(FrameType.KEYED_DOC_SYNC, payload);
+  }
+
   /**
    * Reset the engine for a new bootstrap cycle (e.g. daemon:ready).
    *
@@ -1676,8 +1790,12 @@ export class SyncEngine {
    * gate on `sessionStatus.runtime_state === "ready"` would keep the
    * previous session's `ready` value until the next daemon status
    * frame arrives, leaving a rebootstrap-sized fail-open window.
+   *
+   * `capabilities` are the new connection's (from its ready payload);
+   * omitted means none. They are set before `keyedDocsReset$` fires so
+   * consumers restarting replicas see the new connection's kinds.
    */
-  resetForBootstrap(): void {
+  resetForBootstrap(capabilities: NegotiatedCapabilities = NO_CAPABILITIES): void {
     this.opts.logger.info("[sync-engine] Resetting for bootstrap");
     this.latestSessionStatus = null;
     this.prevExecutions = {};
@@ -1692,6 +1810,8 @@ export class SyncEngine {
       runtime_state: "pending",
       initial_load: { phase: "not_needed" },
     });
+    this.setNegotiatedCapabilities(capabilities);
+    this._keyedDocsReset$.next();
   }
 }
 
