@@ -54,10 +54,58 @@ function noise(length, seed = 7) {
   });
 }
 const bytes = (doc) => extractRecords(doc).reduce((sum, record) => sum + recordBytes(record), 0);
+const recordPath = (record) =>
+  `${record.kind}/${record.kind === "commit" ? record.id : record.head}`;
+/** Bytes a host stores after it already holds `stored` and admits `next`. */
+function unionBytes(stored, next) {
+  const union = new Map(
+    [...extractRecords(stored), ...extractRecords(next)].map((r) => [recordPath(r), r]),
+  );
+  return [...union.values()].reduce((sum, record) => sum + recordBytes(record), 0);
+}
+
+// A change's hash decides its sedimentree record shape. A hash with a leading
+// zero byte (about 1 in 256) heads a fragment that bundles the history before
+// it, instead of a loose commit. Random actors and wall-clock timestamps would
+// make every fixture's shape, and so its byte budget, a coin flip. Fixtures use
+// fixed actors and search fixed timestamps for the head shape a test needs.
+const TIME = 1_790_000_000;
+const ACTOR = {
+  base: "0a".repeat(16),
+  api: "0b".repeat(16),
+  native: "0c".repeat(16),
+};
+function headKind(doc) {
+  const [head] = A.getHeads(doc);
+  return extractRecords(doc).find(
+    (record) => (record.kind === "commit" ? record.id : record.head) === head,
+  )?.kind;
+}
+function edit(doc, actor, change, kind = "commit") {
+  for (let time = TIME; time < TIME + 4096; time++) {
+    const next = A.change(A.clone(doc, { actor }), { time }, change);
+    if (headKind(next) === kind) return next;
+    A.free(next);
+  }
+  throw Error(`No ${kind}-headed edit within the timestamp search bound`);
+}
 const baseDoc = () =>
-  A.change(A.from({ page_id: "fixture", stable: { text: "same identity" } }), (doc) => {
-    doc.data = noise(4096);
-  });
+  edit(
+    edit(A.init(), ACTOR.base, (doc) => {
+      doc.page_id = "fixture";
+      doc.stable = { text: "same identity" };
+    }),
+    ACTOR.base,
+    (doc) => {
+      doc.data = noise(4096);
+    },
+  );
+const apiEdit = (doc) => {
+  doc.api = noise(2048, 11);
+};
+const nativeEdit = (doc) => {
+  doc.native = noise(2048, 12);
+};
 function host(mode, maxSnapshotBytes, storage = new Storage(), records = new Storage()) {
   const owner = new PageRecords({ storage: records });
   const recordStore =
@@ -100,12 +148,8 @@ function context(peer, handle, key = "api-intent") {
 for (const mode of ["local", "buffered"]) {
   test(`${mode}: native admission ahead of the reservation rejects before the API intent`, async () => {
     const base = baseDoc();
-    const candidate = A.change(A.clone(base), (doc) => {
-      doc.api = noise(2048, 11);
-    });
-    const native = A.change(A.clone(base), (doc) => {
-      doc.native = noise(2048, 12);
-    });
+    const candidate = edit(base, ACTOR.api, apiEdit);
+    const native = edit(base, ACTOR.native, nativeEdit);
     const peer = host(mode, bytes(candidate) + 32);
     try {
       const handle = await peer.repo.import(A.save(base));
@@ -205,64 +249,115 @@ for (const mode of ["local", "buffered"]) {
 }
 
 for (const mode of ["local", "buffered"]) {
-  test(
-    `${mode}: incoming authenticated native records cannot consume a recorded API reservation`,
-    { timeout: 10000 },
-    async () => {
-      const base = baseDoc();
-      const candidate = A.change(A.clone(base), (doc) => {
-        doc.api = noise(2048, 11);
+  // A fragment-headed reservation also carries base history the host already
+  // stores as loose commits. Admission charges both representations, so the
+  // reservation budget is the stored union, not the candidate's own records.
+  test(`${mode}: a fragment-headed API edit is charged for the history it bundles`, async () => {
+    const base = baseDoc();
+    const loose = edit(base, ACTOR.api, apiEdit, "commit");
+    const bundled = edit(base, ACTOR.api, apiEdit, "fragment");
+    assert.deepEqual(
+      extractRecords(bundled).map((record) => record.kind),
+      ["fragment"],
+    );
+    assert.ok(unionBytes(base, bundled) > bytes(bundled) + 32);
+    const peer = host(mode, Math.max(bytes(loose), bytes(bundled)) + 32);
+    try {
+      const handle = await peer.repo.import(A.save(base));
+      await peer.flush();
+      const admission = new DocumentAdmission(peer.backend, treeId(handle.documentId));
+      const intent = (candidate) => ({
+        fingerprint: "fixture",
+        pending: true,
+        changes: A.getChanges(base, candidate),
+        receipt: { heads: A.getHeads(candidate) },
       });
-      const peer = host(mode, bytes(candidate) + 32);
-      const author = createPeer();
-      const peers = [peer, author],
-        wires = [];
-      try {
-        const a = await author.repo.import(A.save(base));
-        const handle = await peer.repo.import(A.save(base), { docId: a.documentId });
-        wires.push(await connectPeers(author, peer));
-        await peer.flush();
-        const admission = new DocumentAdmission(peer.backend, treeId(handle.documentId));
-        const entry = {
-          fingerprint: "fixture",
-          pending: true,
-          changes: A.getChanges(base, candidate),
-          receipt: { heads: A.getHeads(candidate) },
-        };
-        await admission.reserve("intent", entry, candidate, async () => {
-          await peer.storage.put("host/operation/intent", entry);
+      let persisted = 0;
+      await assert.rejects(
+        admission.reserve("bundled", intent(bundled), bundled, async () => {
+          persisted++;
+        }),
+        (error) =>
+          isHistoryCapacityError(error) && error.message === "Document history byte limit exceeded",
+      );
+      assert.equal(persisted, 0);
+      assert.equal(admission.pending("bundled"), undefined);
+      // The same edit as a loose commit only adds its own change to the stored base.
+      await admission.reserve("loose", intent(loose), loose, async () => {
+        persisted++;
+      });
+      assert.equal(persisted, 1);
+      assert.ok(admission.pending("loose"));
+    } finally {
+      assert.deepEqual(await closePeers([peer], []), []);
+    }
+  });
+
+  for (const head of ["commit", "fragment"]) {
+    test(
+      `${mode}: incoming authenticated native records cannot consume a recorded ${head}-headed API reservation`,
+      { timeout: 10000 },
+      async () => {
+        const base = baseDoc();
+        const candidate = edit(base, ACTOR.api, apiEdit, head);
+        const native = edit(base, ACTOR.native, nativeEdit);
+        // Exactly enough for the stored base plus the reservation: any native
+        // record beyond that must be refused rather than spend reserved bytes.
+        const peer = host(mode, unionBytes(base, candidate) + 32);
+        const author = createPeer();
+        const peers = [peer, author],
+          wires = [];
+        try {
+          const a = await author.repo.import(A.save(base));
+          const handle = await peer.repo.import(A.save(base), {
+            docId: a.documentId,
+          });
+          wires.push(await connectPeers(author, peer));
+          await peer.flush();
+          const admission = new DocumentAdmission(peer.backend, treeId(handle.documentId));
+          const entry = {
+            fingerprint: "fixture",
+            pending: true,
+            changes: A.getChanges(base, candidate),
+            receipt: { heads: A.getHeads(candidate) },
+          };
+          await admission.reserve("intent", entry, candidate, async () => {
+            await peer.storage.put("host/operation/intent", entry);
+            await peer.storage.sync();
+          });
+          // Observe the actual native rejection callback, without sleeps or polling.
+          let rejected;
+          const failure = new Promise((resolve) => {
+            rejected = resolve;
+          });
+          const storageFailed = peer.backend.storageFailed.bind(peer.backend);
+          peer.backend.storageFailed = (id) => {
+            rejected();
+            storageFailed(id);
+          };
+          // The author's backend signs and sends these exact native changes.
+          await a.update((doc) => A.applyChanges(doc, A.getChanges(base, native))[0]);
+          await failure;
+          assert.equal(handle.doc().native, undefined);
+          // Native failed admission remains visible to its persistence barrier.
+          await assert.rejects(peer.backend.flush());
+          await admission.replay("intent", entry, handle);
+          await peer.flush();
+          await peer.storage.put("host/operation/intent", {
+            ...entry,
+            pending: false,
+          });
           await peer.storage.sync();
-        });
-        // Observe the actual native rejection callback, without sleeps or polling.
-        let rejected;
-        const failure = new Promise((resolve) => {
-          rejected = resolve;
-        });
-        const storageFailed = peer.backend.storageFailed.bind(peer.backend);
-        peer.backend.storageFailed = (id) => {
-          rejected();
-          storageFailed(id);
-        };
-        await a.change((doc) => {
-          doc.native = noise(2048, 12);
-        });
-        await failure;
-        assert.equal(handle.doc().native, undefined);
-        // Native failed admission remains visible to its persistence barrier.
-        await assert.rejects(peer.backend.flush());
-        await admission.replay("intent", entry, handle);
-        await peer.flush();
-        await peer.storage.put("host/operation/intent", { ...entry, pending: false });
-        await peer.storage.sync();
-        await admission.release("intent");
-        assert.deepEqual(handle.doc().api, candidate.api);
-        assert.equal(handle.doc().native, undefined);
-        assert.equal(A.getObjectId(handle.doc().stable), A.getObjectId(base.stable));
-      } finally {
-        assert.deepEqual(await closePeers(peers, wires), []);
-      }
-    },
-  );
+          await admission.release("intent");
+          assert.deepEqual(handle.doc().api, candidate.api);
+          assert.equal(handle.doc().native, undefined);
+          assert.equal(A.getObjectId(handle.doc().stable), A.getObjectId(base.stable));
+        } finally {
+          assert.deepEqual(await closePeers(peers, wires), []);
+        }
+      },
+    );
+  }
 }
 
 test("buffered: remote prefix persistence failure recovers remaining exact history", async () => {
@@ -272,12 +367,17 @@ test("buffered: remote prefix persistence failure recovers remaining exact histo
   try {
     const handle = await peer.repo.import(A.save(base));
     await peer.flush();
-    let candidate = A.change(A.clone(base), (doc) => {
-      doc.api = noise(2048, 11);
-    });
-    candidate = A.change(candidate, (doc) => {
+    // Both new changes stay loose commits, so the interrupted batch leaves a
+    // causal prefix. A fragment-headed `api` edit is saved after the `next`
+    // commit that depends on it; interrupting that batch strands `next`
+    // without its parent, and restored.repo.find below does not resolve.
+    const candidate = edit(edit(base, ACTOR.api, apiEdit), ACTOR.api, (doc) => {
       doc.next = noise(2048, 13);
     });
+    assert.deepEqual(
+      extractRecords(candidate).map((record) => record.kind),
+      ["commit", "commit", "commit", "commit"],
+    );
     const entry = {
       fingerprint: "fixture",
       pending: true,
@@ -334,11 +434,18 @@ for (const mode of ["local", "buffered"]) {
       const handle = await peer.repo.import(A.save(base));
       await peer.flush();
       const ctx = context(peer, handle);
-      const tokenContext = { scope: "page:fixture", principal: ctx.identity.principal };
+      const tokenContext = {
+        scope: "page:fixture",
+        principal: ctx.identity.principal,
+      };
       const issued = await issueRetryToken(peer.storage, tokenContext);
       const originalKey = await retryKey(issued.retry_token, "cleanup-original");
       key = `host/operation/${originalKey}`;
-      ctx.args = { ...ctx.args, idempotency_key: originalKey, retry_token: issued.retry_token };
+      ctx.args = {
+        ...ctx.args,
+        idempotency_key: originalKey,
+        retry_token: issued.retry_token,
+      };
       let fail = true;
       peer.backend.releaseReservation = async (tree, requestKey) => {
         if (requestKey === key && fail) {
