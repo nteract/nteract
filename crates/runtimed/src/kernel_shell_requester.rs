@@ -13,6 +13,7 @@ use jupyter_protocol::{ConnectionInfo, JupyterMessage, JupyterMessageContent, Un
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
+use tracing::debug;
 
 use crate::task_supervisor::spawn_best_effort;
 
@@ -194,18 +195,24 @@ async fn run_shell_requester(
         .await
         .unwrap_or_else(|_| Err(anyhow::anyhow!("{msg_type} timed out")));
         if result.is_err() {
-            // A late reply would otherwise answer the next request.
+            // Late replies then go to the dropped identity, not the next request.
             shell = None;
         }
         let _ = reply.send(result);
     }
 }
 
+/// Every connection gets a fresh ZMQ identity: the kernel routes replies by
+/// identity, so a reconnect under the old one would receive the replies the
+/// kernel still owes the abandoned connection. No stdin socket shares it.
 async fn connect(
     connection_info: &ConnectionInfo,
     client_session_id: &str,
 ) -> anyhow::Result<jupyter_zmq_client::ClientShellConnection> {
-    let identity = jupyter_zmq_client::peer_identity_for_session(client_session_id)?;
+    let identity = jupyter_zmq_client::peer_identity_for_session(&format!(
+        "{client_session_id}-{}",
+        uuid::Uuid::new_v4().simple()
+    ))?;
     Ok(
         jupyter_zmq_client::create_client_shell_connection_with_identity(
             connection_info,
@@ -230,14 +237,22 @@ async fn send_and_read(
     request.buffers = buffers;
     let request_id = request.header.msg_id.clone();
     shell.send(request).await?;
-    let message = shell.read().await?;
-    anyhow::ensure!(
-        message
+    let message = loop {
+        let message = shell.read().await?;
+        if message
             .parent_header
             .as_ref()
-            .is_some_and(|parent| parent.msg_id == request_id),
-        "{msg_type} reply had an unexpected parent"
-    );
+            .is_some_and(|parent| parent.msg_id == request_id)
+        {
+            break message;
+        }
+        // Not ours (e.g. owed to an earlier, timed-out request); the caller's
+        // timeout bounds the wait for ours.
+        debug!(
+            "[kernel-shell] Dropping {} that does not answer {msg_type}",
+            message.header.msg_type
+        );
+    };
     let buffers = message
         .buffers
         .iter()
@@ -304,5 +319,129 @@ mod tests {
             .request_isolated("a_request", Value::Null, Duration::from_secs(1))
             .await
             .is_err());
+    }
+
+    /// A single-threaded fake kernel shell, like ipykernel's: it answers
+    /// requests one at a time, `slow_request` only after `slow`, and first
+    /// sends a reply to another request when `stray` is set. Reports each
+    /// request's `(msg_type, zmq identity)`.
+    async fn fake_kernel(
+        slow: Duration,
+        stray: bool,
+    ) -> (
+        ConnectionInfo,
+        mpsc::UnboundedReceiver<(String, Vec<Bytes>)>,
+        JoinHandle<()>,
+    ) {
+        let ip: std::net::IpAddr = std::net::Ipv4Addr::LOCALHOST.into();
+        let ports = jupyter_zmq_client::peek_ports(ip, 5).await.unwrap();
+        let info = ConnectionInfo {
+            transport: jupyter_protocol::connection_info::Transport::TCP,
+            ip: ip.to_string(),
+            shell_port: ports[0],
+            iopub_port: ports[1],
+            stdin_port: ports[2],
+            control_port: ports[3],
+            hb_port: ports[4],
+            signature_scheme: "hmac-sha256".into(),
+            key: uuid::Uuid::new_v4().to_string(),
+            kernel_name: None,
+        };
+        let mut shell = jupyter_zmq_client::create_kernel_shell_connection(&info, "fake-kernel")
+            .await
+            .unwrap();
+        let (seen_tx, seen) = mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            while let Ok(request) = shell.read().await {
+                let JupyterMessageContent::UnknownMessage(unknown) = &request.content else {
+                    continue;
+                };
+                let _ = seen_tx.send((unknown.msg_type.clone(), request.zmq_identities.clone()));
+                if unknown.msg_type == "slow_request" {
+                    tokio::time::sleep(slow).await;
+                }
+                let reply = |parent: &JupyterMessage| {
+                    JupyterMessage::new(
+                        UnknownMessage {
+                            msg_type: unknown.msg_type.replace("_request", "_reply"),
+                            content: unknown.content.clone(),
+                        },
+                        Some(parent),
+                    )
+                };
+                if stray {
+                    let mut other = request.clone();
+                    other.header.msg_id = uuid::Uuid::new_v4().to_string();
+                    let _ = shell.send(reply(&other)).await;
+                }
+                // A router drops replies to peers that left.
+                let _ = shell.send(reply(&request)).await;
+            }
+        });
+        (info, seen, task)
+    }
+
+    #[tokio::test]
+    async fn a_late_reply_after_a_timeout_does_not_answer_later_requests() {
+        let (info, mut seen, kernel) = fake_kernel(Duration::from_millis(400), false).await;
+        let (requester, task) = spawn_shell_requester(info, "kernel-session");
+        let slow = requester.request(
+            "slow_request",
+            serde_json::json!({"n": 0}),
+            Vec::new(),
+            Duration::from_millis(150),
+        );
+        let error = slow.await.unwrap_err();
+        assert!(error.to_string().contains("timed out"), "{error}");
+        // Queued behind the slow callback in the kernel, as in a burst.
+        let next: Vec<_> = (1..=3)
+            .map(|n| {
+                requester.request(
+                    "b_request",
+                    serde_json::json!({"n": n}),
+                    Vec::new(),
+                    Duration::from_secs(5),
+                )
+            })
+            .collect();
+        for (n, reply) in (1..=3).zip(next) {
+            let reply = reply.await.expect("answered by its own reply");
+            assert_eq!(reply.msg_type, "b_reply");
+            assert_eq!(reply.content["n"], n);
+        }
+        let identities: Vec<Vec<Bytes>> = std::iter::from_fn(|| seen.try_recv().ok())
+            .map(|(_, identity)| identity)
+            .collect();
+        assert_eq!(identities.len(), 4);
+        assert_ne!(
+            identities[0], identities[1],
+            "a reconnect after a timeout uses a fresh identity"
+        );
+        assert!(
+            identities[1..].iter().all(|id| *id == identities[1]),
+            "healthy requests share one connection"
+        );
+        task.abort();
+        kernel.abort();
+    }
+
+    #[tokio::test]
+    async fn replies_to_other_requests_are_skipped() {
+        let (info, _seen, kernel) = fake_kernel(Duration::ZERO, true).await;
+        let (requester, task) = spawn_shell_requester(info, "kernel-session");
+        for n in 0..2 {
+            let reply = requester
+                .request(
+                    "a_request",
+                    serde_json::json!({"n": n}),
+                    Vec::new(),
+                    Duration::from_secs(5),
+                )
+                .await
+                .expect("the stray reply is dropped");
+            assert_eq!(reply.content["n"], n);
+        }
+        task.abort();
+        kernel.abort();
     }
 }

@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-use super::kernel::{BokehKernelExtension, BokehKernelRequester};
+use super::kernel::{BokehKernelExtension, BokehKernelRequester, INGEST_DRAIN_TIMEOUT};
 use super::output_hook::BokehAgentOutputHook;
 use super::store::{replacement_policy_from_env, BokehSessionStore};
 use super::BOKEH_SESSION_KIND;
@@ -149,6 +149,15 @@ impl RuntimeAgentExtension for BokehAgentExtension {
         ctx: AgentLifecycleCtx<'a>,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            // The kernel's last deltas belong in the frozen state. The ingest
+            // bounds its own drain; this bound only guards a lost signal.
+            let drain_bound = INGEST_DRAIN_TIMEOUT + std::time::Duration::from_secs(1);
+            if tokio::time::timeout(drain_bound, self.store.ingest_drained(kernel_id))
+                .await
+                .is_err()
+            {
+                warn!("[bokeh-session] Freezing {kernel_id}'s sessions before its ingest drained");
+            }
             let sessions = self.store.remove_kernel_sessions(kernel_id);
             freeze_sessions(sessions, Disconnect::Kernel(kernel_id), &ctx).await;
         })
@@ -218,8 +227,8 @@ impl BokehAgentExtension {
         });
     }
 
-    /// Enqueue the patch now, so peer events keep their arrival order, and
-    /// reply through `ctx.responses` once the kernel's callback ran.
+    /// Queue the patch now, behind property writes that arrived before it,
+    /// and reply through `ctx.responses` once the kernel's callback ran.
     fn start_patch(
         &self,
         id: String,
@@ -245,11 +254,12 @@ impl BokehAgentExtension {
                 request.session_id
             ));
         }
-        let requester: BokehKernelRequester = self
+        let outbox = self
             .store
-            .requester(kernel_id)
+            .outbox(kernel_id)
             .ok_or_else(|| "kernel does not support Bokeh document sessions".to_string())?;
-        let reply = requester.patch(&request);
+        let session_id = request.session_id.clone();
+        let reply = outbox.one_off(request)?;
         let state = ctx.state.clone();
         let blob_store = ctx.blob_store.clone();
         let blob_publisher = ctx.blob_publisher.clone();
@@ -258,7 +268,7 @@ impl BokehAgentExtension {
             let response = match reply.await {
                 Ok(response) => {
                     if let Err(error) = super::append_callback_outputs(
-                        &request.session_id,
+                        &session_id,
                         &response,
                         &state,
                         &blob_store,
@@ -443,15 +453,23 @@ mod tests {
     }
 
     fn bind_test_kernel(
+        fx: &Fixture,
         store: &BokehSessionStore,
         kernel_id: &str,
     ) -> mpsc::UnboundedReceiver<crate::kernel_shell_requester::ShellCommand> {
         let (shell, rx) = KernelShellRequester::for_test();
-        let (forward_tx, _forward_rx) = mpsc::unbounded_channel();
+        let requester = BokehKernelRequester::new(shell, Arc::new(OutputRedactor::default()));
+        let (outbox, _task) = crate::bokeh_session::kernel::spawn_outbox(
+            requester.clone(),
+            fx.state.clone(),
+            fx.blob_store.clone(),
+            OutputBlobPublisher::none(),
+        );
         store.attach_kernel(
             kernel_id,
-            BokehKernelRequester::new(shell, Arc::new(OutputRedactor::default())),
-            forward_tx,
+            requester,
+            outbox,
+            tokio::sync::oneshot::channel().1,
         );
         rx
     }
@@ -539,8 +557,45 @@ mod tests {
             blob_store: &fx.blob_store,
             blob_publisher: &publisher,
         };
+        let expected_value = match trigger {
+            LossTrigger::KernelLost => json!(0.9),
+            LossTrigger::RoutingStopped => json!(0.5),
+        };
         match trigger {
-            LossTrigger::KernelLost => exts.on_kernel_lost("kernel-1", ctx()).await,
+            LossTrigger::KernelLost => {
+                // The kernel's last delta is still in the ingest window when
+                // the kernel goes; it must reach the frozen state.
+                let (shell, _shell_rx) = KernelShellRequester::for_test();
+                let mut launched = crate::kernel_extensions::KernelExtensions::launch(
+                    &[ext.kernel_extension().unwrap()],
+                    &crate::kernel_extensions::KernelLaunchCtx {
+                        kernel_id: "kernel-1",
+                        kernel_actor_id: KERNEL,
+                        state: &fx.state,
+                        blob_store: &fx.blob_store,
+                        blob_publisher: &publisher,
+                        broadcast_tx: &broadcast::channel(4).0,
+                        redactor: &Arc::new(OutputRedactor::default()),
+                        shell: &shell,
+                    },
+                );
+                launched
+                    .routes()
+                    .get(super::super::BOKEH_DELTA)
+                    .unwrap()
+                    .tx
+                    .send(crate::kernel_extensions::RawIopubMessage {
+                        msg_type: super::super::BOKEH_DELTA.into(),
+                        content: crate::bokeh_session::ingest::tests::wire_delta(
+                            "tx-final",
+                            json!({"props_changed": {"p2": {"value": 0.9}}}),
+                        ),
+                        buffers: Vec::new(),
+                    })
+                    .unwrap();
+                launched.shutdown();
+                exts.on_kernel_lost("kernel-1", ctx()).await
+            }
             LossTrigger::RoutingStopped => {
                 exts.on_keyed_doc_unavailable("test_kv", ctx()).await;
                 assert!(ext.store().contains("session-1"), "other kinds are ignored");
@@ -578,7 +633,7 @@ mod tests {
         assert_eq!(root["name"], "Row");
         assert_eq!(
             root["attributes"]["children"][0]["attributes"]["value"],
-            json!(0.5)
+            expected_value
         );
         assert_eq!(frozen["snapshot"]["document"]["title"], "Page");
     }
@@ -668,14 +723,14 @@ mod tests {
                 if error.contains("does not support")
         ));
         // Another kernel's session is refused.
-        let mut shell_rx = bind_test_kernel(ext.store(), "kernel-2");
+        let mut shell_rx = bind_test_kernel(&fx, ext.store(), "kernel-2");
         assert!(matches!(
             fx.start(&ext, Some("kernel-2"), "req-1", request("tx-1")),
             ExtensionStart::Reply(RuntimeAgentResponse::Error { error })
                 if error.contains("not owned")
         ));
 
-        let mut shell_rx_1 = bind_test_kernel(ext.store(), "kernel-1");
+        let mut shell_rx_1 = bind_test_kernel(&fx, ext.store(), "kernel-1");
         assert!(matches!(
             fx.start(&ext, Some("kernel-1"), "req-2", request("tx-2")),
             ExtensionStart::Deferred
@@ -684,11 +739,14 @@ mod tests {
             fx.start(&ext, Some("kernel-1"), "req-3", request("tx-3")),
             ExtensionStart::Deferred
         ));
-        assert!(shell_rx.try_recv().is_err());
-        let first = shell_rx_1.try_recv().expect("enqueued in arrival order");
-        let second = shell_rx_1.try_recv().expect("enqueued in arrival order");
-        assert_eq!(first.content["transaction_id"], "tx-2");
-        assert_eq!(second.content["transaction_id"], "tx-3");
+        async fn next(
+            rx: &mut mpsc::UnboundedReceiver<crate::kernel_shell_requester::ShellCommand>,
+        ) -> crate::kernel_shell_requester::ShellCommand {
+            tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("sent to the kernel")
+                .unwrap()
+        }
         let reply = |command: crate::kernel_shell_requester::ShellCommand, tx: &str, out: &str| {
             command
                 .reply
@@ -700,8 +758,15 @@ mod tests {
                 }))
                 .unwrap();
         };
-        reply(second, "tx-3", "");
+        // In arrival order, one at a time.
+        let first = next(&mut shell_rx_1).await;
+        assert_eq!(first.content["transaction_id"], "tx-2");
+        assert!(shell_rx_1.try_recv().is_err());
         reply(first, "tx-2", "callback ran\n");
+        let second = next(&mut shell_rx_1).await;
+        assert_eq!(second.content["transaction_id"], "tx-3");
+        reply(second, "tx-3", "");
+        assert!(shell_rx.try_recv().is_err());
         let mut ids = Vec::new();
         for _ in 0..2 {
             let envelope =
@@ -734,7 +799,7 @@ mod tests {
 
         let mut fx = fixture();
         let ext = BokehAgentExtension::with_store(store_with_session());
-        let mut shell_rx = bind_test_kernel(ext.store(), "kernel-1");
+        let mut shell_rx = bind_test_kernel(&fx, ext.store(), "kernel-1");
         flush(
             ext.store(),
             &fx.blob_store,
@@ -859,7 +924,7 @@ mod tests {
         fx.state
             .with_doc(|doc| doc.put_bokeh_session("session-1", &original))
             .unwrap();
-        let mut shell_rx = bind_test_kernel(ext.store(), "kernel-1");
+        let mut shell_rx = bind_test_kernel(&fx, ext.store(), "kernel-1");
         let retire = |kernel_id: &str| RuntimeAgentRequest::RetireBokehSessions {
             kernel_id: kernel_id.into(),
             session_ids: vec!["session-1".into()],

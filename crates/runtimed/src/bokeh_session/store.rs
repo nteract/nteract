@@ -23,14 +23,15 @@ use runtime_doc::{
     BokehSessionDocDelta, BokehSessionStatus, RuntimeStateHandle,
 };
 use serde_json::{json, Value};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::oneshot::error::TryRecvError;
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, warn};
 
 use super::hex_heads;
 use super::ingest::{
     prepare_flush, BlobSink, BytesEncoding, DataOp, KernelDelta, PreparedFlush, Tagged,
 };
-use super::kernel::BokehKernelRequester;
+use super::kernel::{BokehKernelOutbox, BokehKernelRequester, INGEST_DRAIN_TIMEOUT};
 use super::materialize::SnapshotWithTail;
 use super::BOKEH_SESSION_KIND;
 use crate::blob_store::BlobStore;
@@ -87,11 +88,11 @@ fn parse_test_replacement_policy(raw: &str) -> Option<BokehReplacementPolicy> {
     })
 }
 
-/// Property changes a non-kernel actor won, for the kernel.
+/// Property changes a non-kernel actor won, as a test forwarder sees them.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BokehForeignForward {
     pub(crate) session_id: String,
-    pub(crate) transaction_id: String,
     /// `(model id, property, encoded value)`.
     pub(crate) changes: Vec<(String, String, String)>,
 }
@@ -163,8 +164,10 @@ struct KernelBinding {
 
 struct Inner {
     sessions: HashMap<String, AgentSession>,
-    forwarder: Option<mpsc::UnboundedSender<BokehForeignForward>>,
+    forwarder: Option<BokehKernelOutbox>,
     kernel: Option<KernelBinding>,
+    /// Per kernel: resolves once its ingest applied every delta it received.
+    ingest_drains: HashMap<String, oneshot::Receiver<()>>,
     retired: Vec<(u64, String)>,
     policy: BokehReplacementPolicy,
 }
@@ -213,6 +216,7 @@ impl BokehSessionStore {
                 sessions: HashMap::new(),
                 forwarder: None,
                 kernel: None,
+                ingest_drains: HashMap::new(),
                 retired: Vec::new(),
                 policy,
             })),
@@ -263,37 +267,41 @@ impl BokehSessionStore {
         &self,
         forwarder: Option<mpsc::UnboundedSender<BokehForeignForward>>,
     ) {
-        self.lock().forwarder = forwarder;
+        self.lock().forwarder = forwarder.map(BokehKernelOutbox::tap_for_test);
     }
 
-    /// Bind a launched kernel: its forwarder receives foreign property
-    /// changes and its requester serves patch, fold and close requests.
+    /// Bind a launched kernel: its outbox receives foreign property changes
+    /// and one-off events, its requester serves fold and close requests, and
+    /// `ingest_drained` resolves once its ingest has stopped.
     pub(crate) fn attach_kernel(
         &self,
         kernel_id: &str,
         requester: BokehKernelRequester,
-        forwarder: mpsc::UnboundedSender<BokehForeignForward>,
+        outbox: BokehKernelOutbox,
+        ingest_drained: oneshot::Receiver<()>,
     ) {
         let mut inner = self.lock();
-        inner.forwarder = Some(forwarder);
+        inner.forwarder = Some(outbox);
         inner.kernel = Some(KernelBinding {
             kernel_id: kernel_id.to_string(),
             requester,
         });
+        inner
+            .ingest_drains
+            .retain(|_, drained| matches!(drained.try_recv(), Err(TryRecvError::Empty)));
+        inner
+            .ingest_drains
+            .insert(kernel_id.to_string(), ingest_drained);
     }
 
     /// Undo [`Self::attach_kernel`] unless a newer kernel already replaced
     /// the binding.
-    pub(crate) fn detach_kernel(
-        &self,
-        kernel_id: &str,
-        forwarder: &mpsc::UnboundedSender<BokehForeignForward>,
-    ) {
+    pub(crate) fn detach_kernel(&self, kernel_id: &str, outbox: &BokehKernelOutbox) {
         let mut inner = self.lock();
         if inner
             .forwarder
             .as_ref()
-            .is_some_and(|current| current.same_channel(forwarder))
+            .is_some_and(|current| current.same(outbox))
         {
             inner.forwarder = None;
         }
@@ -303,6 +311,25 @@ impl BokehSessionStore {
             .is_some_and(|binding| binding.kernel_id == kernel_id)
         {
             inner.kernel = None;
+        }
+    }
+
+    /// The outbox of `kernel_id`, if that kernel is bound.
+    pub(crate) fn outbox(&self, kernel_id: &str) -> Option<BokehKernelOutbox> {
+        let inner = self.lock();
+        inner
+            .kernel
+            .as_ref()
+            .filter(|binding| binding.kernel_id == kernel_id)
+            .and(inner.forwarder.clone())
+    }
+
+    /// Wait until `kernel_id`'s ingest has applied the deltas it received
+    /// before it stopped (bounded by [`INGEST_DRAIN_TIMEOUT`]).
+    pub(crate) async fn ingest_drained(&self, kernel_id: &str) {
+        let drained = self.lock().ingest_drains.remove(kernel_id);
+        if let Some(drained) = drained {
+            let _ = drained.await;
         }
     }
 
@@ -852,7 +879,7 @@ impl AgentKeyedDoc for BokehSessionStore {
 }
 
 fn forward(
-    forwarder: Option<&mpsc::UnboundedSender<BokehForeignForward>>,
+    forwarder: Option<&BokehKernelOutbox>,
     session_id: &str,
     props: BTreeMap<String, BTreeMap<String, String>>,
 ) {
@@ -871,11 +898,7 @@ fn forward(
         warn!("[bokeh-session] No kernel to forward {session_id} property changes to");
         return;
     };
-    let _ = forwarder.send(BokehForeignForward {
-        session_id: session_id.to_string(),
-        transaction_id: uuid::Uuid::new_v4().to_string(),
-        changes,
-    });
+    forwarder.forward_props(session_id, changes);
 }
 
 fn retire_tail(tail: Option<SourceTail>, now: u64, retired: &mut Vec<(u64, String)>) {
@@ -971,10 +994,12 @@ pub(crate) struct IngestContext {
 }
 
 /// Coalesce kernel deltas (`nteract_bokeh_delta` from IOPub) per session and
-/// apply each window as one change.
+/// apply each window as one change. On `stop` (or when every sender is gone)
+/// the deltas already received are applied within [`INGEST_DRAIN_TIMEOUT`].
 pub(crate) async fn run_ingest(
     mut rx: mpsc::UnboundedReceiver<RawIopubMessage>,
     ctx: IngestContext,
+    mut stop: oneshot::Receiver<()>,
 ) {
     let mut pending: Vec<KernelDelta> = Vec::new();
     let mut flush_tick = tokio::time::interval(INGEST_FLUSH_INTERVAL);
@@ -985,14 +1010,10 @@ pub(crate) async fn run_ingest(
         tokio::select! {
             raw = rx.recv() => {
                 let Some(raw) = raw else { break };
-                match KernelDelta::parse(&raw.content, &raw.buffers) {
-                    Ok(delta) => match pending.iter_mut().find(|p| p.session_id == delta.session_id) {
-                        Some(existing) => existing.merge(delta),
-                        None => pending.push(delta),
-                    },
-                    Err(error) => warn!("[bokeh-session] Dropping malformed delta: {error}"),
-                }
+                queue_delta(&mut pending, raw);
             }
+            // A dropped sender counts as a stop.
+            _ = &mut stop => break,
             _ = flush_tick.tick(), if !pending.is_empty() => {
                 for delta in std::mem::take(&mut pending) {
                     flush_delta(delta, &ctx).await;
@@ -1006,8 +1027,33 @@ pub(crate) async fn run_ingest(
             }
         }
     }
-    for delta in pending {
-        flush_delta(delta, &ctx).await;
+    rx.close();
+    let drain = async {
+        while let Some(raw) = rx.recv().await {
+            queue_delta(&mut pending, raw);
+        }
+        for delta in pending {
+            flush_delta(delta, &ctx).await;
+        }
+    };
+    if tokio::time::timeout(INGEST_DRAIN_TIMEOUT, drain)
+        .await
+        .is_err()
+    {
+        warn!("[bokeh-session] Gave up applying the final kernel deltas");
+    }
+}
+
+fn queue_delta(pending: &mut Vec<KernelDelta>, raw: RawIopubMessage) {
+    match KernelDelta::parse(&raw.content, &raw.buffers) {
+        Ok(delta) => match pending
+            .iter_mut()
+            .find(|p| p.session_id == delta.session_id)
+        {
+            Some(existing) => existing.merge(delta),
+            None => pending.push(delta),
+        },
+        Err(error) => warn!("[bokeh-session] Dropping malformed delta: {error}"),
     }
 }
 
@@ -1725,14 +1771,27 @@ pub(crate) mod tests {
         );
         let (old_tx, _old_rx) = mpsc::unbounded_channel();
         let (new_tx, mut new_rx) = mpsc::unbounded_channel();
-        store.attach_kernel("kernel-1", requester.clone(), old_tx.clone());
-        store.attach_kernel("kernel-2", requester, new_tx);
+        let old = BokehKernelOutbox::tap_for_test(old_tx);
+        store.attach_kernel(
+            "kernel-1",
+            requester.clone(),
+            old.clone(),
+            oneshot::channel().1,
+        );
+        store.attach_kernel(
+            "kernel-2",
+            requester,
+            BokehKernelOutbox::tap_for_test(new_tx),
+            oneshot::channel().1,
+        );
         assert!(store.requester("kernel-1").is_none());
+        assert!(store.outbox("kernel-1").is_none());
         assert!(store.requester("kernel-2").is_some());
 
         // The replaced kernel shutting down late leaves the new binding.
-        store.detach_kernel("kernel-1", &old_tx);
+        store.detach_kernel("kernel-1", &old);
         assert!(store.requester("kernel-2").is_some());
+        assert!(store.outbox("kernel-2").is_some());
         let mut states = KeyedSyncStates::new();
         let mut peer = BokehSessionDoc::new_empty("user:dev:alice/browser");
         let mut peer_state = sync::State::new();

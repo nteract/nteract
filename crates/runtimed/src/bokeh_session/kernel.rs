@@ -1,16 +1,18 @@
 //! The Bokeh half of a launched kernel: delta ingest, the foreign-change
 //! forwarder, and patch/fold/close requests over the kernel's extension shell.
 
+use std::collections::VecDeque;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use notebook_protocol::protocol::BokehSessionPatchRequest;
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::task::JoinHandle;
 use tracing::warn;
 
-use super::store::{run_ingest, BokehForeignForward, BokehSessionStore, IngestContext};
+use super::store::{run_ingest, BokehSessionStore, IngestContext};
 use super::{
     kernel_error_text, parse_patch_reply, patch_request_wire, BokehKernelPatchResponse,
     RawBokehKernelMessage, BOKEH_CLOSE_REPLY, BOKEH_CLOSE_REQUEST, BOKEH_DELTA, BOKEH_FOLD_REPLY,
@@ -155,65 +157,270 @@ fn check_close_reply(session_id: &str, reply: &ShellReply) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Turn forwarded property changes into `ModelChanged` patch requests, in
-/// arrival order, and route each callback's output once it replies.
-async fn run_bokeh_forwarder(
-    mut forwards: mpsc::UnboundedReceiver<BokehForeignForward>,
+/// One-off events a kernel's outbox holds at most; more are refused, since
+/// unlike property writes they cannot be merged.
+const MAX_PENDING_ONE_OFFS: usize = 256;
+/// How long a stopped kernel's ingest may take to apply the deltas it
+/// already received.
+pub(crate) const INGEST_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+type PatchReply = oneshot::Sender<anyhow::Result<BokehKernelPatchResponse>>;
+
+enum Outbound {
+    /// Foreign property writes for one session, one `(model, property,
+    /// encoded value)` per key, ordered by each key's last write.
+    Props {
+        session_id: String,
+        changes: Vec<(String, String, String)>,
+    },
+    /// A peer's `ApplyBokehSessionPatch`; never merged.
+    OneOff {
+        request: BokehSessionPatchRequest,
+        reply: PatchReply,
+    },
+}
+
+#[derive(Default)]
+struct OutboxQueue {
+    pending: VecDeque<Outbound>,
+    one_offs: usize,
+    closed: bool,
+}
+
+/// Everything a kernel's Bokeh sessions send to it, in arrival order, with
+/// one patch at a time on the shell. While one is in flight, property writes
+/// merge, so a slider dragged during a long cell sends its latest value once
+/// instead of queueing every intermediate one.
+#[derive(Clone, Default)]
+pub(crate) struct BokehKernelOutbox {
+    queue: Arc<StdMutex<OutboxQueue>>,
+    wake: Arc<Notify>,
+    #[cfg(test)]
+    tap: Option<mpsc::UnboundedSender<super::store::BokehForeignForward>>,
+}
+
+impl BokehKernelOutbox {
+    /// An outbox that hands each forward to `tap` instead of a kernel.
+    #[cfg(test)]
+    pub(crate) fn tap_for_test(
+        tap: mpsc::UnboundedSender<super::store::BokehForeignForward>,
+    ) -> Self {
+        Self {
+            tap: Some(tap),
+            ..Self::default()
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, OutboxQueue> {
+        self.queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.queue, &other.queue)
+    }
+
+    /// Queue foreign property writes. They merge into the session's pending
+    /// writes unless a one-off event was queued since: a callback for that
+    /// event must see the values written before it, and only those.
+    pub(crate) fn forward_props(&self, session_id: &str, changes: Vec<(String, String, String)>) {
+        if changes.is_empty() {
+            return;
+        }
+        #[cfg(test)]
+        if let Some(tap) = &self.tap {
+            let _ = tap.send(super::store::BokehForeignForward {
+                session_id: session_id.to_string(),
+                changes,
+            });
+            return;
+        }
+        let mut queue = self.lock();
+        if queue.closed {
+            return;
+        }
+        let merge_into = queue
+            .pending
+            .iter_mut()
+            .rev()
+            .take_while(|entry| matches!(entry, Outbound::Props { .. }))
+            .find_map(|entry| match entry {
+                Outbound::Props {
+                    session_id: id,
+                    changes,
+                } if id == session_id => Some(changes),
+                _ => None,
+            });
+        match merge_into {
+            Some(pending) => {
+                for change in changes {
+                    pending.retain(|(model, prop, _)| (model, prop) != (&change.0, &change.1));
+                    pending.push(change);
+                }
+            }
+            None => queue.pending.push_back(Outbound::Props {
+                session_id: session_id.to_string(),
+                changes,
+            }),
+        }
+        drop(queue);
+        self.wake.notify_one();
+    }
+
+    /// Queue a one-off patch behind everything written before it. Returns
+    /// the kernel's reply, or an error when too many are already waiting.
+    pub(crate) fn one_off(
+        &self,
+        request: BokehSessionPatchRequest,
+    ) -> Result<
+        impl Future<Output = anyhow::Result<BokehKernelPatchResponse>> + Send + 'static,
+        String,
+    > {
+        let (reply, response) = oneshot::channel();
+        {
+            let mut queue = self.lock();
+            if queue.closed {
+                return Err("the kernel's Bokeh outbox is closed".to_string());
+            }
+            if queue.one_offs >= MAX_PENDING_ONE_OFFS {
+                return Err(format!(
+                    "{MAX_PENDING_ONE_OFFS} Bokeh events are already waiting for the kernel"
+                ));
+            }
+            queue.one_offs += 1;
+            queue.pending.push_back(Outbound::OneOff { request, reply });
+        }
+        self.wake.notify_one();
+        Ok(async move {
+            response.await.map_err(|_| {
+                anyhow::anyhow!("the kernel stopped before the Bokeh event was sent")
+            })?
+        })
+    }
+
+    /// Drop everything pending; later sends are ignored or refused.
+    pub(crate) fn close(&self) {
+        let mut queue = self.lock();
+        queue.closed = true;
+        queue.pending.clear();
+        queue.one_offs = 0;
+        drop(queue);
+        self.wake.notify_one();
+    }
+
+    async fn next(&self) -> Option<Outbound> {
+        loop {
+            {
+                let mut queue = self.lock();
+                if let Some(entry) = queue.pending.pop_front() {
+                    if matches!(entry, Outbound::OneOff { .. }) {
+                        queue.one_offs -= 1;
+                    }
+                    return Some(entry);
+                }
+                if queue.closed {
+                    return None;
+                }
+            }
+            // `notify_one` stores a permit, so a send between the check and
+            // this await is not missed.
+            self.wake.notified().await;
+        }
+    }
+}
+
+/// Send the outbox to the kernel one patch at a time and route each
+/// callback's output once it replies.
+async fn run_bokeh_outbox(
+    outbox: BokehKernelOutbox,
     requester: BokehKernelRequester,
     state: runtime_doc::RuntimeStateHandle,
     blob_store: Arc<BlobStore>,
     blob_publisher: OutputBlobPublisher,
 ) {
-    while let Some(forward) = forwards.recv().await {
-        let mut events = Vec::with_capacity(forward.changes.len());
-        for (model, attr, encoded) in &forward.changes {
-            match super::materialize::resolve_value(encoded, &blob_store).await {
-                Ok(new) => events.push(json!({
-                    "kind": "ModelChanged",
-                    "model": {"id": model},
-                    "attr": attr,
-                    "new": new,
-                })),
-                Err(error) => warn!("[bokeh-session] Cannot forward {model}.{attr}: {error}"),
-            }
-        }
-        if events.is_empty() {
-            continue;
-        }
-        let request = BokehSessionPatchRequest {
-            session_id: forward.session_id,
-            transaction_id: forward.transaction_id,
-            patch: json!({"events": events}),
-            buffers: Vec::new(),
-            buffer_refs: Vec::new(),
-        };
-        // Enqueued here, in order; only the reply is awaited off this loop.
-        let reply = requester.patch(&request);
-        let state = state.clone();
-        let blob_store = blob_store.clone();
-        let blob_publisher = blob_publisher.clone();
-        spawn_best_effort("bokeh-forward-reply", async move {
-            match reply.await {
-                Ok(response) => {
-                    if let Err(error) = super::append_callback_outputs(
-                        &request.session_id,
-                        &response,
-                        &state,
-                        &blob_store,
-                        &blob_publisher,
-                    )
-                    .await
-                    {
-                        warn!("[bokeh-session] Failed to append callback output: {error}");
+    while let Some(entry) = outbox.next().await {
+        let (request, reply) = match entry {
+            Outbound::Props {
+                session_id,
+                changes,
+            } => {
+                let mut events = Vec::with_capacity(changes.len());
+                for (model, attr, encoded) in &changes {
+                    match super::materialize::resolve_value(encoded, &blob_store).await {
+                        Ok(new) => events.push(json!({
+                            "kind": "ModelChanged",
+                            "model": {"id": model},
+                            "attr": attr,
+                            "new": new,
+                        })),
+                        Err(error) => {
+                            warn!("[bokeh-session] Cannot forward {model}.{attr}: {error}")
+                        }
                     }
                 }
-                Err(error) => warn!(
-                    "[bokeh-session] Forwarding {} to the kernel failed: {error}",
-                    request.session_id
-                ),
+                if events.is_empty() {
+                    continue;
+                }
+                let request = BokehSessionPatchRequest {
+                    session_id,
+                    transaction_id: uuid::Uuid::new_v4().to_string(),
+                    patch: json!({"events": events}),
+                    buffers: Vec::new(),
+                    buffer_refs: Vec::new(),
+                };
+                (request, None)
             }
-        });
+            Outbound::OneOff { request, reply } => (request, Some(reply)),
+        };
+        let result = requester.patch(&request).await;
+        match reply {
+            Some(reply) => {
+                let _ = reply.send(result);
+            }
+            None => {
+                let state = state.clone();
+                let blob_store = blob_store.clone();
+                let blob_publisher = blob_publisher.clone();
+                spawn_best_effort("bokeh-forward-reply", async move {
+                    match result {
+                        Ok(response) => {
+                            if let Err(error) = super::append_callback_outputs(
+                                &request.session_id,
+                                &response,
+                                &state,
+                                &blob_store,
+                                &blob_publisher,
+                            )
+                            .await
+                            {
+                                warn!("[bokeh-session] Failed to append callback output: {error}");
+                            }
+                        }
+                        Err(error) => warn!(
+                            "[bokeh-session] Forwarding {} to the kernel failed: {error}",
+                            request.session_id
+                        ),
+                    }
+                });
+            }
+        }
     }
+}
+
+/// Start a kernel's outbox task; it ends when the outbox is closed.
+pub(crate) fn spawn_outbox(
+    requester: BokehKernelRequester,
+    state: runtime_doc::RuntimeStateHandle,
+    blob_store: Arc<BlobStore>,
+    blob_publisher: OutputBlobPublisher,
+) -> (BokehKernelOutbox, JoinHandle<()>) {
+    let outbox = BokehKernelOutbox::default();
+    let task = spawn_best_effort(
+        "bokeh-session-outbox",
+        run_bokeh_outbox(outbox.clone(), requester, state, blob_store, blob_publisher),
+    );
+    (outbox, task)
 }
 
 /// Per-kernel Bokeh tasks: ingest of `nteract_bokeh_delta` and the
@@ -226,33 +433,32 @@ impl KernelExtension for BokehKernelExtension {
     fn on_launch(&self, ctx: &KernelLaunchCtx<'_>) -> KernelExtensionInstance {
         let requester = BokehKernelRequester::new(ctx.shell.clone(), ctx.redactor.clone());
         let (delta_tx, delta_rx) = mpsc::unbounded_channel();
-        let ingest = spawn_best_effort(
-            "bokeh-session-ingest",
-            run_ingest(
-                delta_rx,
-                IngestContext {
-                    store: self.store.clone(),
-                    blob_store: ctx.blob_store.clone(),
-                    blob_publisher: ctx.blob_publisher.clone(),
-                    state: ctx.state.clone(),
-                    broadcast_tx: ctx.broadcast_tx.clone(),
-                    kernel_actor_id: ctx.kernel_actor_id.to_string(),
-                },
-            ),
+        let (stop_ingest, stop) = oneshot::channel();
+        let (drained_tx, drained) = oneshot::channel::<()>();
+        // Not in `tasks`, which shutdown aborts: deltas the kernel sent before
+        // it went must reach the documents before they are frozen.
+        spawn_best_effort("bokeh-session-ingest", {
+            let ctx = IngestContext {
+                store: self.store.clone(),
+                blob_store: ctx.blob_store.clone(),
+                blob_publisher: ctx.blob_publisher.clone(),
+                state: ctx.state.clone(),
+                broadcast_tx: ctx.broadcast_tx.clone(),
+                kernel_actor_id: ctx.kernel_actor_id.to_string(),
+            };
+            async move {
+                run_ingest(delta_rx, ctx, stop).await;
+                drop(drained_tx);
+            }
+        });
+        let (outbox, outbox_task) = spawn_outbox(
+            requester.clone(),
+            ctx.state.clone(),
+            ctx.blob_store.clone(),
+            ctx.blob_publisher.clone(),
         );
-        let (forward_tx, forward_rx) = mpsc::unbounded_channel();
         self.store
-            .attach_kernel(ctx.kernel_id, requester.clone(), forward_tx.clone());
-        let forwarder = spawn_best_effort(
-            "bokeh-session-forwarder",
-            run_bokeh_forwarder(
-                forward_rx,
-                requester,
-                ctx.state.clone(),
-                ctx.blob_store.clone(),
-                ctx.blob_publisher.clone(),
-            ),
-        );
+            .attach_kernel(ctx.kernel_id, requester, outbox.clone(), drained);
         let store = self.store.clone();
         let kernel_id = ctx.kernel_id.to_string();
         KernelExtensionInstance {
@@ -265,9 +471,11 @@ impl KernelExtension for BokehKernelExtension {
                     after_outputs: true,
                 },
             )],
-            tasks: vec![ingest, forwarder],
+            tasks: vec![outbox_task],
             on_shutdown: Some(Box::new(move || {
-                store.detach_kernel(&kernel_id, &forward_tx);
+                let _ = stop_ingest.send(());
+                outbox.close();
+                store.detach_kernel(&kernel_id, &outbox);
             })),
         }
     }
@@ -412,5 +620,276 @@ mod tests {
 
         launched.shutdown();
         assert!(store.requester("kernel-1").is_none());
+    }
+
+    fn patch_events(command: &ShellCommand) -> Vec<(String, String, Value)> {
+        assert_eq!(command.msg_type, BOKEH_PATCH_REQUEST);
+        command.content["patch"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| {
+                (
+                    event["model"]["id"].as_str().unwrap().to_string(),
+                    event["attr"].as_str().unwrap().to_string(),
+                    event["new"].clone(),
+                )
+            })
+            .collect()
+    }
+
+    fn patch_ok(command: ShellCommand) {
+        let session_id = command.content["session_id"].clone();
+        let transaction_id = command.content["transaction_id"].clone();
+        reply(
+            command,
+            super::super::BOKEH_PATCH_REPLY,
+            json!({"status": "ok", "session_id": session_id, "transaction_id": transaction_id,
+                   "stdout": "", "stderr": ""}),
+        );
+    }
+
+    async fn next_command(rx: &mut mpsc::UnboundedReceiver<ShellCommand>) -> ShellCommand {
+        tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("a request reaches the shell")
+            .unwrap()
+    }
+
+    async fn assert_no_command(rx: &mut mpsc::UnboundedReceiver<ShellCommand>) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(command) = rx.try_recv() {
+            panic!("unexpected request {}", command.content);
+        }
+    }
+
+    /// A launched Bokeh kernel over a test shell, plus a synced peer.
+    struct Harness {
+        store: BokehSessionStore,
+        shell_rx: mpsc::UnboundedReceiver<ShellCommand>,
+        states: crate::keyed_doc::KeyedSyncStates,
+        peer: runtime_doc::BokehSessionDoc,
+        peer_state: automerge::sync::State,
+        _launched: KernelExtensions,
+        _blob_dir: tempfile::TempDir,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let dir = tempfile::TempDir::new().unwrap();
+            let blob_store = Arc::new(BlobStore::new(dir.path().to_path_buf()));
+            let state = runtime_doc::RuntimeStateHandle::new(
+                runtime_doc::RuntimeStateDoc::new(),
+                broadcast::channel(4).0,
+            );
+            let (broadcast_tx, _) = broadcast::channel(16);
+            let redactor = Arc::new(OutputRedactor::default());
+            let (shell, shell_rx) = KernelShellRequester::for_test();
+            let store = super::super::store::tests::store_with_session();
+            let exts: Vec<Arc<dyn KernelExtension>> = vec![Arc::new(BokehKernelExtension {
+                store: store.clone(),
+            })];
+            let launched = KernelExtensions::launch(
+                &exts,
+                &KernelLaunchCtx {
+                    kernel_id: "kernel-1",
+                    kernel_actor_id: super::super::store::tests::KERNEL,
+                    state: &state,
+                    blob_store: &blob_store,
+                    blob_publisher: &OutputBlobPublisher::none(),
+                    broadcast_tx: &broadcast_tx,
+                    redactor: &redactor,
+                    shell: &shell,
+                },
+            );
+            let mut harness = Self {
+                store,
+                shell_rx,
+                states: crate::keyed_doc::KeyedSyncStates::new(),
+                peer: runtime_doc::BokehSessionDoc::new_empty("user:dev:alice/browser"),
+                peer_state: automerge::sync::State::new(),
+                _launched: launched,
+                _blob_dir: dir,
+            };
+            harness.sync();
+            harness
+        }
+
+        fn sync(&mut self) {
+            super::super::store::tests::sync_peer(
+                &self.store,
+                &mut self.states,
+                &mut self.peer,
+                &mut self.peer_state,
+                0,
+            );
+        }
+
+        fn write(&mut self, model: &str, prop: &str, value: &str) {
+            self.peer.set_prop(model, prop, value).unwrap();
+            self.peer.commit();
+            self.sync();
+        }
+    }
+
+    #[tokio::test]
+    async fn property_writes_coalesce_while_a_patch_is_in_flight() {
+        let mut h = Harness::new();
+        h.write("p2", "value", "0.1");
+        let first = next_command(&mut h.shell_rx).await;
+        assert_eq!(
+            patch_events(&first),
+            vec![("p2".into(), "value".into(), json!(0.1))]
+        );
+        // A drag while the kernel is busy with the first patch.
+        for i in 0..200 {
+            h.write("p2", "value", &format!("0.{}", 200 + i));
+            if i == 100 {
+                h.write("p2", "title", r#""Beta""#);
+            }
+        }
+        h.write("p2", "title", r#""Gamma""#);
+        h.write("p2", "value", "0.75");
+        assert_no_command(&mut h.shell_rx).await;
+
+        patch_ok(first);
+        let second = next_command(&mut h.shell_rx).await;
+        assert_eq!(
+            patch_events(&second),
+            vec![
+                ("p2".into(), "title".into(), json!("Gamma")),
+                ("p2".into(), "value".into(), json!(0.75)),
+            ],
+            "latest value per property, in last-write order"
+        );
+        patch_ok(second);
+        assert_no_command(&mut h.shell_rx).await;
+    }
+
+    fn one_off(transaction_id: &str) -> BokehSessionPatchRequest {
+        BokehSessionPatchRequest {
+            session_id: "session-1".into(),
+            transaction_id: transaction_id.into(),
+            patch: json!({"events": [{"kind": "MessageSent", "msg_type": "bokeh_event",
+                                      "msg_data": {"event_name": "button_click"}}]}),
+            buffers: Vec::new(),
+            buffer_refs: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn one_off_events_are_never_merged_and_writes_do_not_cross_them() {
+        let mut h = Harness::new();
+        let outbox = h.store.outbox("kernel-1").expect("bound at launch");
+        h.write("p2", "value", "0.1");
+        let busy = next_command(&mut h.shell_rx).await;
+
+        h.write("p2", "value", "0.2");
+        let clicks = [
+            outbox.one_off(one_off("click-1")).unwrap(),
+            outbox.one_off(one_off("click-2")).unwrap(),
+        ];
+        h.write("p2", "value", "0.3");
+        h.write("p2", "value", "0.4");
+        assert_no_command(&mut h.shell_rx).await;
+
+        patch_ok(busy);
+        let before = next_command(&mut h.shell_rx).await;
+        assert_eq!(
+            patch_events(&before),
+            vec![("p2".into(), "value".into(), json!(0.2))],
+            "the value written before the click goes first"
+        );
+        patch_ok(before);
+        for transaction_id in ["click-1", "click-2"] {
+            let click = next_command(&mut h.shell_rx).await;
+            assert_eq!(click.content["transaction_id"], transaction_id);
+            patch_ok(click);
+        }
+        let after = next_command(&mut h.shell_rx).await;
+        assert_eq!(
+            patch_events(&after),
+            vec![("p2".into(), "value".into(), json!(0.4))]
+        );
+        patch_ok(after);
+        for click in clicks {
+            assert!(matches!(
+                click.await.unwrap().reply,
+                notebook_protocol::protocol::BokehSessionPatchReply::Accepted { .. }
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_one_off_events_are_bounded() {
+        let mut h = Harness::new();
+        let outbox = h.store.outbox("kernel-1").unwrap();
+        let mut pending: Vec<_> = (0..MAX_PENDING_ONE_OFFS)
+            .map(|n| outbox.one_off(one_off(&format!("click-{n}"))).unwrap())
+            .collect();
+        assert!(outbox.one_off(one_off("refused")).is_err());
+        // One goes in flight, which frees one slot.
+        let busy = next_command(&mut h.shell_rx).await;
+        pending.push(outbox.one_off(one_off("last")).unwrap());
+        let error = outbox
+            .one_off(one_off("one-too-many"))
+            .err()
+            .expect("refused");
+        assert!(error.contains("already waiting"), "{error}");
+        patch_ok(busy);
+        pending.remove(0).await.unwrap();
+        next_command(&mut h.shell_rx).await;
+        assert!(outbox.one_off(one_off("room-again")).is_ok());
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_deltas_already_received() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let blob_store = Arc::new(BlobStore::new(dir.path().to_path_buf()));
+        let state = runtime_doc::RuntimeStateHandle::new(
+            runtime_doc::RuntimeStateDoc::new(),
+            broadcast::channel(4).0,
+        );
+        let (broadcast_tx, _broadcasts) = broadcast::channel(16);
+        let redactor = Arc::new(OutputRedactor::default());
+        let (shell, _shell_rx) = KernelShellRequester::for_test();
+        let store = super::super::store::tests::store_with_session();
+        let exts: Vec<Arc<dyn KernelExtension>> = vec![Arc::new(BokehKernelExtension {
+            store: store.clone(),
+        })];
+        let mut launched = KernelExtensions::launch(
+            &exts,
+            &KernelLaunchCtx {
+                kernel_id: "kernel-1",
+                kernel_actor_id: super::super::store::tests::KERNEL,
+                state: &state,
+                blob_store: &blob_store,
+                blob_publisher: &OutputBlobPublisher::none(),
+                broadcast_tx: &broadcast_tx,
+                redactor: &redactor,
+                shell: &shell,
+            },
+        );
+        let route = launched.routes().get(BOKEH_DELTA).cloned().unwrap();
+        route
+            .tx
+            .send(RawIopubMessage {
+                msg_type: BOKEH_DELTA.into(),
+                content: super::super::ingest::tests::wire_delta(
+                    "tx-final",
+                    json!({"props_changed": {"p2": {"value": 0.9}}}),
+                ),
+                buffers: Vec::new(),
+            })
+            .unwrap();
+        drop(route);
+        // Within the coalescing window, as when the kernel exits mid-burst.
+        launched.shutdown();
+        tokio::time::timeout(Duration::from_secs(5), store.ingest_drained("kernel-1"))
+            .await
+            .expect("drained within its bound");
+        store.with_doc("session-1", |doc| {
+            assert_eq!(doc.get_prop("p2", "value").as_deref(), Some("0.9"));
+        });
     }
 }
