@@ -199,6 +199,7 @@ const targets = Object.freeze({
     asyncPersistence: true,
     compactRecords: true,
     companyViewDomains: "anaconda.com",
+    catalogIndex: "1",
     editor: "wordgard",
     tunnelService: "cloudflared-page8.service",
     frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5", "page6", "page7"]),

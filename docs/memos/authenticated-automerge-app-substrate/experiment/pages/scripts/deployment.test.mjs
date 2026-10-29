@@ -1214,6 +1214,7 @@ test("compaction maintenance and company viewing are enabled for Page7 and Page8
       config.vars.PAGES_COMPANY_VIEW_DOMAINS,
       target !== "page6" ? "anaconda.com" : undefined,
     );
+    assert.equal(config.vars.PAGES_CATALOG_INDEX, target === "page8" ? "1" : undefined);
   }
 });
 
@@ -1231,6 +1232,7 @@ test("fresh Page8 installation owns its origin, storage, runtime and service", (
   assert.equal(config.vars.PAGES_ASYNC_PERSISTENCE, "true");
   assert.equal(config.vars.PAGES_COMPACT_RECORDS, "true");
   assert.equal(config.vars.PAGES_COMPANY_VIEW_DOMAINS, "anaconda.com");
+  assert.equal(config.vars.PAGES_CATALOG_INDEX, "1");
   const unit = f.read("/etc/systemd/system/nteract-page8.service");
   assert.match(unit, /User=nteract-page8\n/);
   assert.match(unit, /WorkingDirectory=\/var\/lib\/nteract-page8\n/);
