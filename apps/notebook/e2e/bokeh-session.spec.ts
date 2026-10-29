@@ -1193,7 +1193,7 @@ test.describe("Bokeh session documents", () => {
     }
   });
 
-  test("a viewer keeps view-local interaction and its other edits snap back", async ({
+  test("a viewer's interaction stays local until the document changes it", async ({
     context,
     page,
   }, testInfo) => {
@@ -1251,7 +1251,7 @@ test.describe("Bokeh session documents", () => {
       await recordModelChanges(frame);
       await engageFrame(viewer, displayId);
 
-      // Slider: the drag changes the model, then the document value returns.
+      // Slider: the drag moves the slider locally and it stays there.
       const handle = frame.locator(".noUi-handle").first();
       await handle.scrollIntoViewIfNeeded();
       const box = (await handle.boundingBox())!;
@@ -1259,15 +1259,13 @@ test.describe("Bokeh session documents", () => {
       await viewer.mouse.down();
       await viewer.mouse.move(box.x + box.width / 2 + 120, box.y + box.height / 2, { steps: 8 });
       await viewer.mouse.up();
-      await expect.poll(() => modelValue(frame, "viewer slider")).toBe(3);
-      const sliderChanges = (await modelChanges(frame)).filter((change) => change.attr === "value");
-      expect(
-        sliderChanges.some((change) => change.value !== 3),
-        "the drag moved the slider locally before it was reverted",
-      ).toBe(true);
-      expect(sliderChanges.at(-1)?.value).toBe(3);
+      await expect.poll(() => modelValue(frame, "viewer slider")).not.toBe(3);
+      const localValue = await modelValue(frame, "viewer slider");
+      await viewer.waitForTimeout(2_000);
+      expect(await modelValue(frame, "viewer slider")).toBe(localValue);
+      await expect(handle).toHaveAttribute("aria-valuenow", `${localValue}.0`);
 
-      // Pan and zoom are view-local: the range moves and stays.
+      // Pan and zoom: the range moves and stays.
       const canvas = frame.locator(".bk-Canvas").first();
       await canvas.scrollIntoViewIfNeeded();
       const plotBox = (await canvas.boundingBox())!;
@@ -1284,16 +1282,22 @@ test.describe("Bokeh session documents", () => {
       await viewer.waitForTimeout(2_000);
       expect(await rangeBounds(frame, rangeId)).toEqual(panned);
 
-      // Tabulator paging: record what each pagination mode does.
+      // Tabulator paging. Local pagination pages in the browser; remote
+      // pagination needs the kernel to send the page, so it is only reported.
       const tables = frame.locator(".tabulator");
       for (const [index, mode] of ["remote", "local"].entries()) {
         const table = tables.nth(index);
         await table.scrollIntoViewIfNeeded();
-        const firstRow = table.locator('.tabulator-row .tabulator-cell[tabulator-field="row"]');
-        await expect(firstRow.first()).toHaveText("r0");
+        const rows = table.locator('.tabulator-row .tabulator-cell[tabulator-field="row"]');
+        await expect(rows.first()).toHaveText("r0");
         await table.locator('.tabulator-page[data-page="2"]').click();
-        await viewer.waitForTimeout(2_000);
-        const shown = await firstRow.allInnerTexts();
+        if (mode === "local") {
+          await expect.poll(() => rows.allInnerTexts()).toEqual(["r3", "r4", "r5"]);
+          await expect(table.locator(".tabulator-page.active")).toHaveText("2");
+        } else {
+          await viewer.waitForTimeout(2_000);
+        }
+        const shown = await rows.allInnerTexts();
         const active = await table.locator(".tabulator-page.active").innerText();
         const pageChanges = (await modelChanges(frame)).filter((change) => change.attr === "page");
         console.log(
@@ -1301,12 +1305,16 @@ test.describe("Bokeh session documents", () => {
           `page changes ${JSON.stringify(pageChanges)}`,
         );
       }
+      // The local values stay after the paging.
+      expect(await modelValue(frame, "viewer slider")).toBe(localValue);
+      expect(await rangeBounds(frame, rangeId)).toEqual(panned);
 
       // Nothing the viewer did reached Python or the session document.
-      const writes = (await hostMessages(viewer)).filter((message) =>
-        ["nteract/bokehSetProps", "nteract/bokehApplyPatch"].includes(message.method),
-      );
-      expect(writes).toEqual([]);
+      const viewerWrites = async () =>
+        (await hostMessages(viewer!)).filter((message) =>
+          ["nteract/bokehSetProps", "nteract/bokehApplyPatch"].includes(message.method),
+        );
+      expect(await viewerWrites()).toEqual([]);
       const checkId = await mcp.createCell("pass");
       await expectPython(
         page,
@@ -1322,7 +1330,16 @@ test.describe("Bokeh session documents", () => {
       );
       await expect.poll(() => modelValue(ownerFrame, "viewer slider")).toBe(3);
 
-      // A revert must not trigger another change: an idle viewer stays quiet.
+      // The owner's change from Python overwrites the viewer's local value.
+      const ownerValue = localValue === 8 ? 7 : 8;
+      await runCell(mcp, checkId, `slider.value = ${ownerValue}`);
+      await expect.poll(() => modelValue(ownerFrame, "viewer slider")).toBe(ownerValue);
+      await expect
+        .poll(() => modelValue(frame, "viewer slider"), { timeout: 30_000 })
+        .toBe(ownerValue);
+      await expect(handle).toHaveAttribute("aria-valuenow", `${ownerValue}.0`);
+
+      // Local interaction must not trigger further changes: an idle viewer stays quiet.
       await resetModelChanges(frame);
       const warningsBefore = warnings.length;
       await viewer.waitForTimeout(5_000);
@@ -1335,6 +1352,20 @@ test.describe("Bokeh session documents", () => {
       expect(idle).toEqual([]);
       expect(warnings.slice(warningsBefore)).toEqual([]);
       await expectSameMountedRoot(frame);
+
+      // Python only ever saw the owner's value.
+      expect(await viewerWrites()).toEqual([]);
+      await expectPython(
+        page,
+        mcp,
+        checkId,
+        [
+          `assert received == [${ownerValue}], received`,
+          "assert pages == [], pages",
+          "assert ranges == [], ranges",
+        ],
+        "VIEWER_SENT_NOTHING",
+      );
     } finally {
       await viewer?.close();
       await mcp.close();
@@ -1360,7 +1391,7 @@ interface ChangeRecordingWindow extends Window {
   e2eModelChanges?: ModelChange[];
 }
 
-/** Record every ModelChanged in the frame's mounted document, including reverts. */
+/** Record every ModelChanged in the frame's mounted document. */
 async function recordModelChanges(frame: FrameLocator) {
   await frame.locator("body").evaluate(() => {
     const w = window as unknown as ChangeRecordingWindow;

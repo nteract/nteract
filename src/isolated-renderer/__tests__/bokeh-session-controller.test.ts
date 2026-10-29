@@ -29,8 +29,6 @@ class FakeBuffer {
 interface FakeProp {
   syncable?: boolean;
   may_have_refs?: boolean;
-  readonly?: boolean;
-  default_value?(obj: unknown): unknown;
 }
 
 class FakeBokehModel {
@@ -485,79 +483,142 @@ describe("BokehSessionController", () => {
       h.controller.dispose();
     });
 
-    it("reverts a viewer's property edits to the document and keeps view-local state", async () => {
+    /** A synced viewer whose document also has a range and a paginated table. */
+    async function viewer() {
       const h = harness({ open: { writable: false } });
       await h.controller.start();
       const document = h.documents[0];
       document.add(new FakeBokehModel("x_range", "Range1d", { start: { syncable: true } }));
-      document.add(new FakeBokehModel("selection", "Selection", { indices: { syncable: true } }));
-      document.add(new FakeBokehModel("tabs", "Tabs", { active: { syncable: true } }));
-      document.add(
-        new FakeBokehModel("renderer", "GlyphRenderer", { visible: { syncable: true } }),
-      );
+      document.add(new FakeBokehModel("table", "DataTabulator", { page: { syncable: true } }));
       await h.sendDoc(
         fullUpdate({
           models: {
             ...fullUpdate().models,
             x_range: { type: "Range1d", refProps: [], props: { start: 0 } },
-            selection: { type: "Selection", refProps: [], props: {} },
-            tabs: { type: "Tabs", refProps: ["tabs"], props: { active: 0 } },
-            renderer: { type: "GlyphRenderer", refProps: ["glyph"], props: {} },
+            table: { type: "DataTabulator", refProps: ["source"], props: { page: 1 } },
           },
         }),
       );
       document.applied.length = 0;
       h.calls.length = 0;
-      const slider = document.get_model_by_id("slider")!;
-      slider.properties.value = { syncable: true };
-      slider.properties.title = { syncable: true, default_value: () => "" };
-      expect(h.onReadOnly).toHaveBeenLastCalledWith(true);
-
+      document.get_model_by_id("slider")!.properties.value = { syncable: true };
       const change = (id: string, attr: string, value: unknown) =>
         document.emit({ kind: "ModelChanged", attr, value, model: document.get_model_by_id(id) });
-      // Pan, selection, a tab switch and a legend click stay local.
-      change("x_range", "start", 5);
-      change("selection", "indices", [1]);
-      change("tabs", "active", 1);
-      change("renderer", "visible", false);
-      // Widget edits would never reach Python, so the document's value returns.
-      change("slider", "value", 0.6);
-      change("slider", "title", "Mine");
-      document.emit({ kind: "MessageSent", msg_type: "bokeh_event", msg_data: {} });
-      await vi.advanceTimersByTimeAsync(100);
+      return { ...h, document, change };
+    }
 
-      expect(document.appliedEvents()).toEqual([
-        { kind: "ModelChanged", model: { id: "slider" }, attr: "value", new: 0.5 },
-      ]);
-      expect(slider.setv).toHaveBeenCalledWith({ title: "" }, { sync: false });
-      expect(h.calls).toEqual([]);
-
-      // A local table edit is replaced by the document's columns.
-      document.emit({ kind: "ColumnsPatched", model: document.get_model_by_id("source") });
-      await settle();
-      expect(h.callsTo(NTERACT_BOKEH_SESSION_DATA)).toHaveLength(1);
-      expect(h.callsTo(NTERACT_BOKEH_APPLY_PATCH)).toHaveLength(0);
-      h.controller.dispose();
-    });
-
-    it("lets a viewer that becomes an editor write again", async () => {
-      const { controller, document, notify, onReadOnly, calls, callsTo } = await synced({
-        open: { writable: false },
-      });
-      const slider = document.get_model_by_id("slider")!;
-      slider.properties.value = { syncable: true };
+    it("keeps a viewer's local changes to any model in its view and sends nothing", async () => {
+      const { controller, document, change, calls, onReadOnly } = await viewer();
       expect(onReadOnly).toHaveBeenLastCalledWith(true);
 
+      change("slider", "value", 0.6);
+      change("x_range", "start", 5);
+      change("table", "page", 2);
       document.emit({ kind: "MessageSent", msg_type: "bokeh_event", msg_data: {} });
-      await vi.advanceTimersByTimeAsync(100);
+      document.emit({ kind: "ColumnsPatched", model: document.get_model_by_id("source") });
+      document.emit({ kind: "ColumnsStreamed", model: document.get_model_by_id("source") });
+      await vi.advanceTimersByTimeAsync(1000);
+
+      // Nothing is restored, reloaded or sent.
+      expect(document.applied).toEqual([]);
       expect(calls).toEqual([]);
+      controller.dispose();
+    });
+
+    it("overwrites a viewer's local values when the document changes them", async () => {
+      const { controller, document, change, sendDoc, sendEvents, calls } = await viewer();
+      change("slider", "value", 0.6);
+      change("table", "page", 2);
+      document.emit({ kind: "ColumnsStreamed", model: document.get_model_by_id("source") });
+      await vi.advanceTimersByTimeAsync(100);
+
+      await sendDoc(deltaUpdate({ props: { slider: { value: 0.9 } } }));
+      await sendEvents(
+        eventsFor({
+          dataEvents: [
+            {
+              kind: "ColumnsStreamed",
+              source_id: "source",
+              base_version: 2,
+              new_version: 3,
+              data: { type: "map", entries: [["x", [3]]] },
+            },
+          ],
+        }),
+      );
+      expect(document.appliedEvents()).toEqual([
+        { kind: "ModelChanged", model: { id: "slider" }, attr: "value", new: 0.9 },
+        expect.objectContaining({ kind: "ColumnsStreamed", model: { id: "source" } }),
+      ]);
+
+      // A full update of a new epoch reconciles the view to the document's state.
+      change("slider", "value", 0.6);
+      document.applied.length = 0;
+      await sendDoc(
+        fullUpdate({
+          epoch: 4,
+          models: {
+            ...fullUpdate().models,
+            x_range: { type: "Range1d", refProps: [], props: { start: 0 } },
+            table: { type: "DataTabulator", refProps: ["source"], props: { page: 1 } },
+          },
+          columns: { source: { x: { version: 3, size: 10 } } },
+        }),
+      );
+      expect(document.appliedEvents()).toContainEqual(
+        expect.objectContaining({
+          kind: "RootAdded",
+          model: expect.objectContaining({
+            id: "root-1",
+            attributes: {
+              children: [expect.objectContaining({ id: "slider", attributes: { value: 0.5 } })],
+            },
+          }),
+        }),
+      );
+      expect(calls.filter((call) => call.method !== NTERACT_BOKEH_SESSION_DATA)).toEqual([]);
+      controller.dispose();
+    });
+
+    it("writes only new edits once a viewer becomes an editor", async () => {
+      const { controller, document, change, notify, sendDoc, onReadOnly, callsTo } = await viewer();
+      change("slider", "value", 0.6);
+      change("table", "page", 2);
+      await vi.advanceTimersByTimeAsync(100);
 
       notify(NTERACT_BOKEH_SESSION_STATE, state({ writable: true }));
       expect(onReadOnly).toHaveBeenLastCalledWith(false);
-      document.emit({ kind: "ModelChanged", attr: "value", value: 0.7, model: slider });
+      await vi.advanceTimersByTimeAsync(100);
+      // The values it changed while viewing are not written.
+      expect(callsTo(NTERACT_BOKEH_SET_PROPS)).toEqual([]);
+      // Nor do they hold off the document.
+      await sendDoc(deltaUpdate({ props: { table: { page: 3 } } }));
+      expect(document.appliedEvents()).toEqual([
+        { kind: "ModelChanged", model: { id: "table" }, attr: "page", new: 3 },
+      ]);
+
+      change("slider", "value", 0.7);
       await vi.advanceTimersByTimeAsync(50);
       expect(callsTo(NTERACT_BOKEH_SET_PROPS).map((call) => call.params.props)).toEqual([
         { slider: { value: "0.7" } },
+      ]);
+      controller.dispose();
+    });
+
+    it("drops an editor's unflushed edit when it becomes a viewer", async () => {
+      const { controller, document, notify, sendDoc, onReadOnly, callsTo } = await synced();
+      const slider = document.get_model_by_id("slider")!;
+      slider.properties.value = { syncable: true };
+
+      document.emit({ kind: "ModelChanged", attr: "value", value: 0.6, model: slider });
+      notify(NTERACT_BOKEH_SESSION_STATE, state({ writable: false }));
+      expect(onReadOnly).toHaveBeenLastCalledWith(true);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(callsTo(NTERACT_BOKEH_SET_PROPS)).toEqual([]);
+
+      await sendDoc(deltaUpdate({ props: { slider: { value: 0.9 } } }));
+      expect(document.appliedEvents()).toEqual([
+        { kind: "ModelChanged", model: { id: "slider" }, attr: "value", new: 0.9 },
       ]);
       controller.dispose();
     });

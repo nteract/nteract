@@ -421,8 +421,6 @@ export class BokehSessionController {
   private readonly versions = new Map<string, number>();
   /** `ref_props` per session document model; absent models are not writable. */
   private readonly refProps = new Map<string, Set<string>>();
-  /** Property values the session document holds; omitted ones are at their default. */
-  private readonly docProps = new Map<string, Record<string, unknown>>();
   /** Data edits this frame applied optimistically, by transaction, until their echo arrives. */
   private readonly ownTransactions = new Map<string, OwnDataEdit>();
   private readonly pendingProps = new Map<string, PendingProp>();
@@ -569,28 +567,17 @@ export class BokehSessionController {
     this.options.onLayout();
   }
 
-  private trackModels(update: NteractBokehDocUpdate): void {
-    if (update.kind === "full") {
-      this.refProps.clear();
-      this.docProps.clear();
-    }
-    for (const id of update.removed) {
-      this.refProps.delete(id);
-      this.docProps.delete(id);
-    }
+  private trackRefProps(update: NteractBokehDocUpdate): void {
+    if (update.kind === "full") this.refProps.clear();
+    for (const id of update.removed) this.refProps.delete(id);
     for (const [id, model] of Object.entries(update.models)) {
       this.refProps.set(id, new Set(model.refProps));
-      this.docProps.set(id, { ...model.props });
-    }
-    for (const [id, props] of Object.entries(update.props)) {
-      const known = this.docProps.get(id);
-      if (known) Object.assign(known, props);
     }
   }
 
   private async applyFull(update: NteractBokehDocUpdate): Promise<void> {
     if (this.epoch !== null && update.epoch < this.epoch) return;
-    this.trackModels(update);
+    this.trackRefProps(update);
     if (this.document && update.canSwitch && !this.dirty && this.epoch !== null) {
       this.epoch = update.epoch;
       return;
@@ -681,7 +668,7 @@ export class BokehSessionController {
   private async applyDelta(update: NteractBokehDocUpdate): Promise<void> {
     const document = this.document;
     if (!document) return;
-    this.trackModels(update);
+    this.trackRefProps(update);
     const sources: Record<string, string[] | null> = {};
     const removed: Record<string, string[]> = {};
     for (const [sourceId, refs] of Object.entries(update.columns)) {
@@ -948,12 +935,15 @@ export class BokehSessionController {
 
   // ── Outbound ────────────────────────────────────────────────────────
 
+  /**
+   * A viewer's local changes, to any model, stay in its view and are never
+   * recorded or sent, so they cannot leave pending writes behind; the next
+   * document change to the same property overwrites them. A viewer that
+   * becomes an editor writes only edits made after that, not the values it
+   * diverged to while viewing.
+   */
   private readonly onDocumentChange = (event: BokehDocumentEvent) => {
     if (this.disposed || this.applyingRemote || !shouldSyncEvent(event)) return;
-    if (this.readOnlyShown) {
-      this.revertViewerEdit(event);
-      return;
-    }
     if (!this.writable()) return;
     switch (event.kind) {
       case "ModelChanged":
@@ -969,54 +959,6 @@ export class BokehSessionController {
         break;
     }
   };
-
-  /**
-   * A viewer's edit never reaches Python, so showing it would misrepresent
-   * the session: restore the document's state. View-local interaction (pan,
-   * zoom, selection, tabs, legend, tools) stays.
-   */
-  private revertViewerEdit(event: BokehDocumentEvent): void {
-    const model = event.model;
-    if (!model?.id || this.epoch === null) return;
-    const id = model.id;
-    if (event.kind === "ColumnsStreamed" || event.kind === "ColumnsPatched") {
-      this.enqueue(() => this.reloadSource(id), false);
-      return;
-    }
-    const attr = event.attr;
-    if (event.kind !== "ModelChanged" || !attr) return;
-    const prop = model.properties?.[attr];
-    if (!prop || prop.readonly || this.refProps.get(id)?.has(attr) !== false) return;
-    if ((attr === "data" && isColumnar(model)) || isViewLocal(model.type, attr)) return;
-    // Deferred: BokehJS is still notifying listeners of this change.
-    this.enqueue(() => this.restoreDocValue(id, attr), false);
-  }
-
-  private restoreDocValue(id: string, attr: string): void {
-    const document = this.document;
-    const model = document?.get_model_by_id?.(id);
-    if (!document || !model || !this.readOnlyShown) return;
-    const props = this.docProps.get(id);
-    this.applyingRemote = true;
-    try {
-      if (props && Object.prototype.hasOwnProperty.call(props, attr)) {
-        document.apply_json_patch({
-          events: [{ kind: "ModelChanged", model: { id }, attr, new: props[attr] }],
-        });
-      } else {
-        const prop = model.properties?.[attr];
-        const value = prop?.default_value?.(model);
-        if (value === undefined || typeof value === "symbol") return;
-        model.setv(
-          { [attr]: prop?.kind?.coerce ? prop.kind.coerce(value) : value },
-          { sync: false },
-        );
-      }
-    } finally {
-      this.applyingRemote = false;
-    }
-    this.options.onLayout();
-  }
 
   private writable(): boolean {
     return this.live && this.hostWritable && this.status === "connected" && this.epoch !== null;
@@ -1186,6 +1128,7 @@ export class BokehSessionController {
     const readOnly = this.live && status === "connected" && !this.hostWritable;
     if (readOnly === this.readOnlyShown) return;
     this.readOnlyShown = readOnly;
+    // Unflushed edits from editing would never be sent and would hide document changes.
     if (readOnly) this.clearLocalState();
     this.options.onReadOnly?.(readOnly);
   }
@@ -1208,18 +1151,6 @@ export class BokehSessionController {
     this.document?.clear({ sync: false });
     this.document = null;
   }
-}
-
-/** Properties BokehJS changes for interaction that only affects this view. */
-function isViewLocal(type: string, attr: string): boolean {
-  const name = type.slice(type.lastIndexOf(".") + 1);
-  if (name === "Selection") return true;
-  if (/Range(1d)?$/.test(name)) return attr === "start" || attr === "end";
-  if (name.endsWith("Renderer")) return attr === "visible" || attr === "muted";
-  if (name.endsWith("Tabs")) return attr === "active";
-  if (name === "Toolbar") return attr.startsWith("active_");
-  if (name.endsWith("Tool")) return attr === "active";
-  return false;
 }
 
 function hasEchoAfter(
