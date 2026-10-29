@@ -204,6 +204,7 @@ try {
   outsiderPageId = outsider.body.page_id;
   const outsiderAccess = (await api(consumer, `/api/access?page=${outsiderPageId}`)).body;
   assert.deepEqual(outsiderAccess.domainOptions, []);
+  assert.deepEqual(outsiderAccess.domainProof, { "anaconda.com": "missing" });
   assert.equal(outsiderAccess.domainView, null);
   const outsiderDenied = await api(consumer, `/api/access?page=${outsiderPageId}`, {
     action: "set_domain_view",
@@ -213,6 +214,7 @@ try {
   });
   assert.equal(outsiderDenied.status, 403);
   assert.match(outsiderDenied.body.error, /verified anaconda\.com email/);
+  assert.equal(outsiderDenied.body.code, "company_email_proof_required");
   await consumer.goto(`${origin}/p/${outsiderPageId}`);
   await expect(content(consumer)).toContainText("Not company content");
   await consumer.getByRole("button", { name: "Share", exact: true }).click();
@@ -250,6 +252,7 @@ try {
   assert.deepEqual(options, ["Restricted", "Anyone at anaconda.com with the link"]);
   const initial = (await api(owner, `/api/access?page=${pageId}`)).body;
   assert.deepEqual(initial.domainOptions, ["anaconda.com"]);
+  assert.deepEqual(initial.domainProof, { "anaconda.com": "verified" });
   assert.equal(initial.domainView, null);
   complete("Company owner sees only their verified company option; new Page stays Restricted");
   await owner.getByLabel("Invite by email").fill("alice@localhost");

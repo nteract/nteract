@@ -6,6 +6,7 @@ import { pageAccess, proposeAccessUpdate, restrictAccessDuringCommit } from "./a
 import { proposeSharingMutation, sharingProjection } from "./sharing.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { Page } from "./index.mjs";
+import { errorResponse, HttpError } from "./auth.mjs";
 
 const now = 1_800_000_000_000;
 const namespace = "user:anaconda";
@@ -126,10 +127,13 @@ const companyApiKeyOwner = {
   verifiedEmail: "Owner@Anaconda.com",
 };
 const ownerProofDenied = /Sign in with a verified anaconda\.com email to share with anaconda\.com/;
-async function rejectsWithStatus(promise, status, pattern) {
+const ownerProofExpired =
+  /anaconda\.com email verification expired\. Sign in again with the same account/;
+async function rejectsWithStatus(promise, status, pattern, code) {
   await assert.rejects(promise, (error) => {
     assert.equal(error.status, status);
     assert.match(error.message, pattern);
+    if (code) assert.equal(error.code, code);
     return true;
   });
 }
@@ -141,24 +145,34 @@ test("an owner without company email proof is offered no company audience and ca
     now - 6 * 3600 * 1000 - 1000,
     owner.principal,
   );
-  for (const identity of [
-    { ...owner, credentialKind: "api-key" },
-    owner,
-    { ...owner, credentialKind: "oidc", verifiedEmail: "owner@anaconda.com" },
-    { ...companyApiKeyOwner, verifiedEmail: "owner@sub.anaconda.com" },
-    await verifiedIdentity("owner@gmail.com", true, now, owner.principal),
-    await verifiedIdentity("owner@anaconda.com", false, now, owner.principal),
-    stale,
+  const staleGmail = await verifiedIdentity(
+    "owner@gmail.com",
+    true,
+    now - 6 * 3600 * 1000 - 1000,
+    owner.principal,
+  );
+  for (const [identity, proof] of [
+    [{ ...owner, credentialKind: "api-key" }, "missing"],
+    [owner, "missing"],
+    [{ ...owner, credentialKind: "oidc", verifiedEmail: "owner@anaconda.com" }, "missing"],
+    [{ ...companyApiKeyOwner, verifiedEmail: "owner@sub.anaconda.com" }, "missing"],
+    [await verifiedIdentity("owner@gmail.com", true, now, owner.principal), "missing"],
+    [await verifiedIdentity("owner@anaconda.com", false, now, owner.principal), "missing"],
+    [staleGmail, "missing"],
+    [{ ...stale, principal: `${namespace}:another-owner` }, "missing"],
+    [stale, "expired"],
   ]) {
-    const before = restrictedPage();
+    const before = restrictedPage(identity.principal);
     const projected = await sharingProjection(before, identity, env, now);
     assert.deepEqual(projected.domainOptions, []);
+    assert.deepEqual(projected.domainProof, { "anaconda.com": proof });
     assert.equal(projected.domainView, null);
     assert.equal("domainViewOwnerVerified" in projected, false);
     await rejectsWithStatus(
       proposeSharingMutation(before, identity, enableArgs, now, env),
       403,
-      ownerProofDenied,
+      proof === "expired" ? ownerProofExpired : ownerProofDenied,
+      "company_email_proof_required",
     );
     // Host allowlist and role checks still answer first, with their own errors.
     await rejectsWithStatus(
@@ -183,6 +197,7 @@ test("an owner with a verified company email (API key or browser proof) can shar
     const before = restrictedPage();
     const offered = await sharingProjection(before, identity, env, now);
     assert.deepEqual(offered.domainOptions, ["anaconda.com"]);
+    assert.deepEqual(offered.domainProof, { "anaconda.com": "verified" });
     assert.equal(offered.domainView, null);
     const enabled = await proposeSharingMutation(before, identity, enableArgs, now, env);
     assert.deepEqual(enabled.metadata.acl.domainView, domainView);
@@ -226,15 +241,57 @@ test("an owner with a verified company email (API key or browser proof) can shar
     assert.equal(restricted.metadata.acl.domainView, null);
     assert.deepEqual(restricted.metadata.acl.members, {});
   }
-  // Browser proof older than the identity window no longer offers the company.
-  const later = now + 6 * 3600 * 1000 + 1000;
+});
+
+test("company proof that expires mid-session reports expired, refuses enabling, and recovers on sign-in", async () => {
+  const browserOwner = await verifiedIdentity("owner@anaconda.com", true, now, owner.principal);
+  const page = restrictedPage();
+  // The panel's last projection offered the company...
+  assert.deepEqual((await sharingProjection(page, browserOwner, env, now)).domainOptions, [
+    "anaconda.com",
+  ]);
+  // ...but the six-hour proof window closes before the owner picks it.
+  const later = now + 6 * 3600 * 1000;
   const aged = { ...browserOwner, expiresAt: later + 60_000 };
-  assert.deepEqual((await sharingProjection(restrictedPage(), aged, env, later)).domainOptions, []);
   await rejectsWithStatus(
-    proposeSharingMutation(restrictedPage(), aged, enableArgs, later, env),
+    proposeSharingMutation(page, aged, enableArgs, later, env),
     403,
-    ownerProofDenied,
+    ownerProofExpired,
+    "company_email_proof_required",
   );
+  const expired = await sharingProjection(page, aged, env, later);
+  assert.deepEqual(expired.domainOptions, []);
+  assert.deepEqual(expired.domainProof, { "anaconda.com": "expired" });
+  // OAuth carries the same browser proof and expires the same way.
+  assert.deepEqual(
+    (await sharingProjection(page, { ...aged, credentialKind: "oauth" }, env, later)).domainProof,
+    { "anaconda.com": "expired" },
+  );
+  // Signing in again with the same account mints fresh proof.
+  const renewed = await verifiedIdentity("owner@anaconda.com", true, later, owner.principal);
+  const fresh = { ...renewed, expiresAt: later + 60_000 };
+  assert.deepEqual((await sharingProjection(page, fresh, env, later)).domainProof, {
+    "anaconda.com": "verified",
+  });
+  const enabled = await proposeSharingMutation(
+    page,
+    fresh,
+    { ...enableArgs, idempotency_key: "after-sign-in" },
+    later,
+    env,
+  );
+  assert.deepEqual(enabled.metadata.acl.domainView, domainView);
+});
+
+test("the proof refusal code survives the HTTP error boundary", async () => {
+  const response = errorResponse(
+    new HttpError(403, "Sign in again", "company_email_proof_required"),
+  );
+  assert.equal(response.status, 403);
+  assert.deepEqual(await response.json(), {
+    error: "Sign in again",
+    code: "company_email_proof_required",
+  });
 });
 
 test("a company audience the owner cannot prove stays readable, is flagged, and can only be withdrawn", async () => {

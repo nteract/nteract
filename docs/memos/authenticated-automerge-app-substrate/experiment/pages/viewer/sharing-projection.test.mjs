@@ -11,8 +11,8 @@ test("domain link access is restricted until the host reports an explicit Page g
   const view = domainSharingProjection(owner);
   assert.equal(view.selected, "");
   assert.deepEqual(view.options, [
-    { value: "", label: "Restricted" },
-    { value: "anaconda.com", label: "Anyone at anaconda.com with the link" },
+    { value: "", label: "Restricted", disabled: false },
+    { value: "anaconda.com", label: "Anyone at anaconda.com with the link", disabled: false },
   ]);
   assert.equal(
     domainSharingProjection({ ...owner, domainView: { domain: "anaconda.com" } }).selected,
@@ -50,9 +50,10 @@ test("a stored company audience the owner cannot prove stays visible, flagged an
   const view = domainSharingProjection(legacy);
   assert.equal(view.selected, "anaconda.com");
   assert.equal(view.unverified, true);
+  assert.equal(view.expired, null);
   assert.deepEqual(view.options, [
-    { value: "", label: "Restricted" },
-    { value: "anaconda.com", label: "Anyone at anaconda.com with the link" },
+    { value: "", label: "Restricted", disabled: false },
+    { value: "anaconda.com", label: "Anyone at anaconda.com with the link", disabled: true },
   ]);
   const proven = domainSharingProjection({
     ...owner,
@@ -71,4 +72,43 @@ test("a stored company audience the owner cannot prove stays visible, flagged an
     null,
   );
   assert.equal(domainSharingProjection({ ...legacy, access: { canManageAccess: false } }), null);
+});
+test("expired company proof keeps the company choice visible but disabled; missing proof shows nothing", () => {
+  const expired = domainSharingProjection({
+    ...owner,
+    domainOptions: [],
+    domainProof: { "anaconda.com": "expired" },
+  });
+  assert.equal(expired.selected, "");
+  assert.equal(expired.expired, "anaconda.com");
+  assert.equal(expired.unverified, false);
+  assert.deepEqual(expired.options, [
+    { value: "", label: "Restricted", disabled: false },
+    { value: "anaconda.com", label: "Anyone at anaconda.com with the link", disabled: true },
+  ]);
+  const storedExpired = domainSharingProjection({
+    ...owner,
+    domainOptions: [],
+    domainProof: { "anaconda.com": "expired" },
+    domainView: { domain: "anaconda.com" },
+    domainViewOwnerVerified: false,
+  });
+  assert.equal(storedExpired.selected, "anaconda.com");
+  assert.equal(storedExpired.expired, "anaconda.com");
+  assert.equal(storedExpired.unverified, true);
+  assert.equal(storedExpired.options.length, 2);
+  assert.equal(
+    domainSharingProjection({
+      ...owner,
+      domainOptions: [],
+      domainProof: { "anaconda.com": "missing" },
+    }),
+    null,
+  );
+  const verified = domainSharingProjection({
+    ...owner,
+    domainProof: { "anaconda.com": "verified" },
+  });
+  assert.equal(verified.expired, null);
+  assert.equal(verified.options[1].disabled, false);
 });

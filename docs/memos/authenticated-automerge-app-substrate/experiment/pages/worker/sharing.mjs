@@ -3,33 +3,33 @@ import { appSessionHasFreshVerifiedEmail } from "@cloud/app-session.ts";
 import { pageAccess, proposeAccessUpdate } from "./access.mjs";
 import { HttpError } from "./auth.mjs";
 import { fingerprint, mutationKey } from "./mutations.mjs";
-import {
-  companyViewDomains,
-  configuredDomainView,
-  verifiedCompanyDomains,
-} from "./domain-access.mjs";
+import { companyDomainProof, companyViewDomains, configuredDomainView } from "./domain-access.mjs";
 
 const lifetime = 7 * 24 * 60 * 60 * 1000;
 const roleValid = (role) => ["viewer", "editor"].includes(role);
 /**
  * domainOptions are the host-allowed company domains the requesting owner
- * proves right now. A stored domainView the owner cannot currently prove stays
- * in effect for readers and is flagged with domainViewOwnerVerified: false, so
- * the owner can see it and switch to Restricted.
+ * proves right now; domainProof gives each host-allowed domain's bounded proof
+ * state so an owner whose proof expired can be told to sign in again. A stored
+ * domainView the owner cannot currently prove stays in effect for readers and
+ * is flagged with domainViewOwnerVerified: false, so the owner can see it and
+ * switch to Restricted.
  */
 export async function sharingProjection(metadata, identity, env = {}, now = Date.now()) {
   const access = pageAccess(metadata, identity, { now });
   if (!access.canRead) throw new HttpError(403, "You no longer have access to this Page");
   if (!access.canManageAccess) return { access };
   const acl = metadata.acl ?? {};
-  const domainOptions = (await verifiedCompanyDomains(env, identity, now)).map(
-    ({ domain }) => domain,
+  const domainProof = await companyDomainProof(env, identity, now);
+  const domainOptions = Object.keys(domainProof).filter(
+    (domain) => domainProof[domain] === "verified",
   );
   const domainView = configuredDomainView(metadata, env);
   return {
     access,
     owner: { principal: metadata.owner, displayName: metadata.ownerName },
     domainOptions,
+    domainProof,
     domainView,
     ...(domainView && { domainViewOwnerVerified: domainOptions.includes(domainView.domain) }),
     members: Object.entries(acl.members ?? {})
@@ -117,16 +117,17 @@ export async function proposeSharingMutation(metadata, identity, args, now = Dat
       throw new HttpError(400, "Company domain access is view-only");
     // Only someone who proves the company email may present a Page to that
     // company. Restricted needs no proof, so an owner can always withdraw.
-    if (
-      args.domain !== null &&
-      !(await verifiedCompanyDomains(env, identity, now)).some(
-        ({ domain }) => domain === args.domain,
-      )
-    )
-      throw new HttpError(
-        403,
-        `Sign in with a verified ${args.domain} email to share with ${args.domain}`,
-      );
+    if (args.domain !== null) {
+      const proof = (await companyDomainProof(env, identity, now))[args.domain];
+      if (proof !== "verified")
+        throw new HttpError(
+          403,
+          proof === "expired"
+            ? `Your ${args.domain} email verification expired. Sign in again with the same account to share with ${args.domain}`
+            : `Sign in with a verified ${args.domain} email to share with ${args.domain}`,
+          "company_email_proof_required",
+        );
+    }
     acl.domainView =
       args.domain === null
         ? null

@@ -1,7 +1,11 @@
 import { request } from "./request.mjs";
 
 export const SHARING_FRESH_MS = 30_000;
-const accessError = (error) => [401, 403, 404].includes(error?.status);
+// A missing company-email proof refuses one sharing change; it is not a loss of
+// Page access, so the owner's ledger stays and is reloaded with the new proof state.
+export const COMPANY_PROOF_REQUIRED = "company_email_proof_required";
+const accessError = (error) =>
+  [401, 403, 404].includes(error?.status) && error?.code !== COMPANY_PROOF_REQUIRED;
 
 export function sharingAvailable(session) {
   return (
@@ -116,6 +120,9 @@ export function createSharingAccess(
     } catch (error) {
       if (error.status === 409 && current())
         await read({ force: true, preserveError: true }).catch(() => {});
+      // The reloaded ledger carries domainProof, which explains the refusal.
+      else if (error.code === COMPANY_PROOF_REQUIRED && current())
+        await read({ force: true }).catch(() => {});
       throw error;
     }
   }

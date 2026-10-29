@@ -287,15 +287,11 @@ There is no public/anonymous access, commenter-only role, or ownership transfer.
 
 Company-domain viewing is an optional, read-only fallback. Deployment configuration
 and the owner's Page setting must both allow it; only `anaconda.com` is currently
-recognized. Existing Pages remain Restricted. Only an owner whose own credential
-proves a fresh verified email at that domain is offered or may choose the company
-audience; Restricted never needs proof. A company audience set before that rule
-stays in effect for readers, and the owner sees it flagged with
-`domainViewOwnerVerified: false` until they prove the domain or choose Restricted.
-Verified domain proof expires after
-six hours without fresh identity verification, including active sockets. OAuth
-refresh cannot extend that proof. Explicit revocation overrides domain access;
-removing the audience revokes fallback access without creating permanent members.
+recognized. New Pages start Restricted. Existing company audiences remain active.
+Enabling a company audience requires fresh owner proof. Browser and OAuth proof
+expires after six hours. API-key access uses bounded leases backed by provider
+verification. Explicit revocation overrides domain access; removing the audience
+revokes fallback access without creating permanent members.
 
 ACL updates use a revision and idempotency key. Increases wait for durable
 confirmation; reductions apply immediately. Downgrade/removal retires affected

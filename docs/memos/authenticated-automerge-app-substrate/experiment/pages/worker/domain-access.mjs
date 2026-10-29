@@ -79,6 +79,48 @@ export async function verifiedCompanyDomains(env, identity, now = Date.now()) {
   return leases;
 }
 
+/**
+ * Bounded, PII-free proof state for each host-allowed company domain:
+ * "verified" (fresh proof), "expired" (browser/OAuth proof that bound this
+ * domain but is past its freshness window), or "missing" (no proof for it).
+ * Only "verified" authorizes anything; "expired" tells an owner that signing in
+ * again with the same account restores it.
+ */
+export async function companyDomainProof(env, identity, now = Date.now()) {
+  const verified = new Set(
+    (await verifiedCompanyDomains(env, identity, now)).map(({ domain }) => domain),
+  );
+  const namespace = env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE?.trim();
+  const verifiedAt = identity?.emailProof?.identityVerifiedAt;
+  const mayHaveExpired =
+    !!identity &&
+    identity.namespace === namespace &&
+    typeof identity.principal === "string" &&
+    identity.principal.startsWith(`${namespace}:`) &&
+    ["oidc", "oauth"].includes(identity.credentialKind) &&
+    Number.isSafeInteger(verifiedAt) &&
+    verifiedAt > 0 &&
+    verifiedAt * 1000 <= now;
+  const proof = {};
+  for (const domain of companyViewDomains(env)) {
+    if (verified.has(domain)) proof[domain] = "verified";
+    else if (
+      mayHaveExpired &&
+      // Evaluated at its own verification time, the binding shows which domain
+      // this stale proof covered. It authorizes nothing by itself.
+      (await appSessionHasFreshVerifiedEmailDomain(
+        env,
+        { principal: identity.principal, metadata: identity.emailProof },
+        domain,
+        verifiedAt,
+      ))
+    )
+      proof[domain] = "expired";
+    else proof[domain] = "missing";
+  }
+  return proof;
+}
+
 /** Project verified evidence into a short-lived, host-only authorization lease. */
 export async function domainAccessForIdentity(env, identity, now = Date.now()) {
   return (await verifiedCompanyDomains(env, identity, now))[0];

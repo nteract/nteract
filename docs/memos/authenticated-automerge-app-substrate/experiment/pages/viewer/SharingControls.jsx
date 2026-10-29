@@ -81,7 +81,8 @@ function PageSharing({ session }) {
   const domainId = useId();
   const root = useRef(null),
     button = useRef(null),
-    epoch = useRef(0);
+    epoch = useRef(0),
+    proofExpired = useRef(false);
   useEffect(() => {
     cache.activate();
     return () => cache.dispose();
@@ -104,8 +105,11 @@ function PageSharing({ session }) {
     setCopyError("");
     setMessage("");
     setCopyMessage("");
+    // While company proof is expired, returning from the sign-in tab must
+    // bypass the freshness window to pick up the renewed proof.
     const refresh = () => {
-      if (document.visibilityState !== "hidden") void cache.read().catch(() => {});
+      if (document.visibilityState !== "hidden")
+        void cache.read({ force: proofExpired.current }).catch(() => {});
     };
     refresh();
     const timer = setInterval(refresh, SHARING_FRESH_MS);
@@ -176,6 +180,7 @@ function PageSharing({ session }) {
       session.access?.role === "owner" &&
       ![401, 403, 404].includes(state.error?.status));
   const domainSharing = manage ? domainSharingProjection(value) : null;
+  proofExpired.current = !!domainSharing?.expired;
   return (
     <div className="page-sharing" ref={root}>
       <button
@@ -265,8 +270,8 @@ function PageSharing({ session }) {
                   )
                 }
               >
-                {domainSharing.options.map(({ value, label }) => (
-                  <option key={value} value={value}>
+                {domainSharing.options.map(({ value, label, disabled }) => (
+                  <option key={value} value={value} disabled={disabled}>
                     {label}
                   </option>
                 ))}
@@ -281,12 +286,43 @@ function PageSharing({ session }) {
                   "Only you and invited people can open this Page."
                 )}
               </p>
-              {domainSharing.unverified && (
-                <p className="page-domain-sharing-note" role="note">
-                  You are not signed in with a verified {domainSharing.selected} email. People at{" "}
-                  {domainSharing.selected} can still view this Page. Choose Restricted to stop
-                  sharing with them; sharing again needs a verified {domainSharing.selected} email.
-                </p>
+              {domainSharing.expired ? (
+                <div className="page-domain-sharing-note" role="note">
+                  <p>
+                    Your company email verification expired. Sign in again with the same account to
+                    enable company sharing.
+                  </p>
+                  {domainSharing.unverified && (
+                    <p>
+                      People at {domainSharing.selected} can still view this Page. Choose Restricted
+                      to stop sharing with them.
+                    </p>
+                  )}
+                  <div className="page-domain-sharing-actions">
+                    {/* The same sign-in the session uses; a separate tab keeps
+                        this Page open and its edits running. */}
+                    <a href="/api/auth/login" target="_blank" rel="noopener noreferrer">
+                      Sign in again
+                    </a>
+                    <button
+                      type="button"
+                      className="subtle-button"
+                      disabled={state.refreshing || !!busy}
+                      onClick={() => void cache.read({ force: true }).catch(() => {})}
+                    >
+                      Refresh sharing settings
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                domainSharing.unverified && (
+                  <p className="page-domain-sharing-note" role="note">
+                    You are not signed in with a verified {domainSharing.selected} email. People at{" "}
+                    {domainSharing.selected} can still view this Page. Choose Restricted to stop
+                    sharing with them; sharing again needs a verified {domainSharing.selected}{" "}
+                    email.
+                  </p>
+                )
               )}
             </section>
           )}
