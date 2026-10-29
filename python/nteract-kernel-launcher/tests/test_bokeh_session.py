@@ -921,7 +921,7 @@ def test_failed_build_commits_no_versions_and_keeps_its_events(monkeypatch, capl
 
     monkeypatch.setattr(BokehDocumentSession, "_meta", fail_once)
 
-    with caplog.at_level(logging.ERROR, logger="nteract_kernel_launcher"):
+    with caplog.at_level(logging.WARNING, logger="nteract_kernel_launcher"):
         session.apply_patch(patch={"events": [_model_changed(plot.id, "width", 300)]})
         source.stream({"x": [11], "y": [11]})
 
@@ -932,6 +932,53 @@ def test_failed_build_commits_no_versions_and_keeps_its_events(monkeypatch, capl
     assert any(delta.meta == {"root_ids": [plot.id], "title": "streamed"} for delta in delivered)
     replayed = _replayed_source(checkpoint, delivered, source.id)
     assert list(replayed.data["x"]) == list(source.data["x"])
+    session.close()
+
+
+def test_events_whose_build_keeps_failing_are_dropped_and_their_source_refolded(
+    monkeypatch, caplog
+):
+    pytest.importorskip("bokeh")
+    session, source, checkpoint, delivered = _data_session({"x": [0, 1], "y": [0, 1]})
+    plot = session.roots[0]
+    build = BokehDocumentSession._build_delta_unlocked
+    poisoned: list[Any] = []
+    attempts = []
+
+    def fail_on_first_stream(self, events, *args, **kwargs):
+        if not poisoned:
+            poisoned.extend(e for e in events if getattr(e, "kind", None) == "ColumnsStreamed")
+        if any(e in poisoned for e in events):
+            attempts.append(len(events))
+            raise RuntimeError("build failed")
+        return build(self, events, *args, **kwargs)
+
+    monkeypatch.setattr(BokehDocumentSession, "_build_delta_unlocked", fail_on_first_stream)
+
+    with caplog.at_level(logging.WARNING, logger="nteract_kernel_launcher"):
+        source.stream({"x": [2], "y": [2]})
+        plot.width = 300
+        plot.height = 300
+        plot.width = 400
+        source.stream({"x": [3], "y": [3]})
+
+    # The stream flushes at its trigger and again at its dispatch.
+    assert attempts == [1, 1, 2]
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert "dropping" in errors[0].getMessage()
+    # Events that failed alongside the dropped ones still go out.
+    widths = [d.props_changed.get(plot.id, {}).get("width") for d in delivered]
+    widths = [width for width in widths if width is not None]
+    assert widths == [300, 400]
+    # The fold restores the dropped rows at the same version, so no gap follows.
+    events = _data_events(delivered)
+    assert [(e["kind"], e.get("version"), e.get("base_version")) for e in events[:2]] == [
+        ("ColumnsFolded", 0, None),
+        ("ColumnsStreamed", None, 0),
+    ]
+    replayed = _replayed_source(checkpoint, delivered, source.id)
+    assert list(replayed.data["x"]) == list(source.data["x"]) == [0, 1, 2, 3]
     session.close()
 
 

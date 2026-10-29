@@ -3,8 +3,8 @@
 //! the output committer (output hook) and each launched kernel (kernel
 //! extension), and the handler of Bokeh runtime-agent requests.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use notebook_protocol::protocol::{
@@ -30,25 +30,18 @@ use crate::task_supervisor::spawn_best_effort;
 
 pub(crate) struct BokehAgentExtension {
     store: BokehSessionStore,
-    /// `(session, source)` folds requested from the kernel and not yet
-    /// answered; repeated data requests must not queue more.
-    folds_in_flight: Arc<StdMutex<HashSet<(String, String)>>>,
 }
 
 impl BokehAgentExtension {
     pub(crate) fn new(init: &AgentExtensionInit) -> Self {
         Self {
             store: BokehSessionStore::new(replacement_policy_from_env(), init.availability.clone()),
-            folds_in_flight: Arc::default(),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn with_store(store: BokehSessionStore) -> Self {
-        Self {
-            store,
-            folds_in_flight: Arc::default(),
-        }
+        Self { store }
     }
 
     #[cfg(test)]
@@ -197,33 +190,22 @@ impl BokehAgentExtension {
         session_id: &str,
         sources: &[String],
     ) {
-        let new: Vec<String> = {
-            let mut in_flight = self
-                .folds_in_flight
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            sources
-                .iter()
-                .filter(|source| in_flight.insert((session_id.to_string(), (*source).clone())))
-                .cloned()
-                .collect()
-        };
+        let new = self.store.claim_folds(session_id, sources);
         if new.is_empty() {
             return;
         }
         let fold = requester.fold(session_id, new.clone());
-        let in_flight = self.folds_in_flight.clone();
+        let store = self.store.clone();
         let session_id = session_id.to_string();
         spawn_best_effort("bokeh-fold", async move {
-            if let Err(error) = fold.await {
-                warn!("[bokeh-session] On-demand fold failed: {error}");
+            match fold.await {
+                // The delta clears the claim; asking again would only queue
+                // another fold behind the deferred one.
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => warn!("[bokeh-session] On-demand fold failed: {error}"),
             }
-            let mut in_flight = in_flight
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            for source in new {
-                in_flight.remove(&(session_id.clone(), source));
-            }
+            store.release_folds(&session_id, &new);
         });
     }
 
@@ -790,16 +772,16 @@ mod tests {
         );
     }
 
-    /// Viewers never make the kernel fold, and a pending fold is not
-    /// requested again until the kernel answers it.
-    #[tokio::test]
-    async fn oversized_tails_fold_once_per_source_and_only_for_writers() {
+    type ShellRx = mpsc::UnboundedReceiver<crate::kernel_shell_requester::ShellCommand>;
+
+    /// A session whose `p3` tail outgrew its fold, bound to `kernel-1`.
+    async fn oversized_tail() -> (Fixture, BokehAgentExtension, ShellRx) {
         use crate::bokeh_session::ingest::tests::wire_delta;
         use crate::bokeh_session::store::tests::flush;
 
-        let mut fx = fixture();
+        let fx = fixture();
         let ext = BokehAgentExtension::with_store(store_with_session());
-        let mut shell_rx = bind_test_kernel(&fx, ext.store(), "kernel-1");
+        let shell_rx = bind_test_kernel(&fx, ext.store(), "kernel-1");
         flush(
             ext.store(),
             &fx.blob_store,
@@ -823,33 +805,64 @@ mod tests {
             &[],
         )
         .await;
-        let request = |fx: &mut Fixture, id: &str, request_folds: bool| {
-            let started = fx.start(
-                &ext,
-                Some("kernel-1"),
-                id,
-                RuntimeAgentRequest::GetBokehSessionData {
-                    session_id: "session-1".into(),
-                    source_ids: None,
-                    request_folds,
-                },
-            );
-            let ExtensionStart::Reply(RuntimeAgentResponse::BokehSessionData { data }) = started
-            else {
-                panic!("expected a data tail");
-            };
-            assert_eq!(
-                data.fold_requested,
-                ["p3"],
-                "the caller still learns of the fold"
-            );
-        };
+        (fx, ext, shell_rx)
+    }
 
-        request(&mut fx, "viewer", false);
+    fn request_data(fx: &mut Fixture, ext: &BokehAgentExtension, id: &str, request_folds: bool) {
+        let started = fx.start(
+            ext,
+            Some("kernel-1"),
+            id,
+            RuntimeAgentRequest::GetBokehSessionData {
+                session_id: "session-1".into(),
+                source_ids: None,
+                request_folds,
+            },
+        );
+        let ExtensionStart::Reply(RuntimeAgentResponse::BokehSessionData { data }) = started else {
+            panic!("expected a data tail");
+        };
+        assert_eq!(
+            data.fold_requested,
+            ["p3"],
+            "the caller still learns of the fold"
+        );
+    }
+
+    fn reply_to_fold(
+        fold: crate::kernel_shell_requester::ShellCommand,
+        content: serde_json::Value,
+    ) {
+        fold.reply
+            .send(Ok(crate::kernel_shell_requester::ShellReply {
+                msg_type: super::super::BOKEH_FOLD_REPLY.into(),
+                content,
+                buffers: Vec::new(),
+            }))
+            .unwrap();
+    }
+
+    async fn wait_for_folds_pending(ext: &BokehAgentExtension, expected: &[&str]) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while ext.store().folds_pending("session-1") != expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("folds pending never became {expected:?}"));
+    }
+
+    /// Viewers never make the kernel fold, and a pending fold is not
+    /// requested again until the kernel answers it.
+    #[tokio::test]
+    async fn oversized_tails_fold_once_per_source_and_only_for_writers() {
+        let (mut fx, ext, mut shell_rx) = oversized_tail().await;
+
+        request_data(&mut fx, &ext, "viewer", false);
         assert!(shell_rx.try_recv().is_err(), "viewers queue no kernel work");
 
-        request(&mut fx, "writer-1", true);
-        request(&mut fx, "writer-2", true);
+        request_data(&mut fx, &ext, "writer-1", true);
+        request_data(&mut fx, &ext, "writer-2", true);
         let fold = shell_rx.try_recv().expect("one fold");
         assert_eq!(fold.content["source_ids"], json!(["p3"]));
         assert!(
@@ -857,24 +870,54 @@ mod tests {
             "no second fold while one is pending"
         );
 
-        fold.reply
-            .send(Ok(crate::kernel_shell_requester::ShellReply {
-                msg_type: super::super::BOKEH_FOLD_REPLY.into(),
-                content: json!({"status": "ok"}),
-                buffers: Vec::new(),
-            }))
-            .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while !ext.folds_in_flight.lock().unwrap().is_empty() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("the answered fold is no longer pending");
-        request(&mut fx, "writer-3", true);
+        reply_to_fold(fold, json!({"status": "ok"}));
+        wait_for_folds_pending(&ext, &[]).await;
+        request_data(&mut fx, &ext, "writer-3", true);
         assert!(
             shell_rx.try_recv().is_ok(),
             "a still-oversized tail folds again"
+        );
+    }
+
+    /// A fold the kernel deferred stays pending past its reply, so readers
+    /// do not queue more folds behind it, until its delta lands.
+    #[tokio::test]
+    async fn a_deferred_fold_stays_pending_until_its_delta_lands() {
+        use crate::bokeh_session::ingest::tests::wire_delta;
+        use crate::bokeh_session::store::tests::flush;
+
+        let (mut fx, ext, mut shell_rx) = oversized_tail().await;
+        request_data(&mut fx, &ext, "writer-1", true);
+        let fold = shell_rx.try_recv().expect("one fold");
+        reply_to_fold(
+            fold,
+            json!({"status": "ok", "source_ids": [], "deferred": true}),
+        );
+        // Let the reply task run; the claim must survive it.
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(ext.store().folds_pending("session-1"), ["p3"]);
+        request_data(&mut fx, &ext, "writer-2", true);
+        assert!(
+            shell_rx.try_recv().is_err(),
+            "the deferred fold is not requested again"
+        );
+
+        flush(
+            ext.store(),
+            &fx.blob_store,
+            wire_delta(
+                "tx-fold",
+                json!({"data_events": [{"kind": "ColumnsFolded", "source_id": "p3", "version": 1,
+                                         "columns": {"x": [1, 2]}}]}),
+            ),
+            &[],
+        )
+        .await;
+        assert!(
+            ext.store().folds_pending("session-1").is_empty(),
+            "the fold delta ends the claim"
         );
     }
 

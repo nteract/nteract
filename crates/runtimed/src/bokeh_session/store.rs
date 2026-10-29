@@ -9,7 +9,7 @@
 //! ([`AgentKeyedDoc`]). It creates sessions only while the coordinator routes
 //! that kind; otherwise Panel outputs stay static.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -119,6 +119,10 @@ struct AgentSession {
     kernel_actor: String,
     tracker: BokehReplacementTracker,
     tails: HashMap<String, SourceTail>,
+    /// Sources with a fold requested from the kernel and not yet answered,
+    /// or deferred by the kernel and not yet delivered; repeated data
+    /// requests must not queue more.
+    folds_pending: HashSet<String>,
 }
 
 impl AgentSession {
@@ -370,6 +374,7 @@ impl BokehSessionStore {
                 kernel_actor: kernel_actor.to_string(),
                 tracker,
                 tails: HashMap::new(),
+                folds_pending: HashSet::new(),
             },
         );
         drop(inner);
@@ -484,6 +489,7 @@ impl BokehSessionStore {
                         }
                     }
                     retire_tail(session.tails.remove(&source_id), now, retired);
+                    session.folds_pending.remove(&source_id);
                     delta.columns_changed.insert(source_id, columns);
                 }
                 DataOp::Replace {
@@ -522,6 +528,8 @@ impl BokehSessionStore {
                 columns_before.extend(existing.values().map(|c| c.blob.clone()));
             }
             retire_tail(session.tails.remove(id), now, retired);
+            // The kernel cannot fold a removed source, so no delta will clear it.
+            session.folds_pending.remove(id);
         }
         for message in flush.messages {
             broadcasts.push_message(message, &flush.message_buffers);
@@ -616,6 +624,9 @@ impl BokehSessionStore {
                 .map_err(|error| anyhow::anyhow!("replace Bokeh session {session_id}: {error}"))?;
             session.doc = replacement.doc;
             session.tracker = BokehReplacementTracker::start(&mut session.doc, *policy, now);
+            // A fold deferred across the replacement may never be needed in
+            // the new epoch; let readers ask again.
+            session.folds_pending.clear();
             records.push(BokehReplacementRecord {
                 session_id: session_id.clone(),
                 epoch: replacement.epoch,
@@ -749,6 +760,43 @@ impl BokehSessionStore {
             }
         }
         Some(tail)
+    }
+
+    /// Mark folds as requested from the kernel and return the sources that
+    /// had none pending, which the caller must request.
+    pub(crate) fn claim_folds(&self, session_id: &str, sources: &[String]) -> Vec<String> {
+        let mut inner = self.lock();
+        let Some(session) = inner.sessions.get_mut(session_id) else {
+            return Vec::new();
+        };
+        sources
+            .iter()
+            .filter(|source| session.folds_pending.insert((*source).clone()))
+            .cloned()
+            .collect()
+    }
+
+    /// End claims the kernel answered without deferring, or failed. A
+    /// deferred fold stays claimed until its `ColumnsFolded` lands, the
+    /// source is removed or the epoch is replaced.
+    pub(crate) fn release_folds(&self, session_id: &str, sources: &[String]) {
+        if let Some(session) = self.lock().sessions.get_mut(session_id) {
+            for source in sources {
+                session.folds_pending.remove(source);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn folds_pending(&self, session_id: &str) -> Vec<String> {
+        let inner = self.lock();
+        let mut pending: Vec<String> = inner
+            .sessions
+            .get(session_id)
+            .map(|session| session.folds_pending.iter().cloned().collect())
+            .unwrap_or_default();
+        pending.sort();
+        pending
     }
 
     /// Drop a kernel's sessions, returning their final state, tails
@@ -1487,6 +1535,45 @@ pub(crate) mod tests {
         sync_peer(&store, &mut states, &mut fresh, &mut fresh_state, 1);
         assert_eq!(fresh.epoch(), Some(1));
         assert_eq!(fresh.get_prop("p2", "value").as_deref(), Some("0.9"));
+    }
+
+    /// Fold claims (deferred ones included) end with the epoch or the
+    /// source, since no fold delta may follow; claims are per session.
+    #[tokio::test]
+    async fn fold_claims_end_with_the_epoch_or_the_source() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let blobs = BlobStore::new(dir.path().to_path_buf());
+        let store = BokehSessionStore::with_policy(BokehReplacementPolicy {
+            min_change_bytes: 0,
+            saved_size_factor: 0,
+            min_interval_ms: 0,
+        });
+        let doc = BokehSessionDoc::build(&snapshot(), KERNEL).unwrap();
+        store.insert("session-1", doc, "kernel-1", KERNEL);
+        let claim = |sources: &[&str]| {
+            let sources: Vec<String> = sources.iter().map(|s| s.to_string()).collect();
+            store.claim_folds("session-1", &sources)
+        };
+
+        assert_eq!(claim(&["p3"]), ["p3"]);
+        assert!(claim(&["p3"]).is_empty(), "already claimed");
+        assert!(store.claim_folds("other", &["p3".into()]).is_empty());
+        store.with_doc("session-1", |doc| {
+            doc.set_prop("p2", "value", "0.9").unwrap();
+            doc.commit();
+        });
+        assert_eq!(store.replace_due().unwrap().len(), 1);
+        assert!(store.folds_pending("session-1").is_empty());
+
+        assert_eq!(claim(&["p3"]), ["p3"]);
+        flush(
+            &store,
+            &blobs,
+            wire_delta("tx-1", json!({"models_removed": ["p3"]})),
+            &[],
+        )
+        .await;
+        assert!(store.folds_pending("session-1").is_empty());
     }
 
     #[test]

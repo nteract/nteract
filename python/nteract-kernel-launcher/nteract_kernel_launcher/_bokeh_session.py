@@ -48,6 +48,10 @@ INLINE_FLUSH_DELAY = 0.05
 FOLD_BYTE_RATIO = 2
 FOLD_QUIET_SECONDS = 2.0
 
+# Builds an event may fail before it is dropped. A failure that persists would
+# otherwise log on every flush and hold back every later change.
+MAX_BUILD_ATTEMPTS = 3
+
 _ref_props_cache: dict[type, list[str]] = {}
 
 # Returns the kernel's IOLoop; set by the kernel-hook install.
@@ -521,6 +525,8 @@ class BokehDocumentSession:
         self._transaction_events: list[Any] = []
         self._queued_deltas: list[BokehDelta] = []
         self._pending_events: list[Any] = []
+        # Failed builds per requeued event, keyed by id; holding the event keeps the id unique.
+        self._build_failures: dict[int, tuple[Any, int]] = {}
         self._flush_scheduled = False
         self._flush_scheduled_at = 0.0
         self._quiet_fold_scheduled = False
@@ -936,17 +942,66 @@ class BokehDocumentSession:
 
         The caller may be user code that only set a property. A failed build
         commits nothing, so its events go back to the front of the queue and
-        the next flush retries them against unchanged versions.
+        the next flush retries them against unchanged versions, up to
+        ``MAX_BUILD_ATTEMPTS`` builds per event.
         """
-        try:
-            delta = self._build_delta_unlocked(events, transaction_id, **kwargs)
-        except Exception:  # noqa: BLE001
-            log.exception("Could not build a Bokeh delta for session %s", self.session_id)
-            self._pending_events[:0] = events
-            return None
+        while True:
+            try:
+                delta = self._build_delta_unlocked(events, transaction_id, **kwargs)
+                break
+            except Exception:  # noqa: BLE001
+                kept = self._drop_exhausted_unlocked(events)
+                if not kept or len(kept) == len(events):
+                    self._pending_events[:0] = kept
+                    return None
+                # The dropped events may have been the cause, so the rest
+                # need not wait for another change to be retried.
+                events = kept
+        self._build_failures.clear()
         if delta is not None:
             self._deliver_unlocked(delta)
         return delta
+
+    def _drop_exhausted_unlocked(self, events: list[Any]) -> list[Any]:
+        """Count a failed build against its events; return those still worth retrying."""
+        if not events:
+            # A correction only; the next patch touching these properties corrects them.
+            log.exception("Could not build a Bokeh delta for session %s", self.session_id)
+            return []
+        failures = {}
+        dropped = []
+        for event in events:
+            count = self._build_failures.get(id(event), (event, 0))[1] + 1
+            if count >= MAX_BUILD_ATTEMPTS:
+                dropped.append(event)
+            else:
+                failures[id(event)] = (event, count)
+        self._build_failures = failures
+        kept = [event for event in events if id(event) in failures]
+        if not dropped:
+            log.warning(
+                "Could not build a Bokeh delta for session %s; retrying on the next flush",
+                self.session_id,
+                exc_info=True,
+            )
+            return kept
+        log.error(
+            "Could not build a Bokeh delta for session %s after %d attempts; dropping %d events",
+            self.session_id,
+            MAX_BUILD_ATTEMPTS,
+            len(dropped),
+            exc_info=True,
+        )
+        # Nothing was versioned, so later deltas follow without a gap, but
+        # readers lack the dropped streams and patches until a fold resets them.
+        for event in dropped:
+            model = getattr(event, "model", None)
+            mid = str(model.id) if model is not None else None
+            if mid in self._known_models and (
+                isinstance(event, _FrozenDataEvent | _ReplacedColumns) or _is_data_event(event)
+            ):
+                self._deferred_folds.add(mid)
+        return kept
 
     def _held(self) -> bool:
         """Whether Bokeh is holding events for changes the graph already has.

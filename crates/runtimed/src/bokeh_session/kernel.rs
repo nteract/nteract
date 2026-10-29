@@ -77,12 +77,14 @@ impl BokehKernelRequester {
         }
     }
 
-    /// Ask the kernel to fold sources; the folds arrive as a delta.
+    /// Ask the kernel to fold sources; the folds arrive as a delta. Resolves
+    /// to whether the kernel deferred them until its document is free, in
+    /// which case the delta comes after the reply.
     pub(crate) fn fold(
         &self,
         session_id: &str,
         source_ids: Vec<String>,
-    ) -> impl Future<Output = anyhow::Result<()>> + Send + 'static {
+    ) -> impl Future<Output = anyhow::Result<bool>> + Send + 'static {
         let content = json!({
             "schema_version": BOKEH_WIRE_SCHEMA_VERSION,
             "session_id": session_id,
@@ -107,7 +109,7 @@ impl BokehKernelRequester {
                 "Bokeh fold failed: {}",
                 kernel_error_text(raw.content.get("error"))
             );
-            Ok(())
+            Ok(raw.content.get("deferred").and_then(Value::as_bool) == Some(true))
         }
     }
 
@@ -544,6 +546,18 @@ mod tests {
     async fn fold_and_close_check_the_kernel_reply() {
         let (shell, mut rx) = KernelShellRequester::for_test();
         let requester = BokehKernelRequester::new(shell, Arc::new(OutputRedactor::default()));
+        for (content, deferred) in [
+            (json!({"status": "ok", "source_ids": ["p3"]}), false),
+            (
+                json!({"status": "ok", "source_ids": [], "deferred": true}),
+                true,
+            ),
+        ] {
+            let fold = requester.fold("session-1", vec!["p3".into()]);
+            reply(rx.try_recv().unwrap(), BOKEH_FOLD_REPLY, content);
+            assert_eq!(fold.await.unwrap(), deferred);
+        }
+
         let fold = requester.fold("session-1", vec!["p3".into()]);
         let command = rx.try_recv().unwrap();
         assert_eq!(command.content["source_ids"], json!(["p3"]));
