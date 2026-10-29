@@ -5,27 +5,36 @@ import { DatabaseSync } from "node:sqlite";
 
 /** Real SQLite behind the subset of the D1 binding Pages uses. A batch runs as
  * one transaction, like D1. `mode` injects an outage: "fail" rejects every
- * call, "hang" never settles. */
+ * call, "hang" never settles. `delay` adds latency to every call. */
 export class SqliteD1 {
   mode = "ok";
   calls = 0;
+  delay = 0;
   constructor(path) {
     this.sqlite = new DatabaseSync(path);
   }
-  #outage() {
+  async #gate() {
     this.calls++;
-    if (this.mode === "fail") return Promise.reject(new Error("injected D1 outage"));
-    if (this.mode === "hang") return new Promise(() => {});
-    return null;
+    if (this.delay) await new Promise((resolve) => setTimeout(resolve, this.delay));
+    if (this.mode === "fail") throw new Error("injected D1 outage");
+    if (this.mode === "hang") await new Promise(() => {});
   }
   prepare(sql) {
     const connection = this.sqlite;
     const build = (values = []) => ({
       bind: (...next) => build(next),
-      first: async () => this.#outage() ?? connection.prepare(sql).get(...values) ?? null,
-      all: async () =>
-        this.#outage() ?? { success: true, results: connection.prepare(sql).all(...values) },
-      run: async () => this.#outage() ?? this.#run(sql, values),
+      first: async () => {
+        await this.#gate();
+        return connection.prepare(sql).get(...values) ?? null;
+      },
+      all: async () => {
+        await this.#gate();
+        return { success: true, results: connection.prepare(sql).all(...values) };
+      },
+      run: async () => {
+        await this.#gate();
+        return this.#run(sql, values);
+      },
       execute: () => this.#run(sql, values),
     });
     return build();
@@ -40,8 +49,7 @@ export class SqliteD1 {
     const hold = this.holdNext;
     this.holdNext = undefined;
     if (hold) await hold;
-    const outage = this.#outage();
-    if (outage) return outage;
+    await this.#gate();
     this.sqlite.exec("BEGIN");
     try {
       const results = statements.map((statement, index) => {

@@ -15,6 +15,7 @@ import {
   parseListArguments,
   pruneIndexRows,
   queryCatalogIndex,
+  reconcileAccountIndex,
   reportPageIndex,
   restrictPageIndex,
   retirePageIndex,
@@ -1004,4 +1005,40 @@ test("shared title repair uses the Page host's observation time", async (t) => {
     f.db.rows("SELECT title FROM pages_catalog_access WHERE principal = ?", member)[0].title,
     "Gamma",
   );
+});
+
+test("a slow D1 cannot stretch reconcile past its deadline plus one call", async (t) => {
+  const db = sqliteD1(t).open();
+  await migrateCatalogIndex(db);
+  const storage = new Storage();
+  await ownEntries(storage, 100);
+  shortBounds(t, { reconcile: 300 });
+  db.delay = 150;
+  const reconcile = () =>
+    reconcileAccountIndex({
+      db,
+      storage,
+      principal: owner,
+      epoch: "1",
+      verify: async () => ({ status: "unavailable" }),
+    });
+  const ownerRows = () =>
+    db.rows("SELECT count(*) AS n FROM pages_catalog_access WHERE principal = ?", owner)[0].n;
+  const started = Date.now();
+  assert.equal(await reconcile(), false);
+  const elapsed = Date.now() - started;
+  // Deadline plus one in-flight D1 call, with scheduling slack.
+  assert.ok(elapsed < 300 + 150 + 40, `reconcile took ${elapsed} ms`);
+  // Progress stops at the last committed unit: every committed entry is in D1
+  // and nothing after the saved position is.
+  const pass = await storage.get("host/index/sync");
+  assert.equal(pass.phase, "owned");
+  const committed = Number(pass.after.slice("page/".length, "page/".length + 8));
+  assert.ok(committed > 0 && committed % 24 === 0, pass.after);
+  assert.equal(ownerRows(), committed);
+  db.delay = 0;
+  let done = false;
+  for (let request = 0; request < 10 && !done; request++) done = await reconcile();
+  assert.equal(done, true);
+  assert.equal(ownerRows(), 100);
 });

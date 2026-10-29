@@ -510,10 +510,13 @@ export class Catalog {
   /**
    * D1 or this Catalog's entries supply candidates; neither is authority for a
    * title. Owner rows must match this account's own `page/` (or `trash/`)
-   * entry, and every other row is checked by its Page host. The scan looks
-   * ahead for one verified row past the page, so whether next_cursor is set
-   * does not depend on rejected candidates. The cursor is sealed to the
-   * caller, query and in_trash, and rejected rows are pruned on encounter.
+   * entry, and every other row is checked by its Page host. Titles shown come
+   * from those checks; search matches the caller's own authorized snapshots.
+   * The scan looks ahead for one verified row past the page, so rejected rows
+   * set next_cursor only when the scan stops at its bound, and then only over
+   * stale rows whose snapshots the caller was previously authorized to see.
+   * The cursor is sealed to the caller, query and in_trash, and rejected rows
+   * are pruned on encounter.
    */
   async listPages(request, identity, args) {
     const options = parseListArguments(args);

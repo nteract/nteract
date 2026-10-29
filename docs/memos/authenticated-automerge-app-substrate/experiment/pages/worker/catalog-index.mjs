@@ -5,9 +5,11 @@
  * own the owner, ACL and lifecycle state. A listing returns a non-owner title
  * only after its Page DO confirms access, and an owner title only while the
  * owner's Catalog DO still has the matching `page/` or `trash/` entry. A stale
- * or missing D1 row can hide a Page from a listing; it cannot reveal one, and
- * listings look ahead and seal their cursors so a rejected row cannot change a
- * response either.
+ * or missing D1 row can hide a Page from a listing; it cannot reveal a title.
+ * Search and ordering use each principal's own snapshot of the titles it was
+ * authorized to see. A listing looks ahead for one verified row, but a scan
+ * stopped by its bound can still return a cursor positioned over stale rows
+ * whose snapshots the caller was previously authorized to see.
  *
  * Migrations are append-only and additive. Older builds ignore these tables,
  * and a build must keep working against a schema version newer than it knows.
@@ -309,8 +311,11 @@ function deleteDomainReaders(db, pageId, domain, memberKeys, revision) {
 /** Grants from a committed revision, each carrying the title snapshot its
  * principal is now authorized to see. A delayed write from an older revision
  * finds a newer acl_revision and changes nothing; a principal no longer listed
- * keeps the last title it was authorized to see. Owner rows imported from the
- * owner's own Catalog are unguarded: ownership never changes. */
+ * keeps the last title it was authorized to see. Snapshots change only here:
+ * from Page host reports (members on title changes, a domain reader when it
+ * opens the Page) and from account reconciliation after the Page host
+ * verifies the principal. Owner rows imported from the owner's own Catalog
+ * are unguarded: ownership never changes. */
 function upsertAccess(db, pageId, rows, revision, { title, updatedAt, owner = false }) {
   const snapshot = catalogTitle(title);
   return db
@@ -747,14 +752,19 @@ function sharedStatements(db, principal, pageId, page, fallbackAt, createdAt) {
  * when they need repair. A pass rewrites owner rows from the Catalog's `page/`
  * and `trash/` entries (title, timestamps, state), re-verifies every shared
  * entry and every non-owner D1 row with its Page host, and drops owner rows
- * the Catalog no longer has. One listing advances it until about
- * `catalogIndexTimeouts.reconcile`, `entriesPerListing` entries or
- * `verifications` Page checks, whichever comes first; the deadline is checked
- * before every step, and a step's checks run `concurrency` at a time, so one
- * listing spends at most the reconcile budget plus one check deadline. The
- * exact position persists in the Catalog, so a pass over a large account
- * (O(account size), advanced only by listings) resumes instead of holding
- * this Catalog's request queue.
+ * the Catalog no longer has.
+ *
+ * One listing advances the pass in units: at most one D1 read, one group of
+ * `concurrency` Page checks, and one D1 write each. The deadline
+ * (`catalogIndexTimeouts.reconcile` from entry) is checked before every D1
+ * call and every check group; after it passes, nothing new starts. The only
+ * exception is the write that commits checks already made, so their results
+ * are never thrown away. Worst case: the deadline plus one in-flight D1 call
+ * (`read`), or plus one check group (`verify`) and its commit (`write`). The
+ * position advances only through committed entries and persists in the
+ * Catalog, so a pass, which is O(account size) and advanced only by listings,
+ * resumes exactly where it stopped and never holds this Catalog's request
+ * queue beyond that bound. While D1 calls exceed the budget, the pass waits.
  *
  * Returns true when the account's rows are complete for this epoch: a pass
  * completed now, or one completed before under the same epoch.
@@ -767,6 +777,8 @@ export async function reconcileAccountIndex({
   verify,
   now = Date.now(),
 }) {
+  const deadline = Date.now() + catalogIndexTimeouts.reconcile;
+  const open = () => Date.now() < deadline;
   const marker = await read(
     db
       .prepare("SELECT epoch, synced_at FROM pages_catalog_accounts WHERE principal = ?")
@@ -784,9 +796,18 @@ export async function reconcileAccountIndex({
     !(Date.parse(marker.synced_at) > now - catalogIndexBounds.reconcileIntervalMs);
   if (!due) return true;
   pass ??= { epoch, phase: "owned", after: null, incomplete: false, dirty: dirty ?? null };
-  const deadline = Date.now() + catalogIndexTimeouts.reconcile;
   let verifications = 0;
   let entries = 0;
+  const write = (statements) =>
+    statements.length
+      ? withTimeout(db.batch(statements), catalogIndexTimeouts.write)
+      : Promise.resolve();
+  /** Commit a unit and the position after it, in that order. */
+  const commit = async (statements, position) => {
+    await write(statements);
+    Object.assign(pass, position);
+    await storage.put(SYNC, pass);
+  };
   /** Verify a group concurrently; deletes carry the revision observed before
    * the check, so a regrant that lands meanwhile survives. */
   const checkShared = async (group) => {
@@ -823,19 +844,17 @@ export async function reconcileAccountIndex({
         ).results ?? []
       ).map((row) => [row.page_id, row.updated_revision]),
     );
+  // One owner write holds at most 24 entries (two statements each).
+  const ownerUnit = 24;
   while (
-    pass.phase !== "done" &&
-    Date.now() < deadline &&
+    pass.phase !== "finished" &&
+    open() &&
     verifications < catalogIndexBounds.verifications &&
     entries < catalogIndexBounds.entriesPerListing
   ) {
-    const statements = [];
     if (pass.phase === "owned" || pass.phase === "trash") {
       const prefix = pass.phase === "owned" ? "page/" : "trash/";
-      const room = Math.min(
-        catalogIndexBounds.entries,
-        catalogIndexBounds.entriesPerListing - entries,
-      );
+      const room = Math.min(ownerUnit, catalogIndexBounds.entriesPerListing - entries);
       const listed = [
         ...(
           await storage.list({
@@ -845,7 +864,7 @@ export async function reconcileAccountIndex({
           })
         ).entries(),
       ];
-      entries += listed.length;
+      const statements = [];
       for (const [, entry] of listed) {
         if (entry?.pending || !validPageId(entry?.page_id)) continue;
         const updatedAt = entry.updated_at ?? entry.created_at ?? new Date(now).toISOString();
@@ -869,9 +888,15 @@ export async function reconcileAccountIndex({
           ),
         );
       }
-      pass.after = listed.at(-1)?.[0] ?? pass.after;
-      if (listed.length < room)
-        Object.assign(pass, { phase: pass.phase === "owned" ? "trash" : "shared", after: null });
+      // Storage reads are local; the deadline guards the D1 write.
+      if (statements.length && !open()) break;
+      entries += listed.length;
+      await commit(
+        statements,
+        listed.length < room
+          ? { phase: pass.phase === "owned" ? "trash" : "shared", after: null }
+          : { after: listed.at(-1)[0] },
+      );
     } else if (pass.phase === "shared") {
       const room = Math.min(
         catalogIndexBounds.concurrency,
@@ -886,11 +911,12 @@ export async function reconcileAccountIndex({
           })
         ).entries(),
       ];
-      entries += listed.length;
       const valid = listed.map(([, entry]) => entry).filter((entry) => validPageId(entry?.page_id));
-      const revisions = await observedRevisions(valid.map((entry) => entry.page_id));
-      statements.push(
-        ...(await checkShared(
+      let statements = [];
+      if (valid.length) {
+        const revisions = await observedRevisions(valid.map((entry) => entry.page_id));
+        if (!open()) break;
+        statements = await checkShared(
           valid.map((entry) => ({
             pageId: entry.page_id,
             updatedAt: entry.updated_at ?? new Date(now).toISOString(),
@@ -898,14 +924,17 @@ export async function reconcileAccountIndex({
             revision: revisions.get(entry.page_id),
             fromCatalog: true,
           })),
-        )),
+        );
+      }
+      entries += listed.length;
+      await commit(
+        statements,
+        listed.length < room ? { phase: "rows", after: null } : { after: listed.at(-1)[0] },
       );
-      pass.after = listed.at(-1)?.[0] ?? pass.after;
-      if (listed.length < room) Object.assign(pass, { phase: "rows", after: null });
     } else if (pass.phase === "rows" || pass.phase === "orphans") {
       const owner = pass.phase === "orphans";
       const room = owner
-        ? Math.min(catalogIndexBounds.entries, catalogIndexBounds.entriesPerListing - entries)
+        ? Math.min(ownerUnit * 2, catalogIndexBounds.entriesPerListing - entries)
         : Math.min(
             catalogIndexBounds.concurrency,
             catalogIndexBounds.verifications - verifications,
@@ -925,7 +954,7 @@ export async function reconcileAccountIndex({
               .all(),
           )
         ).results ?? [];
-      entries += rows.length;
+      let statements = [];
       const unchecked = [];
       for (const row of rows) {
         if (owner) {
@@ -945,27 +974,30 @@ export async function reconcileAccountIndex({
           });
         }
       }
-      statements.push(...(await checkShared(unchecked)));
-      pass.after = rows.at(-1)?.page_id ?? pass.after;
-      if (rows.length < room)
-        Object.assign(pass, { phase: owner ? "done" : "orphans", after: null });
+      if ((statements.length || unchecked.length) && !open()) break;
+      if (unchecked.length) statements = await checkShared(unchecked);
+      entries += rows.length;
+      await commit(
+        statements,
+        rows.length < room
+          ? { phase: owner ? "done" : "orphans", after: null }
+          : { after: rows.at(-1).page_id },
+      );
+    } else if (pass.phase === "done") {
+      await storage.delete(SYNC);
+      if (pass.incomplete) return current;
+      await read(
+        db
+          .prepare(
+            `INSERT INTO pages_catalog_accounts (principal, epoch, synced_at) VALUES (?, ?, ?)
+            ON CONFLICT (principal) DO UPDATE SET epoch = excluded.epoch, synced_at = excluded.synced_at`,
+          )
+          .bind(principal, epoch, new Date(now).toISOString())
+          .run(),
+      );
+      if ((await storage.get(DIRTY)) === (pass.dirty ?? undefined)) await storage.delete(DIRTY);
+      return true;
     }
-    for (let index = 0; index < statements.length; index += 48)
-      await read(db.batch(statements.slice(index, index + 48)));
-    await storage.put(SYNC, pass);
   }
-  if (pass.phase !== "done") return current;
-  await storage.delete(SYNC);
-  if (pass.incomplete) return current;
-  await read(
-    db
-      .prepare(
-        `INSERT INTO pages_catalog_accounts (principal, epoch, synced_at) VALUES (?, ?, ?)
-        ON CONFLICT (principal) DO UPDATE SET epoch = excluded.epoch, synced_at = excluded.synced_at`,
-      )
-      .bind(principal, epoch, new Date(now).toISOString())
-      .run(),
-  );
-  if ((await storage.get(DIRTY)) === (pass.dirty ?? undefined)) await storage.delete(DIRTY);
-  return true;
+  return current;
 }

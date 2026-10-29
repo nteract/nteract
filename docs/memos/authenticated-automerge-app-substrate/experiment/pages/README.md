@@ -217,13 +217,14 @@ D1 picks candidates; it never grants access. Every non-owner row returned by a
 listing is verified by its Page host with the caller's credentials, and owner rows
 must match the account's own Catalog entry. Each access row keeps its own title
 snapshot, updated only while that principal is authorized: members on title
-changes, domain readers when they open the Page. Search and ordering use that
+changes, domain readers when they open the Page, and any principal when account
+reconciliation verifies it with the Page host. Search and ordering use that
 snapshot, so a row left behind after revocation still carries the last title its
 principal was allowed to see. Rejected rows are pruned when a listing meets them,
 guarded by the revision the listing read. A listing looks ahead for one verified
 row past its page; only a scan that stops at its bound (`2 × limit + 16`
 candidates) returns a cursor without one, and that can only reflect stale rows
-whose titles the caller already saw. `next_cursor` is sealed (AES-GCM, keyed from
+carrying titles the caller was previously authorized to see. `next_cursor` is sealed (AES-GCM, keyed from
 `NOTEBOOK_CLOUD_APP_SESSION_SECRET`) to the caller, query and `in_trash`, and
 expires after 24 hours. Pagination is best-effort: a Page whose title or sharing
 changes mid-traversal can move across the cursor.
@@ -243,10 +244,13 @@ hours. A pass rewrites owner rows (title, timestamps, state), re-verifies shared
 entries and non-owner rows (using the Page host's own title observation time), and
 drops owner rows the Catalog no longer has. A Page host's first check after a
 restart also reports its row. Each listing advances the pass until about one
-second, 128 entries or 16 Page checks; the deadline is checked before every step
-and checks run four at a time, so one listing spends at most that budget plus one
-3-second check deadline. The exact position persists, so a pass, which is
-O(account size) and advanced only by listings, does not hold the Catalog's queue.
+second, 128 entries or 16 Page checks. The deadline is checked before every D1
+call and every group of four Page checks, and nothing new starts after it; only a
+check group already made still commits. Worst case is the deadline plus one D1
+call (2.5 s), or plus one check group (3 s) and its commit (1.5 s). Progress is
+saved through the last committed entry, so a pass, which is O(account size) and
+advanced only by listings, resumes exactly and does not hold the Catalog's queue
+beyond that bound. While D1 calls take longer than the budget, the pass waits.
 Until an account's first pass completes, its listings use the Catalog entries.
 Changing the epoch value forces an immediate pass everywhere; it is not required
 after a rollback, since the periodic pass and each Page host's first report after
