@@ -5642,6 +5642,7 @@ impl Daemon {
                 // safe (the persisted-doc walk below still gathers refs for
                 // anything they might reopen). Without this distinction, a
                 // daemon that stays open while idle would never GC again.
+                let blob_mark_started = chrono::Utc::now();
                 let blob_max_age = blob_gc_grace();
                 let execution_store_refs = Self::collect_execution_store_refs_for_gc(
                     &self.config.execution_store_dir,
@@ -5670,7 +5671,13 @@ impl Daemon {
                         execution_store_refs,
                     );
                     debug!("[runtimed] GC: mark sources: {}", mark.summary());
-                    Self::sweep_orphaned_blobs(&self.blob_store, mark.hashes(), blob_max_age).await;
+                    Self::sweep_orphaned_blobs_before(
+                        &self.blob_store,
+                        mark.hashes(),
+                        blob_max_age,
+                        blob_mark_started,
+                    )
+                    .await;
                 }
             }
 
@@ -6698,11 +6705,35 @@ impl Daemon {
 
     /// Sweep the blob store, deleting blobs that are not in
     /// `referenced_hashes` and are older than `blob_max_age`.
+    #[cfg(test)]
     pub(crate) async fn sweep_orphaned_blobs(
         blob_store: &BlobStore,
         referenced_hashes: &std::collections::HashSet<String>,
         blob_max_age: std::time::Duration,
     ) {
+        Self::sweep_orphaned_blobs_before(
+            blob_store,
+            referenced_hashes,
+            blob_max_age,
+            chrono::Utc::now(),
+        )
+        .await;
+    }
+
+    async fn sweep_orphaned_blobs_before(
+        blob_store: &BlobStore,
+        referenced_hashes: &std::collections::HashSet<String>,
+        blob_max_age: std::time::Duration,
+        mark_started: chrono::DateTime<chrono::Utc>,
+    ) {
+        // Fix the boundary before marking. Even zero-grace GC must preserve
+        // uploads whose references could not yet appear in that mark snapshot.
+        let Some(cutoff) = chrono::Duration::from_std(blob_max_age)
+            .ok()
+            .and_then(|grace| mark_started.checked_sub_signed(grace))
+        else {
+            return;
+        };
         const DELETE_BATCH_SIZE: usize = 50;
         match blob_store.list().await {
             Ok(all_blobs) => {
@@ -6713,21 +6744,11 @@ impl Daemon {
                         if referenced_hashes.contains(hash) {
                             continue;
                         }
-                        let is_stale =
-                            blob_store
-                                .get_meta(hash)
-                                .await
-                                .ok()
-                                .flatten()
-                                .is_some_and(|m| {
-                                    let age_secs = chrono::Utc::now()
-                                        .signed_duration_since(m.created_at)
-                                        .num_seconds();
-                                    // Guard against clock skew (negative age
-                                    // wraps to huge u64 otherwise).
-                                    age_secs > 0 && age_secs as u64 > blob_max_age.as_secs()
-                                });
-                        if is_stale && blob_store.delete(hash).await.unwrap_or(false) {
+                        if blob_store
+                            .delete_if_older_than(hash, cutoff)
+                            .await
+                            .unwrap_or(false)
+                        {
                             // Per-deletion audit line: when a sweep turns out
                             // to have eaten a live blob, this is the record of
                             // what was deleted and that no mark source
@@ -11699,6 +11720,41 @@ mod tests {
         assert!(
             blob_store.get(&hash).await.unwrap().is_none(),
             "unreferenced blob past grace should be deleted"
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_preserves_reput_after_mark_even_with_zero_grace() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = BlobStore::with_ephemeral_cap(tmp.path().join("blobs"), 0);
+        let owner = crate::blob_store::EphemeralBlobOwner::default();
+        let hash = blob_store
+            .put_leased_ephemeral(b"reused", "x/test", &owner.next_lease())
+            .await
+            .unwrap();
+        let marked_at = chrono::Utc::now();
+        blob_store
+            .put_leased_ephemeral(b"reused", "x/test", &owner.next_lease())
+            .await
+            .unwrap();
+        Daemon::sweep_orphaned_blobs_before(
+            &blob_store,
+            &std::collections::HashSet::new(),
+            std::time::Duration::ZERO,
+            marked_at,
+        )
+        .await;
+        assert!(blob_store.get(&hash).await.unwrap().is_some());
+        Daemon::sweep_orphaned_blobs_before(
+            &blob_store,
+            &std::collections::HashSet::new(),
+            std::time::Duration::MAX,
+            chrono::Utc::now(),
+        )
+        .await;
+        assert!(
+            blob_store.get(&hash).await.unwrap().is_some(),
+            "unrepresentable grace must fail closed"
         );
     }
 

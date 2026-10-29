@@ -34,7 +34,7 @@ use super::ingest::{
 use super::kernel::{BokehKernelOutbox, BokehKernelRequester, INGEST_DRAIN_TIMEOUT};
 use super::materialize::SnapshotWithTail;
 use super::BOKEH_SESSION_KIND;
-use crate::blob_store::BlobStore;
+use crate::blob_store::{BlobStore, EphemeralBlobLease, EphemeralBlobOwner};
 use crate::kernel_extensions::RawIopubMessage;
 use crate::keyed_doc::agent::{KeyedDocAvailability, KeyedDocWaker};
 use crate::keyed_doc::{AgentKeyedDoc, KeyedSyncStates};
@@ -117,6 +117,11 @@ struct SourceTail {
     buffer_blobs: Vec<String>,
 }
 
+struct RetirementBarrier {
+    epoch: u64,
+    heads: Vec<automerge::ChangeHash>,
+}
+
 struct AgentSession {
     doc: BokehSessionDoc,
     kernel_id: String,
@@ -127,6 +132,8 @@ struct AgentSession {
     /// (`None`), or deferred by the kernel at the given time and not yet
     /// delivered; repeated data requests must not queue more.
     folds_pending: HashMap<String, Option<u64>>,
+    retirements: HashMap<String, RetirementBarrier>,
+    coordinator_epoch_ready: bool,
 }
 
 impl AgentSession {
@@ -177,10 +184,25 @@ struct Inner {
     /// Per kernel: resolves once its ingest applied every delta it received.
     ingest_drains: HashMap<String, oneshot::Receiver<()>>,
     retired: Vec<(u64, String)>,
+    blob_leases: HashMap<String, EphemeralBlobLease>,
+    // Disconnected producers cannot prove a retained coordinator snapshot was
+    // replaced. Leave their leases to the ordinary all-room GC.
+    unconfirmed_retirements: BTreeSet<String>,
     policy: BokehReplacementPolicy,
 }
 
 impl Inner {
+    fn protected_blob_refs(&self) -> BTreeSet<String> {
+        let mut refs = self.live_blob_refs();
+        refs.extend(self.unconfirmed_retirements.iter().cloned());
+        refs.extend(
+            self.sessions
+                .values()
+                .flat_map(|session| session.retirements.keys().cloned()),
+        );
+        refs
+    }
+
     fn live_blob_refs(&self) -> BTreeSet<String> {
         self.sessions
             .values()
@@ -196,6 +218,7 @@ pub(crate) struct BokehSessionStore {
     /// `None` only in tests, where every session is accepted.
     availability: Option<KeyedDocAvailability>,
     started: Instant,
+    blob_owner: EphemeralBlobOwner,
     #[cfg(test)]
     clock_offset_ms: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -228,11 +251,14 @@ impl BokehSessionStore {
                 kernel: None,
                 ingest_drains: HashMap::new(),
                 retired: Vec::new(),
+                blob_leases: HashMap::new(),
+                unconfirmed_retirements: BTreeSet::new(),
                 policy,
             })),
             waker: Arc::new(StdMutex::new(None)),
             availability,
             started: Instant::now(),
+            blob_owner: EphemeralBlobOwner::default(),
             #[cfg(test)]
             clock_offset_ms: Arc::default(),
         }
@@ -395,6 +421,8 @@ impl BokehSessionStore {
                 tracker,
                 tails: HashMap::new(),
                 folds_pending: HashMap::new(),
+                retirements: HashMap::new(),
+                coordinator_epoch_ready: false,
             },
         );
         drop(inner);
@@ -449,6 +477,7 @@ impl BokehSessionStore {
             .get_mut(&flush.session_id)
             .ok_or_else(|| anyhow::anyhow!("unknown Bokeh session {}", flush.session_id))?;
         let epoch = session.doc.epoch().unwrap_or_default();
+        let before_refs = session.blob_refs();
 
         let mut delta = BokehSessionDocDelta {
             models_added: flush.models_added,
@@ -559,6 +588,16 @@ impl BokehSessionStore {
         // Ops applied before an error are valid kernel state; keep them.
         session.doc.commit();
         let referenced = session.blob_refs();
+        let removal_heads = session.doc.get_heads();
+        for hash in before_refs.difference(&referenced) {
+            session.retirements.insert(
+                hash.clone(),
+                RetirementBarrier {
+                    epoch,
+                    heads: removal_heads.clone(),
+                },
+            );
+        }
         // Content addressing can make a retired hash current again; its
         // grace period restarts when it is next superseded.
         retired.retain(|(_, blob)| !referenced.contains(blob));
@@ -574,27 +613,75 @@ impl BokehSessionStore {
         Ok(broadcasts.finish())
     }
 
-    /// Blobs retired at least `RETIRED_BLOB_GRACE_MS` ago, to free if
-    /// ephemeral. Content addressing lets any session reference a retired
-    /// hash again, so blobs still live anywhere in the store are dropped
-    /// from the list instead of returned.
-    pub(crate) fn take_expired_retired(&self, now_ms: u64) -> Vec<String> {
+    /// Select and detach exact generations atomically. A later re-put cannot
+    /// donate its fresh lease to an older asynchronous retirement batch.
+    fn take_expired_retired(&self, now_ms: u64) -> Vec<(String, EphemeralBlobLease)> {
         let mut inner = self.lock();
-        let (expired, kept): (Vec<_>, Vec<_>) = inner
-            .retired
-            .drain(..)
-            .partition(|(at, _)| now_ms.saturating_sub(*at) >= RETIRED_BLOB_GRACE_MS);
-        inner.retired = kept;
-        if expired.is_empty() {
-            return Vec::new();
+        let protected = inner.protected_blob_refs();
+        let mut expired = Vec::new();
+        let mut kept = Vec::new();
+        for (at, hash) in std::mem::take(&mut inner.retired) {
+            if now_ms.saturating_sub(at) < RETIRED_BLOB_GRACE_MS || protected.contains(&hash) {
+                kept.push((at, hash));
+            } else if let Some(lease) = inner.blob_leases.remove(&hash) {
+                expired.push((hash, lease));
+            }
         }
-        let live = inner.live_blob_refs();
-        let mut seen = BTreeSet::new();
+        inner.retired = kept;
         expired
-            .into_iter()
-            .map(|(_, blob)| blob)
-            .filter(|blob| !live.contains(blob) && seen.insert(blob.clone()))
-            .collect()
+    }
+
+    fn register_blob_leases(&self, leases: HashMap<String, EphemeralBlobLease>) {
+        let mut inner = self.lock();
+        for (hash, lease) in leases {
+            if inner
+                .blob_leases
+                .get(&hash)
+                .is_none_or(|old| old.generation < lease.generation)
+            {
+                inner.blob_leases.insert(hash.clone(), lease);
+                // Even a one-off message (not a document root) gets a fresh
+                // fetch grace period when identical bytes are emitted again.
+                inner.retired.retain(|(_, retired)| retired != &hash);
+            }
+        }
+    }
+
+    /// Also retire writes from rejected/partially prepared flushes and one-off
+    /// message buffers. Leases protect the upload-to-document-commit interval.
+    fn retire_unused_leases(&self) {
+        let now = self.now_ms();
+        let mut inner = self.lock();
+        let live = inner.protected_blob_refs();
+        let retired: BTreeSet<_> = inner.retired.iter().map(|(_, hash)| hash.clone()).collect();
+        let unused: Vec<_> = inner
+            .blob_leases
+            .keys()
+            .filter(|hash| !live.contains(*hash) && !retired.contains(*hash))
+            .cloned()
+            .collect();
+        inner
+            .retired
+            .extend(unused.into_iter().map(|hash| (now, hash)));
+    }
+
+    async fn release_retired(&self, blobs: &BlobStore, now: u64) -> Vec<String> {
+        let expired = self.take_expired_retired(now);
+        let hashes = expired.iter().map(|(hash, _)| hash.clone()).collect();
+        for (hash, lease) in expired {
+            if let Err(error) = blobs.release_ephemeral_lease(&hash, &lease).await {
+                debug!("[bokeh-session] Could not release retired blob {hash}: {error}");
+                self.register_blob_leases(HashMap::from([(hash, lease)]));
+                self.retire_unused_leases();
+            }
+        }
+        hashes
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn free_retired_for_test(&self, blobs: &BlobStore) {
+        self.retire_unused_leases();
+        self.release_retired(blobs, self.now_ms()).await;
     }
 
     /// Every blob a session in this store still references: column refs,
@@ -647,6 +734,7 @@ impl BokehSessionStore {
             // A fold deferred across the replacement may never be needed in
             // the new epoch; let readers ask again.
             session.folds_pending.clear();
+            session.coordinator_epoch_ready = false;
             records.push(BokehReplacementRecord {
                 session_id: session_id.clone(),
                 epoch: replacement.epoch,
@@ -704,6 +792,7 @@ impl BokehSessionStore {
         let Inner {
             sessions,
             forwarder,
+            retired,
             ..
         } = &mut *inner;
         let session_id = header.id.as_str();
@@ -727,6 +816,49 @@ impl BokehSessionStore {
             .receive_sync_and_foreign_props(state, message, |actor| {
                 actor.to_bytes() != kernel_actor.as_bytes()
             })?;
+        // A partial new-epoch replica may advertise heads while the hub still
+        // serves the previous epoch. Only full catch-up proves that handoff.
+        // Once ready, ancestry suffices for later removals during continuous
+        // updates; they need not wait for exact current-head equality again.
+        let acknowledged = state.their_heads.clone().unwrap_or_default();
+        if acknowledged == session.doc.get_heads() && session.doc.read_snapshot().is_ok() {
+            session.coordinator_epoch_ready = true;
+        }
+        if session.coordinator_epoch_ready
+            && !acknowledged.is_empty()
+            && acknowledged
+                .iter()
+                .all(|head| session.doc.doc_mut().get_change_by_hash(head).is_some())
+        {
+            let missing: BTreeSet<_> = session
+                .doc
+                .doc_mut()
+                .get_changes(&acknowledged)
+                .iter()
+                .map(|change| change.hash())
+                .collect();
+            let confirmed: BTreeSet<_> = session
+                .retirements
+                .iter()
+                .filter(|(_, barrier)| {
+                    barrier.epoch < epoch
+                        || (barrier.epoch == epoch
+                            && barrier.heads.iter().all(|head| !missing.contains(head)))
+                })
+                .map(|(hash, _)| hash.clone())
+                .collect();
+            session
+                .retirements
+                .retain(|hash, _| !confirmed.contains(hash));
+            // Fetch grace starts when the coordinator sees the removal, not
+            // when an offline producer first made it.
+            let now = self.now_ms();
+            for (at, hash) in retired.iter_mut() {
+                if confirmed.contains(hash) {
+                    *at = now;
+                }
+            }
+        }
         let mut changed = BTreeMap::new();
         for (model, props) in view.foreign_props {
             for (name, value) in props {
@@ -870,7 +1002,10 @@ impl BokehSessionStore {
         let now = self.now_ms();
         let mut inner = self.lock();
         let Inner {
-            sessions, retired, ..
+            sessions,
+            retired,
+            unconfirmed_retirements,
+            ..
         } = &mut *inner;
         let ids: Vec<String> = sessions
             .iter()
@@ -880,6 +1015,8 @@ impl BokehSessionStore {
         let mut removed = Vec::new();
         for id in ids {
             if let Some(mut session) = sessions.remove(&id) {
+                unconfirmed_retirements.extend(session.blob_refs());
+                unconfirmed_retirements.extend(session.retirements.keys().cloned());
                 match session.snapshot_with_tail() {
                     Ok(state) => removed.push((id, state)),
                     Err(error) => warn!("[bokeh-session] Cannot freeze session {id}: {error}"),
@@ -918,10 +1055,15 @@ impl BokehSessionStore {
         let now = self.now_ms();
         let mut inner = self.lock();
         let Inner {
-            sessions, retired, ..
+            sessions,
+            retired,
+            unconfirmed_retirements,
+            ..
         } = &mut *inner;
         for id in session_ids {
             if let Some(mut session) = sessions.remove(id) {
+                unconfirmed_retirements.extend(session.blob_refs());
+                unconfirmed_retirements.extend(session.retirements.keys().cloned());
                 for (_, tail) in session.tails.drain() {
                     retire_tail(Some(tail), now, retired);
                 }
@@ -1161,12 +1303,15 @@ pub(crate) async fn flush_delta(delta: KernelDelta, ctx: &IngestContext) {
         debug!("[bokeh-session] Dropping delta for {session_id}: no live session");
         return;
     }
-    let sink = BlobSink::new(&ctx.blob_store, &ctx.blob_publisher);
+    let sink = BlobSink::leased(&ctx.blob_store, &ctx.blob_publisher, &ctx.store.blob_owner);
     let encoding = ctx.store.bytes_encoding(&session_id);
-    let flush = match prepare_flush(delta, encoding, &sink).await {
+    let prepared = prepare_flush(delta, encoding, &sink).await;
+    ctx.store.register_blob_leases(sink.take_leases());
+    let flush = match prepared {
         Ok(flush) => flush,
         Err(error) => {
             warn!("[bokeh-session] Failed to store delta for {session_id}: {error}");
+            ctx.store.retire_unused_leases();
             return;
         }
     };
@@ -1182,6 +1327,7 @@ pub(crate) async fn flush_delta(delta: KernelDelta, ctx: &IngestContext) {
         }
         Err(error) => warn!("[bokeh-session] Failed to apply delta for {session_id}: {error}"),
     }
+    ctx.store.retire_unused_leases();
 }
 
 pub(crate) fn apply_replacements(ctx: &IngestContext) {
@@ -1224,11 +1370,10 @@ pub(crate) fn apply_replacements(ctx: &IngestContext) {
 }
 
 async fn free_retired(ctx: &IngestContext) {
-    for blob in ctx.store.take_expired_retired(ctx.store.now_ms()) {
-        if let Err(error) = ctx.blob_store.delete_if_ephemeral(&blob).await {
-            debug!("[bokeh-session] Could not free retired blob {blob}: {error}");
-        }
-    }
+    ctx.store.retire_unused_leases();
+    ctx.store
+        .release_retired(&ctx.blob_store, ctx.store.now_ms())
+        .await;
 }
 
 #[cfg(test)]
@@ -1298,10 +1443,12 @@ pub(crate) mod tests {
         let publisher = OutputBlobPublisher::none();
         let delta = KernelDelta::parse(&content, buffers).unwrap();
         let encoding = store.bytes_encoding(&delta.session_id);
-        let prepared = prepare_flush(delta, encoding, &BlobSink::new(blobs, &publisher))
-            .await
-            .unwrap();
-        store.commit_flush(prepared).unwrap()
+        let sink = BlobSink::leased(blobs, &publisher, &store.blob_owner);
+        let prepared = prepare_flush(delta, encoding, &sink).await.unwrap();
+        store.register_blob_leases(sink.take_leases());
+        let result = store.commit_flush(prepared).unwrap();
+        store.retire_unused_leases();
+        result
     }
 
     /// Sync the store to a fresh peer replica through frame payloads.
@@ -1489,11 +1636,11 @@ pub(crate) mod tests {
             store.take_expired_retired(store.now_ms()).is_empty(),
             "grace period"
         );
-        let expired = store.take_expired_retired(store.now_ms() + RETIRED_BLOB_GRACE_MS);
+        acknowledge_sessions(&store);
+        let expired = store
+            .release_retired(&blobs, store.now_ms() + RETIRED_BLOB_GRACE_MS)
+            .await;
         assert_eq!(expired, vec![first_blob.clone()]);
-        for blob in expired {
-            assert!(blobs.delete_if_ephemeral(&blob).await.unwrap());
-        }
         assert!(!blobs.exists(&first_blob));
     }
 
@@ -1727,12 +1874,42 @@ pub(crate) mod tests {
             .unwrap()
     }
 
-    async fn free_expired(store: &BokehSessionStore, blobs: &BlobStore) -> Vec<String> {
-        let expired = store.take_expired_retired(store.now_ms() + RETIRED_BLOB_GRACE_MS + 1);
-        for blob in &expired {
-            blobs.delete_if_ephemeral(blob).await.unwrap();
+    fn acknowledge_sessions(store: &BokehSessionStore) {
+        // Each peer starts empty, catches up, and sends a real advertised-head
+        // receipt. Tests must not equate elapsed time with coordinator progress.
+        let mut states = KeyedSyncStates::default();
+        let mut peers: HashMap<String, (BokehSessionDoc, sync::State)> = HashMap::new();
+        let mut pending = store.generate_frames(&mut states);
+        for _ in 0..32 {
+            let mut next = Vec::new();
+            for frame in pending {
+                let (header, body) = KeyedDocFrameHeader::try_parse(&frame).unwrap();
+                let (doc, state) = peers.entry(header.id.clone()).or_insert_with(|| {
+                    (BokehSessionDoc::new_empty("ack-peer"), sync::State::new())
+                });
+                doc.receive_sync_message(state, sync::Message::decode(body).unwrap())
+                    .unwrap();
+                if let Some(message) = doc.generate_sync_message(state) {
+                    if let Some(reply) = store.receive_sync(&header, message, &mut states).unwrap()
+                    {
+                        next.push(reply);
+                    }
+                }
+            }
+            next.extend(store.generate_frames(&mut states));
+            if next.is_empty() {
+                return;
+            }
+            pending = next;
         }
-        expired
+        panic!("coordinator acknowledgment did not quiesce");
+    }
+
+    async fn free_expired(store: &BokehSessionStore, blobs: &BlobStore) -> Vec<String> {
+        acknowledge_sessions(store);
+        store
+            .release_retired(blobs, store.now_ms() + RETIRED_BLOB_GRACE_MS + 1)
+            .await
     }
 
     async fn materialize_session(store: &BokehSessionStore, session_id: &str, blobs: &BlobStore) {
@@ -1773,6 +1950,58 @@ pub(crate) mod tests {
         assert!(store.take_expired_retired(store.now_ms()).is_empty());
         assert_eq!(free_expired(&store, &blobs).await, vec![current.clone()]);
         assert!(!blobs.exists(&current));
+    }
+
+    #[tokio::test]
+    async fn renewed_transient_buffer_restarts_its_fetch_grace() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let blobs = BlobStore::with_ephemeral_cap(dir.path().to_path_buf(), 0);
+        let store = store_with_session();
+        let first = store.blob_owner.next_lease();
+        let hash = blobs
+            .put_leased_ephemeral(b"one-off", "x/test", &first)
+            .await
+            .unwrap();
+        store.register_blob_leases(HashMap::from([(hash.clone(), first)]));
+        store.retire_unused_leases();
+        store.clock_offset_ms.store(
+            RETIRED_BLOB_GRACE_MS - 1,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        let renewed = store.blob_owner.next_lease();
+        blobs
+            .put_leased_ephemeral(b"one-off", "x/test", &renewed)
+            .await
+            .unwrap();
+        store.register_blob_leases(HashMap::from([(hash.clone(), renewed)]));
+        store.retire_unused_leases();
+        assert!(store
+            .release_retired(&blobs, store.now_ms() + 2)
+            .await
+            .is_empty());
+        assert!(blobs.get(&hash).await.unwrap().is_some());
+        assert_eq!(free_expired(&store, &blobs).await, vec![hash.clone()]);
+        assert!(blobs.get(&hash).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn another_runtime_agents_live_column_survives_retirement() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let blobs_a = BlobStore::with_ephemeral_cap(dir.path().to_path_buf(), 0);
+        let blobs_b = BlobStore::with_ephemeral_cap(dir.path().to_path_buf(), 0);
+        let a = store_with_session();
+        let b = store_with_session();
+        flush(&a, &blobs_a, cdc("session-1", 0, 1), &[]).await;
+        flush(&b, &blobs_b, cdc("session-1", 0, 1), &[]).await;
+        let shared = current_x_blob(&a, "session-1");
+        assert_eq!(shared, current_x_blob(&b, "session-1"));
+        flush(&a, &blobs_a, cdc("session-1", 1, 2), &[]).await;
+        assert!(free_expired(&a, &blobs_a).await.contains(&shared));
+        assert!(blobs_b.get(&shared).await.unwrap().is_some());
+        materialize_session(&b, "session-1", &blobs_b).await;
+        flush(&b, &blobs_b, cdc("session-1", 1, 3), &[]).await;
+        assert!(free_expired(&b, &blobs_b).await.contains(&shared));
+        assert!(blobs_a.get(&shared).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -2021,5 +2250,81 @@ pub(crate) mod tests {
             .unwrap()
             .is_none());
         assert!(states.keys().next().is_none());
+    }
+    #[tokio::test]
+    async fn expired_batch_does_not_take_a_later_transient_lease() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let blobs = BlobStore::new(dir.path().to_path_buf());
+        let store = store_with_session();
+        let old = store.blob_owner.next_lease();
+        let hash = blobs
+            .put_leased_ephemeral(b"transient", "text/plain", &old)
+            .await
+            .unwrap();
+        store.register_blob_leases(HashMap::from([(hash.clone(), old)]));
+        store.retire_unused_leases();
+        store.advance_clock_for_test(RETIRED_BLOB_GRACE_MS + 1);
+        let batch = store.take_expired_retired(store.now_ms());
+        assert_eq!(batch.len(), 1);
+        let fresh = store.blob_owner.next_lease();
+        blobs
+            .put_leased_ephemeral(b"transient", "text/plain", &fresh)
+            .await
+            .unwrap();
+        store.register_blob_leases(HashMap::from([(hash.clone(), fresh)]));
+        store.retire_unused_leases();
+        for (hash, lease) in batch {
+            blobs.release_ephemeral_lease(&hash, &lease).await.unwrap();
+        }
+        store.free_retired_for_test(&blobs).await;
+        assert!(
+            blobs.exists(&hash),
+            "old batch cannot consume the renewed generation"
+        );
+        store.advance_clock_for_test(RETIRED_BLOB_GRACE_MS + 1);
+        store.free_retired_for_test(&blobs).await;
+        assert!(!blobs.exists(&hash));
+    }
+
+    #[tokio::test]
+    async fn acknowledged_removal_can_retire_while_newer_changes_are_in_flight() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let blobs = BlobStore::with_ephemeral_cap(dir.path().to_path_buf(), 0);
+        let store = store_with_session();
+        flush(&store, &blobs, cdc("session-1", 0, 1), &[]).await;
+        let old = current_x_blob(&store, "session-1");
+        let mut states = KeyedSyncStates::new();
+        let mut peer = BokehSessionDoc::new_empty("coordinator");
+        let mut peer_state = sync::State::new();
+        sync_peer(&store, &mut states, &mut peer, &mut peer_state, 0);
+        flush(&store, &blobs, cdc("session-1", 1, 2), &[]).await;
+        let removed_at = store.with_doc("session-1", |doc| doc.get_heads()).unwrap();
+        store.with_doc("session-1", |doc| {
+            doc.set_prop("p2", "value", "0.9").unwrap();
+            doc.commit();
+            assert_ne!(doc.get_heads(), removed_at);
+        });
+        let acknowledgement = sync::Message {
+            heads: removed_at,
+            need: vec![],
+            have: vec![],
+            changes: Vec::<Vec<u8>>::new().into(),
+            flags: None,
+            version: sync::MessageVersion::V1,
+        };
+        store
+            .receive_sync(
+                &KeyedDocFrameHeader::new(BOKEH_SESSION_KIND, "session-1", 0),
+                acknowledgement,
+                &mut states,
+            )
+            .unwrap();
+        store.advance_clock_for_test(RETIRED_BLOB_GRACE_MS + 1);
+        store.free_retired_for_test(&blobs).await;
+        assert!(
+            !blobs.exists(&old),
+            "same-epoch ancestor receipt proves the removal"
+        );
+        materialize_session(&store, "session-1", &blobs).await;
     }
 }

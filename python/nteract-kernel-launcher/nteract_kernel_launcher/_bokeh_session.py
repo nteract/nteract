@@ -32,7 +32,9 @@ import weakref
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, TypeVar, cast
+
+_ColumnMutation = TypeVar("_ColumnMutation", bound=Callable[..., Any])
 
 log = logging.getLogger("nteract_kernel_launcher")
 
@@ -340,7 +342,7 @@ def _wrap_column_data_mutations() -> None:
             return
         _column_data_wrapped = True
 
-        def wrap(original: Callable[..., Any]) -> Callable[..., Any]:
+        def wrap(original: _ColumnMutation) -> _ColumnMutation:
             @functools.wraps(original)
             def mutate(self: Any, doc: Any, *args: Any, **kwargs: Any) -> Any:
                 with _sessions_lock:
@@ -356,7 +358,7 @@ def _wrap_column_data_mutations() -> None:
                     for session in started:
                         session._end_data_mutation()
 
-            return mutate
+            return cast(_ColumnMutation, mutate)
 
         PropertyValueColumnData._stream = wrap(PropertyValueColumnData._stream)
         PropertyValueColumnData._patch = wrap(PropertyValueColumnData._patch)

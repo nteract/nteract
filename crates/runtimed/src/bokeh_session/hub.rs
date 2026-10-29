@@ -357,6 +357,12 @@ impl KeyedDocKind for BokehRoomKind {
         }
     }
 
+    fn is_runtime_snapshot_ready(&self, epoch: u64, doc: &AutoCommit) -> bool {
+        BokehSessionDocRef::from_doc(doc)
+            .read_snapshot()
+            .is_ok_and(|snapshot| snapshot.epoch == epoch)
+    }
+
     fn on_runtime_change(&self, id: &str, _epoch: u64, doc: &AutoCommit) {
         let columns = BokehSessionDocRef::from_doc(doc).read_columns();
         let folded: FoldedColumns = columns
@@ -877,6 +883,404 @@ pub(crate) mod tests {
             stale.resyncs.first(),
             Some(SessionControlMessage::DocResync { epoch: 1, .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn record_first_epoch_change_preserves_snapshot_on_agent_loss() {
+        let mut room = Room::new();
+        let _store = room.with_streamed_tail().await;
+        room.add_session_output().await;
+        room.set_record(BokehSessionStatus::Connected, 1);
+        let mut stale = Peer::new(ConnectionScope::Editor);
+        stale.sync(&room);
+        assert!(matches!(
+            stale.resyncs.first(),
+            Some(SessionControlMessage::DocResync { epoch: 1, .. })
+        ));
+        assert!(room
+            .hub
+            .peer_updates(&mut stale.hub_states, None)
+            .is_empty());
+        assert_eq!(room.snapshot_with_tail().unwrap().snapshot.epoch, 0);
+        assert_eq!(room.x().await, json!([1, 2, 3]));
+        room.lose_runtime_agent().await;
+        let frozen = room.stored_payload().await;
+        assert_eq!(
+            materialized_x(&frozen["snapshot"]["document"]),
+            json!([1, 2, 3])
+        );
+    }
+
+    fn runtime_message(room: &mut Room, epoch: u64, message: sync::Message) -> Vec<Vec<u8>> {
+        let frame = KeyedDocFrameHeader::new(BOKEH_SESSION_KIND, "session-1", epoch)
+            .encode_frame(&message.encode());
+        room.hub.receive_runtime_frame(&mut room.hub_states, &frame)
+    }
+
+    fn replacement_doc(epoch: u64) -> BokehSessionDoc {
+        let mut replacement = snapshot();
+        replacement.epoch = epoch;
+        BokehSessionDoc::build(&replacement, KERNEL).unwrap()
+    }
+
+    #[tokio::test]
+    async fn incomplete_runtime_epochs_keep_the_last_usable_snapshot() {
+        let mut room = Room::new();
+        let _store = room.with_streamed_tail().await;
+        room.add_session_output().await;
+        let old_roots = room.hub.blob_roots();
+        assert!(!old_roots.is_empty());
+        let mut peer = Peer::new(ConnectionScope::Editor);
+        peer.sync(&room);
+
+        // A runtime opening message carries heads but no document changes.
+        let mut next = replacement_doc(1);
+        let opening = next.generate_sync_message(&mut sync::State::new()).unwrap();
+        assert!(opening.changes.is_empty());
+        runtime_message(&mut room, 1, opening);
+        assert_eq!(room.snapshot_with_tail().unwrap().snapshot.epoch, 0);
+        assert!(room.hub.peer_updates(&mut peer.hub_states, None).is_empty());
+
+        // A second replacement can begin before the first completed. Its
+        // scaffold is readable, but one advertised change has not arrived.
+        let mut next = replacement_doc(2);
+        let scaffold = next.get_heads()[0];
+        next.set_prop("p2", "value", "0.9").unwrap();
+        let complete = next.commit().unwrap();
+        let partial = sync::Message {
+            heads: vec![complete],
+            need: vec![],
+            have: vec![],
+            changes: vec![next
+                .doc_mut()
+                .get_change_by_hash(&scaffold)
+                .unwrap()
+                .raw_bytes()
+                .to_vec()]
+            .into(),
+            flags: None,
+            version: sync::MessageVersion::V1,
+        };
+        runtime_message(&mut room, 2, partial);
+        assert_eq!(room.snapshot_with_tail().unwrap().snapshot.epoch, 0);
+        assert!(old_roots.is_subset(&room.hub.blob_roots()));
+        assert!(room.hub.peer_updates(&mut peer.hub_states, None).is_empty());
+
+        // Neither old-epoch edits nor correctly labelled writes may seed a
+        // replacement before its runtime-authorized contents are complete.
+        peer.doc.set_prop("p2", "value", "0.7").unwrap();
+        peer.doc.commit();
+        peer.sync(&room);
+        assert!(matches!(
+            peer.resyncs.last(),
+            Some(SessionControlMessage::DocResync { epoch: 2, .. })
+        ));
+        peer.restart(2);
+        peer.resyncs.clear();
+        peer.sync(&room);
+        assert!(peer.resyncs.is_empty());
+        assert_eq!(hub_prop(&room, "p2", "value").as_deref(), Some("0.5"));
+
+        let malformed =
+            KeyedDocFrameHeader::new(BOKEH_SESSION_KIND, "session-1", 3).encode_frame(&[0xff]);
+        assert!(room
+            .hub
+            .receive_runtime_frame(&mut room.hub_states, &malformed)
+            .is_empty());
+        assert_eq!(room.snapshot_with_tail().unwrap().snapshot.epoch, 0);
+        // A decodable sync envelope with a corrupt change must not retire
+        // the recovery replica either, even when it advances the wire epoch.
+        runtime_message(
+            &mut room,
+            3,
+            sync::Message {
+                heads: vec![complete],
+                need: vec![],
+                have: vec![],
+                changes: vec![vec![0xff]].into(),
+                flags: None,
+                version: sync::MessageVersion::V1,
+            },
+        );
+        assert_eq!(room.snapshot_with_tail().unwrap().snapshot.epoch, 0);
+        room.lose_runtime_agent().await;
+        let frozen = room.stored_payload().await;
+        assert_eq!(
+            materialized_x(&frozen["snapshot"]["document"]),
+            json!([1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn runtime_replacement_promotes_only_after_all_advertised_heads_arrive() {
+        let mut room = Room::new();
+        let store = store_with_session();
+        room.pump(&store);
+        room.set_record(BokehSessionStatus::Connected, 1);
+        let mut peer = Peer::new(ConnectionScope::Editor);
+        peer.sync(&room);
+        let mut next = replacement_doc(1);
+        let scaffold = next.get_heads()[0];
+        next.set_prop("p2", "value", "0.9").unwrap();
+        let complete = next.commit().unwrap();
+        for (change, expected_epoch) in [(scaffold, 0), (complete, 1)] {
+            runtime_message(
+                &mut room,
+                1,
+                sync::Message {
+                    heads: vec![complete],
+                    need: vec![],
+                    have: vec![],
+                    changes: vec![next
+                        .doc_mut()
+                        .get_change_by_hash(&change)
+                        .unwrap()
+                        .raw_bytes()
+                        .to_vec()]
+                    .into(),
+                    flags: None,
+                    version: sync::MessageVersion::V1,
+                },
+            );
+            assert_eq!(
+                room.snapshot_with_tail().unwrap().snapshot.epoch,
+                expected_epoch
+            );
+        }
+        assert_eq!(hub_prop(&room, "p2", "value").as_deref(), Some("0.9"));
+        assert!(!room.hub.peer_updates(&mut peer.hub_states, None).is_empty());
+        // The old producer may not rewind the accepted epoch.
+        let mut old = replacement_doc(0);
+        let message = old.generate_sync_message(&mut sync::State::new()).unwrap();
+        assert!(runtime_message(&mut room, 0, message).is_empty());
+        assert_eq!(room.snapshot_with_tail().unwrap().snapshot.epoch, 1);
+    }
+
+    #[test]
+    fn pending_current_epoch_openings_stay_quiet_until_runtime_promotion() {
+        let mut room = Room::new();
+        let store = store_with_session();
+        room.pump(&store);
+        room.set_record(BokehSessionStatus::Connected, 1);
+        let mut peer = Peer::new(ConnectionScope::Editor);
+        peer.restart(1);
+        let opening = peer.doc.generate_sync_message(&mut peer.state).unwrap();
+        let frame = KeyedDocFrameHeader::new(BOKEH_SESSION_KIND, "session-1", 1)
+            .encode_frame(&opening.encode());
+        for _ in 0..8 {
+            let reply = room.hub.receive_peer_frame(
+                &mut peer.hub_states,
+                &frame,
+                &peer.identity,
+                &room.state,
+            );
+            assert!(reply.resync.is_none());
+            assert!(reply.frames.is_empty());
+            assert!(room.hub.peer_updates(&mut peer.hub_states, None).is_empty());
+        }
+        assert!(peer.hub_states.contains(&session_key("session-1")));
+        assert_eq!(hub_prop(&room, "p2", "value").as_deref(), Some("0.5"));
+
+        let mut changed = room.hub.subscribe();
+        let mut doc = replacement_doc(1);
+        let heads = doc.get_heads();
+        let message = sync::Message {
+            heads: heads.clone(),
+            need: vec![],
+            have: vec![],
+            changes: heads
+                .iter()
+                .map(|head| {
+                    doc.doc_mut()
+                        .get_change_by_hash(head)
+                        .unwrap()
+                        .raw_bytes()
+                        .to_vec()
+                })
+                .collect::<Vec<_>>()
+                .into(),
+            flags: None,
+            version: sync::MessageVersion::V1,
+        };
+        runtime_message(&mut room, 1, message);
+        assert_eq!(changed.try_recv().unwrap(), session_key("session-1"));
+        let updates = room.hub.peer_updates(&mut peer.hub_states, None);
+        assert!(!updates.is_empty());
+        peer.apply(updates);
+        peer.sync(&room);
+        assert!(peer.resyncs.is_empty());
+        assert_eq!(peer.doc.get_prop("p2", "value").as_deref(), Some("0.5"));
+    }
+
+    #[tokio::test]
+    async fn retained_epoch_columns_survive_retirement_until_complete_coordinator_ack() {
+        let mut room = Room::new();
+        let store = BokehSessionStore::with_policy(runtime_doc::BokehReplacementPolicy {
+            min_change_bytes: 0,
+            saved_size_factor: 0,
+            min_interval_ms: 0,
+        });
+        store.insert("session-1", replacement_doc(0), "kernel-1", KERNEL);
+        let replacement = |base, values| {
+            json!({
+                "kind": "ColumnDataChanged", "source_id": "p3",
+                "base_version": base, "new_version": base + 1,
+                "columns": {"x": values}, "columns_removed": [],
+            })
+        };
+        room.broadcast(
+            &store,
+            json!({"data_events": [replacement(0, json!([1, 2]))]}),
+        )
+        .await;
+        room.pump(&store);
+        room.set_record(BokehSessionStatus::Connected, 0);
+        let old_blob = room.snapshot_with_tail().unwrap().snapshot.columns["p3"]["x"]
+            .blob
+            .clone();
+
+        assert_eq!(
+            room.blob_store
+                .get_meta(&old_blob)
+                .await
+                .unwrap()
+                .unwrap()
+                .durability,
+            notebook_protocol::protocol::BlobDurability::Ephemeral,
+        );
+        // Delay both the broadcast and document stream to the coordinator.
+        flush(
+            &store,
+            &room.blob_store,
+            wire_delta(
+                "replace",
+                json!({"data_events": [replacement(1, json!([3, 4]))]}),
+            ),
+            &[],
+        )
+        .await;
+        assert_eq!(store.replace_due().unwrap()[0].epoch, 1);
+        let (scaffold, complete, changes) = store
+            .with_doc("session-1", |doc| {
+                let scaffold = doc.get_heads()[0];
+                doc.set_prop("p2", "value", "0.9").unwrap();
+                let complete = doc.commit().unwrap();
+                let changes: Vec<_> = [scaffold, complete]
+                    .iter()
+                    .map(|head| {
+                        doc.doc_mut()
+                            .get_change_by_hash(head)
+                            .unwrap()
+                            .raw_bytes()
+                            .to_vec()
+                    })
+                    .collect();
+                (scaffold, complete, changes)
+            })
+            .unwrap();
+        room.set_record(BokehSessionStatus::Connected, 1);
+
+        for (index, change) in changes.into_iter().enumerate() {
+            let replies = runtime_message(
+                &mut room,
+                1,
+                sync::Message {
+                    heads: vec![complete],
+                    need: vec![],
+                    have: vec![],
+                    changes: vec![change].into(),
+                    flags: None,
+                    version: sync::MessageVersion::V1,
+                },
+            );
+            assert!(!replies.is_empty());
+            for reply in replies {
+                let (_, body) = KeyedDocFrameHeader::try_parse(&reply).unwrap();
+                let acknowledgement = sync::Message::decode(body).unwrap();
+                assert_eq!(
+                    acknowledgement.heads,
+                    vec![if index == 0 { scaffold } else { complete }]
+                );
+                // Intentionally withhold the producer's automatic reply so
+                // the hub stays partially synced until the next iteration.
+                store
+                    .receive_payload(&reply, &mut room.agent_states)
+                    .unwrap();
+            }
+            if index == 0 {
+                store.advance_clock_for_test(120_000);
+                store.free_retired_for_test(&room.blob_store).await;
+                assert!(room.blob_store.exists(&old_blob));
+                assert_eq!(room.snapshot_with_tail().unwrap().snapshot.epoch, 0);
+                assert_eq!(room.x().await, json!([1, 2]));
+            }
+        }
+        assert_eq!(room.snapshot_with_tail().unwrap().snapshot.epoch, 1);
+        assert_eq!(room.x().await, json!([3, 4]));
+        store.advance_clock_for_test(59_000);
+        store.free_retired_for_test(&room.blob_store).await;
+        assert!(
+            room.blob_store.exists(&old_blob),
+            "fetch grace starts at acknowledgement"
+        );
+        store.advance_clock_for_test(2_000);
+        store.free_retired_for_test(&room.blob_store).await;
+        assert!(
+            !room.blob_store.exists(&old_blob),
+            "acknowledged obsolete column is reclaimed"
+        );
+    }
+
+    #[test]
+    fn first_runtime_snapshot_is_hidden_until_its_sync_is_complete() {
+        let mut room = Room::new();
+        room.set_record(BokehSessionStatus::Connected, 0);
+        let mut doc = replacement_doc(0);
+        let scaffold = doc.get_heads()[0];
+        doc.set_prop("p2", "value", "0.9").unwrap();
+        let complete = doc.commit().unwrap();
+        runtime_message(
+            &mut room,
+            0,
+            sync::Message {
+                heads: vec![complete],
+                need: vec![],
+                have: vec![],
+                changes: vec![doc
+                    .doc_mut()
+                    .get_change_by_hash(&scaffold)
+                    .unwrap()
+                    .raw_bytes()
+                    .to_vec()]
+                .into(),
+                flags: None,
+                version: sync::MessageVersion::V1,
+            },
+        );
+        assert!(room.snapshot_with_tail().is_none());
+        let mut peer = Peer::new(ConnectionScope::Viewer);
+        peer.sync(&room);
+        assert!(peer.resyncs.is_empty());
+        assert!(room.hub.peer_updates(&mut peer.hub_states, None).is_empty());
+        runtime_message(
+            &mut room,
+            0,
+            sync::Message {
+                heads: vec![complete],
+                need: vec![],
+                have: vec![],
+                changes: vec![doc
+                    .doc_mut()
+                    .get_change_by_hash(&complete)
+                    .unwrap()
+                    .raw_bytes()
+                    .to_vec()]
+                .into(),
+                flags: None,
+                version: sync::MessageVersion::V1,
+            },
+        );
+        assert_eq!(hub_prop(&room, "p2", "value").as_deref(), Some("0.9"));
     }
 
     #[test]

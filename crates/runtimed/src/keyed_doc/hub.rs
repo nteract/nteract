@@ -38,6 +38,10 @@ const MAX_RECORD_READS: usize = 3;
 struct HubDoc {
     epoch: u64,
     doc: AutoCommit,
+    /// Until the producer has supplied a complete replacement, keep the last
+    /// usable replica for saves, agent-loss recovery and blob reachability.
+    retained: Option<(u64, AutoCommit)>,
+    ready: bool,
 }
 
 impl HubDoc {
@@ -45,6 +49,8 @@ impl HubDoc {
         Self {
             epoch,
             doc: AutoCommit::new().with_actor(automerge::ActorId::from(HUB_ACTOR)),
+            retained: None,
+            ready: false,
         }
     }
 }
@@ -236,7 +242,16 @@ impl KeyedDocHub {
             .entry(key.clone())
             .or_insert_with(|| HubDoc::new(epoch));
         if doc.epoch < epoch {
-            *doc = HubDoc::new(epoch);
+            let mut next = HubDoc::new(epoch);
+            next.retained = if doc.ready {
+                Some((
+                    doc.epoch,
+                    std::mem::replace(&mut doc.doc, AutoCommit::new()),
+                ))
+            } else {
+                doc.retained.take()
+            };
+            *doc = next;
         }
         doc
     }
@@ -281,6 +296,7 @@ impl KeyedDocHub {
         let hub_doc = Self::ensure_epoch(&mut docs, &key, header.epoch);
         let state = states.for_epoch(&key, hub_doc.epoch);
         let heads_before = hub_doc.doc.get_heads();
+        let was_ready = hub_doc.ready;
         let received = catch_automerge_result("keyed-doc-runtime-receive", || {
             hub_doc.doc.sync().receive_sync_message(state, message)
         })
@@ -296,6 +312,22 @@ impl KeyedDocHub {
                 false
             }
         };
+        // An opening sync message advertises heads before sending their
+        // changes. Do not retire the previous replica (or prune its tails)
+        // until every advertised head is present and the kind can read it.
+        if !hub_doc.ready
+            && state.their_heads.as_ref().is_some_and(|heads| {
+                heads
+                    .iter()
+                    .all(|head| hub_doc.doc.get_change_by_hash(head).is_some())
+            })
+            && hub_doc.doc.get_missing_deps(&[]).is_empty()
+            && kind.is_runtime_snapshot_ready(hub_doc.epoch, &hub_doc.doc)
+        {
+            hub_doc.ready = true;
+            hub_doc.retained = None;
+        }
+        let changed = hub_doc.ready && (changed || !was_ready);
         if changed {
             kind.on_runtime_change(&key.id, hub_doc.epoch, &hub_doc.doc);
         }
@@ -403,6 +435,23 @@ impl KeyedDocHub {
             scope,
             current_epoch: current,
         };
+        // A record may announce an epoch before its runtime document arrives.
+        // Peers cannot seed that replacement or merge old changes into it.
+        if !hub_doc.ready {
+            states.reset(&key, current);
+            if let Err(rejection) = ctx.check_frame_epoch(header.epoch) {
+                reply.resync = Some(SessionControlMessage::DocResync {
+                    kind: key.kind.clone(),
+                    id: key.id.clone(),
+                    epoch: current,
+                    reason: rejection.to_string(),
+                });
+            }
+            // A current-epoch opening is already subscribed. Stay quiet until
+            // promotion notifies it: DocResync would make the client reopen
+            // immediately, producing an endless request/resync loop.
+            return reply;
+        }
         let heads_before = hub_doc.doc.get_heads();
         let admission = size_check.and_then(|()| {
             admit_peer_message(
@@ -465,12 +514,17 @@ impl KeyedDocHub {
         keys.iter()
             .filter_map(|key| {
                 let doc = docs.get_mut(key)?;
+                if !doc.ready {
+                    return None;
+                }
                 generate(key, doc, states)
             })
             .collect()
     }
 
-    /// Run `f` on the replica of `key`. Runs under the hub lock.
+    /// Run `f` on the last usable replica of `key`. During an epoch handoff,
+    /// the retained replica stays readable until the producer completes the
+    /// replacement. Runs under the hub lock.
     pub(crate) fn with_doc<R>(
         &self,
         key: &KeyedDocKey,
@@ -478,7 +532,13 @@ impl KeyedDocHub {
     ) -> Option<R> {
         let mut docs = self.lock();
         let doc = docs.get_mut(key)?;
-        Some(f(doc.epoch, &mut doc.doc))
+        if let Some((epoch, retained)) = doc.retained.as_mut() {
+            Some(f(*epoch, retained))
+        } else if doc.ready {
+            Some(f(doc.epoch, &mut doc.doc))
+        } else {
+            None
+        }
     }
 
     pub(crate) fn ids(&self, kind: &str) -> Vec<String> {
@@ -503,6 +563,9 @@ impl KeyedDocHub {
         for (key, doc) in docs.iter() {
             if let Some(kind) = self.kinds.get(key.kind.as_str()) {
                 roots.extend(kind.referenced_blobs(&doc.doc));
+                if let Some((_, retained)) = &doc.retained {
+                    roots.extend(kind.referenced_blobs(retained));
+                }
             }
         }
         roots

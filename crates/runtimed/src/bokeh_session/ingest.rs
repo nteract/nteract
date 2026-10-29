@@ -17,7 +17,7 @@ use super::{
     hex_sha256, required_str, BOKEH_BUFFER_MEDIA_TYPE, BOKEH_COLUMN_MEDIA_TYPE,
     BOKEH_PROP_MEDIA_TYPE, BOKEH_WIRE_SCHEMA_VERSION,
 };
-use crate::blob_store::BlobStore;
+use crate::blob_store::{BlobStore, EphemeralBlobLease, EphemeralBlobOwner};
 use crate::output_blob_publisher::OutputBlobPublisher;
 
 pub(crate) type BufferMap = HashMap<String, Vec<u8>>;
@@ -26,11 +26,40 @@ pub(crate) type BufferMap = HashMap<String, Vec<u8>>;
 pub(crate) struct BlobSink<'a> {
     store: &'a BlobStore,
     publisher: &'a OutputBlobPublisher,
+    owner: Option<&'a EphemeralBlobOwner>,
+    leases: std::sync::Mutex<HashMap<String, EphemeralBlobLease>>,
 }
 
 impl<'a> BlobSink<'a> {
     pub(crate) fn new(store: &'a BlobStore, publisher: &'a OutputBlobPublisher) -> Self {
-        Self { store, publisher }
+        Self {
+            store,
+            publisher,
+            owner: None,
+            leases: Default::default(),
+        }
+    }
+
+    pub(crate) fn leased(
+        store: &'a BlobStore,
+        publisher: &'a OutputBlobPublisher,
+        owner: &'a EphemeralBlobOwner,
+    ) -> Self {
+        Self {
+            store,
+            publisher,
+            owner: Some(owner),
+            leases: Default::default(),
+        }
+    }
+
+    pub(crate) fn take_leases(&self) -> HashMap<String, EphemeralBlobLease> {
+        std::mem::take(
+            &mut *self
+                .leases
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        )
     }
 
     async fn put(
@@ -39,10 +68,31 @@ impl<'a> BlobSink<'a> {
         media_type: &str,
         durability: BlobDurability,
     ) -> anyhow::Result<String> {
-        let hash = self
-            .store
-            .put_with_durability(bytes, media_type, durability)
-            .await?;
+        let hash = if let Some(owner) = self
+            .owner
+            .filter(|_| durability == BlobDurability::Ephemeral)
+        {
+            let lease = owner.next_lease();
+            let hash = self
+                .store
+                .put_leased_ephemeral(bytes, media_type, &lease)
+                .await?;
+            {
+                let mut leases = self
+                    .leases
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let existing = leases.entry(hash.clone()).or_insert_with(|| lease.clone());
+                if existing.generation < lease.generation {
+                    *existing = lease;
+                }
+            }
+            hash
+        } else {
+            self.store
+                .put_with_durability(bytes, media_type, durability)
+                .await?
+        };
         self.publisher
             .publish_artifact(
                 hash.clone(),
