@@ -447,9 +447,36 @@ details.document-actions > div button {
   background: var(--surface);
   padding: 1rem 1.5rem 3rem;
 }
-.document.with-comments {
-  max-width: 1392px;
-  padding-right: 360px;
+/* Desktop comments dock against the Page's right edge. The Page stays centered
+   while the right gutter fits the panel, then moves left, then narrows. Its
+   1.5rem side padding is the gap between text and panel. Percentages resolve
+   against the viewport for both the Page and the fixed panel, so both rules
+   compute the same edge. Below 901px the panel is a modal sheet instead. */
+@media screen and (min-width: 901px) {
+  .document.with-comments {
+    --comments-width: 312px;
+    --comments-reserve: calc(var(--comments-width) + 24px);
+    --document-width: min(1056px, 100% - var(--comments-reserve));
+    --document-left: max(
+      0px,
+      min(
+        (100% - var(--document-width)) / 2,
+        100% - var(--document-width) - var(--comments-reserve)
+      )
+    );
+    width: var(--document-width);
+    max-width: none;
+    margin-left: var(--document-left);
+    margin-right: 0;
+  }
+  .document.with-comments:has(> .comments-expanded) {
+    --comments-width: min(680px, max(312px, 100% - 600px));
+  }
+  .document.with-comments > .comments {
+    left: calc(var(--document-left) + var(--document-width));
+    right: auto;
+    width: var(--comments-width);
+  }
 }
 .document-meta {
   display: flex;
@@ -708,7 +735,7 @@ dialog::backdrop {
 }
 .comments {
   position: fixed;
-  inset: 80px max(24px, calc((100vw - 1180px) / 2 + 24px)) auto auto;
+  inset: 80px 24px auto auto;
   width: 312px;
   max-width: calc(100vw - 2rem);
   max-height: calc(100dvh - 104px);
