@@ -45,7 +45,7 @@ import { issueRetryToken, inspectOperation, reserveOperation } from "./operation
 import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
 import { RecordMaintenance } from "./record-maintenance.mjs";
 export { PageRecords } from "./record-persistence.mjs";
-import { DocumentPolicy, hex, logicalId } from "./policy.mjs";
+import { DocumentPolicy, admissionCancelled, hex, logicalId } from "./policy.mjs";
 import {
   documentMutation,
   recoverDocumentMutations,
@@ -1170,6 +1170,7 @@ export class Page {
     // waiting on the native handshake, so idle handshakes cannot bypass quotas.
     this.wirePrincipals.set(wire, identity.principal);
     let release = noop;
+    const admission = new AbortController();
     let leaseTimer;
     let expiryTimer;
     const armExpiry = (expiresAt) => {
@@ -1178,12 +1179,14 @@ export class Page {
         expiryTimer = setTimeout(() => void wire.disconnect(), Math.max(1, expiresAt - Date.now()));
     };
     const handshakeTimer = setTimeout(() => {
+      admission.abort(admissionCancelled("native_admission_timeout"));
       void wire.disconnect();
     }, 10_000);
     wire.onDisconnect(() => {
       clearTimeout(handshakeTimer);
       clearInterval(leaseTimer);
       clearTimeout(expiryTimer);
+      admission.abort(admissionCancelled());
       release();
       this.wires.delete(wire);
       this.wirePrincipals.delete(wire);
@@ -1205,6 +1208,8 @@ export class Page {
           // Only the native verified peer and the credential verified on this
           // upgrade may establish this durable binding, before backend admission.
           release = await this.policy.bind(key, senderId, identity, {
+            signal: admission.signal,
+            waitUntil: (promise) => this.ctx.waitUntil(promise),
             reauthenticate: () => authenticate(request, this.env),
             disconnect: () => wire.disconnect(),
             onRenewal: (expiresAt) => {
@@ -1212,6 +1217,7 @@ export class Page {
             },
           });
           wire.onDisconnect(release);
+          if (!this.wires.has(wire)) return;
           clearTimeout(handshakeTimer);
           const leaseExpiresAt = this.policy.leaseExpiresAt(identity);
           armExpiry(leaseExpiresAt);

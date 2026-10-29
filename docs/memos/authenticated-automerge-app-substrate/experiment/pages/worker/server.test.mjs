@@ -651,7 +651,7 @@ test("member signing-key capacity reserves owner keys and known keys reconnect a
   assert.equal(f.policy.bindings.size, 256, "retired-key denial records must remain durable");
 });
 
-test("pending key admission reserves quota and failed persistence releases only the new reservation", async () => {
+test("uncertain key persistence retains its reservation and permits only an exact retry", async () => {
   const f = fixture();
   const viewer = { ...f.identity, principal: "user:viewer" };
   grant(f, viewer.principal, "viewer");
@@ -666,14 +666,16 @@ test("pending key admission reserves quota and failed persistence releases only 
     return put(name, value);
   };
   const admission = f.bind(numberedKey(32), viewer);
-  const denied = assert.rejects(admission, /fixture persistence failure/);
+  const denied = assert.rejects(admission, { code: "native_binding_persistence_failed" });
   await assert.rejects(f.bind(numberedKey(33), viewer), /32 signing keys per member/);
   assert.deepEqual(f.policy.profiles(), {}, "pending keys do not expose profiles");
   fail(new Error("fixture persistence failure"));
   await denied;
-  assert.equal(f.policy.bindings.size, 31);
+  assert.equal(f.policy.bindings.size, 32);
   assert.equal(f.policy.sessions.size, 0);
-  await f.bind(numberedKey(33), viewer);
+  await assert.rejects(f.bind(numberedKey(33), viewer), /32 signing keys per member/);
+  f.storage.put = put;
+  await f.bind(numberedKey(32), viewer);
   assert.equal(f.policy.bindings.size, 32);
 });
 

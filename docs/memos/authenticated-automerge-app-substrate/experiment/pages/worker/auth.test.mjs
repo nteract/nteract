@@ -192,6 +192,23 @@ test("server diagnostics identify the boundary without exposing provider errors 
   );
   assert.equal(logs[1][1].errorType, "Error");
   assert.equal(JSON.stringify(logs).includes("token"), false);
+  logFailure(
+    Object.assign(Error("private principal and token"), {
+      status: 503,
+      code: "native_admission_timeout",
+    }),
+    "native-admission",
+  );
+  assert.equal(logs[2][1].reason, "native_admission_timeout");
+  logFailure(
+    Object.assign(Error("private body"), {
+      status: 503,
+      code: "private-token-value",
+    }),
+    "native-admission",
+  );
+  assert.equal(logs[3][1].reason, undefined);
+  assert.equal(JSON.stringify(logs).includes("private"), false);
 });
 
 test("passage-conflict transport exposes only bounded recovery addresses", async () => {
