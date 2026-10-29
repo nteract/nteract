@@ -612,6 +612,10 @@ struct DaemonReadyPayload {
     comments_doc_id: Option<String>,
     /// Daemon-authoritative notebook reference stored inside the CommentsDoc.
     comments_notebook_ref: Option<serde_json::Value>,
+    /// Keyed document kinds the room routes over `KeyedDocSync` (0x0b); the
+    /// frontend sends 0x0b only for these. Omitted when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    keyed_doc_kinds: Vec<String>,
 }
 
 /// How to connect a new window to the daemon.
@@ -1002,6 +1006,7 @@ async fn initialize_notebook_sync_open(
         local_environment_selection: info.capabilities.local_environment_selection,
         comments_doc_id: info.capabilities.comments_doc_id.clone(),
         comments_notebook_ref: info.capabilities.comments_notebook_ref.clone(),
+        keyed_doc_kinds: info.capabilities.keyed_doc_kinds.clone(),
     };
 
     setup_sync_receivers(
@@ -1088,6 +1093,7 @@ async fn initialize_notebook_sync_create(
         local_environment_selection: info.capabilities.local_environment_selection,
         comments_doc_id: info.capabilities.comments_doc_id.clone(),
         comments_notebook_ref: info.capabilities.comments_notebook_ref.clone(),
+        keyed_doc_kinds: info.capabilities.keyed_doc_kinds.clone(),
     };
 
     setup_sync_receivers(
@@ -1218,11 +1224,16 @@ fn attach_ready_payload(
         local_environment_selection: capabilities.local_environment_selection,
         comments_doc_id: capabilities.comments_doc_id,
         comments_notebook_ref: capabilities.comments_notebook_ref,
+        keyed_doc_kinds: capabilities.keyed_doc_kinds,
     }
 }
 
 /// The UUID attach handshake carries no creation or workstation defaults.
 /// A refused/missing room propagates as an error, with no create fallback.
+#[allow(
+    clippy::result_large_err,
+    reason = "This wrapper preserves notebook-sync's typed connection errors"
+)]
 async fn connect_attach_relay(
     socket_path: PathBuf,
     notebook_id: String,
@@ -1316,6 +1327,7 @@ async fn initialize_notebook_sync_hosted(
         local_environment_selection: info.capabilities.local_environment_selection,
         comments_doc_id: info.capabilities.comments_doc_id.clone(),
         comments_notebook_ref: info.capabilities.comments_notebook_ref.clone(),
+        keyed_doc_kinds: info.capabilities.keyed_doc_kinds.clone(),
     };
 
     setup_sync_receivers(
@@ -1726,6 +1738,27 @@ mod tests {
             .unwrap();
         assert_eq!(value["ephemeral"], false);
         assert_eq!(value["notebook_path"], "/project/saved.ipynb");
+    }
+
+    #[test]
+    fn ready_payload_carries_keyed_doc_kinds_only_when_the_room_routes_some() {
+        let caps = notebook_protocol::connection::ProtocolCapabilities::v4(None);
+        let none = super::attach_ready_payload("room".into(), 1, None, None, caps.clone());
+        assert!(serde_json::to_value(none)
+            .unwrap()
+            .get("keyed_doc_kinds")
+            .is_none());
+        let routed = super::attach_ready_payload(
+            "room".into(),
+            2,
+            None,
+            None,
+            caps.with_keyed_doc_kinds(vec!["test_kv".into()]),
+        );
+        assert_eq!(
+            serde_json::to_value(routed).unwrap()["keyed_doc_kinds"],
+            serde_json::json!(["test_kv"])
+        );
     }
 
     #[cfg(unix)]
@@ -4694,28 +4727,21 @@ async fn send_frame_bytes(
         guard.as_ref().cloned().ok_or("Not connected to daemon")?
     };
 
-    use notebook_wire::frame_types;
-
     let frame_type = frame_data[0];
     let payload = &frame_data[1..];
 
-    match frame_type {
-        frame_types::AUTOMERGE_SYNC
-        | frame_types::REQUEST
-        | frame_types::PRESENCE
-        | frame_types::RUNTIME_STATE_SYNC
-        | frame_types::COMMS_DOC_SYNC
-        | frame_types::COMMENTS_DOC_SYNC
-        | frame_types::POOL_STATE_SYNC
-        | frame_types::PUT_BLOB => handle
-            .forward_frame(frame_type, payload.to_vec())
-            .await
-            .map_err(|e| format!("send_frame(0x{:02x}): {}", frame_type, e)),
-        _ => Err(format!(
+    // Deny-list rather than allow-list: the daemon decides which client frame
+    // types it accepts, so a new type needs no relay change.
+    if notebook_wire::is_daemon_originated_frame(frame_type) {
+        return Err(format!(
             "Unsupported outgoing frame type: 0x{:02x}",
             frame_type
-        )),
+        ));
     }
+    handle
+        .forward_frame(frame_type, payload.to_vec())
+        .await
+        .map_err(|e| format!("send_frame(0x{:02x}): {}", frame_type, e))
 }
 
 /// Check packages for typosquatting (similar names to popular packages).

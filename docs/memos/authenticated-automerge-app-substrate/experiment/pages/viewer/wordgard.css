@@ -1,0 +1,451 @@
+.wordgard-editor {
+  position: relative;
+  min-width: 0;
+}
+.wordgard-editor .wordgard-document {
+  --wg-highlight-color: var(--primary);
+  --wg-panel-color: var(--popover);
+  --wg-border-color: var(--border);
+  border: 0;
+  outline: none;
+  font: inherit;
+  color: inherit;
+  line-height: 1.7;
+}
+.wordgard-editor .wg-selected-node {
+  outline-color: var(--primary);
+}
+.wordgard-editor wg-dropcursor.wg-vertical,
+.wordgard-editor wg-dropcursor.wg-horizontal {
+  border-color: var(--primary);
+}
+.wordgard-editor dialog {
+  background: var(--popover);
+  color: var(--popover-foreground);
+}
+.wordgard-editor .wordgard-document .wg-dialog-button {
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+}
+.wordgard-editor .wordgard-document .wg-dialog-button:active {
+  background: var(--accent);
+}
+.wordgard-editor .wordgard-document:has(> wg-scroller > wg-content:focus) {
+  /* Wordgard's base theme adds its own whole-editor focus outline. */
+  outline: none;
+}
+.wordgard-document wg-content {
+  display: block;
+  outline: none;
+  min-height: 1.7em;
+  padding: 8px 0;
+  overflow-wrap: anywhere;
+}
+.wordgard-document wg-content p {
+  margin: 0 0 1em;
+}
+.wordgard-document wg-content h1,
+.wordgard-document wg-content h2,
+.wordgard-document wg-content h3 {
+  line-height: 1.3;
+  margin: 1.2em 0 0.6em;
+}
+.wordgard-document wg-content > :first-child {
+  margin-top: 0;
+}
+.wordgard-document wg-content ul,
+.wordgard-document wg-content ol {
+  padding-inline-start: 1.5em;
+}
+.wordgard-document wg-content li > p {
+  margin: 0.15em 0;
+}
+.wordgard-document wg-content .wordgard-task-item {
+  list-style: none;
+  position: relative;
+}
+.wordgard-task-content > p {
+  margin: 0.15em 0;
+}
+.wordgard-task-control {
+  position: absolute;
+  inset-inline-start: -1.7em;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.7em;
+  height: 1.7em;
+  cursor: pointer;
+}
+.wordgard-task-control input[type="checkbox"] {
+  appearance: auto;
+  margin: 0;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--primary);
+  cursor: inherit;
+}
+.wordgard-task-control input:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+.wordgard-task-item[data-checked="true"] > .wordgard-task-content > p {
+  color: var(--muted-foreground);
+  text-decoration: line-through;
+}
+@media (pointer: coarse) {
+  .wordgard-task-item {
+    min-height: 44px;
+  }
+  .wordgard-task-control {
+    width: 44px;
+    height: 44px;
+    inset-inline-start: -36px;
+    top: -8px;
+  }
+}
+.wordgard-document wg-content a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.wordgard-document wg-content pre {
+  font:
+    14px/1.6 ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+  border-radius: 10px;
+  background: var(--muted);
+  color: var(--foreground);
+  padding: 44px 16px 16px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  position: relative;
+}
+.wordgard-document .wg-code-language {
+  font:
+    12px/1.4 ui-sans-serif,
+    system-ui,
+    sans-serif;
+  max-width: 160px;
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.wordgard-document .wg-code-language:hover {
+  background: var(--accent);
+}
+.wordgard-document wg-content img {
+  max-width: 100%;
+  height: auto;
+}
+.image-selection-label {
+  padding: 0 8px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+.image-upload-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 0;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+.image-upload-status > span {
+  flex: 1 1 180px;
+}
+.image-upload-status button {
+  min-height: 36px;
+  padding: 4px 8px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.wordgard-caret-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.wordgard-caret-layer .peer-caret {
+  position: absolute;
+  width: 0;
+  border-left: 2px solid #8b5fbf;
+  pointer-events: none;
+}
+.wordgard-caret-layer .peer-caret > span {
+  max-width: min(220px, 60vw);
+}
+.wordgard-caret-layer .peer-caret[data-label-side="left"] > span {
+  left: auto;
+  right: 0;
+}
+.wordgard-widget {
+  user-select: text;
+  white-space: normal;
+}
+.wordgard-diagram {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  margin: 0;
+  min-width: 0;
+}
+.wordgard-diagram > p {
+  margin: 0;
+  padding: 12px 0;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+.wordgard-diagram-canvas {
+  overflow: auto;
+  text-align: center;
+}
+/* Pele retains these CSS references in its sanitized SVG. Color changes flow
+   through the existing diagram without remounting it or changing editor state. */
+.wordgard-diagram-canvas {
+  --pele-bg: var(--card);
+  --pele-fg: var(--foreground);
+  --pele-muted: var(--muted-foreground);
+  --pele-line: var(--foreground);
+  --pele-surface: var(--muted);
+  --pele-surface-alt: var(--secondary);
+  --pele-border: var(--border);
+  --pele-accent: var(--primary);
+  --pele-font: var(--output-ui-font, sans-serif);
+  --pele-font-mono: var(--output-mono-font, monospace);
+}
+.wordgard-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+.wordgard-diagram-header,
+.wordgard-diagram-actions {
+  -webkit-user-select: none;
+  user-select: none;
+}
+.wordgard-diagram-header {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 4px 12px;
+}
+.wordgard-diagram-language {
+  color: var(--muted-foreground);
+  font:
+    12px/1.4 ui-sans-serif,
+    system-ui,
+    sans-serif;
+}
+.wordgard-diagram-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  z-index: 1;
+}
+.wordgard-diagram-actions .wordgard-diagram-action {
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.wordgard-diagram-action svg {
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+}
+.wordgard-diagram-actions .wordgard-diagram-action:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+.wordgard-diagram-action:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.wordgard-diagram-copy-error {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: max-content;
+  max-width: 200px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  font:
+    12px/1.4 ui-sans-serif,
+    system-ui,
+    sans-serif;
+  white-space: normal;
+}
+.wordgard-document .preserved-table,
+.wordgard-document .preserved-table .markdown-table-scroll {
+  margin: 0;
+}
+.wordgard-document .remote-edit {
+  text-decoration: underline;
+  text-decoration-color: #b79551;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+}
+@media (max-width: 600px) {
+  .wordgard-document wg-content pre {
+    padding-top: 56px;
+    padding-inline: 12px;
+  }
+  .wordgard-diagram-header {
+    min-height: 52px;
+  }
+  .wordgard-diagram-actions .wordgard-diagram-action {
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+  .wordgard-document .wg-code-language {
+    top: 4px;
+    height: 44px;
+    max-width: calc(100% - 116px);
+  }
+}
+
+.wordgard-document wg-content table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  margin: 12px 0 20px;
+  font-size: 0.94em;
+}
+.wordgard-document wg-content td,
+.wordgard-document wg-content th {
+  border: 1px solid var(--border);
+  padding: 10px 12px;
+  vertical-align: top;
+  font-weight: 400;
+  text-align: left;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.wordgard-document wg-content [data-table-header="true"] {
+  background: var(--muted);
+  font-weight: 600;
+}
+.wordgard-document wg-content .wg-selected-cell {
+  background: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+.pages-table-menu {
+  position: fixed;
+  z-index: 100;
+  width: 244px;
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--popover);
+  box-shadow: 0 8px 28px #00000014;
+  color: var(--popover-foreground);
+  font:
+    13px/1.4 ui-sans-serif,
+    system-ui,
+    sans-serif;
+}
+.pages-table-menu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.pages-table-menu button:hover,
+.pages-table-menu button:focus-visible {
+  background: var(--accent);
+  color: var(--accent-foreground);
+  outline: none;
+}
+.pages-table-menu button.table-menu-delete {
+  color: var(--destructive);
+}
+.pages-table-menu button.table-menu-divider {
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  margin-top: 4px;
+  padding-top: 12px;
+}
+.pages-table-menu form {
+  padding: 8px;
+}
+.pages-table-menu label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.pages-table-menu input {
+  width: 72px;
+  padding: 7px;
+  border: 1px solid var(--input);
+  border-radius: 6px;
+  font: inherit;
+  background: var(--background);
+  color: var(--foreground);
+}
+.pages-table-menu form button {
+  justify-content: center;
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+}
+@media (max-width: 600px) {
+  .wordgard-document wg-content td,
+  .wordgard-document wg-content th {
+    padding: 8px;
+  }
+  .pages-table-menu button {
+    min-height: 44px;
+  }
+}
+.wordgard-table-convert {
+  display: block;
+  margin: 8px 0 0 auto;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.wordgard-table-convert:hover {
+  background: var(--accent);
+}

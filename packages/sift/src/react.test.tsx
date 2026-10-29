@@ -2362,5 +2362,210 @@ describe("SiftTable", () => {
       expect(container.querySelector<HTMLElement>(".sift-stat-rows")?.dataset.value).toBe("2 rows");
       unmount();
     });
+
+    /**
+     * A worker that honors `autoLoad` for a three-group file of two rows per
+     * group: it pauses after every group while groups remain, and each
+     * `resume` appends one more group.
+     */
+    function pausingWorker() {
+      const listeners: Listener[] = [];
+      const posted: { t: string; autoLoad?: unknown }[] = [];
+      let terminated = false;
+      let rowCount = 2;
+      const total = 6;
+      const reply = (message: unknown) =>
+        setTimeout(() => {
+          if (!terminated) for (const l of listeners) l({ data: message } as unknown as Event);
+        }, 0);
+      const pauseOrFinish = () =>
+        reply({
+          t: "event",
+          event:
+            rowCount < total
+              ? {
+                  type: "streaming-done",
+                  loadedRows: rowCount,
+                  totalRows: total,
+                  truncated: true,
+                  resumable: true,
+                }
+              : {
+                  type: "streaming-done",
+                  loadedRows: rowCount,
+                  totalRows: total,
+                  truncated: false,
+                  resumable: false,
+                },
+        });
+      return {
+        posted,
+        postMessage(message: { t: string; id: number; viewStart?: number; viewEnd?: number }) {
+          posted.push(message);
+          if (message.t === "open") {
+            reply({
+              t: "opened",
+              id: message.id,
+              columns,
+              rowCount,
+              head: cells(0, 2, 2),
+              rowGroupCount: 3,
+            });
+            setTimeout(pauseOrFinish, 5);
+          } else if (message.t === "resume") {
+            reply({ t: "event", event: { type: "streaming-resumed", rowCount } });
+            rowCount += 2;
+            reply({
+              t: "event",
+              event: { type: "rows-appended", rowCount, summariesAll: [null, null] },
+            });
+            reply({
+              t: "progress",
+              phase: "chunk",
+              rowGroup: rowCount / 2 - 1,
+              rowGroupCount: 3,
+              loadedRows: rowCount,
+              totalRows: total,
+              truncated: false,
+              memoryBytes: 10,
+            });
+            pauseOrFinish();
+          } else if (message.t === "query") {
+            const result = { generation: 0, filteredCount: rowCount, summaries: [null, null] };
+            reply({
+              t: "query",
+              id: message.id,
+              result: { ...result, summariesAll: [null, null] },
+            });
+          } else if (message.t === "window") {
+            reply({
+              t: "window",
+              id: message.id,
+              cells: cells(message.viewStart!, message.viewEnd!, rowCount),
+            });
+          } else if (message.t === "close") {
+            reply({ t: "closed" });
+          }
+        },
+        addEventListener(type: string, listener: Listener) {
+          if (type === "message") listeners.push(listener);
+        },
+        terminate() {
+          terminated = true;
+        },
+      };
+    }
+
+    const loadPhases = (milestones: SiftLoadMilestone[]) =>
+      milestones
+        .filter((m) =>
+          ["streaming-complete", "streaming-resumed", "chunk-appended"].includes(m.phase),
+        )
+        .map((m) =>
+          m.phase === "streaming-complete"
+            ? `complete ${m.rowCount}/${m.totalRowCount} resumable=${m.resumable}`
+            : `${m.phase} ${m.rowCount}`,
+        );
+
+    it("worker + autoLoad pauses with Load more and resumes on each click", async () => {
+      vi.useRealTimers();
+      const worker = pausingWorker();
+      setWorkerFactory(() => worker as unknown as Worker);
+      const milestones: SiftLoadMilestone[] = [];
+      const { container, unmount } = render(
+        <SiftTable
+          source={{
+            kind: "byte-source",
+            source,
+            worker: true,
+            overflow: "truncate",
+            autoLoad: { rows: 2 },
+          }}
+          onLoadMilestone={(m) => milestones.push(m)}
+        />,
+      );
+      const button = () => container.querySelector<HTMLButtonElement>(".sift-load-more");
+      await waitFor(() => expect(button()?.textContent).toBe("Load more"));
+      expect(worker.posted[0]).toMatchObject({ t: "open", autoLoad: { rows: 2 } });
+      expect(container.querySelector(".sift-preview-hint")?.firstElementChild?.textContent).toBe(
+        "Showing first 2 of 6 rows",
+      );
+      expect(container.querySelector(".sift-status-ready")).not.toBeNull();
+
+      button()!.click();
+      await waitFor(() => expect(loadPhases(milestones)).toHaveLength(4));
+      await waitFor(() => {
+        expect(button()?.textContent).toBe("Load more");
+        expect(button()?.disabled).toBe(false);
+      });
+      expect(container.querySelector(".sift-preview-hint")?.firstElementChild?.textContent).toBe(
+        "Showing first 4 of 6 rows",
+      );
+
+      button()!.click();
+      await waitFor(() => expect(loadPhases(milestones)).toHaveLength(7));
+      expect(loadPhases(milestones)).toEqual([
+        "complete 2/6 resumable=true",
+        "streaming-resumed 2",
+        "chunk-appended 4",
+        "complete 4/6 resumable=true",
+        "streaming-resumed 4",
+        "chunk-appended 6",
+        "complete 6/6 resumable=false",
+      ]);
+      expect(worker.posted.filter((m) => m.t === "resume")).toHaveLength(2);
+      await waitFor(() => {
+        expect(button()).toBeNull();
+        expect(container.querySelector(".sift-preview-hint")).toBeNull();
+        expect(container.querySelector<HTMLElement>(".sift-stat-rows")?.dataset.value).toBe(
+          "6 rows",
+        );
+      });
+      unmount();
+    });
+
+    it("worker + autoLoad trigger: scroll resumes from the engine's near-end callback", async () => {
+      vi.useRealTimers();
+      const worker = pausingWorker();
+      setWorkerFactory(() => worker as unknown as Worker);
+      const milestones: SiftLoadMilestone[] = [];
+      const { container, unmount } = render(
+        <SiftTable
+          source={{
+            kind: "byte-source",
+            source,
+            worker: true,
+            overflow: "truncate",
+            autoLoad: { rows: 2, trigger: "scroll" },
+          }}
+          onLoadMilestone={(m) => milestones.push(m)}
+        />,
+      );
+      // Two rows sit inside the near-end range: the windowed engine reports it
+      // once it is at rest on each pause, with no scroll input.
+      await waitFor(() => expect(loadPhases(milestones)).toHaveLength(7));
+      expect(loadPhases(milestones)).toEqual([
+        "complete 2/6 resumable=true",
+        "streaming-resumed 2",
+        "chunk-appended 4",
+        "complete 4/6 resumable=true",
+        "streaming-resumed 4",
+        "chunk-appended 6",
+        "complete 6/6 resumable=false",
+      ]);
+      expect(worker.posted.filter((m) => m.t === "resume")).toHaveLength(2);
+      const options = vi.mocked(createTable).mock.calls.at(-1)?.[2];
+      expect(options?.onScrollNearEnd).toBeTypeOf("function");
+      // Not paused any more: a late near-end report posts nothing.
+      options!.onScrollNearEnd!();
+      expect(worker.posted.filter((m) => m.t === "resume")).toHaveLength(2);
+      await waitFor(() => {
+        expect(container.querySelector(".sift-load-more")).toBeNull();
+        expect(container.querySelector<HTMLElement>(".sift-stat-rows")?.dataset.value).toBe(
+          "6 rows",
+        );
+      });
+      unmount();
+    });
   });
 });

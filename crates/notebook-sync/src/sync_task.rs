@@ -27,7 +27,7 @@ use log::{debug, info, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
-use notebook_protocol::connection::{self, FrameSink, FrameSource, NotebookFrameType};
+use notebook_protocol::connection::{self, FrameSink, FrameSource, KeyedDocKey, NotebookFrameType};
 use notebook_protocol::protocol::{
     NotebookBroadcast, NotebookRequest, NotebookRequestEnvelope, NotebookResponse,
     NotebookResponseEnvelope, SessionControlMessage, SessionSyncStatusWire,
@@ -453,6 +453,14 @@ impl SyncReactor {
         }
         // Also send CommentsDoc changes
         send_comments_sync_message(&self.io.doc, writer).await?;
+        // Opening frames and local writes of keyed documents.
+        let keyed_frames = {
+            let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
+            state.keyed.outbound()
+        };
+        for payload in keyed_frames {
+            send_keyed_doc_frame(writer, &payload, &self.io.notebook_id).await;
+        }
         self.resolve_confirm_waiters();
         Ok(())
     }
@@ -943,6 +951,21 @@ impl SyncReactor {
                 }
                 Ok(())
             }
+            NotebookFrameType::KeyedDocSync => {
+                let reply = {
+                    let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
+                    let actor = state.doc.get_actor().clone();
+                    let (event, reply) = state.keyed.receive(&frame.payload, &actor);
+                    if let Some(event) = event {
+                        let _ = state.keyed_tx.send(event);
+                    }
+                    reply
+                };
+                if let Some(payload) = reply {
+                    send_keyed_doc_frame(writer, &payload, &self.io.notebook_id).await;
+                }
+                Ok(())
+            }
 
             NotebookFrameType::SessionControl => {
                 let message = match serde_json::from_slice::<SessionControlMessage>(&frame.payload)
@@ -973,6 +996,34 @@ impl SyncReactor {
                         // bridge health. Keep the additive control message
                         // forward-compatible without changing readiness.
                     }
+                    SessionControlMessage::DocResync {
+                        kind,
+                        id,
+                        epoch,
+                        reason,
+                    } => {
+                        debug!(
+                            "[notebook-sync] Daemon refused keyed document {kind}/{id} for {}: {reason}",
+                            self.io.notebook_id
+                        );
+                        let opening = {
+                            let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
+                            let actor = state.doc.get_actor().clone();
+                            let key = KeyedDocKey::new(kind, id);
+                            match state.keyed.resync(&key, epoch, &reason, &actor) {
+                                Some((event, opening)) => {
+                                    let _ = state.keyed_tx.send(event);
+                                    opening
+                                }
+                                None => None,
+                            }
+                        };
+                        if let Some(payload) = opening {
+                            send_keyed_doc_frame(writer, &payload, &self.io.notebook_id).await;
+                        }
+                    }
+                    // Coordinator-to-runtime-agent only.
+                    SessionControlMessage::RuntimeAgentCapabilities { .. } => {}
                 }
                 Ok(())
             }
@@ -1260,6 +1311,17 @@ async fn send_state_sync_message<W: FrameSink>(
     }
 
     Ok(())
+}
+
+/// Warn-only, like the other document acks: a dead socket ends the loop on
+/// its next read.
+async fn send_keyed_doc_frame<W: FrameSink>(writer: &mut W, payload: &[u8], notebook_id: &str) {
+    if let Err(e) = writer
+        .send_frame(NotebookFrameType::KeyedDocSync, payload)
+        .await
+    {
+        warn!("[notebook-sync] Failed to send KeyedDocSync for {notebook_id}: {e}");
+    }
 }
 
 async fn send_comms_sync_message<W: FrameSink>(
@@ -2273,5 +2335,329 @@ mod tests {
         daemon.await.expect("daemon task");
         drop(handle);
         sync_task.await.expect("sync task exits");
+    }
+
+    // ── Keyed documents ───────────────────────────────────────────────
+
+    use automerge::sync::SyncDoc;
+    use automerge::transaction::Transactable;
+    use automerge::{ReadDoc, ROOT};
+    use notebook_protocol::connection::KeyedDocFrameHeader;
+
+    use crate::keyed_doc::KeyedDocEvent;
+
+    const TEST_KIND: &str = "test_kv";
+
+    struct FakeDaemon {
+        reader: connection::FramedReader,
+        writer: BufWriter<tokio::io::WriteHalf<tokio::io::DuplexStream>>,
+    }
+
+    /// Run the sync task against an in-memory daemon end.
+    fn spawn_keyed_session(
+        kinds: &[&str],
+    ) -> (crate::DocHandle, FakeDaemon, tokio::task::JoinHandle<()>) {
+        let (handle, config) = test_handle_and_config();
+        let handle = handle.with_keyed_doc_kinds(kinds.iter().map(|k| k.to_string()).collect());
+        let (client, server) = tokio::io::duplex(256 * 1024);
+        let (client_read, client_write) = tokio::io::split(client);
+        let (server_read, server_write) = tokio::io::split(server);
+        let sync_task = tokio::spawn(run(config, client_read, client_write));
+        let daemon = FakeDaemon {
+            reader: connection::FramedReader::spawn(BufReader::new(server_read), 64),
+            writer: BufWriter::new(server_write),
+        };
+        (handle, daemon, sync_task)
+    }
+
+    impl FakeDaemon {
+        /// The next `KeyedDocSync` frame, skipping every other type.
+        async fn next_keyed(&mut self) -> (KeyedDocFrameHeader, sync::Message) {
+            loop {
+                let frame = timeout(Duration::from_secs(2), self.reader.recv())
+                    .await
+                    .expect("client sent a KeyedDocSync frame")
+                    .expect("client stayed connected")
+                    .expect("frame read");
+                if frame.frame_type == NotebookFrameType::KeyedDocSync {
+                    let (header, body) = KeyedDocFrameHeader::try_parse(&frame.payload).unwrap();
+                    return (header, sync::Message::decode(body).unwrap());
+                }
+            }
+        }
+
+        /// Fails if the client sends a `KeyedDocSync` frame within `window`.
+        async fn expect_no_keyed(&mut self, window: Duration) {
+            let deadline = tokio::time::Instant::now() + window;
+            while let Ok(frame) = tokio::time::timeout_at(deadline, self.reader.recv()).await {
+                let frame = frame.expect("client stayed connected").expect("frame read");
+                assert_ne!(
+                    frame.frame_type,
+                    NotebookFrameType::KeyedDocSync,
+                    "client must not send KeyedDocSync"
+                );
+            }
+        }
+
+        async fn send_keyed(&mut self, header: &KeyedDocFrameHeader, message: sync::Message) {
+            connection::send_typed_frame(
+                &mut self.writer,
+                NotebookFrameType::KeyedDocSync,
+                &header.encode_frame(&message.encode()),
+            )
+            .await
+            .unwrap();
+        }
+
+        async fn send_control(&mut self, message: &SessionControlMessage) {
+            send_typed_json_frame(&mut self.writer, NotebookFrameType::SessionControl, message)
+                .await
+                .unwrap();
+        }
+    }
+
+    /// The producer's copy of one keyed document epoch.
+    struct HubDoc {
+        header: KeyedDocFrameHeader,
+        doc: AutoCommit,
+        state: sync::State,
+    }
+
+    impl HubDoc {
+        fn new(id: &str, epoch: u64, value: &str) -> Self {
+            let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(b"rt:producer"));
+            doc.put(ROOT, "value", value).unwrap();
+            doc.commit();
+            Self {
+                header: KeyedDocFrameHeader::new(TEST_KIND, id, epoch),
+                doc,
+                state: sync::State::new(),
+            }
+        }
+
+        /// Apply a client message and send the reply, if any.
+        async fn answer(&mut self, daemon: &mut FakeDaemon, message: sync::Message) {
+            self.doc
+                .sync()
+                .receive_sync_message(&mut self.state, message)
+                .unwrap();
+            if let Some(reply) = self.doc.sync().generate_sync_message(&mut self.state) {
+                daemon.send_keyed(&self.header, reply).await;
+            }
+        }
+
+        fn value(&self) -> Option<String> {
+            read_value(&self.doc)
+        }
+    }
+
+    fn read_value(doc: &AutoCommit) -> Option<String> {
+        doc.get(ROOT, "value")
+            .unwrap()
+            .and_then(|(value, _)| value.into_string().ok())
+    }
+
+    fn replica(handle: &crate::DocHandle, id: &str) -> Option<(u64, Option<String>)> {
+        handle
+            .with_keyed_doc(TEST_KIND, id, |view| (view.epoch, read_value(view.doc)))
+            .unwrap()
+    }
+
+    async fn next_event(events: &mut broadcast::Receiver<KeyedDocEvent>) -> KeyedDocEvent {
+        timeout(Duration::from_secs(2), events.recv())
+            .await
+            .expect("keyed doc event")
+            .expect("event channel open")
+    }
+
+    #[tokio::test]
+    async fn keyed_doc_opens_syncs_writes_and_resyncs_at_the_daemon_epoch() {
+        let (handle, mut daemon, sync_task) = spawn_keyed_session(&[TEST_KIND]);
+        let mut events = handle.subscribe_keyed_docs().unwrap();
+        assert_eq!(replica(&handle, "d1"), None, "not open yet");
+
+        assert!(handle.open_keyed_doc(TEST_KIND, "d1", 1).unwrap());
+        assert!(!handle.open_keyed_doc(TEST_KIND, "d1", 1).unwrap());
+
+        // Opening frame subscribes at the requested epoch.
+        let mut hub = HubDoc::new("d1", 1, "one");
+        let (header, opening) = daemon.next_keyed().await;
+        assert_eq!(header, hub.header);
+        hub.answer(&mut daemon, opening).await;
+        match next_event(&mut events).await {
+            KeyedDocEvent::Changed {
+                key, epoch, after, ..
+            } => {
+                assert_eq!(key, KeyedDocKey::new(TEST_KIND, "d1"));
+                assert_eq!(epoch, 1);
+                assert_eq!(after, hub.doc.get_heads());
+            }
+            other => panic!("expected Changed, got {other:?}"),
+        }
+        assert_eq!(replica(&handle, "d1"), Some((1, Some("one".into()))));
+
+        // A local write is flushed to the daemon without an explicit sync call.
+        let written = handle
+            .with_keyed_doc(TEST_KIND, "d1", |view| {
+                view.doc.put(ROOT, "value", "local").unwrap();
+                view.doc.get_heads()
+            })
+            .unwrap()
+            .unwrap();
+        while hub.value().as_deref() != Some("local") {
+            let (header, message) = daemon.next_keyed().await;
+            assert_eq!(header, hub.header);
+            hub.answer(&mut daemon, message).await;
+        }
+        assert!(hub.doc.get_heads() == written);
+
+        // The daemon refuses and has moved to epoch 2: the replica restarts
+        // empty there, without the refused write, and resubscribes.
+        daemon
+            .send_control(&SessionControlMessage::DocResync {
+                kind: TEST_KIND.into(),
+                id: "d1".into(),
+                epoch: 2,
+                reason: "scope viewer cannot write".into(),
+            })
+            .await;
+        loop {
+            match next_event(&mut events).await {
+                KeyedDocEvent::Resync { key, epoch, reason } => {
+                    assert_eq!(key, KeyedDocKey::new(TEST_KIND, "d1"));
+                    assert_eq!(epoch, 2);
+                    assert_eq!(reason, "scope viewer cannot write");
+                    break;
+                }
+                KeyedDocEvent::Changed { .. } => {}
+            }
+        }
+        assert_eq!(replica(&handle, "d1"), Some((2, None)));
+
+        let mut hub = HubDoc::new("d1", 2, "two");
+        let (header, opening) = loop {
+            let (header, message) = daemon.next_keyed().await;
+            if header.epoch == 2 {
+                break (header, message);
+            }
+        };
+        assert_eq!(header, hub.header);
+        assert!(opening.heads.is_empty(), "fresh replica has no changes");
+        hub.answer(&mut daemon, opening).await;
+        assert!(matches!(
+            next_event(&mut events).await,
+            KeyedDocEvent::Changed { epoch: 2, .. }
+        ));
+        assert_eq!(replica(&handle, "d1"), Some((2, Some("two".into()))));
+
+        drop(handle);
+        sync_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn keyed_doc_follows_epoch_bumps_from_frames_and_reopens() {
+        let (handle, mut daemon, sync_task) = spawn_keyed_session(&[TEST_KIND]);
+        let mut events = handle.subscribe_keyed_docs().unwrap();
+        handle.open_keyed_doc(TEST_KIND, "d1", 1).unwrap();
+        let mut hub = HubDoc::new("d1", 1, "one");
+        let (_, opening) = daemon.next_keyed().await;
+        hub.answer(&mut daemon, opening).await;
+        next_event(&mut events).await;
+
+        // The producer replaced the document: the daemon pushes epoch 3.
+        let mut replacement = HubDoc::new("d1", 3, "three");
+        let push = replacement
+            .doc
+            .sync()
+            .generate_sync_message(&mut replacement.state)
+            .unwrap();
+        daemon.send_keyed(&replacement.header, push).await;
+        // A late frame for the old epoch is dropped.
+        let stale = hub
+            .doc
+            .sync()
+            .generate_sync_message(&mut sync::State::new());
+        daemon.send_keyed(&hub.header, stale.unwrap()).await;
+        loop {
+            let (header, message) = daemon.next_keyed().await;
+            if header.epoch == 1 {
+                // An epoch-1 ack queued before the bump arrived.
+                continue;
+            }
+            assert_eq!(header.epoch, 3, "replies follow the new epoch");
+            replacement.answer(&mut daemon, message).await;
+            if replica(&handle, "d1") == Some((3, Some("three".into()))) {
+                break;
+            }
+        }
+        assert!(matches!(
+            next_event(&mut events).await,
+            KeyedDocEvent::Changed { epoch: 3, .. }
+        ));
+
+        // Opening at a newer epoch than the replica restarts it as well.
+        assert!(handle.open_keyed_doc(TEST_KIND, "d1", 4).unwrap());
+        assert_eq!(replica(&handle, "d1"), Some((4, None)));
+        loop {
+            let (header, _) = daemon.next_keyed().await;
+            if header.epoch == 4 {
+                break;
+            }
+        }
+
+        drop(handle);
+        sync_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn keyed_doc_refuses_kinds_the_daemon_did_not_advertise() {
+        let (handle, mut daemon, sync_task) = spawn_keyed_session(&[]);
+        assert!(!handle.supports_doc_kind(TEST_KIND));
+        assert!(matches!(
+            handle.open_keyed_doc(TEST_KIND, "d1", 1),
+            Err(SyncError::UnsupportedDocKind(kind)) if kind == TEST_KIND
+        ));
+        assert!(matches!(
+            handle.with_keyed_doc(TEST_KIND, "d1", |_| ()),
+            Err(SyncError::UnsupportedDocKind(_))
+        ));
+
+        let (other, _other_daemon, other_task) = spawn_keyed_session(&[TEST_KIND]);
+        assert!(matches!(
+            other.open_keyed_doc("other_kind", "d1", 1),
+            Err(SyncError::UnsupportedDocKind(_))
+        ));
+        assert!(matches!(
+            other.open_keyed_doc(TEST_KIND, "", 1),
+            Err(SyncError::InvalidKeyedDocKey(_))
+        ));
+        drop(other);
+        other_task.await.unwrap();
+
+        // Daemon traffic for documents this client never opened gets no
+        // reply, and local edits flush no keyed frames.
+        let hub = HubDoc::new("d1", 1, "one");
+        let mut push = HubDoc::new("d1", 1, "one");
+        let message = push
+            .doc
+            .sync()
+            .generate_sync_message(&mut push.state)
+            .unwrap();
+        daemon.send_keyed(&hub.header, message).await;
+        daemon
+            .send_control(&SessionControlMessage::DocResync {
+                kind: TEST_KIND.into(),
+                id: "d1".into(),
+                epoch: 1,
+                reason: "unexpected".into(),
+            })
+            .await;
+        handle
+            .add_cell_with_source("cell-1", "code", None, "x = 1")
+            .unwrap();
+        daemon.expect_no_keyed(Duration::from_millis(300)).await;
+
+        drop(handle);
+        sync_task.await.unwrap();
     }
 }

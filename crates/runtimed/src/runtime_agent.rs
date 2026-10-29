@@ -38,7 +38,9 @@ use notebook_doc::presence::PresenceState;
 use notebook_protocol::connection::{
     FrameSink, FrameSource, FrameTransport, NotebookFrameType, PackageManager, UdsFrameTransport,
 };
-use notebook_protocol::protocol::{NotebookBroadcast, RuntimeAgentRequest, RuntimeAgentResponse};
+use notebook_protocol::protocol::{
+    NotebookBroadcast, RuntimeAgentRequest, RuntimeAgentResponse, SessionControlMessage,
+};
 use runtime_doc::{CommsDoc, CommsDocHandle, ExecutionState, RuntimeLifecycle, RuntimeStateDoc};
 use runtime_doc::{KernelActivity, RuntimeStateHandle};
 use tokio::sync::{broadcast, mpsc, RwLock};
@@ -49,6 +51,7 @@ use crate::blob_store::BlobStore;
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::kernel_dispatch::Kernel;
 use crate::kernel_state::KernelState;
+use crate::keyed_doc::{AgentDocs, AgentKeyedDoc};
 use crate::output_blob_publisher::OutputBlobPublisher;
 use crate::output_prep::{
     KernelStatus, LifecycleSignal, QueueCommandReceivers, VisualizationStateCommand, WorkCommand,
@@ -235,6 +238,7 @@ pub async fn run_runtime_agent(
         // The daemon/UDS path never launches on attach: the daemon drives launch
         // via an inbound `LaunchKernel` RPC. Always `None` here.
         None,
+        crate::keyed_doc::agent_kinds(),
     )
     .await
 }
@@ -314,6 +318,7 @@ pub async fn run_cloud_runtime_agent(
         },
         output_blob_publisher,
         initial_launch,
+        crate::keyed_doc::agent_kinds(),
     )
     .await
 }
@@ -568,6 +573,7 @@ async fn run_runtime_agent_on_transport<T, F>(
     resolve_actor: F,
     output_blob_publisher: OutputBlobPublisher,
     initial_launch: Option<(LaunchTrigger, RuntimeAgentRequest)>,
+    keyed_doc_kinds: Vec<Arc<dyn AgentKeyedDoc>>,
 ) -> anyhow::Result<()>
 where
     T: FrameTransport,
@@ -606,7 +612,6 @@ where
 
     let state_doc = RuntimeStateDoc::try_new_with_actor(&runtime_agent_id)
         .map_err(|e| anyhow::anyhow!("create runtime-agent state doc: {e}"))?;
-    let mut coordinator_sync_state = automerge::sync::State::new();
     let (state_changed_tx, mut state_changed_rx) = broadcast::channel::<()>(64);
     // Keep a clone of the sender for the reconnect "kick" path that needs
     // to force a sync round even when heads haven't changed.
@@ -615,10 +620,16 @@ where
 
     let comms_doc = CommsDoc::try_new_with_actor(&runtime_agent_id)
         .map_err(|e| anyhow::anyhow!("create runtime-agent comms doc: {e}"))?;
-    let mut comms_sync_state = automerge::sync::State::new();
     let (comms_changed_tx, mut comms_changed_rx) = broadcast::channel::<()>(64);
     let comms_kick_tx = comms_changed_tx.clone();
     let comms = CommsDocHandle::new(comms_doc, comms_changed_tx);
+
+    // Per-connection sync states for RuntimeStateDoc, CommsDoc and keyed
+    // documents; every reconnect resets them together.
+    let mut docs = AgentDocs::new(state_kick_tx.clone(), comms_kick_tx);
+    for kind in keyed_doc_kinds {
+        docs.register(kind);
+    }
 
     // -- 3. Create local infrastructure -------------------------------------
 
@@ -936,7 +947,7 @@ where
                                 if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
                                     let sync_result = ctx.state.with_doc(|sd| {
                                         match sd.receive_sync_message_with_changes_recovering(
-                                            &mut coordinator_sync_state,
+                                            &mut docs.coordinator_sync,
                                             msg,
                                             "runtime-agent-state-receive",
                                         ) {
@@ -1046,7 +1057,7 @@ where
                                     let reply_encoded = match ctx
                                         .state
                                         .generate_sync_message_recovering(
-                                            &mut coordinator_sync_state,
+                                            &mut docs.coordinator_sync,
                                             "runtime-agent-state-reply",
                                         ) {
                                             Ok(message) => message.map(|reply| reply.encode()),
@@ -1080,7 +1091,7 @@ where
                                     let sync_result = ctx.comms.with_doc(|comms_doc| {
                                         let comms_before = comms_doc.get_comms();
                                         match comms_doc.receive_sync_and_foreign_comms_recovering(
-                                            &mut comms_sync_state,
+                                            &mut docs.comms_sync,
                                             msg,
                                             |actor| {
                                                 !is_kernel_authored_actor(
@@ -1221,7 +1232,7 @@ where
                                     let reply_encoded = match ctx
                                         .comms
                                         .generate_sync_message_recovering(
-                                            &mut comms_sync_state,
+                                            &mut docs.comms_sync,
                                             "runtime-agent-comms-reply",
                                         ) {
                                             Ok(message) => message.map(|reply| reply.encode()),
@@ -1250,23 +1261,25 @@ where
                                 debug!("[runtime-agent] Received NotebookDoc sync frame (ignored for now)");
                             }
 
-                            NotebookFrameType::SessionControl => {
-                                if let Ok(control) =
-                                    serde_json::from_slice::<serde_json::Value>(&typed_frame.payload)
-                                {
-                                    if control.get("type").and_then(|v| v.as_str())
-                                        == Some("cloud_frame_rejected")
-                                    {
-                                        warn!(
-                                            "[runtime-agent] Cloud room rejected frame: frame_type={:?} reason={}",
-                                            control.get("frame_type"),
-                                            control
-                                                .get("reason")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("(no reason given)")
-                                        );
+                            NotebookFrameType::KeyedDocSync => {
+                                match docs.receive_keyed_frame(&typed_frame.payload) {
+                                    Ok(Some(reply)) => {
+                                        if let Err(e) = frame_sink
+                                            .send_frame(NotebookFrameType::KeyedDocSync, &reply)
+                                            .await
+                                        {
+                                            warn!("[runtime-agent] KeyedDocSync reply send failed: {}", e);
+                                        }
+                                    }
+                                    Ok(None) => {}
+                                    Err(e) => {
+                                        warn!("[runtime-agent] Dropping KeyedDocSync frame: {}", e);
                                     }
                                 }
+                            }
+
+                            NotebookFrameType::SessionControl => {
+                                handle_agent_session_control(&mut docs, &typed_frame.payload);
                             }
 
                             _ => {
@@ -1336,13 +1349,7 @@ where
                                 // The daemon creates a fresh sync state for
                                 // each connection; match that or the docs
                                 // won't converge.
-                                coordinator_sync_state = automerge::sync::State::new();
-                                comms_sync_state = automerge::sync::State::new();
-                                // Kick off a full resync so the daemon gets
-                                // everything the kernel produced while we
-                                // were disconnected.
-                                let _ = state_kick_tx.send(());
-                                let _ = comms_kick_tx.send(());
+                                docs.reset_all();
                                 // Track for the flap floor (recoverable only;
                                 // the UDS path leaves this `None`).
                                 if transport.clean_eof_is_recoverable() {
@@ -1397,10 +1404,7 @@ where
                             Ok((new_source, new_sink)) => {
                                 frame_source = new_source;
                                 frame_sink = new_sink;
-                                coordinator_sync_state = automerge::sync::State::new();
-                                comms_sync_state = automerge::sync::State::new();
-                                let _ = state_kick_tx.send(());
-                                let _ = comms_kick_tx.send(());
+                                docs.reset_all();
                                 last_recoverable_reconnect = Some(tokio::time::Instant::now());
                                 info!("[runtime-agent] Reconnected after clean close");
                                 continue;
@@ -1545,10 +1549,7 @@ where
                                 Ok((new_source, new_sink)) => {
                                     frame_source = new_source;
                                     frame_sink = new_sink;
-                                    coordinator_sync_state = automerge::sync::State::new();
-                                    comms_sync_state = automerge::sync::State::new();
-                                    let _ = state_kick_tx.send(());
-                                    let _ = comms_kick_tx.send(());
+                                    docs.reset_all();
                                     info!("[runtime-agent] Reconnected after Broadcast send failure");
                                     continue;
                                 }
@@ -1582,7 +1583,7 @@ where
                 let encoded = match ctx
                     .state
                     .generate_sync_message_recovering(
-                        &mut coordinator_sync_state,
+                        &mut docs.coordinator_sync,
                         "runtime-agent-state-outbound",
                     ) {
                         Ok(message) => message.map(|msg| msg.encode()),
@@ -1628,10 +1629,7 @@ where
                             Ok((new_source, new_sink)) => {
                                 frame_source = new_source;
                                 frame_sink = new_sink;
-                                coordinator_sync_state = automerge::sync::State::new();
-                                comms_sync_state = automerge::sync::State::new();
-                                let _ = state_kick_tx.send(());
-                                let _ = comms_kick_tx.send(());
+                                docs.reset_all();
                                 info!("[runtime-agent] Reconnected after send failure");
                                 continue;
                             }
@@ -1654,7 +1652,7 @@ where
                 let encoded = match ctx
                     .comms
                     .generate_sync_message_recovering(
-                        &mut comms_sync_state,
+                        &mut docs.comms_sync,
                         "runtime-agent-comms-outbound",
                     ) {
                         Ok(message) => message.map(|msg| msg.encode()),
@@ -1688,10 +1686,7 @@ where
                             Ok((new_source, new_sink)) => {
                                 frame_source = new_source;
                                 frame_sink = new_sink;
-                                coordinator_sync_state = automerge::sync::State::new();
-                                comms_sync_state = automerge::sync::State::new();
-                                let _ = state_kick_tx.send(());
-                                let _ = comms_kick_tx.send(());
+                                docs.reset_all();
                                 info!("[runtime-agent] Reconnected after CommsDoc send failure");
                                 continue;
                             }
@@ -1702,6 +1697,52 @@ where
                                 );
                                 break;
                             }
+                        }
+                    }
+                }
+            }
+
+            // Keyed documents with something to send, for kinds the
+            // coordinator advertised on this connection.
+            _ = docs.keyed_changed() => {
+                let mut send_error = None;
+                for frame in docs.outbound_keyed_frames() {
+                    if let Err(e) = frame_sink
+                        .send_frame(NotebookFrameType::KeyedDocSync, &frame)
+                        .await
+                    {
+                        send_error = Some(e);
+                        break;
+                    }
+                }
+                if let Some(e) = send_error {
+                    if !transport.clean_eof_is_recoverable() {
+                        warn!("[runtime-agent] Closing after KeyedDocSync send failure: {}", e);
+                        break;
+                    }
+                    warn!(
+                        "[runtime-agent] KeyedDocSync send failed: {} — reconnecting \
+                         (kernel stays running)",
+                        e
+                    );
+                    drop(frame_source);
+                    match reconnect_after_writer_error(
+                        &transport,
+                        &mut last_recoverable_reconnect,
+                    ).await {
+                        Ok((new_source, new_sink)) => {
+                            frame_source = new_source;
+                            frame_sink = new_sink;
+                            docs.reset_all();
+                            info!("[runtime-agent] Reconnected after KeyedDocSync send failure");
+                            continue;
+                        }
+                        Err(reconnect_err) => {
+                            error!(
+                                "[runtime-agent] Reconnect failed after retries: {}",
+                                reconnect_err
+                            );
+                            break;
                         }
                     }
                 }
@@ -1736,10 +1777,7 @@ where
                         Ok((new_source, new_sink)) => {
                             frame_source = new_source;
                             frame_sink = new_sink;
-                            coordinator_sync_state = automerge::sync::State::new();
-                            comms_sync_state = automerge::sync::State::new();
-                            let _ = state_kick_tx.send(());
-                            let _ = comms_kick_tx.send(());
+                            docs.reset_all();
                             info!("[runtime-agent] Reconnected after async response send failure");
                             continue;
                         }
@@ -1772,6 +1810,38 @@ where
     match terminal_error {
         Some(error) => Err(error),
         None => Ok(()),
+    }
+}
+
+/// Session-control frames from the coordinator: the keyed document kinds it
+/// routes, and rejections of frames this agent sent.
+fn handle_agent_session_control(docs: &mut AgentDocs, payload: &[u8]) {
+    if let Ok(SessionControlMessage::RuntimeAgentCapabilities { keyed_doc_kinds }) =
+        serde_json::from_slice::<SessionControlMessage>(payload)
+    {
+        info!("[runtime-agent] Coordinator routes keyed document kinds {keyed_doc_kinds:?}");
+        docs.set_coordinator_kinds(keyed_doc_kinds);
+        return;
+    }
+    let Ok(control) = serde_json::from_slice::<serde_json::Value>(payload) else {
+        return;
+    };
+    if control.get("type").and_then(|v| v.as_str()) != Some("cloud_frame_rejected") {
+        return;
+    }
+    let reason = control
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(no reason given)");
+    warn!(
+        "[runtime-agent] Cloud room rejected frame: frame_type={:?} reason={}",
+        control.get("frame_type"),
+        reason
+    );
+    if let Some(frame_type) = notebook_cloud_transport::rejected_frame_type(&control)
+        .filter(|frame_type| notebook_wire::is_optional_frame(*frame_type))
+    {
+        docs.on_optional_frame_rejected(frame_type, reason);
     }
 }
 
@@ -3479,6 +3549,180 @@ mod tests {
             &current,
             &HashSet::from(["loaded-before-topology".to_string()]),
         ));
+    }
+
+    // -- keyed documents through the agent loop ----------------------------
+
+    type InboundTx = mpsc::UnboundedSender<std::io::Result<TypedNotebookFrame>>;
+    type OutboundRx = mpsc::UnboundedReceiver<(NotebookFrameType, Vec<u8>)>;
+
+    struct ChannelSource(mpsc::UnboundedReceiver<std::io::Result<TypedNotebookFrame>>);
+    impl FrameSource for ChannelSource {
+        async fn recv_frame(&mut self) -> Option<std::io::Result<TypedNotebookFrame>> {
+            self.0.recv().await
+        }
+    }
+
+    struct ChannelSink(mpsc::UnboundedSender<(NotebookFrameType, Vec<u8>)>);
+    impl FrameSink for ChannelSink {
+        async fn send_frame(
+            &mut self,
+            frame_type: NotebookFrameType,
+            payload: &[u8],
+        ) -> std::io::Result<()> {
+            self.0
+                .send((frame_type, payload.to_vec()))
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        }
+    }
+
+    /// Hands out prepared in-memory connections in order. Read errors are
+    /// recoverable and a clean EOF ends the agent, like the UDS transport.
+    struct ChannelTransport(
+        std::sync::Mutex<std::collections::VecDeque<(ChannelSource, ChannelSink)>>,
+    );
+    impl FrameTransport for ChannelTransport {
+        type Source = ChannelSource;
+        type Sink = ChannelSink;
+
+        async fn connect(&self) -> std::io::Result<(Self::Source, Self::Sink)> {
+            self.0
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::ConnectionRefused))
+        }
+    }
+
+    fn channel_connection() -> ((ChannelSource, ChannelSink), InboundTx, OutboundRx) {
+        let (in_tx, in_rx) = mpsc::unbounded_channel();
+        let (out_tx, out_rx) = mpsc::unbounded_channel();
+        ((ChannelSource(in_rx), ChannelSink(out_tx)), in_tx, out_rx)
+    }
+
+    fn session_control(value: serde_json::Value) -> std::io::Result<TypedNotebookFrame> {
+        Ok(TypedNotebookFrame {
+            frame_type: NotebookFrameType::SessionControl,
+            payload: serde_json::to_vec(&value).unwrap(),
+        })
+    }
+
+    fn coordinator_kinds(kinds: &[&str]) -> std::io::Result<TypedNotebookFrame> {
+        session_control(serde_json::json!({
+            "type": "runtime_agent_capabilities",
+            "keyed_doc_kinds": kinds,
+        }))
+    }
+
+    /// Keyed frames the agent sent within `window`.
+    async fn keyed_frames_within(out: &mut OutboundRx, window: Duration) -> Vec<Vec<u8>> {
+        let mut frames = Vec::new();
+        let deadline = tokio::time::Instant::now() + window;
+        while let Ok(Some((frame_type, payload))) =
+            tokio::time::timeout_at(deadline, out.recv()).await
+        {
+            if frame_type == NotebookFrameType::KeyedDocSync {
+                frames.push(payload);
+            }
+        }
+        frames
+    }
+
+    async fn next_keyed_frame(out: &mut OutboundRx) -> Vec<u8> {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let (frame_type, payload) = out.recv().await.expect("agent connection open");
+                if frame_type == NotebookFrameType::KeyedDocSync {
+                    return payload;
+                }
+            }
+        })
+        .await
+        .expect("a KeyedDocSync frame")
+    }
+
+    /// Fix 1 and the reconnect reset in the real agent loop: no `0x0b`
+    /// until the coordinator advertises the kind, none after a reconnect
+    /// until it advertises again, and none after the kind was rejected.
+    #[tokio::test]
+    async fn agent_loop_sends_keyed_frames_only_for_advertised_kinds() {
+        use crate::keyed_doc::test_kind::{TestKvAgentDoc, TEST_KV};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (first, first_in, mut first_out) = channel_connection();
+        let (second, second_in, mut second_out) = channel_connection();
+        let transport =
+            ChannelTransport(std::sync::Mutex::new([first, second].into_iter().collect()));
+        let producer = Arc::new(TestKvAgentDoc::default());
+        producer.insert("doc-1", 0);
+        producer.put("doc-1", "a", "1");
+        let agent = tokio::spawn(run_runtime_agent_on_transport(
+            transport,
+            "keyed-doc-notebook".to_string(),
+            tmp.path().join("blobs"),
+            |_| Ok("runtime-agent:keyed-doc-test".to_string()),
+            OutputBlobPublisher::none(),
+            None,
+            vec![producer.clone() as Arc<dyn AgentKeyedDoc>],
+        ));
+
+        let quiet = Duration::from_millis(300);
+        assert!(keyed_frames_within(&mut first_out, quiet).await.is_empty());
+        first_in.send(coordinator_kinds(&[])).unwrap();
+        producer.put("doc-1", "a", "2");
+        assert!(
+            keyed_frames_within(&mut first_out, quiet).await.is_empty(),
+            "a coordinator that routes no kinds receives no KeyedDocSync"
+        );
+        first_in.send(coordinator_kinds(&[TEST_KV])).unwrap();
+        let frame = next_keyed_frame(&mut first_out).await;
+        let (header, _) = notebook_wire::KeyedDocFrameHeader::try_parse(&frame).unwrap();
+        assert_eq!(
+            (header.kind.as_str(), header.id.as_str()),
+            (TEST_KV, "doc-1")
+        );
+
+        // A read error reconnects; the new connection starts with nothing
+        // advertised and fresh sync states for every document.
+        first_in
+            .send(Err(std::io::Error::other("stream desync")))
+            .unwrap();
+        let mut runtime_state_resent = false;
+        let deadline = tokio::time::Instant::now() + quiet;
+        while let Ok(Some((frame_type, _))) =
+            tokio::time::timeout_at(deadline, second_out.recv()).await
+        {
+            assert_ne!(frame_type, NotebookFrameType::KeyedDocSync);
+            runtime_state_resent |= frame_type == NotebookFrameType::RuntimeStateSync;
+        }
+        assert!(runtime_state_resent, "reset_all kicks RuntimeStateDoc");
+        // doc-1 has not changed since its last frame, so the agent only
+        // speaks again because reset_all cleared the in-flight sync state.
+        second_in.send(coordinator_kinds(&[TEST_KV])).unwrap();
+        let frame = next_keyed_frame(&mut second_out).await;
+        let (header, _) = notebook_wire::KeyedDocFrameHeader::try_parse(&frame).unwrap();
+        assert_eq!(header.id, "doc-1");
+
+        // A rejected optional frame stops keyed sync without ending the agent.
+        second_in
+            .send(session_control(serde_json::json!({
+                "type": "cloud_frame_rejected",
+                "frame_type": notebook_wire::frame_types::KEYED_DOC_SYNC,
+                "reason": "keyed_doc_sync is not routed by cloud rooms",
+            })))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        producer.put("doc-1", "a", "3");
+        assert!(keyed_frames_within(&mut second_out, quiet).await.is_empty());
+        assert!(!agent.is_finished());
+
+        drop(second_in);
+        drop(first_in);
+        tokio::time::timeout(Duration::from_secs(10), agent)
+            .await
+            .expect("agent exits on EOF")
+            .unwrap()
+            .unwrap();
     }
 
     // -- reconnect_with_backoff against a mock transport ------------------

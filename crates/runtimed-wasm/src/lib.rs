@@ -33,7 +33,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
+mod keyed_doc;
 mod output_content;
+
+pub use keyed_doc::{encode_keyed_doc_frame, keyed_doc_frame_header, KeyedDocHandle};
 
 const MARKDOWN_PROJECTION_MIME: &str = "application/vnd.nteract.markdown+json";
 const MARKDOWN_SOURCE_MIME: &str = "text/markdown";
@@ -229,6 +232,14 @@ pub enum FrameEvent {
     /// Daemon-to-hosted-room bridge health.
     HostedBridgeStatus {
         hosted_bridge_status: HostedBridgeStatusWire,
+    },
+    /// The daemon refused this peer's writes to a keyed document. The host
+    /// drops that document's replica and syncs a new one for `epoch`.
+    DocResync {
+        kind: String,
+        id: String,
+        epoch: u64,
+        reason: String,
     },
     /// Runtime state document was synced — frontend should update runtime state UI.
     RuntimeStateSyncApplied {
@@ -3521,16 +3532,7 @@ impl NotebookHandle {
                         return JsValue::UNDEFINED;
                     }
                 };
-                match msg {
-                    SessionControlMessage::SyncStatus(status) => {
-                        events.push(FrameEvent::SessionControl { status });
-                    }
-                    SessionControlMessage::HostedBridgeStatus { status } => {
-                        events.push(FrameEvent::HostedBridgeStatus {
-                            hosted_bridge_status: status,
-                        });
-                    }
-                }
+                events.extend(session_control_event(msg));
             }
             frame_types::RUNTIME_STATE_SYNC => {
                 // Apply a server-authored RuntimeStateDoc sync message to our local replica.
@@ -3776,6 +3778,30 @@ impl NotebookHandle {
         }
 
         serialize_to_js(&events).unwrap_or(JsValue::UNDEFINED)
+    }
+}
+
+fn session_control_event(msg: SessionControlMessage) -> Option<FrameEvent> {
+    match msg {
+        SessionControlMessage::SyncStatus(status) => Some(FrameEvent::SessionControl { status }),
+        SessionControlMessage::HostedBridgeStatus { status } => {
+            Some(FrameEvent::HostedBridgeStatus {
+                hosted_bridge_status: status,
+            })
+        }
+        SessionControlMessage::DocResync {
+            kind,
+            id,
+            epoch,
+            reason,
+        } => Some(FrameEvent::DocResync {
+            kind,
+            id,
+            epoch,
+            reason,
+        }),
+        // Coordinator-to-runtime-agent only.
+        SessionControlMessage::RuntimeAgentCapabilities { .. } => None,
     }
 }
 
@@ -4107,6 +4133,35 @@ mod tests {
         val: serde_json::Value,
     ) -> (serde_json::Value, Vec<Vec<String>>, Vec<Vec<String>>) {
         resolve_comm_state_for_frontend(&val, 1234, true)
+    }
+
+    #[test]
+    fn doc_resync_session_control_becomes_a_frame_event() {
+        let msg: SessionControlMessage = serde_json::from_value(json!({
+            "type": "doc_resync",
+            "kind": "test_kv",
+            "id": "d1",
+            "epoch": 3,
+            "reason": "scope viewer cannot write",
+        }))
+        .unwrap();
+        let event = session_control_event(msg).unwrap();
+        assert_eq!(
+            serde_json::to_value(&event).unwrap(),
+            json!({
+                "type": "doc_resync",
+                "kind": "test_kv",
+                "id": "d1",
+                "epoch": 3,
+                "reason": "scope viewer cannot write",
+            })
+        );
+        assert!(
+            session_control_event(SessionControlMessage::RuntimeAgentCapabilities {
+                keyed_doc_kinds: vec!["test_kv".into()],
+            })
+            .is_none()
+        );
     }
 
     #[test]

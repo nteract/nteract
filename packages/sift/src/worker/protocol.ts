@@ -16,7 +16,15 @@ import type { Column, ColumnFileStats, ColumnType, DatasetCoverage } from "../ta
 import type { TableLimitOverflow } from "../file-data";
 import type { DataEvent, QueryResult, ViewQuery, WindowCells } from "../windowed";
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
+
+/**
+ * Default worker allocation cap, as a multiple of `limits.maxDecodedBytes`.
+ * Decoding a row group transiently needs about twice the retained heap, so a
+ * cap at 2× can trap on the last row group a truncating budget admits; 2.5×
+ * leaves the budget, not the cap, as what ends a large preview.
+ */
+export const DEFAULT_ALLOCATION_CAP_FACTOR = 2.5;
 
 export type OpenRequest = {
   t: "open";
@@ -29,8 +37,17 @@ export type OpenRequest = {
   headRows: number;
   wasmUrl?: string;
   wasmFallbackUrl?: string;
-  /** Live WASM heap bytes allowed; defaults to `limits.maxDecodedBytes * 2`. */
+  /**
+   * Live WASM heap bytes allowed; defaults to `limits.maxDecodedBytes *
+   * DEFAULT_ALLOCATION_CAP_FACTOR`.
+   */
   allocationCap?: number;
+  /**
+   * Soft budget: pause once the committed rows or decoded bytes reach it while
+   * row groups remain, and wait for `resume`. Each resume extends it by the
+   * same amounts. What triggers a resume is the main thread's concern.
+   */
+  autoLoad?: { rows?: number; decodedBytes?: number };
 };
 
 export type ToWorker =
@@ -43,6 +60,8 @@ export type ToWorker =
   /** Answer to a `read` relay; `bytes.buffer` is transferred. */
   | { t: "read-result"; id: number; bytes: Uint8Array }
   | { t: "read-error"; id: number; message: string }
+  /** Continue a load paused at the `autoLoad` budget. No-op unless paused. */
+  | { t: "resume" }
   | { t: "close" };
 
 export type OpenedReply = {

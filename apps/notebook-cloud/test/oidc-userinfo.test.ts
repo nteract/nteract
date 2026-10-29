@@ -8,6 +8,7 @@ import {
   type IdentityEnvironment,
 } from "../src/identity.ts";
 import { loadOidcUserInfo, OidcUserInfoError } from "../src/oidc-userinfo.ts";
+import { createServerAppSession } from "../src/app-session.ts";
 import { base64Url, oidcTokenFixture } from "./oidc-jwt-fixture.ts";
 
 async function fixture(options: Parameters<typeof oidcTokenFixture>[0] = {}) {
@@ -134,6 +135,14 @@ describe("optional OIDC UserInfo", () => {
     const identity = await authenticate(token, env);
     assert.equal(identity.metadata.email, "new@example.test");
     assert.equal(identity.metadata.emailVerified, false);
+    const session = await createServerAppSession(
+      { NOTEBOOK_CLOUD_APP_SESSION_SECRET: "test-secret-with-at-least-32-characters" },
+      identity,
+      "test",
+      30_000,
+      1_000,
+    );
+    assert.equal(session.verifiedEmailDomainBinding, undefined);
   });
 
   for (const endpoint of [

@@ -27,14 +27,18 @@ type RuntimedWasmModule =
 type NotebookHandleConstructor = RuntimedWasmModule["NotebookHandle"];
 export type NotebookHandle = InstanceType<NotebookHandleConstructor>;
 
-let wasmInitialized = false;
-let WasmNotebookHandle: NotebookHandleConstructor;
+let wasmModule: RuntimedWasmModule | undefined;
 
 /**
  * Load and initialize the WASM module once. Subsequent calls are no-ops.
  */
 export async function initWasm(): Promise<NotebookHandleConstructor> {
-  if (wasmInitialized) return WasmNotebookHandle;
+  return (await initWasmModule()).NotebookHandle;
+}
+
+/** The initialized WASM module, for tests that need its free functions. */
+export async function initWasmModule(): Promise<RuntimedWasmModule> {
+  if (wasmModule) return wasmModule;
 
   const wasmPath = resolve(
     __dirname,
@@ -54,9 +58,8 @@ export async function initWasm(): Promise<NotebookHandleConstructor> {
   const mod = (await import(jsPath)) as RuntimedWasmModule;
   mod.initSync({ module: new Uint8Array(wasmBytes) });
 
-  wasmInitialized = true;
-  WasmNotebookHandle = mod.NotebookHandle;
-  return WasmNotebookHandle;
+  wasmModule = mod;
+  return mod;
 }
 
 // ── Server handle adapter ────────────────────────────────────────────

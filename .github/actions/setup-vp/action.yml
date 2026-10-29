@@ -16,10 +16,13 @@ runs:
       env:
         HOME: ${{ env.NTERACT_RUNNER_TOOL_HOME }}
       with:
+        # Keep Vite+ on the repository's Node version instead of the latest LTS.
+        node-version-file: .nvmrc
         run-install: ${{ inputs.run-install }}
 
     - name: Set up Vite+
       if: env.NTERACT_RUNNER_TOOL_HOME == ''
       uses: voidzero-dev/setup-vp@v1
       with:
+        node-version-file: .nvmrc
         run-install: ${{ inputs.run-install }}

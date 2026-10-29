@@ -99,11 +99,13 @@ export const NOTEBOOK_RESPONSE_RESULTS_EXHAUSTIVE: MissingUnionMember<
 
 export type SessionControlMessage =
   | ({ type: "sync_status" } & SessionStatus)
-  | { type: "hosted_bridge_status"; status: HostedBridgeStatus };
+  | { type: "hosted_bridge_status"; status: HostedBridgeStatus }
+  | { type: "doc_resync"; kind: string; id: string; epoch: number; reason: string };
 
 export const SESSION_CONTROL_TYPES = [
   "sync_status",
   "hosted_bridge_status",
+  "doc_resync",
 ] as const satisfies readonly SessionControlMessage["type"][];
 
 export const NOTEBOOK_DOC_PHASES = [

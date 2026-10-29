@@ -99,6 +99,32 @@ describe("generateFrameHtml", () => {
     expect(source).toContain("{ capture: true }");
   });
 
+  it("finds links clicked inside shadow roots", () => {
+    const helper = html.match(/function eventLink\(e\) \{[\s\S]*?\n {8}\}/)?.[0];
+    expect(helper).toBeDefined();
+    const eventLink = new Function(`${helper}; return eventLink;`)() as (
+      e: Event,
+    ) => Element | null;
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const link = document.createElement("a");
+    link.href = "/";
+    const label = document.createElement("span");
+    link.append(label);
+    host.attachShadow({ mode: "open" }).append(link);
+
+    let found: Element | null = null;
+    document.addEventListener("click", (e) => (found = eventLink(e)), {
+      capture: true,
+      once: true,
+    });
+    label.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+    host.remove();
+
+    expect(found).toBe(link);
+  });
+
   it("forwards in-notebook fragment links unresolved", () => {
     expect(source).toContain("var rawHref = link.getAttribute('href') || ''");
     expect(source).toContain("url: rawHref.charAt(0) === '#' ? rawHref : link.href");

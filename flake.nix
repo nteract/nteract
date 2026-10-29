@@ -24,7 +24,7 @@
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
 
-        rustToolchain = pkgs.rust-bin.stable."1.94.0".default.override {
+        rustToolchain = pkgs.rust-bin.stable."1.99.1".default.override {
           extensions = [ "rustfmt" "clippy" "rust-analyzer" "rust-src" ];
         };
 
@@ -105,7 +105,7 @@
           # The Nix workflow updates this only after matching pnpmDeps.drvPath.
           # For a lockfile change, run `nix build .#pnpmDeps --no-link` and copy
           # that derivation's "got:" hash here; keep pnpm_11's hash unchanged.
-          hash = "sha256-Q9HqfVdkaUt2uN/TskXRe2HPQ0nK7H28KI/5+CMLrbw=";
+          hash = "sha256-EkVEY280AGJUk42nqFIedGbH7tD/mhrDsfsbYn4Iqng=";
         };
 
         jsBuild = pkgs.stdenv.mkDerivation {

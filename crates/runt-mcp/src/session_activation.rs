@@ -210,6 +210,10 @@ impl ActivationLease {
     /// tests exercise the exact production lock/check ordering against a stub
     /// payload instead of mirroring it.
     #[cfg(test)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "Test wrapper preserves the production response type"
+    )]
     pub async fn install_in_slot<S>(
         &self,
         slot: &tokio::sync::RwLock<Option<S>>,
@@ -219,6 +223,10 @@ impl ActivationLease {
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "Test wrapper preserves the production response type"
+    )]
     pub async fn install_in_slot_recovering<S>(
         &self,
         slot: &tokio::sync::RwLock<Option<S>>,
@@ -230,6 +238,10 @@ impl ActivationLease {
 
     /// Publish compatibility selection and retained attachment atomically.
     /// The synchronous callback must not await; rejected generations publish nothing.
+    #[allow(
+        clippy::result_large_err,
+        reason = "Activation returns the complete MCP response to the caller"
+    )]
     pub async fn install_in_slot_with<S>(
         &self,
         slot: &tokio::sync::RwLock<Option<S>>,
@@ -241,6 +253,10 @@ impl ActivationLease {
             .map_err(|(result, _)| result)
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Rejected activation returns the complete MCP response and the uninstalled session"
+    )]
     async fn install_in_slot_recovering_with<S>(
         &self,
         slot: &tokio::sync::RwLock<Option<S>>,

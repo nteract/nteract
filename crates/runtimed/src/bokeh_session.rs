@@ -4,6 +4,8 @@
 //! generic Bokeh checkpoint/patch protocol between the launcher, runtime, and
 //! isolated browser view without exposing arbitrary Jupyter messages.
 
+pub(crate) mod output_hook;
+
 use std::future::Future;
 use std::pin::Pin;
 

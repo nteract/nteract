@@ -22,8 +22,7 @@ import {
   outputAllowsScrollPassthrough,
   outputNeedsIsolation,
   outputSegmentLane,
-  outputUsesBokeh,
-  outputUsesPanel,
+  outputUsesScriptDocument,
   outputUsesSift,
   outputUsesVega,
   outputUsesWheelOwningFrame,
@@ -40,16 +39,9 @@ import type {
   ParentToIframeMessage,
   RenderPayload,
 } from "../../../../src/components/isolated/frame-bridge";
-import type { BokehSessionRuntime } from "../../../../src/components/isolated/bokeh-session-context";
 import type { IsolatedDiagnosticHandler } from "../../../../src/components/isolated/diagnostics";
 import type { NteractEmbedHostContextPatch } from "../../../../src/components/isolated/host-context";
-import type {
-  NteractBokehApplyPatchParams,
-  NteractBokehApplyPatchResult,
-  NteractBokehSessionOpenParams,
-  NteractBokehSessionSnapshot,
-  NteractMeasureElementResult,
-} from "../../../../src/components/isolated/rpc-methods";
+import type { NteractMeasureElementResult } from "../../../../src/components/isolated/rpc-methods";
 
 export {
   anyOutputNeedsIsolation,
@@ -59,8 +51,7 @@ export {
   outputAllowsScrollPassthrough,
   outputNeedsIsolation,
   outputSegmentLane,
-  outputUsesBokeh,
-  outputUsesPanel,
+  outputUsesScriptDocument,
   outputUsesSift,
   outputUsesVega,
   outputUsesWheelOwningFrame,
@@ -84,10 +75,6 @@ export {
   useIsolatedRenderer,
   useRegisterIsolatedOutput,
 } from "../../../../src/components/isolated/isolated-renderer-context";
-
-export function useBokehSessionRuntime(): BokehSessionRuntime | null {
-  return null;
-}
 
 export interface IsolatedFrameProps {
   id?: string;
@@ -115,12 +102,9 @@ export interface IsolatedFrameProps {
   onMouseUp?: (params: { hasSelection?: boolean }) => void;
   onDoubleClick?: () => void;
   onWidgetUpdate?: (commId: string, state: Record<string, unknown>) => void;
-  onBokehSessionOpen?: (
-    params: NteractBokehSessionOpenParams,
-  ) => Promise<NteractBokehSessionSnapshot>;
-  onBokehApplyPatch?: (
-    params: NteractBokehApplyPatchParams,
-  ) => Promise<NteractBokehApplyPatchResult>;
+  /** Accepted for shared callers; this inline adapter serves no extension requests. */
+  onExtensionRequest?: (method: string, params: unknown) => Promise<unknown>;
+  extensionMethods?: readonly string[];
   onError?: (error: { message: string; stack?: string }) => void;
   onMessage?: (message: IframeToParentMessage) => void;
   onDiagnostic?: IsolatedDiagnosticHandler;
@@ -128,6 +112,7 @@ export interface IsolatedFrameProps {
 
 export interface IsolatedFrameHandle {
   send: (message: ParentToIframeMessage) => void;
+  notifyExtension: (method: string, params: unknown) => void;
   render: (payload: RenderPayload) => void;
   renderBatch: (outputs: RenderPayload[]) => void;
   eval: (code: string) => void;
@@ -146,26 +131,6 @@ export class CommBridgeManager {
   constructor(_options: unknown) {}
 
   handleIframeMessage(_message: IframeToParentMessage): void {}
-
-  dispose(): void {}
-}
-
-export class BokehSessionBridgeManager {
-  constructor(_options: unknown) {}
-
-  openSession(_params: NteractBokehSessionOpenParams): Promise<NteractBokehSessionSnapshot> {
-    return Promise.reject(new Error("Bokeh document sessions are unavailable in Elements"));
-  }
-
-  applyPatch(_params: NteractBokehApplyPatchParams): Promise<NteractBokehApplyPatchResult> {
-    return Promise.reject(new Error("Bokeh document sessions are unavailable in Elements"));
-  }
-
-  setBindings(_bindings: unknown): void {}
-
-  updateRuntimeSessions(_sessions: unknown): void {}
-
-  notifyCurrentState(): void {}
 
   dispose(): void {}
 }
@@ -278,6 +243,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       ref,
       () => ({
         send: () => {},
+        notifyExtension: () => {},
         render: (payload) =>
           setOutputs(payload.replace ? [payload] : (current) => [...current, payload]),
         renderBatch: (nextOutputs) => setOutputs(nextOutputs),

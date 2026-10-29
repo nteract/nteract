@@ -95,7 +95,7 @@ test("preview caches exclude workspace crates, installed tools, and generated ap
   }
   assert.doesNotMatch(rust, /cache-directories:/);
   assert.match(rust, /key: cloud-wasm-.*hashFiles\('source\/rust-toolchain\.toml', 'source\/\.cargo\/config\.toml'\)/);
-  assert.match(rust, /^          cmd-format: rustup run 1\.94\.0 \{0\}$/m);
+  assert.match(rust, /^          cmd-format: rustup run 1\.99\.1 \{0\}$/m);
 });
 
 test("a dependency cache hit never skips installation, source compilation, or bundle export", () => {

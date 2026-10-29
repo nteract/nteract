@@ -1,4 +1,4 @@
-import type { AuthenticatedConnection } from "./identity.ts";
+import type { AuthenticatedConnection, ConnectionScope } from "./identity.ts";
 import { normalizeInviteEmail } from "./sharing.ts";
 import {
   readServerAppSession,
@@ -17,6 +17,7 @@ export interface CloudAppSession {
   issuedAt: number;
   identityVerifiedAt?: number;
   verifiedEmailBinding?: string;
+  verifiedEmailDomainBinding?: string;
   principal: string;
   principalNamespace: string;
   provider: "oidc";
@@ -28,6 +29,7 @@ interface CloudAppSessionPayload {
   iat: number;
   identity_verified_at?: number;
   verified_email_binding?: string;
+  verified_email_domain_binding?: string;
   ns: string;
   principal: string;
   provider: "oidc";
@@ -99,6 +101,9 @@ export async function appSessionRenewalCookie(
       ? {
           identity_verified_at: session.identityVerifiedAt,
           verified_email_binding: session.verifiedEmailBinding,
+          ...(session.verifiedEmailDomainBinding && {
+            verified_email_domain_binding: session.verifiedEmailDomainBinding,
+          }),
         }
       : {}),
     ...(session.displayName ? { display_name: session.displayName } : {}),
@@ -138,6 +143,9 @@ export async function readCloudAppSession(
       ? {
           identityVerifiedAt: payload.identity_verified_at,
           verifiedEmailBinding: payload.verified_email_binding,
+          ...(payload.verified_email_domain_binding && {
+            verifiedEmailDomainBinding: payload.verified_email_domain_binding,
+          }),
         }
       : {}),
     ...(payload.display_name ? { displayName: payload.display_name } : {}),
@@ -167,8 +175,38 @@ export async function createServerAppSession(
       ? {
           identityVerifiedAt: proof.identity_verified_at,
           verifiedEmailBinding: proof.verified_email_binding,
+          verifiedEmailDomainBinding: proof.verified_email_domain_binding,
         }
       : {}),
+  };
+}
+
+/** Project session evidence; callers must still enforce notebook ACLs. */
+export function appSessionConnectionIdentity(
+  session: CloudAppSession,
+  operator: string,
+  scope: Exclude<ConnectionScope, "runtime_peer">,
+): AuthenticatedConnection {
+  return {
+    principal: session.principal,
+    operator,
+    actorLabel: `${session.principal}/${operator}`,
+    scope,
+    metadata: {
+      provider: "app-session",
+      transport: "app-session-cookie",
+      principalNamespace: session.principalNamespace,
+      ...(session.displayName ? { displayName: session.displayName } : {}),
+      ...(session.identityVerifiedAt !== undefined
+        ? { identityVerifiedAt: session.identityVerifiedAt }
+        : {}),
+      ...(session.verifiedEmailDomainBinding
+        ? { verifiedEmailDomainBinding: session.verifiedEmailDomainBinding }
+        : {}),
+      ...(session.verifiedEmailBinding
+        ? { verifiedEmailBinding: session.verifiedEmailBinding }
+        : {}),
+    },
   };
 }
 
@@ -199,11 +237,82 @@ export async function appSessionHasFreshVerifiedEmail(
   }
 }
 
+/**
+ * Verify an exact, lowercase ASCII domain against separately bound email evidence.
+ * This proves verified email provenance only; it grants no organization membership
+ * or notebook access. Callers must enforce their own authorization policy.
+ */
+export async function appSessionHasFreshVerifiedEmailDomain(
+  env: AppSessionEnvironment,
+  identity: AuthenticatedConnection,
+  domain: string,
+  nowSeconds = currentEpochSeconds(),
+): Promise<boolean> {
+  const { identityVerifiedAt, verifiedEmailDomainBinding } = identity.metadata;
+  if (
+    identity.metadata.provider !== "app-session" ||
+    !Number.isSafeInteger(identityVerifiedAt) ||
+    identityVerifiedAt === undefined ||
+    identityVerifiedAt <= 0 ||
+    identityVerifiedAt > nowSeconds ||
+    nowSeconds - identityVerifiedAt >= NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS ||
+    typeof verifiedEmailDomainBinding !== "string" ||
+    !/^[A-Za-z0-9_-]{43}$/.test(verifiedEmailDomainBinding) ||
+    typeof domain !== "string" ||
+    !isNormalizedEmailDomain(domain)
+  )
+    return false;
+  try {
+    const expected = await verifiedEmailDomainBindingBytes(
+      env,
+      identity,
+      domain,
+      identityVerifiedAt,
+    );
+    const actual = base64UrlDecodeBytes(verifiedEmailDomainBinding);
+    return actual !== null && timingSafeBytesEqual(expected, actual);
+  } catch {
+    return false;
+  }
+}
+
+function isNormalizedEmailDomain(domain: string): boolean {
+  return (
+    domain.length <= 253 &&
+    domain === domain.trim() &&
+    /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(domain)
+  );
+}
+
+function verifiedEmailDomainBindingBytes(
+  env: AppSessionEnvironment,
+  identity: AuthenticatedConnection,
+  domain: string,
+  verifiedAt: number,
+): Promise<Uint8Array> {
+  return hmacSha256(
+    env,
+    JSON.stringify([
+      "app-session-verified-email-domain:v1",
+      "oidc",
+      identity.metadata.principalNamespace,
+      identity.principal,
+      domain,
+      verifiedAt,
+    ]),
+  );
+}
+
 async function verifiedEmailProof(
   env: AppSessionEnvironment,
   identity: AuthenticatedConnection,
   nowSeconds: number,
-): Promise<Pick<CloudAppSessionPayload, "identity_verified_at" | "verified_email_binding">> {
+): Promise<
+  Pick<
+    CloudAppSessionPayload,
+    "identity_verified_at" | "verified_email_binding" | "verified_email_domain_binding"
+  >
+> {
   if (identity.metadata.emailVerified !== true || !identity.metadata.email) return {};
   let email: string;
   try {
@@ -211,11 +320,23 @@ async function verifiedEmailProof(
   } catch {
     return {};
   }
+  // Reject non-ASCII domains before lowercasing can fold Unicode into ASCII.
+  // Keep exact-email normalization unchanged; domain evidence is a separate proof.
+  const rawDomain = identity.metadata.email.trim().split("@")[1]!;
+  const domain = rawDomain.toLowerCase();
+  const canProveDomain = !/[^\x00-\x7f]/.test(rawDomain) && isNormalizedEmailDomain(domain);
   return {
     identity_verified_at: nowSeconds,
     verified_email_binding: base64UrlEncodeBytes(
       await verifiedEmailBindingBytes(env, identity, email, nowSeconds),
     ),
+    ...(canProveDomain
+      ? {
+          verified_email_domain_binding: base64UrlEncodeBytes(
+            await verifiedEmailDomainBindingBytes(env, identity, domain, nowSeconds),
+          ),
+        }
+      : {}),
   };
 }
 

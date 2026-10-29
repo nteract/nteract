@@ -712,6 +712,10 @@ fn projection_failure_result(error: &ClientError, lease: &ActivationLease) -> Ca
     )
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "Session helpers return complete MCP tool responses on failure"
+)]
 async fn get_room_projection(
     server: &NteractMcp,
     notebook_id: &str,
@@ -989,6 +993,10 @@ async fn reuse_retained_legacy_session(
     Some(response)
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "Session helpers return complete MCP tool responses on failure"
+)]
 async fn install_activated_session(
     server: &NteractMcp,
     lease: &ActivationLease,

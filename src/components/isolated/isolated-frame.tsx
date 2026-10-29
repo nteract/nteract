@@ -8,13 +8,7 @@ import {
   useState,
 } from "react";
 import type { IframeToParentMessage, ParentToIframeMessage, RenderPayload } from "./frame-bridge";
-import type {
-  NteractBokehApplyPatchParams,
-  NteractBokehApplyPatchResult,
-  NteractBokehSessionOpenParams,
-  NteractBokehSessionSnapshot,
-  NteractMeasureElementResult,
-} from "./rpc-methods";
+import type { NteractMeasureElementResult } from "./rpc-methods";
 import { logIsolatedDiagnostic, type IsolatedDiagnosticHandler } from "./diagnostics";
 import {
   createIsolatedFrameDocument,
@@ -180,15 +174,18 @@ export interface IsolatedFrameProps {
    */
   onWidgetUpdate?: (commId: string, state: Record<string, unknown>) => void;
 
-  /** Materialize an authoritative Bokeh document replay for this frame. */
-  onBokehSessionOpen?: (
-    params: NteractBokehSessionOpenParams,
-  ) => Promise<NteractBokehSessionSnapshot>;
+  /**
+   * Serve an iframe→host request for one of `extensionMethods` (e.g. an
+   * output-session plugin's host methods).
+   */
+  onExtensionRequest?: (method: string, params: unknown) => Promise<unknown>;
 
-  /** Apply a browser-authored Bokeh document transaction. */
-  onBokehApplyPatch?: (
-    params: NteractBokehApplyPatchParams,
-  ) => Promise<NteractBokehApplyPatchResult>;
+  /**
+   * Iframe→host request methods this frame serves through
+   * `onExtensionRequest`. Read when the iframe bootstraps, so a changed set
+   * applies from the next bootstrap; requests for other methods are rejected.
+   */
+  extensionMethods?: readonly string[];
 
   /**
    * Callback when an error occurs in the iframe.
@@ -228,6 +225,12 @@ export interface IsolatedFrameHandle {
    * Send a message to the iframe.
    */
   send: (message: ParentToIframeMessage) => void;
+
+  /**
+   * Send an extension notification (e.g. an output-session update) to the
+   * renderer over JSON-RPC, ordered with queued `send` messages.
+   */
+  notifyExtension: (method: string, params: unknown) => void;
 
   /**
    * Send content to render in the iframe.
@@ -355,8 +358,8 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       onMouseUp,
       onDoubleClick,
       onWidgetUpdate,
-      onBokehSessionOpen,
-      onBokehApplyPatch,
+      onExtensionRequest,
+      extensionMethods,
       onError,
       onMessage,
       onDiagnostic,
@@ -411,8 +414,8 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const onMouseUpRef = useRef(onMouseUp);
     const onDoubleClickRef = useRef(onDoubleClick);
     const onWidgetUpdateRef = useRef(onWidgetUpdate);
-    const onBokehSessionOpenRef = useRef(onBokehSessionOpen);
-    const onBokehApplyPatchRef = useRef(onBokehApplyPatch);
+    const onExtensionRequestRef = useRef(onExtensionRequest);
+    const extensionMethodsRef = useRef(extensionMethods);
     const onErrorRef = useRef(onError);
     const onMessageRef = useRef(onMessage);
     const onDiagnosticRef = useRef(onDiagnostic);
@@ -454,8 +457,8 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     onMouseUpRef.current = onMouseUp;
     onDoubleClickRef.current = onDoubleClick;
     onWidgetUpdateRef.current = onWidgetUpdate;
-    onBokehSessionOpenRef.current = onBokehSessionOpen;
-    onBokehApplyPatchRef.current = onBokehApplyPatch;
+    onExtensionRequestRef.current = onExtensionRequest;
+    extensionMethodsRef.current = extensionMethods;
     onErrorRef.current = onError;
     onMessageRef.current = onMessage;
     onDiagnosticRef.current = onDiagnostic;
@@ -491,6 +494,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         getFrameWindow: () => iframeRef.current?.contentWindow,
         getInitialContent: () => initialContentRef.current,
         getHostContext: () => resolvedHostContextRef.current,
+        getExtensionMethods: () => extensionMethodsRef.current ?? [],
         // Seed the runtime before passive effects so an early iframe bootstrap
         // message can report the current bundle state.
         rendererBundle: { rendererCode, rendererCss },
@@ -541,19 +545,12 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
           onWidgetUpdate: (commId, state) => {
             onWidgetUpdateRef.current?.(commId, state);
           },
-          onBokehSessionOpen: async (params) => {
-            const handler = onBokehSessionOpenRef.current;
+          onExtensionRequest: async (method, params) => {
+            const handler = onExtensionRequestRef.current;
             if (!handler) {
-              throw new Error("Bokeh document sessions are not available in this host");
+              throw new Error(`No host handler for extension method ${method}`);
             }
-            return handler(params);
-          },
-          onBokehApplyPatch: async (params) => {
-            const handler = onBokehApplyPatchRef.current;
-            if (!handler) {
-              throw new Error("Bokeh document sessions are read-only in this host");
-            }
-            return handler(params);
+            return handler(method, params);
           },
           onError: (error) => {
             onErrorRef.current?.(error);
@@ -721,6 +718,8 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       ref,
       () => ({
         send,
+        notifyExtension: (method: string, params: unknown) =>
+          runtimeRef.current?.notifyExtension(method, params),
         render: (payload: RenderPayload) => runtimeRef.current?.render(payload),
         renderBatch: (outputs: RenderPayload[]) => runtimeRef.current?.renderBatch(outputs),
         eval: (code: string) => runtimeRef.current?.eval(code),

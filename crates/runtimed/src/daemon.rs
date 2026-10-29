@@ -4388,7 +4388,8 @@ impl Daemon {
                     connection_identity.actor_label().as_str(),
                     connection_identity.scope().as_str(),
                 )
-                .with_comments_doc_identity(comments_doc_id, comments_notebook_ref),
+                .with_comments_doc_identity(comments_doc_id, comments_notebook_ref)
+                .with_keyed_doc_kinds(room.keyed_docs.advertised_kinds()),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,
@@ -4660,7 +4661,8 @@ impl Daemon {
                     connection_identity.actor_label().as_str(),
                     connection_identity.scope().as_str(),
                 )
-                .with_comments_doc_identity(comments_doc_id, comments_notebook_ref),
+                .with_comments_doc_identity(comments_doc_id, comments_notebook_ref)
+                .with_keyed_doc_kinds(room.keyed_docs.advertised_kinds()),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,
@@ -6697,6 +6699,7 @@ impl Daemon {
                     .await;
                 }
                 mark.extend_with_source("bokeh-session-buffers", &detail, bokeh_buffer_hashes);
+                mark.extend_with_source("keyed-docs", &detail, room.keyed_docs.blob_roots());
 
                 {
                     let mut resolved_asset_hashes = std::collections::HashSet::new();

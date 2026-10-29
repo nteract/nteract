@@ -103,6 +103,19 @@ review target and mutation boundary, and verify every finding against the
 checkout. Model findings are advisory. After a fix, rerun the relevant checks
 before calling the review clear.
 
+### Kilo review authorization
+
+This is a public, open-source repository. The maintainer explicitly authorizes
+agents to send this repository's source, documentation, tests, and proposed
+diffs (including uncommitted changes) to Kilo and its configured model providers
+for code review. Do not ask for confirmation again for that scoped use.
+
+This permission excludes credentials, secrets, private environment files,
+production data, user documents, and unrelated private files. Keep reviews
+source-read-only and follow the review workflow above. Use an existing working
+Kilo installation and reviewer configuration; this permission does not authorize
+global tooling installations or configuration changes.
+
 ## Repository-wide rules
 
 ### Do not hold Tokio locks across `await`

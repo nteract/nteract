@@ -10,6 +10,7 @@ Start here to understand a subsystem. This is not a complete inventory.
 | Topic | Start with |
 |-------|------------|
 | Local-first notebook state and recovery | [`adr/local-first-notebook-state.md`](adr/local-first-notebook-state.md), [`adr/room-source-lifecycle-and-file-recovery.md`](adr/room-source-lifecycle-and-file-recovery.md), [`adr/automerge-document-storage.md`](adr/automerge-document-storage.md), [`adr/document-split.md`](adr/document-split.md), [`adr/runtime-state-document-identity.md`](adr/runtime-state-document-identity.md) |
+| Pages (actively maintained experiment) | [`memos/authenticated-automerge-app-substrate/experiment/pages/README.md`](memos/authenticated-automerge-app-substrate/experiment/pages/README.md) |
 | Authenticated Automerge applications (research) | [`memos/authenticated-automerge-app-substrate/README.md`](memos/authenticated-automerge-app-substrate/README.md), [`memos/extensible-automerge-document-contracts.md`](memos/extensible-automerge-document-contracts.md) |
 | Runtime write ownership (proposal) | [`memos/runtime-writer-decomposition.md`](memos/runtime-writer-decomposition.md), [`plans/runtime-writer-decomposition.md`](plans/runtime-writer-decomposition.md) |
 | Hosted document checkpoint measurements and proposal | [`memos/celld-document-persistence.md`](memos/celld-document-persistence.md) |

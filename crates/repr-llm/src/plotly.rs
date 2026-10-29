@@ -245,7 +245,7 @@ fn dominant_chart_type(trace_types: &[&str]) -> String {
             counts.push((t, 1));
         }
     }
-    counts.sort_by(|a, b| b.1.cmp(&a.1));
+    counts.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
     if counts.len() == 1 {
         counts[0].0.to_string()

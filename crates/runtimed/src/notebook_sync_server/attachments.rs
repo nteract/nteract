@@ -135,7 +135,7 @@ pub(crate) fn image_attachment_hash(refs: &AttachmentRefs, name: &str) -> Option
         .iter()
         .filter(|(media_type, _)| media_type.starts_with("image/"))
         .collect();
-    image_refs.sort_by(|(left, _), (right, _)| left.cmp(right));
+    image_refs.sort_by_key(|(media_type, _)| *media_type);
     image_refs
         .into_iter()
         .next()

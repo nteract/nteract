@@ -156,6 +156,8 @@ export function useNotebook() {
   const outputCacheRef = useRef<Map<string, JupyterOutput>>(new Map());
   const prevPathRef = useRef<string | null>(null);
   const actorLabelRef = useRef(`desktop:${sessionIdRef.current}`);
+  // Set in beforeBootstrap; bootstrap's resetForBootstrap would otherwise clear it.
+  const keyedDocKindsRef = useRef<readonly string[]>([]);
   const commentsDocIdRef = useRef<string | null>(null);
   const commentsNotebookRefJsonRef = useRef<string | null>(null);
   const [localActor, setLocalActor] = useState(actorLabelRef.current);
@@ -353,7 +355,7 @@ export function useNotebook() {
       // Flush initial sync message through the engine.
       const engine = engineRef.current;
       if (engine) {
-        engine.resetForBootstrap();
+        engine.resetForBootstrap({ keyedDocKinds: new Set(keyedDocKindsRef.current) });
         engine.flush();
       }
 
@@ -448,6 +450,7 @@ export function useNotebook() {
       requiresReadyGeneration: host.relay.requiresReadyGeneration,
       beforeBootstrap: (trigger) => {
         if (trigger.kind !== "ready") return;
+        keyedDocKindsRef.current = trigger.payload.keyed_doc_kinds ?? [];
 
         logger.info("[automerge-notebook] daemon:ready — bootstrapping relay generation");
         if (trigger.payload.actor_label) {

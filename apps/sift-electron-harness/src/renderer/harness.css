@@ -1,0 +1,46 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+}
+
+.harness {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.harness-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #ddd;
+  background: #f6f6f6;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.harness-error b,
+div.harness-error {
+  color: #b00020;
+}
+
+.harness-table {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.harness-empty {
+  display: grid;
+  flex: 1;
+  place-items: center;
+}

@@ -915,6 +915,95 @@ describe("windowed QA round 2", () => {
     });
   }
 
+  /** Resident rows: push `count` tall rows into `source` and tell the engine. */
+  function appendResident(count: number) {
+    for (let i = 0; i < count; i++) {
+      const id = rows.length + 1;
+      rows.push([id, `TALL ${id - 1}`, 500 + i, true]);
+    }
+    source.rowCount = rows.length;
+    engine.onBatchAppended();
+  }
+
+  it("resident appends keep the anchored row in place while rows above get measured", async () => {
+    rows = rowsWithTallNames(400, 1); // every row measures 76 px; unmeasured rows estimate 36 px
+    source = makeTableData(rows);
+    mount(source);
+    await settle();
+    // Jump into the middle: the rows above the overscan are still estimates,
+    // and each render measures the overscan rows that come into range.
+    await scrollTo(200 * 36 + 10);
+    const anchor = anchoredRow();
+    for (let i = 0; i < 6; i++) {
+      appendResident(20);
+      await frame();
+      expect(engine.getState().totalCount).toBe(400 + 20 * (i + 1));
+      // scrollTop may move; what sits under the header does not.
+      expect(screenTop(anchor.viewRow)).toBe(anchor.top);
+      expect(anchoredRow()).toEqual(anchor);
+    }
+  });
+
+  it("renders after a jump hold the row under the header while rows above get measured", async () => {
+    rows = rowsWithTallNames(400, 1); // every row measures 76 px; unmeasured rows estimate 36 px
+    source = makeTableData(rows);
+    mount(source);
+    await settle();
+    // A jump into unmeasured rows: the row the estimates put under the header
+    // stays there while the render measures the overscan rows above it.
+    await scrollTo(200 * 36 + 10);
+    const anchor = anchoredRow();
+    // More renders before any append (footer updates, resizes, a repeated
+    // scroll event) each measure the rows that newly enter the overscan.
+    for (let i = 0; i < 3; i++) {
+      viewport().dispatchEvent(new Event("scroll"));
+      await frame();
+      expect(anchoredRow()).toEqual(anchor);
+    }
+    appendResident(20);
+    await frame();
+    expect(anchoredRow()).toEqual(anchor);
+  });
+
+  it("an append that lands before the render of a new scroll position anchors to that position", async () => {
+    rows = rowsWithTallNames(400, 1);
+    source = makeTableData(rows);
+    mount(source);
+    await settle();
+    await scrollTo(100 * 36);
+    for (const delta of [300, 4000]) {
+      // Scroll without a frame: the pool still shows the previous position.
+      viewport().scrollTop += delta;
+      viewport().dispatchEvent(new Event("scroll"));
+      // The live-geometry answer for the new position; the DOM path must agree.
+      geometry.state.viewportRect = false;
+      const expected = hooks().captureScrollAnchor()!;
+      geometry.state.viewportRect = true;
+      expect(hooks().captureScrollAnchor()).toEqual(expected);
+      appendResident(20);
+      await frame();
+      expect(anchoredRow().viewRow).toBe(expected.row);
+      expect(anchoredRow().top).toBe(HEADER_H - Math.round(expected.offset));
+    }
+  });
+
+  it("resident appends on a fresh mount keep the first row at the top", async () => {
+    rows = rowsWithTallNames(40, 1);
+    source = makeTableData(rows);
+    mount(source);
+    // An append before the first layout: nothing to anchor, nothing moves.
+    appendResident(20);
+    await settle();
+    expect(viewport().scrollTop).toBe(0);
+    expect(anchoredRow()).toEqual({ viewRow: 0, top: HEADER_H });
+    for (let i = 0; i < 3; i++) {
+      appendResident(20);
+      await frame();
+      expect(viewport().scrollTop).toBe(0);
+      expect(anchoredRow()).toEqual({ viewRow: 0, top: HEADER_H });
+    }
+  });
+
   it("filtered appends commit without moving the viewport or the anchored row", async () => {
     mount(harness.data);
     await settle();

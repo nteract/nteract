@@ -234,6 +234,10 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   const sharingSourceText = readFileSync(sharingSourcePath, "utf8");
   const sharingPanelSourcePath = new URL("../viewer/sharing-panel.tsx", import.meta.url);
   const sharingPanelSourceText = readFileSync(sharingPanelSourcePath, "utf8");
+  const sharedSharingPanelSource = readFileSync(
+    new URL("../../../src/components/sharing/SharingPanel.tsx", import.meta.url),
+    "utf8",
+  );
   const titleSourcePath = new URL("../viewer/cloud-notebook-title.tsx", import.meta.url);
   const titleSourceText = readFileSync(titleSourcePath, "utf8");
   const cssPath = new URL("../viewer/index.css", import.meta.url);
@@ -450,54 +454,62 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sharingSourceText, /<CloudSharingPanel/);
   assert.doesNotMatch(sharingSourceText, /function CloudSharingPanel/);
   assert.match(sharingPanelSourceText, /export function CloudSharingPanel/);
-  assert.match(sharingPanelSourceText, /Invite people, review requests, and manage link access\./);
-  assert.match(sharingPanelSourceText, /aria-label="Edit access requests"/);
-  assert.match(sharingPanelSourceText, /<h3 className="text-sm font-semibold">Edit requests<\/h3>/);
-  assert.match(sharingPanelSourceText, /accessProjection\.accessRequestRows\.map/);
-  assert.match(sharingPanelSourceText, /accessProjection\.accessRequestSummary/);
-  assert.match(sharingPanelSourceText, /aria-label="Compute access"/);
-  assert.match(sharingPanelSourceText, /accessProjection\.runtimeAccessRows\.map/);
-  assert.match(sharingPanelSourceText, /function CloudShareStateLabel/);
-  assert.match(sharingPanelSourceText, /<CloudShareStateLabel tone=\{row\.stateTone\}>/);
-  assert.match(sharingPanelSourceText, /Can view this notebook without signing in/);
+  assert.match(sharingPanelSourceText, /<SharingPanel/);
+  assert.match(sharingPanelSourceText, /primitives=\{primitives\}/);
   assert.match(
-    sharingPanelSourceText,
-    /Link access is off\. Only listed people can open this notebook/,
+    sharedSharingPanelSource,
+    /Invite people, review requests, and manage link access\./,
   );
-  assert.match(sharingPanelSourceText, /aria-label=\{copyLinkLabel\}/);
-  assert.match(sharingPanelSourceText, /compactCopyLinkLabel/);
-  // Every section renders rows through one CloudShareRow so trailing controls
+  assert.match(sharedSharingPanelSource, /aria-label="Edit access requests"/);
+  assert.match(
+    sharedSharingPanelSource,
+    /<h3 className="text-sm font-semibold">Edit requests<\/h3>/,
+  );
+  assert.match(sharedSharingPanelSource, /accessProjection\.accessRequestRows\.map/);
+  assert.match(sharedSharingPanelSource, /accessProjection\.accessRequestSummary/);
+  assert.match(sharedSharingPanelSource, /aria-label="Compute access"/);
+  assert.match(sharedSharingPanelSource, /accessProjection\.runtimeAccessRows\.map/);
+  assert.match(sharedSharingPanelSource, /function SharingStateLabel/);
+  assert.match(sharedSharingPanelSource, /<SharingStateLabel tone=\{row\.stateTone\}>/);
+  assert.match(sharedSharingPanelSource, /Can view this \$\{resourceLabel\} without signing in/);
+  assert.match(
+    sharedSharingPanelSource,
+    /Link access is off\. Only listed people can open this \$\{resourceLabel\}/,
+  );
+  assert.match(sharedSharingPanelSource, /aria-label=\{copyLinkLabel\}/);
+  assert.match(sharedSharingPanelSource, /compactCopyLinkLabel/);
+  // Every section renders rows through one SharingRow so trailing controls
   // share a single reserved action column instead of each row positioning its
   // own, which is what made buttons, badges, and text land on different insets.
   assert.match(
-    sharingPanelSourceText,
-    /function CloudShareRow\(\{ row, children \}: \{ row: CloudShareAccessRow; children\?: ReactNode \}\)/,
+    sharedSharingPanelSource,
+    /function SharingRow\(\{ row, children \}: \{ row: SharingAccessRow; children\?: ReactNode \}\)/,
   );
   assert.match(
-    sharingPanelSourceText,
-    /<CloudShareRowIcon row=\{row\} \/>[\s\S]*<strong className="block truncate text-sm font-medium">\{row\.label\}<\/strong>/,
+    sharedSharingPanelSource,
+    /<SharingRowIcon row=\{row\} \/>[\s\S]*<strong className="block truncate text-sm font-medium">\{row\.label\}<\/strong>/,
   );
-  for (const rows of ["notebookAccessRows", "accessRequestRows", "runtimeAccessRows"]) {
+  for (const rows of ["accessRows", "accessRequestRows", "runtimeAccessRows"]) {
     assert.match(
-      sharingPanelSourceText,
+      sharedSharingPanelSource,
       new RegExp(
-        `accessProjection\\.${rows}\\.map\\(\\(row\\) => \\(\\s*<CloudShareRow key=\\{row\\.id\\} row=\\{row\\}`,
+        `accessProjection\\.${rows}\\.map\\(\\(row\\) => \\(\\s*<SharingRow key=\\{row\\.id\\} row=\\{row\\}`,
       ),
     );
   }
   assert.match(
-    sharingPanelSourceText,
+    sharedSharingPanelSource,
     /accessProjection\.accessRequestRows\.map\(\(row\) =>[\s\S]*label=\{`Approve \$\{row\.label\}`\}/,
   );
-  assert.match(sharingPanelSourceText, /label=\{`Remove \$\{row\.label\}`\}/);
+  assert.match(sharedSharingPanelSource, /label=\{`Remove \$\{row\.label\}`\}/);
   // Icon sizing and aria-hidden come from the Button variant and lucide's own
   // defaults; per-icon overrides here drift from the design system.
-  assert.doesNotMatch(sharingPanelSourceText, /<[A-Z]\w*[^>]*\bsize-3\.5\b/);
-  assert.doesNotMatch(sharingPanelSourceText, /aria-hidden/);
-  assert.doesNotMatch(sharingPanelSourceText, /\bleading-5\b/);
+  assert.doesNotMatch(sharedSharingPanelSource, /<[A-Z]\w*[^>]*\bsize-3\.5\b/);
+  assert.doesNotMatch(sharedSharingPanelSource, /aria-hidden/);
+  assert.doesNotMatch(sharedSharingPanelSource, /\bleading-5\b/);
   // Enable/Disable and Copy link are real buttons, not ghost text that reads
   // as a link.
-  assert.doesNotMatch(sharingPanelSourceText, /variant="ghost"\s+size="sm"/);
+  assert.doesNotMatch(sharedSharingPanelSource, /variant="ghost"\s+size="sm"/);
   assert.match(sharingPanelSourceText, /import \{ Button \} from "@\/components\/ui\/button";/);
   assert.match(sharingPanelSourceText, /import \{ Input \} from "@\/components\/ui\/input";/);
   assert.match(
