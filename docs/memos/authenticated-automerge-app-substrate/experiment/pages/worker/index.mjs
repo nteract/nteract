@@ -40,7 +40,11 @@ import {
   readJson,
 } from "./auth.mjs";
 import { DurableByteStore, persistentSeed } from "./storage.mjs";
-import { DocumentAdmission, isHistoryCapacityError } from "./history-admission.mjs";
+import {
+  DocumentAdmission,
+  isHistoryCapacityError,
+  logIncompleteHistory,
+} from "./history-admission.mjs";
 import { issueRetryToken, inspectOperation, reserveOperation } from "./operation-journal.mjs";
 import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
 import { RecordMaintenance } from "./record-maintenance.mjs";
@@ -692,6 +696,7 @@ export class Page {
       if (creation && !this.metadata?.deleted) await this.finishCreation(creation);
       if (!this.handle && this.metadata?.documentId && !this.metadata.deleted) {
         this.handle = await this.repo.find(this.metadata.documentId);
+        logIncompleteHistory(this.handle.doc());
         this.observeActivity();
         try {
           await recoverDocumentMutations(

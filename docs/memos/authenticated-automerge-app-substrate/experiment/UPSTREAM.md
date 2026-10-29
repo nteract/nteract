@@ -161,6 +161,33 @@ and the buffered persistence protocol. The two original 16 MiB scenarios in
 legacy intents. In-process fault injection is not a proof of host power-loss or
 object-store failover behavior.
 
+The causal-history patch in `patch-causal-history.mjs` changes two upstream
+files. Native `saveBatchAll` hands the bridge a batch's commits and fragments,
+and upstream wrote every commit before any fragment. Storage may persist only a
+prefix of those sequential writes: Pages splits a flush into PageRecords
+batches of 128 keys or 2 MB, and a crash can land between any two saves. A
+child commit could then be durable without the fragment holding its parent.
+The bridge now orders each batch so every prefix is causally closed. Loose
+commit parents are exact; a parent outside the batch's loose commits is
+attributed to a fragment by head or checkpoint prefix, and an unattributed one
+waits for every fragment in the batch. Fragment boundaries order fragments and
+the commits beneath them. Boundary metadata is not authenticated, so a cycle
+drops the conservative edges first and then falls back to fragments-first
+native order. Stored keys, frames and signatures are unchanged.
+
+Upstream `DocumentDelegate` waited for every checkpoint head before declaring
+the initial snapshot. A checkpoint is computed from the records a replica
+stores, all delivered before the checkpoint event, so a head that has not
+materialized by then depends on a change the replica does not hold, and the
+lookup never resolved. The patched delegate targets the heads that did
+materialize and logs how many it could not. Unapplied changes stay queued in
+the Automerge document and apply if a peer or journaled intent later supplies
+their dependencies; nothing stored is discarded. If no head materializes, a
+lookup with no other source becomes unavailable instead of waiting forever.
+`causal-history.test.mjs` covers batch order against native metadata, readiness
+with a missing middle commit, and a missing root. The upstream fix belongs in
+`StorageBridge.saveBatchAll` and `DocumentDelegate.#checkpoint`.
+
 ## Runtime evidence
 
 `upstream.test.mjs` runs real upstream Repo handles, Automerge WASM, Subduction

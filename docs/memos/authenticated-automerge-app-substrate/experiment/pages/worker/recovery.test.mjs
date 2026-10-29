@@ -3,7 +3,7 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
-import { Catalog, Page } from "./index.mjs";
+import { Catalog, Page, PageRecords } from "./index.mjs";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
 
 class Storage {
@@ -468,6 +468,100 @@ for (const fault of ["signer-read", "signer-write", "policy-load"]) {
     assert.equal(page.initializing, undefined);
   });
 }
+
+/** PageRecords storage: multi-key put and delete, like Durable Object storage. */
+class RecordStorage {
+  values = new Map();
+  async get(key) {
+    return this.values.get(key);
+  }
+  async put(values) {
+    for (const [key, value] of Object.entries(values))
+      this.values.set(key, typeof value === "string" ? value : value.slice());
+  }
+  async delete(keys) {
+    for (const key of keys) this.values.delete(key);
+  }
+  async sync() {}
+  async list({ prefix, startAfter = "", limit }) {
+    return new Map(
+      [...this.values]
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .filter(([key]) => key.startsWith(prefix) && key > startAfter)
+        .slice(0, limit),
+    );
+  }
+}
+
+test("a buffered Page whose stored history lost a parent record restarts and serves reads", async (t) => {
+  const auth = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", auth.fetch);
+  const warnings = [];
+  t.mock.method(console, "warn", (line) => warnings.push(line));
+  const storage = new Storage();
+  const records = new RecordStorage();
+  const env = {
+    ...auth.env,
+    PAGES_ASYNC_PERSISTENCE: "true",
+    PAGE_RECORDS: { getByName: () => new PageRecords({ storage: records }) },
+    CATALOGS: { getByName: () => ({ fetch: async () => Response.json({}) }) },
+  };
+  const pages = [];
+  t.after(async () => {
+    for (const page of pages) {
+      await page.repo?.shutdown();
+      await page.backend?.close();
+      page.signer?.free();
+    }
+  });
+  const owner = auth.apiKey();
+  const first = new Page(contextFor(storage), env);
+  pages.push(first);
+  await first.ready;
+  const created = await first.fetch(
+    requestFor(owner, "/internal/create", { page_id: pageId, title: "Kept", markdown: "Body" }),
+  );
+  assert.equal(created.status, 201);
+  for (const note of ["one", "two", "three"])
+    await first.handle.change((doc) => {
+      doc[note] = note;
+    });
+  await first.flush();
+  // Records stored without causal ordering can hold a child without its
+  // parent. Drop one stored loose commit that has a stored loose child.
+  const changes = A.getAllChanges(first.handle.doc()).map((change) => A.decodeChange(change));
+  const commit = (hash) =>
+    [...records.values.keys()].find((key) => key.endsWith(`/commits/${hash}`));
+  const lost = changes.find(
+    (change) =>
+      change.deps.length &&
+      commit(change.hash) &&
+      changes.some((child) => child.deps.includes(change.hash) && commit(child.hash)),
+  );
+  assert.ok(lost, "a stored loose commit with a stored loose child");
+  records.values.delete(commit(lost.hash));
+
+  const restarted = new Page(contextFor(storage), env);
+  pages.push(restarted);
+  let timer;
+  await Promise.race([
+    restarted.ready,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Error("Page startup did not settle")), 5000);
+    }),
+  ]).finally(() => clearTimeout(timer));
+  assert.equal(restarted.handle.doc().title, "Kept");
+  assert.ok(A.getMissingDeps(restarted.handle.doc(), []).includes(lost.hash));
+  const read = await restarted.fetch(
+    requestFor(owner, "/internal/tool", { operation: "read_page", arguments: { page_id: pageId } }),
+  );
+  assert.equal(read.status, 200);
+  const logged = warnings.map((line) => JSON.parse(line));
+  assert.deepEqual(
+    logged.map(({ event, missing_dependencies }) => ({ event, missing_dependencies })),
+    [{ event: "page.history_incomplete", missing_dependencies: 1 }],
+  );
+});
 
 test("startup recovery finds pending edits beyond a full default storage page", async () => {
   const storage = new Storage();

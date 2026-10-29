@@ -12,6 +12,24 @@ export function isHistoryCapacityError(error) {
   return false;
 }
 
+/** Startup readiness targets the stored history that materializes. Stored
+ * changes whose dependencies never became durable stay queued in the document,
+ * and apply if a peer or a journaled intent supplies the dependencies. One
+ * structured line, with counts only, records that the Page started that way.
+ * Like admission logs it carries no Page ID, principal or change hash. */
+export function logIncompleteHistory(doc) {
+  const missing = A.getMissingDeps(doc, []).length;
+  if (!missing) return undefined;
+  const record = {
+    service: "nteract-pages-native",
+    event: "page.history_incomplete",
+    missing_dependencies: missing,
+    timestamp: new Date().toISOString(),
+  };
+  console.warn(JSON.stringify(record));
+  return record;
+}
+
 /** The record bridge exclusively owns admission, including native WebSocket
  * writes. Its reservation callback persists the immutable host intent while
  * that same writer is held. The host must first flush the intent's dependency

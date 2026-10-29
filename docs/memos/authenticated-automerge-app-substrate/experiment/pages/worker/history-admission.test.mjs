@@ -367,10 +367,8 @@ test("buffered: remote prefix persistence failure recovers remaining exact histo
   try {
     const handle = await peer.repo.import(A.save(base));
     await peer.flush();
-    // Both new changes stay loose commits, so the interrupted batch leaves a
-    // causal prefix. A fragment-headed `api` edit is saved after the `next`
-    // commit that depends on it; interrupting that batch strands `next`
-    // without its parent, and restored.repo.find below does not resolve.
+    // Both new changes stay loose commits. The fragment-headed variant of this
+    // shape is covered by the flush-split tests below.
     const candidate = edit(edit(base, ACTOR.api, apiEdit), ACTOR.api, (doc) => {
       doc.next = noise(2048, 13);
     });
@@ -421,6 +419,177 @@ test("buffered: remote prefix persistence failure recovers remaining exact histo
     assert.deepEqual(await closePeers(peers, []), []);
   }
 });
+
+/** Restart readiness is bounded: a lookup that does not settle fails the test. */
+async function findWithin(repo, documentId, ms = 5000) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Error(`repo.find did not settle within ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([repo.find(documentId), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// The candidate's `api` change heads a fragment that bundles the base history,
+// and the `next` commit depends on it. One flush carries both records.
+function fragmentParentCandidate(base) {
+  const candidate = edit(edit(base, ACTOR.api, apiEdit, "fragment"), ACTOR.api, (doc) => {
+    doc.next = noise(2048, 13);
+  });
+  const records = extractRecords(candidate);
+  const [head] = A.getHeads(candidate);
+  const child = records.find((record) => record.kind === "commit" && record.id === head);
+  assert.ok(child, "the newest change is a loose commit");
+  const parent = records.find(
+    (record) => record.kind === "fragment" && child.parents.includes(record.head),
+  );
+  assert.ok(parent, "its only parent heads a fragment");
+  return { candidate, child, parent };
+}
+
+async function stageIntent(peer, handle, base, candidate, key) {
+  const entry = {
+    fingerprint: "fixture",
+    pending: true,
+    changes: A.getChanges(base, candidate),
+    receipt: { heads: A.getHeads(candidate) },
+  };
+  const admission = new DocumentAdmission(peer.backend, treeId(handle.documentId));
+  await admission.reserve(key, entry, candidate, async () => {
+    await peer.storage.put(key, entry);
+    await peer.storage.sync();
+  });
+  await admission.replay(key, entry, handle);
+  return entry;
+}
+
+test("buffered: every split of a flush leaves a history that restarts", async () => {
+  const base = baseDoc();
+  const { candidate, child, parent } = fragmentParentCandidate(base);
+  const cap = unionBytes(base, candidate) + 32768;
+  // Count the record keys one complete flush writes, then interrupt after each.
+  const writes = async (peer) => {
+    const keys = [];
+    peer.records.afterPut = (path) => {
+      if (path.startsWith("repo/")) keys.push(path);
+    };
+    await peer.flush();
+    peer.records.afterPut = undefined;
+    return keys;
+  };
+  const prepare = async () => {
+    const peer = host("buffered", cap);
+    const handle = await peer.repo.import(A.save(base));
+    await peer.flush();
+    const entry = await stageIntent(peer, handle, base, candidate, "host/operation/split");
+    return { peer, handle, entry };
+  };
+  const probe = await prepare();
+  const keys = await writes(probe.peer);
+  assert.deepEqual(await closePeers([probe.peer], []), []);
+  const childKey = keys.findIndex((key) => key.endsWith(`/commits/${child.id}`));
+  const parentKey = keys.findIndex((key) => key.endsWith(`/fragments/${parent.head}`));
+  assert.ok(childKey >= 0 && parentKey >= 0, "one flush writes both records");
+  // Persist the parent-holding fragment before the commit that depends on it.
+  assert.ok(parentKey < childKey, `fragment written at ${parentKey}, child at ${childKey}`);
+
+  for (let split = 1; split < keys.length; split++) {
+    const { peer, handle, entry } = await prepare();
+    const peers = [peer];
+    try {
+      let written = 0;
+      // The mock stores each key before afterPut runs: `split` keys are durable.
+      peer.records.afterPut = (path) => {
+        if (path.startsWith("repo/") && ++written === split) throw Error("batch split");
+      };
+      await assert.rejects(peer.flush(), /Could not persist records/);
+      const restored = host("buffered", cap, peer.storage.clone(), peer.records.clone());
+      peers.push(restored);
+      const recovered = await findWithin(restored.repo, handle.documentId);
+      await recoverDocumentMutations(
+        restored.storage,
+        recovered,
+        () => restored.flush(),
+        new DocumentAdmission(restored.backend, treeId(handle.documentId)),
+      );
+      assert.ok(A.hasHeads(recovered.doc(), entry.receipt.heads), `split ${split}`);
+      assert.deepEqual(recovered.doc().next, candidate.next);
+      assert.equal(A.getObjectId(recovered.doc().stable), A.getObjectId(base.stable));
+      peer.records.afterPut = undefined;
+    } finally {
+      assert.deepEqual(await closePeers(peers, []), []);
+    }
+  }
+});
+
+// Records stored without causal ordering can hold a child commit without the
+// fragment that holds its parent. Startup must not wait for that parent.
+for (const journal of [true, false]) {
+  test(`buffered: a stored commit without its parent fragment restarts ${journal ? "and replays its intent" : "with the reachable history"}`, async () => {
+    const base = baseDoc();
+    const { candidate, child, parent } = fragmentParentCandidate(base);
+    const cap = unionBytes(base, candidate) + 32768;
+    const peer = host("buffered", cap);
+    const peers = [peer];
+    try {
+      const handle = await peer.repo.import(A.save(base));
+      await peer.flush();
+      const baseHeads = A.getHeads(handle.doc());
+      const key = "host/operation/legacy";
+      // A journaled API edit stays pending: the crash precedes its receipt.
+      // Otherwise the history came from a native peer and has no intent.
+      const entry = journal
+        ? await stageIntent(peer, handle, base, candidate, key)
+        : await handle.update((doc) => A.applyChanges(doc, A.getChanges(base, candidate))[0]);
+      await peer.flush();
+      const records = peer.records.clone();
+      const fragment = [...records.values.keys()].find((path) =>
+        path.endsWith(`/fragments/${parent.head}`),
+      );
+      assert.ok(fragment);
+      assert.ok([...records.values.keys()].some((path) => path.endsWith(`/commits/${child.id}`)));
+      records.values.delete(fragment);
+      const restored = host("buffered", cap, peer.storage.clone(), records);
+      peers.push(restored);
+      const recovered = await findWithin(restored.repo, handle.documentId);
+      // Readiness falls back to the history that materializes. The orphaned
+      // commit stays queued: nothing stored is discarded.
+      assert.deepEqual(A.getHeads(recovered.doc()), baseHeads);
+      assert.equal(recovered.doc().next, undefined);
+      assert.deepEqual(A.getMissingDeps(recovered.doc(), []), [parent.head]);
+      if (journal) {
+        await recoverDocumentMutations(
+          restored.storage,
+          recovered,
+          () => restored.flush(),
+          new DocumentAdmission(restored.backend, treeId(handle.documentId)),
+        );
+        assert.ok(A.hasHeads(recovered.doc(), entry.receipt.heads));
+        assert.equal((await restored.storage.get(key)).pending, false);
+      } else {
+        // A peer that still holds the parent completes the queued child.
+        const [api] = A.getChanges(base, candidate).filter(
+          (change) => A.decodeChange(change).hash === parent.head,
+        );
+        await recovered.update((doc) => A.applyChanges(doc, [api])[0]);
+        await restored.flush();
+      }
+      assert.deepEqual(recovered.doc().next, candidate.next);
+      assert.deepEqual(A.getMissingDeps(recovered.doc(), []), []);
+      assert.equal(A.getObjectId(recovered.doc().stable), A.getObjectId(base.stable));
+      // The repaired history restarts cleanly.
+      const again = host("buffered", cap, restored.storage.clone(), restored.records.clone());
+      peers.push(again);
+      const reopened = await findWithin(again.repo, handle.documentId);
+      assert.deepEqual(reopened.doc().next, candidate.next);
+    } finally {
+      assert.deepEqual(await closePeers(peers, []), []);
+    }
+  });
+}
 
 for (const mode of ["local", "buffered"]) {
   test(`${mode}: failed terminal cleanup cannot revive a pending intent after receipt retirement`, async (t) => {

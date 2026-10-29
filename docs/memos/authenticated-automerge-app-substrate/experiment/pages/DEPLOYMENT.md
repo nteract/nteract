@@ -50,6 +50,10 @@ Existing documents, sessions, ACLs, and assets must be preserved.
 Rollback must retain binary record readers and the `PageRecords` binding and
 buffered-storage implementation. A legacy hex-only build cannot read updated
 records, and an older synchronous-only build cannot read buffered Pages.
+Causal record ordering changes only the order of writes; keys and frames are
+unchanged, so earlier builds read the result. A rollback build still waits
+forever on stored history whose parent never became durable; startup recovery
+from that shape needs this build or later.
 
 The D1 catalog index (`PAGES_CATALOG_INDEX`) is additive: Catalog entries keep
 their keys and shape, and older builds ignore the `pages_catalog_*` tables. After
