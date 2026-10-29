@@ -4,6 +4,7 @@ import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
 import { PageSession } from "./session.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
+import { applyComment } from "../model/comments.mjs";
 import {
   decodeSnapshot,
   encodeSnapshot,
@@ -97,6 +98,36 @@ test("a forbidden connection keeps the draft and closes its transport without si
   assert.equal(A.load(decodeSnapshot(checkpoint.snapshot)).title, doc.title);
   assert.equal(checkpoint.access.role, "none");
   assert.match(session.exportRecovery().markdown, /Unsynced local draft/);
+});
+
+test("the recovery Markdown lists comments and replies the host never acknowledged", () => {
+  const { session } = fixture();
+  let doc = session.doc;
+  const blockId = Object.keys(doc.blocks)[0];
+  const author = { principal: session.identity.principal, displayName: "Writer" };
+  const comment = (input) => {
+    let result;
+    doc = A.change(doc, (d) => {
+      result = applyComment(d, input, author);
+    });
+    session.handle = { doc: () => doc };
+    return result;
+  };
+  const sent = comment({ block_id: blockId, body: "Already on the server" });
+  session.savedHeads = A.getHeads(doc);
+  comment({ action: "reply", thread_id: sent.thread_id, body: "Reply typed offline" });
+  comment({ block_id: blockId, body: "New thread typed offline" });
+  const { markdown, heads } = session.exportRecovery();
+  assert.deepEqual(heads, A.getHeads(doc));
+  const [body, unsent] = markdown.split("\n---\n");
+  assert.match(body, /^# Unsynced local draft/);
+  assert.match(unsent, /## Unsent comments/);
+  assert.match(unsent, /\*\*Writer\*\* · reply · .*\n\n> Reply typed offline/);
+  assert.match(unsent, /\*\*Writer\*\* · comment · .*\n\n> New thread typed offline/);
+  assert.doesNotMatch(unsent, /Already on the server/, "acknowledged comments are not repeated");
+  // Once the host acknowledges everything, the section disappears.
+  session.savedHeads = A.getHeads(doc);
+  assert.doesNotMatch(session.exportRecovery().markdown, /Unsent comments/);
 });
 
 test("changed grant generation freezes both clean and dirty old replicas before native connection", async (t) => {

@@ -82,6 +82,7 @@ Run targeted browser checks from `pages`:
 | MCP file import, insertion, and retries | `node scripts/local-sharing-e2e.mjs --mcp-images` | Starts an isolated fixture |
 | Collaborative checkboxes | `node scripts/local-sharing-e2e.mjs --task-lists` | Starts an isolated fixture |
 | Admission codes, celld restart, and reconnect to Saved | `node scripts/local-sharing-e2e.mjs --admission` | Starts and restarts an isolated fixture |
+| Reload prompt after a deploy under an open tab | `node scripts/local-sharing-e2e.mjs --build-update` | Starts an isolated fixture and swaps its build |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
@@ -337,11 +338,12 @@ A deleted Page returns `page_deleted` only to its owner and to holders of a
 current viewer/editor grant. Everyone else, including principals with a role
 "none" tombstone, receives the same `403 page_access_denied` body and headers as
 for an unreadable Page. Clients that send `X-Pages-Admission: 1` also get that
-response for a missing Page. Clients without it keep the legacy 404, because the
-deployed viewer renews an expired draft registration only on that 404 and the
-app does not force a reload on a new build. Until that compatibility path is
-removed, a caller that omits the header can still distinguish missing from
-existing Pages, as before. Tool and MCP routes also still distinguish them.
+response for a missing Page. Clients without it keep the legacy 404, because
+viewers built before that header renew an expired draft registration only on
+that 404. Those viewers predate the protocol floor and never read it, so it
+stays until the removal policy in [Build updates](#build-updates) is met. Until
+then, a caller that omits the header can still distinguish missing from existing
+Pages, as before. Tool and MCP routes also still distinguish them.
 
 The browser reconnects with backoff on transient codes, rechecks access through
 `/api/connect` on access and sign-in codes, and stops on `signing_key_rejected`
@@ -453,6 +455,68 @@ qualification. Runtime adaptations such as the Worker-only CBOR Uint8Array path
 are source-checked and regression-tested; a passing storage probe alone does not
 qualify ephemeral presence. Diagnostics exclude provider messages, credentials,
 request bodies, and document content.
+
+## Build updates
+
+Each build has a 12-character id: the start of its source fingerprint, also
+recorded as `build_id` in `dist/build-receipt.json`. The Worker reports it as
+`build` in `/health` and in an `X-Pages-Build` header on every `/api/*`
+response; the viewer bundle embeds the same id. The Worker also advertises
+`minViewerProtocol` (header `X-Pages-Min-Viewer-Protocol`), the oldest viewer
+protocol it serves. Both live in [build-identity.mjs](shared/build-identity.mjs).
+
+The viewer compares on every response it already reads (reconnect, saves,
+session refresh), when a hidden tab becomes visible, and every 10 minutes while
+visible. It never polls while hidden and never reloads by itself.
+
+| Server advertises | Viewer shows | Editing |
+| --- | --- | --- |
+| Same build | Nothing | Unchanged |
+| Different build (newer or a rollback), floor at or below this viewer | "Pages changed on the server. Reload to use the current version." | Unchanged |
+| Floor above this viewer's protocol | "Pages changed on the server. This tab can't edit until you reload." | Paused; accepted edits keep saving |
+
+Reload covers everything the tab holds. It pauses edits and waits until every
+accepted edit on the open Page has a durable host receipt. If those edits can't
+be saved (signed out, access removed, local storage failed, or 15 seconds
+without a receipt), the banner says why and the tab stays open. Opening another
+Page while Reload waits cancels it. A voluntary attempt that fails resumes
+editing; a raised floor keeps its own pause.
+
+A Page the person just left keeps syncing for up to 10 seconds, then closes and
+writes its IndexedDB checkpoint, which reopening imports. The tab then releases
+that Page's session and keeps only its account, id, title and whether the
+checkpoint was written. When a closed Page's edits never reached the server:
+
+| Checkpoint | Reload shows |
+| --- | --- |
+| Written | "Edits on _title_ haven't reached the server yet. They're saved in this browser and sync when you open that Page again." with Reload anyway and Open _title_ |
+| Failed | Names the Page and blocks Reload. Download edits and comments, then Discard unsaved edits and reload (or acknowledge the loss first) |
+
+The download is one Markdown file: the Page body, then an "Unsent comments"
+section with every comment, reply or edit the host never acknowledged, each
+under the passage it was attached to. A failed record outlives reopening the
+Page, since the reopened replica can't contain what its checkpoint failed to
+write. It clears only when a host receipt includes all of its heads, or when the
+person confirms Discard unsaved edits. Records are keyed by account and Page id.
+
+An unsent comment or reply, on an open or resolved thread, blocks Reload until
+it is sent or discarded. A draft that can't be sent (edits paused, write access
+gone, or the thread resolved) stays visible read-only with Copy and Discard.
+
+The floor pauses supporting browser viewers; it does not enforce compatibility
+for older viewers or API clients. Viewers built before this mechanism never read
+it, and a tab that was offline can reconnect later with edits it accepted under
+an older protocol. Remove a server compatibility path only after all of these
+hold:
+
+1. Every supported viewer reads the floor.
+2. The floor has excluded the older viewers for a full support window.
+3. The server can still drain edits older clients already accepted, or rejects
+   them without losing them (the client keeps a local draft and says so).
+
+Raise `MIN_VIEWER_PROTOCOL` and `VIEWER_PROTOCOL` together in one release. MCP
+and HTTP tool compatibility is versioned separately and does not follow this
+floor.
 
 ## HTTP and MCP tools
 

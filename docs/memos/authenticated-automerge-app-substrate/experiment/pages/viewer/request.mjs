@@ -2,6 +2,14 @@
 // authentication lookup can take 10 seconds; a normal rollout takes longer.
 export const REQUEST_TIMEOUT_MS = 30_000;
 
+const responseObservers = new Set();
+/** Observe the headers of every response this module receives, before its
+ * body is read. An observer's exception never reaches the request. */
+export function observeResponses(fn) {
+  responseObservers.add(fn);
+  return () => responseObservers.delete(fn);
+}
+
 function invalidResponse(response) {
   return Object.assign(Error(`The server returned an unexpected response (${response.status})`), {
     code: "INVALID_RESPONSE",
@@ -64,6 +72,11 @@ export async function request(
         throw error;
       }
       controller.signal.throwIfAborted();
+      for (const observe of responseObservers) {
+        try {
+          observe(response.headers);
+        } catch {}
+      }
       const contentType = response.headers.get("content-type") ?? "";
       if (!/^application\/(?:[\w.-]+\+)?json(?:\s*;|$)/i.test(contentType)) {
         void response.body?.cancel().catch(() => {});
