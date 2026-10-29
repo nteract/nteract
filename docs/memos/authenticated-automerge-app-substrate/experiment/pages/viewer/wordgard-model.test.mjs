@@ -11,6 +11,11 @@ import {
   CodeBlock,
   PagesLink,
   OpaqueBlock,
+  PagesImage,
+  Heading,
+  Blockquote,
+  BulletList,
+  ListItem,
 } from "./wordgard-model.mjs";
 function fixture(markdown) {
   return A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) =>
@@ -99,4 +104,35 @@ test("unsupported schema and unsafe links fail explicitly; code blocks need no l
     Paragraph.create([Leaf.text("Link", [PagesLink.of({ href: "/p/page", title: "Title" })])]),
   ]);
   assert.ok(decode(encode(link)).doc.eq(link));
+});
+test("an empty first paragraph keeps its own native marker when content follows it", () => {
+  const empty = Paragraph.create([]);
+  const image = PagesImage.of({
+    src: "/api/pages/p/assets/" + "a".repeat(64),
+    alt: "",
+    title: null,
+  });
+  for (const tree of [
+    schema.doc([empty, Paragraph.create([Leaf.text("Hope")])]),
+    schema.doc([empty, empty, Paragraph.create([Leaf.text("Hope")])]),
+    schema.doc([empty, Heading.of(2).create([Leaf.text("Title")])]),
+    schema.doc([Blockquote.create([empty, Paragraph.create([Leaf.text("Quoted")])])]),
+    schema.doc([
+      BulletList.create([ListItem.create([empty, Paragraph.create([Leaf.text("Item")])])]),
+    ]),
+    schema.doc([Paragraph.create([Leaf.text("With image!")]), empty, Paragraph.create([image])]),
+  ]) {
+    const spans = encode(tree);
+    assert.ok(decode(spans).doc.eq(tree), String(tree));
+    const doc = A.change(fixture(""), (d) => A.updateSpans(d, textPath("one"), spans));
+    assert.ok(decode(A.spans(doc, textPath("one"))).doc.eq(tree), String(tree));
+    assert.doesNotThrow(() => blockMarkdown(doc.blocks.one));
+  }
+  // A lone empty paragraph and a non-empty first paragraph stay implicit.
+  assert.deepEqual(encode(schema.doc([empty])), []);
+  assert.equal(encode(schema.doc([Paragraph.create([Leaf.text("Hope")])]))[0].type, "text");
+  assert.deepEqual(
+    encode(schema.doc([Blockquote.create([empty])])).map((span) => String(span.value.type)),
+    ["blockquote"],
+  );
 });

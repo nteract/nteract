@@ -232,6 +232,41 @@ try {
     "Real R2 bytes match SHA-256; read/write scopes, Page roles and Page-scoped hashes enforced",
   );
 
+  // An image alone in a block's first paragraph, deleted by hand. Its empty
+  // paragraph must survive the native round trip with no projection error.
+  const firstBlock = content(owner);
+  await firstBlock.click();
+  await owner.keyboard.press("ControlOrMeta+Home");
+  await imageEvent(owner, "paste", fixtures[1], "first-paragraph.png");
+  for (const page of [owner, editor, viewer]) await expectImages(page, 1);
+  const leading = images(owner).first();
+  await leading.click();
+  await expect(leading).toHaveClass(/wg-selected-node/);
+  await owner.keyboard.press("ArrowRight");
+  await owner.keyboard.press("Enter");
+  await expect(firstBlock.locator("p")).toHaveCount(3);
+  await leading.click();
+  await expect(leading).toHaveClass(/wg-selected-node/);
+  await owner.keyboard.press("Backspace");
+  for (const page of [owner, editor, viewer]) await expectImages(page, 0);
+  const projectionError = /did not reproduce|is behind its Pages document/;
+  await expect(owner.getByText(projectionError)).toHaveCount(0);
+  await expect(firstBlock.locator("p")).toHaveCount(3);
+  await expect
+    .poll(async () => {
+      const read = (await tool(owner, "read_page", { page_id: pageId })).body;
+      return read.blocks.map((block) => block.markdown).join("\n");
+    })
+    .not.toContain("![");
+  await owner.keyboard.press("ControlOrMeta+z");
+  for (const page of [owner, editor, viewer]) await expectImages(page, 1);
+  await owner.keyboard.press("ControlOrMeta+Shift+z");
+  for (const page of [owner, editor, viewer]) await expectImages(page, 0);
+  await expect(owner.getByText(projectionError)).toHaveCount(0);
+  for (const page of [owner, editor, viewer])
+    await expect(content(page)).toContainText("Images stay private with this Page.");
+  complete("Deleting an image alone in a block's first paragraph keeps the Page in sync");
+
   let resumeUpload;
   const holdUpload = new Promise((resolve) => {
     resumeUpload = resolve;
@@ -250,6 +285,8 @@ try {
     { times: 1 },
   );
   await atEnd(owner);
+  // A collapsed caret hides contextual formatting; open the dock for Insert image.
+  await owner.keyboard.press("Alt+F10");
   const chooser = owner.waitForEvent("filechooser");
   await owner.getByRole("button", { name: "Insert image", exact: true }).click();
   await (
@@ -335,7 +372,8 @@ try {
   );
   await viewer.reload();
   await expectImages(viewer, 3);
-  await expect(viewer.getByRole("button", { name: "Insert image", exact: true })).toBeDisabled();
+  // Readers get no formatting dock, so no Insert image control at all.
+  await expect(viewer.getByRole("button", { name: "Insert image", exact: true })).toHaveCount(0);
   let readonlyUploads = 0;
   viewer.on("request", (request) => {
     if (request.url() === origin + uploadPath && request.method() === "POST") readonlyUploads++;
