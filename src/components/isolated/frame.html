@@ -1055,6 +1055,15 @@
           "click",
           function (e) {
             var link = eventLink(e);
+            // Keep blob/data downloads (including Panel's FileDownload) native.
+            // Cross-origin HTTP links can ignore download and navigate the frame,
+            // so they must still go through the host's navigation policy.
+            if (
+              link &&
+              link.hasAttribute("download") &&
+              (link.protocol === "blob:" || link.protocol === "data:")
+            )
+              return;
             if (link && link.href) {
               e.preventDefault();
               // link.href resolves "#x" against the frame's own URL; the host

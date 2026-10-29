@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { readFile } from "node:fs/promises";
 import { fixtures } from "../src/fixtures";
 
 const FIXTURE_COUNT = fixtures.length;
@@ -266,6 +267,68 @@ test.describe("Renderer plugin fixtures", () => {
     );
     const body = page.frameLocator('[data-testid="vanilla-remount-frame"] iframe').locator("body");
     await expect(body).toContainText("vanilla remount 1", { timeout: 30_000 });
+  });
+
+  for (const { kind, selector } of [
+    { kind: "blob", selector: "#shadow-download span" },
+    { kind: "programmatic blob", selector: "#shadow-download-trigger" },
+    { kind: "data", selector: "#shadow-data-download span" },
+  ]) {
+    test(`native ${kind} downloads from shadow roots stay inside the frame`, async ({ page }) => {
+      await page.goto("/?scenario=shadow-link");
+      const status = page.getByTestId("shadow-link-status");
+      await expect(status).toHaveAttribute("data-rendered", "true", { timeout: 30_000 });
+      const frame = page.frameLocator('[data-testid="shadow-link-frame"] iframe');
+      const frameNavigations: string[] = [];
+      page.on("framenavigated", (navigated) => {
+        if (navigated !== page.mainFrame()) frameNavigations.push(navigated.url());
+      });
+
+      const [download] = await Promise.all([
+        page.waitForEvent("download", { timeout: 5_000 }),
+        frame.locator(selector).click(),
+      ]);
+      expect(await download.failure()).toBeNull();
+      if (kind !== "data") expect(download.suggestedFilename()).toBe("report.csv");
+      const downloadedPath = await download.path();
+      expect(downloadedPath).not.toBeNull();
+      expect(await readFile(downloadedPath!, "utf8")).toBe("name,value\nalpha,1\n");
+
+      // Exercise double-click forwarding without starting two more downloads.
+      await frame.locator("#shadow-download span").dispatchEvent("dblclick", { composed: true });
+      // Ordered frame messages make this ordinary link click a barrier: neither
+      // the download nor its double-click may have been forwarded to the host.
+      await frame.locator("#shadow-link span").click();
+      await expect(status).toHaveAttribute(
+        "data-link-clicks",
+        "https://example.invalid/shadow-link",
+      );
+      await expect(status).toHaveAttribute("data-double-clicks", "0");
+      expect(frameNavigations).toEqual([]);
+    });
+  }
+
+  test("cross-origin download links are forwarded instead of navigating the frame", async ({
+    page,
+  }) => {
+    const url = "https://example.invalid/download.pdf";
+    // No attachment disposition: the browser ignores download for this URL.
+    await page.route(url, (route) =>
+      route.fulfill({ contentType: "text/html", body: "Remote content" }),
+    );
+    await page.goto("/?scenario=shadow-link");
+    const status = page.getByTestId("shadow-link-status");
+    await expect(status).toHaveAttribute("data-rendered", "true", { timeout: 30_000 });
+    const frameNavigations: string[] = [];
+    page.on("framenavigated", (navigated) => {
+      if (navigated !== page.mainFrame()) frameNavigations.push(navigated.url());
+    });
+    const frame = page.frameLocator('[data-testid="shadow-link-frame"] iframe');
+    const link = frame.locator("#shadow-http-download span");
+    await link.click();
+    await expect(status).toHaveAttribute("data-link-clicks", url);
+    await expect(link).toBeVisible();
+    expect(frameNavigations).toEqual([]);
   });
 
   test("links inside shadow roots are forwarded instead of navigating the frame", async ({

@@ -422,7 +422,17 @@ const SHADOW_LINK_HTML = `<div id="shadow-link-host"></div><script>
 const root = document.getElementById("shadow-link-host").attachShadow({ mode: "open" });
 root.innerHTML =
   '<a id="shadow-link" href="https://example.invalid/shadow-link"><span>Shadow link</span></a>' +
-  '<p id="shadow-text">Shadow text</p>';
+  '<p id="shadow-text">Shadow text</p>' +
+  '<a id="shadow-download" download="report.csv"><span>Download report</span></a>' +
+  '<button id="shadow-download-trigger">Generate and download report</button>' +
+  '<a id="shadow-data-download" download><span>Download data</span></a>' +
+  '<a id="shadow-http-download" href="https://example.invalid/download.pdf" download="output.pdf"><span>Download remote PDF</span></a>';
+const report = "name,value\\nalpha,1\\n";
+const download = root.querySelector("#shadow-download");
+download.href = URL.createObjectURL(new Blob([report], { type: "text/csv" }));
+root.querySelector("#shadow-data-download").href = "data:text/csv," + encodeURIComponent(report);
+// Panel FileDownload also triggers its anchor programmatically after preparing data.
+root.querySelector("#shadow-download-trigger").onclick = () => download.click();
 </script>`;
 
 function ShadowLinkScenarioApp() {
