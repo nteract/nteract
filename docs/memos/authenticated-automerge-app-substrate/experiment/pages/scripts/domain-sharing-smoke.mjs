@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
+import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
 const origin = process.env.PAGES_ORIGIN;
 assert.equal(new URL(origin).origin, origin);
@@ -386,7 +387,15 @@ try {
       base_heads: read.heads,
       ...retry(catalog),
     });
-    return deleted.status === 200;
+    if (deleted.status !== 200) return false;
+    // delete_page moves a Page to Trash; disposable fixtures are purged.
+    const invoke = async (operation, args) => {
+      const result = await tool(page, operation, args);
+      if (result.status !== 200) throw Error(JSON.stringify(result.body));
+      return result.body;
+    };
+    await purgeTrashedFixture(invoke, id, async () => retry(await invoke("list_pages")));
+    return true;
   };
   try {
     report.cleaned =

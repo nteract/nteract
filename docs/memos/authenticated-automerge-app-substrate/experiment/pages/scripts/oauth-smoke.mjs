@@ -6,6 +6,7 @@ import { chromium, expect } from "@playwright/test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
 export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) {
   const base = new URL(origin);
@@ -567,8 +568,19 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
           },
         }).catch(() => null);
         report.cleaned = deleted?.status === 200;
-        if (!report.cleaned)
-          report.cleanupFailure = { status: deleted?.status, error: deleted?.body?.error };
+        if (report.cleaned) {
+          const invoke = async (operation, args) => {
+            const result = await sessionApi(owner, "/api/tools", { operation, arguments: args });
+            if (result.status !== 200) throw Object.assign(Error(result.body?.error), result);
+            return result.body;
+          };
+          await purgeTrashedFixture(invoke, pageId, async () =>
+            retry(await invoke("list_pages", {})),
+          ).catch((error) => {
+            report.cleaned = false;
+            report.cleanupFailure = { status: error.status, error: error.message };
+          });
+        } else report.cleanupFailure = { status: deleted?.status, error: deleted?.body?.error };
       }
     }
     await browser.close();

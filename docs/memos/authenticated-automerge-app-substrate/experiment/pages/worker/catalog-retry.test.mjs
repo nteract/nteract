@@ -12,6 +12,10 @@ class Storage {
     return structuredClone(this.values.get(key));
   }
   async put(key, value) {
+    if (typeof key === "object") {
+      for (const [name, entry] of Object.entries(key)) await this.put(name, entry);
+      return;
+    }
     this.values.set(key, structuredClone(value));
   }
   async delete(key) {
@@ -49,7 +53,10 @@ for (const operation of ["create_page", "delete_page"]) {
               return Response.json(
                 operation === "create_page"
                   ? { page_id: id, title: "Created", heads: ["a".repeat(64)] }
-                  : { page_id: id, deleted: true },
+                  : {
+                      receipt: { page_id: id, state: "trashed", trashed: true },
+                      current: { page_id: id, state: "trashed", revision: 1, title: "Before" },
+                    },
               );
             },
           }),
@@ -79,5 +86,6 @@ for (const operation of ["create_page", "delete_page"]) {
     assert.equal(pageRequests, 1);
     assert.deepEqual(storage.durable, storage.values);
     assert.equal(storage.durable.has(`page/${recorded.pageId}`), operation === "create_page");
+    assert.equal(storage.durable.has(`trash/${recorded.pageId}`), operation === "delete_page");
   });
 }

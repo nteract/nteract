@@ -1,4 +1,4 @@
-import { pageAccess, pageGrant } from "./access.mjs";
+import { pageAccess, pageGrant, pageState } from "./access.mjs";
 import { withAdmissionReason } from "./admission-reasons.mjs";
 
 export const hex = (bytes) => [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -21,6 +21,23 @@ export function credentialExpired() {
   );
   error.status = 401;
   return error;
+}
+
+/** The owner gets a conflict for writes. Members learn only that the Page is
+ * in Trash; anyone without a grant sees an ordinary denial.
+ */
+export function pageTrashed(access, grant) {
+  if (access.canRead)
+    return Object.assign(new Error("This Page is in Trash; restore it before changing it"), {
+      status: 409,
+      code: "page_trashed",
+    });
+  return ["viewer", "editor"].includes(grant?.role)
+    ? withAdmissionReason(
+        new PermissionDenied("This Page is in its owner's Trash", "page_trashed"),
+        "page_trashed",
+      )
+    : withAdmissionReason(new PermissionDenied(), "page_no_grant");
 }
 
 export function admissionCancelled(code = "native_admission_cancelled") {
@@ -54,6 +71,8 @@ export class DocumentPolicy {
 
   account(identity, write = false) {
     const access = pageAccess(this.metadata(), identity, { now: this.now() });
+    if (access.trashed && (!access.canRead || write))
+      throw pageTrashed(access, pageGrant(this.metadata(), identity?.principal));
     if (!access.canRead) throw this.readDenied(identity);
     if (write && this.metadata()?.recoveryBlocked)
       throw Object.assign(
@@ -441,7 +460,9 @@ export class DocumentPolicy {
 
   async access(key, tree, write = false) {
     const metadata = this.metadata();
-    if (!metadata || metadata.deleted || metadata.tree !== tree) throw new PermissionDenied();
+    // The owner may still read a trashed Page; account() denies everyone else.
+    if (!metadata || pageState(metadata) === "deleted" || metadata.tree !== tree)
+      throw new PermissionDenied();
     if (key === this.serverKey) return;
     await this.active(key, write);
   }

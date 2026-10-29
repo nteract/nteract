@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
+import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9916";
 assert.equal(new URL(origin).hostname, "localhost");
@@ -264,6 +265,13 @@ try {
   if (pageId) {
     try {
       await mutate("delete_page", { page_id: pageId });
+      await purgeTrashedFixture(call, pageId, async () => {
+        const authority = await call("list_pages");
+        return {
+          retry_token: authority.retry_token,
+          idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+        };
+      });
       report.fixtureDeleted = true;
     } catch (error) {
       report.cleanupError = error.message;

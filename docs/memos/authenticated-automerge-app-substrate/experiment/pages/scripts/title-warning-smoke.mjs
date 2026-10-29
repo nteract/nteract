@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { parseEnv } from "node:util";
+import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
 const origin = process.env.PAGES_ORIGIN ?? "http://localhost:9896";
 const target = new URL(origin);
@@ -297,6 +298,7 @@ try {
       assert.equal(current.title, fixtureTitle, "Only this run's owned fixture may be deleted");
       const catalog = await mcp("list_pages");
       await mcp("delete_page", { page_id: pageId, base_heads: current.heads, ...retry(catalog) });
+      await purgeTrashedFixture(mcp, pageId, async () => retry(await mcp("list_pages")));
       assert.equal((await httpRaw("read_page", { page_id: pageId })).status, 404);
       assert.equal(
         (await mcp("list_pages")).pages.some((page) => page.page_id === pageId),

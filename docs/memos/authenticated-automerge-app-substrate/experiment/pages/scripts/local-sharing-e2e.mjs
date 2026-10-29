@@ -23,9 +23,13 @@ const mcpImages = process.argv.includes("--mcp-images");
 const taskLists = process.argv.includes("--task-lists");
 const admission = process.argv.includes("--admission");
 const buildUpdate = process.argv.includes("--build-update");
-if ([domainView, images, mcpImages, taskLists, admission, buildUpdate].filter(Boolean).length > 1)
+const trash = process.argv.includes("--trash");
+if (
+  [domainView, images, mcpImages, taskLists, admission, buildUpdate, trash].filter(Boolean).length >
+  1
+)
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --mcp-images, --task-lists, --admission or --build-update",
+    "Choose one qualification: --domain-view, --images, --mcp-images, --task-lists, --admission, --build-update or --trash",
   );
 const children = new Set();
 let canceled = false;
@@ -271,19 +275,21 @@ try {
   await run(
     process.execPath,
     [
-      admission
-        ? "scripts/admission-smoke.mjs"
-        : taskLists
-          ? "scripts/task-lists-smoke.mjs"
-          : mcpImages
-            ? "scripts/mcp-image-import-smoke.mjs"
-            : images
-              ? "scripts/images-smoke.mjs"
-              : domainView
-                ? "scripts/domain-sharing-smoke.mjs"
-                : buildUpdate
-                  ? "scripts/build-update-smoke.mjs"
-                  : "scripts/sharing-smoke.mjs",
+      trash
+        ? "scripts/trash-smoke.mjs"
+        : admission
+          ? "scripts/admission-smoke.mjs"
+          : taskLists
+            ? "scripts/task-lists-smoke.mjs"
+            : mcpImages
+              ? "scripts/mcp-image-import-smoke.mjs"
+              : images
+                ? "scripts/images-smoke.mjs"
+                : domainView
+                  ? "scripts/domain-sharing-smoke.mjs"
+                  : buildUpdate
+                    ? "scripts/build-update-smoke.mjs"
+                    : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {

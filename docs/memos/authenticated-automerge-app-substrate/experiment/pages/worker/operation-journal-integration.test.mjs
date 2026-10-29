@@ -18,6 +18,10 @@ class Storage {
     return structuredClone(this.values.get(key));
   }
   async put(key, value) {
+    if (typeof key === "object") {
+      for (const [name, entry] of Object.entries(key)) await this.put(name, entry);
+      return;
+    }
     this.values.set(key, structuredClone(value));
   }
   async delete(key) {
@@ -492,8 +496,27 @@ async function catalogFixture(t) {
             const path = new URL(request.url).pathname;
             requests.push({ path, id, body: await request.json() });
             return Response.json(
-              path === "/internal/delete"
-                ? { page_id: id, deleted: true }
+              path === "/internal/trash"
+                ? {
+                    receipt: {
+                      page_id: id,
+                      state: "trashed",
+                      trashed: true,
+                      title: "Shared plan",
+                      trashed_at: new Date(start).toISOString(),
+                      trashed_by: principal,
+                      trash_root_id: id,
+                    },
+                    current: {
+                      page_id: id,
+                      state: "trashed",
+                      revision: 1,
+                      title: "Shared plan",
+                      trashed_at: new Date(start).toISOString(),
+                      trashed_by: principal,
+                      trash_root_id: id,
+                    },
+                  }
                 : { page_id: id, title: "Shared plan", heads: ["a".repeat(64)] },
             );
           },
@@ -555,10 +578,16 @@ test("list_pages token governs catalog create/delete retries and rejects another
   const deletedResponse = await f.request("delete_page", deletion);
   assert.equal(deletedResponse.status, 200);
   const deleted = await deletedResponse.json();
-  assert.deepEqual(deleted, { page_id: created.page_id, deleted: true });
+  assert.equal(deleted.state, "trashed");
+  assert.equal(f.requests.at(-1).path, "/internal/trash");
   assert.deepEqual(await (await f.request("delete_page", deletion)).json(), deleted);
   assert.equal(f.requests.length, 2);
   assert.equal((await (await f.request("list_pages")).json()).pages.length, 0);
+  const trash = await (await f.request("list_pages", { in_trash: true })).json();
+  assert.deepEqual(
+    trash.pages.map(({ page_id, state }) => ({ page_id, state })),
+    [{ page_id: created.page_id, state: "trashed" }],
+  );
   now += RETRY_LIFETIME_MS;
   const renewed = await (await f.request("list_pages")).json();
   // A new admitted operation collects terminal receipts; reads themselves do not.

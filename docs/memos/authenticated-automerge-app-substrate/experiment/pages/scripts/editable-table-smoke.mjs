@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
+import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9895";
 assert.equal(new URL(origin).hostname, "localhost");
@@ -444,6 +445,13 @@ try {
         base_heads: current.heads,
         idempotency_key: crypto.randomUUID(),
       });
+      await purgeTrashedFixture(
+        (operation, args) => call(a, operation, args),
+        page_id,
+        () => ({
+          idempotency_key: crypto.randomUUID(),
+        }),
+      );
     } catch (error) {
       report.cleanedUp = false;
       report.cleanupError = String(error);

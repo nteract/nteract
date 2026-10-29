@@ -9,6 +9,7 @@ import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { imageDownloadUrl, imageFileId, imagePng } from "./fixtures/local-mcp-images.mjs";
+import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
 const origin = process.env.PAGES_ORIGIN;
 assert.equal(new URL(origin).origin, origin);
@@ -484,6 +485,12 @@ try {
         ...retry(catalog),
       });
       assert.equal(deleted.status, 200);
+      const invoke = async (operation, args) => {
+        const result = await sessionTool(operation, args);
+        assert.equal(result.status, 200, JSON.stringify(result.body));
+        return result.body;
+      };
+      await purgeTrashedFixture(invoke, fixtureId, async () => retry(await invoke("list_pages")));
       if (asset && fixtureId === pageId)
         assert.equal((await owner.context().request.get(origin + asset.asset_url)).status(), 404);
     } catch (error) {

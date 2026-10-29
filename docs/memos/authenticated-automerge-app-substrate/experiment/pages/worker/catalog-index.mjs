@@ -14,7 +14,7 @@
  * Migrations are append-only and additive. Older builds ignore these tables,
  * and a build must keep working against a schema version newer than it knows.
  */
-import { pageGrant } from "./access.mjs";
+import { pageGrant, pageState } from "./access.mjs";
 import { HttpError } from "./auth.mjs";
 import { catalogTitle } from "./catalog.mjs";
 import { configuredDomainView } from "./domain-access.mjs";
@@ -66,6 +66,15 @@ export const CATALOG_MIGRATIONS = Object.freeze([
       "ALTER TABLE pages_catalog_access ADD COLUMN title TEXT NOT NULL DEFAULT ''",
       "ALTER TABLE pages_catalog_access ADD COLUMN title_search TEXT NOT NULL DEFAULT ''",
       "DELETE FROM pages_catalog_accounts",
+    ]),
+  }),
+  // The Page's lifecycle revision fences state changes and access writes, so
+  // a delayed trash retirement or stale report can't undo a restore.
+  Object.freeze({
+    version: 3,
+    name: "lifecycle_revision",
+    statements: Object.freeze([
+      "ALTER TABLE pages_catalog_pages ADD COLUMN lifecycle_revision INTEGER NOT NULL DEFAULT 0",
     ]),
   }),
 ]);
@@ -184,8 +193,8 @@ export async function markCatalogIndexDirty(storage) {
 /** Lifecycle as the index stores it. Trash keeps a deleted tombstone plus a
  * trash record until purge. */
 export function indexedState(metadata) {
-  if (!metadata?.deleted) return "active";
-  return metadata.trash && !metadata.purged ? "trashed" : "deleted";
+  const state = pageState(metadata);
+  return state === "missing" ? "active" : state;
 }
 function trashedAt(metadata) {
   const value = metadata?.trash?.trashed_at ?? metadata?.trash?.trashedAt;
@@ -235,28 +244,38 @@ export function listingRestricted(previous, next, env) {
 
 const searchText = (title) => title.toLowerCase();
 const revisionOf = (metadata) => metadata?.acl?.revision ?? 0;
+const lifecycleOf = (metadata) => metadata?.lifecycleRevision ?? 0;
+/** True when the bound lifecycle revision is at least the Page row's. */
+const lifecycleGuard = (pageId) =>
+  `? >= coalesce((SELECT lifecycle_revision FROM pages_catalog_pages WHERE page_id = ${pageId}), 0)`;
 
-/** Title and lifecycle state follow the latest observation time; the ACL
- * revision only moves forward. A deleted tombstone never changes again. */
+/** Title follows the latest observation time. Lifecycle state follows the
+ * newest lifecycle revision, then observation time within one revision. The
+ * ACL and lifecycle revisions only move forward. A deleted tombstone never
+ * changes again. */
 function pageUpsert(db, page) {
   const title = catalogTitle(page.title);
+  const newerState = `excluded.lifecycle_revision > pages_catalog_pages.lifecycle_revision
+    OR (excluded.lifecycle_revision = pages_catalog_pages.lifecycle_revision
+      AND excluded.updated_at >= pages_catalog_pages.updated_at)`;
   return db
     .prepare(
       `INSERT INTO pages_catalog_pages
-        (page_id, owner, title, title_search, state, created_at, updated_at, trashed_at, acl_revision)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (page_id, owner, title, title_search, state, created_at, updated_at, trashed_at,
+          acl_revision, lifecycle_revision)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (page_id) DO UPDATE SET
         title = CASE WHEN excluded.updated_at >= pages_catalog_pages.updated_at
           THEN excluded.title ELSE pages_catalog_pages.title END,
         title_search = CASE WHEN excluded.updated_at >= pages_catalog_pages.updated_at
           THEN excluded.title_search ELSE pages_catalog_pages.title_search END,
-        state = CASE WHEN excluded.updated_at >= pages_catalog_pages.updated_at
-          THEN excluded.state ELSE pages_catalog_pages.state END,
-        trashed_at = CASE WHEN excluded.updated_at >= pages_catalog_pages.updated_at
+        state = CASE WHEN ${newerState} THEN excluded.state ELSE pages_catalog_pages.state END,
+        trashed_at = CASE WHEN ${newerState}
           THEN excluded.trashed_at ELSE pages_catalog_pages.trashed_at END,
         created_at = min(pages_catalog_pages.created_at, excluded.created_at),
         updated_at = max(pages_catalog_pages.updated_at, excluded.updated_at),
-        acl_revision = max(pages_catalog_pages.acl_revision, excluded.acl_revision)
+        acl_revision = max(pages_catalog_pages.acl_revision, excluded.acl_revision),
+        lifecycle_revision = max(pages_catalog_pages.lifecycle_revision, excluded.lifecycle_revision)
       WHERE pages_catalog_pages.state != 'deleted'`,
     )
     .bind(
@@ -269,6 +288,7 @@ function pageUpsert(db, page) {
       page.updated_at,
       page.trashed_at ?? null,
       page.revision ?? 0,
+      page.lifecycle ?? 0,
     );
 }
 
@@ -278,12 +298,13 @@ const revisionGuard = `updated_revision <= ? AND ? >= coalesce(
   (SELECT acl_revision FROM pages_catalog_pages WHERE page_id = pages_catalog_access.page_id), 0)`;
 
 /** Drop owner/member rows the host record no longer lists. */
-function deleteUnlisted(db, pageId, rows, revision) {
+function deleteUnlisted(db, pageId, rows, revision, lifecycle) {
   return db
     .prepare(
       `DELETE FROM pages_catalog_access
       WHERE page_id = ? AND source IN ('owner', 'member')
-        AND principal NOT IN (SELECT value FROM json_each(?)) AND ${revisionGuard}`,
+        AND principal NOT IN (SELECT value FROM json_each(?)) AND ${revisionGuard}
+        AND ${lifecycleGuard("pages_catalog_access.page_id")}`,
     )
     .bind(
       pageId,
@@ -292,20 +313,21 @@ function deleteUnlisted(db, pageId, rows, revision) {
       ),
       revision,
       revision,
+      lifecycle,
     );
 }
 
 /** Domain-reader rows survive only under the same active domain view, and
  * never for a principal with any explicit member record (including removal). */
-function deleteDomainReaders(db, pageId, domain, memberKeys, revision) {
+function deleteDomainReaders(db, pageId, domain, memberKeys, revision, lifecycle) {
   return db
     .prepare(
       `DELETE FROM pages_catalog_access
       WHERE page_id = ? AND source = 'domain_opened'
         AND (? IS NULL OR domain IS NOT ? OR principal IN (SELECT value FROM json_each(?)))
-        AND ${revisionGuard}`,
+        AND ${revisionGuard} AND ${lifecycleGuard("pages_catalog_access.page_id")}`,
     )
-    .bind(pageId, domain, domain, JSON.stringify(memberKeys), revision, revision);
+    .bind(pageId, domain, domain, JSON.stringify(memberKeys), revision, revision, lifecycle);
 }
 
 /** Grants from a committed revision, each carrying the title snapshot its
@@ -316,7 +338,13 @@ function deleteDomainReaders(db, pageId, domain, memberKeys, revision) {
  * opens the Page) and from account reconciliation after the Page host
  * verifies the principal. Owner rows imported from the owner's own Catalog
  * are unguarded: ownership never changes. */
-function upsertAccess(db, pageId, rows, revision, { title, updatedAt, owner = false }) {
+function upsertAccess(
+  db,
+  pageId,
+  rows,
+  revision,
+  { title, updatedAt, owner = false, lifecycle = 0 },
+) {
   const snapshot = catalogTitle(title);
   return db
     .prepare(
@@ -327,7 +355,8 @@ function upsertAccess(db, pageId, rows, revision, { title, updatedAt, owner = fa
       FROM json_each(?)
       WHERE EXISTS (
         SELECT 1 FROM pages_catalog_pages
-        WHERE page_id = ? AND state != 'deleted' AND (? = 1 OR acl_revision <= ?)
+        WHERE page_id = ? AND state != 'deleted'
+          AND (? = 1 OR (acl_revision <= ? AND lifecycle_revision <= ?))
       )
       ON CONFLICT (page_id, principal) DO UPDATE SET
         role = excluded.role, source = excluded.source, domain = excluded.domain,
@@ -349,19 +378,23 @@ function upsertAccess(db, pageId, rows, revision, { title, updatedAt, owner = fa
       pageId,
       owner ? 1 : 0,
       revision,
+      lifecycle,
       owner ? 1 : 0,
     );
 }
 
 /** Delete one row only if nothing newer than the observed revision has
  * replaced it since: a regrant that lands first survives a delayed prune. */
-function deleteObserved(db, pageId, principal, revision) {
+function deleteObserved(db, pageId, principal, revision, updatedAt = null) {
+  // A row rewritten since the listing read it (a restore or regrant at the
+  // same ACL revision advances updated_at) survives a delayed prune.
   return db
     .prepare(
       `DELETE FROM pages_catalog_access
-      WHERE page_id = ? AND principal = ? AND updated_revision <= ?`,
+      WHERE page_id = ? AND principal = ? AND updated_revision <= ?
+        AND (? IS NULL OR updated_at <= ?)`,
     )
-    .bind(pageId, principal, revision);
+    .bind(pageId, principal, revision, updatedAt, updatedAt);
 }
 
 /** Full reconcile from a Page DO's committed host record. Runs after commit,
@@ -377,6 +410,7 @@ export async function reportPageIndex(env, { metadata, title, observedAt, reader
   const rows = readerOnly ? listed.filter((row) => row.principal === reader?.principal) : listed;
   const pageId = metadata.pageId;
   const revision = revisionOf(metadata);
+  const lifecycle = lifecycleOf(metadata);
   await db.batch([
     pageUpsert(db, {
       page_id: pageId,
@@ -387,16 +421,18 @@ export async function reportPageIndex(env, { metadata, title, observedAt, reader
       updated_at: observedAt,
       trashed_at: state === "trashed" ? trashedAt(metadata) : null,
       revision,
+      lifecycle,
     }),
-    deleteUnlisted(db, pageId, listed, revision),
+    deleteUnlisted(db, pageId, listed, revision, lifecycle),
     deleteDomainReaders(
       db,
       pageId,
       state === "active" ? projection.domain : null,
       projection.memberKeys,
       revision,
+      lifecycle,
     ),
-    upsertAccess(db, pageId, rows, revision, { title, updatedAt: observedAt }),
+    upsertAccess(db, pageId, rows, revision, { title, updatedAt: observedAt, lifecycle }),
   ]);
 }
 
@@ -411,14 +447,16 @@ export async function restrictPageIndex(env, metadata, revision = revisionOf(met
   const active = indexedState(metadata) === "active";
   const projection = accessRows(metadata, env);
   const rows = active ? projection.rows : projection.rows.filter((row) => row.source === "owner");
+  const lifecycle = lifecycleOf(metadata);
   await db.batch([
-    deleteUnlisted(db, pageId, rows, revision),
+    deleteUnlisted(db, pageId, rows, revision, lifecycle),
     deleteDomainReaders(
       db,
       pageId,
       active ? projection.domain : null,
       projection.memberKeys,
       revision,
+      lifecycle,
     ),
   ]);
 }
@@ -435,32 +473,40 @@ export async function retirePageIndex(env, metadata, now = new Date().toISOStrin
       db
         .prepare(
           `INSERT INTO pages_catalog_pages
-            (page_id, owner, title, title_search, state, created_at, updated_at)
-          VALUES (?, ?, '', '', 'deleted', ?, ?)
-          ON CONFLICT (page_id) DO UPDATE SET state = 'deleted', title = '', title_search = ''`,
+            (page_id, owner, title, title_search, state, created_at, updated_at, lifecycle_revision)
+          VALUES (?, ?, '', '', 'deleted', ?, ?, ?)
+          ON CONFLICT (page_id) DO UPDATE SET state = 'deleted', title = '', title_search = '',
+            lifecycle_revision = max(lifecycle_revision, excluded.lifecycle_revision)`,
         )
-        .bind(pageId, metadata.owner, now, now),
+        .bind(pageId, metadata.owner, now, now, lifecycleOf(metadata)),
       db.prepare("DELETE FROM pages_catalog_access WHERE page_id = ?").bind(pageId),
     ]);
     return;
   }
+  // Fenced by lifecycle revision: a retirement delayed past a restore (or a
+  // later regrant) finds a newer revision and changes nothing.
+  const lifecycle = lifecycleOf(metadata);
   await db.batch([
     db
       .prepare(
         `UPDATE pages_catalog_pages
-        SET state = 'trashed', trashed_at = ?, updated_at = max(updated_at, ?)
-        WHERE page_id = ? AND state != 'deleted'`,
+        SET state = 'trashed', trashed_at = ?, updated_at = max(updated_at, ?),
+          lifecycle_revision = ?
+        WHERE page_id = ? AND state != 'deleted' AND lifecycle_revision <= ?`,
       )
-      .bind(trashedAt(metadata) ?? now, now, pageId),
+      .bind(trashedAt(metadata) ?? now, now, lifecycle, pageId, lifecycle),
     db
-      .prepare("DELETE FROM pages_catalog_access WHERE page_id = ? AND source != 'owner'")
-      .bind(pageId),
+      .prepare(
+        `DELETE FROM pages_catalog_access WHERE page_id = ? AND source != 'owner'
+          AND ${lifecycleGuard("pages_catalog_access.page_id")}`,
+      )
+      .bind(pageId, lifecycle),
     db
       .prepare(
         `UPDATE pages_catalog_access SET updated_at = max(updated_at, ?)
-        WHERE page_id = ? AND source = 'owner'`,
+        WHERE page_id = ? AND source = 'owner' AND ${lifecycleGuard("pages_catalog_access.page_id")}`,
       )
-      .bind(now, pageId),
+      .bind(now, pageId, lifecycle),
   ]);
 }
 
@@ -470,8 +516,8 @@ export async function pruneIndexRows(db, rows) {
   if (!rows.length) return;
   await withTimeout(
     db.batch(
-      rows.map(({ page_id, principal, revision }) =>
-        deleteObserved(db, page_id, principal, revision ?? 0),
+      rows.map(({ page_id, principal, revision, updated_at }) =>
+        deleteObserved(db, page_id, principal, revision ?? 0, updated_at ?? null),
       ),
     ),
     catalogIndexTimeouts.write,
@@ -729,6 +775,7 @@ function sharedStatements(db, principal, pageId, page, fallbackAt, createdAt) {
       created_at: createdAt ?? observed,
       updated_at: observed,
       revision: page.revision ?? 0,
+      lifecycle: page.lifecycle_revision ?? 0,
     }),
     upsertAccess(
       db,
@@ -742,7 +789,7 @@ function sharedStatements(db, principal, pageId, page, fallbackAt, createdAt) {
         },
       ],
       page.revision ?? 0,
-      { title: page.title, updatedAt: observed },
+      { title: page.title, updatedAt: observed, lifecycle: page.lifecycle_revision ?? 0 },
     ),
   ];
 }
@@ -878,6 +925,7 @@ export async function reconcileAccountIndex({
             created_at: entry.created_at ?? updatedAt,
             updated_at: updatedAt,
             trashed_at: state === "trashed" ? (entry.trashed_at ?? null) : null,
+            lifecycle: entry.lifecycle_revision ?? 0,
           }),
           upsertAccess(
             db,

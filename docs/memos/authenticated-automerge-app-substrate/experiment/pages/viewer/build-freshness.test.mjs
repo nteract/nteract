@@ -12,6 +12,7 @@ import { observeResponses, request } from "./request.mjs";
 import { PageSession } from "./session.mjs";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
+import { closeTrashedSessions } from "./trash.mjs";
 
 setFlagsFromString("--expose-gc");
 const gc = runInNewContext("gc");
@@ -611,4 +612,71 @@ test("paused edits need every reason released and survive capability refreshes",
   session.pauseEdits("protocol", false);
   assert.equal(session.canWrite, true);
   assert.equal(emitted, 4);
+});
+
+test("moving a Page to Trash closes it through the gate: a held checkpoint blocks Reload", async () => {
+  const g = gate();
+  const trashed = new FakeSession("page-trashed");
+  g.reloadGate.hold(trashed);
+  let release;
+  const close = trashed.close.bind(trashed);
+  trashed.close = () =>
+    new Promise((resolve) => {
+      release = () => close().then(resolve);
+    });
+  const closing = closeTrashedSessions(g.reloadGate, [trashed, trashed]);
+  trashed.set({ status: "Saved", pending: false });
+  const result = g.reload();
+  await settle();
+  assert.equal(typeof release, "function", "the checkpoint close is in flight");
+  assert.equal(g.reloaded(), 0, "Reload waits for the held checkpoint");
+  release();
+  await closing;
+  assert.deepEqual(await result, { ok: true });
+  assert.equal(g.reloaded(), 1);
+});
+
+test("a failed checkpoint while moving a Page to Trash offers its recovery export", async () => {
+  const g = gate();
+  const trashed = new FakeSession("page-trash-lost");
+  trashed.checkpointFails = true;
+  g.reloadGate.hold(trashed);
+  const closing = closeTrashedSessions(g.reloadGate, [trashed]);
+  trashed.set({ status: "Offline" });
+  await closing;
+  await settle();
+  const result = await g.reload();
+  assert.equal(result.reason, "unsaved");
+  assert.equal(result.pages[0].pageId, "page-trash-lost");
+  assert.equal(result.pages[0].markdown, "# Garden notes\n\nUnsent edit\n");
+});
+
+test("Reload waits for an access reload that closes its old replica", async () => {
+  const g = gate();
+  const reader = new FakeSession("page-restored");
+  g.reloadGate.hold(reader);
+  let finish;
+  const reloading = new Promise((resolve) => {
+    finish = resolve;
+  });
+  g.reloadGate.track(reader, reloading);
+  const result = g.reload();
+  await settle();
+  assert.equal(g.reloaded(), 0);
+  finish();
+  assert.deepEqual(await result, { ok: true });
+});
+
+test("a failed access reload keeps its live session blocking Reload", async () => {
+  const g = gate();
+  const writer = new FakeSession("page-switch-failed");
+  g.reloadGate.hold(writer);
+  await g.reloadGate.track(writer, Promise.reject(Error("checkpoint failed"))).catch(() => {});
+  await settle();
+  const result = g.reload();
+  await settle();
+  assert.equal(g.reloaded(), 0, "unsent edits on the live session still block Reload");
+  writer.set({ status: "Saved", pending: false });
+  assert.deepEqual(await result, { ok: true });
+  assert.equal(g.reloaded(), 1);
 });

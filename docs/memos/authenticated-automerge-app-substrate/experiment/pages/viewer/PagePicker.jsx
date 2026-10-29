@@ -1,9 +1,19 @@
 import { matchingPages } from "./page-list.mjs";
 import { pagePath, isPlainNavigation } from "../shared/routes.mjs";
 import { useEffect, useRef, useState } from "react";
-import { Check, FileText, Plus, Search, X } from "lucide-react";
+import { Check, FileText, Plus, Search, Trash2, X } from "lucide-react";
 
-export function PagePicker({ open, pages, currentId, onClose, onOpen, onCreate, creating, error }) {
+export function PagePicker({
+  open,
+  pages,
+  currentId,
+  onClose,
+  onOpen,
+  onCreate,
+  onTrash,
+  creating,
+  error,
+}) {
   const dialog = useRef(null);
   const [query, setQuery] = useState("");
   useEffect(() => {
@@ -75,6 +85,17 @@ export function PagePicker({ open, pages, currentId, onClose, onOpen, onCreate, 
             <p className="muted">{query ? "No matching pages." : "No pages yet."}</p>
           )}
         </nav>
+        {onTrash && (
+          <button
+            className="subtle-button picker-trash"
+            onClick={() => {
+              onClose();
+              onTrash();
+            }}
+          >
+            <Trash2 size={16} aria-hidden="true" /> Trash
+          </button>
+        )}
       </div>
     </dialog>
   );

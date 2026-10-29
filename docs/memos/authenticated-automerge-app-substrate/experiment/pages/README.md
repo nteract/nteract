@@ -83,6 +83,7 @@ Run targeted browser checks from `pages`:
 | Collaborative checkboxes | `node scripts/local-sharing-e2e.mjs --task-lists` | Starts an isolated fixture |
 | Admission codes, celld restart, and reconnect to Saved | `node scripts/local-sharing-e2e.mjs --admission` | Starts and restarts an isolated fixture |
 | Reload prompt after a deploy under an open tab | `node scripts/local-sharing-e2e.mjs --build-update` | Starts an isolated fixture and swaps its build |
+| Trash, restore, and permanent deletion | `node scripts/local-sharing-e2e.mjs --trash` | Starts an isolated fixture |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
@@ -280,8 +281,8 @@ non-secret configuration while a person authorizes the connection; a successful
 `list_pages` call verifies access. A driver label is a description, not verified
 vendor identity or a permission grant.
 
-A Page starts private. Its immutable owner manages access and deletion, editors
-write/comment, and viewers read. Each operation intersects the Page role with
+A Page starts private. Its immutable owner manages access, Trash, and permanent
+deletion, editors write/comment, and viewers read. Each operation intersects the Page role with
 credential scopes. Email invitations expire after seven days, become stable
 principal grants only after verified provider email admission, and do not send
 email. Pending invitations cannot authorize sockets or override a newer role.
@@ -575,6 +576,80 @@ persistence. Tool mutations do not simulate typing or lock out peers.
 Content warnings, inserted image IDs, and other receipt results are captured at
 the operation's actual heads and are not recomputed during retry.
 
+### Trash and permanent deletion
+
+`delete_page` moves a Page to Trash; it does not delete the document. The Page
+record keeps its Automerge document, comments, ACL, and signing-key bindings.
+Trashing applies immediately, like an access reduction: member sessions close,
+current viewers and editors get `403 page_trashed` (admission close 4410, retry
+"recheck"), and their catalog references are pruned on their next listing.
+Everyone else, including company viewers and removed members, gets exactly the
+missing-Page response: the legacy `404`, or `403 page_access_denied` for clients
+that send `X-Pages-Admission`. The D1 index retires trashed rows to the owner
+and lists them only with `in_trash`. Index writes are fenced by the Page's
+lifecycle revision, and every lifecycle transition advances the Catalog entry's
+`updated_at`, so delayed retirements, reports and prunes cannot undo a restore. The owner keeps a
+read-only preview through reads and native sync; edits, comments, progress,
+sharing changes, and image uploads return `409 page_trashed`. The browser
+previews on a reader replica; any key first admitted while trashed stays a
+reader key, so restore reloads onto the writer replica. An upload authorized
+before trashing can still store its bytes before the final authorization check
+rejects it; those bytes are unreferenced and are not cleaned up. Reads of a trashed Page carry a `trash` object
+and no edit retry authority. The owner's catalog moves the entry from `page/` to
+`trash/`, so trashed Pages leave default listings and the 100-Page quota.
+`list_pages({in_trash:true})` lists them.
+
+Each transition increments the record's `lifecycleRevision`. The Catalog
+records the revision it last observed when it reserves a lifecycle request and
+sends it as `expected_revision`; the Page applies the request only at that
+revision. A retry of an older request returns its stored receipt, or
+`{superseded: true, applied: false, state}` once that receipt has been pruned,
+and never applies again. A superseded result was not applied; callers read the
+current state before acting. The Page keeps its newest 256 receipts. A
+transition is committed with its receipt in one write and installed in memory
+only after `sync()`; if that barrier fails, the next request finishes the
+transition before doing anything else, so a receipt never replays for an
+unfinished transition. If a newly reserved request is
+superseded because the Catalog's index was stale, the Catalog retargets it once
+at the Page's current revision. The Catalog always projects the Page's current
+state, not the replayed receipt.
+
+Pending trash and restore requests hold a hidden destination slot in the
+owner's Catalog, written in the same storage call as the intent. The intent is
+marked `forwarded` before the Page sees it. A never-forwarded slot counts for
+one retry lifetime while its intent is pending. A forwarded slot does not
+expire: once its lifetime lapses, counting asks the Page for its current
+lifecycle state and either converts the slot to the real entry or releases it.
+A resumed request whose slot lapsed takes a new one if capacity allows;
+otherwise the Page only reports its current state.
+
+A trashed document that fails to load answers `503` and is retried on the next
+request. Only a deleted record, or the owner Catalog's tombstone delivered to
+the Page, makes the absence permanent; the Page then answers like a missing
+Page.
+
+`restore_page` waits for the restored record to be durable, like an access
+increase, then returns the same ID, content, comments, and ACL. Grants and key
+generations are untouched by Trash, so collaborators reconnect with their
+previous role and keys. Restored titles are projected back into member catalogs.
+
+`purge_page` is a two-step owner operation on a trashed Page. `action:"preview"`
+returns the title, comment count, collaborators who lose access, pending
+invitations, and an HMAC-signed `preview_token` valid for ten minutes. The token
+binds the owner, current heads, ACL, and lifecycle revision; any change
+invalidates it. Confirmation rechecks the live heads and record in the same
+synchronous step that tombstones the Page. While trashed, the policy refuses
+native writes from every key, so only a change accepted before Trash and applied
+late could differ. `action:"confirm"` with the unchanged token then runs the
+permanent deletion path:
+it tombstones the record, closes admission, deletes the document, and writes the
+catalog deletion tombstone. Private image bytes stay in object storage but are
+no longer served.
+
+Trash has no automatic expiry. Pages stay there until the owner restores or
+purges them, up to 100 per account. Each trash record identifies its root Page.
+This implementation trashes and restores individual Pages.
+
 ### Retry contract
 
 After a conflict, reread before constructing new work. For an uncertain outcome,
@@ -593,7 +668,8 @@ The versioned journal bounds active receipts at 1,000 entries/8 MiB and pending
 work at 64 entries/4 MiB. Capacity causes explicit backpressure. Collection removes
 expired completed receipts with a durable monotonic clock floor, not arbitrary
 keys. Legacy receipts retain a separate 1,000-entry cap; browser edits do not
-consume this budget. Catalog deletion tombstones remain permanent. See the
+consume this budget. Catalog deletion tombstones remain permanent; Trash writes
+none. See the
 [operation journal](worker/operation-journal.mjs) and its integration tests.
 
 ### Progress and presence

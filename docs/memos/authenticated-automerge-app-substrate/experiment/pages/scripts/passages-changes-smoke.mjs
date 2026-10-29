@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
+import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9896";
 const url = new URL(origin);
@@ -410,6 +411,7 @@ try {
       const current = await read();
       const catalog = await mcp("list_pages");
       await mcp("delete_page", guarded(catalog, { page_id: pageId, base_heads: current.heads }));
+      await purgeTrashedFixture(mcp, pageId, async () => guarded(await mcp("list_pages"), {}));
       const absent = await rawMcp("read_page", { page_id: pageId, comments: "none" });
       assert.equal(absent.isError, true);
       const remaining = await mcp("list_pages");

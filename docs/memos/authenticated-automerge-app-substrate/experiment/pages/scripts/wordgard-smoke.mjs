@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
+import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
@@ -42,7 +43,7 @@ async function call(page, operation, args = {}) {
     const fingerprint = JSON.stringify(args);
     let request = requests.get(requestKey);
     if (!request) {
-      const catalog = ["create_page", "delete_page"].includes(operation);
+      const catalog = ["create_page", "delete_page", "purge_page"].includes(operation);
       const authority = await rawCall(
         page,
         catalog ? "list_pages" : "read_page",
@@ -1330,6 +1331,13 @@ try {
       base_heads: current.heads,
       idempotency_key: crypto.randomUUID(),
     });
+    await purgeTrashedFixture(
+      (operation, args) => call(a, operation, args),
+      page_id,
+      () => ({
+        idempotency_key: crypto.randomUUID(),
+      }),
+    );
   }
   report.cleanedUp = true;
   report.result = "pass";

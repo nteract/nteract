@@ -210,8 +210,9 @@ allow signed-in people with a verified company email domain to view by link.
 Pages stay Restricted until the owner chooses that audience. Personal email
 providers are never offered, and only an owner signed in with a verified email at
 that company domain can choose it. Editors
-can write and comment, viewers can read, and only the owner can manage access or
-delete a Page. Credential scope further limits the account's Page permissions.
+can write and comment, viewers can read, and only the owner can manage access,
+move a Page to Trash, restore it, or delete it permanently. Credential scope
+further limits the account's Page permissions.
 
 ## Authentication
 
@@ -399,7 +400,8 @@ Start by listing and reading:
 
 read_page returns title, ordered blocks, comments, heads, retry_token, retry_key_prefix, and
 retry_until. Keep the returned page_id and block IDs. list_pages also returns a
-retry_token for catalog operations (create_page and delete_page). Browser link: ${origin}/p/<page_id>.
+retry_token for catalog operations (create_page, delete_page, restore_page and
+purge_page). Browser link: ${origin}/p/<page_id>.
 list_pages accepts optional query (title substring), limit (1-100, default 50) and cursor.
 Pass next_cursor back as cursor, with the same query, until it is null. Pagination is not a
 snapshot: concurrent title or sharing changes can move Pages across the cursor. A short or
@@ -421,7 +423,41 @@ empty result does not prove a Page is absent.
 - manage_page_comment: add, reply, resolve, reopen, edit, or delete_message.
 - import_page_image: page_id and a ChatGPT-supplied file descriptor; returns a
   private asset_id and asset_url for a subsequent insert_image edit. See Images above.
-- delete_page: delete the Page and comments. There is no restore operation.
+- delete_page: move a Page you own to Trash. See Trash below.
+- restore_page: page_id, idempotency_key and the list_pages retry_token.
+- purge_page: permanently delete a trashed Page in two calls. See Trash below.
+
+### Trash
+
+delete_page is recoverable. It moves the Page to Trash with its content, comments
+and sharing intact, and hides it from default listings. Collaborators lose access
+while it is in Trash. The owner can still read it (read_page, read_page_changes,
+list_page_comments), but cannot edit, comment, report progress or change sharing
+until it is restored; those calls return code page_trashed. Reads of a trashed
+Page include a trash object and no retry authority.
+
+A delete_page, restore_page or purge_page result with superseded:true and
+applied:false means this request was not applied: the Page changed since the
+request was reserved. Its state field is the current state. Read the Page's
+current state (list_pages with in_trash, or read_page) before deciding what to
+do; do not treat it as success.
+
+- list_pages with {"in_trash": true} lists your trashed Pages with trashed_at and
+  trashed_by. Shared Pages in another owner's Trash are not listed.
+- restore_page returns the Page with the same page_id, content, comments and
+  sharing. Collaborators regain their previous access.
+- purge_page deletes permanently and cannot be undone. Call it first with
+  {"action": "preview"}: the result has title, comment_count, collaborators who
+  lose access, and a preview_token valid for ten minutes. Show that to the person
+  and get confirmation. Then call {"action": "confirm"} with the unchanged
+  preview_token, a new idempotency_key and a list_pages retry_token. An edit or
+  sharing change after the preview returns purge_preview_invalid; preview again.
+  Only trashed Pages can be purged (otherwise page_not_in_trash).
+
+Trash has no automatic expiry: Pages stay there until restored or purged. Trash
+holds up to 100 Pages (trash_capacity when full). Restoring needs a free slot in
+the 100-Page limit. Purging makes the Page's private images unavailable, but
+their stored bytes are not erased.
 
 ### One title, with the body left intact
 
@@ -567,7 +603,8 @@ Pages preserves supplied body content; it does not silently delete headings.
 
 Read before editing. Document edits and deletion require page_id,
 base_heads from a read, and idempotency_key. Include retry_token
-from read_page or read_page_changes for edits/comments; use the list_pages token for create/delete.
+from read_page or read_page_changes for edits/comments; use the list_pages token for
+create, delete, restore and purge.
 Append a new UUID to retry_key_prefix from the same result for
 each new request (keys accept 8–128 letters, digits, underscores, or hyphens).
 

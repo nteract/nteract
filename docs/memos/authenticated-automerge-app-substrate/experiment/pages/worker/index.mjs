@@ -83,9 +83,23 @@ import {
 } from "./mutations.mjs";
 
 import { claimInvitation, proposeSharingMutation, sharingProjection } from "./sharing.mjs";
-import { pageAccess, restrictAccessDuringCommit } from "./access.mjs";
+import { pageAccess, pageGrant, pageState, restrictAccessDuringCommit } from "./access.mjs";
 
-import { catalogTitle, refreshCatalogTitle } from "./catalog.mjs";
+import {
+  CATALOG_LIMIT,
+  TRASH_LIMIT,
+  catalogTitle,
+  countCapacity,
+  holdsLifecycleSlot,
+  lifecycleSlot,
+  lifecycleSlotKey,
+  observedLifecycleRevision,
+  projectLifecycle,
+  pruneTombstonedTrash,
+  refreshCatalogTitle,
+  releaseLifecycleSlot,
+  trashFields,
+} from "./catalog.mjs";
 import {
   CatalogIndexUnavailable,
   catalogIndexDatabase,
@@ -113,6 +127,13 @@ import { handleImportPageImage } from "./import-image.mjs";
 import { readTool } from "./tool-reads.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
 import { PageActivity } from "./page-activity.mjs";
+import {
+  issuePurgePreview,
+  publicTrash,
+  purgeImpact,
+  trashRecord,
+  verifyPurgePreview,
+} from "./trash.mjs";
 
 const operations = new Set([
   "list_pages",
@@ -128,9 +149,32 @@ const operations = new Set([
   "manage_page_comment",
   "reply_page_comment",
   "delete_page",
+  "restore_page",
+  "purge_page",
 ]);
+/** Catalog-owned Page lifecycle operations and the Page route each one uses. */
+const lifecycleRoutes = {
+  delete_page: "/internal/trash",
+  restore_page: "/internal/restore",
+  purge_page: "/internal/purge",
+};
+/** delete_page moves a Page to Trash. Its journal fingerprint uses a distinct
+ * name so a build that predates Trash cannot replay the receipt as a
+ * permanent deletion: it reports an idempotency conflict instead.
+ */
+const lifecycleFingerprint = {
+  delete_page: "trash_page",
+  restore_page: "restore_page",
+  purge_page: "purge_page",
+};
 const noop = async () => {};
 const INDEX_REPORT_PENDING = "host/index/report-pending";
+/** Lifecycle receipts kept per Page for retries; older ones are pruned. */
+const LIFECYCLE_RECEIPT_LIMIT = 256;
+const lifecycleReceiptKey = (operationKey) =>
+  `host/lifecycle/${operationKey.slice("host/operation/".length)}`;
+const sameHeads = (left, right) =>
+  left.length === right.length && [...left].sort().join() === [...right].sort().join();
 const publicIdentity = ({ principal, displayName, driver }) => ({ principal, displayName, driver });
 
 function validateCreateInput(args) {
@@ -180,7 +224,7 @@ async function invoke(request, env, operation, args = {}) {
     ].includes(operation)
   )
     requireWrite(identity);
-  if (["list_pages", "create_page", "delete_page"].includes(operation)) {
+  if (["list_pages", "create_page", ...Object.keys(lifecycleRoutes)].includes(operation)) {
     return env.CATALOGS.getByName(identity.principal).fetch(
       forwarded(request, "/internal/catalog", { operation, arguments: args }),
     );
@@ -349,6 +393,31 @@ export class Catalog {
     this.tail = next.catch(() => {});
     return next;
   }
+  async countEntries(prefix) {
+    return countCapacity(this.ctx.storage, prefix, {
+      current: (pageId) => this.pageLifecycle(pageId),
+    });
+  }
+  /** Read a Page's current lifecycle state. The Catalog may call its Pages;
+   * a Page never calls its owner's Catalog.
+   */
+  async pageLifecycle(pageId) {
+    const response = await this.env.PAGES.getByName(pageId).fetch(
+      new Request("https://pages.internal/internal/lifecycle-state"),
+    );
+    if (!response.ok) throw Error(`Page lifecycle state unavailable: ${response.status}`);
+    return response.json();
+  }
+  /** Tell a trashed Page that this account recorded its permanent deletion. */
+  async notifyTombstone(pageId) {
+    try {
+      await this.env.PAGES.getByName(pageId).fetch(
+        new Request("https://pages.internal/internal/tombstone", { method: "POST" }),
+      );
+    } catch (error) {
+      logFailure(error, "catalog-tombstone");
+    }
+  }
   async run(request) {
     try {
       if (new URL(request.url).pathname === "/internal/projection") {
@@ -361,6 +430,8 @@ export class Catalog {
         else if (
           !previous?.pending &&
           !(await this.ctx.storage.get(`host/deleted/${value.page_id}`)) &&
+          // A projection observed before trashing must not relist the Page.
+          (value.shared || !(await this.ctx.storage.get(`trash/${value.page_id}`))) &&
           (!previous?.updated_at || previous.updated_at <= value.observed_at)
         ) {
           // A new discovery entry may not have reached D1; reconcile on next listing.
@@ -395,17 +466,40 @@ export class Catalog {
       const args = body.arguments ?? {};
       if (body.operation === "list_pages") return await this.listPages(request, identity, args);
       requireWrite(identity);
-      if (!["create_page", "register_page", "delete_page"].includes(body.operation))
+      const lifecycle = lifecycleRoutes[body.operation];
+      if (!["create_page", "register_page"].includes(body.operation) && !lifecycle)
         throw new HttpError(400, "Unknown catalog operation");
       // Reject deterministic input errors before reserving an intent or page.
       const creating = ["create_page", "register_page"].includes(body.operation);
       const registering = body.operation === "register_page";
       if (
-        body.operation === "delete_page" &&
+        lifecycle &&
         args.expected_principal !== undefined &&
         args.expected_principal !== identity.principal
       )
-        throw new HttpError(403, "Sign in with this Page's original account to delete it");
+        throw new HttpError(403, "Sign in with this Page's original account to change it");
+      if (lifecycle && !validPageId(args.page_id)) throw new HttpError(400, "Invalid page_id");
+      const tombstoned = async () => {
+        if (!(await this.ctx.storage.get(`host/deleted/${args.page_id}`))) return false;
+        await this.ctx.storage.delete(`trash/${args.page_id}`);
+        await this.notifyTombstone(args.page_id);
+        return true;
+      };
+      if (body.operation === "purge_page") {
+        if (!["preview", "confirm"].includes(args.action))
+          throw new HttpError(400, "action must be preview or confirm");
+        if (args.action === "preview" && (await tombstoned()))
+          throw new HttpError(404, "Page not found");
+        // A preview is an owner read of the trashed Page; it reserves nothing.
+        if (args.action === "preview")
+          return this.env.PAGES.getByName(args.page_id).fetch(forwarded(request, lifecycle, args));
+        if (typeof args.preview_token !== "string")
+          throw new HttpError(
+            400,
+            "Call purge_page with action preview, then confirm with its unchanged preview_token",
+            "purge_preview_required",
+          );
+      }
       if (body.operation === "create_page") validateCreateInput(args);
       if (registering) {
         requireRegistrationAccount(args, identity);
@@ -416,7 +510,11 @@ export class Catalog {
           throw new HttpError(409, "Page was deleted");
       }
       const key = mutationKey(args);
-      const digest = await fingerprint(body.operation, args, identity);
+      const digest = await fingerprint(
+        lifecycleFingerprint[body.operation] ?? body.operation,
+        args,
+        identity,
+      );
       const inspected = await inspectOperation(this.ctx.storage, {
         key,
         digest,
@@ -426,31 +524,68 @@ export class Catalog {
       });
       let intent = inspected.entry;
       if (intent && !intent.pending) {
-        if (body.operation === "delete_page")
-          await this.ctx.storage.put(`host/deleted/${intent.pageId}`, true);
         // A previous attempt may have stored its receipt before sync failed.
+        // Only terminal deletion is reapplied: replaying an old trash or
+        // restore receipt must not undo a later transition.
+        if (intent.receipt?.deleted)
+          await projectLifecycle(this.ctx.storage, intent.pageId, { state: "deleted" });
         await this.ctx.storage.sync();
         return json(intent.receipt);
       }
       if (!intent) {
-        if (body.operation === "delete_page" && !validPageId(args.page_id))
-          throw new HttpError(400, "Invalid page_id");
-        if (creating && (await this.ctx.storage.list({ prefix: "page/", limit: 100 })).size >= 100)
+        // A permanent deletion this account observed is terminal, even when a
+        // build without Trash wrote the tombstone. The Catalog refuses here,
+        // so a Page never has to ask its owner's Catalog.
+        if (lifecycle && (await tombstoned())) throw new HttpError(404, "Page not found");
+        if (creating && (await this.countEntries("page/")) >= CATALOG_LIMIT)
           throw new HttpError(409, "This prototype permits 100 pages per account");
-        if (registering && (await this.ctx.storage.get(`page/${args.page_id}`)))
+        if (
+          body.operation === "delete_page" &&
+          // Counting first removes stale reservations, including this Page's.
+          (await this.countEntries("trash/")) >= TRASH_LIMIT &&
+          !(await this.ctx.storage.get(`trash/${args.page_id}`))
+        )
+          throw new HttpError(
+            409,
+            "Trash is full. Permanently delete Pages from Trash before moving more Pages there.",
+            "trash_capacity",
+          );
+        if (
+          body.operation === "restore_page" &&
+          (await this.countEntries("page/")) >= CATALOG_LIMIT &&
+          !(await this.ctx.storage.get(`page/${args.page_id}`))
+        )
+          throw new HttpError(409, "This prototype permits 100 pages per account");
+        if (
+          registering &&
+          ((await this.ctx.storage.get(`page/${args.page_id}`)) ||
+            (await this.ctx.storage.get(`trash/${args.page_id}`)))
+        )
           throw new HttpError(409, "Page already has another creation request");
         intent = {
           fingerprint: digest,
           pending: true,
           pageId: body.operation === "create_page" ? crypto.randomUUID() : args.page_id,
           createdAt: new Date().toISOString(),
+          // The Page applies a lifecycle request only at this revision.
+          ...(lifecycle && {
+            expectedRevision: await observedLifecycleRevision(this.ctx.storage, args.page_id),
+          }),
         };
         intent = await reserveOperation(this.ctx.storage, {
           key,
           entry: intent,
           retry: inspected.retry,
         });
-        await this.ctx.storage.put(key, intent);
+        // The capacity check above holds while the slot stays reserved. The
+        // intent and its slot commit in one write.
+        const slotKey = lifecycleSlotKey(body.operation, intent.pageId);
+        if (slotKey && !(await this.ctx.storage.get(slotKey)))
+          await this.ctx.storage.put({
+            [key]: intent,
+            ...lifecycleSlot(body.operation, intent.pageId, key),
+          });
+        else await this.ctx.storage.put(key, intent);
       }
       const pageId = intent.pageId;
       if (creating) {
@@ -484,15 +619,63 @@ export class Catalog {
         });
         await markCatalogIndexDirty(this.ctx.storage);
       } else {
-        const response = await this.env.PAGES.getByName(pageId).fetch(
-          forwarded(request, "/internal/delete", { ...args, page_id: pageId }),
-        );
-        // A missing Page is already absent; clean up this account's stale index.
-        if (!response.ok && response.status !== 404) return response;
-        await this.ctx.storage.put(`host/deleted/${pageId}`, true);
-        await this.ctx.storage.delete(`page/${pageId}`);
-        await markCatalogIndexDirty(this.ctx.storage);
-        intent.receipt = { page_id: pageId, deleted: true };
+        // A resumed request checks the tombstone too; the Page then answers
+        // as permanently deleted and this intent completes as deleted.
+        if (inspected.entry) await tombstoned();
+        // A resumed request that lost its slot may not apply: it only replays
+        // what the Page already did, unless capacity is still available.
+        let replayOnly = false;
+        if (!(await holdsLifecycleSlot(this.ctx.storage, body.operation, pageId, key))) {
+          const limit = body.operation === "delete_page" ? TRASH_LIMIT : CATALOG_LIMIT;
+          const prefix = body.operation === "delete_page" ? "trash/" : "page/";
+          if ((await this.countEntries(prefix)) < limit)
+            await this.ctx.storage.put(lifecycleSlot(body.operation, pageId, key));
+          else replayOnly = true;
+        }
+        const fresh = !inspected.entry;
+        // Once forwarded, the Page may apply the request, so its slot can no
+        // longer simply expire. The output gate holds the Page request until
+        // this write is durable.
+        if (!intent.forwarded) {
+          intent.forwarded = true;
+          await this.ctx.storage.put(key, intent);
+        }
+        for (let attempt = 0; ; attempt++) {
+          const { expected_revision: _expected, replay_only: _replay, ...requested } = args;
+          const response = await this.env.PAGES.getByName(pageId).fetch(
+            forwarded(request, lifecycle, {
+              ...requested,
+              page_id: pageId,
+              ...(intent.expectedRevision !== undefined && {
+                expected_revision: intent.expectedRevision,
+              }),
+              ...(replayOnly && { replay_only: true }),
+            }),
+          );
+          if (response.headers.get("x-pages-lifecycle-rejected") === "before-change") {
+            await releaseLifecycleSlot(this.ctx.storage, body.operation, pageId, key);
+            await this.ctx.storage.delete(key);
+            await this.ctx.storage.sync();
+            return response;
+          }
+          // A missing Page is already permanently absent; clean up this
+          // account's stale index and report that terminal outcome.
+          if (!response.ok && response.status !== 404) return response;
+          const outcome = response.ok
+            ? await response.json()
+            : { receipt: { page_id: pageId, deleted: true }, current: { state: "deleted" } };
+          // A replayed receipt may be older than the Page's current state.
+          await projectLifecycle(this.ctx.storage, pageId, outcome.current);
+          // This index was stale when a new request was reserved. The Page has
+          // never seen this key, so retarget it once at the current revision.
+          if (outcome.receipt.superseded && fresh && !replayOnly && attempt === 0) {
+            intent.expectedRevision = outcome.current.revision;
+            await this.ctx.storage.put(key, intent);
+            continue;
+          }
+          intent.receipt = outcome.receipt;
+          break;
+        }
       }
       intent.pending = false;
       await this.ctx.storage.put(key, intent);
@@ -535,6 +718,7 @@ export class Catalog {
   async listPages(request, identity, args) {
     const options = parseListArguments(args);
     const storage = this.ctx.storage;
+    if (options.inTrash) await pruneTombstonedTrash(storage);
     const context = {
       principal: identity.principal,
       needle: options.needle,
@@ -616,6 +800,8 @@ export class Catalog {
             page_id: row.page_id,
             principal: identity.principal,
             revision: row.revision,
+            // Index rows carry the access row's time; a newer write survives.
+            ...(row.revision !== undefined && { updated_at: row.updated_at }),
           });
         }
         if (!entry || entry.pending) return null;
@@ -627,6 +813,7 @@ export class Catalog {
           created_at: entry.created_at ?? row.created_at,
           updated_at: row.updated_at,
           ...(entry.trashed_at ? { trashed_at: entry.trashed_at } : {}),
+          ...(options.inTrash && trashFields({ ...entry, page_id: row.page_id })),
         };
       }
       if (options.inTrash) return null;
@@ -638,6 +825,7 @@ export class Catalog {
           page_id: row.page_id,
           principal: identity.principal,
           revision: row.revision,
+          ...(row.revision !== undefined && { updated_at: row.updated_at }),
         });
         await storage.delete(`shared/${row.page_id}`);
         return null;
@@ -704,30 +892,45 @@ export class Page {
       await this.initializeRepo(this.metadata ?? creation?.metadata);
       // A completed deletion wins over an earlier interrupted creation.
       if (creation && !this.metadata?.deleted) await this.finishCreation(creation);
-      if (!this.handle && this.metadata?.documentId && !this.metadata.deleted) {
-        this.handle = await this.repo.find(this.metadata.documentId);
-        logIncompleteHistory(this.handle.doc());
-        this.observeActivity();
-        try {
-          await recoverDocumentMutations(
-            ctx.storage,
-            this.handle,
-            () => this.flush(),
-            this.admission,
-          );
-        } catch (error) {
-          if (!isHistoryCapacityError(error)) throw error;
-          // Capacity is checked on a clone before any pending edit reaches the
-          // serving handle. Preserve accepted history and the unresolved intent.
-          this.recoveryBlocked = {
-            code: "page_recovery_blocked",
-            pending: true,
-            message:
-              "A pending edit exceeds this Page's history capacity. Accepted content is available read-only.",
-          };
-        }
-      }
+      // Trashed Pages keep their document for owner preview and restore.
+      if (!this.handle && this.metadata?.documentId && pageState(this.metadata) !== "deleted")
+        await this.loadDocument();
     });
+  }
+
+  /** Load the serving document. A trashed record whose document cannot be
+   * loaded is treated as transiently unavailable: startup completes, requests
+   * answer 503, and the next request tries again. Permanent absence is only
+   * established by a deleted record or the owner Catalog's tombstone.
+   */
+  async loadDocument() {
+    try {
+      this.handle = await this.repo.find(this.metadata.documentId);
+    } catch (error) {
+      if (pageState(this.metadata) !== "trashed") throw error;
+      logFailure(error, "trashed-document-load");
+      return;
+    }
+    logIncompleteHistory(this.handle.doc());
+    this.observeActivity();
+    try {
+      await recoverDocumentMutations(
+        this.ctx.storage,
+        this.handle,
+        () => this.flush(),
+        this.admission,
+      );
+    } catch (error) {
+      if (!isHistoryCapacityError(error)) throw error;
+      // Capacity is checked on a clone before any pending edit reaches the
+      // serving handle. Preserve accepted history and the unresolved intent.
+      this.recoveryBlocked = {
+        code: "page_recovery_blocked",
+        pending: true,
+        message:
+          "A pending edit exceeds this Page's history capacity. Accepted content is available read-only.",
+      };
+    }
   }
 
   initializeRepo(metadata = this.metadata) {
@@ -895,6 +1098,8 @@ export class Page {
   }
 
   cacheTitle(identity) {
+    // A trashed Page must not relist itself in owner or member catalogs.
+    if (pageState(this.metadata) !== "active") return;
     const title = catalogTitle(this.handle.doc().title);
     const observedReader =
       identity && pageAccess(this.metadata, identity).source === "domain"
@@ -1098,11 +1303,30 @@ export class Page {
     let identity;
     try {
       await this.ready;
+      // Host-only routes for the owner's Catalog. The gateway never forwards
+      // /internal/* paths, so only the host namespace reaches them.
+      if (url.pathname === "/internal/lifecycle-state") {
+        // Report only settled state: a pending transition completes first, or
+        // the Catalog keeps counting the slot while this answers 503.
+        if (this.pendingLifecycle) {
+          try {
+            await this.completeLifecycle();
+          } catch (error) {
+            logFailure(error, "lifecycle-state");
+            return json({ error: "Page lifecycle is settling" }, 503);
+          }
+        }
+        return json(this.metadata ? this.lifecycleCurrent() : { state: "missing" });
+      }
+      if (url.pathname === "/internal/tombstone") return await this.acceptTombstone();
       identity = await authenticate(request, this.env);
       // An ambiguous storage failure retains the exact proposed ACL/receipt.
       // Normal HTTP work retries that barrier before reading or changing it.
       if (this.pendingAccess && !["/api/sync", "/api/saved"].includes(url.pathname))
         await this.installAccess(this.pendingAccess);
+      // Likewise a lifecycle transition whose barrier failed completes first.
+      if (this.pendingLifecycle && !["/api/sync", "/api/saved"].includes(url.pathname))
+        await this.completeLifecycle();
       if (url.pathname === "/internal/register") return await this.register(request, identity);
       if (url.pathname === "/internal/create") {
         requireWrite(identity);
@@ -1168,7 +1392,9 @@ export class Page {
         await this.finishCreation(intent);
         return json(intent.metadata.createdReceipt, 201);
       }
-      if (!this.metadata) {
+      // Anyone without a current grant cannot tell a trashed Page from a
+      // missing one. Only the owner and current members learn it exists.
+      if (!this.metadata || this.hiddenWhileTrashed(identity)) {
         // Admission routes answer a missing Page exactly as an unreadable one,
         // for clients that declare it. The deployed viewer renews an expired
         // draft registration only on this 404, so other clients keep it.
@@ -1180,53 +1406,35 @@ export class Page {
           throw withAdmissionReason(new HttpError(404, "Page not found"), "page_not_found_legacy");
         throw new HttpError(404, "Page not found");
       }
-      if (url.pathname === "/internal/delete") {
-        requireWrite(identity);
-        if (this.metadata.owner !== identity.principal)
-          throw new HttpError(403, "Document access denied");
-        const args = await readJson(request);
-        if (args.page_id !== this.metadata.pageId) throw new HttpError(400, "Invalid page_id");
-        const key = mutationKey(args);
-        const digest = await fingerprint("delete_page", args, identity);
-        if (this.metadata.deleted) {
-          // A new retry key still completes the original deletion barriers.
-          if (this.metadata.deletion?.key === key && this.metadata.deletion.fingerprint !== digest)
-            throw new HttpError(409, "idempotency_key was used for a different request");
-        } else {
-          requireHeads(this.handle.doc(), args.base_heads);
-          // No await between the head guard and the policy-visible tombstone.
-          // The tombstone also records the exact request for crash-safe retries.
-          this.metadata = {
-            ...this.metadata,
-            deleted: true,
-            deletion: {
-              key,
-              fingerprint: digest,
-              receipt: { page_id: this.metadata.pageId, deleted: true },
-            },
-          };
-        }
-        this.recordMaintenance?.stop();
-        this.activity?.close();
-        if (catalogIndexEpoch(this.env)) await this.restrictIndex(this.metadata);
-        // Persist again on retry: a previous storage failure may have occurred
-        // after admission stopped, but before the tombstone reached storage.
-        await this.ctx.storage.put("host/document", this.metadata);
-        await this.policy.close();
-        for (const wire of this.wires) await wire.disconnect();
-        await this.repo.delete(this.metadata.documentId);
-        await this.backend.flush();
-        await this.recordStore?.flush?.();
-        await this.ctx.storage.sync();
-        await this.retireIndex();
-        return json(this.metadata.deletion.receipt);
+      if (pageState(this.metadata) === "trashed" && !this.handle) {
+        await this.loadDocument();
+        if (!this.handle) throw new HttpError(503, "Page is temporarily unavailable");
       }
-      if (this.metadata.deleted) {
+      const lifecycle = {
+        "/internal/trash": () => this.trash(request, identity),
+        "/internal/restore": () => this.restore(request, identity),
+        "/internal/purge": () => this.purge(request, identity),
+      }[url.pathname];
+      if (lifecycle) {
+        try {
+          return await lifecycle();
+        } catch (error) {
+          // Every 4xx is raised before the lifecycle record changes. The
+          // Catalog can release its reservation, as for a rejected creation.
+          if (!(error.status >= 400 && error.status < 500) || error.status === 404) throw error;
+          const response = errorResponse(error, "page-lifecycle");
+          response.headers.set("x-pages-lifecycle-rejected", "before-change");
+          return response;
+        }
+      }
+      if (pageState(this.metadata) === "deleted") {
         // Only the owner and current grant holders learn that it was deleted.
         if (admissionRoute && !this.disclosesDeletion(identity.principal))
           throw withAdmissionReason(new PermissionDenied(), "page_deleted", "page_access_denied");
         throw withAdmissionReason(new HttpError(404, "Page not found"), "page_deleted");
       }
+      const state = pageState(this.metadata);
+      // claimInvitation ignores trashed records, so the ACL stays unchanged.
       if (!["/api/sync", "/api/saved"].includes(url.pathname)) {
         await this.repairIndex();
         const claimed = await claimInvitation(this.metadata, identity, this.env);
@@ -1257,6 +1465,7 @@ export class Page {
           source: domain ? "domain_opened" : "member",
           ...(domain && { domain: identity.domainAccess?.domain }),
           revision: this.metadata.acl?.revision ?? 0,
+          lifecycle_revision: this.metadata.lifecycleRevision ?? 0,
           state: indexedState(this.metadata),
           title_observed_at: this.titleObservedAt,
         });
@@ -1264,6 +1473,8 @@ export class Page {
       if (url.pathname === "/internal/access") {
         const args = await readJson(request);
         if (args.read) return json(await sharingProjection(this.metadata, identity, this.env));
+        if (state === "trashed")
+          throw new HttpError(409, "Restore this Page before changing access", "page_trashed");
         const result = await proposeSharingMutation(
           this.metadata,
           identity,
@@ -1296,6 +1507,7 @@ export class Page {
           ...(incompleteHistory(this.handle.doc()) && {
             historyIncomplete: incompleteHistory(this.handle.doc()),
           }),
+          ...(state === "trashed" && { trash: publicTrash(this.metadata) }),
           peerProfiles: this.profiles(),
           activity: this.activityState().snapshot(),
         });
@@ -1331,16 +1543,21 @@ export class Page {
             recovery: this.recoveryBlocked,
             historyIncomplete: incompleteHistory(this.handle.doc()),
             getPresence: (doc) => this.activityState().read(doc),
+            // A trashed Page cannot be edited, so it issues no edit authority.
             issueAuthority: () =>
-              issueRetryToken(this.ctx.storage, {
-                scope: `page:${this.metadata.pageId}`,
-                principal: identity.principal,
-              }),
+              state === "trashed"
+                ? {}
+                : issueRetryToken(this.ctx.storage, {
+                    scope: `page:${this.metadata.pageId}`,
+                    principal: identity.principal,
+                  }),
           };
           const result =
             body.operation === "read_page_changes"
               ? await readChangesTool(this.handle.doc(), body.arguments ?? {}, options)
               : await readTool(this.handle.doc(), body.operation, body.arguments ?? {}, options);
+          if (state === "trashed" && result.body && typeof result.body === "object")
+            result.body.trash = publicTrash(this.metadata);
           return json(result.body, result.status);
         }
         this.policy.account(identity, true);
@@ -1426,6 +1643,325 @@ export class Page {
     );
   }
 
+  /** A trashed Page is disclosed like a deleted one: only to its owner and
+   * current viewer/editor grant holders. */
+  hiddenWhileTrashed(identity) {
+    return pageState(this.metadata) === "trashed" && !this.disclosesDeletion(identity?.principal);
+  }
+
+  /** Validate an owner lifecycle request and return its journal identity.
+   * `recorded` is this key's receipt from an earlier attempt, if any.
+   */
+  async lifecycleRequest(request, identity, operation) {
+    requireWrite(identity);
+    if (this.metadata.owner !== identity.principal)
+      throw new HttpError(403, "Document access denied");
+    const args = await readJson(request);
+    if (args.page_id !== this.metadata.pageId) throw new HttpError(400, "Invalid page_id");
+    if (operation === "purge_page" && args.action === "preview") return { args };
+    const key = mutationKey(args);
+    // The Catalog adds compare-and-set controls; they never change identity.
+    const { expected_revision: _expected, replay_only: _replay, ...requested } = args;
+    const digest = await fingerprint(operation, requested, identity);
+    const recorded = await this.ctx.storage.get(lifecycleReceiptKey(key));
+    if (recorded && recorded.fingerprint !== digest)
+      throw new HttpError(409, "idempotency_key was used for a different request");
+    return { args, key, digest, recorded };
+  }
+
+  /** The Page's current lifecycle state, projected into the owner's Catalog
+   * even when a retry replays an older receipt.
+   */
+  lifecycleCurrent() {
+    const state = pageState(this.metadata);
+    return {
+      page_id: this.metadata.pageId,
+      state,
+      revision: this.metadata.lifecycleRevision ?? 0,
+      ...(state !== "deleted" && this.handle && { title: catalogTitle(this.handle.doc().title) }),
+      ...(state === "trashed" && publicTrash(this.metadata)),
+    };
+  }
+
+  lifecycleResponse(receipt) {
+    return json({ receipt, current: this.lifecycleCurrent() });
+  }
+
+  /** The owner's Catalog holds a permanent-deletion tombstone for this Page.
+   * Only a trashed record can disagree with it: a build without Trash deleted
+   * the document but left the record. Record that deletion so the Page answers
+   * like a missing one instead of retrying an absent document.
+   */
+  async acceptTombstone() {
+    if (pageState(this.metadata) === "trashed") {
+      this.metadata = {
+        ...this.metadata,
+        lifecycleRevision: (this.metadata.lifecycleRevision ?? 0) + 1,
+        purged: { purged_at: new Date().toISOString(), reason: "deleted_by_earlier_build" },
+      };
+      this.handle = undefined;
+      await this.ctx.storage.put("host/document", this.metadata);
+      await this.ctx.storage.sync();
+      await this.retireIndex();
+    }
+    return json({ state: pageState(this.metadata) });
+  }
+
+  /** Commit a lifecycle transition and its receipt, then finish its barriers.
+   * Trash and purge withdraw access in memory before this runs; restore grants
+   * nothing until the record is durable. If a barrier fails, the transition
+   * stays pending and the next request completes it before doing anything
+   * else, so a retry never replays a receipt for an unfinished transition.
+   */
+  async completeLifecycle(pending = this.pendingLifecycle) {
+    this.pendingLifecycle = pending;
+    if (pending.operation === "purge_page") {
+      const response = await this.finishPermanentDeletion(pending.record);
+      this.pendingLifecycle = undefined;
+      return response;
+    }
+    const restoring = this.metadata !== pending.metadata;
+    // Trash removes non-owner listing rows before its record is durable.
+    if (!restoring && catalogIndexEpoch(this.env)) await this.restrictIndex(pending.metadata);
+    await this.commitLifecycle(pending.key, pending.record, pending.metadata);
+    await this.ctx.storage.sync();
+    this.metadata = pending.metadata;
+    await this.policy.refreshAccess();
+    this.activity?.prune();
+    if (!restoring) await this.retireIndex();
+    if (restoring) {
+      this.cachedTitle = undefined;
+      this.cacheTitle();
+    }
+    this.pendingLifecycle = undefined;
+    return this.lifecycleResponse(pending.record.receipt);
+  }
+
+  lifecycleRecord(operation, digest, receipt, revision = this.metadata.lifecycleRevision ?? 0) {
+    return { operation, fingerprint: digest, revision, receipt, at: Date.now() };
+  }
+
+  /** Persist a lifecycle receipt, optionally with the new record, in one
+   * multi-key write. Receipts are bounded: the Catalog's expected revision,
+   * not receipt retention, prevents an old request from applying again.
+   */
+  async commitLifecycle(key, record, metadata) {
+    await this.ctx.storage.put({
+      [lifecycleReceiptKey(key)]: record,
+      ...(metadata && { "host/document": metadata }),
+    });
+    const records = await this.ctx.storage.list({ prefix: "host/lifecycle/" });
+    if (records.size <= LIFECYCLE_RECEIPT_LIMIT) return;
+    const oldest = [...records]
+      .sort(([, a], [, b]) => a.at - b.at)
+      .slice(0, records.size - LIFECYCLE_RECEIPT_LIMIT);
+    for (const [name] of oldest) await this.ctx.storage.delete(name);
+  }
+
+  /** The Catalog reserved this request against an older lifecycle revision,
+   * or could not hold its slot on resume. Report the current state instead of
+   * applying it.
+   */
+  superseded(args) {
+    const revision = this.metadata.lifecycleRevision ?? 0;
+    return (
+      args.replay_only === true ||
+      (args.expected_revision !== undefined && args.expected_revision !== revision)
+    );
+  }
+  supersededResponse() {
+    // Not recorded: the revision only grows, so a stale expectation stays
+    // stale, and the Catalog may retarget a request it has just reserved.
+    return this.lifecycleResponse({
+      page_id: this.metadata.pageId,
+      superseded: true,
+      applied: false,
+      state: pageState(this.metadata),
+    });
+  }
+
+  /** Move the Page to Trash. The document, comments and ACL are retained.
+   * Access is withdrawn before the record is durable, like an ACL reduction.
+   */
+  async trash(request, identity) {
+    const { args, key, digest, recorded } = await this.lifecycleRequest(
+      request,
+      identity,
+      "trash_page",
+    );
+    const revision = this.metadata.lifecycleRevision ?? 0;
+    const state = pageState(this.metadata);
+    // run() already finished any pending transition, so a receipt is final.
+    if (recorded) return this.lifecycleResponse(recorded.receipt);
+    if (state === "deleted") throw new HttpError(404, "Page not found");
+    if (this.superseded(args)) return this.supersededResponse();
+    let receipt = this.metadata.trash?.receipt;
+    if (state === "active") {
+      requireHeads(this.handle.doc(), args.base_heads);
+      const now = new Date().toISOString();
+      const pageId = this.metadata.pageId;
+      receipt = {
+        page_id: pageId,
+        state: "trashed",
+        trashed: true,
+        title: catalogTitle(this.handle.doc().title),
+        trashed_at: now,
+        trashed_by: identity.principal,
+        trash_root_id: pageId,
+      };
+      // No await between the head guard and the policy-visible record.
+      this.metadata = {
+        ...this.metadata,
+        deleted: true,
+        lifecycleRevision: revision + 1,
+        trash: trashRecord({ pageId, principal: identity.principal, now, receipt }),
+        // Builds that predate Trash read only `deletion`: their delete retry
+        // conflicts, and a fresh key completes an ordinary permanent deletion.
+        deletion: { key, fingerprint: digest, receipt: { page_id: pageId, deleted: true } },
+      };
+    }
+    // Disconnected peers rebroadcast profiles as their sockets close.
+    return this.completeLifecycle({
+      operation: "trash_page",
+      key,
+      record: this.lifecycleRecord("trash_page", digest, receipt),
+      metadata: this.metadata,
+    });
+  }
+
+  /** Restore a trashed Page with its ID, content, comments and ACL. Like an
+   * access increase, nothing is granted before the record is durable.
+   */
+  async restore(request, identity) {
+    const { args, key, digest, recorded } = await this.lifecycleRequest(
+      request,
+      identity,
+      "restore_page",
+    );
+    const revision = this.metadata.lifecycleRevision ?? 0;
+    const state = pageState(this.metadata);
+    if (recorded) return this.lifecycleResponse(recorded.receipt);
+    if (state === "deleted") throw new HttpError(404, "Page not found");
+    if (this.superseded(args)) return this.supersededResponse();
+    if (state === "active") {
+      const record = this.lifecycleRecord("restore_page", digest, {
+        page_id: this.metadata.pageId,
+        state: "active",
+        restored: false,
+        title: catalogTitle(this.handle.doc().title),
+      });
+      await this.commitLifecycle(key, record);
+      await this.ctx.storage.sync();
+      return this.lifecycleResponse(record.receipt);
+    }
+    const receipt = {
+      page_id: this.metadata.pageId,
+      state: "active",
+      restored: true,
+      title: catalogTitle(this.handle.doc().title),
+      restored_at: new Date().toISOString(),
+    };
+    const { trash: _trash, deletion: _deletion, ...rest } = this.metadata;
+    const next = { ...rest, deleted: false, lifecycleRevision: revision + 1 };
+    // Owner sessions reconnect writable and members may reconnect once the
+    // restored record is durable and installed.
+    return this.completeLifecycle({
+      operation: "restore_page",
+      key,
+      record: this.lifecycleRecord("restore_page", digest, receipt, revision + 1),
+      metadata: next,
+    });
+  }
+
+  /** Preview, then permanently delete, a trashed Page. Confirmation requires
+   * the unchanged preview token; new heads, ACL or lifecycle revision
+   * invalidate it.
+   */
+  async purge(request, identity) {
+    const { args, key, digest, recorded } = await this.lifecycleRequest(
+      request,
+      identity,
+      "purge_page",
+    );
+    const state = pageState(this.metadata);
+    if (key && state === "deleted" && this.deletionFinished && this.metadata.deletion)
+      return this.lifecycleResponse(recorded?.receipt ?? this.metadata.deletion.receipt);
+    // After a restart, a durable purge record may still own document storage.
+    if (recorded && state === "deleted") return this.finishPermanentDeletion();
+    if (recorded) return this.lifecycleResponse(recorded.receipt);
+    if (state === "deleted") {
+      // A new retry key still completes the original deletion barriers.
+      if (!key || !this.metadata.deletion) throw new HttpError(404, "Page not found");
+      return this.finishPermanentDeletion();
+    }
+    if (state !== "trashed")
+      throw new HttpError(
+        409,
+        "Move this Page to Trash with delete_page before deleting it permanently",
+        "page_not_in_trash",
+      );
+    const doc = this.handle.doc();
+    if (args.action === "preview")
+      return json({
+        page_id: this.metadata.pageId,
+        ...publicTrash(this.metadata),
+        ...purgeImpact(this.metadata, doc),
+        heads: A.getHeads(doc),
+        ...(await issuePurgePreview(this.ctx.storage, this.metadata, doc, identity.principal)),
+      });
+    if (this.superseded(args)) return this.supersededResponse();
+    const verified = this.metadata;
+    await verifyPurgePreview(
+      this.ctx.storage,
+      verified,
+      doc,
+      identity.principal,
+      args.preview_token,
+    );
+    // Verification awaited crypto and storage. Recheck the live document and
+    // record in the same synchronous step that tombstones the Page. While
+    // trashed the policy refuses every native write, so this only catches a
+    // change accepted before Trash that applied late.
+    if (this.metadata !== verified || !sameHeads(A.getHeads(this.handle.doc()), A.getHeads(doc)))
+      throw new HttpError(
+        409,
+        "The Page changed after its preview; preview the permanent deletion again",
+        "purge_preview_invalid",
+      );
+    const receipt = { page_id: this.metadata.pageId, deleted: true, purged: true };
+    this.metadata = {
+      ...this.metadata,
+      lifecycleRevision: (this.metadata.lifecycleRevision ?? 0) + 1,
+      purged: { purged_at: new Date().toISOString(), purged_by: identity.principal },
+      deletion: { key, fingerprint: digest, receipt },
+    };
+    return this.completeLifecycle({
+      operation: "purge_page",
+      key,
+      record: this.lifecycleRecord("purge_page", digest, receipt),
+    });
+  }
+
+  async finishPermanentDeletion(record) {
+    this.recordMaintenance?.stop();
+    this.activity?.close();
+    if (catalogIndexEpoch(this.env)) await this.restrictIndex(this.metadata);
+    // Persist again on retry: a previous storage failure may have occurred
+    // after admission stopped, but before the record reached storage.
+    if (record) await this.commitLifecycle(this.metadata.deletion.key, record, this.metadata);
+    else await this.ctx.storage.put("host/document", this.metadata);
+    await this.policy.close();
+    for (const wire of this.wires) await wire.disconnect();
+    await this.repo.delete(this.metadata.documentId);
+    await this.backend.flush();
+    await this.recordStore?.flush?.();
+    await this.ctx.storage.sync();
+    await this.retireIndex();
+    // Barriers are complete for this process; a restart repeats them.
+    this.deletionFinished = true;
+    return this.lifecycleResponse(this.metadata.deletion.receipt);
+  }
+
   async register(request, identity) {
     requireWrite(identity);
     let intent;
@@ -1443,7 +1979,9 @@ export class Page {
       if (metadata) {
         if (metadata.owner !== identity.principal)
           throw new HttpError(403, "Document access denied");
-        if (metadata.deleted) throw new HttpError(409, "Page was deleted");
+        // A completed registration still replays after trashing; the browser
+        // treats "Page was deleted" as permanent and forgets its local copy.
+        if (pageState(metadata) === "deleted") throw new HttpError(409, "Page was deleted");
         if (metadata.registration !== digest)
           throw new HttpError(409, "Page already has another creation request");
       } else {
