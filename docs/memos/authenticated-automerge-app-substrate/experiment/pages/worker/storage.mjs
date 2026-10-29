@@ -13,6 +13,17 @@ export class DurableByteStore {
     assertStoredSize(`repo/${key}`, value.byteLength);
     await this.storage.put(`repo/${key}`, new Uint8Array(value));
   }
+  /** One multi-key put is one atomic write, up to 128 keys. */
+  async saveMany(entries) {
+    if (entries.length > 128) {
+      for (const [key, value] of entries) await this.save(key, value);
+      return;
+    }
+    for (const [key, value] of entries) assertStoredSize(`repo/${key}`, value.byteLength);
+    await this.storage.put(
+      Object.fromEntries(entries.map(([key, value]) => [`repo/${key}`, new Uint8Array(value)])),
+    );
+  }
   async remove(key) {
     await this.storage.delete(`repo/${key}`);
   }

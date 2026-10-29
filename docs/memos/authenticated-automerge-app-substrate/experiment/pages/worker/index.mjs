@@ -40,7 +40,12 @@ import {
   readJson,
 } from "./auth.mjs";
 import { DurableByteStore, persistentSeed } from "./storage.mjs";
-import { DocumentAdmission, isHistoryCapacityError } from "./history-admission.mjs";
+import {
+  DocumentAdmission,
+  incompleteHistory,
+  isHistoryCapacityError,
+  logIncompleteHistory,
+} from "./history-admission.mjs";
 import { issueRetryToken, inspectOperation, reserveOperation } from "./operation-journal.mjs";
 import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
 import { RecordMaintenance } from "./record-maintenance.mjs";
@@ -701,6 +706,7 @@ export class Page {
       if (creation && !this.metadata?.deleted) await this.finishCreation(creation);
       if (!this.handle && this.metadata?.documentId && !this.metadata.deleted) {
         this.handle = await this.repo.find(this.metadata.documentId);
+        logIncompleteHistory(this.handle.doc());
         this.observeActivity();
         try {
           await recoverDocumentMutations(
@@ -1287,6 +1293,9 @@ export class Page {
             ...(this.recoveryBlocked && { canWrite: false, canComment: false }),
           },
           ...(this.recoveryBlocked && { recovery: this.recoveryBlocked }),
+          ...(incompleteHistory(this.handle.doc()) && {
+            historyIncomplete: incompleteHistory(this.handle.doc()),
+          }),
           peerProfiles: this.profiles(),
           activity: this.activityState().snapshot(),
         });
@@ -1320,6 +1329,7 @@ export class Page {
           this.cacheTitle(identity);
           const options = {
             recovery: this.recoveryBlocked,
+            historyIncomplete: incompleteHistory(this.handle.doc()),
             getPresence: (doc) => this.activityState().read(doc),
             issueAuthority: () =>
               issueRetryToken(this.ctx.storage, {

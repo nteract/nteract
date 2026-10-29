@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
-import { Repo } from "@automerge/automerge-repo";
+import { Repo, generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
 import { recordBytes } from "@automerge/automerge-repo/sedimentree";
 import { SubductionBackend } from "@automerge/automerge-repo-subduction";
@@ -13,6 +13,7 @@ import { DocumentAdmission, isHistoryCapacityError } from "./history-admission.m
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
 import { issueRetryToken, RETRY_LIFETIME_MS } from "./operation-journal.mjs";
 import { retryKey } from "../model/retry-key.mjs";
+import { buildPersistenceFixture } from "../../persistence-workload.mjs";
 
 class Storage {
   values = new Map();
@@ -106,11 +107,20 @@ const apiEdit = (doc) => {
 const nativeEdit = (doc) => {
   doc.native = noise(2048, 12);
 };
-function host(mode, maxSnapshotBytes, storage = new Storage(), records = new Storage()) {
+function host(
+  mode,
+  maxSnapshotBytes,
+  storage = new Storage(),
+  records = new Storage(),
+  { maxBatchKeys } = {},
+) {
   const owner = new PageRecords({ storage: records });
   const recordStore =
     mode === "buffered"
-      ? new BufferedRecordStore(new RemoteRecordSink({ fetch: (request) => owner.fetch(request) }))
+      ? new BufferedRecordStore(
+          new RemoteRecordSink({ fetch: (request) => owner.fetch(request) }),
+          { maxBatchKeys },
+        )
       : new DurableByteStore(storage);
   const signer = N.MemorySigner.fromBytes(new Uint8Array(32).fill(23));
   const backend = new SubductionBackend({ signer, storage: recordStore, maxSnapshotBytes });
@@ -367,10 +377,8 @@ test("buffered: remote prefix persistence failure recovers remaining exact histo
   try {
     const handle = await peer.repo.import(A.save(base));
     await peer.flush();
-    // Both new changes stay loose commits, so the interrupted batch leaves a
-    // causal prefix. A fragment-headed `api` edit is saved after the `next`
-    // commit that depends on it; interrupting that batch strands `next`
-    // without its parent, and restored.repo.find below does not resolve.
+    // Both new changes stay loose commits. The fragment-headed variant of this
+    // shape is covered by the flush-split tests below.
     const candidate = edit(edit(base, ACTOR.api, apiEdit), ACTOR.api, (doc) => {
       doc.next = noise(2048, 13);
     });
@@ -421,6 +429,177 @@ test("buffered: remote prefix persistence failure recovers remaining exact histo
     assert.deepEqual(await closePeers(peers, []), []);
   }
 });
+
+/** Restart readiness is bounded: a lookup that does not settle fails the test. */
+async function findWithin(repo, documentId, ms = 5000) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Error(`repo.find did not settle within ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([repo.find(documentId), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// The candidate's `api` change heads a fragment that bundles the base history,
+// and the `next` commit depends on it. One flush carries both records.
+function fragmentParentCandidate(base) {
+  const candidate = edit(edit(base, ACTOR.api, apiEdit, "fragment"), ACTOR.api, (doc) => {
+    doc.next = noise(2048, 13);
+  });
+  const records = extractRecords(candidate);
+  const [head] = A.getHeads(candidate);
+  const child = records.find((record) => record.kind === "commit" && record.id === head);
+  assert.ok(child, "the newest change is a loose commit");
+  const parent = records.find(
+    (record) => record.kind === "fragment" && child.parents.includes(record.head),
+  );
+  assert.ok(parent, "its only parent heads a fragment");
+  return { candidate, child, parent };
+}
+
+async function stageIntent(peer, handle, base, candidate, key) {
+  const entry = {
+    fingerprint: "fixture",
+    pending: true,
+    changes: A.getChanges(base, candidate),
+    receipt: { heads: A.getHeads(candidate) },
+  };
+  const admission = new DocumentAdmission(peer.backend, treeId(handle.documentId));
+  await admission.reserve(key, entry, candidate, async () => {
+    await peer.storage.put(key, entry);
+    await peer.storage.sync();
+  });
+  await admission.replay(key, entry, handle);
+  return entry;
+}
+
+test("buffered: every split of a flush leaves a history that restarts", async () => {
+  const base = baseDoc();
+  const { candidate, child, parent } = fragmentParentCandidate(base);
+  const cap = unionBytes(base, candidate) + 32768;
+  // Count the record keys one complete flush writes, then interrupt after each.
+  const writes = async (peer) => {
+    const keys = [];
+    peer.records.afterPut = (path) => {
+      if (path.startsWith("repo/")) keys.push(path);
+    };
+    await peer.flush();
+    peer.records.afterPut = undefined;
+    return keys;
+  };
+  const prepare = async () => {
+    const peer = host("buffered", cap);
+    const handle = await peer.repo.import(A.save(base));
+    await peer.flush();
+    const entry = await stageIntent(peer, handle, base, candidate, "host/operation/split");
+    return { peer, handle, entry };
+  };
+  const probe = await prepare();
+  const keys = await writes(probe.peer);
+  assert.deepEqual(await closePeers([probe.peer], []), []);
+  const childKey = keys.findIndex((key) => key.endsWith(`/commits/${child.id}`));
+  const parentKey = keys.findIndex((key) => key.endsWith(`/fragments/${parent.head}`));
+  assert.ok(childKey >= 0 && parentKey >= 0, "one flush writes both records");
+  // Persist the parent-holding fragment before the commit that depends on it.
+  assert.ok(parentKey < childKey, `fragment written at ${parentKey}, child at ${childKey}`);
+
+  for (let split = 1; split < keys.length; split++) {
+    const { peer, handle, entry } = await prepare();
+    const peers = [peer];
+    try {
+      let written = 0;
+      // The mock stores each key before afterPut runs: `split` keys are durable.
+      peer.records.afterPut = (path) => {
+        if (path.startsWith("repo/") && ++written === split) throw Error("batch split");
+      };
+      await assert.rejects(peer.flush(), /Could not persist records/);
+      const restored = host("buffered", cap, peer.storage.clone(), peer.records.clone());
+      peers.push(restored);
+      const recovered = await findWithin(restored.repo, handle.documentId);
+      await recoverDocumentMutations(
+        restored.storage,
+        recovered,
+        () => restored.flush(),
+        new DocumentAdmission(restored.backend, treeId(handle.documentId)),
+      );
+      assert.ok(A.hasHeads(recovered.doc(), entry.receipt.heads), `split ${split}`);
+      assert.deepEqual(recovered.doc().next, candidate.next);
+      assert.equal(A.getObjectId(recovered.doc().stable), A.getObjectId(base.stable));
+      peer.records.afterPut = undefined;
+    } finally {
+      assert.deepEqual(await closePeers(peers, []), []);
+    }
+  }
+});
+
+// Records stored without causal ordering can hold a child commit without the
+// fragment that holds its parent. Startup must not wait for that parent.
+for (const journal of [true, false]) {
+  test(`buffered: a stored commit without its parent fragment restarts ${journal ? "and replays its intent" : "with the reachable history"}`, async () => {
+    const base = baseDoc();
+    const { candidate, child, parent } = fragmentParentCandidate(base);
+    const cap = unionBytes(base, candidate) + 32768;
+    const peer = host("buffered", cap);
+    const peers = [peer];
+    try {
+      const handle = await peer.repo.import(A.save(base));
+      await peer.flush();
+      const baseHeads = A.getHeads(handle.doc());
+      const key = "host/operation/legacy";
+      // A journaled API edit stays pending: the crash precedes its receipt.
+      // Otherwise the history came from a native peer and has no intent.
+      const entry = journal
+        ? await stageIntent(peer, handle, base, candidate, key)
+        : await handle.update((doc) => A.applyChanges(doc, A.getChanges(base, candidate))[0]);
+      await peer.flush();
+      const records = peer.records.clone();
+      const fragment = [...records.values.keys()].find((path) =>
+        path.endsWith(`/fragments/${parent.head}`),
+      );
+      assert.ok(fragment);
+      assert.ok([...records.values.keys()].some((path) => path.endsWith(`/commits/${child.id}`)));
+      records.values.delete(fragment);
+      const restored = host("buffered", cap, peer.storage.clone(), records);
+      peers.push(restored);
+      const recovered = await findWithin(restored.repo, handle.documentId);
+      // Readiness falls back to the history that materializes. The orphaned
+      // commit stays queued: nothing stored is discarded.
+      assert.deepEqual(A.getHeads(recovered.doc()), baseHeads);
+      assert.equal(recovered.doc().next, undefined);
+      assert.deepEqual(A.getMissingDeps(recovered.doc(), []), [parent.head]);
+      if (journal) {
+        await recoverDocumentMutations(
+          restored.storage,
+          recovered,
+          () => restored.flush(),
+          new DocumentAdmission(restored.backend, treeId(handle.documentId)),
+        );
+        assert.ok(A.hasHeads(recovered.doc(), entry.receipt.heads));
+        assert.equal((await restored.storage.get(key)).pending, false);
+      } else {
+        // A peer that still holds the parent completes the queued child.
+        const [api] = A.getChanges(base, candidate).filter(
+          (change) => A.decodeChange(change).hash === parent.head,
+        );
+        await recovered.update((doc) => A.applyChanges(doc, [api])[0]);
+        await restored.flush();
+      }
+      assert.deepEqual(recovered.doc().next, candidate.next);
+      assert.deepEqual(A.getMissingDeps(recovered.doc(), []), []);
+      assert.equal(A.getObjectId(recovered.doc().stable), A.getObjectId(base.stable));
+      // The repaired history restarts cleanly.
+      const again = host("buffered", cap, restored.storage.clone(), restored.records.clone());
+      peers.push(again);
+      const reopened = await findWithin(again.repo, handle.documentId);
+      assert.deepEqual(reopened.doc().next, candidate.next);
+    } finally {
+      assert.deepEqual(await closePeers(peers, []), []);
+    }
+  });
+}
 
 for (const mode of ["local", "buffered"]) {
   test(`${mode}: failed terminal cleanup cannot revive a pending intent after receipt retirement`, async (t) => {
@@ -498,3 +677,249 @@ for (const mode of ["local", "buffered"]) {
     }
   });
 }
+
+// Every persistence cut of a flush must restart: ready on what the durable
+// records build, or unavailable only when they build nothing. Each PageRecords
+// write here holds one key (`maxBatchKeys: 1`), or one atomic record group, so
+// the cuts are every boundary a production flush could stop at.
+const CUT_CAP = 4 * 1024 * 1024;
+const RECORD_PATH = /\/(commits|fragments)\/([0-9a-f]{64})$/;
+
+function linearEdits(base, count = 5) {
+  let doc = base;
+  for (let i = 0; i < count; i++)
+    doc = edit(doc, ACTOR.api, (draft) => {
+      draft[`line${i}`] = noise(512, 40 + i);
+    });
+  return doc;
+}
+
+function mergeHeavy(base, rounds = 3) {
+  const actors = ["1a", "1b", "1c"].map((actor) => actor.repeat(16));
+  let doc = base;
+  let time = TIME + 100;
+  for (let round = 0; round < rounds; round++) {
+    const branches = actors.map((actor, i) =>
+      A.change(A.clone(doc, { actor }), { time: time++ }, (draft) => {
+        draft[`round${round}actor${i}`] = noise(256, 20 + round * 3 + i);
+      }),
+    );
+    doc = branches.reduce(
+      (merged, branch) => A.merge(merged, branch),
+      A.clone(doc, { actor: actors[0] }),
+    );
+  }
+  return A.change(doc, { time: time++ }, (draft) => {
+    draft.merged = true;
+  });
+}
+
+/** Capture each atomic PageRecords write of one flush. */
+async function recordFlush(peer) {
+  const before = peer.records.clone();
+  const writes = [];
+  const put = peer.records.put.bind(peer.records);
+  peer.records.put = async (key, value) => {
+    const entries = typeof key === "string" ? [[key, value]] : Object.entries(key);
+    const repo = entries.filter(([path]) => path.startsWith("repo/"));
+    if (repo.length) writes.push(repo.map(([path, data]) => [path, structuredClone(data)]));
+    return put(key, value);
+  };
+  try {
+    await peer.flush();
+  } finally {
+    peer.records.put = put;
+  }
+  return { before, writes };
+}
+
+/** The history a set of durable records builds, from their Automerge payloads. */
+function buildable(records, byPath) {
+  let doc = A.init();
+  try {
+    for (const path of records.values.keys()) {
+      const match = RECORD_PATH.exec(path);
+      const record = match && byPath.get(`${match[1]}/${match[2]}`);
+      if (record) doc = A.loadIncremental(doc, record.blob);
+    }
+    return { heads: A.getHeads(doc).sort(), missing: A.getMissingDeps(doc, []) };
+  } finally {
+    A.free(doc);
+  }
+}
+
+const recordIndex = (...lists) =>
+  new Map(
+    lists
+      .flat()
+      .map((record) => [
+        recordPath(record).replace("commit/", "commits/").replace("fragment/", "fragments/"),
+        record,
+      ]),
+  );
+
+async function restartAt(scenario, writes, label) {
+  const records = scenario.before.clone();
+  for (const write of writes)
+    for (const [path, data] of write) records.values.set(path, structuredClone(data));
+  const expected = buildable(records, scenario.byPath);
+  const restored = host("buffered", CUT_CAP, scenario.storage.clone(), records);
+  try {
+    if (!expected.heads.length) {
+      await assert.rejects(findWithin(restored.repo, scenario.documentId), /is unavailable/, label);
+      return expected;
+    }
+    const handle = await findWithin(restored.repo, scenario.documentId);
+    assert.deepEqual(A.getHeads(handle.doc()).sort(), expected.heads, label);
+    if (scenario.entry) {
+      await recoverDocumentMutations(
+        restored.storage,
+        handle,
+        () => restored.flush(),
+        new DocumentAdmission(restored.backend, treeId(scenario.documentId)),
+      );
+      assert.ok(A.hasHeads(handle.doc(), scenario.entry.receipt.heads), label);
+      assert.deepEqual(A.getMissingDeps(handle.doc(), []), [], label);
+    }
+    return expected;
+  } finally {
+    assert.deepEqual(await closePeers([restored], []), []);
+  }
+}
+
+async function journaledScenario(name, base, candidate) {
+  const peer = host("buffered", CUT_CAP, undefined, undefined, { maxBatchKeys: 1 });
+  try {
+    const handle = await peer.repo.import(A.save(base));
+    await peer.flush();
+    const entry = await stageIntent(peer, handle, base, candidate, `host/operation/${name}`);
+    const { before, writes } = await recordFlush(peer);
+    return {
+      name,
+      before,
+      writes,
+      entry,
+      storage: peer.storage.clone(),
+      documentId: handle.documentId,
+      byPath: recordIndex(extractRecords(base), extractRecords(candidate)),
+    };
+  } finally {
+    assert.deepEqual(await closePeers([peer], []), []);
+  }
+}
+
+async function importScenario(name, records, documentId, store) {
+  const peer = host("buffered", CUT_CAP, undefined, undefined, { maxBatchKeys: 1 });
+  try {
+    documentId = await store(peer);
+    const { before, writes } = await recordFlush(peer);
+    return {
+      name,
+      before,
+      writes,
+      storage: peer.storage.clone(),
+      documentId,
+      byPath: recordIndex(records),
+    };
+  } finally {
+    assert.deepEqual(await closePeers([peer], []), []);
+  }
+}
+
+function shuffled(items, seed) {
+  const result = [...items];
+  for (let i = result.length - 1; i > 0; i--) {
+    seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31;
+    const j = seed % (i + 1);
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
+
+test(
+  "buffered: every persistence cut of a flush restarts on the history it builds",
+  { timeout: 120_000 },
+  async () => {
+    const base = baseDoc();
+    const fresh = mergeHeavy(baseDoc());
+    const fixture = buildPersistenceFixture({ rounds: 8 });
+    try {
+      const compacted = [...fixture.loose, ...fixture.covering].filter(
+        (record, index, all) =>
+          all.findIndex((o) => recordPath(o) === recordPath(record)) === index,
+      );
+      assert.ok(
+        compacted.some((record) => record.kind === "fragment"),
+        "a compacted history",
+      );
+      const scenarios = [
+        await journaledScenario("linear", base, linearEdits(base)),
+        await journaledScenario("merge-heavy", base, mergeHeavy(base)),
+        await journaledScenario("fragment-parent", base, fragmentParentCandidate(base).candidate),
+        await importScenario(
+          "fresh merge-heavy",
+          extractRecords(fresh),
+          undefined,
+          async (peer) => {
+            const handle = await peer.repo.import(A.save(fresh));
+            return handle.documentId;
+          },
+        ),
+        await importScenario("compacted snapshot", compacted, undefined, async (peer) => {
+          const documentId = interpretAsDocumentId(generateAutomergeUrl());
+          await peer.backend.storeSnapshot(treeId(documentId), compacted);
+          return documentId;
+        }),
+      ];
+      let restarts = 0;
+      for (const scenario of scenarios) {
+        assert.ok(scenario.writes.length > 1, `${scenario.name} splits into several writes`);
+        for (let cut = 0; cut <= scenario.writes.length; cut++) {
+          const expected = await restartAt(
+            scenario,
+            scenario.writes.slice(0, cut),
+            `${scenario.name} cut ${cut}/${scenario.writes.length}`,
+          );
+          restarts++;
+          // Causal order: every prefix holds the parents of what it holds.
+          assert.deepEqual(expected.missing, [], `${scenario.name} cut ${cut} is causally closed`);
+        }
+      }
+      // Readiness does not depend on that order: arbitrary write orders of the
+      // fresh history, including children before parents, still restart.
+      const [, , , unordered] = scenarios;
+      const single = unordered.writes.flat().map((entry) => [entry]);
+      for (const seed of [7, 19]) {
+        const order = shuffled(single, seed);
+        for (let cut = 0; cut <= order.length; cut++) {
+          await restartAt(
+            unordered,
+            order.slice(0, cut),
+            `shuffle ${seed} cut ${cut}/${order.length}`,
+          );
+          restarts++;
+        }
+      }
+      assert.ok(restarts > 60, `${restarts} restarts`);
+    } finally {
+      fixture.free();
+    }
+  },
+);
+
+test("local: records saved together reach Durable Object storage in one put", async () => {
+  const storage = new Storage();
+  const calls = [];
+  const put = storage.put.bind(storage);
+  storage.put = async (key, value) => {
+    calls.push(typeof key === "string" ? [key] : Object.keys(key));
+    return put(key, value);
+  };
+  const store = new DurableByteStore(storage);
+  await store.saveMany([
+    ["tree/a", Uint8Array.of(1)],
+    ["tree/b", Uint8Array.of(2)],
+  ]);
+  assert.deepEqual(calls, [["repo/tree/a", "repo/tree/b"]]);
+  assert.deepEqual(await store.load("tree/b"), Uint8Array.of(2));
+});

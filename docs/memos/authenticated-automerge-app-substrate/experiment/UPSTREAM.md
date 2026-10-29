@@ -161,6 +161,47 @@ and the buffered persistence protocol. The two original 16 MiB scenarios in
 legacy intents. In-process fault injection is not a proof of host power-loss or
 object-store failover behavior.
 
+The causal-history patch in `patch-causal-history.mjs` changes two upstream
+files. Storage may persist only a prefix of one flush: Pages splits a flush
+into PageRecords batches of 128 keys or 2 MB, and a crash can land between any
+two saves. Upstream `saveBatchAll` wrote every commit before any fragment, so a
+child commit could be durable without the fragment holding its parent, and
+`DocumentDelegate` then waited forever for a checkpoint head that could not
+materialize.
+
+Readiness is the guarantee. When `local-load-complete` arrives, every local
+record has already been applied. If a local checkpoint head has not
+materialized, it needs a change this replica does not store. The patched
+delegate becomes ready on the document's materialized frontier
+(`A.getHeads`), not on filtered checkpoint tips: checkpoint construction drops
+stored records that other stored commits reference, so in a diamond with one
+branch lost the only tip is the unapplied merge. If nothing applied, the
+lookup becomes unavailable once no source can supply more. Unapplied changes
+stay queued in the Automerge document and apply if a peer or journaled intent
+supplies their dependencies; nothing stored is discarded. Network checkpoints
+keep upstream semantics.
+
+Ordering is best effort but correct. The bridge orders each native batch by
+what records actually hold and need: a loose commit holds its change and needs
+its parents; a fragment holds every change in its bundle and needs the
+bundle's external dependencies, decoded with `A.readBundle`. Sedimentree
+boundaries are not a dependency set. A need held by no batch record is already
+stored or missing and adds no edge. Records in one strongly connected
+component cannot be ordered; the bridge writes such a group through the
+optional `LocalByteStore.saveMany`, which persists every entry or none. Pages
+implements it as one `storage.put({...})`: celld v0.6.3 (`8702f6d`) queues a
+multi-key put and applies it in one SQLite `IMMEDIATE` transaction
+(`crates/celld/storage.rs` `put_many_serialized`, `crates/celld/js/storage_ops.rs`).
+celld sets no key-count limit there; Pages keeps Cloudflare's documented 128
+keys per put and its own 2 MB request cap. A group over those limits, or a byte
+store without `saveMany`, is written in sequence and readiness covers an
+interrupted prefix. Stored keys, frames and signatures are unchanged.
+`causal-history.test.mjs` covers real bundles whose boundary omits their
+dependencies, an atomic cycle group, a reversed compacted history, and
+readiness for a lost merge branch, a lost middle and a lost root. The upstream
+fix belongs in `StorageBridge.saveBatchAll` and `DocumentDelegate`'s
+`local-load-complete` handling.
+
 ## Runtime evidence
 
 `upstream.test.mjs` runs real upstream Repo handles, Automerge WASM, Subduction

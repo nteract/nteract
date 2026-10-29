@@ -97,7 +97,7 @@ export async function readTool(
   doc,
   operation,
   args,
-  { issueAuthority, recovery, getPresence } = {},
+  { issueAuthority, recovery, historyIncomplete, getPresence } = {},
 ) {
   const heads = A.getHeads(doc);
   let settings = { maxBytes: DEFAULT_READ_BYTES, offset: 0, limit: 100 },
@@ -156,7 +156,12 @@ export async function readTool(
     };
   }
   const authority = await issueAuthority();
-  const common = { heads, ...authority, ...(recovery && { recovery }) };
+  const common = {
+    heads,
+    ...authority,
+    ...(recovery && { recovery }),
+    ...(historyIncomplete && { history_incomplete: historyIncomplete }),
+  };
   let body = { ...payload, ...common };
   if (legacy) return { status, body };
   // Reserve room for the public URL added by the MCP transport.

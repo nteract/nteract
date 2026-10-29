@@ -3,7 +3,7 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
-import { Catalog, Page } from "./index.mjs";
+import { Catalog, Page, PageRecords } from "./index.mjs";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
 
 class Storage {
@@ -468,6 +468,197 @@ for (const fault of ["signer-read", "signer-write", "policy-load"]) {
     assert.equal(page.initializing, undefined);
   });
 }
+
+/** PageRecords storage: multi-key put and delete, like Durable Object storage. */
+class RecordStorage {
+  values = new Map();
+  async get(key) {
+    return this.values.get(key);
+  }
+  async put(values) {
+    for (const [key, value] of Object.entries(values))
+      this.values.set(key, typeof value === "string" ? value : value.slice());
+  }
+  async delete(keys) {
+    for (const key of keys) this.values.delete(key);
+  }
+  async sync() {}
+  async list({ prefix, startAfter = "", limit }) {
+    return new Map(
+      [...this.values]
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .filter(([key]) => key.startsWith(prefix) && key > startAfter)
+        .slice(0, limit),
+    );
+  }
+}
+
+/** Apply one change as a loose commit: a hash with a leading zero byte would
+ * head a fragment instead, so search fixed timestamps for the shape. */
+async function looseChange(page, actor, change) {
+  for (let time = 1_790_000_000; time < 1_790_004_096; time++) {
+    const next = A.change(A.clone(page.handle.doc(), { actor }), { time }, change);
+    const [head] = A.getHeads(next);
+    const bytes = A.getLastLocalChange(next);
+    A.free(next);
+    if (head.startsWith("00")) continue;
+    await page.handle.update((doc) => A.applyChanges(doc, [bytes])[0]);
+    return { hash: head, bytes };
+  }
+  throw Error("No loose-commit change within the timestamp search bound");
+}
+
+const ACTORS = { left: "1a".repeat(16), right: "1b".repeat(16), merge: "1c".repeat(16) };
+
+// Each shape names the stored change it loses and the frontier the Page must
+// start on. A lost root leaves nothing buildable: startup fails, bounded.
+const SHAPES = {
+  "missing branch of a merge": async (page) => {
+    const left = await looseChange(page, ACTORS.left, (doc) => {
+      doc.left = "left";
+    });
+    const right = await looseChange(page, ACTORS.right, (doc) => {
+      doc.right = "right";
+    });
+    await looseChange(page, ACTORS.merge, (doc) => {
+      doc.merged = "merged";
+    });
+    return { lost: right, frontier: [left.hash] };
+  },
+  "missing middle of a chain": async (page) => {
+    const first = await looseChange(page, ACTORS.left, (doc) => {
+      doc.one = "one";
+    });
+    const middle = await looseChange(page, ACTORS.left, (doc) => {
+      doc.two = "two";
+    });
+    await looseChange(page, ACTORS.left, (doc) => {
+      doc.three = "three";
+    });
+    return { lost: middle, frontier: [first.hash] };
+  },
+  "missing root": async (page) => {
+    await looseChange(page, ACTORS.left, (doc) => {
+      doc.one = "one";
+    });
+    const [root] = A.getAllChanges(page.handle.doc()).map((change) => A.decodeChange(change));
+    return { lost: { hash: root.hash, root: true }, frontier: [] };
+  },
+};
+
+async function bufferedPages(t) {
+  const auth = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", auth.fetch);
+  const warnings = [];
+  t.mock.method(console, "warn", (line) => warnings.push(line));
+  const storage = new Storage();
+  const records = new RecordStorage();
+  const env = {
+    ...auth.env,
+    PAGES_ASYNC_PERSISTENCE: "true",
+    PAGE_RECORDS: { getByName: () => new PageRecords({ storage: records }) },
+    CATALOGS: { getByName: () => ({ fetch: async () => Response.json({}) }) },
+  };
+  const pages = [];
+  t.after(async () => {
+    for (const page of pages) {
+      await page.repo?.shutdown();
+      await page.backend?.close();
+      page.signer?.free();
+    }
+  });
+  const open = () => {
+    const page = new Page(contextFor(storage), env);
+    pages.push(page);
+    return page;
+  };
+  return { owner: auth.apiKey(), storage, records, warnings, open };
+}
+
+const within = (promise, label) => {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Error(`${label} did not settle`)), 5000);
+    }),
+  ]).finally(() => clearTimeout(timer));
+};
+
+for (const [shape, build] of Object.entries(SHAPES))
+  for (const journal of [false, true]) {
+    if (shape === "missing root" && journal) continue;
+    test(`a buffered Page restarts with a ${shape}${journal ? " and replays the intent that holds it" : ""}`, async (t) => {
+      const f = await bufferedPages(t);
+      const first = f.open();
+      await first.ready;
+      const created = await first.fetch(
+        requestFor(f.owner, "/internal/create", {
+          page_id: pageId,
+          title: "Kept",
+          markdown: "Body",
+        }),
+      );
+      assert.equal(created.status, 201);
+      const { lost, frontier } = await build(first);
+      const complete = A.getHeads(first.handle.doc());
+      await first.flush();
+      // Records stored without causal ordering can hold a child without its
+      // parent. Drop the stored record that holds the lost change.
+      const keys = [...f.records.values.keys()];
+      const removed = lost.root
+        ? keys.filter((key) => key.endsWith(`/commits/${lost.hash}`) || key.includes("/fragments/"))
+        : keys.filter((key) => key.endsWith(`/commits/${lost.hash}`));
+      assert.ok(removed.length, "the lost change is stored");
+      for (const key of removed) f.records.values.delete(key);
+      if (journal)
+        // An interrupted API edit whose receipt was never written holds it.
+        await f.storage.put("host/operation/lost-edit", {
+          fingerprint: "fixture",
+          pending: true,
+          changes: [lost.bytes],
+          receipt: { page_id: pageId, heads: [lost.hash] },
+        });
+
+      const restarted = f.open();
+      if (!frontier.length) {
+        await assert.rejects(within(restarted.ready, "Page startup"), /unavailable/);
+        return;
+      }
+      await within(restarted.ready, "Page startup");
+      const read = async () => {
+        const response = await restarted.fetch(
+          requestFor(f.owner, "/internal/tool", {
+            operation: "read_page",
+            arguments: { page_id: pageId, include_content: false },
+          }),
+        );
+        assert.equal(response.status, 200);
+        return response.json();
+      };
+      const connect = async () =>
+        (await restarted.fetch(requestFor(f.owner, "/api/connect"))).json();
+      const logged = f.warnings.map((line) => JSON.parse(line));
+      assert.deepEqual(
+        logged.map(({ event }) => event),
+        ["page.history_incomplete"],
+        "startup logs the incomplete history once",
+      );
+      if (journal) {
+        assert.deepEqual(A.getHeads(restarted.handle.doc()).sort(), [...complete].sort());
+        assert.equal((await f.storage.get("host/operation/lost-edit")).pending, false);
+        assert.equal((await read()).history_incomplete, undefined);
+        assert.equal((await connect()).historyIncomplete, undefined);
+      } else {
+        assert.deepEqual(A.getHeads(restarted.handle.doc()), frontier);
+        assert.equal(restarted.handle.doc().title, "Kept");
+        const body = await read();
+        assert.equal(body.history_incomplete.code, "page_history_incomplete");
+        assert.equal(body.history_incomplete.missing_dependencies, 1);
+        assert.equal((await connect()).historyIncomplete.missing_dependencies, 1);
+      }
+    });
+  }
 
 test("startup recovery finds pending edits beyond a full default storage page", async () => {
   const storage = new Storage();

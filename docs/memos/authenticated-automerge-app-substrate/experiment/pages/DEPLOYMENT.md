@@ -57,6 +57,10 @@ rollback publishes a different build id too, so open tabs see the banner again.
 Rollback must retain binary record readers and the `PageRecords` binding and
 buffered-storage implementation. A legacy hex-only build cannot read updated
 records, and an older synchronous-only build cannot read buffered Pages.
+Causal record ordering changes only the order and grouping of writes; keys and
+frames are unchanged, so earlier builds read the result. A rollback build still waits
+forever on stored history whose parent never became durable; startup recovery
+from that shape needs this build or later.
 
 The Page8 profile sets `PAGES_CATALOG_INDEX=1`. Changing this epoch label starts
 account reconciliation on the next listing. Reconciliation may take several

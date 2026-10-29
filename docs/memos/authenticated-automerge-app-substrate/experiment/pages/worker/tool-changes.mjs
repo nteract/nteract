@@ -15,7 +15,11 @@ const invalid = (message) => {
 /** A captured revision supplies the complete net delta and its edit authority.
  * Oversized results fail as a whole; current heads never imply a partial delta.
  */
-export async function readChangesTool(doc, args, { issueAuthority, recovery } = {}) {
+export async function readChangesTool(
+  doc,
+  args,
+  { issueAuthority, recovery, historyIncomplete } = {},
+) {
   const heads = A.getHeads(doc);
   let maxBytes = DEFAULT_BYTES,
     payload,
@@ -54,7 +58,12 @@ export async function readChangesTool(doc, args, { issueAuthority, recovery } = 
     };
   }
   const authority = await issueAuthority();
-  const common = { heads, ...authority, ...(recovery && { recovery }) };
+  const common = {
+    heads,
+    ...authority,
+    ...(recovery && { recovery }),
+    ...(historyIncomplete && { history_incomplete: historyIncomplete }),
+  };
   let body = { ...payload, ...common };
   // The MCP transport adds its public Page URL to this JSON envelope.
   const fits = (value) => bytes(value) + 512 <= maxBytes;

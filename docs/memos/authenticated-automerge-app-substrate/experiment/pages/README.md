@@ -425,7 +425,15 @@ edits and presence. Control state and API intents remain durable on the live Pag
 so admission and API writes may still encounter storage latency. Failed batches
 remain retryable beneath newer values. After a crash, the host recovers persisted
 records and browser replicas resynchronize later history. A generation lease
-rejects stale pre-crash batches.
+rejects stale pre-crash batches. Record writes follow causal order, decoded from record payloads, so a
+persisted prefix of a flush holds the parents of every record in it; records
+that depend on each other share one atomic PageRecords write. If stored history
+still references a change that never became durable (records written by earlier
+builds could be split that way), the Page starts on the history that
+materializes, logs `page.history_incomplete` with a count, and runs journal
+recovery. Readers that pass admission see `history_incomplete` in read results
+and `historyIncomplete` from `/api/connect` until a peer or a pending intent
+supplies the missing parents.
 
 Versioned binary records preserve signed native envelopes and Automerge changes;
 legacy hex records remain readable. `PAGES_COMPACT_RECORDS=true` enables

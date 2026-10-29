@@ -5,6 +5,7 @@ import { patchSnapshotStore } from "./patch-snapshot-store.mjs";
 import { patchAdmission } from "./patch-admission.mjs";
 import { patchRecordCodec } from "./patch-record-codec.mjs";
 import { patchCompaction } from "./patch-compaction.mjs";
+import { patchCausalHistory } from "./patch-causal-history.mjs";
 
 // Source-hash-checked alterations to pinned Repo3. No wire or WASM changes.
 export function patchUpstream(root) {
@@ -45,6 +46,7 @@ export function patchUpstream(root) {
   const admission = patchAdmission(root);
   const compaction = patchCompaction(root);
   const recordCodec = patchRecordCodec(root);
+  const causalHistory = patchCausalHistory(root);
   const after = createHash("sha256").update(readFileSync(path)).digest("hex");
   return {
     path: "packages/automerge-repo-subduction/src/index.ts",
@@ -54,5 +56,6 @@ export function patchUpstream(root) {
     admission,
     compaction,
     recordCodec,
+    causalHistory,
   };
 }

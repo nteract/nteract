@@ -57,6 +57,18 @@
         "path": "packages/automerge-repo-subduction/src/record-codec.ts",
         "sha256": "fad0c5dcddd327f1ac07f8cac0c3b3b156aeaabd8a9bf1283266b5f391c212cb"
       }
-    }
+    },
+    "causalHistory": [
+      {
+        "path": "packages/automerge-repo-subduction/src/storage.ts",
+        "before": "070bf534188442d664b7e5066d9a4490fa8c998b257d7a700909059bd9b9a951",
+        "after": "3a335064a7741c16677f374b67957b5033479a7a6168631c54cbea2f1a9005ec"
+      },
+      {
+        "path": "packages/automerge-repo/src/DocumentDelegate.ts",
+        "before": "9c529b2bd424837397ba735085a01992edf1ed46c2c61fca2d68bdc027159240",
+        "after": "25bb4f4bb9471ecd22ed59784b9f7055bc87e3163ccc2271f6ff28e14c2247f0"
+      }
+    ]
   }
 }
