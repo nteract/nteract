@@ -131,7 +131,7 @@
 }
 .comments .comment-rich-content p,
 .comments .comment-rich-editor p {
-  white-space: normal;
+  white-space: pre-wrap;
 }
 .comments .wordgard-document wg-content {
   line-height: 1.5;
@@ -163,7 +163,7 @@
 .comments .wordgard-document wg-content th {
   min-width: 100px;
   max-width: 320px;
-  white-space: normal;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 

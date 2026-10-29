@@ -191,7 +191,13 @@ try {
   await page.keyboard.press("Tab");
   await page.keyboard.type("Column B");
   await page.keyboard.press("Tab");
-  await page.keyboard.type("Native cell");
+  await expect(editor.locator("td, th").nth(2)).toHaveCSS("white-space", "pre-wrap");
+  // Let the DOM settle with a trailing space before entering the next word.
+  // Collapsed whitespace can move the native caret before that space.
+  await page.keyboard.type("Native ");
+  await page.waitForTimeout(80);
+  await page.keyboard.type("cell");
+  await expect(editor.locator("td, th").nth(2)).toHaveText("Native cell");
   await page.keyboard.press("Tab");
   await page.keyboard.type("Kept");
   await page.setViewportSize({ width: 390, height: 844 });
