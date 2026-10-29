@@ -27,8 +27,9 @@ const MAX_OPTIONS: usize = 8;
 const SUMMARY_MAX_CHARS: usize = 6000;
 /// Blob-backed values worth fetching for display; larger ones are named only.
 const MAX_PROP_BLOB_BYTES: u64 = 64 * 1024;
-/// Column blobs are fetched only to count rows.
-const MAX_COLUMN_BLOB_BYTES: u64 = 16 * 1024 * 1024;
+/// Column refs carry no length, so rows are counted by fetching a column;
+/// sources whose columns are all larger go without a count.
+const MAX_COLUMN_BLOB_BYTES: u64 = 256 * 1024;
 
 /// Props a summary displays; only these are fetched when blob-backed.
 const DISPLAY_PROPS: &[&str] = &[
@@ -74,7 +75,8 @@ pub struct BokehSessionView {
     /// `None` when the session document could not be synced; the summary
     /// then falls back to the output's saved document.
     pub snapshot: Option<BokehSessionSnapshot>,
-    /// Rows per data source, counted from its first column.
+    /// Rows per data source, counted from its smallest column when that is
+    /// small enough to fetch.
     pub source_rows: BTreeMap<String, usize>,
 }
 
@@ -133,12 +135,14 @@ pub async fn prepare_bokeh_view(
         }
     }
     for (source_id, columns) in snapshot.columns.iter().take(MAX_SOURCES) {
-        let Some(column) = columns.values().next() else {
+        // Columns of a source share a length, so the cheapest one will do.
+        let Some(column) = columns
+            .values()
+            .filter(|column| column.size <= MAX_COLUMN_BLOB_BYTES)
+            .min_by_key(|column| column.size)
+        else {
             continue;
         };
-        if column.size > MAX_COLUMN_BLOB_BYTES {
-            continue;
-        }
         let rows = fetch_blob_text(&column.blob, ctx)
             .await
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
@@ -1693,6 +1697,54 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("x, y (5 rows)"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn row_counts_never_fetch_large_column_blobs() {
+        let store = tempfile::tempdir().unwrap();
+        let write_blob = |hash: &str, content: &str| {
+            let dir = store.path().join(&hash[..2]);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(&hash[2..]), content).unwrap();
+        };
+        // Declared sizes stand in for large blobs; small files show what a
+        // fetch would read.
+        write_blob("aa11", "[1, 2, 3]");
+        write_blob("bb22", "[1, 2, 3, 4]");
+        write_blob("dd44", "[1]");
+        let column = |blob: &str, size: u64| BokehColumnRef {
+            blob: blob.into(),
+            size,
+            version: 0,
+        };
+        let mut snapshot = page();
+        snapshot.columns = BTreeMap::from([
+            (
+                "p18".to_string(),
+                BTreeMap::from([
+                    ("x".to_string(), column("aa11", 1024 * 1024)),
+                    ("y".to_string(), column("bb22", 12)),
+                ]),
+            ),
+            (
+                "p19".to_string(),
+                BTreeMap::from([("x".to_string(), column("dd44", 2 * 1024 * 1024))]),
+            ),
+        ]);
+        let view = prepare_bokeh_view(
+            "session-abcdef123456",
+            BokehSessionStatus::Connected,
+            0,
+            Some(snapshot),
+            ResolveCtx {
+                blob_store_path: Some(store.path()),
+                ..Default::default()
+            },
+        )
+        .await;
+        // Counted from the smallest column; omitted when every column is large.
+        assert_eq!(view.source_rows.get("p18"), Some(&4));
+        assert_eq!(view.source_rows.get("p19"), None);
     }
 
     #[test]

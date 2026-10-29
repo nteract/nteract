@@ -10,7 +10,9 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use notebook_sync::bokeh::{BokehDocHandleExt, BokehWriteError, BokehWriteReport};
+use notebook_sync::bokeh::{
+    BokehDocHandleExt, BokehValueSource, BokehWriteError, BokehWriteReport, BokehWrittenValue,
+};
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::ErrorData as McpError;
 use runtime_doc::BokehSessionStatus;
@@ -27,7 +29,7 @@ use super::{reject_unknown_args, tool_error};
 const DEFAULT_WAIT_MS: u64 = 1500;
 const MAX_WAIT_MS: u64 = 5000;
 const SYNC_TIMEOUT: Duration = Duration::from_secs(3);
-const MAX_SIDE_EFFECTS: usize = 10;
+const MAX_KERNEL_CHANGES: usize = 10;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -185,16 +187,17 @@ pub async fn set_bokeh_property(
         .values
         .get(&target.model_id)
         .and_then(|values| values.get(&params.property));
-    let side_effects: serde_json::Map<String, serde_json::Value> = report
-        .side_effects
+    let kernel_changes: serde_json::Map<String, serde_json::Value> = report
+        .kernel_changes
         .iter()
         .flat_map(|(model, values)| {
             values
                 .iter()
                 .map(move |(prop, value)| (format!("{model}.{prop}"), shown(model, value)))
         })
-        .take(MAX_SIDE_EFFECTS)
+        .take(MAX_KERNEL_CHANGES)
         .collect();
+    let source = written.map(|w| w.source);
     let mut result = CallToolResult::success(vec![crate::formatting::assistant_text(text)]);
     result.structured_content = Some(serde_json::json!({
         "session_id": session_id,
@@ -204,12 +207,28 @@ pub async fn set_bokeh_property(
         "property": params.property,
         "requested": shown(&target.model_id, &encoded),
         "value": written.and_then(|w| w.value.as_deref()).map(|v| shown(&target.model_id, v)),
-        "corrected": written.is_some_and(|w| w.corrected),
+        "set_by": source.map(source_label),
+        "corrected": written.is_some_and(|w| is_correction(w, &encoded)),
+        "confirmed_by_python": source == Some(BokehValueSource::Kernel),
         "changed": report.changed,
         "acknowledged": report.acknowledged,
-        "side_effects": side_effects,
+        "replaced_epoch": report.replaced_epoch,
+        "kernel_changes_observed": kernel_changes,
     }));
     Ok(result)
+}
+
+fn source_label(source: BokehValueSource) -> &'static str {
+    match source {
+        BokehValueSource::Requested => "request",
+        BokehValueSource::Kernel => "python",
+        BokehValueSource::OtherClient => "other_client",
+        BokehValueSource::Lost => "lost",
+    }
+}
+
+fn is_correction(written: &BokehWrittenValue, requested: &str) -> bool {
+    written.source == BokehValueSource::Kernel && written.value.as_deref() != Some(requested)
 }
 
 fn describe(
@@ -233,33 +252,54 @@ fn describe(
         Some(label) => format!("{} {label:?} ({}.{property})", target.kind, target.model_id),
         None => format!("{} {}.{property}", target.kind, target.model_id),
     };
-    let requested = show(&target.model_id, requested);
     let written = report
         .values
         .get(&target.model_id)
         .and_then(|values| values.get(property));
+    let now = written
+        .and_then(|w| w.value.as_deref())
+        .map(|value| show(&target.model_id, value))
+        .unwrap_or_else(|| "(unset)".into());
+    let shown_request = show(&target.model_id, requested);
+    let source = written.map(|w| w.source);
+    let lost = source == Some(BokehValueSource::Lost);
     let mut lines = vec![if !report.changed {
-        format!("{name} already equals {requested}; nothing was sent, so no callbacks ran.")
-    } else if let Some(written) = written.filter(|w| w.corrected) {
-        let now = written
-            .value
-            .as_deref()
-            .map(|value| show(&target.model_id, value))
-            .unwrap_or_else(|| "(unset)".into());
-        format!("Python corrected {name}: requested {requested}, now {now}.")
-    } else if report.acknowledged {
-        format!(
-            "Set {name} = {requested}. The daemon accepted it and forwarded it to Python, which runs the callbacks; no correction arrived within {wait_ms} ms, so Python kept the value (accepted values are not echoed)."
-        )
+        format!("{name} already equals {shown_request}; nothing was sent, so no callbacks ran.")
+    } else if let Some(epoch) = report.replaced_epoch {
+        if lost {
+            format!(
+                "The write {name} = {shown_request} was lost: the session document was replaced (epoch {epoch}) before the write reached Python, and the new document has {now}. Set it again to retry."
+            )
+        } else {
+            format!(
+                "The session document was replaced (epoch {epoch}) while waiting; the new document holds {name} = {shown_request}, but Python has not confirmed it."
+            )
+        }
     } else {
-        format!(
-            "Submitted {name} = {requested}; the daemon had not confirmed it within {wait_ms} ms."
-        )
+        match source {
+            Some(BokehValueSource::Kernel) if written.is_some_and(|w| is_correction(w, requested)) => {
+                format!("Python corrected {name}: requested {shown_request}, now {now}.")
+            }
+            Some(BokehValueSource::Kernel) => {
+                format!("Python applied {name} = {shown_request}.")
+            }
+            Some(BokehValueSource::OtherClient) => format!(
+                "Another client set {name} to {now} after this write (requested {shown_request})."
+            ),
+            _ if report.acknowledged => format!(
+                "Set {name} = {shown_request}: accepted by the daemon; not yet confirmed by Python. Python only sends a value back to correct it, and none arrived within {wait_ms} ms; a busy kernel applies the write and runs callbacks once it is idle."
+            ),
+            _ => format!(
+                "Submitted {name} = {shown_request}; the daemon had not confirmed it within {wait_ms} ms."
+            ),
+        }
     }];
-    if !report.side_effects.is_empty() {
-        lines.push("Callbacks also changed:".into());
+    if !report.kernel_changes.is_empty() {
+        lines.push(
+            "Kernel changes observed while waiting (callback results or unrelated updates):".into(),
+        );
         let changes: Vec<String> = report
-            .side_effects
+            .kernel_changes
             .iter()
             .flat_map(|(model, values)| {
                 values
@@ -268,12 +308,12 @@ fn describe(
             })
             .collect();
         let total = changes.len();
-        lines.extend(changes.into_iter().take(MAX_SIDE_EFFECTS));
-        if total > MAX_SIDE_EFFECTS {
-            lines.push(format!("  \u{2026} {} more", total - MAX_SIDE_EFFECTS));
+        lines.extend(changes.into_iter().take(MAX_KERNEL_CHANGES));
+        if total > MAX_KERNEL_CHANGES {
+            lines.push(format!("  \u{2026} {} more", total - MAX_KERNEL_CHANGES));
         }
     }
-    if report.changed {
+    if report.changed && !lost {
         lines.push("Callback output and errors are appended to the cell's outputs.".into());
     }
     lines.join("\n")
@@ -371,12 +411,26 @@ mod tests {
         }
     }
 
+    const BROWSER: &str = "user:dev:browser/tab";
+
+    /// How the room's other writers react to an agent write of `p2.value`.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Kernel {
+        /// Python clamps and runs the callback that updates `p4.text`.
+        Callbacks,
+        /// Python is busy in a cell and has not applied the write yet.
+        Busy,
+        /// Python is busy; a browser overwrites the value and another prop.
+        Browser,
+    }
+
     struct Room {
         runtime: RuntimeStateDoc,
         runtime_sync: State,
         hub: BokehSessionDoc,
         hub_sync: State,
         scope: RuntimeStateWriteScope,
+        kernel: Kernel,
         tx: mpsc::UnboundedSender<TypedNotebookFrame>,
     }
 
@@ -415,6 +469,10 @@ mod tests {
         fn on_bokeh_frame(&mut self, payload: &[u8]) {
             let (header, body) = KeyedDocFrameHeader::try_parse(payload).unwrap();
             assert_eq!(header.kind, BOKEH_SESSION_KIND);
+            if header.id != SESSION {
+                // Other sessions' documents never arrive.
+                return;
+            }
             let message = Message::decode(body).unwrap();
             let context = self.context();
             let agent = ActorId::from(AGENT.as_bytes());
@@ -430,7 +488,17 @@ mod tests {
                         .get("p2")
                         .is_some_and(|props| props.contains("value"))
                     {
-                        self.run_kernel();
+                        match self.kernel {
+                            Kernel::Callbacks => self.run_kernel(),
+                            Kernel::Busy => {}
+                            Kernel::Browser => {
+                                self.hub.set_actor(BROWSER);
+                                self.hub.set_prop("p2", "value", "0.8").unwrap();
+                                self.hub.set_prop("p4", "text", r#""browser""#).unwrap();
+                                self.hub.commit();
+                                self.hub.set_actor(KERNEL);
+                            }
+                        }
                     }
                     self.push_hub();
                 }
@@ -500,8 +568,12 @@ mod tests {
     }
 
     fn record(status: BokehSessionStatus) -> BokehSessionState {
+        record_for("out-1", status)
+    }
+
+    fn record_for(output_id: &str, status: BokehSessionStatus) -> BokehSessionState {
         BokehSessionState {
-            output_id: "out-1".into(),
+            output_id: output_id.into(),
             cell_id: "cell-1".into(),
             execution_id: "exec-1".into(),
             kernel_id: "kernel-1".into(),
@@ -536,6 +608,7 @@ mod tests {
                 hub: BokehSessionDoc::build(&snapshot(), KERNEL).unwrap(),
                 hub_sync: State::new(),
                 scope: RuntimeStateWriteScope::Editor,
+                kernel: Kernel::Callbacks,
                 tx,
             }));
             let handle = notebook_sync::connect::connect_frame_io(
@@ -618,9 +691,42 @@ mod tests {
                 .unwrap()
         }
 
+        /// Announce another session whose document the room never sends.
+        async fn add_session(&self, session_id: &str, output_id: &str, status: BokehSessionStatus) {
+            {
+                let mut room = self.room.lock().unwrap();
+                room.runtime
+                    .put_bokeh_session(session_id, &record_for(output_id, status))
+                    .unwrap();
+                room.push_runtime();
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                let mut updates = self.handle.subscribe_runtime_state();
+                while !self
+                    .handle
+                    .get_runtime_state()
+                    .unwrap()
+                    .bokeh_sessions
+                    .contains_key(session_id)
+                {
+                    updates.changed().await.unwrap();
+                }
+            })
+            .await
+            .unwrap();
+        }
+
         fn hub_prop(&self, model: &str, prop: &str) -> Option<String> {
             self.room.lock().unwrap().hub.get_prop(model, prop)
         }
+    }
+
+    fn manifest(output_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "output_type": "display_data",
+            "output_id": output_id,
+            "data": {BOKEH_SESSION_MIME: {"inline": "{}"}},
+        })
     }
 
     fn text(result: &CallToolResult) -> String {
@@ -641,10 +747,13 @@ mod tests {
         let message = text(&result);
         assert_eq!(result.is_error, Some(false), "{message}");
         assert!(
-            message.contains("Set Slider \"Alpha\" (p2.value) = 0.25."),
+            message.contains("Set Slider \"Alpha\" (p2.value) = 0.25: accepted"),
             "{message}"
         );
-        assert!(message.contains("Python kept the value"), "{message}");
+        assert!(
+            message.contains("accepted by the daemon; not yet confirmed by Python"),
+            "{message}"
+        );
         assert!(message.contains("p4.text = \"value is 0.25\""), "{message}");
         let data = result.structured_content.as_ref().unwrap();
         assert_eq!(data["acknowledged"], true);
@@ -732,6 +841,149 @@ mod tests {
             text(&result).contains("is disconnected and read-only"),
             "{}",
             text(&result)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unapplied_write_is_not_reported_as_kept_by_python() {
+        let fixture = Fixture::new().await;
+        fixture.room.lock().unwrap().kernel = Kernel::Busy;
+        let result = fixture.set("Alpha", "value", serde_json::json!(0.25)).await;
+        let message = text(&result);
+        assert_eq!(result.is_error, Some(false), "{message}");
+        assert!(!message.contains("Python kept"), "{message}");
+        assert!(
+            message.contains("accepted by the daemon; not yet confirmed by Python"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_clients_write_is_not_a_python_correction() {
+        let fixture = Fixture::new().await;
+        fixture.room.lock().unwrap().kernel = Kernel::Browser;
+        let result = fixture.set("Alpha", "value", serde_json::json!(0.25)).await;
+        let message = text(&result);
+        assert!(!message.contains("Python corrected"), "{message}");
+        assert!(message.contains("Another client"), "{message}");
+        assert!(!message.contains("p4.text"), "{message}");
+        assert_eq!(
+            result.structured_content.as_ref().unwrap()["corrected"],
+            false
+        );
+    }
+
+    #[tokio::test]
+    async fn kernel_changes_during_the_wait_are_not_called_callback_effects() {
+        let fixture = Fixture::new().await;
+        let result = fixture.set("Alpha", "value", serde_json::json!(0.25)).await;
+        let message = text(&result);
+        assert!(!message.contains("Callbacks also changed"), "{message}");
+        assert!(message.contains("observed while waiting"), "{message}");
+        assert!(message.contains("p4.text = \"value is 0.25\""), "{message}");
+    }
+
+    #[tokio::test]
+    async fn summaries_wait_for_connected_sessions_under_one_deadline() {
+        let fixture = Fixture::new().await;
+        for (session, output) in [("session-2", "out-2"), ("session-3", "out-3")] {
+            fixture
+                .add_session(session, output, BokehSessionStatus::Connected)
+                .await;
+        }
+        let manifests: Vec<_> = ["out-1", "out-2", "out-3"].map(manifest).into();
+        let started = std::time::Instant::now();
+        let views = crate::live_views::collect(&fixture.handle, &manifests, None, None).await;
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(2500),
+            "two unsynced sessions took {elapsed:?}"
+        );
+        assert_eq!(views.len(), 3);
+        let summary = views["out-1"].summarize().unwrap();
+        assert!(summary.contains("p2 Slider \"Alpha\""), "{summary}");
+    }
+
+    #[tokio::test]
+    async fn summaries_of_ended_sessions_use_the_saved_document_without_waiting() {
+        let fixture = Fixture::new().await;
+        fixture
+            .add_session("session-4", "out-4", BokehSessionStatus::Disconnected)
+            .await;
+        fixture
+            .add_session("session-5", "out-5", BokehSessionStatus::Closed)
+            .await;
+        let manifests: Vec<_> = ["out-4", "out-5"].map(manifest).into();
+        let started = std::time::Instant::now();
+        let views = crate::live_views::collect(&fixture.handle, &manifests, None, None).await;
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(150),
+            "ended sessions took {elapsed:?}"
+        );
+        assert_eq!(views.len(), 2);
+        assert!(views["out-4"].summarize().is_none());
+    }
+
+    #[test]
+    fn a_replacement_reports_the_write_lost_unless_the_new_epoch_kept_it() {
+        use notebook_sync::bokeh::{BokehValueSource, BokehWriteReport, BokehWrittenValue};
+        use runtimed_outputs::bokeh_summary::BokehTarget;
+
+        let target = BokehTarget {
+            model_id: "p2".into(),
+            kind: "Slider".into(),
+            label: Some("Alpha".into()),
+            secret: false,
+        };
+        let report = |value: &str, source| BokehWriteReport {
+            changed: true,
+            acknowledged: true,
+            replaced_epoch: Some(3),
+            values: [(
+                "p2".to_string(),
+                [(
+                    "value".to_string(),
+                    BokehWrittenValue {
+                        value: Some(value.into()),
+                        source,
+                    },
+                )]
+                .into(),
+            )]
+            .into(),
+            ..Default::default()
+        };
+        let lost = super::describe(
+            &target,
+            "value",
+            "0.25",
+            &report("0.5", BokehValueSource::Lost),
+            300,
+            &|_| false,
+        );
+        assert!(
+            lost.starts_with("The write Slider \"Alpha\" (p2.value) = 0.25 was lost"),
+            "{lost}"
+        );
+        assert!(
+            lost.contains("epoch 3") && lost.contains("has 0.5"),
+            "{lost}"
+        );
+        assert!(!lost.contains("Callback output"), "{lost}");
+        let kept = super::describe(
+            &target,
+            "value",
+            "0.25",
+            &report("0.25", BokehValueSource::Requested),
+            300,
+            &|_| false,
+        );
+        assert!(
+            kept.contains(
+                "holds Slider \"Alpha\" (p2.value) = 0.25, but Python has not confirmed it"
+            ),
+            "{kept}"
         );
     }
 }

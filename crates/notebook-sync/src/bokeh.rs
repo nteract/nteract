@@ -27,12 +27,26 @@ pub const BOKEH_SESSION_KIND: &str = "bokeh_session";
 
 const ACK_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
+/// Who set a written property's value as of the end of the wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BokehValueSource {
+    /// Still this write's value. Python echoes only corrections, so this
+    /// does not show that Python applied it.
+    Requested,
+    /// The session's kernel set it after the write, normally Python
+    /// correcting it.
+    Kernel,
+    /// Another client set it after the write.
+    OtherClient,
+    /// The document was replaced (new epoch) without the write.
+    Lost,
+}
+
 /// The value a written property has after the write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BokehWrittenValue {
     pub value: Option<String>,
-    /// Another actor (normally the kernel's correction) wrote it after us.
-    pub corrected: bool,
+    pub source: BokehValueSource,
 }
 
 /// What became of a property write within the wait window.
@@ -40,14 +54,19 @@ pub struct BokehWrittenValue {
 pub struct BokehWriteReport {
     /// False when every value was already current, so nothing was sent.
     pub changed: bool,
-    /// The daemon merged the write.
+    /// The daemon merged the write into the epoch it was written for.
     pub acknowledged: bool,
     /// The daemon refused the write; the replica restarted without it.
     pub rejected: Option<String>,
+    /// The producer replaced the document during the wait. The new epoch
+    /// keeps the write only if it reached the runtime agent first; `values`
+    /// read the new document.
+    pub replaced_epoch: Option<u64>,
     pub values: BTreeMap<String, BTreeMap<String, BokehWrittenValue>>,
-    /// Other properties another actor changed during the wait, such as
-    /// callback side effects.
-    pub side_effects: BTreeMap<String, BTreeMap<String, String>>,
+    /// Other properties the kernel changed while waiting. Callback results
+    /// and unrelated kernel updates (periodic callbacks, running cells) look
+    /// the same here.
+    pub kernel_changes: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -140,11 +159,11 @@ impl BokehDocHandleExt for DocHandle {
             return Err(BokehWriteError::Unsupported);
         }
         let events = self.subscribe_keyed_docs()?;
-        let (changed, heads) = write(self, session_id, status, props)?;
-        if !changed {
+        let written = write(self, session_id, status, props)?;
+        if !written.changed {
             return Ok(unchanged_report(props));
         }
-        Ok(observe_write(self, events, session_id, props, &heads, wait).await?)
+        Ok(observe_write(self, events, session_id, props, &written, wait).await?)
     }
 }
 
@@ -165,21 +184,29 @@ fn snapshot(
         .flatten())
 }
 
-/// Write one batch to the replica. Returns whether it changed the replica
-/// and the heads to wait for; the sync task sends the change.
+/// A write the sync task is sending.
+struct Written {
+    changed: bool,
+    epoch: u64,
+    heads: Vec<ChangeHash>,
+    /// Authored this epoch's build; only its writes count as Python's.
+    kernel: ActorId,
+}
+
+/// Write one batch to the replica; the sync task sends the change.
 fn write(
     handle: &DocHandle,
     session_id: &str,
     status: BokehSessionStatus,
     props: &BTreeMap<String, BTreeMap<String, String>>,
-) -> Result<(bool, Vec<ChangeHash>), BokehWriteError> {
+) -> Result<Written, BokehWriteError> {
     handle
         .with_keyed_doc(BOKEH_SESSION_KIND, session_id, |view| {
             let epoch = view.epoch;
             let mut doc = BokehSessionDocMut::from_doc(view.doc);
-            if doc.epoch().is_none() {
+            let (Some(_), Some(kernel)) = (doc.epoch(), doc.epoch_actor()) else {
                 return Err(BokehWriteError::NotSynced(session_id.to_string()));
-            }
+            };
             // The daemon knows this connection's scope and enforces it; the
             // local check covers status, epoch and content.
             let context = BokehSessionWriteContext {
@@ -188,7 +215,12 @@ fn write(
                 current_epoch: epoch,
             };
             let changed = doc.write_peer_props(&context, props)?;
-            Ok((changed, doc.get_heads()))
+            Ok(Written {
+                changed,
+                epoch,
+                heads: doc.get_heads(),
+                kernel,
+            })
         })?
         .unwrap_or_else(|| Err(BokehWriteError::NotSynced(session_id.to_string())))
 }
@@ -206,7 +238,7 @@ fn unchanged_report(props: &BTreeMap<String, BTreeMap<String, String>>) -> Bokeh
                             prop.clone(),
                             BokehWrittenValue {
                                 value: Some(value.clone()),
-                                corrected: false,
+                                source: BokehValueSource::Requested,
                             },
                         )
                     })
@@ -218,12 +250,13 @@ fn unchanged_report(props: &BTreeMap<String, BTreeMap<String, String>>) -> Bokeh
     }
 }
 
-/// Property values the change between `before` and `after` set, won by an
-/// actor other than this replica's.
-fn foreign_values(
+/// Values of properties the kernel won in the change between `before` and
+/// `after` of epoch `epoch`.
+fn kernel_values(
     handle: &DocHandle,
     session_id: &str,
     epoch: u64,
+    kernel: &ActorId,
     before: &[ChangeHash],
     after: &[ChangeHash],
 ) -> Result<BTreeMap<String, BTreeMap<String, String>>, SyncError> {
@@ -238,34 +271,32 @@ fn foreign_values(
             if view.epoch != epoch || !known(before) || !known(after) {
                 return BTreeMap::new();
             }
-            let ours: ActorId = view.doc.get_actor().clone();
             let mut doc = BokehSessionDocMut::from_doc(view.doc);
             let changeset = doc.diff(before, after);
-            doc.foreign_props(&changeset, |actor| *actor != ours)
+            doc.foreign_props(&changeset, |actor| actor == kernel)
         })?
         .unwrap_or_default())
 }
 
-fn has_merged(
+/// The replica's epoch, and whether the daemon merged `heads` in it.
+fn merge_state(
     handle: &DocHandle,
     session_id: &str,
     heads: &[ChangeHash],
-) -> Result<bool, SyncError> {
-    Ok(handle
-        .with_keyed_doc(BOKEH_SESSION_KIND, session_id, |mut view| {
-            view.has_merged(heads)
-        })?
-        .unwrap_or(false))
+) -> Result<Option<(u64, bool)>, SyncError> {
+    handle.with_keyed_doc(BOKEH_SESSION_KIND, session_id, |mut view| {
+        (view.epoch, view.has_merged(heads))
+    })
 }
 
-/// Follow a write until the kernel corrects every value, the daemon refuses
-/// it, or `wait` runs out.
+/// Follow a write until the kernel sets every written value, the daemon
+/// refuses it, the document is replaced, or `wait` runs out.
 async fn observe_write(
     handle: &DocHandle,
     mut events: broadcast::Receiver<KeyedDocEvent>,
     session_id: &str,
     props: &BTreeMap<String, BTreeMap<String, String>>,
-    heads: &[ChangeHash],
+    written: &Written,
     wait: Duration,
 ) -> Result<BokehWriteReport, SyncError> {
     let deadline = tokio::time::Instant::now() + wait;
@@ -278,20 +309,16 @@ async fn observe_write(
             .get(model)
             .is_some_and(|values| values.contains_key(prop))
     };
+    let mut kernel_set_all = false;
     loop {
-        if !report.acknowledged {
-            report.acknowledged = has_merged(handle, session_id, heads)?;
+        match merge_state(handle, session_id, &written.heads)? {
+            Some((epoch, _)) if epoch != written.epoch => {
+                report.replaced_epoch = Some(epoch);
+            }
+            Some((_, merged)) => report.acknowledged |= merged,
+            None => {}
         }
-        let all_corrected = props.iter().all(|(model, values)| {
-            values.keys().all(|prop| {
-                report
-                    .values
-                    .get(model)
-                    .and_then(|values| values.get(prop))
-                    .is_some_and(|value| value.corrected)
-            })
-        });
-        if report.rejected.is_some() || all_corrected {
+        if report.rejected.is_some() || report.replaced_epoch.is_some() || kernel_set_all {
             break;
         }
         // The daemon's acknowledgement moves only the sync state, which
@@ -317,57 +344,84 @@ async fn observe_write(
                 before,
                 after,
             } if is_session(&key, session_id) => {
-                for (model, values) in foreign_values(handle, session_id, epoch, &before, &after)? {
+                if epoch != written.epoch {
+                    report.replaced_epoch = Some(epoch);
+                    continue;
+                }
+                let changed =
+                    kernel_values(handle, session_id, epoch, &written.kernel, &before, &after)?;
+                for (model, values) in changed {
                     for (prop, value) in values {
-                        if requested(&model, &prop) {
-                            report.values.entry(model.clone()).or_default().insert(
-                                prop,
-                                BokehWrittenValue {
-                                    value: Some(value),
-                                    corrected: true,
-                                },
-                            );
-                        } else {
+                        if !requested(&model, &prop) {
                             report
-                                .side_effects
+                                .kernel_changes
                                 .entry(model.clone())
                                 .or_default()
                                 .insert(prop, value);
                         }
                     }
                 }
+                kernel_set_all = written_values(handle, session_id, props, written)?
+                    .iter()
+                    .all(|(_, _, value)| value.source == BokehValueSource::Kernel);
             }
             _ => {}
         }
     }
     if report.rejected.is_none() {
-        let current = handle
-            .with_keyed_doc(BOKEH_SESSION_KIND, session_id, |view| {
-                let doc = BokehSessionDocRef::from_doc(&*view.doc);
-                props
-                    .iter()
-                    .flat_map(|(model, values)| {
-                        values
-                            .keys()
-                            .map(|prop| ((model.clone(), prop.clone()), doc.get_prop(model, prop)))
-                    })
-                    .collect::<Vec<_>>()
-            })?
-            .unwrap_or_default();
-        for ((model, prop), value) in current {
-            report
-                .values
-                .entry(model)
-                .or_default()
-                .entry(prop)
-                .and_modify(|written| written.value = value.clone())
-                .or_insert(BokehWrittenValue {
-                    value,
-                    corrected: false,
-                });
+        for (model, prop, value) in written_values(handle, session_id, props, written)? {
+            report.values.entry(model).or_default().insert(prop, value);
         }
     }
     Ok(report)
+}
+
+/// Current value and setter of each written property. The write was the
+/// latest value when made, so any other winner came after it, or at the
+/// same time and won the conflict.
+fn written_values(
+    handle: &DocHandle,
+    session_id: &str,
+    props: &BTreeMap<String, BTreeMap<String, String>>,
+    written: &Written,
+) -> Result<Vec<(String, String, BokehWrittenValue)>, SyncError> {
+    Ok(handle
+        .with_keyed_doc(BOKEH_SESSION_KIND, session_id, |view| {
+            let ours = view.doc.get_actor().clone();
+            let replaced = view.epoch != written.epoch;
+            let doc = BokehSessionDocRef::from_doc(&*view.doc);
+            props
+                .iter()
+                .flat_map(|(model, values)| {
+                    values.iter().map(|(prop, requested)| {
+                        let value = doc.get_prop(model, prop);
+                        let source = if replaced {
+                            if value.as_ref() == Some(requested) {
+                                BokehValueSource::Requested
+                            } else {
+                                BokehValueSource::Lost
+                            }
+                        } else {
+                            match doc.prop_actor(model, prop) {
+                                Some(actor) if actor == ours => BokehValueSource::Requested,
+                                Some(actor) if actor != written.kernel => {
+                                    BokehValueSource::OtherClient
+                                }
+                                // Peers cannot remove models, so a vanished
+                                // property is the kernel's doing too.
+                                _ => BokehValueSource::Kernel,
+                            }
+                        };
+                        (
+                            model.clone(),
+                            prop.clone(),
+                            BokehWrittenValue { value, source },
+                        )
+                    })
+                })
+                .collect()
+        })?
+        .unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -411,6 +465,7 @@ mod tests {
                     props: BTreeMap::from([
                         ("value".to_string(), "0.5".to_string()),
                         ("title".to_string(), r#""Alpha""#.to_string()),
+                        ("disabled".to_string(), "false".to_string()),
                     ]),
                 },
             )]),
@@ -418,17 +473,45 @@ mod tests {
         }
     }
 
+    const BROWSER: &str = "user:dev:browser/tab";
+
+    /// What the hub's other writers do once an agent write to `p1.value`
+    /// merges.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum React {
+        /// Python clamps to [0, 1] and only echoes corrections.
+        Clamp,
+        /// A browser overwrites the value and sets another property, and an
+        /// unrelated kernel tick changes the title; Python itself is busy.
+        Others,
+        /// The producer replaces the document (epoch 1) before the write
+        /// reached it, so the new epoch lacks it.
+        Replace,
+    }
+
     struct Hub {
         doc: BokehSessionDoc,
         state: State,
         refuse: bool,
+        react: React,
         tx: mpsc::UnboundedSender<TypedNotebookFrame>,
     }
 
     impl Hub {
+        fn epoch(&self) -> u64 {
+            self.doc.epoch().unwrap_or_default()
+        }
+
+        fn write_as(&mut self, actor: &str, model: &str, prop: &str, value: &str) {
+            self.doc.set_actor(actor);
+            self.doc.set_prop(model, prop, value).unwrap();
+            self.doc.commit();
+            self.doc.set_actor(KERNEL);
+        }
+
         fn push(&mut self) {
             if let Some(message) = self.doc.generate_sync_message(&mut self.state) {
-                let payload = KeyedDocFrameHeader::new(BOKEH_SESSION_KIND, "s1", 0)
+                let payload = KeyedDocFrameHeader::new(BOKEH_SESSION_KIND, "s1", self.epoch())
                     .encode_frame(&message.encode());
                 let _ = self.tx.send(TypedNotebookFrame {
                     frame_type: NotebookFrameType::KeyedDocSync,
@@ -448,8 +531,11 @@ mod tests {
                     RuntimeStateWriteScope::Editor
                 },
                 status: BokehSessionStatus::Connected,
-                current_epoch: 0,
+                current_epoch: self.epoch(),
             };
+            if header.epoch != self.epoch() {
+                return;
+            }
             let agent = ActorId::from(AGENT.as_bytes());
             match self.doc.receive_peer_sync_message_checked(
                 &mut self.state,
@@ -463,11 +549,27 @@ mod tests {
                         .get("p1")
                         .is_some_and(|props| props.contains("value"))
                     {
-                        // Python clamps to [0, 1] and only echoes corrections.
-                        let value: f64 = self.doc.get_prop("p1", "value").unwrap().parse().unwrap();
-                        if value > 1.0 {
-                            self.doc.set_prop("p1", "value", "1").unwrap();
-                            self.doc.commit();
+                        match self.react {
+                            React::Clamp => {
+                                let value: f64 =
+                                    self.doc.get_prop("p1", "value").unwrap().parse().unwrap();
+                                if value > 1.0 {
+                                    self.write_as(KERNEL, "p1", "value", "1");
+                                }
+                            }
+                            React::Others => {
+                                self.write_as(BROWSER, "p1", "value", "0.9");
+                                self.write_as(BROWSER, "p1", "disabled", "true");
+                                self.write_as(KERNEL, "p1", "title", r#""tick 1""#);
+                            }
+                            React::Replace => {
+                                let next = BokehSessionSnapshot {
+                                    epoch: 1,
+                                    ..snapshot()
+                                };
+                                self.doc = BokehSessionDoc::build(&next, KERNEL).unwrap();
+                                self.state = State::new();
+                            }
                         }
                     }
                     self.push();
@@ -516,6 +618,7 @@ mod tests {
             doc: BokehSessionDoc::build(&snapshot(), KERNEL).unwrap(),
             state: State::new(),
             refuse: false,
+            react: React::Clamp,
             tx,
         }));
         let handle = crate::connect::connect_frame_io(
@@ -560,7 +663,7 @@ mod tests {
             report.values["p1"]["value"],
             BokehWrittenValue {
                 value: Some("0.25".into()),
-                corrected: false
+                source: BokehValueSource::Requested
             }
         );
         assert_eq!(
@@ -584,7 +687,7 @@ mod tests {
             report.values["p1"]["value"],
             BokehWrittenValue {
                 value: Some("1".into()),
-                corrected: true
+                source: BokehValueSource::Kernel
             }
         );
 
@@ -632,6 +735,57 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(resynced.models["p1"].props["value"], "1");
+    }
+
+    #[tokio::test]
+    async fn only_kernel_changes_count_as_corrections_or_observed_changes() {
+        let (handle, hub) = connect(&[BOKEH_SESSION_KIND]).await;
+        handle
+            .await_bokeh_session("s1", 0, Duration::from_secs(1))
+            .await
+            .unwrap()
+            .expect("document synced");
+        hub.lock().unwrap().react = React::Others;
+        let report = handle
+            .write_bokeh_session_props("s1", BokehSessionStatus::Connected, &props("0.25"), WAIT)
+            .await
+            .unwrap();
+        assert!(report.acknowledged, "{report:?}");
+        let value = &report.values["p1"]["value"];
+        assert_eq!(value.value.as_deref(), Some("0.9"), "{report:?}");
+        assert_eq!(value.source, BokehValueSource::OtherClient, "{report:?}");
+        // The browser's other write is not reported; the kernel's tick is.
+        assert_eq!(
+            report.kernel_changes,
+            BTreeMap::from([(
+                "p1".to_string(),
+                BTreeMap::from([("title".to_string(), r#""tick 1""#.to_string())])
+            )]),
+            "{report:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_lost_to_an_epoch_replacement_is_not_acknowledged() {
+        let (handle, hub) = connect(&[BOKEH_SESSION_KIND]).await;
+        handle
+            .await_bokeh_session("s1", 0, Duration::from_secs(1))
+            .await
+            .unwrap()
+            .expect("document synced");
+        hub.lock().unwrap().react = React::Replace;
+        let report = handle
+            .write_bokeh_session_props("s1", BokehSessionStatus::Connected, &props("0.25"), WAIT)
+            .await
+            .unwrap();
+        assert!(!report.acknowledged, "{report:?}");
+        let value = &report.values["p1"]["value"];
+        assert_eq!(value.value.as_deref(), Some("0.5"), "{report:?}");
+        assert_eq!(value.source, BokehValueSource::Lost, "{report:?}");
+        assert_eq!(report.replaced_epoch, Some(1), "{report:?}");
+        // The new epoch's build is all kernel-authored; none of it is a
+        // reaction to the write.
+        assert!(report.kernel_changes.is_empty(), "{report:?}");
     }
 
     #[tokio::test]
