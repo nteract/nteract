@@ -796,6 +796,8 @@ try {
   // A collapsed caret intentionally hides contextual formatting. Open the
   // keyboard-accessible dock to inspect history without changing the selection.
   await a.keyboard.press("Alt+F10");
+  // showFormatting focuses the dock on the next animation frame.
+  await expect(a.getByRole("button", { name: "Undo", exact: true })).toBeFocused();
   await expect(a.getByRole("button", { name: "Undo", exact: true })).toBeEnabled();
   await a.keyboard.press("Escape");
   await expect(content(a)).toBeFocused();
