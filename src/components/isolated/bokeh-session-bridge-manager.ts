@@ -69,11 +69,24 @@ function stringMap(value: unknown): Record<string, Record<string, string>> {
   return result;
 }
 
+function stateSignature(state: NteractBokehSessionStateParams): string {
+  return [
+    state.status,
+    state.epoch,
+    state.outputId,
+    state.live,
+    state.writable,
+    state.error ?? "",
+  ].join(":");
+}
+
 export class BokehSessionBridgeManager {
   private readonly frame: IsolatedFrameHandle;
   private readonly transport: BokehSessionTransport;
   private readonly bindings = new Map<string, BokehSessionOutputBinding>();
   private readonly docSubscriptions = new Map<string, () => void>();
+  /** Sessions whose document the host stopped rebuilding, with the reason. */
+  private readonly docErrors = new Map<string, string>();
   private readonly eventQueues = new Map<string, Promise<void>>();
   private runtimeSessions: Record<string, BokehSessionState> = {};
   private stateSignatures = new Map<string, string>();
@@ -112,23 +125,30 @@ export class BokehSessionBridgeManager {
 
   notifyCurrentState(): void {
     for (const [sessionId, binding] of this.bindings) {
-      const session = this.ownedSession(binding);
-      const status = session?.status ?? "disconnected";
-      const epoch = session?.epoch ?? null;
-      const live = this.docSubscriptions.has(sessionId);
-      const writable = this.writable(status);
-      const signature = `${status}:${epoch}:${binding.outputId}:${live}:${writable}`;
+      const state = this.currentState(sessionId, binding);
+      const signature = stateSignature(state);
       if (this.stateSignatures.get(sessionId) === signature) continue;
       this.stateSignatures.set(sessionId, signature);
-      this.frame.notifyExtension(NTERACT_BOKEH_SESSION_STATE, {
-        sessionId,
-        outputId: binding.outputId,
-        status,
-        epoch,
-        live,
-        writable,
-      } satisfies NteractBokehSessionStateParams);
+      this.frame.notifyExtension(NTERACT_BOKEH_SESSION_STATE, state);
     }
+  }
+
+  private currentState(
+    sessionId: string,
+    binding: BokehSessionOutputBinding,
+  ): NteractBokehSessionStateParams {
+    const session = this.ownedSession(binding);
+    const error = session?.status === "connected" ? this.docErrors.get(sessionId) : undefined;
+    const status = error !== undefined ? "error" : (session?.status ?? "disconnected");
+    return {
+      sessionId,
+      outputId: binding.outputId,
+      status,
+      epoch: session?.epoch ?? null,
+      live: this.docSubscriptions.has(sessionId),
+      writable: this.writable(status),
+      ...(error !== undefined ? { error } : {}),
+    };
   }
 
   /** Serve a request from the frame; it may only reach its own outputs' sessions. */
@@ -159,23 +179,38 @@ export class BokehSessionBridgeManager {
     const live = status === "connected" && docs !== null;
     this.unsubscribeDoc(sessionId);
     if (live) {
-      const unsubscribe = docs.subscribe(sessionId, (update) => {
-        if (this.disposed || !this.bindings.has(sessionId)) return;
-        this.frame.notifyExtension(NTERACT_BOKEH_SESSION_DOC, {
-          outputId: binding.outputId,
-          update,
-        } satisfies NteractBokehSessionDocParams);
-      });
+      const unsubscribe = docs.subscribe(
+        sessionId,
+        (update) => {
+          if (this.disposed || !this.bindings.has(sessionId)) return;
+          this.frame.notifyExtension(NTERACT_BOKEH_SESSION_DOC, {
+            outputId: binding.outputId,
+            update,
+          } satisfies NteractBokehSessionDocParams);
+          if (update.kind === "full" && this.docErrors.delete(sessionId)) {
+            this.notifyCurrentState();
+          }
+        },
+        (error) => {
+          if (this.disposed || !this.bindings.has(sessionId)) return;
+          this.docErrors.set(sessionId, error);
+          this.notifyCurrentState();
+        },
+      );
       this.docSubscriptions.set(sessionId, unsubscribe);
     }
+    // The result carries this state. Sent as a notification it would reach
+    // the frame before the result, while its own state is still pre-open.
+    const state = this.currentState(sessionId, binding);
+    this.stateSignatures.set(sessionId, stateSignature(state));
     this.notifyCurrentState();
     return {
       sessionId,
       outputId: binding.outputId,
-      status,
-      epoch: session?.epoch ?? null,
-      live,
-      writable: this.writable(status),
+      status: state.status,
+      epoch: state.epoch,
+      live: state.live,
+      writable: state.writable,
     };
   }
 
@@ -183,7 +218,7 @@ export class BokehSessionBridgeManager {
     const sessionId = requireString(params as unknown as Record<string, unknown>, "sessionId");
     const binding = this.requireBinding(sessionId, params.outputId);
     const docs = this.transport.docs;
-    if (!docs || !this.writable(this.ownedSession(binding)?.status)) return { status: "read_only" };
+    if (!docs || !this.currentState(sessionId, binding).writable) return { status: "read_only" };
     return docs.writeProps(sessionId, stringMap(params.props));
   }
 
@@ -272,6 +307,7 @@ export class BokehSessionBridgeManager {
   private unsubscribeDoc(sessionId: string): void {
     this.docSubscriptions.get(sessionId)?.();
     this.docSubscriptions.delete(sessionId);
+    this.docErrors.delete(sessionId);
   }
 
   private writable(status: string | undefined): boolean {

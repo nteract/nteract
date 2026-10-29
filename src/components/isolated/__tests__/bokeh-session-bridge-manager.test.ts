@@ -194,11 +194,21 @@ describe("BokehSessionBridgeManager", () => {
       live: true,
       writable: true,
     });
-    expect(docs.subscribe).toHaveBeenCalledWith("session-1", expect.any(Function));
-    // The frame learns it is followed, so a later `live: false` means a new bridge.
-    expect(frame.notifyExtension).toHaveBeenLastCalledWith(
+    expect(docs.subscribe).toHaveBeenCalledWith(
+      "session-1",
+      expect.any(Function),
+      expect.any(Function),
+    );
+    // The open result tells the frame it is followed; the same state sent
+    // while its open is pending would read as a stale `live: false`.
+    expect(frame.notifyExtension).not.toHaveBeenCalledWith(
       NTERACT_BOKEH_SESSION_STATE,
-      expect.objectContaining({ status: "connected", live: true }),
+      expect.objectContaining({ live: true }),
+    );
+    manager.updateRuntimeSessions({ "session-1": runtimeSession() });
+    expect(frame.notifyExtension).not.toHaveBeenCalledWith(
+      NTERACT_BOKEH_SESSION_STATE,
+      expect.objectContaining({ live: true }),
     );
 
     for (const listener of docListeners) listener(update);
@@ -216,6 +226,49 @@ describe("BokehSessionBridgeManager", () => {
 
     manager.setBindings([]);
     expect(docListeners.size).toBe(0);
+  });
+
+  it("reports an error state while the host cannot build the session document", async () => {
+    const { docs, frame, manager } = makeHarness();
+    await manager.handleRequest(NTERACT_BOKEH_SESSION_OPEN, {
+      sessionId: "session-1",
+      outputId: "output-1",
+    });
+    const [, listener, onError] = docs.subscribe.mock.calls[0] as unknown as [
+      string,
+      BokehSessionDocListener,
+      (error: string) => void,
+    ];
+    vi.mocked(frame.notifyExtension).mockClear();
+
+    onError("Failed to fetch Bokeh blob late-blob: 404");
+    expect(frame.notifyExtension).toHaveBeenCalledWith(NTERACT_BOKEH_SESSION_STATE, {
+      sessionId: "session-1",
+      outputId: "output-1",
+      status: "error",
+      epoch: 3,
+      live: true,
+      writable: false,
+      error: "Failed to fetch Bokeh blob late-blob: 404",
+    });
+    await expect(
+      manager.handleRequest(NTERACT_BOKEH_SET_PROPS, {
+        sessionId: "session-1",
+        outputId: "output-1",
+        props: { slider: { value: "0.5" } },
+      }),
+    ).resolves.toEqual({ status: "read_only" });
+
+    // A later full update (a resync or a new epoch) recovers the session.
+    listener(update);
+    expect(frame.notifyExtension).toHaveBeenLastCalledWith(NTERACT_BOKEH_SESSION_STATE, {
+      sessionId: "session-1",
+      outputId: "output-1",
+      status: "connected",
+      epoch: 3,
+      live: true,
+      writable: true,
+    });
   });
 
   it("renders frozen and unknown sessions from the payload without subscribing", async () => {

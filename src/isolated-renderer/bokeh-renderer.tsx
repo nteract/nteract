@@ -6,7 +6,7 @@
  * plugin; the nteract payload remaps the sibling data into one object.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { RendererInstallContext, RendererProps } from "@/lib/renderer-registry";
 import {
   BOKEHJS_EXEC_MIME_TYPE,
@@ -437,6 +437,7 @@ function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
   const [readOnly, setReadOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasMountedDocument, setHasMountedDocument] = useState(false);
+  const viewOnlyLabelId = useId();
   // The host re-sends output payloads as fresh structured clones whenever the
   // output area re-renders. A session is identified by its id, so only a new
   // session (or output) may tear down and remount the live document.
@@ -510,14 +511,26 @@ function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
     };
   }, [sessionKey, outputId]);
 
+  useEffect(() => {
+    if (hasMountedDocument) requestHostResize();
+  }, [readOnly, hasMountedDocument]);
+
   const disconnected = status !== null && status !== "connected";
   const statusLabel =
     status === "closed" ? "Session closed" : status === "error" ? "Session error" : "Disconnected";
 
   return (
     <div className="relative" data-slot="bokeh-session-output">
-      {/* A viewer sees the live session, but its edits would never reach Python. */}
-      <div ref={containerRef} inert={readOnly} />
+      <div ref={containerRef} aria-describedby={readOnly ? viewOnlyLabelId : undefined} />
+      {readOnly ? (
+        <div
+          id={viewOnlyLabelId}
+          className="mt-1 text-right text-xs text-muted-foreground"
+          title="This connection cannot change the session"
+        >
+          View only
+        </div>
+      ) : null}
       {disconnected && hasMountedDocument ? (
         <div className="absolute inset-0 flex items-center justify-center bg-background/60 text-sm font-medium text-foreground backdrop-blur-[1px]">
           <span title={error ?? undefined}>{statusLabel}</span>

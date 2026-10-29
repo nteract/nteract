@@ -421,6 +421,8 @@ export class BokehSessionController {
   private readonly versions = new Map<string, number>();
   /** `ref_props` per session document model; absent models are not writable. */
   private readonly refProps = new Map<string, Set<string>>();
+  /** Property values the session document holds; omitted ones are at their default. */
+  private readonly docProps = new Map<string, Record<string, unknown>>();
   /** Data edits this frame applied optimistically, by transaction, until their echo arrives. */
   private readonly ownTransactions = new Map<string, OwnDataEdit>();
   private readonly pendingProps = new Map<string, PendingProp>();
@@ -430,7 +432,10 @@ export class BokehSessionController {
   private graceTimer: ReturnType<typeof setTimeout> | null = null;
   private inbound: Promise<void> = Promise.resolve();
   private outbound: Promise<void> = Promise.resolve();
+  /** A re-open is queued and has not started yet. */
   private reopening = false;
+  /** An open request is in flight; state sent meanwhile predates its result. */
+  private opening = false;
   private opened = false;
   private readonly unsubscribers: Array<() => void> = [];
 
@@ -454,11 +459,18 @@ export class BokehSessionController {
     subscribe(NTERACT_BOKEH_SESSION_STATE, (params) => {
       if (params.sessionId !== this.sessionId || typeof params.status !== "string") return;
       if (typeof params.writable === "boolean") this.hostWritable = params.writable;
-      this.setStatus(params.status as NteractBokehSessionStatus);
-      // The record can arrive after the frame opened, and a new host bridge
-      // (after a transport reconnect) does not follow the session until the
-      // frame opens it again.
-      if (params.status === "connected" && this.opened && (!this.live || params.live === false)) {
+      this.setStatus(
+        params.status as NteractBokehSessionStatus,
+        typeof params.error === "string" ? params.error : undefined,
+      );
+      if (params.status !== "connected" || !this.opened) return;
+      // A new host bridge (after a transport reconnect) does not follow the
+      // session until the frame opens it again, even mid-open.
+      if (params.live === false) {
+        this.reopen();
+      } else if (!this.live && !this.opening) {
+        // The record arrived after the frame opened. During an open `live`
+        // is stale; its result decides.
         this.reopen();
       }
     });
@@ -510,6 +522,7 @@ export class BokehSessionController {
 
   private async open(): Promise<void> {
     let result: NteractBokehSessionOpenResult | null = null;
+    this.opening = true;
     try {
       result = (await this.options.requestHost(NTERACT_BOKEH_SESSION_OPEN, {
         sessionId: this.sessionId,
@@ -518,6 +531,8 @@ export class BokehSessionController {
     } catch (error) {
       // Hosts without session support still render the payload read-only.
       console.warn("[bokeh-session] Session is not available:", errorMessage(error));
+    } finally {
+      this.opening = false;
     }
     this.opened = true;
     this.live = result?.live === true;
@@ -554,17 +569,28 @@ export class BokehSessionController {
     this.options.onLayout();
   }
 
-  private trackRefProps(update: NteractBokehDocUpdate): void {
-    if (update.kind === "full") this.refProps.clear();
-    for (const id of update.removed) this.refProps.delete(id);
+  private trackModels(update: NteractBokehDocUpdate): void {
+    if (update.kind === "full") {
+      this.refProps.clear();
+      this.docProps.clear();
+    }
+    for (const id of update.removed) {
+      this.refProps.delete(id);
+      this.docProps.delete(id);
+    }
     for (const [id, model] of Object.entries(update.models)) {
       this.refProps.set(id, new Set(model.refProps));
+      this.docProps.set(id, { ...model.props });
+    }
+    for (const [id, props] of Object.entries(update.props)) {
+      const known = this.docProps.get(id);
+      if (known) Object.assign(known, props);
     }
   }
 
   private async applyFull(update: NteractBokehDocUpdate): Promise<void> {
     if (this.epoch !== null && update.epoch < this.epoch) return;
-    this.trackRefProps(update);
+    this.trackModels(update);
     if (this.document && update.canSwitch && !this.dirty && this.epoch !== null) {
       this.epoch = update.epoch;
       return;
@@ -655,7 +681,7 @@ export class BokehSessionController {
   private async applyDelta(update: NteractBokehDocUpdate): Promise<void> {
     const document = this.document;
     if (!document) return;
-    this.trackRefProps(update);
+    this.trackModels(update);
     const sources: Record<string, string[] | null> = {};
     const removed: Record<string, string[]> = {};
     for (const [sourceId, refs] of Object.entries(update.columns)) {
@@ -725,9 +751,13 @@ export class BokehSessionController {
     const patchEvents: JsonPatchEvent[] = [];
     const removals: Array<[string, string[]]> = [];
     const gaps = new Set<string>();
-    for (const event of events.dataEvents) {
+    for (const [position, event] of events.dataEvents.entries()) {
       const sourceId = event.source_id;
-      if (ownEdit?.sourceId === sourceId && event.kind === "ColumnDataChanged") {
+      if (
+        ownEdit?.sourceId === sourceId &&
+        event.kind === "ColumnDataChanged" &&
+        !hasEchoAfter(events.dataEvents, position, ownEdit)
+      ) {
         // A callback replaced the source in the edit's transaction; the
         // launcher folded the edit into this replacement, so no echo follows.
         this.ownTransactions.delete(events.transactionId);
@@ -919,8 +949,12 @@ export class BokehSessionController {
   // ── Outbound ────────────────────────────────────────────────────────
 
   private readonly onDocumentChange = (event: BokehDocumentEvent) => {
-    if (this.disposed || this.applyingRemote || !this.writable()) return;
-    if (!shouldSyncEvent(event)) return;
+    if (this.disposed || this.applyingRemote || !shouldSyncEvent(event)) return;
+    if (this.readOnlyShown) {
+      this.revertViewerEdit(event);
+      return;
+    }
+    if (!this.writable()) return;
     switch (event.kind) {
       case "ModelChanged":
         this.recordLocalProp(event);
@@ -935,6 +969,54 @@ export class BokehSessionController {
         break;
     }
   };
+
+  /**
+   * A viewer's edit never reaches Python, so showing it would misrepresent
+   * the session: restore the document's state. View-local interaction (pan,
+   * zoom, selection, tabs, legend, tools) stays.
+   */
+  private revertViewerEdit(event: BokehDocumentEvent): void {
+    const model = event.model;
+    if (!model?.id || this.epoch === null) return;
+    const id = model.id;
+    if (event.kind === "ColumnsStreamed" || event.kind === "ColumnsPatched") {
+      this.enqueue(() => this.reloadSource(id), false);
+      return;
+    }
+    const attr = event.attr;
+    if (event.kind !== "ModelChanged" || !attr) return;
+    const prop = model.properties?.[attr];
+    if (!prop || prop.readonly || this.refProps.get(id)?.has(attr) !== false) return;
+    if ((attr === "data" && isColumnar(model)) || isViewLocal(model.type, attr)) return;
+    // Deferred: BokehJS is still notifying listeners of this change.
+    this.enqueue(() => this.restoreDocValue(id, attr), false);
+  }
+
+  private restoreDocValue(id: string, attr: string): void {
+    const document = this.document;
+    const model = document?.get_model_by_id?.(id);
+    if (!document || !model || !this.readOnlyShown) return;
+    const props = this.docProps.get(id);
+    this.applyingRemote = true;
+    try {
+      if (props && Object.prototype.hasOwnProperty.call(props, attr)) {
+        document.apply_json_patch({
+          events: [{ kind: "ModelChanged", model: { id }, attr, new: props[attr] }],
+        });
+      } else {
+        const prop = model.properties?.[attr];
+        const value = prop?.default_value?.(model);
+        if (value === undefined || typeof value === "symbol") return;
+        model.setv(
+          { [attr]: prop?.kind?.coerce ? prop.kind.coerce(value) : value },
+          { sync: false },
+        );
+      }
+    } finally {
+      this.applyingRemote = false;
+    }
+    this.options.onLayout();
+  }
 
   private writable(): boolean {
     return this.live && this.hostWritable && this.status === "connected" && this.epoch !== null;
@@ -1126,6 +1208,33 @@ export class BokehSessionController {
     this.document?.clear({ sync: false });
     this.document = null;
   }
+}
+
+/** Properties BokehJS changes for interaction that only affects this view. */
+function isViewLocal(type: string, attr: string): boolean {
+  const name = type.slice(type.lastIndexOf(".") + 1);
+  if (name === "Selection") return true;
+  if (/Range(1d)?$/.test(name)) return attr === "start" || attr === "end";
+  if (name.endsWith("Renderer")) return attr === "visible" || attr === "muted";
+  if (name.endsWith("Tabs")) return attr === "active";
+  if (name === "Toolbar") return attr.startsWith("active_");
+  if (name.endsWith("Tool")) return attr === "active";
+  return false;
+}
+
+function hasEchoAfter(
+  events: NteractBokehResolvedEvents["dataEvents"],
+  position: number,
+  edit: OwnDataEdit,
+): boolean {
+  return events
+    .slice(position + 1)
+    .some(
+      (event) =>
+        event.kind !== "ColumnDataChanged" &&
+        event.source_id === edit.sourceId &&
+        event.echo_of === edit.index,
+    );
 }
 
 function columnDataChanged(

@@ -622,6 +622,67 @@ describe("BokehSessionDocStore", () => {
 
       expect(updates.at(-1)).toMatchObject({ kind: "full", epoch: 1, canSwitch: false });
     });
+
+    it("stops retrying after a bounded number of attempts and reports the error", async () => {
+      vi.useFakeTimers();
+      const { store, fetchBlob, updates } = harness();
+      const errors: string[] = [];
+      store.updateSessions({ "session-1": record() });
+      store.subscribe(
+        "session-1",
+        (update) => updates.push(update),
+        (error) => errors.push(error),
+      );
+      store.receiveFrame(
+        hubFrame(
+          initialStep({
+            models: { ...initialStep().models, div: { type: "Div", ref_props: [], props: {} } },
+            props: { div: { stylesheets: blobProp } },
+          }),
+        ),
+      );
+      const lateFetches = () =>
+        fetchBlob.mock.calls.filter(([ref]) => ref.blob === "late-blob").length;
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      const attempts = lateFetches();
+      expect(attempts).toBeGreaterThan(1);
+      expect(attempts).toBeLessThanOrEqual(8);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("late-blob");
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(lateFetches()).toBe(attempts);
+      expect(updates).toEqual([]);
+    });
+
+    it("skips deltas until the retried full update lands", async () => {
+      vi.useFakeTimers();
+      const { store, blobs, updates } = harness();
+      store.updateSessions({ "session-1": record() });
+      store.subscribe("session-1", (update) => updates.push(update));
+      store.receiveFrame(hubFrame(initialStep()));
+      await tick();
+
+      const step = (heads: string[], props: Record<string, Record<string, string>>) =>
+        hubFrame({ session_id: "session-1", epoch: 0, heads, props });
+      // The second delta is queued before the first one's failure is known.
+      store.receiveFrame(step(["h1"], { slider: { stylesheets: blobProp } }));
+      store.receiveFrame(step(["h2"], { slider: { value: "0.6" } }));
+      await tick();
+      store.receiveFrame(step(["h3"], { slider: { value: "0.7" } }));
+      await tick();
+      expect(updates.map((update) => update.kind)).toEqual(["full"]);
+
+      blobs.set("late-blob", '"loaded"');
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(updates.map((update) => update.kind)).toEqual(["full", "full"]);
+      expect(updates[1].models.slider.props).toMatchObject({ value: 0.7 });
+
+      store.receiveFrame(step(["h4"], { slider: { value: "0.8" } }));
+      await tick();
+      expect(updates.at(-1)).toMatchObject({ kind: "delta", props: { slider: { value: 0.8 } } });
+    });
   });
 
   describe("viewer connections", () => {

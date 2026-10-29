@@ -727,14 +727,17 @@ test.describe("Bokeh session documents", () => {
           last: 0,
         });
       await markMountedRoot(frame);
+      // Each stream advances the source's version by one from the displayed one.
+      const { folded: baseVersion } = await foldVersions(frame, sourceId);
+      const streams = 49;
 
       const streamId = await mcp.createCell("pass");
       await runCell(
         mcp,
         streamId,
-        "for i in range(1, 50):\n    source.stream(dict(x=[i], y=[i * i]), rollover=30)",
+        `for i in range(1, ${streams + 1}):\n    source.stream(dict(x=[i], y=[i * i]), rollover=30)`,
       );
-      await expect.poll(() => columnTail(frame, sourceId)).toEqual({ length: 30, last: 49 });
+      await expect.poll(() => columnTail(frame, sourceId)).toEqual({ length: 30, last: streams });
 
       // A joiner before the fold loads the folded columns plus the retained tail.
       const early = await context.newPage();
@@ -742,23 +745,29 @@ test.describe("Bokeh session documents", () => {
       await openNotebookRoom(early, notebookId);
       await expect
         .poll(() => columnTail(outputFrame(early, displayId), sourceId), { timeout: 60_000 })
-        .toEqual({ length: 30, last: 49 });
+        .toEqual({ length: 30, last: streams });
 
       // After the quiet fold, a joiner reads the columns alone.
+      const streamed = baseVersion + streams;
       await expect
         .poll(() => foldVersions(frame, sourceId), { timeout: 30_000 })
-        .toEqual({ streamed: 49, folded: 49 });
-      await runCell(mcp, streamId, "source.stream(dict(x=[50], y=[2500]), rollover=30)");
+        .toEqual({ streamed, folded: streamed });
+      const next = streams + 1;
+      await runCell(
+        mcp,
+        streamId,
+        `source.stream(dict(x=[${next}], y=[${next * next}]), rollover=30)`,
+      );
       await expect
         .poll(() => foldVersions(frame, sourceId), { timeout: 30_000 })
-        .toEqual({ streamed: 50, folded: 50 });
+        .toEqual({ streamed: streamed + 1, folded: streamed + 1 });
       const late = await context.newPage();
       pages.push(late);
       await openNotebookRoom(late, notebookId);
       for (const viewer of [page, early, late]) {
         await expect
           .poll(() => columnTail(outputFrame(viewer, displayId), sourceId), { timeout: 60_000 })
-          .toEqual({ length: 30, last: 50 });
+          .toEqual({ length: 30, last: next });
       }
       await expectSameMountedRoot(frame);
     } finally {

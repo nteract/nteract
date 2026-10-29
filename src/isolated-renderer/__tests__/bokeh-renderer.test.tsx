@@ -336,7 +336,7 @@ describe("Bokeh renderer plugin", () => {
     expect(container.querySelector('[data-testid="native-bokeh-root"]')).not.toBeNull();
   });
 
-  it("blocks interaction with a live session the connection may not write", async () => {
+  it("labels a live session the connection may not write as view only", async () => {
     const { NativeRenderer, requestHost, notifications } = setupNativeBokehSession();
     requestHost.mockResolvedValue({
       sessionId: "session-1",
@@ -346,7 +346,7 @@ describe("Bokeh renderer plugin", () => {
       live: true,
       writable: false,
     });
-    const { container } = render(
+    const { container, getByText, queryByText } = render(
       <NativeRenderer
         data={nativeSessionPayload()}
         mimeType={NTERACT_BOKEH_SESSION_MIME_TYPE}
@@ -356,7 +356,10 @@ describe("Bokeh renderer plugin", () => {
     const root = () => container.querySelector('[data-testid="native-bokeh-root"]');
 
     await waitFor(() => expect(root()).not.toBeNull());
-    expect(root()!.parentElement).toHaveAttribute("inert");
+    // Viewers keep pan, zoom, tooltips and keyboard access.
+    expect(container.querySelector("[inert]")).toBeNull();
+    const label = getByText("View only");
+    expect(root()!.parentElement).toHaveAttribute("aria-describedby", label.id);
     expect(container).not.toHaveTextContent("Disconnected");
 
     await act(async () => {
@@ -369,7 +372,36 @@ describe("Bokeh renderer plugin", () => {
         writable: true,
       });
     });
-    expect(root()!.parentElement).not.toHaveAttribute("inert");
+    expect(queryByText("View only")).toBeNull();
+    expect(root()!.parentElement).not.toHaveAttribute("aria-describedby");
+  });
+
+  it("shows a session error the host reports", async () => {
+    const { NativeRenderer, notifications } = setupNativeBokehSession();
+    const { container } = render(
+      <NativeRenderer
+        data={nativeSessionPayload()}
+        mimeType={NTERACT_BOKEH_SESSION_MIME_TYPE}
+        outputId="output-1"
+      />,
+    );
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="native-bokeh-root"]')).not.toBeNull();
+    });
+
+    await act(async () => {
+      notifications.get(NTERACT_BOKEH_SESSION_STATE)?.({
+        sessionId: "session-1",
+        outputId: "output-1",
+        status: "error",
+        epoch: 0,
+        live: true,
+        writable: false,
+        error: "Failed to fetch Bokeh blob b: 404",
+      });
+    });
+    expect(container).toHaveTextContent("Session error");
+    expect(container.querySelector('[title="Failed to fetch Bokeh blob b: 404"]')).not.toBeNull();
   });
 
   it("keeps a native session mounted when an equivalent payload is re-sent", async () => {

@@ -95,6 +95,8 @@ export interface BokehSessionDocStoreOptions {
 }
 
 export type BokehSessionDocListener = (update: NteractBokehDocUpdate) => void;
+/** The store gave up rebuilding the document; a later full update recovers. */
+export type BokehSessionDocErrorListener = (error: string) => void;
 
 /**
  * User values older than this are not rewritten after a resync or epoch
@@ -107,6 +109,8 @@ const PROP_BLOB_CACHE_LIMIT = 256;
 /** Backoff for rebuilding a full update after one failed (e.g. a blob fetch). */
 const RETRY_INITIAL_MS = 500;
 const RETRY_MAX_MS = 8_000;
+/** Retries of a full update before subscribers are told it failed. */
+const RETRY_LIMIT = 5;
 
 interface PendingValue {
   modelId: string;
@@ -118,6 +122,7 @@ interface PendingValue {
 interface SessionEntry {
   readonly sessionId: string;
   readonly listeners: Set<BokehSessionDocListener>;
+  readonly errorListeners: Map<BokehSessionDocListener, BokehSessionDocErrorListener>;
   record: BokehSessionState | undefined;
   replica: BokehSessionDocReplica | null;
   synced: boolean;
@@ -129,6 +134,7 @@ interface SessionEntry {
   /** An update failed to build since the last full update to every subscriber. */
   missed: boolean;
   retryDelay: number;
+  retryAttempts: number;
   retryTimer: ReturnType<typeof setTimeout> | null;
   /** What subscribers showed when the replica was dropped, for the switch check. */
   previousHeads: string[] | null;
@@ -253,18 +259,24 @@ export class BokehSessionDocStore {
    * Follow a session's document. The listener receives a `full` update once
    * the epoch's document has arrived, then a `delta` per sync step.
    */
-  subscribe(sessionId: string, listener: BokehSessionDocListener): () => void {
+  subscribe(
+    sessionId: string,
+    listener: BokehSessionDocListener,
+    onError?: BokehSessionDocErrorListener,
+  ): () => void {
     let entry = this.sessions.get(sessionId);
     if (!entry) {
       entry = {
         sessionId,
         listeners: new Set(),
+        errorListeners: new Map(),
         record: this.records[sessionId],
         replica: null,
         synced: false,
         queuedHeads: [],
         missed: false,
         retryDelay: RETRY_INITIAL_MS,
+        retryAttempts: 0,
         retryTimer: null,
         previousHeads: null,
         rewrite: false,
@@ -274,6 +286,7 @@ export class BokehSessionDocStore {
       this.sessions.set(sessionId, entry);
     }
     entry.listeners.add(listener);
+    if (onError) entry.errorListeners.set(listener, onError);
     if (!entry.replica && entry.record) {
       this.openReplica(entry, entry.record.epoch);
     } else if (entry.synced) {
@@ -282,6 +295,7 @@ export class BokehSessionDocStore {
     const subscribed = entry;
     return () => {
       subscribed.listeners.delete(listener);
+      subscribed.errorListeners.delete(listener);
       if (subscribed.listeners.size > 0 || this.sessions.get(sessionId) !== subscribed) return;
       // The daemon keeps pushing frames to a subscribed peer; they are ignored
       // once no replica is left to receive them.
@@ -414,6 +428,7 @@ export class BokehSessionDocStore {
       entry.replica?.free();
       entry.replica = null;
       entry.listeners.clear();
+      entry.errorListeners.clear();
       this.cancelRetry(entry);
     }
     this.sessions.clear();
@@ -425,6 +440,9 @@ export class BokehSessionDocStore {
     replica.set_read_only(this.readOnly(entry));
     entry.replica = replica;
     entry.synced = false;
+    // A new document gets its own retries.
+    entry.retryAttempts = 0;
+    entry.retryDelay = RETRY_INITIAL_MS;
     // Any frame subscribes; an empty replica's first message asks for the doc.
     this.send(replica, replica.flush_sync() ?? null);
   }
@@ -551,6 +569,8 @@ export class BokehSessionDocStore {
     replica: BokehSessionDocReplica,
     changeset: BokehDocChangeset,
   ): void {
+    // Subscribers missed a state; a delta on top of it would not match.
+    if (entry.missed) return;
     // Read synchronously: the replica keeps changing while values resolve.
     const added: Record<string, BokehDocModel> = {};
     for (const id of changeset.models_added) {
@@ -627,15 +647,18 @@ export class BokehSessionDocStore {
         } catch (error) {
           if (this.disposed) return;
           this.options.logger?.warn("[bokeh-session] Failed to build a session update:", error);
-          this.retryFull(entry);
+          this.retryFull(entry, error);
           return;
         }
         if (this.disposed) return;
+        // Built before an earlier update's failure was known.
+        if (kind === "delta" && entry.missed) return;
         if (kind === "full") {
           // A switch would keep the state subscribers never received.
           if (entry.missed) update = { ...update, canSwitch: false };
           entry.missed = false;
           entry.retryDelay = RETRY_INITIAL_MS;
+          entry.retryAttempts = 0;
           this.cancelRetry(entry);
         }
         for (const listener of listeners) listener(update);
@@ -645,10 +668,20 @@ export class BokehSessionDocStore {
       });
   }
 
-  /** Send everyone a full update after a backoff, until one is delivered. */
-  private retryFull(entry: SessionEntry): void {
+  /**
+   * Send everyone a full update after a backoff, until one is delivered or
+   * the attempts run out. A replica replacement or a new subscriber still
+   * starts a fresh full update afterwards.
+   */
+  private retryFull(entry: SessionEntry, error: unknown): void {
     entry.missed = true;
     if (entry.retryTimer !== null) return;
+    if (entry.retryAttempts >= RETRY_LIMIT) {
+      const message = error instanceof Error ? error.message : String(error);
+      for (const onError of entry.errorListeners.values()) onError(message);
+      return;
+    }
+    entry.retryAttempts += 1;
     const delay = entry.retryDelay;
     entry.retryDelay = Math.min(delay * 2, RETRY_MAX_MS);
     entry.retryTimer = setTimeout(() => {

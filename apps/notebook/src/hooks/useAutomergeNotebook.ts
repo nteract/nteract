@@ -15,6 +15,7 @@ import {
   refreshBlobPort,
   refreshBlobResolver,
 } from "../lib/blob-port";
+import { connectionScopeAllowsNotebookWrite } from "../lib/connection-scope";
 import { logger } from "../lib/logger";
 import {
   type CellSnapshot,
@@ -66,10 +67,6 @@ function waitForNotebookWasmReady(): Promise<void> {
     loggedWasmReady = true;
     logger.info("[automerge-notebook] WASM initialized");
   });
-}
-
-function scopeAllowsNotebookWrite(scope: string | null): boolean {
-  return scope === null || scope === "editor" || scope === "owner";
 }
 
 function normalizeCommentsDocId(commentsDocId: string | null | undefined): string | null {
@@ -466,7 +463,7 @@ export function useNotebook() {
         setConnectionGeneration((generation) => generation + 1);
         const connectionScope = trigger.payload.connection_scope ?? null;
         setConnectionScope(connectionScope);
-        canWriteNotebookRef.current = scopeAllowsNotebookWrite(connectionScope);
+        canWriteNotebookRef.current = connectionScopeAllowsNotebookWrite(connectionScope);
         const nextNotebookIdentity = notebookReadyIdentity(trigger.payload);
         const preserveProjection = shouldPreserveBootstrapProjection({
           previousIdentity: readyNotebookIdentityRef.current,

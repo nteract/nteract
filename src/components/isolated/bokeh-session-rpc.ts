@@ -209,6 +209,8 @@ export interface NteractBokehSessionStateParams {
    */
   live: boolean;
   writable: boolean;
+  /** With status `error`: why the host stopped following the document. */
+  error?: string;
 }
 
 export interface NteractBokehSessionDocParams {

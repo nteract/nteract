@@ -29,6 +29,8 @@ class FakeBuffer {
 interface FakeProp {
   syncable?: boolean;
   may_have_refs?: boolean;
+  readonly?: boolean;
+  default_value?(obj: unknown): unknown;
 }
 
 class FakeBokehModel {
@@ -179,7 +181,11 @@ const settle = () => vi.advanceTimersByTimeAsync(0);
 
 function harness(
   options: {
-    open?: Partial<NteractBokehSessionOpenResult> | Error;
+    /** A function is called per open, e.g. to send state while the open is in flight. */
+    open?:
+      | Partial<NteractBokehSessionOpenResult>
+      | Error
+      | ((count: number) => Partial<NteractBokehSessionOpenResult>);
     payload?: Record<string, unknown>;
     data?: (params: NteractBokehSessionDataParams) => NteractBokehSessionDataResult;
     setProps?: () => unknown;
@@ -219,13 +225,17 @@ function harness(
     calls.push({ method, params: params as Record<string, unknown> });
     if (method === NTERACT_BOKEH_SESSION_OPEN) {
       if (options.open instanceof Error) throw options.open;
+      const open =
+        typeof options.open === "function"
+          ? options.open(calls.filter((call) => call.method === method).length)
+          : options.open;
       return {
         sessionId: "session-1",
         outputId: "output-1",
         status: "connected",
         epoch: 3,
         live: true,
-        ...options.open,
+        ...open,
       };
     }
     if (method === NTERACT_BOKEH_SESSION_DATA) {
@@ -434,7 +444,103 @@ describe("BokehSessionController", () => {
       controller.dispose();
     });
 
-    it("keeps a viewer's edits local and marks the output read-only", async () => {
+    it("opens once when the host reports the state it opened while the open is in flight", async () => {
+      // The record arrives after the frame first opened: the host reports the
+      // session connected, and while the re-open is in flight it reports
+      // itself following the session, as the bridge manager may.
+      let h: ReturnType<typeof harness> | null = null;
+      h = harness({
+        open: (count) => {
+          if (count === 1) return { status: "disconnected", live: false, epoch: null };
+          h!.notify(NTERACT_BOKEH_SESSION_STATE, state());
+          return {};
+        },
+      });
+      await h.controller.start();
+      h.notify(NTERACT_BOKEH_SESSION_STATE, state({ live: false }));
+      await settle();
+      await h.sendDoc(fullUpdate());
+      await settle();
+
+      expect(h.callsTo(NTERACT_BOKEH_SESSION_OPEN)).toHaveLength(2);
+      h.controller.dispose();
+    });
+
+    it("opens again when a new host appears while an open is in flight", async () => {
+      let h: ReturnType<typeof harness> | null = null;
+      h = harness({
+        open: (count) => {
+          // The bridge serving this open is replaced before it answers.
+          if (count === 2) h!.notify(NTERACT_BOKEH_SESSION_STATE, state({ live: false }));
+          return {};
+        },
+      });
+      await h.controller.start();
+      await h.sendDoc(fullUpdate());
+      h.notify(NTERACT_BOKEH_SESSION_STATE, state({ live: false }));
+      await settle();
+      await settle();
+
+      expect(h.callsTo(NTERACT_BOKEH_SESSION_OPEN)).toHaveLength(3);
+      h.controller.dispose();
+    });
+
+    it("reverts a viewer's property edits to the document and keeps view-local state", async () => {
+      const h = harness({ open: { writable: false } });
+      await h.controller.start();
+      const document = h.documents[0];
+      document.add(new FakeBokehModel("x_range", "Range1d", { start: { syncable: true } }));
+      document.add(new FakeBokehModel("selection", "Selection", { indices: { syncable: true } }));
+      document.add(new FakeBokehModel("tabs", "Tabs", { active: { syncable: true } }));
+      document.add(
+        new FakeBokehModel("renderer", "GlyphRenderer", { visible: { syncable: true } }),
+      );
+      await h.sendDoc(
+        fullUpdate({
+          models: {
+            ...fullUpdate().models,
+            x_range: { type: "Range1d", refProps: [], props: { start: 0 } },
+            selection: { type: "Selection", refProps: [], props: {} },
+            tabs: { type: "Tabs", refProps: ["tabs"], props: { active: 0 } },
+            renderer: { type: "GlyphRenderer", refProps: ["glyph"], props: {} },
+          },
+        }),
+      );
+      document.applied.length = 0;
+      h.calls.length = 0;
+      const slider = document.get_model_by_id("slider")!;
+      slider.properties.value = { syncable: true };
+      slider.properties.title = { syncable: true, default_value: () => "" };
+      expect(h.onReadOnly).toHaveBeenLastCalledWith(true);
+
+      const change = (id: string, attr: string, value: unknown) =>
+        document.emit({ kind: "ModelChanged", attr, value, model: document.get_model_by_id(id) });
+      // Pan, selection, a tab switch and a legend click stay local.
+      change("x_range", "start", 5);
+      change("selection", "indices", [1]);
+      change("tabs", "active", 1);
+      change("renderer", "visible", false);
+      // Widget edits would never reach Python, so the document's value returns.
+      change("slider", "value", 0.6);
+      change("slider", "title", "Mine");
+      document.emit({ kind: "MessageSent", msg_type: "bokeh_event", msg_data: {} });
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(document.appliedEvents()).toEqual([
+        { kind: "ModelChanged", model: { id: "slider" }, attr: "value", new: 0.5 },
+      ]);
+      expect(slider.setv).toHaveBeenCalledWith({ title: "" }, { sync: false });
+      expect(h.calls).toEqual([]);
+
+      // A local table edit is replaced by the document's columns.
+      document.emit({ kind: "ColumnsPatched", model: document.get_model_by_id("source") });
+      await settle();
+      expect(h.callsTo(NTERACT_BOKEH_SESSION_DATA)).toHaveLength(1);
+      expect(h.callsTo(NTERACT_BOKEH_APPLY_PATCH)).toHaveLength(0);
+      h.controller.dispose();
+    });
+
+    it("lets a viewer that becomes an editor write again", async () => {
       const { controller, document, notify, onReadOnly, calls, callsTo } = await synced({
         open: { writable: false },
       });
@@ -442,7 +548,6 @@ describe("BokehSessionController", () => {
       slider.properties.value = { syncable: true };
       expect(onReadOnly).toHaveBeenLastCalledWith(true);
 
-      document.emit({ kind: "ModelChanged", attr: "value", value: 0.6, model: slider });
       document.emit({ kind: "MessageSent", msg_type: "bokeh_event", msg_data: {} });
       await vi.advanceTimersByTimeAsync(100);
       expect(calls).toEqual([]);
@@ -1199,6 +1304,59 @@ describe("BokehSessionController", () => {
       );
       expect(document.appliedEvents()).toHaveLength(2);
       expect(callsTo(NTERACT_BOKEH_SESSION_DATA)).toHaveLength(0);
+      controller.dispose();
+    });
+
+    it("keeps its own edit when its echo follows a replacement in the same transaction", async () => {
+      let reload = false;
+      const { controller, document, sendEvents, calls, callsTo } = await synced({
+        data: (): NteractBokehSessionDataResult => ({
+          epoch: 3,
+          columns: { source: { x: { version: reload ? 4 : 2, data: reload ? [9, 10] : [0] } } },
+          events: [],
+          foldRequested: [],
+        }),
+      });
+      document.emit({ kind: "ColumnsStreamed", model: document.get_model_by_id("source") });
+      await settle();
+      const transactionId = (calls[0].params as { transactionId: string }).transactionId;
+      reload = true;
+
+      // A callback replaced the source before the launcher re-emitted the edit.
+      await sendEvents(
+        eventsFor({
+          transactionId,
+          dataEvents: [
+            {
+              kind: "ColumnDataChanged",
+              source_id: "source",
+              base_version: 2,
+              new_version: 3,
+              columns: { x: { version: 3, data: [9] } },
+              columns_removed: [],
+            },
+            {
+              kind: "ColumnsStreamed",
+              source_id: "source",
+              base_version: 3,
+              new_version: 4,
+              data: { type: "map", entries: [["x", [10]]] },
+              echo_of: 0,
+            },
+          ],
+        }),
+      );
+
+      // The replacement wiped the optimistic edit, so the echo is not applied
+      // again on top of it: the source reloads to the kernel's state.
+      expect(document.appliedEvents().map((event) => event.kind)).toEqual([
+        "ColumnDataChanged",
+        "ColumnDataChanged",
+      ]);
+      expect(document.appliedEvents().at(-1)).toMatchObject({
+        data: { type: "map", entries: [["x", [9, 10]]] },
+      });
+      expect(callsTo(NTERACT_BOKEH_SESSION_DATA)).toHaveLength(1);
       controller.dispose();
     });
 

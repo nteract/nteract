@@ -17,8 +17,6 @@ import {
   type ExecuteCellOptions,
   type NotebookResponse,
   type NotebookOutlineItem,
-  allowsNotebookWrite,
-  isConnectionScope,
   putBlob,
   type SessionStatus,
 } from "runtimed";
@@ -97,6 +95,7 @@ import {
   setCommentsProjectionSnapshot,
   useCommentsProjection,
 } from "./lib/comments-projection-store";
+import { connectionScopeAllowsNotebookWrite } from "./lib/connection-scope";
 import { createDesktopConnectionStatusSource } from "./lib/desktop-connection-status";
 import {
   CondaDependencyPanel as CondaDependencyHeader,
@@ -247,10 +246,6 @@ function createClientExecutionId(): string {
 
 function createLocalCommentEntityId(prefix: "thread" | "message"): string {
   return `${prefix}-${globalThis.crypto.randomUUID()}`;
-}
-
-function canConnectionScopeMutateComments(connectionScope: string | null): boolean {
-  return connectionScope === null || connectionScope === "editor" || connectionScope === "owner";
 }
 
 function commentAnchorThreadOrderScope(anchor: CommentAnchor): string {
@@ -651,10 +646,8 @@ function AppContent() {
     blobResolver: useBlobResolver(),
     client: notebookClient,
     createReplica: createBokehReplica,
-    // The hub refuses a viewer's session writes; null is an unscoped local connection.
-    canWrite:
-      connectionScope === null ||
-      (isConnectionScope(connectionScope) && allowsNotebookWrite(connectionScope)),
+    // The hub refuses a viewer's session writes.
+    canWrite: connectionScopeAllowsNotebookWrite(connectionScope),
     logger,
   });
 
@@ -775,7 +768,7 @@ function AppContent() {
   const canMutateComments =
     commentsEnabled &&
     Boolean(commentsProjection) &&
-    canConnectionScopeMutateComments(connectionScope);
+    connectionScopeAllowsNotebookWrite(connectionScope);
   const commentsPanelStatus =
     commentsProjection === null
       ? "Comments sync unavailable."
