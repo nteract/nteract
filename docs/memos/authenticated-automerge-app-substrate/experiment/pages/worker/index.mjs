@@ -877,6 +877,8 @@ export class Page {
         // Admission routes answer a missing Page exactly as an unreadable one,
         // for clients that declare it. The deployed viewer renews an expired
         // draft registration only on this 404, so other clients keep it.
+        // Remove the legacy branch once older viewers must reload before
+        // reconnecting and every supported viewer handles the unified 403.
         if (admissionRoute && unifiedMissing(request))
           throw withAdmissionReason(new PermissionDenied(), "page_not_found");
         if (admissionRoute)
