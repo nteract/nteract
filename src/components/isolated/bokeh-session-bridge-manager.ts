@@ -58,12 +58,13 @@ function requireString(params: Record<string, unknown>, field: string): string {
 
 function stringMap(value: unknown): Record<string, Record<string, string>> {
   if (!isRecord(value)) throw new Error("Bokeh property writes must be an object");
-  const result: Record<string, Record<string, string>> = {};
+  // Frame-supplied model and property names are data, including prototype keys.
+  const result: Record<string, Record<string, string>> = Object.create(null);
   for (const [modelId, props] of Object.entries(value)) {
     if (!isRecord(props)) throw new Error("Bokeh property writes must map models to values");
     for (const [name, encoded] of Object.entries(props)) {
       if (typeof encoded !== "string") throw new Error("Bokeh property values must be JSON text");
-      (result[modelId] ??= {})[name] = encoded;
+      (result[modelId] ??= Object.create(null))[name] = encoded;
     }
   }
   return result;

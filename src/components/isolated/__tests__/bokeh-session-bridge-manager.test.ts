@@ -347,6 +347,67 @@ describe("BokehSessionBridgeManager", () => {
     expect(docs.writeProps).toHaveBeenCalledOnce();
   });
 
+  it.each(["__proto__", "constructor"])(
+    "does not mutate host prototypes before rejecting model %s",
+    async (modelId) => {
+      const { docs, manager } = makeHarness();
+      const marker = "__nteractBokehBridgeProbe";
+      const props = JSON.parse(`{"${modelId}":{"${marker}":"true"}}`);
+      docs.writeProps.mockImplementation(() => {
+        throw new Error("Unknown Bokeh model");
+      });
+
+      try {
+        await expect(
+          manager.handleRequest(NTERACT_BOKEH_SET_PROPS, {
+            sessionId: "session-1",
+            outputId: "output-1",
+            props,
+          }),
+        ).rejects.toThrow("Unknown Bokeh model");
+        expect(Object.getOwnPropertyDescriptor(Object.prototype, marker)).toBeUndefined();
+        expect(Object.getOwnPropertyDescriptor(Object, marker)).toBeUndefined();
+      } finally {
+        // Keep the failing regression isolated if the unsafe decoder returns.
+        Reflect.deleteProperty(Object.prototype, marker);
+        Reflect.deleteProperty(Object, marker);
+        manager.dispose();
+      }
+    },
+  );
+
+  it("preserves special model and property names as own data keys", async () => {
+    const { docs, manager } = makeHarness();
+    const marker = "__nteractBokehBridgeProbe";
+    const props = JSON.parse(
+      `{"__proto__":{"${marker}":"1"},"constructor":{"${marker}":"2"},"slider":{"__proto__":"3","constructor":"4","prototype":"5","value":"0.5"}}`,
+    );
+
+    try {
+      await expect(
+        manager.handleRequest(NTERACT_BOKEH_SET_PROPS, {
+          sessionId: "session-1",
+          outputId: "output-1",
+          props,
+        }),
+      ).resolves.toEqual({ status: "written" });
+      const [, forwarded] = docs.writeProps.mock.calls[0] as unknown as [
+        string,
+        Record<string, Record<string, string>>,
+      ];
+      expect(Object.keys(forwarded)).toEqual(Object.keys(props));
+      expect(JSON.stringify(forwarded)).toBe(JSON.stringify(props));
+      expect(Object.getPrototypeOf(forwarded)).toBeNull();
+      for (const values of Object.values(forwarded)) {
+        expect(Object.getPrototypeOf(values)).toBeNull();
+      }
+    } finally {
+      Reflect.deleteProperty(Object.prototype, marker);
+      Reflect.deleteProperty(Object, marker);
+      manager.dispose();
+    }
+  });
+
   it("follows a viewer connection's sessions read-only", async () => {
     const { docs, frame, manager, transport } = makeHarness({ writable: false });
     expect(frame.notifyExtension).toHaveBeenCalledWith(
