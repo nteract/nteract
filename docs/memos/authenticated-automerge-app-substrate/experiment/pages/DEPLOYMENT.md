@@ -57,7 +57,9 @@ a rollback, accounts repair their index within six hours of their next listing, 
 immediately when the `PAGES_CATALOG_INDEX` value changes. Index migrations run
 lazily on first use and must stay additive so a rollback build keeps working
 against the newer schema. Listing cursors are sealed with a key derived from the
-session secret; rotating that secret invalidates outstanding cursors. Copying
+session secret and expire after 24 hours; rotating that secret invalidates
+outstanding cursors. Migration 2 adds per-principal title snapshots and clears the
+reconcile markers, so each account rebuilds its rows on its next listings. Copying
 a document or its assets between targets is separate from deployment; publishing
 does not migrate another environment's data.
 

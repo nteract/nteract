@@ -13,6 +13,7 @@ import {
   migrateCatalogIndex,
   openCursor,
   parseListArguments,
+  pruneIndexRows,
   queryCatalogIndex,
   reportPageIndex,
   restrictPageIndex,
@@ -48,6 +49,7 @@ const at = (minute) =>
 const namespace = "user:anaconda-fixture";
 const owner = `${namespace}:fixture-user`;
 const member = `${namespace}:member`;
+const stranger = `${namespace}:stranger`;
 
 /** Shorten every bound for one test and restore it afterwards. */
 function shortBounds(t, timeouts = {}, bounds = {}) {
@@ -306,7 +308,11 @@ async function catalogFixture(t, { index = "1" } = {}) {
       },
     },
   };
-  const tokens = { [owner]: auth.apiKey(), [member]: auth.apiKey({ userId: "member" }) };
+  const tokens = {
+    [owner]: auth.apiKey(),
+    [member]: auth.apiKey({ userId: "member" }),
+    [stranger]: auth.apiKey({ userId: "stranger" }),
+  };
   const catalog = (principal) => env.CATALOGS.getByName(principal);
   const request = (principal, path, body) =>
     new Request(`https://pages.invalid${path}`, {
@@ -413,16 +419,19 @@ test("first listing backfills owned and shared entries, verifying shared Pages",
       shared: true,
     });
 
+  // The first pass spans listings (128 entries each); cursors work across the
+  // switch from Catalog entries to D1.
   const pages = [];
   let cursor;
   do {
     const result = await f.list(owner, { limit: 50, ...(cursor && { cursor }) });
-    assert.equal(result.source, "index");
     pages.push(...result.body.pages);
     cursor = result.body.next_cursor;
   } while (cursor);
   assert.equal(pages.length, 120, "no 100-entry cap");
+  assert.equal(new Set(pages.map((page) => page.page_id)).size, 120);
   assert.equal(pages[0].title, "Owned 120");
+  assert.equal((await f.list(owner, { limit: 1 })).source, "index");
 
   // The member's pass cannot finish while one host is unavailable, so the
   // Catalog entries serve; a later listing completes it and switches to D1.
@@ -471,8 +480,9 @@ test("a denied matching row and a nonexistent row produce the same response", as
   // A revoked member's row left behind (for example, D1 was down at revocation),
   // older than both visible Pages, so it would sit right after a page of two.
   f.db.sqlite.exec(`INSERT INTO pages_catalog_access
-    (page_id, principal, role, source, updated_revision, updated_at)
-    VALUES ('${id(9)}', '${member}', 'viewer', 'member', 1, '2000-01-01T00:00:00.000Z')`);
+    (page_id, principal, role, source, updated_revision, updated_at, title, title_search)
+    VALUES ('${id(9)}', '${member}', 'viewer', 'member', 1, '2000-01-01T00:00:00.000Z',
+      'Secret visible', 'secret visible')`);
   const shape = (result) => ({
     status: result.status,
     source: result.source,
@@ -481,8 +491,9 @@ test("a denied matching row and a nonexistent row produce the same response", as
   });
   for (const args of [{ limit: 2 }, { query: "secret" }, { query: "visible", limit: 2 }]) {
     f.db.sqlite.exec(`INSERT OR IGNORE INTO pages_catalog_access
-      (page_id, principal, role, source, updated_revision, updated_at)
-      VALUES ('${id(9)}', '${member}', 'viewer', 'member', 1, '2000-01-01T00:00:00.000Z')`);
+      (page_id, principal, role, source, updated_revision, updated_at, title, title_search)
+      VALUES ('${id(9)}', '${member}', 'viewer', 'member', 1, '2000-01-01T00:00:00.000Z',
+        'Secret visible', 'secret visible')`);
     const withStale = shape(await f.list(member, args));
     assert.equal(
       f.db.rows("SELECT count(*) AS n FROM pages_catalog_access WHERE page_id = ?", id(9))[0].n,
@@ -819,4 +830,178 @@ test("pagination is best-effort across concurrent title changes", async (t) => {
   const ids = seen.map((page) => page.page_id);
   assert.equal(new Set(ids).size, ids.length, "no duplicates");
   assert.deepEqual(ids, [id(6), id(5), id(4), id(3), id(1)]);
+});
+
+test("cursors expire after a day", async () => {
+  const env = {};
+  const context = { principal: owner, needle: null, inTrash: false };
+  const issued = Date.parse("2026-10-01T00:00:00Z");
+  const cursor = await sealCursor(env, context, { updated_at: at(1), page_id: id(1) }, issued);
+  const hour = 60 * 60 * 1000;
+  assert.equal((await openCursor(env, context, cursor, issued + 23 * hour)).page_id, id(1));
+  for (const now of [issued + 25 * hour, issued - hour])
+    await assert.rejects(openCursor(env, context, cursor, now), { code: "invalid_cursor" });
+});
+
+test("a regrant that lands before a delayed prune survives it", async (t) => {
+  const { db, env } = await seededIndex(t);
+  const metadata = (revision, role) => ({
+    pageId: id(1),
+    owner,
+    deleted: false,
+    acl: { revision, members: { [member]: { role, generation: revision } } },
+  });
+  await reportPageIndex(env, { metadata: metadata(1, "viewer"), title: "Plan", observedAt: at(1) });
+  let release;
+  db.holdNext = new Promise((resolve) => {
+    release = resolve;
+  });
+  // A listing saw the row at revision 1 and its Page host denied it.
+  const prune = pruneIndexRows(db, [{ page_id: id(1), principal: member, revision: 1 }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  await reportPageIndex(env, { metadata: metadata(3, "editor"), title: "Plan", observedAt: at(2) });
+  release();
+  await prune;
+  assert.deepEqual(
+    db.rows("SELECT role, updated_revision FROM pages_catalog_access WHERE principal = ?", member),
+    [{ role: "editor", updated_revision: 3 }],
+  );
+  await pruneIndexRows(db, [{ page_id: id(1), principal: member, revision: 3 }]);
+  assert.equal(
+    db.rows("SELECT count(*) AS n FROM pages_catalog_access WHERE principal = ?", member)[0].n,
+    0,
+  );
+});
+
+test("a revoked principal cannot probe titles set after revocation", async (t) => {
+  const f = await catalogFixture(t);
+  const viewer = { revision: 1, members: { [member]: { role: "viewer", generation: 1 } } };
+  const pages = Array.from({ length: 18 }, (_, n) =>
+    f.addPage(id(n + 1), `Alpha ${n + 1}`, viewer),
+  );
+  for (const page of pages) page.cacheTitle();
+  await f.settle();
+  await f.list(owner);
+  assert.equal((await f.list(member)).body.pages.length, 18);
+  // Let the member's first pass finish so the probes below only scan.
+  for (let request = 0; request < 4; request++) await f.list(member, { limit: 1 });
+  assert.equal(await f.catalog(member).ctx.storage.get("host/index/sync"), undefined);
+  assert.equal(await f.catalog(member).ctx.storage.get("host/index/dirty"), undefined);
+  // Revoke every grant while D1 is down: all 18 member rows stay behind.
+  shortBounds(t, { read: 30, write: 30 });
+  f.db.mode = "hang";
+  for (const page of pages)
+    await page.installAccess({
+      ...page.metadata,
+      acl: { revision: 2, members: { [member]: { role: "none", generation: 2 } } },
+    });
+  await f.settle();
+  f.db.mode = "ok";
+  Object.assign(catalogIndexTimeouts, { read: 2500, write: 1500 });
+  // Rename every Page through the owner's Catalog, which rewrites the shared
+  // Page rows without touching the revoked member's rows.
+  const storage = f.catalog(owner).ctx.storage;
+  for (let n = 1; n <= 18; n++)
+    await storage.put(`page/${id(n)}`, {
+      ...(await storage.get(`page/${id(n)}`)),
+      title: `Zebra ${n}`,
+      updated_at: "2099-01-01T00:00:00.000Z",
+    });
+  await storage.put("host/index/dirty", "renamed");
+  await f.list(owner);
+  assert.equal(
+    f.db.rows("SELECT count(*) AS n FROM pages_catalog_pages WHERE title LIKE 'Zebra%'")[0].n,
+    18,
+  );
+  assert.equal(
+    f.db.rows("SELECT count(*) AS n FROM pages_catalog_access WHERE principal = ?", member)[0].n,
+    18,
+  );
+  const shape = (result) => ({
+    status: result.status,
+    pages: result.body.pages,
+    more: result.body.next_cursor !== null,
+  });
+  for (const args of [{ query: "zebra", limit: 1 }, { query: "zebra 7" }]) {
+    const revoked = shape(await f.list(member, args));
+    const nonexistent = shape(await f.list(stranger, args));
+    assert.deepEqual(revoked, nonexistent, JSON.stringify(args));
+    assert.deepEqual(revoked, { status: 200, pages: [], more: false });
+  }
+});
+
+test("reconcile checks its deadline before each step and stops at an exact position", async (t) => {
+  const f = await catalogFixture(t);
+  shortBounds(t, { reconcile: 50, verify: 500 });
+  const memberStorage = f.catalog(member).ctx.storage;
+  const viewer = { revision: 1, members: { [member]: { role: "viewer", generation: 1 } } };
+  for (let n = 1; n <= 16; n++) {
+    const page = f.addPage(id(n), `Slow ${n}`, viewer);
+    const run = page.fetch;
+    page.fetch = async (request) => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return run(request);
+    };
+    await memberStorage.put(`shared/${id(n)}`, {
+      page_id: id(n),
+      title: `Slow ${n}`,
+      created_at: at(n),
+      updated_at: at(n),
+    });
+  }
+  const started = Date.now();
+  const result = await f.list(member, { limit: 1 });
+  const elapsed = Date.now() - started;
+  assert.equal(result.source, "catalog");
+  // One step of four concurrent checks, then the deadline stops the pass.
+  assert.deepEqual(await memberStorage.get("host/index/sync"), {
+    epoch: "1",
+    phase: "shared",
+    after: `shared/${id(4)}`,
+    incomplete: false,
+    dirty: null,
+  });
+  assert.ok(elapsed < 1000, `listing took ${elapsed} ms`);
+});
+
+test("shared title repair uses the Page host's observation time", async (t) => {
+  const f = await catalogFixture(t);
+  const viewer = { revision: 1, members: { [member]: { role: "viewer", generation: 1 } } };
+  const memberStorage = f.catalog(member).ctx.storage;
+  f.addPage(id(70), "Alpha", viewer).cacheTitle();
+  await f.settle();
+  await f.list(member);
+  const discovered = await memberStorage.get(`shared/${id(70)}`);
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+  // A later title reaches D1 while the member's discovery entry misses it.
+  await tick();
+  f.addPage(id(70), "Beta", viewer).cacheTitle();
+  await f.settle();
+  await memberStorage.put(`shared/${id(70)}`, discovered);
+  // Index off: the title changes again.
+  await tick();
+  delete f.env.PAGES_CATALOG_INDEX;
+  f.addPage(id(70), "Gamma", viewer).cacheTitle();
+  await f.settle();
+  await memberStorage.put(`shared/${id(70)}`, discovered);
+  // Re-enabled after a restart: the reconcile pass is the Page's first use.
+  await tick();
+  f.env.PAGES_CATALOG_INDEX = "2";
+  const restarted = f.addPage(id(70), "Gamma", viewer);
+  // Keep the host's own report out of this check: the pass must repair alone.
+  restarted.reportIndex = async () => {
+    throw Error("report unavailable");
+  };
+  const found = await f.list(member, { query: "gamma" });
+  assert.equal(found.source, "index");
+  assert.deepEqual(
+    found.body.pages.map((page) => page.title),
+    ["Gamma"],
+  );
+  assert.ok(restarted.titleObservedAt, "the check ran this Page's first-use report");
+  await f.settle();
+  assert.equal(
+    f.db.rows("SELECT title FROM pages_catalog_access WHERE principal = ?", member)[0].title,
+    "Gamma",
+  );
 });

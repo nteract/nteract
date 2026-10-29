@@ -595,7 +595,11 @@ export class Catalog {
         const entry = await storage.get(`${options.inTrash ? "trash/" : "page/"}${row.page_id}`);
         if (!entry) {
           stale = true;
-          pruned.push({ page_id: row.page_id, principal: identity.principal });
+          pruned.push({
+            page_id: row.page_id,
+            principal: identity.principal,
+            revision: row.revision,
+          });
         }
         if (!entry || entry.pending) return null;
         const title = catalogTitle(entry.title);
@@ -613,7 +617,11 @@ export class Catalog {
       if (result.status === "unavailable")
         throw new HttpError(503, "Shared Pages are temporarily unavailable");
       if (result.status === "denied" || (result.page.state && result.page.state !== "active")) {
-        pruned.push({ page_id: row.page_id, principal: identity.principal });
+        pruned.push({
+          page_id: row.page_id,
+          principal: identity.principal,
+          revision: row.revision,
+        });
         await storage.delete(`shared/${row.page_id}`);
         return null;
       }
@@ -887,6 +895,7 @@ export class Page {
         ];
     this.cachedTitle = title;
     const observedAt = new Date().toISOString();
+    if (titleChanged) this.titleObservedAt = observedAt;
     const tasks = recipients.map((principal) =>
       this.env.CATALOGS.getByName(principal).fetch(
         new Request("https://pages.internal/internal/projection", {
@@ -910,7 +919,7 @@ export class Page {
       if (titleChanged || reader) {
         if (reader) this.indexedReaders.add(reader.principal);
         tasks.push(
-          this.reportIndex({ title, observedAt, reader }).then(
+          this.reportIndex({ title, observedAt, reader, readerOnly: !titleChanged }).then(
             () => ({ ok: true }),
             (error) => {
               logFailure(error, "catalog-index-report");
@@ -1214,6 +1223,9 @@ export class Page {
         return json({ page_id: this.metadata.pageId });
       }
       if (url.pathname === "/internal/catalog") {
+        // The first check after a restart reports this Page's current row and
+        // fixes the time its title was observed.
+        this.cacheTitle();
         // Fields after title let the caller's Catalog index this grant; the
         // listing returns only page_id and title from this response.
         const access = pageAccess(this.metadata, identity);
@@ -1228,6 +1240,7 @@ export class Page {
           ...(domain && { domain: identity.domainAccess?.domain }),
           revision: this.metadata.acl?.revision ?? 0,
           state: indexedState(this.metadata),
+          title_observed_at: this.titleObservedAt,
         });
       }
       if (url.pathname === "/internal/access") {
