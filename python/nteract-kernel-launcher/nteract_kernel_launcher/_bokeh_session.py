@@ -345,12 +345,15 @@ def _wrap_column_data_mutations() -> None:
             def mutate(self: Any, doc: Any, *args: Any, **kwargs: Any) -> Any:
                 with _sessions_lock:
                     sessions = list(_sessions_by_document.get(doc, ())) if doc is not None else []
-                for session in sessions:
-                    session._begin_data_mutation()
+                started = []
                 try:
+                    for session in sessions:
+                        session._begin_data_mutation()
+                        started.append(session)
                     return original(self, doc, *args, **kwargs)
                 finally:
-                    for session in sessions:
+                    # A window left open would stall every other thread's flush.
+                    for session in started:
                         session._end_data_mutation()
 
             return mutate
@@ -425,40 +428,72 @@ def _mark_echoes(events: Sequence[Any], setter: str, indices: Sequence[int]) -> 
     return marked
 
 
-class _RequestedMatcher:
+@dataclass(frozen=True)
+class _Correction:
+    """A value a foreign patch asked for, kept until a delta reports the result."""
+
+    value: Any
+    buffers: Sequence[BokehBuffer] = ()
+    force: bool = False
+
+
+def _corrections(
+    patch: Mapping[str, Any], buffers: Sequence[BokehBuffer] = (), *, force: bool = False
+) -> dict[tuple[str, str], _Correction]:
+    return {
+        (mid, attr): _Correction(value, buffers, force)
+        for mid, attrs in _requested_props(patch).items()
+        for attr, value in attrs.items()
+    }
+
+
+def _same_value(prop: Any, a: Any, b: Any) -> bool:
+    """``prop.matches`` with NaN equal to NaN and bools distinct from numbers."""
+    import numpy as np
+
+    bools = (bool, np.bool_)
+    if isinstance(a, bools) != isinstance(b, bools):
+        return False
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        try:
+            return bool(np.array_equal(a, b, equal_nan=True))
+        except TypeError:
+            # ``equal_nan`` needs a numeric dtype.
+            return bool(np.array_equal(a, b))
+    if isinstance(a, float) and isinstance(b, float) and a != a and b != b:
+        return True
+    if isinstance(a, list | tuple) and isinstance(b, list | tuple):
+        return len(a) == len(b) and all(_same_value(prop, x, y) for x, y in zip(a, b, strict=True))
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same_value(prop, a[key], b[key]) for key in a)
+    return bool(prop.matches(a, b))
+
+
+def _holds_requested(
+    models: Iterable[Any], model: Any, attr: str, actual: Any, correction: _Correction
+) -> bool:
     """Whether a property holds the value a foreign patch asked for.
 
     Comparing JSON is not enough: peers encode arrays with other gzip
-    settings, so equal values have different base64. Decode the request and
-    compare as the property descriptor does.
+    settings, so equal values have different base64. The request is decoded
+    but not passed through the property's transform: the peer's document
+    holds what it wrote, so a value Python transformed needs a correction.
     """
+    if _same_json(actual, correction.value):
+        return True
+    from bokeh.core.serialization import Buffer, Deserializer, Serialized
+    from bokeh.core.types import ID
 
-    def __init__(self, models: Iterable[Any], buffers: Sequence[BokehBuffer]) -> None:
-        self._models = list(models)
-        self._buffers = buffers
-
-    def __call__(self, model: Any, attr: str, actual: Any, requested: Any) -> bool:
-        if _same_json(actual, requested):
-            return True
-        from bokeh.core.serialization import Buffer, Deserializer, Serialized
-        from bokeh.core.types import ID
-
-        prop = model.lookup(attr).property
-        try:
-            value = Deserializer(self._models).deserialize(
-                Serialized(
-                    content=requested,
-                    buffers=[Buffer(ID(buffer.id), buffer.data) for buffer in self._buffers],
-                )
+    try:
+        value = Deserializer(list(models)).deserialize(
+            Serialized(
+                content=correction.value,
+                buffers=[Buffer(ID(buffer.id), buffer.data) for buffer in correction.buffers],
             )
-            value = prop.prepare_value(model, attr, value)
-            current = getattr(model, attr)
-            # ``True == 1`` in Python, not in JSON.
-            if isinstance(value, bool) != isinstance(current, bool):
-                return False
-            return bool(prop.matches(value, current))
-        except Exception:  # noqa: BLE001
-            return False
+        )
+        return _same_value(model.lookup(attr).property, value, getattr(model, attr))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _is_column_source(model: Any) -> bool:
@@ -513,24 +548,31 @@ class BokehDocumentSession:
         # Guards session state; never held while user callbacks run.
         self._lock = threading.RLock()
         # Serializes foreign transactions, which run callbacks without ``_lock``.
+        # Only for the shell thread and other threads no callback waits on: a
+        # callback that joins a thread calling apply_patch, correct or
+        # checkpoint deadlocks.
         self._transaction_lock = threading.RLock()
         # Threads between a stream or patch's mutation of ``source.data`` and its trigger.
         self._data_mutations: set[int] = set()
         self._mutations_done = threading.Condition(self._lock)
         self._deferred_folds: set[str] = set()
         self._deferred_fold_all = False
+        # Only the latest request's id: the daemon tracks fold claims by
+        # source, and any ColumnsFolded for a source ends its claim.
         self._deferred_fold_transaction: str | None = None
         self._announced = announced
         self._active_setter: str | None = None
         self._transaction_events: list[Any] = []
         self._queued_deltas: list[BokehDelta] = []
         self._pending_events: list[Any] = []
+        # Corrections from builds that failed, merged into the next build.
+        self._pending_corrections: dict[tuple[str, str], _Correction] = {}
         # Failed builds per requeued event, keyed by id; holding the event keeps the id unique.
         self._build_failures: dict[int, tuple[Any, int]] = {}
         self._flush_scheduled = False
         self._flush_scheduled_at = 0.0
         self._quiet_fold_scheduled = False
-        self._held_retry_scheduled = False
+        self._retry_scheduled = False
         self._closed = False
         self._loop = _current_io_loop()
         self._session_callbacks: dict[Any, Callable[[], None]] = {}
@@ -571,14 +613,23 @@ class BokehDocumentSession:
 
         Before the announcement this becomes the baseline that later deltas
         diff against, so changes still pending are covered by the snapshot.
+        Waits for a foreign transaction on another thread; refuses inside one.
         """
-        with self._lock:
+        with self._transaction_lock, self._lock:
             self._ensure_open()
+            if self._active_setter is not None:
+                # Only the transaction's own callbacks get past the lock, and
+                # its changes have no versions yet.
+                raise BokehSessionError(
+                    f"Bokeh session {self.session_id} cannot checkpoint inside a foreign patch"
+                )
+            # A held flush returns before waiting, so wait here for every path.
+            self._await_data_mutations_unlocked()
             if self._announced:
                 self._flush_pending_unlocked()
             else:
-                self._await_data_mutations_unlocked()
                 self._pending_events = []
+                self._build_failures.clear()
             document = _serialize_bokeh_value(self.document.to_json())
             session_doc = self._session_snapshot_unlocked(document.content)
             return BokehCheckpoint(document=document, session_doc=session_doc)
@@ -595,7 +646,6 @@ class BokehDocumentSession:
         from bokeh.core.types import ID
 
         transaction_id = transaction_id or str(uuid.uuid4())
-        requested = _requested_props(patch)
         with self._transaction_lock:
             with self._lock:
                 self._ensure_open()
@@ -635,9 +685,7 @@ class BokehDocumentSession:
                     delta = self._publish_unlocked(
                         events,
                         transaction_id,
-                        requested=requested,
-                        requested_buffers=buffers,
-                        force_requested=error is not None,
+                        _corrections(patch, buffers, force=error is not None),
                     )
                     # Folds deferred while the transaction ran.
                     self._flush_pending_unlocked()
@@ -654,9 +702,7 @@ class BokehDocumentSession:
             self._ensure_open()
             self._announced = True
             self._flush_pending_unlocked()
-            return self._publish_unlocked(
-                [], transaction_id, requested=_requested_props(patch), force_requested=True
-            )
+            return self._publish_unlocked([], transaction_id, _corrections(patch, force=True))
 
     def fold(
         self, source_ids: Iterable[str] | None = None, *, transaction_id: str | None = None
@@ -664,8 +710,9 @@ class BokehDocumentSession:
         """Fold sources into full columns on request.
 
         Without ids, folds every source with data events since its last fold.
-        While Bokeh holds events or a foreign patch runs, the fold is deferred
-        until the document is free and published under this transaction id.
+        While Bokeh holds events, a foreign patch runs or a failed build waits
+        for its retry, the fold is deferred until the document is free. Folds
+        deferred together are published once, under the latest request's id.
         """
         transaction_id = transaction_id or str(uuid.uuid4())
         with self._lock:
@@ -680,7 +727,7 @@ class BokehDocumentSession:
                 else:
                     self._deferred_folds.update(source_ids)
                 self._deferred_fold_transaction = transaction_id
-                self._schedule_held_retry_unlocked()
+                self._schedule_retry_unlocked()
                 return BokehFoldResult([], deferred=True)
             if source_ids is None:
                 ids = [sid for sid, state in self._sources.items() if state.bytes_since_fold]
@@ -705,6 +752,8 @@ class BokehDocumentSession:
             self._queued_deltas = []
             self._transaction_events = []
             self._pending_events = []
+            self._pending_corrections = {}
+            self._build_failures.clear()
             self._deferred_folds.clear()
             self._deferred_fold_all = False
             cleanup = self._cleanup
@@ -899,36 +948,49 @@ class BokehDocumentSession:
         self._transaction_events = []
         return events
 
-    def _flush_pending(self) -> None:
+    def _flush_pending(self, *, retry: bool = False) -> None:
         with self._lock:
             self._flush_scheduled = False
-            self._flush_pending_unlocked()
-            if (self._pending_events or self._fold_deferred()) and self._held():
-                # A hold released without dispatch never schedules a flush.
-                self._schedule_held_retry_unlocked()
+            self._flush_pending_unlocked(retry=retry)
+            # A hold released without dispatch never schedules a flush, and
+            # nothing may follow a failed build; the attempt cap bounds the latter.
+            if (self._held() and (self._pending_events or self._fold_deferred())) or (
+                self._failed_events_pending_unlocked()
+            ):
+                self._schedule_retry_unlocked()
 
-    def _retry_held_flush(self) -> None:
+    def _retry_flush(self) -> None:
         with self._lock:
-            self._held_retry_scheduled = False
-        self._flush_pending()
+            self._retry_scheduled = False
+        self._flush_pending(retry=True)
 
-    def _schedule_held_retry_unlocked(self) -> None:
-        if self._loop is None or self._closed or self._held_retry_scheduled:
+    def _schedule_retry_unlocked(self) -> None:
+        if self._loop is None or self._closed or self._retry_scheduled:
             return
-        self._held_retry_scheduled = True
+        self._retry_scheduled = True
         loop = self._loop
         # call_later is not thread-safe; add_callback is.
-        loop.add_callback(lambda: loop.call_later(INLINE_FLUSH_DELAY, self._retry_held_flush))
+        loop.add_callback(lambda: loop.call_later(INLINE_FLUSH_DELAY, self._retry_flush))
 
-    def _flush_pending_unlocked(self) -> None:
-        """Publish pending events, then run folds deferred until the document was free."""
+    def _failed_events_pending_unlocked(self) -> bool:
+        return any(id(event) in self._build_failures for event in self._pending_events)
+
+    def _flush_pending_unlocked(self, *, retry: bool = False) -> None:
+        """Publish pending events, then run folds deferred until the document was free.
+
+        Events that all failed their last build are rebuilt only with a new
+        event or on the retry poll, so a change's trigger and dispatch flushes
+        count as one attempt.
+        """
         if self._closed or not self._announced or self._busy_unlocked():
             return
         self._await_data_mutations_unlocked()
         # Waiting released the lock.
         if self._closed or self._busy_unlocked():
             return
-        if self._pending_events:
+        if self._pending_events and (
+            retry or any(id(event) not in self._build_failures for event in self._pending_events)
+        ):
             events = self._pending_events
             self._pending_events = []
             self._publish_unlocked(events, str(uuid.uuid4()))
@@ -936,48 +998,66 @@ class BokehDocumentSession:
             self._fold_deferred_unlocked()
 
     def _publish_unlocked(
-        self, events: list[Any], transaction_id: str, **kwargs: Any
+        self,
+        events: list[Any],
+        transaction_id: str,
+        corrections: Mapping[tuple[str, str], _Correction] | None = None,
     ) -> BokehDelta | None:
         """Build and deliver a delta; a failure is logged, never raised.
 
         The caller may be user code that only set a property. A failed build
         commits nothing, so its events go back to the front of the queue and
-        the next flush retries them against unchanged versions, up to
-        ``MAX_BUILD_ATTEMPTS`` builds per event.
+        its corrections into the next build; the next flush retries them
+        against unchanged versions, up to ``MAX_BUILD_ATTEMPTS`` per event.
         """
+        # Newer requests for the same property replace older ones.
+        corrections = {**self._pending_corrections, **(corrections or {})}
+        self._pending_corrections = {}
+        counted: set[int] = set()
         while True:
             try:
-                delta = self._build_delta_unlocked(events, transaction_id, **kwargs)
+                delta = self._build_delta_unlocked(events, transaction_id, corrections=corrections)
                 break
             except Exception:  # noqa: BLE001
-                kept = self._drop_exhausted_unlocked(events)
+                kept = self._drop_exhausted_unlocked(events, counted)
                 if not kept or len(kept) == len(events):
                     self._pending_events[:0] = kept
+                    self._pending_corrections = corrections
                     return None
                 # The dropped events may have been the cause, so the rest
                 # need not wait for another change to be retried.
                 events = kept
-        self._build_failures.clear()
+        for event in events:
+            self._build_failures.pop(id(event), None)
         if delta is not None:
             self._deliver_unlocked(delta)
         return delta
 
-    def _drop_exhausted_unlocked(self, events: list[Any]) -> list[Any]:
-        """Count a failed build against its events; return those still worth retrying."""
+    def _drop_exhausted_unlocked(self, events: list[Any], counted: set[int]) -> list[Any]:
+        """Count a failed build against its events; return those still worth retrying.
+
+        ``counted`` holds the events already charged in this flush, so
+        retrying the survivors of a drop is not another attempt.
+        """
         if not events:
-            # A correction only; the next patch touching these properties corrects them.
-            log.exception("Could not build a Bokeh delta for session %s", self.session_id)
+            log.warning(
+                "Could not build a Bokeh correction for session %s; retrying with the next build",
+                self.session_id,
+                exc_info=True,
+            )
             return []
-        failures = {}
         dropped = []
         for event in events:
+            if id(event) in counted:
+                continue
+            counted.add(id(event))
             count = self._build_failures.get(id(event), (event, 0))[1] + 1
             if count >= MAX_BUILD_ATTEMPTS:
                 dropped.append(event)
+                self._build_failures.pop(id(event), None)
             else:
-                failures[id(event)] = (event, count)
-        self._build_failures = failures
-        kept = [event for event in events if id(event) in failures]
+                self._build_failures[id(event)] = (event, count)
+        kept = [event for event in events if id(event) in self._build_failures]
         if not dropped:
             log.warning(
                 "Could not build a Bokeh delta for session %s; retrying on the next flush",
@@ -1223,9 +1303,7 @@ class BokehDocumentSession:
         events: Sequence[Any],
         transaction_id: str,
         *,
-        requested: Mapping[str, Mapping[str, Any]] | None = None,
-        requested_buffers: Sequence[BokehBuffer] = (),
-        force_requested: bool = False,
+        corrections: Mapping[tuple[str, str], _Correction] | None = None,
     ) -> BokehDelta | None:
         """Turn recorded events into a delta.
 
@@ -1311,21 +1389,19 @@ class BokehDocumentSession:
 
         # Correction rule: a foreign value Python rejected or changed must be
         # written back even when Bokeh saw no change to report.
-        matches = _RequestedMatcher(current.values(), requested_buffers)
-        for mid, attrs in (requested or {}).items():
+        for (mid, attr), correction in (corrections or {}).items():
             model = current.get(mid)
-            if model is None or mid in added_set:
+            if model is None or mid in added_set or model.lookup(attr, raises=False) is None:
                 continue
-            for attr, value in attrs.items():
-                if model.lookup(attr, raises=False) is None:
-                    continue
-                try:
-                    actual = encode_json(getattr(model, attr))
-                except Exception:  # noqa: BLE001
-                    self._log_unencodable(f"{model.__qualified_model__}.{attr} of {mid}")
-                    continue
-                if force_requested or not matches(model, attr, actual, value):
-                    props_changed.setdefault(mid, {})[attr] = actual
+            try:
+                actual = encode_json(getattr(model, attr))
+            except Exception:  # noqa: BLE001
+                self._log_unencodable(f"{model.__qualified_model__}.{attr} of {mid}")
+                continue
+            if correction.force or not _holds_requested(
+                current.values(), model, attr, actual, correction
+            ):
+                props_changed.setdefault(mid, {})[attr] = actual
         props_changed = {mid: props for mid, props in props_changed.items() if props}
 
         models_added = {mid: self._model_state(current[mid], serializer) for mid in added}

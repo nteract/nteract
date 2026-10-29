@@ -7,6 +7,7 @@ import logging
 import sys
 import threading
 import time
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
@@ -31,6 +32,7 @@ from nteract_kernel_launcher._bokeh_session import (
     BokehDocumentSession,
     BokehFoldResult,
     BokehPatchApplyError,
+    BokehSessionError,
     ref_props,
     session_registry,
 )
@@ -749,6 +751,69 @@ def test_equal_array_in_another_encoding_needs_no_correction():
     session.close()
 
 
+def test_correction_writes_back_a_value_python_transformed():
+    """The peer's document holds what it wrote, so a transformed value must be sent back."""
+    pytest.importorskip("bokeh")
+    from bokeh.document import Document
+    from bokeh.models import ColorPicker
+
+    document = Document()
+    picker = ColorPicker(color="#000000")
+    document.add_root(picker)
+    session = BokehDocumentSession(document, [picker], producer_name="test", producer_version="0")
+
+    result = session.apply_patch(patch={"events": [_model_changed(picker.id, "color", "red")]})
+
+    assert picker.color == "#ff0000"
+    assert result.delta is not None
+    assert result.delta.props_changed == {picker.id: {"color": "#ff0000"}}
+    session.close()
+
+
+@pytest.mark.parametrize("stored", ["ndarray", "list"])
+def test_equal_values_with_nan_need_no_correction(stored):
+    np = pytest.importorskip("numpy")
+    from bokeh.core.serialization import Serializer
+    from bokeh.document import Document
+    from bokeh.models import FixedTicker
+
+    ticks = np.arange(300.0)
+    ticks[3] = np.nan
+    document = Document()
+    ticker = FixedTicker(ticks=ticks if stored == "ndarray" else ticks.tolist())
+    document.add_root(ticker)
+    session = BokehDocumentSession(document, [ticker], producer_name="test", producer_version="0")
+    requested = Serializer(deferred=False).encode(ticks)
+    raw = gzip.decompress(base64.b64decode(requested["array"]["data"]))
+    requested["array"]["data"] = base64.b64encode(
+        gzip.compress(raw, compresslevel=1, mtime=0)
+    ).decode()
+
+    result = session.apply_patch(patch={"events": [_model_changed(ticker.id, "ticks", requested)]})
+
+    assert result.delta is None
+    session.close()
+
+
+@pytest.mark.parametrize("stored", ["bool", "numpy"])
+def test_int_written_over_a_stored_bool_is_corrected(stored):
+    """Bokeh keeps the stored bool because ``1 == True``; JSON tells them apart."""
+    np = pytest.importorskip("numpy")
+    from bokeh.document import Document
+    from bokeh.models import PointDrawTool
+
+    document = Document()
+    tool = PointDrawTool(empty_value=True if stored == "bool" else np.True_)
+    document.add_root(tool)
+    session = BokehDocumentSession(document, [tool], producer_name="test", producer_version="0")
+
+    result = session.apply_patch(patch={"events": [_model_changed(tool.id, "empty_value", 1)]})
+
+    assert result.delta is not None
+    assert result.delta.props_changed == {tool.id: {"empty_value": True}}
+    session.close()
+
+
 def test_callback_joining_a_thread_that_changes_the_document_does_not_deadlock():
     pytest.importorskip("bokeh")
     from bokeh.document import Document
@@ -962,8 +1027,8 @@ def test_events_whose_build_keeps_failing_are_dropped_and_their_source_refolded(
         plot.width = 400
         source.stream({"x": [3], "y": [3]})
 
-    # The stream flushes at its trigger and again at its dispatch.
-    assert attempts == [1, 1, 2]
+    # The stream's dispatch flush has nothing new to retry; each change is one attempt.
+    assert attempts == [1, 2, 3]
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert len(errors) == 1
     assert "dropping" in errors[0].getMessage()
@@ -979,6 +1044,98 @@ def test_events_whose_build_keeps_failing_are_dropped_and_their_source_refolded(
     ]
     replayed = _replayed_source(checkpoint, delivered, source.id)
     assert list(replayed.data["x"]) == list(source.data["x"]) == [0, 1, 2, 3]
+    session.close()
+
+
+def _fail_builds_with(monkeypatch, poisoned: Callable[[Any], bool]) -> list[int]:
+    """Make every build that includes a poisoned event fail; returns their sizes."""
+    build = BokehDocumentSession._build_delta_unlocked
+    attempts: list[int] = []
+
+    def build_or_fail(self, events, *args, **kwargs):
+        if any(poisoned(event) for event in events):
+            attempts.append(len(events))
+            raise RuntimeError("build failed")
+        return build(self, events, *args, **kwargs)
+
+    monkeypatch.setattr(BokehDocumentSession, "_build_delta_unlocked", build_or_fail)
+    return attempts
+
+
+def _is_stream(event: Any) -> bool:
+    return getattr(event, "kind", None) == "ColumnsStreamed"
+
+
+def test_build_attempts_count_changes_not_repeat_flushes_or_unrelated_corrections(
+    monkeypatch, caplog
+):
+    pytest.importorskip("bokeh")
+    session, source, checkpoint, delivered = _data_session({"x": [0, 1], "y": [0, 1]})
+    plot = session.roots[0]
+    attempts = _fail_builds_with(monkeypatch, _is_stream)
+    unrelated = {"events": [_model_changed(plot.id, "width", 999)]}
+
+    with caplog.at_level(logging.WARNING, logger="nteract_kernel_launcher"):
+        # The stream's dispatch flush retries nothing new, so it is no attempt.
+        source.stream({"x": [2], "y": [2]})
+        session.correct(unrelated, "c1")
+        plot.width = 300
+        session.correct(unrelated, "c2")
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+        plot.height = 300
+
+    assert attempts == [1, 2, 3]
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert "dropping 1 events" in errors[0].getMessage()
+    replayed = _replayed_source(checkpoint, delivered, source.id)
+    assert list(replayed.data["x"]) == list(source.data["x"])
+    session.close()
+
+
+def test_one_flush_counts_one_attempt_per_event(monkeypatch, caplog):
+    """Retrying what survived a drop in the same flush is not another attempt."""
+    pytest.importorskip("bokeh")
+    session, source, _checkpoint, _delivered = _data_session({"x": [0, 1], "y": [0, 1]})
+    plot = session.roots[0]
+    _fail_builds_with(monkeypatch, lambda e: _is_stream(e) or getattr(e, "attr", None) == "height")
+
+    with caplog.at_level(logging.WARNING, logger="nteract_kernel_launcher"):
+        source.stream({"x": [2], "y": [2]})
+        plot.width = 300
+        plot.height = 300
+
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert [getattr(e, "attr", None) for e in session._pending_events] == ["width", "height"]
+    session.close()
+
+
+def test_forced_correction_survives_a_failed_build(monkeypatch):
+    pytest.importorskip("bokeh")
+    session, _row, slider, delivered = _row_session()
+    build = BokehDocumentSession._build_delta_unlocked
+    failures = []
+
+    def fail_once(self, *args, **kwargs):
+        if not failures:
+            failures.append(True)
+            raise RuntimeError("build failed")
+        return build(self, *args, **kwargs)
+
+    monkeypatch.setattr(BokehDocumentSession, "_build_delta_unlocked", fail_once)
+
+    with pytest.raises(BokehPatchApplyError):
+        session.apply_patch(
+            transaction_id="failing",
+            patch={"events": [_model_changed(slider.id, "value", "not a number")]},
+        )
+    assert failures
+    assert not delivered
+    slider.title = "next"
+
+    [delta] = delivered
+    assert delta.props_changed == {slider.id: {"value": 0, "title": "next"}}
     session.close()
 
 
@@ -1152,6 +1309,46 @@ def test_fold_requested_while_held_follows_once_the_hold_ends(kernel, release):
     assert list(replayed.data["x"]) == list(source.data["x"])
 
 
+def test_fold_deferred_behind_a_failed_build_follows_once_the_build_succeeds(monkeypatch):
+    """Nothing else may change, so the retry poll has to keep going without a hold."""
+    pytest.importorskip("bokeh")
+    monkeypatch.setattr(_bokeh_session, "MAX_BUILD_ATTEMPTS", 5)
+    build = BokehDocumentSession._build_delta_unlocked
+    failures = []
+
+    def fail_three_times(self, events, *args, **kwargs):
+        if events and len(failures) < 3:
+            failures.append(len(events))
+            raise RuntimeError("build failed")
+        return build(self, events, *args, **kwargs)
+
+    monkeypatch.setattr(BokehDocumentSession, "_build_delta_unlocked", fail_three_times)
+
+    async def run():
+        session, source, checkpoint, delivered = _data_session(
+            {"x": list(range(100)), "y": list(range(100))}
+        )
+        source.stream({"x": [100], "y": [100]})
+        result = session.fold([source.id], transaction_id="fold")
+        for _ in range(40):
+            await asyncio.sleep(INLINE_FLUSH_DELAY)
+            if any(delta.transaction_id == "fold" for delta in delivered):
+                break
+        session.close()
+        return source, checkpoint, result, delivered
+
+    source, checkpoint, result, delivered = asyncio.run(run())
+    assert result == BokehFoldResult([], deferred=True)
+    assert len(failures) == 3
+    assert [event["kind"] for event in _data_events(delivered)] == [
+        "ColumnsStreamed",
+        "ColumnsFolded",
+    ]
+    assert delivered[-1].transaction_id == "fold"
+    replayed = _replayed_source(checkpoint, delivered, source.id)
+    assert list(replayed.data["x"]) == list(source.data["x"])
+
+
 @pytest.mark.parametrize("encoder", ["quiet-fold", "fold-request", "replacement"])
 def test_encoding_on_another_thread_waits_for_a_stream_in_flight(monkeypatch, encoder):
     """Bokeh mutates ``source.data`` before it triggers the stream, as with Panel nthreads."""
@@ -1201,6 +1398,113 @@ def test_encoding_on_another_thread_waits_for_a_stream_in_flight(monkeypatch, en
     assert {name: list(values) for name, values in replayed.data.items()} == {
         name: list(values) for name, values in source.data.items()
     }
+
+
+def _pause_streams(session: BokehDocumentSession) -> tuple[threading.Event, threading.Event]:
+    """Pause the next stream between its mutation of ``source.data`` and its trigger."""
+    from bokeh.document.events import ColumnsStreamedEvent
+
+    callbacks = session.document.callbacks
+    record = callbacks.trigger_on_change
+    mutated = threading.Event()
+    release = threading.Event()
+
+    def paused_trigger(event):
+        if isinstance(event, ColumnsStreamedEvent) and not release.is_set():
+            mutated.set()
+            release.wait(5)
+        record(event)
+
+    callbacks.trigger_on_change = paused_trigger
+    return mutated, release
+
+
+def test_held_checkpoint_waits_for_a_stream_in_flight():
+    pytest.importorskip("bokeh")
+    session, source, _checkpoint, _delivered = _data_session(
+        {"x": list(range(100)), "y": list(range(100))}
+    )
+    session.document.hold()
+    mutated, release = _pause_streams(session)
+    streamer = threading.Thread(target=source.stream, args=({"x": [100], "y": [100]},), daemon=True)
+    streamer.start()
+    assert mutated.wait(5)
+
+    checkpointer = threading.Thread(target=session.checkpoint, daemon=True)
+    checkpointer.start()
+    checkpointer.join(0.2)
+    waited = checkpointer.is_alive()
+    release.set()
+    streamer.join(5)
+    checkpointer.join(5)
+
+    assert waited
+    assert not checkpointer.is_alive()
+    session.close()
+
+
+def test_checkpoint_waits_for_a_foreign_transaction_and_refuses_inside_it():
+    """Mid-transaction, the document has changes whose events are not versioned yet."""
+    pytest.importorskip("bokeh")
+    session, _row, slider, _delivered = _row_session()
+    entered = threading.Event()
+    release = threading.Event()
+    refused: list[Exception] = []
+
+    def on_value(attr, old, new):
+        try:
+            session.checkpoint()
+        except BokehSessionError as exc:
+            refused.append(exc)
+        entered.set()
+        release.wait(5)
+
+    slider.on_change("value", on_value)
+    patcher = threading.Thread(
+        target=session.apply_patch,
+        kwargs={"patch": {"events": [_model_changed(slider.id, "value", 5)]}},
+        daemon=True,
+    )
+    patcher.start()
+    assert entered.wait(5)
+    checkpointer = threading.Thread(target=session.checkpoint, daemon=True)
+    checkpointer.start()
+    checkpointer.join(0.2)
+    waited = checkpointer.is_alive()
+    release.set()
+    patcher.join(5)
+    checkpointer.join(5)
+
+    assert refused
+    assert waited
+    assert not checkpointer.is_alive()
+    session.close()
+
+
+def test_a_failed_mutation_window_start_closes_the_windows_already_opened(monkeypatch):
+    pytest.importorskip("bokeh")
+    session, source, _checkpoint, _delivered = _data_session({"x": [0, 1], "y": [0, 1]})
+    other = BokehDocumentSession(
+        session.document, session.roots, producer_name="test", producer_version="0"
+    )
+    begin = BokehDocumentSession._begin_data_mutation
+    started = []
+
+    def begin_once(self):
+        if started:
+            raise RuntimeError("begin failed")
+        started.append(self)
+        begin(self)
+
+    monkeypatch.setattr(BokehDocumentSession, "_begin_data_mutation", begin_once)
+
+    with pytest.raises(RuntimeError, match="begin failed"):
+        source.stream({"x": [2], "y": [2]})
+
+    assert len(started) == 1
+    assert session._data_mutations == other._data_mutations == set()
+    other.close()
+    session.close()
 
 
 def test_new_source_arrives_with_a_fold():
