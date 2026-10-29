@@ -62,6 +62,7 @@ test("a rejected stale-epoch upgrade retires the discovered activity before retr
   t.mock.method(globalThis, "WebSocket", function (address) {
     Object.defineProperty(this, "binaryType", { value: "blob", writable: true });
     this.address = address;
+    this.addEventListener = () => {};
     this.close = () => closed++;
   });
   t.mock.method(N.SubductionWebSocket, "setup", async (socket) => {

@@ -3,6 +3,7 @@ import { readServerAppSession } from "@cloud/oidc-session-store.ts";
 import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { readAccessToken } from "./oauth-store.mjs";
 import { domainAccessForIdentity } from "./domain-access.mjs";
+import { withAdmissionReason } from "./admission-reasons.mjs";
 
 export class HttpError extends Error {
   constructor(status, message, code) {
@@ -28,7 +29,7 @@ export function requireSameOrigin(request, env) {
   const origin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin;
   const supplied = request.headers.get("origin");
   if ((supplied && supplied !== origin) || request.headers.get("sec-fetch-site") === "cross-site")
-    throw new HttpError(403, "Use this Pages origin");
+    throw withAdmissionReason(new HttpError(403, "Use this Pages origin"), "origin_rejected");
   const changesState =
     !["GET", "HEAD", "OPTIONS"].includes(request.method) ||
     request.headers.get("upgrade")?.toLowerCase() === "websocket";
@@ -44,7 +45,7 @@ export function requireSameOrigin(request, env) {
     !request.headers.has("authorization") &&
     supplied !== origin
   )
-    throw new HttpError(403, "Origin is required");
+    throw withAdmissionReason(new HttpError(403, "Origin is required"), "origin_rejected");
 }
 
 async function withDomainAccess(identity, env) {
@@ -72,7 +73,10 @@ export async function authenticate(request, env) {
           "/internal/assets/authorize",
         ].includes(new URL(request.url).pathname)
       )
-        throw new HttpError(403, "This credential is limited to Pages MCP");
+        throw withAdmissionReason(
+          new HttpError(403, "This credential is limited to Pages MCP"),
+          "credential_scope",
+        );
       const grant = await readAccessToken(env, token, {
         resource: pagesPublicOrigin(env) + "/mcp",
       });
@@ -116,10 +120,18 @@ export async function authenticate(request, env) {
       );
     let identity;
     try {
-      identity = await verify("editor");
+      try {
+        identity = await verify("editor");
+      } catch (error) {
+        if (error.message !== "Anaconda API key scopes do not allow requested scope") throw error;
+        identity = await verify("viewer");
+      }
     } catch (error) {
-      if (error.message !== "Anaconda API key scopes do not allow requested scope") throw error;
-      identity = await verify("viewer");
+      // A provider outage is not a credential verdict.
+      const status = error?.status ?? (error?.name === "AuthError" ? 401 : 500);
+      if (status >= 500 && error && typeof error === "object")
+        withAdmissionReason(error, "credential_unverified");
+      throw error;
     }
     return withDomainAccess(
       {
@@ -138,7 +150,8 @@ export async function authenticate(request, env) {
       env,
     );
   }
-  if (!request.headers.has("cookie")) throw new HttpError(401, "Sign in to Pages");
+  if (!request.headers.has("cookie"))
+    throw withAdmissionReason(new HttpError(401, "Sign in to Pages"), "credential_missing");
   const session = await readServerAppSession(env, request, Math.floor(Date.now() / 1000));
   if (!session) throw new HttpError(401, "Sign in to Pages");
   return withDomainAccess(

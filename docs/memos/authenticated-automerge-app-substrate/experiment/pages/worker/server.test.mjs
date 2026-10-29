@@ -244,6 +244,53 @@ test("WebSocket bridge rejects text and oversized frames and releases pending re
   assert.equal(other.closed, true);
 });
 
+test("WebSocket bridge reports one bounded refusal category before closing", async () => {
+  class Socket extends EventTarget {
+    closes = [];
+    close(code, reason) {
+      this.closes.push([code, reason]);
+      this.dispatchEvent(new Event("close"));
+    }
+    send() {}
+  }
+  const cases = [
+    [
+      "unsupported_frame",
+      (socket) => socket.dispatchEvent(new MessageEvent("message", { data: "text" })),
+    ],
+    [
+      "frame_too_large",
+      (socket) =>
+        socket.dispatchEvent(new MessageEvent("message", { data: new Uint8Array(5).buffer })),
+    ],
+    [
+      "receive_queue_full",
+      (socket) => {
+        for (let i = 0; i < 2; i++)
+          socket.dispatchEvent(new MessageEvent("message", { data: new Uint8Array(3).buffer }));
+      },
+    ],
+    ["send_buffer_full", (_socket, wire) => wire.sendBytes(new Uint8Array(4)).catch(() => {})],
+  ];
+  for (const [category, trigger] of cases) {
+    const socket = new Socket();
+    const reported = [];
+    const wire = new WebSocketByteTransport(socket, {
+      maxFrameBytes: 4,
+      maxQueuedBytes: 4,
+      onRefusal: (value) => {
+        reported.push(value);
+        return wire.disconnect(4400, "request_rejected");
+      },
+    });
+    if (category === "send_buffer_full") socket.bufferedAmount = 2;
+    await trigger(socket, wire);
+    await new Promise(setImmediate);
+    assert.deepEqual(reported, [category]);
+    assert.deepEqual(socket.closes, [[4400, "request_rejected"]], "the host's close wins");
+  }
+});
+
 test("current writers cannot relay unknown, read-only, revoked, or another account's authors", async () => {
   const f = fixture();
   await f.bind(key);

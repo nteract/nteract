@@ -81,6 +81,7 @@ Run targeted browser checks from `pages`:
 | Browser uploads and image permissions | `node scripts/local-sharing-e2e.mjs --images` | Starts an isolated fixture |
 | MCP file import, insertion, and retries | `node scripts/local-sharing-e2e.mjs --mcp-images` | Starts an isolated fixture |
 | Collaborative checkboxes | `node scripts/local-sharing-e2e.mjs --task-lists` | Starts an isolated fixture |
+| Admission codes, celld restart, and reconnect to Saved | `node scripts/local-sharing-e2e.mjs --admission` | Starts and restarts an isolated fixture |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
 | Passage edits and revision deltas | `PAGES_ORIGIN=http://localhost:9894 node scripts/passages-changes-smoke.mjs` | Uses the running Wordgard fixture |
@@ -262,10 +263,42 @@ reservation because failure does not prove that the write had no effect. A match
 retry uses the same payload. These pending reservations are resident state; after
 restart, the host loads the binding records that storage actually retained.
 
-Native admission logs include bounded reason codes for timeout, cancellation,
-pending/already-connected keys, changed access, binding mismatch, and persistence
-failure. They omit signing keys, account identities, document content, and provider
-error text. A reason identifies the rejected boundary, not the cause of storage delay.
+Every refusal on `/api/connect`, `/api/sync`, `/api/saved`, and native admission
+logs one `admission.denied` JSON line with a reason from the closed set in
+[admission-reasons.mjs](worker/admission-reasons.mjs). celld exports it as the
+OTel log body. It names the refused boundary, not the cause of a storage delay,
+and omits principals, signing keys, Page IDs, tokens, messages, and content. A
+handshake deadline that expires while the key's binding write is still unsettled
+logs `native_binding_stalled` rather than `native_admission_timeout`.
+
+Clients receive only a code from [admission.mjs](shared/admission.mjs): HTTP
+errors carry it as `code`; native refusals after the upgrade close the socket with
+that code as the reason. Byte-transport refusals (text frames, oversized frames,
+full queues) report a bounded category, log it once, and close with
+`request_rejected` or `temporarily_unavailable`.
+
+A deleted Page returns `page_deleted` only to its owner and to holders of a
+current viewer/editor grant. Everyone else, including principals with a role
+"none" tombstone, receives the same `403 page_access_denied` body and headers as
+for an unreadable Page. Clients that send `X-Pages-Admission: 1` also get that
+response for a missing Page. Clients without it keep the legacy 404, because the
+deployed viewer renews an expired draft registration only on that 404 and the
+app does not force a reload on a new build. Until that compatibility path is
+removed, a caller that omits the header can still distinguish missing from
+existing Pages, as before. Tool and MCP routes also still distinguish them.
+
+The browser reconnects with backoff on transient codes, rechecks access through
+`/api/connect` on access and sign-in codes, and stops on `signing_key_rejected`
+until Retry. A first open waiting for the document ends with that diagnosis
+instead of a lookup timeout, and the open retry loop does not reopen. A socket
+counts as admitted only after it stays open 15 seconds, so quick refusals keep
+growing the backoff instead of resetting it.
+
+A binding write that never settles still blocks its own signing key until the
+host restarts; other keys are unaffected. A rejected write may have taken effect,
+so the host neither issues a competing write nor releases the reservation. If an
+ACL change retires that key, the access refresh waits behind the same write and
+holds the Page's serialized HTTP queue. The pending-admission tests pin both cases.
 
 Membership, invitation, connection, and lifetime signing-key counts are bounded;
 retired keys remain recorded to prevent regained authority. See [access.mjs](worker/access.mjs) and the Worker tests for membership admission

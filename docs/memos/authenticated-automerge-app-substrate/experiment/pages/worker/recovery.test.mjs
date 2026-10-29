@@ -183,16 +183,28 @@ test("unknown Page lookups write no signer, repository, or host state", async (t
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   const token = auth.apiKey();
-  for (const [path, body] of [
-    ["/api/connect"],
-    ["/api/sync"],
-    ["/api/saved", { heads: ["a".repeat(64)] }],
-    ["/internal/tool", { operation: "read_page", arguments: { page_id: pageId } }],
+  for (const [path, body, capable, status] of [
+    // Admission routes answer a missing Page exactly as an unreadable one for
+    // clients that declare the capability; others keep the legacy 404.
+    ["/api/connect", undefined, true, 403],
+    ["/api/sync", undefined, true, 403],
+    ["/api/saved", { heads: ["a".repeat(64)] }, true, 403],
+    ["/api/connect", undefined, false, 404],
+    ["/api/saved", { heads: ["a".repeat(64)] }, false, 404],
+    ["/internal/tool", { operation: "read_page", arguments: { page_id: pageId } }, true, 404],
   ]) {
     const storage = new Storage();
     const page = new Page(contextFor(storage), auth.env);
     await page.ready;
-    assert.equal((await page.fetch(requestFor(token, path, body))).status, 404);
+    const request = requestFor(token, path, body);
+    if (capable) request.headers.set("x-pages-admission", "1");
+    const response = await page.fetch(request);
+    assert.equal(response.status, status, `${path} capable=${capable}`);
+    if (status === 403)
+      assert.deepEqual(await response.json(), {
+        error: "Document access denied",
+        code: "page_access_denied",
+      });
     assert.equal(storage.values.size, 0);
     assert.deepEqual(storage.writes, []);
     assert.equal(page.signer, undefined);

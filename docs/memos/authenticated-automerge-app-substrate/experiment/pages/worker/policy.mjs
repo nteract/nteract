@@ -1,4 +1,5 @@
 import { pageAccess, pageGrant } from "./access.mjs";
+import { withAdmissionReason } from "./admission-reasons.mjs";
 
 export const hex = (bytes) => [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 export const logicalId = (bytes) => {
@@ -11,6 +12,15 @@ export class PermissionDenied extends Error {
     this.status = 403;
     this.code = code;
   }
+}
+
+export function credentialExpired() {
+  const error = new PermissionDenied(
+    "Document access denied: credential expired",
+    "credential_expired",
+  );
+  error.status = 401;
+  return error;
 }
 
 export function admissionCancelled(code = "native_admission_cancelled") {
@@ -44,7 +54,7 @@ export class DocumentPolicy {
 
   account(identity, write = false) {
     const access = pageAccess(this.metadata(), identity, { now: this.now() });
-    if (!access.canRead) throw new PermissionDenied();
+    if (!access.canRead) throw this.readDenied(identity);
     if (write && this.metadata()?.recoveryBlocked)
       throw Object.assign(
         new Error("Page recovery is blocked; accepted content is available read-only"),
@@ -53,6 +63,20 @@ export class DocumentPolicy {
     if (write && !identity.canWrite) throw new PermissionDenied("Credential is read-only");
     if (write && !access.canWrite) throw new PermissionDenied("Page is read-only");
     return access;
+  }
+
+  /** Classify a read denial for logs. Expiry is the only case with a distinct
+   * client outcome; grant removal and no grant share the same response. */
+  readDenied(identity) {
+    if (!(Number.isFinite(identity?.expiresAt) && identity.expiresAt > this.now()))
+      return credentialExpired();
+    const members = this.metadata()?.acl?.members;
+    return withAdmissionReason(
+      new PermissionDenied(),
+      members && Object.hasOwn(members, identity.principal)
+        ? "page_access_removed"
+        : "page_no_grant",
+    );
   }
 
   leaseExpiresAt(identity) {
@@ -104,7 +128,11 @@ export class DocumentPolicy {
         session.canWrite !== (access.canWrite && this.authorAllowed(this.bindings.get(key)))
       ) {
         this.sessions.delete(key);
-        disconnects.push(session.disconnect);
+        disconnects.push(() =>
+          session.disconnect(
+            new PermissionDenied("Page access changed during connection", "native_access_changed"),
+          ),
+        );
       }
     }
     for (const admission of this.admissions.values()) {
@@ -117,10 +145,12 @@ export class DocumentPolicy {
         access.role !== claim.access.role ||
         access.canWrite !== claim.access.canWrite
       ) {
-        claim.cancel(
-          new PermissionDenied("Page access changed during connection", "native_access_changed"),
+        const changed = new PermissionDenied(
+          "Page access changed during connection",
+          "native_access_changed",
         );
-        disconnects.push(claim.disconnect);
+        claim.cancel(changed);
+        disconnects.push(() => claim.disconnect(changed));
       }
     }
     if (persist) {
@@ -212,7 +242,7 @@ export class DocumentPolicy {
         "native_acl_committing",
       );
     if (!/^[0-9a-f]{64}$/.test(key) || key === this.serverKey)
-      throw new PermissionDenied("Invalid peer key");
+      throw withAdmissionReason(new PermissionDenied("Invalid peer key"), "native_invalid_key");
     const previous = this.bindings.get(key);
     if (
       previous &&
@@ -228,18 +258,27 @@ export class DocumentPolicy {
       throw new PermissionDenied("Signing key admission is pending", "native_binding_pending");
     if (!previous) {
       if (this.bindings.size >= 256)
-        throw new PermissionDenied("This prototype permits 256 signing keys per document");
+        throw withAdmissionReason(
+          new PermissionDenied("This prototype permits 256 signing keys per document"),
+          "native_key_capacity",
+        );
       if (identity.principal !== this.metadata()?.owner) {
         const bindings = [...this.bindings.values()];
         if (bindings.filter((binding) => binding.principal === identity.principal).length >= 32)
-          throw new PermissionDenied("This prototype permits 32 signing keys per member");
+          throw withAdmissionReason(
+            new PermissionDenied("This prototype permits 32 signing keys per member"),
+            "native_key_capacity",
+          );
         // Preserve owner admission even if several members fill their quotas.
         // Reader/retired bindings remain permanent: deleting them would let an
         // old key be admitted afresh and publish records it authored as a reader.
         if (
           bindings.filter((binding) => binding.principal !== this.metadata()?.owner).length >= 224
         )
-          throw new PermissionDenied("Member signing-key capacity reached");
+          throw withAdmissionReason(
+            new PermissionDenied("Member signing-key capacity reached"),
+            "native_key_capacity",
+          );
       }
     }
     if (!admission) {
@@ -282,7 +321,16 @@ export class DocumentPolicy {
       },
     };
     admission.claim = claim;
-    const abort = () => claim.cancel(signal.reason ?? admissionCancelled());
+    const abort = () => {
+      const reason = signal.reason ?? admissionCancelled();
+      // A handshake deadline that expires while this key's binding write is
+      // still unsettled is a storage stall, not a slow client.
+      claim.cancel(
+        reason?.code === "native_admission_timeout" && admission.state === "pending"
+          ? admissionCancelled("native_binding_stalled")
+          : reason,
+      );
+    };
     signal?.addEventListener("abort", abort, { once: true });
     try {
       if (admission.state !== "pending" && admission.state !== "persisted")
@@ -386,7 +434,7 @@ export class DocumentPolicy {
       return current;
     } catch (error) {
       if (this.sessions.get(key) === session) this.sessions.delete(key);
-      await session.disconnect();
+      await session.disconnect(error);
       throw error;
     }
   }
@@ -438,7 +486,7 @@ export class DocumentPolicy {
       claim.cancel(admissionCancelled());
       sessions.push(claim);
     }
-    await Promise.allSettled(sessions.map((session) => session.disconnect()));
+    await Promise.allSettled(sessions.map((session) => session.disconnect(admissionCancelled())));
   }
 
   native() {

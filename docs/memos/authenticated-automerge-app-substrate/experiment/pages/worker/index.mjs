@@ -45,7 +45,28 @@ import { issueRetryToken, inspectOperation, reserveOperation } from "./operation
 import { BufferedRecordStore, RemoteRecordSink } from "./record-persistence.mjs";
 import { RecordMaintenance } from "./record-maintenance.mjs";
 export { PageRecords } from "./record-persistence.mjs";
-import { DocumentPolicy, admissionCancelled, hex, logicalId } from "./policy.mjs";
+import {
+  DocumentPolicy,
+  PermissionDenied,
+  admissionCancelled,
+  credentialExpired,
+  hex,
+  logicalId,
+} from "./policy.mjs";
+import {
+  ADMISSION_ROUTES,
+  admissionCloseCode,
+  admissionCode,
+  admissionErrorResponse,
+  admissionReason,
+  logAdmissionDenied,
+  transportRefusal,
+  withAdmissionReason,
+} from "./admission-reasons.mjs";
+import { ADMISSION_CAPABILITY } from "../shared/admission.mjs";
+
+const unifiedMissing = (request) =>
+  request.headers.get(ADMISSION_CAPABILITY.header) === ADMISSION_CAPABILITY.value;
 import {
   documentMutation,
   recoverDocumentMutations,
@@ -256,11 +277,17 @@ export default {
           );
         return env.PAGES.getByName(pageId).fetch(internal);
       }
-      if (["/api/connect", "/api/sync", "/api/saved"].includes(url.pathname)) {
-        await authenticate(request, env);
-        const id = url.searchParams.get("page");
-        if (!validPageId(id)) throw new HttpError(400, "Invalid page");
-        return env.PAGES.getByName(id).fetch(request);
+      if (ADMISSION_ROUTES.includes(url.pathname)) {
+        let identity;
+        try {
+          identity = await authenticate(request, env);
+          const id = url.searchParams.get("page");
+          if (!validPageId(id)) throw new HttpError(400, "Invalid page");
+          return await env.PAGES.getByName(id).fetch(request);
+        } catch (error) {
+          if ((error.status ?? 500) >= 500) logFailure(error, "gateway");
+          return admissionErrorResponse(error, { stage: "gateway", identity });
+        }
       }
       if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/internal/"))
         return json({ error: "Not found" }, 404);
@@ -771,10 +798,12 @@ export class Page {
   }
 
   async run(request) {
+    const url = new URL(request.url);
+    const admissionRoute = ADMISSION_ROUTES.includes(url.pathname);
+    let identity;
     try {
       await this.ready;
-      const identity = await authenticate(request, this.env);
-      const url = new URL(request.url);
+      identity = await authenticate(request, this.env);
       // An ambiguous storage failure retains the exact proposed ACL/receipt.
       // Normal HTTP work retries that barrier before reading or changing it.
       if (this.pendingAccess && !["/api/sync", "/api/saved"].includes(url.pathname))
@@ -844,7 +873,18 @@ export class Page {
         await this.finishCreation(intent);
         return json(intent.metadata.createdReceipt, 201);
       }
-      if (!this.metadata) throw new HttpError(404, "Page not found");
+      if (!this.metadata) {
+        // Admission routes answer a missing Page exactly as an unreadable one,
+        // for clients that declare it. The deployed viewer renews an expired
+        // draft registration only on this 404, so other clients keep it.
+        // Remove the legacy branch once older viewers must reload before
+        // reconnecting and every supported viewer handles the unified 403.
+        if (admissionRoute && unifiedMissing(request))
+          throw withAdmissionReason(new PermissionDenied(), "page_not_found");
+        if (admissionRoute)
+          throw withAdmissionReason(new HttpError(404, "Page not found"), "page_not_found_legacy");
+        throw new HttpError(404, "Page not found");
+      }
       if (url.pathname === "/internal/delete") {
         requireWrite(identity);
         if (this.metadata.owner !== identity.principal)
@@ -884,7 +924,12 @@ export class Page {
         await this.ctx.storage.sync();
         return json(this.metadata.deletion.receipt);
       }
-      if (this.metadata.deleted) throw new HttpError(404, "Page not found");
+      if (this.metadata.deleted) {
+        // Only the owner and current grant holders learn that it was deleted.
+        if (admissionRoute && !this.disclosesDeletion(identity.principal))
+          throw withAdmissionReason(new PermissionDenied(), "page_deleted", "page_access_denied");
+        throw withAdmissionReason(new HttpError(404, "Page not found"), "page_deleted");
+      }
       if (!["/api/sync", "/api/saved"].includes(url.pathname)) {
         const claimed = await claimInvitation(this.metadata, identity, this.env);
         if (claimed) await this.installAccess(claimed);
@@ -1044,8 +1089,24 @@ export class Page {
       }
       throw new HttpError(404, "Not found");
     } catch (error) {
-      return errorResponse(error, "page");
+      if (!admissionRoute) return errorResponse(error, "page");
+      if ((error.status ?? 500) >= 500) logFailure(error, "page");
+      return admissionErrorResponse(error, { stage: "page", identity });
     }
+  }
+
+  /** Owner or a valid viewer/editor grant on the deleted metadata. A role
+   * "none" row is a deny tombstone, which an owner can create for a principal
+   * who never had access, so it discloses nothing. */
+  disclosesDeletion(principal) {
+    if (principal === this.metadata?.owner) return true;
+    const members = this.metadata?.acl?.members;
+    const member = members && Object.hasOwn(members, principal) ? members[principal] : undefined;
+    return (
+      ["viewer", "editor"].includes(member?.role) &&
+      Number.isSafeInteger(member.generation) &&
+      member.generation >= 1
+    );
   }
 
   async register(request, identity) {
@@ -1127,7 +1188,9 @@ export class Page {
       };
       const timer = setTimeout(() => {
         this.handle.off("heads-changed", changed);
-        reject(new HttpError(409, MISSING_EDITS_MESSAGE));
+        reject(
+          withAdmissionReason(new HttpError(409, MISSING_EDITS_MESSAGE), "receipt_heads_missing"),
+        );
       }, 10_000);
       this.handle.on("heads-changed", changed);
       changed();
@@ -1148,7 +1211,10 @@ export class Page {
       // Reject before allocating a socket so the browser rediscovers after a
       // restart instead of permanently rejecting the new host's snapshots.
       if (epochs[0] !== this.activityState().epoch)
-        throw new HttpError(409, "Page activity session changed; reconnect");
+        throw withAdmissionReason(
+          new HttpError(409, "Page activity session changed; reconnect"),
+          "activity_epoch_changed",
+        );
     }
     if (this.wires.size >= 24) throw new HttpError(429, "Too many connected peers");
     const principals = [...this.wirePrincipals.values()];
@@ -1163,7 +1229,17 @@ export class Page {
     const client = pair[0],
       socket = pair[1];
     socket.accept(); // Resident connection; reconnect reconstructs native state.
-    const wire = new WebSocketByteTransport(socket);
+    // A transport refusal is logged once here, before the disconnect callback
+    // records a generic cancellation.
+    let refusal;
+    const wire = new WebSocketByteTransport(socket, {
+      onRefusal: (category) => {
+        refusal = transportRefusal(category);
+        logAdmissionDenied(refusal, { stage: "native", identity });
+        admission.abort(refusal);
+        return close(refusal);
+      },
+    });
     const disconnected = new Promise((resolve) => wire.onDisconnect(resolve));
     this.wires.add(wire);
     // HTTP authentication already established this principal. Reserve before
@@ -1173,14 +1249,18 @@ export class Page {
     const admission = new AbortController();
     let leaseTimer;
     let expiryTimer;
+    const close = (error) => wire.disconnect(admissionCloseCode(error), admissionCode(error));
     const armExpiry = (expiresAt) => {
       clearTimeout(expiryTimer);
       if (this.wires.has(wire))
-        expiryTimer = setTimeout(() => void wire.disconnect(), Math.max(1, expiresAt - Date.now()));
+        expiryTimer = setTimeout(
+          () => void close(credentialExpired()),
+          Math.max(1, expiresAt - Date.now()),
+        );
     };
     const handshakeTimer = setTimeout(() => {
       admission.abort(admissionCancelled("native_admission_timeout"));
-      void wire.disconnect();
+      void close(admission.signal.reason);
     }, 10_000);
     wire.onDisconnect(() => {
       clearTimeout(handshakeTimer);
@@ -1195,7 +1275,17 @@ export class Page {
     });
     this.ctx.waitUntil(
       (async () => {
-        const transport = await N.AuthenticatedTransport.accept(wire, this.signer);
+        let transport;
+        try {
+          transport = await N.AuthenticatedTransport.accept(wire, this.signer);
+        } catch (cause) {
+          throw admission.signal.aborted
+            ? admission.signal.reason
+            : withAdmissionReason(
+                Object.assign(new Error("Native handshake failed", { cause }), { status: 400 }),
+                "native_handshake_failed",
+              );
+        }
         try {
           const peer = transport.peerId;
           let key, senderId;
@@ -1211,7 +1301,7 @@ export class Page {
             signal: admission.signal,
             waitUntil: (promise) => this.ctx.waitUntil(promise),
             reauthenticate: () => authenticate(request, this.env),
-            disconnect: () => wire.disconnect(),
+            disconnect: (error) => close(error ?? admissionCancelled()),
             onRenewal: (expiresAt) => {
               if (identity.credentialKind === "api-key") armExpiry(expiresAt);
             },
@@ -1223,7 +1313,7 @@ export class Page {
           armExpiry(leaseExpiresAt);
           leaseTimer = setInterval(
             () => {
-              void this.policy.active(key).catch(() => wire.disconnect());
+              void this.policy.active(key).catch((error) => close(error));
             },
             Math.min(15_000, Math.max(1, leaseExpiresAt - Date.now())),
           );
@@ -1231,7 +1321,14 @@ export class Page {
             clearInterval(leaseTimer);
             clearTimeout(expiryTimer);
           });
-          await this.backend.addConnection(transport);
+          try {
+            await this.backend.addConnection(transport);
+          } catch (cause) {
+            throw withAdmissionReason(
+              Object.assign(new Error("Native connection failed", { cause }), { status: 503 }),
+              "native_connection_failed",
+            );
+          }
           this.broadcastProfiles();
           this.broadcastActivity();
         } finally {
@@ -1241,8 +1338,9 @@ export class Page {
         // while the resident socket can trigger authorization and storage work.
         await disconnected;
       })().catch((error) => {
-        logFailure(error, "native-admission");
-        void wire.disconnect();
+        if (error !== refusal) logAdmissionDenied(error, { stage: "native", identity });
+        if (admissionReason(error) === "server_error") logFailure(error, "native-admission");
+        void close(error);
       }),
     );
     return new Response(null, { status: 101, webSocket: client });

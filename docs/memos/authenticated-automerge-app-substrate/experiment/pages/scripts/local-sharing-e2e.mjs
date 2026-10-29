@@ -21,9 +21,10 @@ const domainView = process.argv.includes("--domain-view");
 const images = process.argv.includes("--images");
 const mcpImages = process.argv.includes("--mcp-images");
 const taskLists = process.argv.includes("--task-lists");
-if ([domainView, images, mcpImages, taskLists].filter(Boolean).length > 1)
+const admission = process.argv.includes("--admission");
+if ([domainView, images, mcpImages, taskLists, admission].filter(Boolean).length > 1)
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --mcp-images or --task-lists",
+    "Choose one qualification: --domain-view, --images, --mcp-images, --task-lists or --admission",
   );
 const children = new Set();
 let canceled = false;
@@ -50,8 +51,9 @@ function start(command, args, options = {}) {
   child.once("exit", () => children.delete(child));
   return child;
 }
-async function run(command, args, options) {
+async function run(command, args, options, onMessage) {
   const child = start(command, args, options);
+  if (onMessage) child.on("message", (message) => onMessage(message, child));
   const timeout = setTimeout(() => {
     void stop(child);
   }, 180000);
@@ -77,6 +79,20 @@ async function freePort() {
   const port = server.address().port;
   await new Promise((resolve) => server.close(resolve));
   return port;
+}
+async function portFree(port) {
+  const server = createServer();
+  try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(port, "127.0.0.1", resolve);
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await new Promise((resolve) => server.close(() => resolve()));
+  }
 }
 await mkdir(output, { recursive: true });
 const scratch = await mkdtemp(path.join(tmpdir(), "pages-sharing-e2e-"));
@@ -173,46 +189,70 @@ try {
   );
   if (version !== CELLD_RELEASE.version)
     throw new Error(`Sharing fixture requires ${CELLD_RELEASE.version}; found ${version}`);
-  host = start(
-    process.env.CELLD_BIN || "celld",
-    // celld dev 0.6.3 opens a real private local fleet bucket beneath
-    // runtime/.celld/dev, including R2 objects; no cloud credentials are used.
-    ["dev", runtime, "--host", "127.0.0.1", "--port", String(port), "--no-watch", "--logs"],
-    { cwd: scratch, env: hostEnv, stdio: ["ignore", "pipe", "pipe"] },
-  );
-  host.stdout.pipe(log, { end: false });
-  host.stderr.pipe(log, { end: false });
-  let startupError;
-  host.on("error", (error) => {
-    startupError = error;
-  });
-  const deadline = Date.now() + 60000;
-  for (;;) {
-    if (startupError) throw startupError;
-    if (canceled || host.exitCode !== null || host.signalCode)
-      throw new Error("Local celld stopped before qualification");
-    try {
-      const response = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(1000) });
-      if (response.ok && (await response.json()).prototype === "pages-celld-native") break;
-    } catch {
-      /* wait for local runtime startup */
+  async function boot() {
+    host = start(
+      process.env.CELLD_BIN || "celld",
+      // celld dev 0.6.3 opens a real private local fleet bucket beneath
+      // runtime/.celld/dev, including R2 objects; no cloud credentials are used.
+      ["dev", runtime, "--host", "127.0.0.1", "--port", String(port), "--no-watch", "--logs"],
+      { cwd: scratch, env: hostEnv, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    host.stdout.pipe(log, { end: false });
+    host.stderr.pipe(log, { end: false });
+    let startupError;
+    host.on("error", (error) => {
+      startupError = error;
+    });
+    const deadline = Date.now() + 60000;
+    for (;;) {
+      if (startupError) throw startupError;
+      if (canceled || host.exitCode !== null || host.signalCode)
+        throw new Error("Local celld stopped before qualification");
+      try {
+        const response = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(1000) });
+        if (response.ok && (await response.json()).prototype === "pages-celld-native") break;
+      } catch {
+        /* wait for local runtime startup */
+      }
+      if (Date.now() >= deadline)
+        throw new Error(`Local celld did not become ready; see ${output}/celld.log`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    if (Date.now() >= deadline)
-      throw new Error(`Local celld did not become ready; see ${output}/celld.log`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
   }
+  await boot();
+  // The admission smoke asks the harness to stop and restart the same runtime
+  // directory, so persisted Pages, sessions, and bindings survive the restart.
+  const restartOnRequest = async (message, child) => {
+    if (message?.type !== "restart-celld") return;
+    try {
+      await stop(host);
+      // celld dev's local node can release the listener after its parent exits.
+      const deadline = Date.now() + 30000;
+      while (!(await portFree(port))) {
+        if (Date.now() >= deadline)
+          throw new Error(`Port ${port} stayed busy after stopping celld`);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      await boot();
+      child.send({ type: "celld-restarted" });
+    } catch (error) {
+      child.send({ type: "celld-restart-failed", message: error.message });
+    }
+  };
   await run(
     process.execPath,
     [
-      taskLists
-        ? "scripts/task-lists-smoke.mjs"
-        : mcpImages
-          ? "scripts/mcp-image-import-smoke.mjs"
-          : images
-            ? "scripts/images-smoke.mjs"
-            : domainView
-              ? "scripts/domain-sharing-smoke.mjs"
-              : "scripts/sharing-smoke.mjs",
+      admission
+        ? "scripts/admission-smoke.mjs"
+        : taskLists
+          ? "scripts/task-lists-smoke.mjs"
+          : mcpImages
+            ? "scripts/mcp-image-import-smoke.mjs"
+            : images
+              ? "scripts/images-smoke.mjs"
+              : domainView
+                ? "scripts/domain-sharing-smoke.mjs"
+                : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {
@@ -220,13 +260,18 @@ try {
         PAGES_ORIGIN: origin,
         PAGES_SCREENSHOTS: output,
         PAGES_E2E_KEY_FILE: keyFile,
+        PAGES_CELLD_LOG: path.join(output, "celld.log"),
       },
+      ...(admission && { stdio: ["inherit", "inherit", "inherit", "ipc"] }),
     },
+    admission ? restartOnRequest : undefined,
   );
   const result = JSON.parse(await readFile(path.join(output, "report.json"), "utf8"));
   if (!result.cleaned || result.failure)
     throw new Error("Sharing qualification did not complete cleanly");
-  console.log(`Local OIDC, sharing and MCP qualification passed. Artifacts: ${output}`);
+  console.log(
+    `${admission ? "Local admission and reconnect" : "Local OIDC, sharing and MCP"} qualification passed. Artifacts: ${output}`,
+  );
 } finally {
   await Promise.all([...children].map(stop));
   if (log) await new Promise((resolve) => log.end(resolve));
