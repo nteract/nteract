@@ -19,9 +19,11 @@ interface RecordedMessage {
   status?: string;
   canSwitch?: boolean;
   detail?: string;
+  /** Doc updates only: highest column version per source in the update. */
+  columns?: Record<string, number>;
   /** `nteract/bokehSessionEvents` only. */
   transactionId?: string;
-  dataEvents?: Array<{ source: string; kind: string; echoOf?: number }>;
+  dataEvents?: Array<{ source: string; kind: string; echoOf?: number; version?: number }>;
 }
 
 interface BokehE2EWindow extends Window {
@@ -51,10 +53,20 @@ async function recordBokehMessages(page: Page) {
           params?: {
             epoch?: number;
             status?: string;
-            update?: { kind?: string; epoch?: number; canSwitch?: boolean };
+            update?: {
+              kind?: string;
+              epoch?: number;
+              canSwitch?: boolean;
+              columns?: Record<string, Record<string, { version: number } | null>>;
+            };
             events?: {
               transactionId?: string;
-              dataEvents?: Array<{ source_id: string; kind: string; echo_of?: number }>;
+              dataEvents?: Array<{
+                source_id: string;
+                kind: string;
+                echo_of?: number;
+                new_version?: number;
+              }>;
             };
           };
         };
@@ -76,9 +88,15 @@ async function recordBokehMessages(page: Page) {
               source: event.source_id,
               kind: event.kind,
               echoOf: event.echo_of,
+              version: event.new_version,
             })),
           });
           return;
+        }
+        const columns: Record<string, number> = {};
+        for (const [source, refs] of Object.entries(update?.columns ?? {})) {
+          const versions = Object.values(refs).flatMap((ref) => (ref ? [ref.version] : []));
+          if (versions.length > 0) columns[source] = Math.max(...versions);
         }
         state.messages.push({
           at: Date.now(),
@@ -87,6 +105,7 @@ async function recordBokehMessages(page: Page) {
           kind: update?.kind,
           status: message.params?.status,
           canSwitch: update?.canSwitch,
+          columns,
           detail: (update?.kind === "full"
             ? (
                 JSON.stringify((update as { models?: unknown }).models).match(
@@ -165,6 +184,24 @@ async function columnTail(frame: FrameLocator, sourceId: string) {
       return null;
     }, sourceId)
     .catch(() => null);
+}
+
+/**
+ * Newest version of `sourceId` the frame received as a data event, and the
+ * newest column version its session document carried. Streams only reach the
+ * retained tail; the document's columns move when a fold lands.
+ */
+async function foldVersions(frame: FrameLocator, sourceId: string) {
+  const messages = await frameMessages(frame);
+  let streamed = 0;
+  let folded = 0;
+  for (const message of messages) {
+    for (const event of message.dataEvents ?? []) {
+      if (event.source === sourceId) streamed = Math.max(streamed, event.version ?? 0);
+    }
+    folded = Math.max(folded, message.columns?.[sourceId] ?? 0);
+  }
+  return { streamed, folded };
 }
 
 interface FrameBokehModel {
@@ -708,9 +745,13 @@ test.describe("Bokeh session documents", () => {
         .toEqual({ length: 30, last: 49 });
 
       // After the quiet fold, a joiner reads the columns alone.
-      await page.waitForTimeout(5_000);
+      await expect
+        .poll(() => foldVersions(frame, sourceId), { timeout: 30_000 })
+        .toEqual({ streamed: 49, folded: 49 });
       await runCell(mcp, streamId, "source.stream(dict(x=[50], y=[2500]), rollover=30)");
-      await page.waitForTimeout(5_000);
+      await expect
+        .poll(() => foldVersions(frame, sourceId), { timeout: 30_000 })
+        .toEqual({ streamed: 50, folded: 50 });
       const late = await context.newPage();
       pages.push(late);
       await openNotebookRoom(late, notebookId);
