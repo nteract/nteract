@@ -80,7 +80,9 @@ export function commitEditorTransactions(
   }
 }
 
-export function createWordgardBinding(replica, id) {
+// `encodeSpans` exists for mixed-version tests that stand in for an older
+// build's encoder. The editor always uses the current `encode`.
+export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}) {
   const path = ["blocks", id, "richText"],
     listeners = new Set();
   let current = decode(A.spans(replica.doc, path));
@@ -168,7 +170,7 @@ export function createWordgardBinding(replica, id) {
         },
       );
       return replica.change((d) => {
-        if (structural) A.updateSpans(d, path, encode(tr.newDoc), expand);
+        if (structural) A.updateSpans(d, path, encodeSpans(tr.newDoc), expand);
         else {
           for (const range of [...replacements].reverse()) {
             const from = original.map.wgToAm[range.from],

@@ -411,11 +411,9 @@ export function encode(doc) {
       marker("image", parents, node.param, true);
     } else throw Error(`Unsupported Wordgard inline node: ${node.name}`);
   };
-  // A container's first paragraph has no native marker: decode opens it when
-  // the first text or embed arrives. An empty first paragraph has neither, so
-  // it is implicit only when it is also the last child. Otherwise it needs an
-  // explicit marker, or the next marker absorbs it (deleting an image that was
-  // alone in the first paragraph, or Enter at the start of a block).
+  // A first paragraph can omit its marker when it has content or is the
+  // container's only child. Otherwise, emit a marker to preserve the empty
+  // paragraph.
   const implicitAt = (siblings, i) =>
     i === 0 && (siblings.length === 1 || siblings[0].content?.length > 0);
   const block = (node, parents, implicit = false, listType = null) => {

@@ -436,7 +436,7 @@ export const tools = [
   ),
   tool(
     "patch_page",
-    "Apply an atomic targeted edit batch. Prefer replace_match for visible prose: replace one literal range, optionally scoped by node_index and context, preserving untouched formatting and comment anchors. conflict_scope:target permits older base_heads only for unchanged native targets in replace_match batches; other edits retain the exact-page revision guard. Conflicts identify passages to reread with read_page_changes. patch_block_markdown edits Markdown syntax. Zero or multiple matches fail the whole batch. Tool edits arrive atomically, without a typing cursor.",
+    "Apply an atomic targeted edit batch. Prefer replace_match for visible prose: replace one literal range, optionally scoped by node_index and context, preserving untouched formatting and comment anchors. conflict_scope:target permits older base_heads only for unchanged native targets in replace_match batches; other edits retain the exact-page revision guard. Conflicts identify passages to reread with read_page_changes. patch_block_markdown edits Markdown syntax and refuses a block its Markdown can't reproduce, such as one with an empty paragraph. Zero or multiple matches fail the whole batch. Tool edits arrive atomically, without a typing cursor.",
     {
       ...guard,
       conflict_scope: {

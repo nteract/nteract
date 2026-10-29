@@ -199,11 +199,19 @@ try {
     [fixture, "image/jpeg", 415],
     [Buffer.alloc(5 * 1024 * 1024 + 1), "image/png", 413],
   ]) {
-    const rejected = await fetch(origin + uploadPath, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${keys.owner}`, "Content-Type": mime },
-      body,
-    });
+    let rejected;
+    try {
+      rejected = await fetch(origin + uploadPath, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${keys.owner}`, "Content-Type": mime },
+        body,
+      });
+    } catch (error) {
+      // celld can answer 413 and close before Node finishes writing an
+      // oversized body; Node then reports the closed socket, not the status.
+      if (status === 413 && ["EPIPE", "ECONNRESET"].includes(error.cause?.code)) continue;
+      throw error;
+    }
     assert.equal(rejected.status, status, await rejected.text());
   }
   for (const key of [keys.reader, keys.viewer]) {

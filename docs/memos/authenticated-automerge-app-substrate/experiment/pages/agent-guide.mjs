@@ -624,6 +624,8 @@ matching or applying the text again.
 For formatting or structural edits, use patch_block_markdown with replacements
 [{"old":"exact Markdown","new":"replacement Markdown"}]. Each old string must
 occur exactly once in that block's Markdown. Regex replacement is not supported.
+It refuses a block whose Markdown can't reproduce it, such as one with an empty
+paragraph; use replace_match for text in that block.
 Copy the whole heads array, even when it has more than one entry. On a stale-revision error,
 read again, reconsider the edit, and use a new key. After a timeout or unknown
 outcome, retry the exact request body, key, token, account, and driver label.
