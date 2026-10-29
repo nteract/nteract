@@ -138,8 +138,8 @@ This decision records the Cloudflare prototype and the shipped
 `preview.runt.run` path. The hosted implementation depends on the Workers API:
 Durable Objects, D1, and R2 bindings. Two proposals explore other hosts for the
 same document engine. `../memos/aws-rust-room-host.md` sketches a native Rust
-room host on AWS. `../memos/celld-hosted-room-substrate.md` runs the same
-Worker code on [celld](https://github.com/denoland/celld), which hosts those
+room host on AWS. `../memos/celld-hosted-room-substrate.md` describes running
+the same Worker code on [celld](https://github.com/denoland/celld), which hosts those
 bindings outside Cloudflare against a fleet bucket. Neither memo is an accepted
 deployment decision.
 
@@ -147,7 +147,8 @@ deployment decision.
 
 **Status note, 2026-10-29.** The Worker and Durable Object room-host model in
 this decision runs on two substrates today. This note records where each
-deployment runs. It does not move the production decision to celld.
+deployment runs. Cloudflare remains the primary hosted topology described by
+this draft ADR.
 
 | Deployment | App | Substrate | Identity | Source |
 |------------|-----|-----------|----------|--------|

@@ -1,7 +1,7 @@
 # celld as a Hosted Room Substrate
 
-**Status:** Memo / proposal, 2026-09-11; deployment status refreshed
-2026-10-29. Not an accepted deployment decision. celld hosts managed
+**Status:** Proposal. Deployment status as of 2026-10-29. Not an accepted
+deployment decision. celld hosts managed
 notebook-cloud previews and the Pages experiment's Page8 QA service. Neither
 is an accepted production substrate; the promotion gates below are unmet.
 
@@ -31,7 +31,7 @@ Related:
 
 ## celld deployments today
 
-Two deployment lines run on celld. Both are previews or QA targets.
+celld hosts notebook-cloud previews and the Page8 QA service.
 
 | Deployment | What runs | Runtime and storage | Source |
 |------------|-----------|---------------------|--------|
@@ -139,8 +139,8 @@ What the source shows today:
   that owns the database; `batch()` groups statements into one dispatch and
   one transaction. A binding result is capped at 100,000 rows or 32 MiB.
 
-On main, Pages keeps sign-in sessions and MCP OAuth state in D1; its Page
-catalog lives in `Catalog` Durable Objects. Moving a catalog index into D1 puts lazy schema
+Pages stores sign-in sessions and MCP OAuth state in D1. Its Page catalog
+lives in `Catalog` Durable Objects. Moving a catalog index into D1 puts lazy schema
 bootstrap and single-writer dispatch on the listing path. Measure a cold first
 access on celld 0.6.3 before relying on it, and exercise
 `celld d1 migrations apply` on a fleet bucket before calling fleet migrations
@@ -206,7 +206,7 @@ gates above. The last two are open items from "What the proof cost".
 | Activation authority (#4295) | Unmet. Issue open. Controller runtime not pinned here. | Unmet. Issue open. No qualification record for the pinned 0.6.3 hash. The v0.6.x release notes do not mention activation revocation. |
 | HTTP shared-promise ownership (#4296) | Unmet. Issue open. | Unmet. Issue open. Not separately qualified. |
 | Multi-node failover | No measurement in this repo. Node count is controller-owned. | Unmeasured. The profile names one host. |
-| Fleet D1 migrations | Unknown here. The export ships `migrations_dir`; the controller owns schema setup; the app also bootstraps lazily. | Not run. Lazy schema bootstrap only. |
+| Fleet D1 migrations | Unknown here. The export ships `migrations_dir`; the controller owns schema setup; the app also bootstraps lazily. | The installer does not invoke fleet migrations. The application initializes its D1 schema on first use. |
 
 Page8 adds application-level defense for one part of the activation problem.
 A new Page incarnation acquires a durable generation, and `PageRecords` fences
@@ -225,8 +225,8 @@ not meet the activation-authority gate.
    anything beyond a demo, or does the reconnect gap live in our client code
    regardless of host?
 3. `apps/notebook-cloud`'s export step (`scripts/celld-local.mjs export`)
-   packages the managed preview bundles, and CI builds it for every PR and
-   `main` push. Should it also become a supported self-hosted deploy target,
+   packages the managed preview bundles. CI exports bundles on every `main`
+   push, qualifying Build runs, and authorized PR preview runs. Should it also become a supported self-hosted deploy target,
    or stay tied to the private preview controller until question 1 has an
    answer?
 4. Do we want to push the idle-isolate-retirement knob and the
