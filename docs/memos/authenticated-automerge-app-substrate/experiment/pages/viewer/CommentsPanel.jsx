@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Check, MessageSquare, RotateCcw, X, Maximize2, Minimize2 } from "lucide-react";
 import { resolveCommentDraft } from "./comment-draft.mjs";
+import { COMMENTS_SHEET_QUERY } from "./comments-layout.mjs";
 import { CommentRichText, CommentContent } from "./CommentRichText.jsx";
 import "./comments.css";
 
@@ -31,7 +32,7 @@ export function CommentsPanel({
     composerElement = useRef(null),
     previousComposer = useRef(null),
     resolvedDisclosure = useRef(null);
-  const [mobile, setMobile] = useState(() => matchMedia("(max-width: 900px)").matches);
+  const [mobile, setMobile] = useState(() => matchMedia(COMMENTS_SHEET_QUERY).matches);
   const [drafts, setDrafts] = useState({});
   const [expanded, setExpanded] = useState(false);
   const [visited, setVisited] = useState(open);
@@ -54,7 +55,7 @@ export function CommentsPanel({
     }
   }, [composer?.key]);
   useEffect(() => {
-    const media = matchMedia("(max-width: 900px)");
+    const media = matchMedia(COMMENTS_SHEET_QUERY);
     const update = () => setMobile(media.matches);
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);

@@ -90,10 +90,6 @@
 .comments .comment-composer {
   padding-top: 1rem;
 }
-.comments.comments-expanded {
-  width: 680px;
-  right: 24px;
-}
 .comments-expand {
   margin-left: auto;
 }
