@@ -273,14 +273,26 @@ logs `native_binding_stalled` rather than `native_admission_timeout`.
 
 Clients receive only a code from [admission.mjs](shared/admission.mjs): HTTP
 errors carry it as `code`; native refusals after the upgrade close the socket with
-that code as the reason. A missing Page, and a deleted Page seen by someone with no
-recorded grant, return the same `403 page_access_denied` body as an unreadable
-Page; only the owner and recorded members learn `page_deleted`. Tool and MCP
-routes still distinguish missing from unreadable. The browser reconnects with
-backoff on transient codes, rechecks access through `/api/connect` on access and
-sign-in codes, and stops on `signing_key_rejected` until Retry. A socket counts as
-admitted only after it stays open 15 seconds, so quick refusals keep growing the
-backoff instead of resetting it.
+that code as the reason. Byte-transport refusals (text frames, oversized frames,
+full queues) report a bounded category, log it once, and close with
+`request_rejected` or `temporarily_unavailable`.
+
+A deleted Page returns `page_deleted` only to its owner and to holders of a
+current viewer/editor grant. Everyone else, including principals with a role
+"none" tombstone, receives the same `403 page_access_denied` body and headers as
+for an unreadable Page. Clients that send `X-Pages-Admission: 1` also get that
+response for a missing Page. Clients without it keep the legacy 404, because the
+deployed viewer renews an expired draft registration only on that 404 and the
+app does not force a reload on a new build. Until that compatibility path is
+removed, a caller that omits the header can still distinguish missing from
+existing Pages, as before. Tool and MCP routes also still distinguish them.
+
+The browser reconnects with backoff on transient codes, rechecks access through
+`/api/connect` on access and sign-in codes, and stops on `signing_key_rejected`
+until Retry. A first open waiting for the document ends with that diagnosis
+instead of a lookup timeout, and the open retry loop does not reopen. A socket
+counts as admitted only after it stays open 15 seconds, so quick refusals keep
+growing the backoff instead of resetting it.
 
 A binding write that never settles still blocks its own signing key until the
 host restarts; other keys are unaffected. A rejected write may have taken effect,

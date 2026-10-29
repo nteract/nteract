@@ -32,19 +32,26 @@ function restartCelld() {
   });
 }
 
-async function api(page, path, body) {
+async function api(page, path, body, headers = {}) {
   return page.evaluate(
-    async ({ path, body }) => {
+    async ({ path, body, headers }) => {
       const response = await fetch(path, {
         method: body ? "POST" : "GET",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...headers },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
-      return { status: response.status, body: await response.json() };
+      return {
+        status: response.status,
+        headers: [...response.headers]
+          .filter(([name]) => ["cache-control", "content-type"].includes(name))
+          .sort(),
+        body: await response.json(),
+      };
     },
-    { path, body },
+    { path, body, headers },
   );
 }
+const capable = { "X-Pages-Admission": "1" };
 const tool = (page, operation, args = {}) =>
   api(page, "/api/tools", { operation, arguments: args });
 async function setRole(principal, role) {
@@ -151,20 +158,26 @@ try {
   const anonymous = await fetch(`${origin}/api/connect?page=${pageId}`);
   assert.equal(anonymous.status, 401);
   assert.equal((await anonymous.json()).code, "sign_in_required");
-  const unreadable = await api(stranger, `/api/connect?page=${pageId}`);
-  const missing = await api(stranger, `/api/connect?page=${crypto.randomUUID()}`);
+  const unreadable = await api(stranger, `/api/connect?page=${pageId}`, undefined, capable);
+  const missingId = crypto.randomUUID();
+  const missing = await api(stranger, `/api/connect?page=${missingId}`, undefined, capable);
   assert.deepEqual(unreadable, missing);
-  assert.deepEqual(unreadable, {
-    status: 403,
-    body: { error: "Document access denied", code: "page_access_denied" },
+  assert.equal(unreadable.status, 403);
+  assert.deepEqual(unreadable.body, {
+    error: "Document access denied",
+    code: "page_access_denied",
   });
+  // Clients without the capability (the deployed viewer) keep the legacy 404
+  // for a missing Page; an unreadable Page is still 403 for them.
+  assert.equal((await api(stranger, `/api/connect?page=${missingId}`)).status, 404);
+  assert.equal((await api(stranger, `/api/connect?page=${pageId}`)).status, 403);
   const crossOrigin = await fetch(`${origin}/api/connect?page=${pageId}`, {
     headers: { cookie: await cookieFor(owner), origin: "https://elsewhere.invalid" },
   });
   assert.equal(crossOrigin.status, 403);
   assert.equal((await crossOrigin.json()).code, "request_rejected");
   report.completed.push(
-    "HTTP admission: sign_in_required, request_rejected, identical missing/unreadable 403",
+    "HTTP admission: sign_in_required, request_rejected, identical missing/unreadable 403; legacy 404 without capability",
   );
 
   // Native refusals close with an application code after the upgrade.
@@ -189,8 +202,18 @@ try {
   report.closes.reassigned = await reassigned.closed;
   assert.deepEqual(report.closes.reassigned, { code: 4422, reason: "signing_key_rejected" });
   first.close();
+  // A real text frame on the native socket is refused with its own code.
+  const textAddress = new URL(`/api/sync?page=${pageId}`, origin);
+  textAddress.protocol = "ws:";
+  const text = new WebSocket(textAddress, { headers: { cookie: ownerCookie, origin } });
+  report.closes.textFrame = await new Promise((resolve, reject) => {
+    text.addEventListener("open", () => text.send("not a native frame"));
+    text.addEventListener("close", ({ code, reason }) => resolve({ code, reason }));
+    setTimeout(() => reject(new Error("text frame was not refused")), 15000);
+  });
+  assert.deepEqual(report.closes.textFrame, { code: 4400, reason: "request_rejected" });
   report.completed.push(
-    "Native admission: duplicate key closes 4503 temporarily_unavailable; reassigned key 4422 signing_key_rejected",
+    "Native admission: duplicate key 4503 temporarily_unavailable; reassigned key 4422 signing_key_rejected; text frame 4400 request_rejected",
   );
 
   // Open session, restart celld, keep editing, and reach Saved again.
@@ -243,6 +266,7 @@ try {
     "origin_rejected",
     "native_already_connected",
     "native_binding_mismatch",
+    "native_frame_unsupported",
   ];
   let logs = [];
   await expect

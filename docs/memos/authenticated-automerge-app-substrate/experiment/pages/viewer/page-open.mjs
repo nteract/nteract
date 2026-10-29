@@ -2,6 +2,9 @@ const RETRY_DELAYS = [1000, 2000, 4000, 8000, 10000];
 const CLEANUP_TIMEOUT_MS = 15_000;
 
 function transient(error) {
+  // A permanent native refusal (for example a refused signing key) cannot be
+  // fixed by reopening with the same tab identity.
+  if (error.admission?.retry === "stop") return false;
   if (error.status != null) return error.status >= 500;
   return ["NETWORK_ERROR", "REQUEST_TIMEOUT", "INVALID_RESPONSE"].includes(error.code);
 }

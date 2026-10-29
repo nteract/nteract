@@ -357,6 +357,38 @@ for (const [failure, reason, close] of [
   });
 }
 
+for (const [frame, reason, data] of [
+  ["text", "native_frame_unsupported", () => "not binary"],
+  ["oversized", "native_frame_too_large", () => new ArrayBuffer(32 * 1024 * 1024 + 1)],
+]) {
+  test(`a ${frame} frame during admission logs ${reason} once and closes 4400`, async (t) => {
+    const f = fixture(t, "handshake-timeout");
+    await drain();
+    f.socket.dispatchEvent(new MessageEvent("message", { data: data() }));
+    await f.background;
+    assert.deepEqual(f.socket.closed, { code: 4400, reason: "request_rejected" });
+    assert.deepEqual(
+      f.admissionLogs.map(({ reason }) => reason),
+      [reason],
+      "the refusal is not relogged as a cancellation",
+    );
+  });
+}
+
+test("a malformed frame on an admitted socket logs its refusal once", async (t) => {
+  const f = fixture(t);
+  await drain();
+  assert.equal(f.page.wires.size, 1);
+  f.socket.dispatchEvent(new MessageEvent("message", { data: "not binary" }));
+  await f.background;
+  assert.deepEqual(f.socket.closed, { code: 4400, reason: "request_rejected" });
+  assert.deepEqual(
+    f.admissionLogs.map(({ reason }) => reason),
+    ["native_frame_unsupported"],
+  );
+  assert.equal(f.page.wires.size, 0);
+});
+
 test("a handshake deadline during an unsettled binding write is reported as a storage stall", async (t) => {
   const f = fixture(t, undefined, { reauthenticate: async (identity) => identity });
   f.page.ctx.storage.put = () => new Promise(() => {});

@@ -15,6 +15,8 @@ export const ADMISSION_REASONS = Object.freeze({
   credential_expired: "sign_in_required",
   credential_unverified: "temporarily_unavailable",
   page_not_found: "page_access_denied",
+  // A client without ADMISSION_CAPABILITY keeps the legacy 404 for a missing Page.
+  page_not_found_legacy: "page_deleted",
   page_deleted: "page_deleted",
   page_no_grant: "page_access_denied",
   page_access_removed: "page_access_denied",
@@ -32,17 +34,36 @@ export const ADMISSION_REASONS = Object.freeze({
   native_connection_failed: "temporarily_unavailable",
   native_access_changed: "access_changed",
   native_acl_committing: "access_changed",
+  // Byte-transport refusals of native input, before or after admission.
+  native_frame_unsupported: "request_rejected",
+  native_frame_too_large: "request_rejected",
+  native_receive_queue_full: "temporarily_unavailable",
+  native_send_buffer_full: "temporarily_unavailable",
   native_binding_mismatch: "signing_key_rejected",
   native_invalid_key: "signing_key_rejected",
   native_key_capacity: "signing_key_rejected",
   server_error: "temporarily_unavailable",
 });
 
-export const ADMISSION_CODES = Object.freeze({
-  ...ADMISSION_OUTCOMES,
-  // HTTP-only: a malformed or cross-origin request. Not retryable as sent.
-  request_rejected: Object.freeze({ status: 400, close: 4400, retry: "stop" }),
+export const ADMISSION_CODES = ADMISSION_OUTCOMES;
+
+const transportReasons = Object.freeze({
+  unsupported_frame: "native_frame_unsupported",
+  frame_too_large: "native_frame_too_large",
+  receive_queue_full: "native_receive_queue_full",
+  send_buffer_full: "native_send_buffer_full",
 });
+
+/** Error for a WebSocketByteTransport refusal category. */
+export function transportRefusal(category) {
+  const reason = transportReasons[category] ?? "server_error";
+  return withAdmissionReason(
+    Object.assign(new Error("Native transport refused input"), {
+      status: ADMISSION_CODES[ADMISSION_REASONS[reason]].status,
+    }),
+    reason,
+  );
+}
 
 export const ADMISSION_ROUTES = Object.freeze(["/api/connect", "/api/sync", "/api/saved"]);
 

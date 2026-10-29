@@ -9,12 +9,14 @@ export class WebSocketByteTransport {
   #callbacks = new Set();
   #bytes = 0;
   #closed = false;
+  #closeSent = false;
 
   constructor(
     socket,
     {
       maxQueuedBytes = MAX_WEBSOCKET_MESSAGE_BYTES,
       maxFrameBytes = MAX_WEBSOCKET_MESSAGE_BYTES,
+      onRefusal,
     } = {},
   ) {
     for (const [name, limit] of Object.entries({ maxQueuedBytes, maxFrameBytes })) {
@@ -23,25 +25,28 @@ export class WebSocketByteTransport {
       }
     }
     this.socket = socket;
+    // Called once with a bounded category before the transport closes for
+    // input it refuses, so the host can close with a specific code and log it.
+    this.onRefusal = onRefusal;
     // Newer workerd follows the WebSocket Blob default. Native Subduction
     // expects byte frames; request ArrayBuffer delivery before receiving any.
     socket.binaryType = "arraybuffer";
     socket.addEventListener("message", ({ data }) => {
       if (this.#closed) return;
       if (!(data instanceof ArrayBuffer) && !ArrayBuffer.isView(data)) {
-        void this.disconnect();
+        void this.#refuse("unsupported_frame");
         return;
       }
       const bytes =
         data instanceof ArrayBuffer
           ? new Uint8Array(data)
           : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-      if (
-        bytes.byteLength > maxFrameBytes ||
-        this.#bytes + bytes.byteLength > maxQueuedBytes ||
-        this.#queue.length >= 256
-      ) {
-        void this.disconnect();
+      if (bytes.byteLength > maxFrameBytes) {
+        void this.#refuse("frame_too_large");
+        return;
+      }
+      if (this.#bytes + bytes.byteLength > maxQueuedBytes || this.#queue.length >= 256) {
+        void this.#refuse("receive_queue_full");
         return;
       }
       const copy = bytes.slice();
@@ -70,7 +75,9 @@ export class WebSocketByteTransport {
       buffered < 0 ||
       bytes.byteLength > this.maxQueuedBytes - buffered
     ) {
-      await this.disconnect();
+      await this.#refuse(
+        bytes.byteLength > this.maxFrameBytes ? "frame_too_large" : "send_buffer_full",
+      );
       throw new Error("WebSocket buffer limit exceeded");
     }
     this.socket.send(bytes);
@@ -89,6 +96,18 @@ export class WebSocketByteTransport {
   onDisconnect(callback) {
     if (this.#closed) callback();
     else this.#callbacks.add(callback);
+  }
+
+  // Synchronous: refused input must close the transport before another frame
+  // is queued. The host callback may close first with its own code.
+  #refuse(category) {
+    if (this.#closed) return Promise.resolve();
+    try {
+      Promise.resolve(this.onRefusal?.(category)).catch(() => {});
+    } catch {
+      /* The transport still closes below. */
+    }
+    return this.disconnect();
   }
 
   #finish() {
@@ -117,6 +136,8 @@ export class WebSocketByteTransport {
       typeof reason === "string" &&
       /^[a-z_]{1,64}$/.test(reason);
     this.#finish();
+    if (this.#closeSent) return;
+    this.#closeSent = true;
     try {
       if (application) this.socket.close(code, reason);
       else this.socket.close(1000, "Disconnected");

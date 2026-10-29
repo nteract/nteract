@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
+import * as N from "@automerge/subduction";
 import { PageSession } from "./session.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
 
@@ -215,4 +216,120 @@ test("a TimeoutError outside the cold lookup's own deadline is not normalized fo
   assert.equal(attempts, 1);
   assert.equal(failure.code, 23);
   await failure.cleanupPromise;
+});
+
+// Drive the real first-open path: discovery, native socket, then the cold
+// document lookup. Only network, socket and storage boundaries are replaced.
+function coldOpenFixture(t, { refuseDuringHandshake = false } = {}) {
+  const authentication = { identity: { principal: crypto.randomUUID() }, canWrite: true };
+  const state = { attempts: 0, sockets: [], backoff: [], capability: [] };
+  let lookupStarted;
+  state.lookup = new Promise((resolve) => (lookupStarted = resolve));
+  const locationBefore = Object.getOwnPropertyDescriptor(globalThis, "location");
+  Object.defineProperty(globalThis, "location", {
+    configurable: true,
+    value: { href: "http://localhost:9894/" },
+  });
+  t.after(() => {
+    if (locationBefore) Object.defineProperty(globalThis, "location", locationBefore);
+    else delete globalThis.location;
+  });
+  // The cold lookup deadline never fires: only the refusal can end the wait.
+  t.mock.method(AbortSignal, "timeout", () => new AbortController().signal);
+  t.mock.method(PageSession.prototype, "initializeLocal", async function (key) {
+    state.attempts++;
+    this.replicaKey = key;
+    this.local = { release() {} };
+    this.signer = { free() {} };
+    this.storage = { async close() {} };
+    this.backend = { async addConnection() {}, async close() {} };
+    this.repo = {
+      find(_id, { signal }) {
+        lookupStarted();
+        return new Promise((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason)),
+        );
+      },
+      async flush() {},
+      async shutdown() {},
+    };
+  });
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    assert.ok(url.startsWith("/api/connect?"), url);
+    state.capability.push(new Headers(options?.headers).get("x-pages-admission"));
+    return Response.json({
+      identity: authentication.identity,
+      documentId: "remote-document",
+      access: { role: "viewer", generation: 0, revision: 0, canRead: true, canWrite: false },
+      serverPeerId: "00".repeat(32),
+      serverSenderId: "host",
+      peerProfiles: {},
+    });
+  });
+  t.mock.method(globalThis, "WebSocket", function () {
+    const events = new EventTarget();
+    Object.defineProperty(this, "binaryType", { value: "blob", writable: true });
+    this.addEventListener = events.addEventListener.bind(events);
+    this.dispatchEvent = events.dispatchEvent.bind(events);
+    this.close = () => {};
+    state.sockets.push(this);
+  });
+  const refuse = (socket) =>
+    socket.dispatchEvent(
+      Object.assign(new Event("close"), { code: 4422, reason: "signing_key_rejected" }),
+    );
+  t.mock.method(N.SubductionWebSocket, "setup", async (socket, _signer, _peer, onDisconnect) => {
+    state.disconnect = () => {
+      refuse(socket);
+      onDisconnect();
+    };
+    if (refuseDuringHandshake) {
+      refuse(socket);
+      throw Error("Native handshake failed");
+    }
+    return { free() {}, toTransport: () => ({ free() {} }) };
+  });
+  state.open = () =>
+    openPageWithRetry(() => PageSession.open(crypto.randomUUID(), { authentication }), {
+      signal: new AbortController().signal,
+      delays: [1, 1, 1],
+      setTimeout(fn, delay) {
+        state.backoff.push(delay);
+        return setTimeout(fn, delay);
+      },
+      clearTimeout,
+    });
+  return state;
+}
+
+test("a signing key refused after the handshake ends the cold lookup without retrying", async (t) => {
+  const f = coldOpenFixture(t);
+  const opening = f.open();
+  void opening.catch(() => {});
+  await f.lookup;
+  f.disconnect();
+  const error = await opening.then(
+    () => assert.fail("opened despite refusal"),
+    (error) => error,
+  );
+  assert.equal(error.code, "SIGNING_KEY_REFUSED");
+  assert.match(error.message, /refused this tab's signing key/);
+  assert.equal(error.admission.code, "signing_key_rejected");
+  assert.equal(f.attempts, 1, "a permanent refusal is not reopened");
+  assert.deepEqual(f.backoff, []);
+  assert.deepEqual(f.capability, ["1"], "discovery declares the admission capability");
+  await error.cleanupPromise;
+});
+
+test("a signing key refused during the handshake reports the diagnosis without retrying", async (t) => {
+  const f = coldOpenFixture(t, { refuseDuringHandshake: true });
+  const error = await f.open().then(
+    () => assert.fail("opened despite refusal"),
+    (error) => error,
+  );
+  assert.equal(error.code, "SIGNING_KEY_REFUSED");
+  assert.equal(error.cause.message, "Native handshake failed");
+  assert.equal(f.attempts, 1);
+  assert.deepEqual(f.backoff, []);
+  await error.cleanupPromise;
 });

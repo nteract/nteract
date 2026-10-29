@@ -18,7 +18,7 @@ export { listLocalPages, forgetLocalPage } from "./local-pages.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
-import { admissionCloseOutcome } from "../shared/admission.mjs";
+import { ADMISSION_CAPABILITY, admissionCloseOutcome } from "../shared/admission.mjs";
 import { request } from "./request.mjs";
 import { activitySnapshot } from "./activity.mjs";
 export { request } from "./request.mjs";
@@ -45,6 +45,13 @@ const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 
 export const STABLE_CONNECTION_MS = 15_000;
 const SIGNING_KEY_REFUSED =
   "This Page refused this tab's signing key. Your edits stay on this device. Retry, or open the Page in a new tab.";
+const admissionHeaders = { [ADMISSION_CAPABILITY.header]: ADMISSION_CAPABILITY.value };
+// Not retryable by openPageWithRetry: the same tab key cannot succeed.
+export const signingKeyRefused = (admission, cause) =>
+  Object.assign(Error(SIGNING_KEY_REFUSED, cause === undefined ? undefined : { cause }), {
+    code: "SIGNING_KEY_REFUSED",
+    admission,
+  });
 export function tool(operation, args = {}) {
   return request("/api/tools", {
     method: "POST",
@@ -246,8 +253,9 @@ export class PageSession {
     if (admittedAt !== undefined && Date.now() - admittedAt >= STABLE_CONNECTION_MS)
       this.retryAttempts = 0;
     if (!this.alive || this.authRequired || this.accessDenied || this.accessReloadRequired) return;
-    if (this.socketOutcomes.get(socket)?.retry === "stop") {
-      this.refuseNative();
+    const outcome = this.socketOutcomes.get(socket);
+    if (outcome?.retry === "stop") {
+      this.refuseNative(outcome);
       return;
     }
     this.status = "Reconnecting";
@@ -256,8 +264,11 @@ export class PageSession {
   }
   /** The host refused this tab's signing key. Reconnecting with the same key
    * cannot succeed, so wait for an explicit Retry or a new tab. */
-  refuseNative() {
+  refuseNative(admission) {
     this.nativeRefused = true;
+    this.refusal = admission;
+    // A first open may still be waiting for the document over this socket.
+    this.rejectLookup?.(signingKeyRefused(admission));
     clearTimeout(this.retryTimer);
     this.retryTimer = undefined;
     this.connectionProblem = SIGNING_KEY_REFUSED;
@@ -479,11 +490,18 @@ export class PageSession {
       if (!this.localPage.pending) this.savedHeads = A.getHeads(this.doc);
     } else {
       await this.connect(false);
+      if (this.nativeRefused) throw signingKeyRefused(this.refusal);
       const lookupDeadline = AbortSignal.timeout(15000);
+      // The document arrives over the native socket. If the host refuses this
+      // tab's key, end the lookup with that diagnosis instead of a timeout.
+      const refused = new Promise((_, reject) => {
+        this.rejectLookup = reject;
+      });
       try {
-        this.handle = await this.repo.find(this.connection.documentId, {
-          signal: lookupDeadline,
-        });
+        this.handle = await Promise.race([
+          this.repo.find(this.connection.documentId, { signal: lookupDeadline }),
+          refused,
+        ]);
       } catch (cause) {
         // DOMException.code is the readonly numeric legacy code, so wrap only
         // this lookup's own deadline instead of broadly retrying TimeoutErrors.
@@ -493,6 +511,8 @@ export class PageSession {
             code: "REQUEST_TIMEOUT",
           });
         throw cause;
+      } finally {
+        this.rejectLookup = undefined;
       }
       const now = new Date().toISOString();
       this.localPage = {
@@ -649,14 +669,12 @@ export class PageSession {
       // the exact Page/document identity before considering another request.
       connection = await this.requestWithRenewal(
         `/api/connect?page=${encodeURIComponent(this.pageId)}`,
+        { headers: admissionHeaders },
       );
     } catch (error) {
       if (!current()) return;
-      // A denied/failed lookup is not evidence that this Page never existed.
-      // Keep its local history and original request for a later attempt.
-      // The host answers a missing Page as an unreadable one. This account
-      // would own the Page if it existed, so here that answer means "absent";
-      // registration still checks ownership and deletion tombstones.
+      // Missing and unreadable Pages share one response. Registration
+      // independently checks ownership and deletion tombstones.
       const absent =
         (error.status === 404 && error.message === "Page not found") ||
         (error.status === 403 && error.code === "page_access_denied");
@@ -744,7 +762,9 @@ export class PageSession {
     )
       return;
     try {
-      const connection = await request(`/api/connect?page=${encodeURIComponent(this.pageId)}`);
+      const connection = await request(`/api/connect?page=${encodeURIComponent(this.pageId)}`, {
+        headers: admissionHeaders,
+      });
       if (!this.alive) return;
       if (
         !this.acceptAuthentication({
@@ -835,6 +855,7 @@ export class PageSession {
       if (!current) return;
       this.clearPresence();
       const admission = this.socketOutcomes.get(socket);
+      if (admission?.retry === "stop") throw signingKeyRefused(admission, error);
       if (admission)
         throw Object.assign(Error(error?.message ?? String(error), { cause: error }), {
           admission,
@@ -873,7 +894,7 @@ export class PageSession {
       if (!this.alive || this.accessReloadRequired || this.accessDenied) return;
       if (error.code === "PAGE_ACCESS_CHANGED") return;
       if (error.admission?.retry === "stop") {
-        this.refuseNative();
+        this.refuseNative(error.admission);
         return;
       }
       if (error.status === 401) this.requireSignIn(this.authProblem || undefined);
@@ -1316,7 +1337,7 @@ export class PageSession {
           // retains ownership of any persistence already in progress.
           signal: AbortSignal.timeout(30_000),
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...admissionHeaders },
           body: JSON.stringify({ heads }),
         },
       );

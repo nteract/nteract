@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
-import { ADMISSION_OUTCOMES, admissionCloseOutcome } from "../shared/admission.mjs";
+import {
+  ADMISSION_CAPABILITY,
+  ADMISSION_OUTCOMES,
+  admissionCloseOutcome,
+} from "../shared/admission.mjs";
 import {
   ADMISSION_CODES,
   ADMISSION_REASONS,
@@ -118,29 +122,44 @@ async function disclosureFixture(auth, metadata) {
     metadata: () => page.metadata,
     serverKey: "f".repeat(64),
   });
-  const tokens = {
-    owner: auth.apiKey(),
-    member: auth.apiKey({ userId: "removed-member" }),
-    stranger: auth.apiKey({ userId: "stranger" }),
-  };
-  const call = async (who, path = "/api/connect") => {
+  const tokens = Object.fromEntries(
+    ["owner", "viewer", "never-granted", "removed", "stranger"].map((who) => [
+      who,
+      who === "owner" ? auth.apiKey() : auth.apiKey({ userId: who }),
+    ]),
+  );
+  const call = async (who, path = "/api/connect", { capable = true } = {}) => {
     const response = await page.run(
       new Request(`https://pages.invalid${path}?page=${pageId}`, {
         method: path === "/api/saved" ? "POST" : "GET",
-        headers: { authorization: `Bearer ${tokens[who]}` },
+        headers: {
+          authorization: `Bearer ${tokens[who]}`,
+          ...(capable && { [ADMISSION_CAPABILITY.header]: ADMISSION_CAPABILITY.value }),
+          ...(path === "/api/sync" && { upgrade: "websocket" }),
+        },
         ...(path === "/api/saved" ? { body: JSON.stringify({ heads: ["a".repeat(64)] }) } : {}),
       }),
     );
-    return { status: response.status, body: await response.text() };
+    return {
+      status: response.status,
+      headers: [...response.headers].sort(),
+      body: await response.text(),
+    };
   };
   return { call, owner };
 }
 
+const member = (who) => `user:anaconda-fixture:${who}`;
+const deniedResponse = {
+  status: 403,
+  headers: [
+    ["cache-control", "no-store"],
+    ["content-type", "application/json"],
+  ],
+  body: JSON.stringify({ error: "Document access denied", code: "page_access_denied" }),
+};
+
 test("admission routes answer missing, unreadable and hidden-deleted Pages identically", async (t) => {
-  const denied = {
-    status: 403,
-    body: JSON.stringify({ error: "Document access denied", code: "page_access_denied" }),
-  };
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   t.mock.method(console, "warn", () => {});
@@ -149,21 +168,55 @@ test("admission routes answer missing, unreadable and hidden-deleted Pages ident
   const deleted = await disclosureFixture(auth, {
     deleted: true,
     acl: {
-      revision: 2,
-      members: { "user:anaconda-fixture:removed-member": { role: "none", generation: 2 } },
+      revision: 4,
+      members: {
+        [member("viewer")]: { role: "viewer", generation: 1 },
+        // An owner can write a deny tombstone for someone who never had access.
+        [member("never-granted")]: { role: "none", generation: 1 },
+        [member("removed")]: { role: "none", generation: 2 },
+      },
     },
   });
-  for (const path of ["/api/connect", "/api/saved"]) {
-    assert.deepEqual(await missing.call("stranger", path), denied, `missing ${path}`);
-    assert.deepEqual(await existing.call("stranger", path), denied, `unreadable ${path}`);
-    assert.deepEqual(await deleted.call("stranger", path), denied, `deleted ${path}`);
-    // People already recorded on the Page learn that it was deleted.
-    for (const who of ["owner", "member"])
-      assert.deepEqual(await deleted.call(who, path), {
-        status: 404,
-        body: JSON.stringify({ error: "Page not found", code: "page_deleted" }),
-      });
+  for (const path of ["/api/connect", "/api/sync", "/api/saved"]) {
+    for (const who of ["stranger", "never-granted", "removed"]) {
+      assert.deepEqual(await missing.call(who, path), deniedResponse, `missing ${path} ${who}`);
+      assert.deepEqual(await existing.call(who, path), deniedResponse, `unreadable ${path} ${who}`);
+      assert.deepEqual(await deleted.call(who, path), deniedResponse, `deleted ${path} ${who}`);
+    }
+    // Only the owner and current grant holders learn that it was deleted.
+    for (const who of ["owner", "viewer"]) {
+      const response = await deleted.call(who, path);
+      assert.equal(response.status, 404, `${path} ${who}`);
+      assert.equal(
+        response.body,
+        JSON.stringify({ error: "Page not found", code: "page_deleted" }),
+      );
+    }
   }
+});
+
+test("a deployed viewer without the capability still renews a never-created draft", async (t) => {
+  const auth = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", auth.fetch);
+  t.mock.method(console, "warn", () => {});
+  const missing = await disclosureFixture(auth, undefined);
+  // d53a6e64b viewer/session.mjs reconcileExpiredRegistration renews only when
+  // /api/connect fails with this exact status and message.
+  const legacyAbsent = ({ status, body }) =>
+    status === 404 && JSON.parse(body).error === "Page not found";
+  const legacy = await missing.call("owner", "/api/connect", { capable: false });
+  assert.equal(legacyAbsent(legacy), true);
+  // An unreadable existing Page still answers 403, so legacy clients never
+  // mistake revocation for absence.
+  const existing = await disclosureFixture(auth, { deleted: false });
+  assert.deepEqual(
+    await existing.call("stranger", "/api/connect", { capable: false }),
+    deniedResponse,
+  );
+  // The current viewer declares the capability and accepts the unified 403.
+  const current = await missing.call("owner", "/api/connect");
+  assert.deepEqual(current, deniedResponse);
+  assert.equal(legacyAbsent(current), false);
 });
 
 test("gateway admission denials carry a client code and log a bounded reason", async (t) => {

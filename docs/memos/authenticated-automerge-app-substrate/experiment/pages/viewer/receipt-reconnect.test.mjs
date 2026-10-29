@@ -490,7 +490,7 @@ test("refused native admission does not reset reconnect backoff", async (t) => {
     await f.advance(500 * 2 ** (attempts - 1));
     assert.equal(f.sockets.length, attempts + 1);
   }
-  // A connection that outlived the host's admission deadline was admitted.
+  // A connection open beyond the stability threshold resets backoff.
   const stable = f.sockets.at(-1);
   f.session.socketAdmittedAt.set(stable, Date.now() - 20_000);
   hostClose(stable, 4409, "access_changed");

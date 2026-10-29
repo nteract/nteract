@@ -60,8 +60,13 @@ import {
   admissionErrorResponse,
   admissionReason,
   logAdmissionDenied,
+  transportRefusal,
   withAdmissionReason,
 } from "./admission-reasons.mjs";
+import { ADMISSION_CAPABILITY } from "../shared/admission.mjs";
+
+const unifiedMissing = (request) =>
+  request.headers.get(ADMISSION_CAPABILITY.header) === ADMISSION_CAPABILITY.value;
 import {
   documentMutation,
   recoverDocumentMutations,
@@ -869,8 +874,13 @@ export class Page {
         return json(intent.metadata.createdReceipt, 201);
       }
       if (!this.metadata) {
-        // Admission routes answer a missing Page exactly as an unreadable one.
-        if (admissionRoute) throw withAdmissionReason(new PermissionDenied(), "page_not_found");
+        // Admission routes answer a missing Page exactly as an unreadable one,
+        // for clients that declare it. The deployed viewer renews an expired
+        // draft registration only on this 404, so other clients keep it.
+        if (admissionRoute && unifiedMissing(request))
+          throw withAdmissionReason(new PermissionDenied(), "page_not_found");
+        if (admissionRoute)
+          throw withAdmissionReason(new HttpError(404, "Page not found"), "page_not_found_legacy");
         throw new HttpError(404, "Page not found");
       }
       if (url.pathname === "/internal/delete") {
@@ -913,8 +923,8 @@ export class Page {
         return json(this.metadata.deletion.receipt);
       }
       if (this.metadata.deleted) {
-        // Only principals already recorded on the Page learn that it was deleted.
-        if (admissionRoute && !this.knowsPrincipal(identity.principal))
+        // Only the owner and current grant holders learn that it was deleted.
+        if (admissionRoute && !this.disclosesDeletion(identity.principal))
           throw withAdmissionReason(new PermissionDenied(), "page_deleted", "page_access_denied");
         throw withAdmissionReason(new HttpError(404, "Page not found"), "page_deleted");
       }
@@ -1083,9 +1093,18 @@ export class Page {
     }
   }
 
-  knowsPrincipal(principal) {
+  /** Owner or a valid viewer/editor grant on the deleted metadata. A role
+   * "none" row is a deny tombstone, which an owner can create for a principal
+   * who never had access, so it discloses nothing. */
+  disclosesDeletion(principal) {
+    if (principal === this.metadata?.owner) return true;
     const members = this.metadata?.acl?.members;
-    return principal === this.metadata?.owner || (!!members && Object.hasOwn(members, principal));
+    const member = members && Object.hasOwn(members, principal) ? members[principal] : undefined;
+    return (
+      ["viewer", "editor"].includes(member?.role) &&
+      Number.isSafeInteger(member.generation) &&
+      member.generation >= 1
+    );
   }
 
   async register(request, identity) {
@@ -1208,7 +1227,17 @@ export class Page {
     const client = pair[0],
       socket = pair[1];
     socket.accept(); // Resident connection; reconnect reconstructs native state.
-    const wire = new WebSocketByteTransport(socket);
+    // A transport refusal is logged once here, before the disconnect callback
+    // records a generic cancellation.
+    let refusal;
+    const wire = new WebSocketByteTransport(socket, {
+      onRefusal: (category) => {
+        refusal = transportRefusal(category);
+        logAdmissionDenied(refusal, { stage: "native", identity });
+        admission.abort(refusal);
+        return close(refusal);
+      },
+    });
     const disconnected = new Promise((resolve) => wire.onDisconnect(resolve));
     this.wires.add(wire);
     // HTTP authentication already established this principal. Reserve before
@@ -1307,7 +1336,7 @@ export class Page {
         // while the resident socket can trigger authorization and storage work.
         await disconnected;
       })().catch((error) => {
-        logAdmissionDenied(error, { stage: "native", identity });
+        if (error !== refusal) logAdmissionDenied(error, { stage: "native", identity });
         if (admissionReason(error) === "server_error") logFailure(error, "native-admission");
         void close(error);
       }),
