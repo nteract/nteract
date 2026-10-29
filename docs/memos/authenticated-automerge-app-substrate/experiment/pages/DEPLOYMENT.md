@@ -58,6 +58,10 @@ Rollback must retain binary record readers and the `PageRecords` binding and
 buffered-storage implementation. A legacy hex-only build cannot read updated
 records, and an older synchronous-only build cannot read buffered Pages.
 
+The Page8 profile sets `PAGES_CATALOG_INDEX=1`. Changing the value forces every
+account to reconcile its index on its next listing; leaving it unset turns the index
+off and listings read Catalog entries directly.
+
 The D1 catalog index (`PAGES_CATALOG_INDEX`) is additive: Catalog entries keep
 their keys and shape, and older builds ignore the `pages_catalog_*` tables. After
 a rollback, accounts repair their index within six hours of their next listing, or
