@@ -57,7 +57,7 @@ export function BuildUpdate({ session, principal, onOpenPage }) {
   }
   const pages = outcome?.pages ?? [];
   const canDiscard =
-    acknowledged || (pages.length > 0 && pages.every((page) => downloaded.has(page.pageId)));
+    acknowledged || (pages.length > 0 && pages.every((page) => downloaded.has(page.key)));
   return (
     <div
       className={required ? "build-update build-update--required" : "build-update"}
@@ -98,7 +98,7 @@ export function BuildUpdate({ session, principal, onOpenPage }) {
             .map((page) => (
               <button
                 type="button"
-                key={page.pageId}
+                key={page.key}
                 disabled={reloading}
                 onClick={() => onOpenPage(page.pageId)}
               >
@@ -112,13 +112,13 @@ export function BuildUpdate({ session, principal, onOpenPage }) {
           {pages.map((page) => (
             <button
               type="button"
-              key={page.pageId}
+              key={page.key}
               onClick={() => {
                 downloadMarkdown(page);
-                setDownloaded((previous) => new Set(previous).add(page.pageId));
+                setDownloaded((previous) => new Set(previous).add(page.key));
               }}
             >
-              Download edits as Markdown
+              Download edits and comments (Markdown)
               {pages.length > 1 ? ` (${page.title})` : ""}
             </button>
           ))}
@@ -136,7 +136,7 @@ export function BuildUpdate({ session, principal, onOpenPage }) {
             disabled={reloading || !canDiscard}
             onClick={discardAndReload}
           >
-            Discard and reload
+            Discard unsaved edits and reload
           </button>
         </div>
       )}

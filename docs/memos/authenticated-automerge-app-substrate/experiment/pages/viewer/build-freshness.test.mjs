@@ -197,8 +197,10 @@ class FakeSession {
     this.calls.push("queueSaved");
   }
   doc = { title: "Garden notes" };
+  heads = ["h1"];
+  savedHeads = [];
   exportRecovery() {
-    return { markdown: `# ${this.doc.title}\n\nUnsent edit\n` };
+    return { markdown: `# ${this.doc.title}\n\nUnsent edit\n`, heads: [...this.heads] };
   }
   checkpointFails = false;
   async close() {
@@ -371,7 +373,15 @@ test("a closed Page keeps only metadata, never its session", async () => {
   assert.equal(g.reloadGate.sessions.size, 0);
   assert.deepEqual(
     [...g.reloadGate.closed.values()],
-    [{ account: "dev", pageId: "page-left", title: "Garden notes", checkpointWritten: true }],
+    [
+      {
+        key: "dev:page-left",
+        account: "dev",
+        pageId: "page-left",
+        title: "Garden notes",
+        checkpointWritten: true,
+      },
+    ],
   );
   // Plain data only: nothing the gate retains reaches the session or its doc.
   const seen = new Set();
@@ -451,10 +461,12 @@ test("a failed checkpoint blocks Reload until its Markdown is downloaded or disc
   assert.equal(result.reason, "unsaved");
   assert.deepEqual(result.pages, [
     {
+      key: "dev:page-lost",
       account: "dev",
       pageId: "page-lost",
       title: "Garden notes",
       checkpointWritten: false,
+      heads: ["h1"],
       markdown: "# Garden notes\n\nUnsent edit\n",
     },
   ]);
@@ -478,6 +490,62 @@ test("a failed checkpoint blocks Reload until its Markdown is downloaded or disc
   await assert.rejects(closing, /disk/);
   await settle();
   assert.equal(g.reloadGate.closed.get("dev:page-broken").checkpointWritten, false);
+});
+
+test("reopening never clears a failed checkpoint; only a covering receipt or discard does", async () => {
+  const g = gate();
+  const left = new FakeSession("page-lost");
+  left.checkpointFails = true;
+  left.heads = ["lost-1", "lost-2"];
+  await leaveUnsaved(g, left);
+  // The reopened replica lacks the lost edits, so its receipt covers other heads.
+  const reopened = new FakeSession("page-lost");
+  reopened.heads = ["server"];
+  g.reloadGate.hold(reopened);
+  assert.equal(g.reloadGate.closed.get("dev:page-lost").checkpointWritten, false);
+  let waiting = g.reload();
+  reopened.set({ status: "Saved", pending: false, savedHeads: ["server"] });
+  assert.equal((await waiting).reason, "unsaved", "a receipt for other heads keeps the record");
+  // Leaving again with a written checkpoint, or fully saved, keeps it too.
+  const closing = g.reloadGate.drainAndClose(reopened);
+  await closing;
+  await settle();
+  assert.equal(g.reloadGate.closed.get("dev:page-lost").checkpointWritten, false);
+  // A second failed checkpoint adds its copy instead of replacing the first.
+  const again = new FakeSession("page-lost");
+  again.checkpointFails = true;
+  again.heads = ["lost-3"];
+  await leaveUnsaved(g, again);
+  const record = g.reloadGate.closed.get("dev:page-lost");
+  assert.deepEqual(record.heads, ["lost-1", "lost-2", "lost-3"]);
+  assert.equal(record.markdown.split("# Garden notes").length, 3);
+  // A receipt that includes every recorded head clears it.
+  const synced = new FakeSession("page-lost");
+  g.reloadGate.hold(synced);
+  waiting = g.reload();
+  synced.set({ status: "Saved", pending: false, savedHeads: ["lost-1", "lost-2", "lost-3"] });
+  assert.deepEqual(await waiting, { ok: true });
+});
+
+test("closed records are keyed by account and Page id", async () => {
+  const g = gate();
+  const first = new FakeSession("shared-page");
+  first.checkpointFails = true;
+  await leaveUnsaved(g, first);
+  const other = new FakeSession("shared-page");
+  other.identity = { principal: "other" };
+  other.checkpointFails = true;
+  await leaveUnsaved(g, other);
+  const { pages } = await g.reload();
+  assert.deepEqual(
+    pages.map((page) => page.key),
+    ["dev:shared-page", "other:shared-page"],
+  );
+  g.reloadGate.discard(pages[0]);
+  assert.deepEqual(
+    (await g.reload()).pages.map((page) => page.key),
+    ["other:shared-page"],
+  );
 });
 
 test("a closed Page whose access was removed never traps Reload", async () => {

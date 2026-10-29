@@ -490,7 +490,14 @@ checkpoint was written. When a closed Page's edits never reached the server:
 | Checkpoint | Reload shows |
 | --- | --- |
 | Written | "Edits on _title_ haven't reached the server yet. They're saved in this browser and sync when you open that Page again." with Reload anyway and Open _title_ |
-| Failed | Names the Page and blocks Reload. Download edits as Markdown, then Discard and reload (or acknowledge the loss first) |
+| Failed | Names the Page and blocks Reload. Download edits and comments, then Discard unsaved edits and reload (or acknowledge the loss first) |
+
+The download is one Markdown file: the Page body, then an "Unsent comments"
+section with every comment, reply or edit the host never acknowledged, each
+under the passage it was attached to. A failed record outlives reopening the
+Page, since the reopened replica can't contain what its checkpoint failed to
+write. It clears only when a host receipt includes all of its heads, or when the
+person confirms Discard unsaved edits. Records are keyed by account and Page id.
 
 An unsent comment or reply, on an open or resolved thread, blocks Reload until
 it is sent or discarded. A draft that can't be sent (edits paused, write access

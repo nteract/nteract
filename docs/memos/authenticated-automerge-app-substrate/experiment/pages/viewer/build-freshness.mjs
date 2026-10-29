@@ -213,25 +213,27 @@ export function settleBeforeClose(
  *
  * A left Page holds its session only while it drains. Once closed, the gate
  * keeps plain metadata for a Page whose edits never reached the server:
- * { account, pageId, title, checkpointWritten }, plus the Markdown export when
- * the IndexedDB checkpoint failed, since that export is the only copy left. */
+ * { key, account, pageId, title, checkpointWritten }. When the IndexedDB
+ * checkpoint failed, the record also keeps the recovery Markdown and the heads
+ * it covers, since that export is the only copy left. Such a record goes away
+ * only when a host receipt includes all of its heads, or when the person
+ * confirms "Discard unsaved edits". Reopening the Page never clears it: the
+ * reopened replica can't contain edits its checkpoint failed to write. */
 export class ReloadGate {
   sessions = new Set();
-  draining = new Map();
+  draining = new Set();
   closed = new Map();
   draftSources = new Set();
   epoch = 0;
   constructor({ timers = {}, closeTimeoutMs = CLOSE_DRAIN_MS } = {}) {
     Object.assign(this, { timers, closeTimeoutMs });
   }
-  /** Track the open Page. Opening a Page also supersedes what a previous
-   * session of it left: this session loads that local checkpoint and owns its
-   * receipt. */
+  /** Track the open Page. It loads a checkpointed record's IndexedDB copy and
+   * owns its receipt, so that record is superseded. */
   hold(session) {
     this.epoch++;
     const key = pageKey(session);
-    this.draining.delete(key);
-    this.closed.delete(key);
+    if (this.closed.get(key)?.checkpointWritten) this.closed.delete(key);
     this.sessions.add(session);
   }
   /** Leave a Page: let it finish saving, then close it. Returns the close. */
@@ -239,8 +241,8 @@ export class ReloadGate {
     this.epoch++;
     this.sessions.delete(session);
     const key = pageKey(session);
-    const page = { account: session.identity?.principal, pageId: session.pageId };
-    let markdown;
+    const page = { key, account: session.identity?.principal, pageId: session.pageId };
+    let recovery;
     const closed = settleBeforeClose(session, { ...this.timers, timeoutMs: this.closeTimeoutMs })
       .catch(() => false)
       .then(async (saved) => {
@@ -248,7 +250,7 @@ export class ReloadGate {
           // Read what a failed checkpoint would need while the document is live.
           try {
             page.title = session.doc?.title;
-            markdown = session.exportRecovery?.().markdown;
+            recovery = session.exportRecovery?.();
           } catch {}
         }
         try {
@@ -256,31 +258,57 @@ export class ReloadGate {
         } finally {
           page.saved = saved || !!session.deleted;
           page.checkpointWritten = session.checkpointWritten === true;
+          page.savedHeads = [...(session.savedHeads ?? [])];
         }
       });
-    const token = {};
-    token.settled = closed
+    const settled = closed
       .catch(() => {})
       .then(() => {
-        if (this.draining.get(key) !== token) return;
-        this.draining.delete(key);
+        this.draining.delete(settled);
+        this.acknowledge(key, page.savedHeads);
+        const previous = this.closed.get(key);
         if (page.saved) return;
         const { account, pageId, checkpointWritten } = page;
+        const title = page.title?.trim() || "Untitled";
+        if (checkpointWritten) {
+          // A newer session superseded this checkpoint; a failed record stays.
+          if (!previous && ![...this.sessions].some((open) => pageKey(open) === key))
+            this.closed.set(key, { key, account, pageId, title, checkpointWritten });
+          return;
+        }
+        // Each failed checkpoint is its own lost copy: keep every one.
+        const lost = !previous?.checkpointWritten && previous;
         this.closed.set(key, {
+          key,
           account,
           pageId,
-          title: page.title?.trim() || "Untitled",
-          checkpointWritten,
-          ...(checkpointWritten ? {} : { markdown: markdown ?? "" }),
+          title,
+          checkpointWritten: false,
+          heads: [...(lost ? lost.heads : []), ...(recovery?.heads ?? [])],
+          markdown: [lost?.markdown, recovery?.markdown ?? ""]
+            .filter((part) => part !== undefined)
+            .join("\n---\n\n"),
         });
       });
-    this.draining.set(key, token);
+    this.draining.add(settled);
     return closed;
   }
-  /** Forget a closed Page's unsent edits, after the person downloaded or
-   * explicitly discarded them. */
-  discard({ account, pageId }) {
-    this.closed.delete(keyOf(account, pageId));
+  /** A host receipt for `savedHeads` makes a failed record covered by those
+   * heads redundant. */
+  acknowledge(key, savedHeads = []) {
+    const record = this.closed.get(key);
+    if (
+      record &&
+      !record.checkpointWritten &&
+      record.heads.length > 0 &&
+      record.heads.every((head) => savedHeads.includes(head))
+    )
+      this.closed.delete(key);
+  }
+  /** Forget a closed Page's unsent edits. Call only after the person confirmed
+   * "Discard unsaved edits". */
+  discard({ key }) {
+    this.closed.delete(key);
   }
   watchDrafts(hasDraft) {
     this.draftSources.add(hasDraft);
@@ -316,12 +344,13 @@ export class ReloadGate {
     try {
       const results = await Promise.all([
         ...live.map((session) => saveBeforeReload(session, { ...this.timers, timeoutMs })),
-        ...[...this.draining.values()].map(({ settled }) => settled.then(() => ({ ok: true }))),
+        ...[...this.draining].map((settled) => settled.then(() => ({ ok: true }))),
       ]);
       if (epoch !== this.epoch) return { ok: false, cancelled: true };
       if (this.hasDrafts()) return { ok: false, message: UNSENT_COMMENT };
       const failed = results.find((result) => !result.ok);
       if (failed) return failed;
+      for (const session of live) this.acknowledge(pageKey(session), session.savedHeads);
       const closed = [...this.closed.values()].map((page) => ({ ...page }));
       const unsaved = closed.filter((page) => !page.checkpointWritten);
       if (unsaved.length)

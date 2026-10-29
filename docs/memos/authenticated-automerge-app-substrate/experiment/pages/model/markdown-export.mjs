@@ -31,3 +31,47 @@ export function pageMarkdown(page) {
   const result = hasTitle ? body : `# ${headingText(title)}${body ? `\n\n${body}` : ""}`;
   return result.endsWith("\n") ? result : `${result}\n`;
 }
+
+const quoted = (text) =>
+  text
+    .split("\n")
+    .map((line) => `> ${line}`.trimEnd())
+    .join("\n");
+
+/** A Markdown section listing comment messages in `page` that `saved` lacks
+ * (new messages, or bodies edited since). Both arguments are projectPage
+ * projections; `saved` is the host-acknowledged state, or null when unknown,
+ * in which case every comment is listed. Returns "" when nothing is unsent. */
+export function unsentCommentsMarkdown(page, saved) {
+  const savedThreads = new Map((saved?.comments ?? []).map((thread) => [thread.id, thread]));
+  const sections = [];
+  for (const thread of page.comments ?? []) {
+    const before = savedThreads.get(thread.id);
+    const lines = [];
+    thread.messages.forEach((message, index) => {
+      if (message.deletedAt) return;
+      const old = before?.messages.find((candidate) => candidate.id === message.id);
+      if (old && !old.deletedAt && old.body === message.body) return;
+      const kind = old ? "edited" : index === 0 ? "comment" : "reply";
+      const who = singleLine(message.author?.displayName ?? "") || "Collaborator";
+      lines.push(`**${who}** · ${kind} · ${message.createdAt}\n\n${quoted(message.body ?? "")}`);
+    });
+    if (!lines.length) continue;
+    const { target, selectionContext } = thread;
+    const passage =
+      selectionContext?.status === "attached"
+        ? selectionContext.text
+        : page.blocks.find((block) => block.id === target?.blockId)?.markdown;
+    const anchor = singleLine(passage ?? "").slice(0, 120);
+    sections.push(
+      [`### ${anchor ? `On “${anchor}”` : "On this Page"}`, `Thread ${thread.id}`, ...lines].join(
+        "\n\n",
+      ),
+    );
+  }
+  if (!sections.length) return "";
+  const note = saved
+    ? "These comments and replies never reached the server. Add them again after you reopen the Page."
+    : "These comments and replies may not have reached the server. Check the Page and add any that are missing.";
+  return `\n---\n\n## Unsent comments\n\n${note}\n\n${sections.join("\n\n")}\n`;
+}

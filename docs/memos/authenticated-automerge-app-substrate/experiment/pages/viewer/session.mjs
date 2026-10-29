@@ -5,6 +5,7 @@ import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo
 import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
 import { applyComment } from "../model/comments.mjs";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
+import { unsentCommentsMarkdown } from "../model/markdown-export.mjs";
 import {
   decodeSnapshot,
   encodeSnapshot,
@@ -377,10 +378,18 @@ export class PageSession {
     if (!doc) throw Error("No local Page to export");
     try {
       const page = projectPage(doc);
+      // Comments are part of the draft: list the ones the host never
+      // acknowledged. An archived record has no receipt, so it lists them all.
+      let saved = null;
+      if (!record && this.savedHeads.length)
+        try {
+          saved = projectPage(A.view(doc, this.savedHeads));
+        } catch {}
       return {
         title: page.title,
-        markdown: `# ${page.title}\n\n${page.blocks.map((block) => block.markdown).join("\n\n")}\n`,
+        markdown: `# ${page.title}\n\n${page.blocks.map((block) => block.markdown).join("\n\n")}\n${unsentCommentsMarkdown(page, saved)}`,
         snapshot: record?.snapshot ?? encodeSnapshot(A.save(doc)),
+        heads: A.getHeads(doc),
         page_id: this.pageId,
       };
     } finally {
