@@ -33,6 +33,11 @@ JS callers must convert block types, parent names, and string attributes to
 Wordgard encoder does. Native integer attributes use the same signed scalar
 representation as ordinary JavaScript numbers.
 
+The native adapter rejects unsigned scalar attributes because JSON cannot
+preserve their scalar kind; projecting a small Uint and reconciling it as Int
+would otherwise emit new history for unchanged content. Signed integer
+attributes authored by JavaScript retain their existing representation.
+
 The native adapter rejects mutable Text objects inside block attributes.
 Existing images authored by the legacy Markdown codec can have this shape for
 alt text and titles, while Wordgard writes scalar attributes. Saved JavaScript
@@ -63,6 +68,10 @@ and bullet tasks become native structure, and unsupported syntax is preserved
 as an opaque block with its original source and import provenance. Existing
 Pages immutable source provenance remains the caller's responsibility; exports
 are canonical projections, not a byte-for-byte reconstruction of Markdown.
+
+Linked or emphasized images import as whole-source opaque content because
+the native image marker cannot represent its enclosing link or marks. This
+preserves source and provenance without silently discarding the wrapper.
 
 Markdown cannot represent all rich states, including arbitrary whitespace
 marks or independent alignment per table cell. Export reports unsupported

@@ -26,7 +26,7 @@ pub fn markdown_to_spans(source: &str, options: &ImportOptions<'_>) -> Result<Ve
     let tree = markdown::to_mdast(source, &parse_options())
         .map_err(|error| CodecError(error.to_string()))?;
 
-    if needs_opaque(&tree, 0)? {
+    if needs_opaque(&tree, 0, false)? {
         return opaque(source, options);
     }
     let Node::Root(root) = tree else {
@@ -197,7 +197,7 @@ fn opaque(source: &str, options: &ImportOptions<'_>) -> Result<Vec<Span>> {
     Ok(spans)
 }
 
-fn needs_opaque(node: &Node, depth: usize) -> Result<bool> {
+fn needs_opaque(node: &Node, depth: usize, inside_marks: bool) -> Result<bool> {
     if depth > MAX_DEPTH {
         return Err(CodecError(
             "Markdown nesting exceeds the depth limit".into(),
@@ -224,9 +224,17 @@ fn needs_opaque(node: &Node, depth: usize) -> Result<bool> {
     {
         return Ok(true);
     }
+    // Marks live on text spans; an image marker cannot carry its enclosing
+    // link or emphasis. Preserve the entire source before building any spans
+    // instead of accepting an image with those semantics silently removed.
+    if inside_marks && matches!(node, Node::Image(_)) {
+        return Ok(true);
+    }
+    let inside_marks =
+        inside_marks || matches!(node, Node::Link(_) | Node::Strong(_) | Node::Emphasis(_));
     if let Some(children) = node.children() {
         for child in children {
-            if needs_opaque(child, depth + 1)? {
+            if needs_opaque(child, depth + 1, inside_marks)? {
                 return Ok(true);
             }
         }
@@ -669,6 +677,40 @@ mod tests {
         assert!(
             matches!(&spans[2], Span::Text { marks, .. } if marks.get("code") == Some(&json!(true)) && marks.contains_key("link"))
         );
+    }
+
+    #[test]
+    fn image_wrappers_preserve_whole_source_and_provenance() {
+        for source in [
+            "[![caption](image.png)](https://example.org)",
+            "**![caption](image.png)**",
+            "*![caption](image.png)*",
+            "[***![caption](image.png)***](https://example.org)",
+            "Before\n\n[Text and ![caption](image.png)](https://example.org)\n\nAfter\n",
+            "| A |\n| --- |\n| **![caption](image.png)** |",
+            "# [![caption](image.png)](https://example.org)",
+            "> - *![caption](image.png)*",
+        ] {
+            let options = ImportOptions {
+                import_id: "image-import",
+                kind: "markdown",
+            };
+            let spans = markdown_to_spans(source, &options).unwrap();
+            assert_eq!(spans, opaque(source, &options).unwrap(), "{source}");
+            assert_eq!(crate::spans_to_markdown(&spans).unwrap(), source);
+        }
+    }
+
+    #[test]
+    fn image_wrapper_guard_does_not_leak_to_siblings_or_alt_text() {
+        let source = "**Before** ![**caption**](image.png) [after](https://example.org)";
+        let spans = import(source);
+        assert!(spans.iter().any(|span| matches!(span, Span::Block { value } if value.kind == "image" && value.attrs.get("alt") == Some(&json!("caption")))));
+        assert!(!spans
+            .iter()
+            .any(|span| matches!(span, Span::Block { value } if value.kind == "pages-opaque")));
+        assert!(spans.iter().any(|span| matches!(span, Span::Text { value, marks } if value == "Before" && marks.contains_key("strong"))));
+        assert!(spans.iter().any(|span| matches!(span, Span::Text { value, marks } if value == "after" && marks.contains_key("link"))));
     }
 
     #[test]

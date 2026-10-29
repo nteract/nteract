@@ -21,6 +21,7 @@ const cases = [
   { id: "unicode", markdown: "👩🏽‍💻 **café é** 中文 Ελληνικά 🇳🇿 🧑‍🚀." },
   { id: "image", markdown: '![A cat](/api/assets/cat "Cat portrait")' },
   { id: "image-alt", markdown: 'Before ![Cat \\[meow\\] &amp; **friends**](/api/assets/cat "Portrait") after.' },
+  { id: "image-beside-marks", markdown: '**Before** ![**caption**](image.png) [after](https://example.org)' },
   { id: "image-empty-alt", markdown: "![](/api/assets/cat)" },
   { id: "image-alt-break", markdown: "![one  \ntwo](x)" },
   { id: "mermaid", markdown: "```mermaid\ngraph TD\n  A[Write] --> B[Share]\n```" },
@@ -110,6 +111,30 @@ const divergences = [
       ],
     }),
   ),
+  ...[
+    ["linked-image-preserved", "[![caption](image.png)](https://example.org)"],
+    ["strong-image-preserved", "**![caption](image.png)**"],
+    ["emphasized-image-preserved", "*![caption](image.png)*"],
+    ["nested-image-marks-preserved", "[***![caption](image.png)***](https://example.org)"],
+    ["linked-image-with-prose-preserved", "Before\n\n[Text and ![caption](image.png)](https://example.org)\n\nAfter\n"],
+    ["marked-table-image-preserved", "| A |\n| --- |\n| **![caption](image.png)** |"],
+    ["linked-heading-image-preserved", "# [![caption](image.png)](https://example.org)"],
+    ["marked-nested-list-image-preserved", "> - *![caption](image.png)*"],
+  ].map(([id, markdown]) => ({
+    id,
+    markdown,
+    reason: "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
+    legacy_spans: importLegacy(markdown),
+    expected_spans: [{
+      type: "block",
+      value: {
+        type: "pages-opaque",
+        parents: [],
+        attrs: { source: markdown, importId: "", kind: "markdown" },
+        isEmbed: false,
+      },
+    }],
+  })),
   {
     id: "nested-quote-siblings-preserved",
     markdown: "> > a\n\n> > b",

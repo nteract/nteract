@@ -106,7 +106,11 @@ fn scalar_json(value: &ScalarValue) -> Result<Value> {
         ScalarValue::Boolean(v) => Ok((*v).into()),
         ScalarValue::Str(v) => Ok(v.to_string().into()),
         ScalarValue::Int(v) => Ok((*v).into()),
-        ScalarValue::Uint(v) => Ok((*v).into()),
+        // JSON has no signed/unsigned tag. Accepting Uint here would let the
+        // signed preference in scalar() rewrite an unchanged attribute.
+        ScalarValue::Uint(_) => Err(CodecError(
+            "Unsigned Automerge scalar cannot retain its kind through this codec".into(),
+        )),
         _ => Err(CodecError(
             "Unsupported Automerge scalar would be lost".into(),
         )),
@@ -155,6 +159,35 @@ mod tests {
     use super::*;
     use crate::{markdown_to_spans, ImportOptions};
     use automerge::{transaction::Transactable, AutoCommit, ObjType, ReadDoc, ROOT};
+
+    #[test]
+    fn unsigned_attributes_refuse_projection_without_changing_document() {
+        let mut doc = AutoCommit::new();
+        let text = doc.put_object(ROOT, "richText", ObjType::Text).unwrap();
+        let spans = markdown_to_spans("# Heading", &ImportOptions::default()).unwrap();
+        doc.update_spans(&text, Default::default(), to_automerge(&spans).unwrap())
+            .unwrap();
+        let block = doc.get(&text, 0).unwrap().unwrap().1;
+        let attrs = doc.get(&block, "attrs").unwrap().unwrap().1;
+        doc.put(&attrs, "level", ScalarValue::Uint(1)).unwrap();
+        let before = doc.get_heads();
+        let error = from_automerge(doc.spans(&text).unwrap()).unwrap_err();
+        assert!(error.0.contains("Unsigned Automerge scalar"));
+        assert_eq!(doc.get_heads(), before);
+        assert_eq!(doc.get(ROOT, "richText").unwrap().unwrap().1, text);
+        assert_eq!(doc.get(&block, "attrs").unwrap().unwrap().1, attrs);
+        assert_eq!(
+            doc.get(&attrs, "level")
+                .unwrap()
+                .unwrap()
+                .0
+                .as_scalar()
+                .unwrap(),
+            &ScalarValue::Uint(1)
+        );
+        let loaded = AutoCommit::load(&doc.save()).unwrap();
+        assert!(from_automerge(loaded.spans(&text).unwrap()).is_err());
+    }
 
     #[test]
     fn native_reconciliation_retains_text_identity_and_unrelated_data() {

@@ -25,6 +25,12 @@ and accepts a data image that later Pages validation rejects. Each includes obse
 legacy spans and the exact required Rust result. There is no blanket exception
 for parser differences.
 
+Linked or emphasized images also retain the whole original source as opaque
+content: native image markers cannot carry those enclosing marks. Fixtures
+cover nested wrappers, surrounding prose, headings, lists, and table cells.
+Ordinary images, formatting inside alt text, adjacent marked prose, and text
+links keep their existing native mappings.
+
 The nested-quote sibling case preserves the boundary between two outer quotes;
 the legacy span adapter merges them. Its `legacy_export_spans` records that exact
 legacy reimport result, while native and Wordgard round trips must preserve both

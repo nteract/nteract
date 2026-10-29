@@ -572,6 +572,52 @@
       "canonical_markdown": "Before ![Cat \\[meow\\] & friends](/api/assets/cat \"Portrait\") after."
     },
     {
+      "id": "image-beside-marks",
+      "markdown": "**Before** ![**caption**](image.png) [after](https://example.org)",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "Before",
+          "marks": {
+            "strong": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " ",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "image.png",
+              "alt": "caption",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "after",
+          "marks": {
+            "link": "{\"href\":\"https://example.org\",\"title\":null}"
+          }
+        }
+      ],
+      "canonical_markdown": "**Before** ![caption](image.png) [after](https://example.org)"
+    },
+    {
       "id": "image-empty-alt",
       "markdown": "![](/api/assets/cat)",
       "expected_spans": [
@@ -3307,6 +3353,432 @@
             "parents": [],
             "attrs": {
               "source": "![unsafe](data:image/png;base64,YQ==)",
+              "importId": "",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "linked-image-preserved",
+      "markdown": "[![caption](image.png)](https://example.org)",
+      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
+      "legacy_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "image.png",
+              "alt": "caption",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        }
+      ],
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "[![caption](image.png)](https://example.org)",
+              "importId": "",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "strong-image-preserved",
+      "markdown": "**![caption](image.png)**",
+      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
+      "legacy_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "image.png",
+              "alt": "caption",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        }
+      ],
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "**![caption](image.png)**",
+              "importId": "",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "emphasized-image-preserved",
+      "markdown": "*![caption](image.png)*",
+      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
+      "legacy_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "image.png",
+              "alt": "caption",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        }
+      ],
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "*![caption](image.png)*",
+              "importId": "",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "nested-image-marks-preserved",
+      "markdown": "[***![caption](image.png)***](https://example.org)",
+      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
+      "legacy_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "image.png",
+              "alt": "caption",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        }
+      ],
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "[***![caption](image.png)***](https://example.org)",
+              "importId": "",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "linked-image-with-prose-preserved",
+      "markdown": "Before\n\n[Text and ![caption](image.png)](https://example.org)\n\nAfter\n",
+      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
+      "legacy_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Before",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Text and ",
+          "marks": {
+            "link": "{\"href\":\"https://example.org\",\"title\":null}"
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "image.png",
+              "alt": "caption",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "After",
+          "marks": {}
+        }
+      ],
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\n\n[Text and ![caption](image.png)](https://example.org)\n\nAfter\n",
+              "importId": "",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "marked-table-image-preserved",
+      "markdown": "| A |\n| --- |\n| **![caption](image.png)** |",
+      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
+      "legacy_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "A",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "table",
+              "table-row",
+              "table-cell"
+            ],
+            "attrs": {
+              "src": "image.png",
+              "alt": "caption",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        }
+      ],
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "| A |\n| --- |\n| **![caption](image.png)** |",
+              "importId": "",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "linked-heading-image-preserved",
+      "markdown": "# [![caption](image.png)](https://example.org)",
+      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
+      "legacy_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "heading",
+            "parents": [],
+            "attrs": {
+              "level": 1
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "heading"
+            ],
+            "attrs": {
+              "src": "image.png",
+              "alt": "caption",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        }
+      ],
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "# [![caption](image.png)](https://example.org)",
+              "importId": "",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "marked-nested-list-image-preserved",
+      "markdown": "> - *![caption](image.png)*",
+      "reason": "Image markers cannot carry enclosing links or marks. The legacy adapter drops those wrappers; Rust preserves the whole source as opaque content.",
+      "legacy_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "blockquote",
+              "unordered-list-item",
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "image.png",
+              "alt": "caption",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        }
+      ],
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "> - *![caption](image.png)*",
               "importId": "",
               "kind": "markdown"
             },
