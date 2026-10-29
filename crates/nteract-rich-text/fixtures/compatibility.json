@@ -1,0 +1,3064 @@
+{
+  "profile": "pages-markdown-v1",
+  "oracle": "docs/memos/authenticated-automerge-app-substrate/experiment/pages/model/richtext.mjs",
+  "fixtures": [
+    {
+      "id": "empty",
+      "markdown": "",
+      "expected_spans": [],
+      "canonical_markdown": ""
+    },
+    {
+      "id": "paragraph",
+      "markdown": "A shared document.",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "A shared document.",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "A shared document."
+    },
+    {
+      "id": "paragraphs",
+      "markdown": "First paragraph.\n\nSecond paragraph.",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "First paragraph.",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Second paragraph.",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "First paragraph.\n\nSecond paragraph."
+    },
+    {
+      "id": "soft-break",
+      "markdown": "First line\nsecond line",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "First line second line",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "First line second line"
+    },
+    {
+      "id": "crlf-soft-break",
+      "markdown": "First line\r\nsecond line",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "First line second line",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "First line second line"
+    },
+    {
+      "id": "hard-break",
+      "markdown": "First line  \nsecond line",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "First line",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "second line",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "First line\\\nsecond line"
+    },
+    {
+      "id": "heading-levels",
+      "markdown": "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "heading",
+            "parents": [],
+            "attrs": {
+              "level": 1
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "One",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "heading",
+            "parents": [],
+            "attrs": {
+              "level": 2
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Two",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "heading",
+            "parents": [],
+            "attrs": {
+              "level": 3
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Three",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "heading",
+            "parents": [],
+            "attrs": {
+              "level": 4
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Four",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "heading",
+            "parents": [],
+            "attrs": {
+              "level": 5
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Five",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "heading",
+            "parents": [],
+            "attrs": {
+              "level": 6
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Six",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six"
+    },
+    {
+      "id": "setext-heading",
+      "markdown": "Heading\n=======\n\nParagraph.",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "heading",
+            "parents": [],
+            "attrs": {
+              "level": 1
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Heading",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Paragraph.",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "# Heading\n\nParagraph."
+    },
+    {
+      "id": "marks",
+      "markdown": "Plain **strong**, *emphasis*, `code`, and ***both***.",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "Plain ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "strong",
+          "marks": {
+            "strong": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ", ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "emphasis",
+          "marks": {
+            "em": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ", ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "code",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ", and ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "both",
+          "marks": {
+            "em": true,
+            "strong": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ".",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "Plain **strong**, *emphasis*, `code`, and ***both***."
+    },
+    {
+      "id": "marked-code",
+      "markdown": "**`code`** and [`code`](https://x.test)",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "code",
+          "marks": {
+            "strong": true,
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " and ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "code",
+          "marks": {
+            "link": "{\"href\":\"https://x.test\",\"title\":null}",
+            "code": true
+          }
+        }
+      ],
+      "canonical_markdown": "**`code`** and [`code`](https://x.test)"
+    },
+    {
+      "id": "mark-boundaries",
+      "markdown": "**bold *and italic* bold** then *italic **and bold** italic*.",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "bold ",
+          "marks": {
+            "strong": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "and italic",
+          "marks": {
+            "em": true,
+            "strong": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " bold",
+          "marks": {
+            "strong": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " then ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "italic ",
+          "marks": {
+            "em": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "and bold",
+          "marks": {
+            "em": true,
+            "strong": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " italic",
+          "marks": {
+            "em": true
+          }
+        },
+        {
+          "type": "text",
+          "value": ".",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "**bold *and italic* bold** then *italic **and bold** italic*."
+    },
+    {
+      "id": "literal-markers",
+      "markdown": "Escaped \\*stars\\*, \\_underscores\\_, \\`ticks\\`, and \\[brackets\\].",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "Escaped *stars*, _underscores_, `ticks`, and [brackets].",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "Escaped \\*stars\\*, \\_underscores\\_, \\`ticks\\`, and \\[brackets\\]."
+    },
+    {
+      "id": "link-title",
+      "markdown": "[A **strong** link](https://example.org/a \"A title\") and [mail](mailto:reader@example.org).",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "A ",
+          "marks": {
+            "link": "{\"href\":\"https://example.org/a\",\"title\":\"A title\"}"
+          }
+        },
+        {
+          "type": "text",
+          "value": "strong",
+          "marks": {
+            "link": "{\"href\":\"https://example.org/a\",\"title\":\"A title\"}",
+            "strong": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " link",
+          "marks": {
+            "link": "{\"href\":\"https://example.org/a\",\"title\":\"A title\"}"
+          }
+        },
+        {
+          "type": "text",
+          "value": " and ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "mail",
+          "marks": {
+            "link": "{\"href\":\"mailto:reader@example.org\",\"title\":null}"
+          }
+        },
+        {
+          "type": "text",
+          "value": ".",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "[A **strong** link](https://example.org/a \"A title\") and [mail](mailto:reader@example.org)."
+    },
+    {
+      "id": "relative-link",
+      "markdown": "[Section](#section) and [asset](/api/assets/example)",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "Section",
+          "marks": {
+            "link": "{\"href\":\"#section\",\"title\":null}"
+          }
+        },
+        {
+          "type": "text",
+          "value": " and ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "asset",
+          "marks": {
+            "link": "{\"href\":\"/api/assets/example\",\"title\":null}"
+          }
+        }
+      ],
+      "canonical_markdown": "[Section](#section) and [asset](/api/assets/example)"
+    },
+    {
+      "id": "bare-url",
+      "markdown": "https://example.org and reader@example.org remain prose.",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "https://example.org and reader@example.org remain prose.",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "https://example.org and reader@example.org remain prose."
+    },
+    {
+      "id": "unicode",
+      "markdown": "👩🏽‍💻 **café é** 中文 Ελληνικά 🇳🇿 🧑‍🚀.",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "👩🏽‍💻 ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "café é",
+          "marks": {
+            "strong": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " 中文 Ελληνικά 🇳🇿 🧑‍🚀.",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "👩🏽‍💻 **café é** 中文 Ελληνικά 🇳🇿 🧑‍🚀."
+    },
+    {
+      "id": "image",
+      "markdown": "![A cat](/api/assets/cat \"Cat portrait\")",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "/api/assets/cat",
+              "alt": "A cat",
+              "title": "Cat portrait"
+            },
+            "isEmbed": true
+          }
+        }
+      ],
+      "canonical_markdown": "![A cat](/api/assets/cat \"Cat portrait\")"
+    },
+    {
+      "id": "image-alt",
+      "markdown": "Before ![Cat \\[meow\\] &amp; **friends**](/api/assets/cat \"Portrait\") after.",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "Before ",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "/api/assets/cat",
+              "alt": "Cat [meow] & friends",
+              "title": "Portrait"
+            },
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " after.",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "Before ![Cat \\[meow\\] & friends](/api/assets/cat \"Portrait\") after."
+    },
+    {
+      "id": "image-empty-alt",
+      "markdown": "![](/api/assets/cat)",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "/api/assets/cat",
+              "alt": "",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        }
+      ],
+      "canonical_markdown": "![](/api/assets/cat)"
+    },
+    {
+      "id": "image-alt-break",
+      "markdown": "![one  \ntwo](x)",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "x",
+              "alt": "one\ntwo",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        }
+      ],
+      "canonical_markdown": "![one\ntwo](x)"
+    },
+    {
+      "id": "mermaid",
+      "markdown": "```mermaid\ngraph TD\n  A[Write] --> B[Share]\n```",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "code-block",
+            "parents": [],
+            "attrs": {
+              "params": "mermaid"
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "graph TD\n  A[Write] --> B[Share]",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "```mermaid\ngraph TD\n  A[Write] --> B[Share]\n```"
+    },
+    {
+      "id": "code-info",
+      "markdown": "```rust title=demo\nfn main() {}\n```",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "code-block",
+            "parents": [],
+            "attrs": {
+              "params": "rust title=demo"
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "fn main() {}",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "```rust title=demo\nfn main() {}\n```"
+    },
+    {
+      "id": "code-backticks",
+      "markdown": "A `` `quoted` `` value.\n\n````text\n```inside```\n````",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "A ",
+          "marks": {}
+        },
+        {
+          "type": "text",
+          "value": "`quoted`",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " value.",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "code-block",
+            "parents": [],
+            "attrs": {
+              "params": "text"
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "```inside```",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "A `` `quoted` `` value.\n\n````text\n```inside```\n````"
+    },
+    {
+      "id": "indented-code",
+      "markdown": "    a < b\n    next()",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "code-block",
+            "parents": [],
+            "attrs": {
+              "params": ""
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "a < b\nnext()",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "```\na < b\nnext()\n```"
+    },
+    {
+      "id": "quote",
+      "markdown": "> First paragraph.\n>\n> Second paragraph.",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "blockquote",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "First paragraph.",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Second paragraph.",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "> First paragraph.\n>\n> Second paragraph."
+    },
+    {
+      "id": "nested-quote",
+      "markdown": "> Outer\n>\n> > Inner\n> >\n> > Last",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "blockquote",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Outer",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "blockquote",
+            "parents": [
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Inner",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [
+              "blockquote",
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Last",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "> Outer\n>\n> > Inner\n> >\n> > Last"
+    },
+    {
+      "id": "bullet-list",
+      "markdown": "- First\n- Second",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "First",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Second",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "* First\n\n* Second"
+    },
+    {
+      "id": "numbered-list",
+      "markdown": "3. Third\n4. Fourth",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "ordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Third",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "ordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Fourth",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "1. Third\n\n2. Fourth"
+    },
+    {
+      "id": "nested-list",
+      "markdown": "- Parent\n  - Child\n  - Other\n- Sibling",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Parent",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [
+              "unordered-list-item"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Child",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [
+              "unordered-list-item"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Other",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Sibling",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "* Parent\n\n  * Child\n\n  * Other\n\n* Sibling"
+    },
+    {
+      "id": "list-paragraphs",
+      "markdown": "- First paragraph\n\n  Second paragraph\n\n- Another item",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "First paragraph",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [
+              "unordered-list-item"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Second paragraph",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Another item",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "* First paragraph\n\n  Second paragraph\n\n* Another item"
+    },
+    {
+      "id": "tasks",
+      "markdown": "- [ ] Pending\n- [x] Complete\n- [X] Also complete",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "task-list-item",
+            "parents": [],
+            "attrs": {
+              "checked": false
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Pending",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "task-list-item",
+            "parents": [],
+            "attrs": {
+              "checked": true
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Complete",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "task-list-item",
+            "parents": [],
+            "attrs": {
+              "checked": true
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Also complete",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "- [ ] Pending\n\n- [x] Complete\n\n- [x] Also complete"
+    },
+    {
+      "id": "mixed-tasks",
+      "markdown": "- Ordinary\n- [ ] Pending\n- [x] Done\n- Ordinary again",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Ordinary",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "task-list-item",
+            "parents": [],
+            "attrs": {
+              "checked": false
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Pending",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "task-list-item",
+            "parents": [],
+            "attrs": {
+              "checked": true
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Done",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Ordinary again",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "* Ordinary\n\n- [ ] Pending\n\n- [x] Done\n\n* Ordinary again"
+    },
+    {
+      "id": "nested-tasks",
+      "markdown": "- [ ] Parent\n  - [x] Child\n  - Ordinary child\n- [x] Sibling",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "task-list-item",
+            "parents": [],
+            "attrs": {
+              "checked": false
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Parent",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "task-list-item",
+            "parents": [
+              "task-list-item"
+            ],
+            "attrs": {
+              "checked": true
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Child",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [
+              "task-list-item"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Ordinary child",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "task-list-item",
+            "parents": [],
+            "attrs": {
+              "checked": true
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Sibling",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "- [ ] Parent\n\n  - [x] Child\n\n  * Ordinary child\n\n- [x] Sibling"
+    },
+    {
+      "id": "task-link",
+      "markdown": "- [ ] [Read the guide](https://example.org/guide)",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "task-list-item",
+            "parents": [],
+            "attrs": {
+              "checked": false
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Read the guide",
+          "marks": {
+            "link": "{\"href\":\"https://example.org/guide\",\"title\":null}"
+          }
+        }
+      ],
+      "canonical_markdown": "- [ ] [Read the guide](https://example.org/guide)"
+    },
+    {
+      "id": "literal-task",
+      "markdown": "- \\[ \\] Literal\n- `[x]` Code\n\nProse [ ] remains literal.",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "[ ] Literal",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "[x]",
+          "marks": {
+            "code": true
+          }
+        },
+        {
+          "type": "text",
+          "value": " Code",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "paragraph",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Prose [ ] remains literal.",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "* \\[ \\] Literal\n\n* `[x]` Code\n\nProse \\[ \\] remains literal."
+    },
+    {
+      "id": "ordered-literal-task",
+      "markdown": "1. [ ] This is an ordinary numbered item",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "ordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "[ ] This is an ordinary numbered item",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "1. \\[ \\] This is an ordinary numbered item"
+    },
+    {
+      "id": "table",
+      "markdown": "| Capability | Meaning |\n| --- | --- |\n| **Native** | Shared state |\n| Editing | `splice` |",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Capability",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Meaning",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Native",
+          "marks": {
+            "strong": true
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Shared state",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Editing",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "splice",
+          "marks": {
+            "code": true
+          }
+        }
+      ],
+      "canonical_markdown": "| Capability | Meaning |\n| --- | --- |\n| **Native** | Shared state |\n| Editing | `splice` |"
+    },
+    {
+      "id": "table-alignment",
+      "markdown": "| Left | Center | Right |\n| :--- | :---: | ---: |\n| a | b | c |",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {
+              "align": "left"
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Left",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {
+              "align": "center"
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Center",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {
+              "align": "right"
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Right",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {
+              "align": "left"
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "a",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {
+              "align": "center"
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "b",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {
+              "align": "right"
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "c",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "| Left | Center | Right |\n| :--- | :---: | ---: |\n| a | b | c |"
+    },
+    {
+      "id": "table-empty",
+      "markdown": "| A | B |\n| --- | --- |\n| | |\n| x | |",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "A",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "B",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "x",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "| A | B |\n| --- | --- |\n|  |  |\n| x |  |"
+    },
+    {
+      "id": "table-ragged-import",
+      "markdown": "| A | B | C |\n| --- | --- | --- |\n| only |\n| x | y | z | extra |",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "A",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "B",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "C",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "only",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "x",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "y",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "z",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "| A | B | C |\n| --- | --- | --- |\n| only |  |  |\n| x | y | z |"
+    },
+    {
+      "id": "table-pipes",
+      "markdown": "| Text | Code |\n| --- | --- |\n| a\\|b | `c\\|d` |",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Text",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Code",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "a|b",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "c|d",
+          "marks": {
+            "code": true
+          }
+        }
+      ],
+      "canonical_markdown": "| Text | Code |\n| --- | --- |\n| a\\|b | `c\\|d` |"
+    },
+    {
+      "id": "table-breaks",
+      "markdown": "| A | B |\n| --- | --- |\n| first<br>second | third<BR />fourth |",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "A",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "B",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "first",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "table",
+              "table-row",
+              "table-cell"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "second",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "third",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "hard-break",
+            "parents": [
+              "table",
+              "table-row",
+              "table-cell"
+            ],
+            "attrs": {},
+            "isEmbed": true
+          }
+        },
+        {
+          "type": "text",
+          "value": "fourth",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "| A | B |\n| --- | --- |\n| first<br>second | third<br>fourth |"
+    },
+    {
+      "id": "table-literal-breaks",
+      "markdown": "| Escaped | Entity | Code |\n| --- | --- | --- |\n| \\<br> | &lt;br&gt; | `<br>` |",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Escaped",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Entity",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Code",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "<br>",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "<br>",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "<br>",
+          "marks": {
+            "code": true
+          }
+        }
+      ],
+      "canonical_markdown": "| Escaped | Entity | Code |\n| --- | --- | --- |\n| \\<br> | \\<br> | `<br>` |"
+    },
+    {
+      "id": "table-in-quote",
+      "markdown": "> | A | B |\n> | --- | --- |\n> | x | y |",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "blockquote",
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "blockquote",
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "A",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "blockquote",
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "B",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "blockquote",
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "blockquote",
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "x",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "blockquote",
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "y",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "> | A | B |\n> | --- | --- |\n> | x | y |"
+    },
+    {
+      "id": "table-in-list",
+      "markdown": "- Introduction\n\n  | A | B |\n  | --- | --- |\n  | x | y |",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "Introduction",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [
+              "unordered-list-item"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "unordered-list-item",
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "unordered-list-item",
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "A",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "unordered-list-item",
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "B",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "unordered-list-item",
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "unordered-list-item",
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "x",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "unordered-list-item",
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "y",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "* Introduction\n\n  | A | B |\n  | --- | --- |\n  | x | y |"
+    },
+    {
+      "id": "inline-html-literal",
+      "markdown": "Literal <b>text</b> stays visible.",
+      "expected_spans": [
+        {
+          "type": "text",
+          "value": "Literal <b>text</b> stays visible.",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "Literal <b>text</b> stays visible."
+    },
+    {
+      "id": "opaque-html",
+      "markdown": "<section>Preserve this</section>",
+      "import_id": "html-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "<section>Preserve this</section>",
+              "importId": "html-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "<section>Preserve this</section>"
+    },
+    {
+      "id": "opaque-math",
+      "markdown": "The value is $x + 1$.",
+      "import_id": "math-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "The value is $x + 1$.",
+              "importId": "math-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "The value is $x + 1$."
+    },
+    {
+      "id": "opaque-reference",
+      "markdown": "[Guide][ref]\n\n[ref]: https://example.org",
+      "import_id": "reference-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "[Guide][ref]\n\n[ref]: https://example.org",
+              "importId": "reference-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "[Guide][ref]\n\n[ref]: https://example.org"
+    },
+    {
+      "id": "opaque-strikethrough",
+      "markdown": "Keep ~~this~~ untouched.",
+      "import_id": "strike-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Keep ~~this~~ untouched.",
+              "importId": "strike-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Keep ~~this~~ untouched."
+    },
+    {
+      "id": "opaque-rule-gate",
+      "markdown": "Before\n\n---\n\nAfter",
+      "import_id": "rule-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "Before\n\n---\n\nAfter",
+              "importId": "rule-import",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "Before\n\n---\n\nAfter"
+    },
+    {
+      "id": "opaque-instruction",
+      "markdown": "# Treat as preserved content",
+      "kind": "instruction",
+      "import_id": "instruction-import",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "# Treat as preserved content",
+              "importId": "instruction-import",
+              "kind": "instruction"
+            },
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "# Treat as preserved content"
+    }
+  ],
+  "divergences": [
+    {
+      "id": "thematic-break-preserved",
+      "markdown": "***",
+      "reason": "The legacy adapter drops thematic breaks. Rust preserves the whole source as opaque content.",
+      "legacy_spans": [],
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "***",
+              "importId": "",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "unsafe-link-preserved",
+      "markdown": "[unsafe](javascript:alert%281%29)",
+      "reason": "Rust preserves unsafe links as opaque source; Markdown-it leaves this rejected link syntax as prose.",
+      "legacy_spans": [
+        {
+          "type": "text",
+          "value": "[unsafe](javascript:alert%281%29)",
+          "marks": {}
+        }
+      ],
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "[unsafe](javascript:alert%281%29)",
+              "importId": "",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "unsafe-image-preserved",
+      "markdown": "![unsafe](data:image/png;base64,YQ==)",
+      "reason": "Rust preserves unsafe images as opaque source; the legacy parser accepts a data image that Pages validation later rejects.",
+      "legacy_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "image",
+            "parents": [
+              "paragraph"
+            ],
+            "attrs": {
+              "src": "data:image/png;base64,YQ==",
+              "alt": "unsafe",
+              "title": null
+            },
+            "isEmbed": true
+          }
+        }
+      ],
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "pages-opaque",
+            "parents": [],
+            "attrs": {
+              "source": "![unsafe](data:image/png;base64,YQ==)",
+              "importId": "",
+              "kind": "markdown"
+            },
+            "isEmbed": false
+          }
+        }
+      ]
+    }
+  ],
+  "export_cases": [
+    {
+      "id": "ragged-native-table",
+      "spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "A",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "B",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "x",
+          "marks": {}
+        }
+      ],
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "A",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "B",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "x",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        }
+      ],
+      "canonical_markdown": "| A | B |\n| --- | --- |\n|  |  |\n| x |  |"
+    }
+  ]
+}
