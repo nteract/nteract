@@ -308,8 +308,19 @@ fn render_node(nodes: &[Node], id: usize, ordered_index: usize) -> Result<String
             } else {
                 marker.len()
             });
+            // A structural-only item still needs its own marker line. In a
+            // task item, putting the nested list beside `[ ]` would make that
+            // list marker ordinary paragraph text instead of a child list.
+            let structural_first = node
+                .children
+                .first()
+                .is_some_and(|id| nodes[*id].kind != "paragraph");
             let mut lines = content.split('\n');
-            let mut result = format!("{marker}{}", lines.next().unwrap_or(""));
+            let mut result = if structural_first {
+                marker.trim_end().to_owned()
+            } else {
+                format!("{marker}{}", lines.next().unwrap_or(""))
+            };
             for line in lines {
                 result.push('\n');
                 if !line.is_empty() {
@@ -780,5 +791,49 @@ mod tests {
         );
         assert!(markdown.starts_with("&#32;"));
         assert!(markdown.ends_with("&#32;&#32;"));
+    }
+    #[test]
+    fn mixed_opaque_and_editable_blocks_refuse_export_without_mutation() {
+        let opaque = json!({"type":"block","value":{"type":"pages-opaque","parents":[],"attrs":{"source":"<custom>preserved</custom>\n","importId":"import-42","kind":"markdown"},"isEmbed":false}});
+        let paragraph = json!({"type":"block","value":{"type":"paragraph","parents":[],"attrs":{},"isEmbed":false}});
+        let text = json!({"type":"text","value":"Editable neighbor","marks":{}});
+        for native in [
+            json!([opaque, paragraph, text]),
+            json!([paragraph, text, opaque]),
+        ] {
+            let value = spans(native);
+            let before = value.clone();
+            let error = spans_to_markdown(&value)
+                .expect_err("mixed source cannot round-trip through the whole-source opaque gate");
+            assert!(error.to_string().contains("cannot preserve"));
+            assert_eq!(value, before);
+        }
+    }
+
+    #[test]
+    fn sole_opaque_export_preserves_source_and_keeps_metadata_native() {
+        for source in [
+            "",
+            "# instruction source\n\n",
+            "<custom>\n exact bytes 👩🏽‍💻\n</custom>\n",
+        ] {
+            let value = spans(
+                json!([{ "type":"block", "value": { "type":"pages-opaque", "parents":[], "attrs":{"source":source,"importId":"import-42","kind":"instruction"}, "isEmbed":false } }]),
+            );
+            let before = value.clone();
+            assert_eq!(spans_to_markdown(&value).expect("source export"), source);
+            assert_eq!(value, before);
+        }
+    }
+    #[test]
+    fn structural_only_task_siblings_keep_their_own_marker_lines() {
+        let source = "- [ ]\n  - [x] a\n- [x]\n  - [ ] b\n";
+        let original =
+            crate::markdown_to_spans(source, &crate::ImportOptions::default()).expect("import");
+        let exported = spans_to_markdown(&original).expect("export");
+        assert_eq!(exported, "- [ ]\n  - [x] a\n\n- [x]\n  - [ ] b");
+        let imported = crate::markdown_to_spans(&exported, &crate::ImportOptions::default())
+            .expect("reimport");
+        assert_eq!(original, imported);
     }
 }

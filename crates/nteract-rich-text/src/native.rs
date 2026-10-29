@@ -68,10 +68,13 @@ fn scalar(value: &Value) -> Result<ScalarValue> {
         Value::Null => Ok(ScalarValue::Null),
         Value::Bool(v) => Ok((*v).into()),
         Value::String(v) => Ok(v.as_str().into()),
+        // JS Automerge stores ordinary integral numbers as signed integers.
+        // JSON equality alone misses this distinction: Uint would rewrite an
+        // unchanged JS-authored heading when update_spans reconciles it.
         Value::Number(v) => v
-            .as_u64()
-            .map(ScalarValue::Uint)
-            .or_else(|| v.as_i64().map(ScalarValue::Int))
+            .as_i64()
+            .map(ScalarValue::Int)
+            .or_else(|| v.as_u64().map(ScalarValue::Uint))
             .ok_or_else(|| CodecError("Noninteger attribute".into())),
         _ => Err(CodecError("Expected scalar attribute".into())),
     }

@@ -9,7 +9,8 @@ use crate::{
 };
 
 /// Import the conservative `pages-markdown-v1` profile into native span data.
-/// Unsupported syntax is retained as one opaque block, never silently removed.
+/// Unsupported syntax within admission bounds is retained as one opaque block,
+/// never silently removed. Both source and resulting serialized spans must fit.
 pub fn markdown_to_spans(source: &str, options: &ImportOptions<'_>) -> Result<Vec<Span>> {
     if source.len() > MAX_INPUT_BYTES {
         return Err(CodecError("Markdown exceeds the input byte limit".into()));
@@ -392,16 +393,38 @@ impl Builder<'_> {
         children: &[Node],
         attrs: Attributes,
     ) -> Result<()> {
-        // Containers that begin with only structural children are reconstructed
-        // from their descendants' parent paths. Text containers need a marker
-        // to distinguish adjacent quotes/list items, including empty items.
+        // A list item has an implicit leading paragraph even when its Markdown
+        // AST starts with a nested list. Every item needs a marker: parent paths
+        // alone cannot distinguish two neighboring items of the same type.
+        // Structural quote wrappers may be inferred, unless that would reuse
+        // the previous sibling's still-open parent path and merge the siblings.
+        let children_parents = with_parent(parents, kind);
+        let reuses_previous_container = self
+            .spans
+            .iter()
+            .rev()
+            .find_map(|span| {
+                if let Span::Block { value } = span {
+                    let mut path = value.parents.clone();
+                    if !value.is_embed {
+                        path.push(value.kind.clone());
+                    }
+                    Some(path.starts_with(&children_parents))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(false);
         let has_text_child = children
             .iter()
             .any(|child| matches!(child, Node::Paragraph(_) | Node::Heading(_) | Node::Code(_)));
-        if has_text_child || children.is_empty() {
+        if has_text_child
+            || children.is_empty()
+            || kind.ends_with("list-item")
+            || reuses_previous_container
+        {
             self.marker(kind, parents, attrs, false);
         }
-        let children_parents = with_parent(parents, kind);
         for (index, child) in children.iter().enumerate() {
             self.block(child, &children_parents, index == 0)?;
         }
@@ -670,6 +693,27 @@ mod tests {
     }
 
     #[test]
+    fn source_and_serialized_spans_have_independent_admission_bounds() {
+        // Even one text span has JSON overhead. Being below the source limit
+        // alone does not guarantee that the converted spans fit.
+        let source = "a".repeat(MAX_INPUT_BYTES - 1);
+        let error = markdown_to_spans(&source, &ImportOptions::default()).unwrap_err();
+        assert!(error.0.contains("Rich spans"));
+        // Opaque source is subject to the same bound, including JSON escaping
+        // and provenance. Refuse explicitly rather than truncate its content.
+        let source = "\"".repeat(MAX_INPUT_BYTES / 2);
+        let error = markdown_to_spans(
+            &source,
+            &ImportOptions {
+                import_id: "fixture",
+                kind: "instruction",
+            },
+        )
+        .unwrap_err();
+        assert!(error.0.contains("Rich spans"));
+    }
+
+    #[test]
     fn indented_code_does_not_open_an_admission_guard_fence() {
         let source = format!("    ```\n{}text", ">".repeat(40_000));
         let error = markdown_to_spans(&source, &ImportOptions::default()).unwrap_err();
@@ -710,5 +754,30 @@ mod tests {
                 .0
                 .contains("before parsing"));
         }
+    }
+
+    #[test]
+    fn structural_only_list_siblings_keep_distinct_outer_markers() {
+        for (source, kind) in [
+            ("-\n  - a\n-\n  - b\n", "unordered-list-item"),
+            ("1.\n   1. a\n2.\n   1. b\n", "ordered-list-item"),
+            ("- > > a\n- > > b", "unordered-list-item"),
+        ] {
+            let spans = import(source);
+            assert_eq!(spans.iter().filter(|span| matches!(span, Span::Block { value } if value.kind == kind && value.parents.is_empty())).count(), 2, "{source}");
+        }
+    }
+
+    #[test]
+    fn structural_only_quote_siblings_keep_their_boundary() {
+        let spans = import("> > a\n\n> > b");
+        assert!(
+            matches!(&spans[2], Span::Block { value } if value.kind == "blockquote" && value.parents.is_empty())
+        );
+        assert!(
+            matches!(&spans[3], Span::Block { value } if value.kind == "blockquote" && value.parents == ["blockquote"])
+        );
+        let nested_siblings = import("> > a\n>\n> > b");
+        assert_ne!(spans, nested_siblings);
     }
 }

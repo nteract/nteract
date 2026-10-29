@@ -14,12 +14,21 @@ reference links, strikethrough, and non-Markdown input retain opaque source and
 import provenance. General GFM support is not the Pages compatibility profile:
 bare URLs remain prose, for example.
 
+Structural-only sibling list items retain explicit parent markers even when
+their first content is another list. Bullet, ordered, mixed, task, and quoted
+variants ensure that adjacent items cannot collapse into one container.
+
 `divergences` explicitly records intentional differences from the old codec:
 thematic breaks must be preserved rather than dropped, and unsafe destinations
 are preserved as opaque source; the legacy parser literalizes a rejected link
 and accepts a data image that later Pages validation rejects. Each includes observed
 legacy spans and the exact required Rust result. There is no blanket exception
 for parser differences.
+
+The nested-quote sibling case preserves the boundary between two outer quotes;
+the legacy span adapter merges them. Its `legacy_export_spans` records that exact
+legacy reimport result, while native and Wordgard round trips must preserve both
+outer quotes. This exception does not relax other structural comparisons.
 
 `export_cases` covers structure that can arise from native edits, including a
 ragged table. Markdown must pad missing cells to retain all rows on reimport.
@@ -42,6 +51,31 @@ checks imported spans against the oracle, and reparses Rust exports through both
 codecs. It also verifies rejection paths return matching errors. Only adjacent
 text spans with identical marks are coalesced; structural markers, attributes,
 checked state, and opaque provenance are compared without normalization.
+
+The same corpus also crosses the headless Wordgard model: decode, encode, Rust
+export/import, then decode again must yield an equal Wordgard document. Wordgard
+omits the initial paragraph marker in the `paragraphs` and `code-backticks`
+fixtures, and adds an explicit quote marker in `table-in-quote`. Document
+equality validates those different representations without relaxing the separate
+strict import assertions. This checks the model boundary, not browser editing,
+selection mapping, or IME behavior.
+
+`javascript-automerge.json` contains actual JavaScript-authored Automerge saves,
+encoded as hex for native tests without another dependency. A fixed actor and
+zero timestamps make regeneration deterministic. `--check` compares the persisted
+bytes and heads as well as the Markdown and input spans. `legacy-core` exercises
+the existing parser's marks, headings, tasks and tables. `wordgard-rich` also
+includes an image and uses Wordgard's encoder. Native reconciliation must retain
+their heads and object identity. This catches differences such as signed versus
+unsigned integer attributes that plain JSON parity cannot detect. Generation
+uses the package's ESM exports, as Pages does.
+
+`legacy-image-text` records an adoption gate: the legacy parser stores image alt
+and title as nested Automerge Text objects, while Wordgard uses immutable strings.
+The current native adapter rejects those Text attributes instead of silently
+changing their identity or discarding history. JSON span equality alone does not
+expose that storage difference. Resolving it requires a separate compatibility
+decision before using the native adapter against existing Pages documents.
 
 To deliberately refresh the oracle after reviewing a Pages codec change, run
 the generator without `--check` and inspect the fixture diff. Do not regenerate

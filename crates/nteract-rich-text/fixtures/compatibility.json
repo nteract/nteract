@@ -962,6 +962,303 @@
       "canonical_markdown": "* Parent\n\n  * Child\n\n  * Other\n\n* Sibling"
     },
     {
+      "id": "nested-only-bullet-siblings",
+      "markdown": "-\n  - a\n-\n  - b\n",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [
+              "unordered-list-item"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "a",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [
+              "unordered-list-item"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "b",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "* \n\n  * a\n\n* \n\n  * b"
+    },
+    {
+      "id": "nested-only-ordered-siblings",
+      "markdown": "1.\n   1. a\n2.\n   1. b\n",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "ordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "ordered-list-item",
+            "parents": [
+              "ordered-list-item"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "a",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "ordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "ordered-list-item",
+            "parents": [
+              "ordered-list-item"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "b",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "1. \n\n   1. a\n\n2. \n\n   1. b"
+    },
+    {
+      "id": "nested-only-mixed-siblings",
+      "markdown": "-\n  1. a\n-\n  1. b\n",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "ordered-list-item",
+            "parents": [
+              "unordered-list-item"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "a",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "ordered-list-item",
+            "parents": [
+              "unordered-list-item"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "b",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "* \n\n  1. a\n\n* \n\n  1. b"
+    },
+    {
+      "id": "quoted-nested-only-bullets",
+      "markdown": "> -\n>   - a\n> -\n>   - b\n",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [
+              "blockquote",
+              "unordered-list-item"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "a",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [
+              "blockquote",
+              "unordered-list-item"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "b",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "> * \n>\n>   * a\n>\n> * \n>\n>   * b"
+    },
+    {
+      "id": "quoted-nested-only-ordered",
+      "markdown": "> 1.\n>    - a\n> 2.\n>    - b\n",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "ordered-list-item",
+            "parents": [
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [
+              "blockquote",
+              "ordered-list-item"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "a",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "ordered-list-item",
+            "parents": [
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "unordered-list-item",
+            "parents": [
+              "blockquote",
+              "ordered-list-item"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "b",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "> 1. \n>\n>    * a\n>\n> 2. \n>\n>    * b"
+    },
+    {
       "id": "list-paragraphs",
       "markdown": "- First paragraph\n\n  Second paragraph\n\n- Another item",
       "expected_spans": [
@@ -1206,6 +1503,71 @@
         }
       ],
       "canonical_markdown": "- [ ] Parent\n\n  - [x] Child\n\n  * Ordinary child\n\n- [x] Sibling"
+    },
+    {
+      "id": "nested-only-task-siblings",
+      "markdown": "- [ ]\n  - [x] a\n- [x]\n  - [ ] b\n",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "task-list-item",
+            "parents": [],
+            "attrs": {
+              "checked": false
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "task-list-item",
+            "parents": [
+              "task-list-item"
+            ],
+            "attrs": {
+              "checked": true
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "a",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "task-list-item",
+            "parents": [],
+            "attrs": {
+              "checked": true
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "task-list-item",
+            "parents": [
+              "task-list-item"
+            ],
+            "attrs": {
+              "checked": false
+            },
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "b",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "- [ ] \n\n  - [x] a\n\n- [x] \n\n  - [ ] b"
     },
     {
       "id": "task-link",
@@ -2451,6 +2813,155 @@
       "canonical_markdown": "> | A | B |\n> | --- | --- |\n> | x | y |"
     },
     {
+      "id": "sibling-tables-in-quote",
+      "markdown": "> | A |\n> | --- |\n> | a |\n>\n> | B |\n> | --- |\n> | b |\n",
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "blockquote",
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "blockquote",
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "A",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "blockquote",
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "blockquote",
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "a",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table",
+            "parents": [
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "blockquote",
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-header",
+            "parents": [
+              "blockquote",
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "B",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-row",
+            "parents": [
+              "blockquote",
+              "table"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "table-cell",
+            "parents": [
+              "blockquote",
+              "table",
+              "table-row"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "b",
+          "marks": {}
+        }
+      ],
+      "canonical_markdown": "> | A |\n> | --- |\n> | a |\n>\n> | B |\n> | --- |\n> | b |"
+    },
+    {
       "id": "table-in-list",
       "markdown": "- Introduction\n\n  | A | B |\n  | --- | --- |\n  | x | y |",
       "expected_spans": [
@@ -2801,6 +3312,122 @@
             },
             "isEmbed": false
           }
+        }
+      ]
+    },
+    {
+      "id": "nested-quote-siblings-preserved",
+      "markdown": "> > a\n\n> > b",
+      "reason": "The legacy span adapter omits both outer quote markers and merges sibling quotes. Rust retains the second outer marker to preserve the boundary.",
+      "legacy_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "blockquote",
+            "parents": [
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "a",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "blockquote",
+            "parents": [
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "b",
+          "marks": {}
+        }
+      ],
+      "legacy_export_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "blockquote",
+            "parents": [
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "a",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "blockquote",
+            "parents": [
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "b",
+          "marks": {}
+        }
+      ],
+      "expected_spans": [
+        {
+          "type": "block",
+          "value": {
+            "type": "blockquote",
+            "parents": [
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "a",
+          "marks": {}
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "blockquote",
+            "parents": [],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "block",
+          "value": {
+            "type": "blockquote",
+            "parents": [
+              "blockquote"
+            ],
+            "attrs": {},
+            "isEmbed": false
+          }
+        },
+        {
+          "type": "text",
+          "value": "b",
+          "marks": {}
         }
       ]
     }

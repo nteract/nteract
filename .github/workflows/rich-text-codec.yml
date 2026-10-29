@@ -8,6 +8,7 @@ on:
       - Cargo.lock
       - rust-toolchain.toml
       - docs/memos/authenticated-automerge-app-substrate/experiment/pages/model/richtext.mjs
+      - docs/memos/authenticated-automerge-app-substrate/experiment/pages/viewer/wordgard-model.mjs
       - docs/memos/authenticated-automerge-app-substrate/experiment/pages/package.json
       - docs/memos/authenticated-automerge-app-substrate/experiment/package-lock.json
       - .github/workflows/rich-text-codec.yml
@@ -19,6 +20,7 @@ on:
       - Cargo.lock
       - rust-toolchain.toml
       - docs/memos/authenticated-automerge-app-substrate/experiment/pages/model/richtext.mjs
+      - docs/memos/authenticated-automerge-app-substrate/experiment/pages/viewer/wordgard-model.mjs
       - docs/memos/authenticated-automerge-app-substrate/experiment/pages/package.json
       - docs/memos/authenticated-automerge-app-substrate/experiment/package-lock.json
       - .github/workflows/rich-text-codec.yml

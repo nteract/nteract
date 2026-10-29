@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolve } from "node:path";
+import { execFileSync } from "node:child_process";
 
 // The compatibility oracle intentionally uses the existing Pages dependencies.
 // It is a test-only adapter and is not a second production codec.
@@ -40,6 +41,37 @@ export function exportLegacy(spans) {
         },
   );
   return exportMarkdown(pmDocFromSpans(adapter, hydrated));
+}
+
+export function javaScriptDocumentFixture(markdown, wordgard = false) {
+  // Resolve the ESM exports exactly as Pages does. Mixing the package's CJS
+  // and ESM ImmutableString classes changes how attributes are stored.
+  const script = `
+    import fs from "node:fs";
+    import * as A from "@automerge/automerge";
+    import { pmNodeToSpans } from "@automerge/prosemirror";
+    import { adapter, parseMarkdown } from "./model/richtext.mjs";
+    import { decode, encode } from "./viewer/wordgard-model.mjs";
+    const { markdown, wordgard } = JSON.parse(fs.readFileSync(0, "utf8"));
+    const imported = pmNodeToSpans(adapter, parseMarkdown(markdown));
+    const spans = wordgard ? encode(decode(imported).doc) : imported;
+    const actor = "11111111111111111111111111111111";
+    let doc = A.init({ actor });
+    doc = A.change(doc, { time: 0 }, (draft) => { draft.content = ""; });
+    doc = A.change(doc, { time: 0 }, (draft) => {
+      A.updateSpans(draft, ["content"], spans, adapter.updateSpansConfig());
+    });
+    const result = { markdown, actor, heads: A.getHeads(doc), bytes_hex: Buffer.from(A.save(doc)).toString("hex"), spans };
+    A.free(doc);
+    process.stdout.write(JSON.stringify(result));
+  `;
+  return JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: pagesRoot,
+    input: JSON.stringify({ markdown, wordgard }),
+    encoding: "utf8",
+    timeout: 30_000,
+    maxBuffer: 1024 * 1024,
+  }));
 }
 
 // Automerge may split adjacent text spans at change boundaries. Coalescing

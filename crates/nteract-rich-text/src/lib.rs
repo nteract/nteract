@@ -24,6 +24,8 @@ pub use validate::{safe_url, validate_spans};
 pub use wire::process_json;
 
 pub const PROFILE: &str = "pages-markdown-v1";
+/// Independent bounds for Markdown source and serialized spans. An import
+/// must satisfy both, including JSON escaping and span/provenance overhead.
 pub const MAX_INPUT_BYTES: usize = 262_144;
 pub const MAX_DEPTH: usize = 32;
 

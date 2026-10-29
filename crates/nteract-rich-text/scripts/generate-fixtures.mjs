@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { deepStrictEqual } from "node:assert";
-import { importLegacy, exportLegacy } from "./legacy-codec.mjs";
+import { importLegacy, exportLegacy, javaScriptDocumentFixture } from "./legacy-codec.mjs";
 
 const cases = [
   { id: "empty", markdown: "" },
@@ -32,10 +32,16 @@ const cases = [
   { id: "bullet-list", markdown: "- First\n- Second" },
   { id: "numbered-list", markdown: "3. Third\n4. Fourth" },
   { id: "nested-list", markdown: "- Parent\n  - Child\n  - Other\n- Sibling" },
+  { id: "nested-only-bullet-siblings", markdown: "-\n  - a\n-\n  - b\n" },
+  { id: "nested-only-ordered-siblings", markdown: "1.\n   1. a\n2.\n   1. b\n" },
+  { id: "nested-only-mixed-siblings", markdown: "-\n  1. a\n-\n  1. b\n" },
+  { id: "quoted-nested-only-bullets", markdown: "> -\n>   - a\n> -\n>   - b\n" },
+  { id: "quoted-nested-only-ordered", markdown: "> 1.\n>    - a\n> 2.\n>    - b\n" },
   { id: "list-paragraphs", markdown: "- First paragraph\n\n  Second paragraph\n\n- Another item" },
   { id: "tasks", markdown: "- [ ] Pending\n- [x] Complete\n- [X] Also complete" },
   { id: "mixed-tasks", markdown: "- Ordinary\n- [ ] Pending\n- [x] Done\n- Ordinary again" },
   { id: "nested-tasks", markdown: "- [ ] Parent\n  - [x] Child\n  - Ordinary child\n- [x] Sibling" },
+  { id: "nested-only-task-siblings", markdown: "- [ ]\n  - [x] a\n- [x]\n  - [ ] b\n" },
   { id: "task-link", markdown: "- [ ] [Read the guide](https://example.org/guide)" },
   { id: "literal-task", markdown: "- \\[ \\] Literal\n- `[x]` Code\n\nProse [ ] remains literal." },
   { id: "ordered-literal-task", markdown: "1. [ ] This is an ordinary numbered item" },
@@ -47,6 +53,7 @@ const cases = [
   { id: "table-breaks", markdown: "| A | B |\n| --- | --- |\n| first<br>second | third<BR />fourth |" },
   { id: "table-literal-breaks", markdown: "| Escaped | Entity | Code |\n| --- | --- | --- |\n| \\<br> | &lt;br&gt; | `<br>` |" },
   { id: "table-in-quote", markdown: "> | A | B |\n> | --- | --- |\n> | x | y |" },
+  { id: "sibling-tables-in-quote", markdown: "> | A |\n> | --- |\n> | a |\n>\n> | B |\n> | --- |\n> | b |\n" },
   { id: "table-in-list", markdown: "- Introduction\n\n  | A | B |\n  | --- | --- |\n  | x | y |" },
   { id: "inline-html-literal", markdown: "Literal <b>text</b> stays visible." },
   { id: "opaque-html", markdown: "<section>Preserve this</section>", import_id: "html-import" },
@@ -103,6 +110,20 @@ const divergences = [
       ],
     }),
   ),
+  {
+    id: "nested-quote-siblings-preserved",
+    markdown: "> > a\n\n> > b",
+    reason: "The legacy span adapter omits both outer quote markers and merges sibling quotes. Rust retains the second outer marker to preserve the boundary.",
+    legacy_spans: importLegacy("> > a\n\n> > b"),
+    legacy_export_spans: importLegacy("> > a\n\n> > b"),
+    expected_spans: [
+      { type: "block", value: { type: "blockquote", parents: ["blockquote"], attrs: {}, isEmbed: false } },
+      { type: "text", value: "a", marks: {} },
+      { type: "block", value: { type: "blockquote", parents: [], attrs: {}, isEmbed: false } },
+      { type: "block", value: { type: "blockquote", parents: ["blockquote"], attrs: {}, isEmbed: false } },
+      { type: "text", value: "b", marks: {} },
+    ],
+  },
 ];
 
 const ragged = structuredClone(fixtures.find((item) => item.id === "table-empty").expected_spans);
@@ -126,10 +147,24 @@ const document = {
   export_cases,
 };
 const target = new URL("../fixtures/compatibility.json", import.meta.url);
+const javascriptTarget = new URL("../fixtures/javascript-automerge.json", import.meta.url);
+const coreMarkdown = '## Shared café 🦀\n\nA **strong** *shared* [link](https://example.org "site") and `code`.\n\n- [ ] Read\n- [x] Write\n\n| A | B |\n| :--- | ---: |\n| one | two |';
+const imageMarkdown = '![Cat](/api/assets/cat "cat")';
+const javascriptDocument = {
+  documents: [
+    { id: "legacy-core", ...javaScriptDocumentFixture(coreMarkdown) },
+    { id: "wordgard-rich", ...javaScriptDocumentFixture(`${coreMarkdown}\n\n${imageMarkdown}`, true) },
+    { id: "legacy-image-text", ...javaScriptDocumentFixture(imageMarkdown) },
+  ],
+};
 if (process.argv.includes("--check")) {
   deepStrictEqual(JSON.parse(await readFile(target, "utf8")), document);
+  deepStrictEqual(JSON.parse(await readFile(javascriptTarget, "utf8")), javascriptDocument);
   console.log(`Legacy oracle matches ${fixtures.length} imports, ${divergences.length} declared divergences, and ${export_cases.length} exports.`);
+  console.log(`JavaScript Automerge fixtures match ${javascriptDocument.documents.length} persisted documents.`);
 } else {
   await writeFile(target, `${JSON.stringify(document, null, 2)}\n`);
+  await writeFile(javascriptTarget, `${JSON.stringify(javascriptDocument, null, 2)}\n`);
   console.log(`Wrote ${target.pathname}`);
+  console.log(`Wrote ${javascriptTarget.pathname}`);
 }

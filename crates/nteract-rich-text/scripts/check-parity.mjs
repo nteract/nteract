@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
-import { importLegacy, normalizeSpans } from "./legacy-codec.mjs";
+import { pathToFileURL } from "node:url";
+import { importLegacy, normalizeSpans, pagesRoot } from "./legacy-codec.mjs";
+
+const { decode, encode } = await import(
+  pathToFileURL(resolve(pagesRoot, "viewer/wordgard-model.mjs")).href
+);
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => {
@@ -97,7 +102,9 @@ for (const [index, fixture] of exportFixtures.entries()) {
   } else {
     equalSpans(
       importLegacy(result.markdown, fixture.import_id, fixture.kind),
-      fixture.expected_spans,
+      // A declared legacy exporter limitation has an exact recorded result;
+      // native and Wordgard round trips below still require preserved structure.
+      fixture.legacy_export_spans ?? fixture.expected_spans,
       `${fixture.id}: exported Markdown changed legacy rich-text semantics`,
     );
   }
@@ -117,6 +124,36 @@ for (const [index, fixture] of exportFixtures.entries()) {
   equalSpans(result.spans, fixture.expected_spans, `${fixture.id}: Rust export/import changed semantics`);
 }
 
+// Wordgard can represent a paragraph or container implicitly, so its encoded
+// markers need not match the importer's markers. Keep the strict legacy span
+// checks above and independently prove equality of Wordgard's document model.
+const wordgardCases = allImports.map((fixture, index) => {
+  const doc = decode(imports[index].spans).doc;
+  const spans = JSON.parse(JSON.stringify(encode(doc)));
+  assert(decode(spans).doc.eq(doc), `${fixture.id}: Wordgard encode/decode changed the document`);
+  return { fixture, doc, spans };
+});
+const wordgardExports = runBoth(wordgardCases.map(({ spans }) => ({ op: "export", spans })));
+for (const [index, { fixture }] of wordgardCases.entries()) {
+  assert.equal(wordgardExports[index].ok, true, `${fixture.id}: ${wordgardExports[index].error}`);
+}
+const wordgardImports = runBoth(
+  wordgardExports.map((result, index) => ({
+    op: "import",
+    markdown: result.markdown,
+    import_id: wordgardCases[index].fixture.import_id ?? "",
+    kind: wordgardCases[index].fixture.kind ?? "markdown",
+  })),
+);
+for (const [index, { fixture, doc }] of wordgardCases.entries()) {
+  const result = wordgardImports[index];
+  assert.equal(result.ok, true, `${fixture.id}: ${result.error}`);
+  assert(
+    decode(result.spans).doc.eq(doc),
+    `${fixture.id}: Rust export/import changed the Wordgard document`,
+  );
+}
+
 const invalid = [
   { op: "export", spans: [{ type: "text", value: "bad mark", marks: { unknown: true } }] },
   { op: "export", spans: [{ type: "text", value: "bad link", marks: { link: "not JSON" } }] },
@@ -129,5 +166,5 @@ for (const result of runBoth(invalid)) {
 }
 
 console.log(
-  `${allImports.length} imports, ${exportFixtures.length} exports and round trips, and ${invalid.length} invalid inputs passed (${requestCount} identical native/WASM responses).`,
+  `${allImports.length} imports, ${exportFixtures.length} exports and round trips, ${wordgardCases.length} Wordgard round trips, and ${invalid.length} invalid inputs passed (${requestCount} identical native/WASM responses).`,
 );

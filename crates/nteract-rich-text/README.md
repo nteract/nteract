@@ -30,7 +30,14 @@ its own guarded transaction, preserving the existing text object. Direct rich
 editing should continue using granular text/mark operations where available.
 JS callers must convert block types, parent names, and string attributes to
 `Automerge.ImmutableString` before reconciliation, as the existing Pages
-adapter does.
+Wordgard encoder does. Native integer attributes use the same signed scalar
+representation as ordinary JavaScript numbers.
+
+The native adapter rejects mutable Text objects inside block attributes.
+Existing images authored by the legacy Markdown codec can have this shape for
+alt text and titles, while Wordgard writes scalar attributes. Saved JavaScript
+fixtures record this difference; adoption must handle it explicitly to avoid
+replacing attribute objects or losing concurrent attribute edits.
 
 `process_json` accepts a bounded request and returns an explicit success or
 error object. The native example reads one request per line. The WASM build
@@ -62,10 +69,19 @@ marks or independent alignment per table cell. Export reports unsupported
 content instead of silently stripping it; a semantic reimport check verifies
 representability at this explicit export boundary. Callers must retain the
 native document and surface that limitation. Re-import is not an editor migration.
+An isolated opaque block exports its original source. A mixture of opaque
+blocks and rich prose currently returns an export error: the conservative
+import profile would otherwise turn the whole result into one opaque block.
+The original rich document remains intact in both cases.
+
 Ordered-list starts currently normalize to one because the existing span
 contract does not carry them. Ragged tables export with padding to retain every
-cell. The codec's per-call 256 KiB bound follows the existing Pages rich-block
-ingress limit; it is not a document-history or storage limit.
+cell. Markdown source and serialized spans each have a separate 256 KiB
+admission limit, following the existing Pages rich-block ingress limit.
+JSON escaping, block markers, marks, and opaque provenance count toward the
+span limit, so some source below 256 KiB can still exceed it after conversion.
+The caller receives an error and must retain the original input. These are
+per-call interchange bounds, not document-history or storage limits.
 
 ## Qualification and adoption
 
