@@ -270,3 +270,47 @@ test("StrictMode effect restart can still preload sharing", async (t) => {
   assert.match(f.container.textContent, /account-a owner/);
   assert.doesNotMatch(f.container.textContent, /Loading/);
 });
+
+test("an owner without company email proof sees no company link option", async (t) => {
+  const f = await fixture(t, async () =>
+    json({ ...ledger(), domainOptions: [], domainView: null }),
+  );
+  await f.toggle();
+  assert.match(f.container.textContent, /account-a owner/);
+  assert.equal(f.container.querySelector(".page-domain-sharing"), null);
+  assert.doesNotMatch(f.container.textContent, /Anyone at/);
+});
+
+test("an unproven stored company audience shows a note and can be switched to Restricted", async (t) => {
+  const posts = [];
+  const f = await fixture(t, async (_url, options) => {
+    if (options.method === "POST") {
+      posts.push(JSON.parse(options.body));
+      return json({ ...ledger(2), domainOptions: [], domainView: null, receipt: { revision: 2 } });
+    }
+    return json({
+      ...ledger(),
+      domainOptions: [],
+      domainView: { domain: "anaconda.com", namespace: "fixture" },
+      domainViewOwnerVerified: false,
+    });
+  });
+  await f.toggle();
+  const select = f.container.querySelector(".page-domain-sharing select");
+  assert.equal(select.value, "anaconda.com");
+  assert.deepEqual(
+    [...select.options].map((option) => option.textContent),
+    ["Restricted", "Anyone at anaconda.com with the link"],
+  );
+  const note = f.container.querySelector(".page-domain-sharing-note");
+  assert.match(note.textContent, /not signed in with a verified anaconda\.com email/);
+  assert.match(note.textContent, /can still view/);
+  await act(() => {
+    select.value = "";
+    select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  });
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].action, "set_domain_view");
+  assert.equal(posts[0].domain, null);
+  assert.equal(f.container.querySelector(".page-domain-sharing"), null);
+});

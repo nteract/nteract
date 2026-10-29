@@ -24,6 +24,7 @@ export default {
         defaultTokenTtlSeconds: 300,
         users: [
           { email: "dev@localhost", name: "Local Owner" },
+          { email: "lead@anaconda.com", name: "Company Owner" },
           { email: "alice@localhost", name: "Invited Editor" },
           { email: "employee@anaconda.com", name: "Company Viewer" },
           { email: "blocked@anaconda.com", name: "Excluded Employee" },

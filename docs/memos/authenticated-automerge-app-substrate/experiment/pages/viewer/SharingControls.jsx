@@ -281,6 +281,13 @@ function PageSharing({ session }) {
                   "Only you and invited people can open this Page."
                 )}
               </p>
+              {domainSharing.unverified && (
+                <p className="page-domain-sharing-note" role="note">
+                  You are not signed in with a verified {domainSharing.selected} email. People at{" "}
+                  {domainSharing.selected} can still view this Page. Choose Restricted to stop
+                  sharing with them; sharing again needs a verified {domainSharing.selected} email.
+                </p>
+              )}
             </section>
           )}
           <div className="page-sharing-export">

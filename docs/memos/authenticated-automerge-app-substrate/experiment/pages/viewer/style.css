@@ -1323,6 +1323,12 @@ dialog::backdrop {
   line-height: 1.5;
   color: var(--muted-foreground);
 }
+.page-domain-sharing .page-domain-sharing-note {
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--warning-soft);
+  color: inherit;
+}
 @media (max-width: 640px) {
   .page-sharing-popover {
     position: fixed;

@@ -33,7 +33,7 @@ const retry = (read) => {
 };
 const content = (page) => page.locator("wg-content");
 const pages = new Map();
-let owner, employee, invited, excluded, consumer, pageId;
+let owner, employee, invited, excluded, consumer, pageId, outsiderPageId;
 async function api(page, path, body) {
   return page.evaluate(
     async ({ path, body }) => {
@@ -183,7 +183,7 @@ async function oauthGrant(page) {
   return token.access_token;
 }
 try {
-  owner = await signIn("dev@localhost");
+  owner = await signIn("lead@anaconda.com");
   employee = await signIn("employee@anaconda.com");
   excluded = await signIn("blocked@anaconda.com");
   consumer = await signIn("outsider@gmail.com");
@@ -194,6 +194,41 @@ try {
   for (const page of [owner, employee, excluded, consumer, invited])
     identities.push(await api(page, "/api/auth/session"));
   assert.equal(new Set(identities.map((result) => result.body.identity.principal)).size, 5);
+  const consumerCatalog = (await tool(consumer, "list_pages")).body;
+  const outsider = await tool(consumer, "create_page", {
+    title: "Outsider Page",
+    markdown: "Not company content.",
+    ...retry(consumerCatalog),
+  });
+  assert.equal(outsider.status, 200);
+  outsiderPageId = outsider.body.page_id;
+  const outsiderAccess = (await api(consumer, `/api/access?page=${outsiderPageId}`)).body;
+  assert.deepEqual(outsiderAccess.domainOptions, []);
+  assert.equal(outsiderAccess.domainView, null);
+  const outsiderDenied = await api(consumer, `/api/access?page=${outsiderPageId}`, {
+    action: "set_domain_view",
+    domain: "anaconda.com",
+    expected_revision: outsiderAccess.access.revision,
+    idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(outsiderDenied.status, 403);
+  assert.match(outsiderDenied.body.error, /verified anaconda\.com email/);
+  await consumer.goto(`${origin}/p/${outsiderPageId}`);
+  await expect(content(consumer)).toContainText("Not company content");
+  await consumer.getByRole("button", { name: "Share", exact: true }).click();
+  // The owner row appears only after the owner's access ledger has loaded.
+  await expect(
+    consumer
+      .getByRole("dialog", { name: "Share Page" })
+      .getByText("Owner", { exact: true })
+      .first(),
+  ).toBeVisible();
+  assert.equal(
+    await consumer.getByRole("combobox", { name: "Link access", exact: true }).count(),
+    0,
+  );
+  assert.equal((await api(employee, `/api/connect?page=${outsiderPageId}`)).status, 403);
+  complete("Consumer owner is offered no company audience and cannot set one");
   const catalog = (await tool(owner, "list_pages")).body;
   const created = await tool(owner, "create_page", {
     title: "Company link sharing",
@@ -216,7 +251,7 @@ try {
   const initial = (await api(owner, `/api/access?page=${pageId}`)).body;
   assert.deepEqual(initial.domainOptions, ["anaconda.com"]);
   assert.equal(initial.domainView, null);
-  complete("Noncompany owner sees only configured company option; new Page stays Restricted");
+  complete("Company owner sees only their verified company option; new Page stays Restricted");
   await owner.getByLabel("Invite by email").fill("alice@localhost");
   await owner.getByLabel("Access", { exact: true }).selectOption("editor");
   await owner.getByRole("button", { name: "Invite", exact: true }).click();
@@ -340,19 +375,23 @@ try {
         .catch(() => {});
   throw error;
 } finally {
-  if (pageId && owner) {
-    try {
-      const read = (await tool(owner, "read_page", { page_id: pageId })).body;
-      const catalog = (await tool(owner, "list_pages")).body;
-      const deleted = await tool(owner, "delete_page", {
-        page_id: pageId,
-        base_heads: read.heads,
-        ...retry(catalog),
-      });
-      report.cleaned = deleted.status === 200;
-    } catch (error) {
-      report.cleanupError = error.message;
-    }
+  const cleanup = async (page, id) => {
+    const read = (await tool(page, "read_page", { page_id: id })).body;
+    const catalog = (await tool(page, "list_pages")).body;
+    const deleted = await tool(page, "delete_page", {
+      page_id: id,
+      base_heads: read.heads,
+      ...retry(catalog),
+    });
+    return deleted.status === 200;
+  };
+  try {
+    report.cleaned =
+      (!pageId || !owner || (await cleanup(owner, pageId))) &&
+      (!outsiderPageId || !consumer || (await cleanup(consumer, outsiderPageId))) &&
+      !!pageId;
+  } catch (error) {
+    report.cleanupError = error.message;
   }
   await browser.close();
   await writeFile(`${output}/report.json`, JSON.stringify(report, null, 2) + "\n");

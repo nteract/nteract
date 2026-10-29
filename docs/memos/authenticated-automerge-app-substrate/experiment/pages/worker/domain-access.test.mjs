@@ -35,18 +35,23 @@ const metadata = () => ({
   owner: owner.principal,
   acl: { revision: 1, members: {}, invites: {}, domainView },
 });
-async function verifiedIdentity(email = "person@anaconda.com", verified = true, at = now) {
+async function verifiedIdentity(
+  email = "person@anaconda.com",
+  verified = true,
+  at = now,
+  principal = employee.principal,
+) {
   const session = await createServerAppSession(
     env,
     {
-      principal: employee.principal,
+      principal,
       metadata: { provider: "oidc", principalNamespace: namespace, email, emailVerified: verified },
     },
     "fixture-session",
     now / 1000 + 60,
     at / 1000,
   );
-  return { ...employee, emailProof: { ...session, provider: "app-session" } };
+  return { ...employee, principal, emailProof: { ...session, provider: "app-session" } };
 }
 
 class Storage {
@@ -97,63 +102,175 @@ test("company sharing is disabled by default and rejects consumer or arbitrary c
   );
 });
 
-test("a Gmail owner can choose only the host-approved viewer domain without creating memberships", async () => {
-  const before = metadata();
-  delete before.acl.domainView;
-  const args = {
-    action: "set_domain_view",
-    domain: "anaconda.com",
-    expected_revision: 1,
-    idempotency_key: "enable-domain",
-  };
-  const enabled = await proposeSharingMutation(before, owner, args, now, env);
-  assert.deepEqual(enabled.metadata.acl.domainView, domainView);
-  assert.deepEqual(enabled.metadata.acl.members, {});
-  assert.equal(before.acl.domainView, undefined);
-  const projected = sharingProjection(
-    enabled.metadata,
-    { ...owner, expiresAt: Date.now() + 60_000 },
-    env,
+const enableArgs = {
+  action: "set_domain_view",
+  domain: "anaconda.com",
+  expected_revision: 1,
+  idempotency_key: "enable-domain",
+};
+const restrictArgs = {
+  action: "set_domain_view",
+  domain: null,
+  expected_revision: 1,
+  idempotency_key: "restrict-domain",
+};
+const restrictedPage = (principal = owner.principal) => {
+  const value = metadata();
+  value.owner = principal;
+  delete value.acl.domainView;
+  return value;
+};
+const companyApiKeyOwner = {
+  ...owner,
+  credentialKind: "api-key",
+  verifiedEmail: "Owner@Anaconda.com",
+};
+const ownerProofDenied = /Sign in with a verified anaconda\.com email to share with anaconda\.com/;
+async function rejectsWithStatus(promise, status, pattern) {
+  await assert.rejects(promise, (error) => {
+    assert.equal(error.status, status);
+    assert.match(error.message, pattern);
+    return true;
+  });
+}
+
+test("an owner without company email proof is offered no company audience and cannot set one", async () => {
+  const stale = await verifiedIdentity(
+    "owner@anaconda.com",
+    true,
+    now - 6 * 3600 * 1000 - 1000,
+    owner.principal,
   );
-  assert.deepEqual(projected.domainOptions, ["anaconda.com"]);
+  for (const identity of [
+    { ...owner, credentialKind: "api-key" },
+    owner,
+    { ...owner, credentialKind: "oidc", verifiedEmail: "owner@anaconda.com" },
+    { ...companyApiKeyOwner, verifiedEmail: "owner@sub.anaconda.com" },
+    await verifiedIdentity("owner@gmail.com", true, now, owner.principal),
+    await verifiedIdentity("owner@anaconda.com", false, now, owner.principal),
+    stale,
+  ]) {
+    const before = restrictedPage();
+    const projected = await sharingProjection(before, identity, env, now);
+    assert.deepEqual(projected.domainOptions, []);
+    assert.equal(projected.domainView, null);
+    assert.equal("domainViewOwnerVerified" in projected, false);
+    await rejectsWithStatus(
+      proposeSharingMutation(before, identity, enableArgs, now, env),
+      403,
+      ownerProofDenied,
+    );
+    // Host allowlist and role checks still answer first, with their own errors.
+    await rejectsWithStatus(
+      proposeSharingMutation(before, identity, { ...enableArgs, domain: "gmail.com" }, now, env),
+      400,
+      /supported company domain/,
+    );
+    await rejectsWithStatus(
+      proposeSharingMutation(before, identity, { ...enableArgs, role: "editor" }, now, env),
+      400,
+      /view-only/,
+    );
+    const restricted = await proposeSharingMutation(before, identity, restrictArgs, now, env);
+    assert.equal(restricted.metadata.acl.domainView, null);
+    assert.equal(restricted.receipt.revision, 2);
+  }
+});
+
+test("an owner with a verified company email (API key or browser proof) can share with that company", async () => {
+  const browserOwner = await verifiedIdentity("owner@anaconda.com", true, now, owner.principal);
+  for (const identity of [companyApiKeyOwner, browserOwner]) {
+    const before = restrictedPage();
+    const offered = await sharingProjection(before, identity, env, now);
+    assert.deepEqual(offered.domainOptions, ["anaconda.com"]);
+    assert.equal(offered.domainView, null);
+    const enabled = await proposeSharingMutation(before, identity, enableArgs, now, env);
+    assert.deepEqual(enabled.metadata.acl.domainView, domainView);
+    assert.deepEqual(enabled.metadata.acl.members, {});
+    assert.equal(before.acl.domainView, undefined);
+    const projected = await sharingProjection(enabled.metadata, identity, env, now);
+    assert.deepEqual(projected.domainOptions, ["anaconda.com"]);
+    assert.deepEqual(projected.domainView, domainView);
+    assert.equal(projected.domainViewOwnerVerified, true);
+    assert.equal(
+      (await proposeSharingMutation(enabled.metadata, identity, enableArgs, now, env)).replay,
+      true,
+    );
+    // A replay returns the stored receipt even after the proof lapses; it
+    // cannot apply a new audience.
+    assert.equal(
+      (await proposeSharingMutation(enabled.metadata, owner, enableArgs, now, env)).replay,
+      true,
+    );
+    await assert.rejects(
+      proposeSharingMutation(before, employee, enableArgs, now, env),
+      /Only the owner/,
+    );
+    await assert.rejects(
+      proposeSharingMutation(
+        enabled.metadata,
+        identity,
+        { ...enableArgs, idempotency_key: "stale-enable" },
+        now,
+        env,
+      ),
+      /Sharing changed/,
+    );
+    const restricted = await proposeSharingMutation(
+      enabled.metadata,
+      identity,
+      { ...restrictArgs, expected_revision: 2 },
+      now,
+      {},
+    );
+    assert.equal(restricted.metadata.acl.domainView, null);
+    assert.deepEqual(restricted.metadata.acl.members, {});
+  }
+  // Browser proof older than the identity window no longer offers the company.
+  const later = now + 6 * 3600 * 1000 + 1000;
+  const aged = { ...browserOwner, expiresAt: later + 60_000 };
+  assert.deepEqual((await sharingProjection(restrictedPage(), aged, env, later)).domainOptions, []);
+  await rejectsWithStatus(
+    proposeSharingMutation(restrictedPage(), aged, enableArgs, later, env),
+    403,
+    ownerProofDenied,
+  );
+});
+
+test("a company audience the owner cannot prove stays readable, is flagged, and can only be withdrawn", async () => {
+  // Stored before owner proof was required: the owner holds a Gmail account.
+  const legacy = metadata();
+  const projected = await sharingProjection(legacy, owner, env, now);
+  assert.deepEqual(projected.domainOptions, []);
   assert.deepEqual(projected.domainView, domainView);
+  assert.equal(projected.domainViewOwnerVerified, false);
   assert.equal(
-    (await proposeSharingMutation(enabled.metadata, owner, args, now, env)).replay,
+    (await sharingProjection(legacy, companyApiKeyOwner, env, now)).domainViewOwnerVerified,
     true,
   );
-  await assert.rejects(proposeSharingMutation(before, employee, args, now, env), /Only the owner/);
-  await assert.rejects(
-    proposeSharingMutation(before, owner, { ...args, role: "editor" }, now, env),
-    /view-only/,
-  );
-  await assert.rejects(
-    proposeSharingMutation(before, owner, { ...args, domain: "gmail.com" }, now, env),
-    /supported/,
-  );
-  await assert.rejects(
+  const reader = pageAccess(legacy, { ...employee, domainAccess: lease }, { now });
+  assert.equal(reader.canRead, true);
+  assert.equal(reader.source, "domain");
+  await rejectsWithStatus(
     proposeSharingMutation(
-      enabled.metadata,
+      legacy,
       owner,
-      { ...args, idempotency_key: "stale-enable" },
+      { ...enableArgs, idempotency_key: "reassert-legacy" },
       now,
       env,
     ),
-    /Sharing changed/,
+    403,
+    ownerProofDenied,
   );
-  const restricted = await proposeSharingMutation(
-    enabled.metadata,
-    owner,
-    {
-      action: "set_domain_view",
-      domain: null,
-      expected_revision: 2,
-      idempotency_key: "restrict-domain",
-    },
-    now,
-    {},
-  );
+  const restricted = await proposeSharingMutation(legacy, owner, restrictArgs, now, env);
   assert.equal(restricted.metadata.acl.domainView, null);
-  assert.deepEqual(restricted.metadata.acl.members, {});
+  assert.equal(
+    pageAccess(restricted.metadata, { ...employee, domainAccess: lease }, { now }).canRead,
+    false,
+  );
+  const after = await sharingProjection(restricted.metadata, owner, env, now);
+  assert.equal(after.domainView, null);
+  assert.equal("domainViewOwnerVerified" in after, false);
 });
 
 test("domain evidence requires verified exact company email and has a nonrenewable proof deadline", async () => {

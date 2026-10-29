@@ -27,16 +27,24 @@ export function configuredDomainView(metadata, env) {
     : null;
 }
 
-/** Project verified evidence into a short-lived, host-only authorization lease. */
-export async function domainAccessForIdentity(env, identity, now = Date.now()) {
+/**
+ * Every host-allowed company domain this identity proves with fresh verified
+ * email evidence, each as a short-lived, host-only lease. The same evidence
+ * gates reading a company-shared Page and an owner offering or choosing that
+ * company audience.
+ */
+export async function verifiedCompanyDomains(env, identity, now = Date.now()) {
   const namespace = env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE?.trim();
   if (
+    !identity ||
     identity.namespace !== namespace ||
+    typeof identity.principal !== "string" ||
     !identity.principal.startsWith(`${namespace}:`) ||
     !Number.isFinite(identity.expiresAt) ||
     identity.expiresAt <= now
   )
-    return undefined;
+    return [];
+  const leases = [];
   for (const domain of companyViewDomains(env)) {
     if (identity.credentialKind === "api-key" && identity.verifiedEmail) {
       let email;
@@ -46,9 +54,8 @@ export async function domainAccessForIdentity(env, identity, now = Date.now()) {
         continue;
       }
       if (email.slice(email.lastIndexOf("@") + 1) === domain)
-        return { domain, namespace, expiresAt: identity.expiresAt };
-    }
-    if (
+        leases.push({ domain, namespace, expiresAt: identity.expiresAt });
+    } else if (
       ["oidc", "oauth"].includes(identity.credentialKind) &&
       identity.emailProof &&
       (await appSessionHasFreshVerifiedEmailDomain(
@@ -58,7 +65,7 @@ export async function domainAccessForIdentity(env, identity, now = Date.now()) {
         Math.floor(now / 1000),
       ))
     ) {
-      return {
+      leases.push({
         domain,
         namespace,
         expiresAt: Math.min(
@@ -66,8 +73,13 @@ export async function domainAccessForIdentity(env, identity, now = Date.now()) {
           (identity.emailProof.identityVerifiedAt + NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS) *
             1000,
         ),
-      };
+      });
     }
   }
-  return undefined;
+  return leases;
+}
+
+/** Project verified evidence into a short-lived, host-only authorization lease. */
+export async function domainAccessForIdentity(env, identity, now = Date.now()) {
+  return (await verifiedCompanyDomains(env, identity, now))[0];
 }

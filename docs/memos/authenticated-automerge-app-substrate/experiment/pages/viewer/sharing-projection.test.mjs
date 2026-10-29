@@ -40,3 +40,35 @@ test("unavailable stored domains and duplicate host choices cannot create an ext
     false,
   );
 });
+test("a stored company audience the owner cannot prove stays visible, flagged and withdrawable", () => {
+  const legacy = {
+    ...owner,
+    domainOptions: [],
+    domainView: { domain: "anaconda.com" },
+    domainViewOwnerVerified: false,
+  };
+  const view = domainSharingProjection(legacy);
+  assert.equal(view.selected, "anaconda.com");
+  assert.equal(view.unverified, true);
+  assert.deepEqual(view.options, [
+    { value: "", label: "Restricted" },
+    { value: "anaconda.com", label: "Anyone at anaconda.com with the link" },
+  ]);
+  const proven = domainSharingProjection({
+    ...owner,
+    domainView: { domain: "anaconda.com" },
+    domainViewOwnerVerified: true,
+  });
+  assert.equal(proven.unverified, false);
+  assert.equal(proven.selected, "anaconda.com");
+  // Without the host's flag, an unoffered stored domain is not surfaced.
+  assert.equal(
+    domainSharingProjection({
+      ...owner,
+      domainOptions: [],
+      domainView: { domain: "anaconda.com" },
+    }),
+    null,
+  );
+  assert.equal(domainSharingProjection({ ...legacy, access: { canManageAccess: false } }), null);
+});
