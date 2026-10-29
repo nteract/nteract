@@ -69,7 +69,7 @@ import {
 } from "./wordgard-collaboration.mjs";
 import { wordgardWidgets, wordgardCodeLanguages } from "./wordgard-widgets.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
-import { linkDestination } from "./rich-links.mjs";
+import { linkDestination } from "./link-destination.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
 import { selectedImage } from "./image-selection.mjs";
 import {

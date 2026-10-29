@@ -217,8 +217,7 @@
 }
 /* Pele retains these CSS references in its sanitized SVG. Color changes flow
    through the existing diagram without remounting it or changing editor state. */
-.wordgard-diagram-canvas,
-.code-block-diagram {
+.wordgard-diagram-canvas {
   --pele-bg: var(--card);
   --pele-fg: var(--foreground);
   --pele-muted: var(--muted-foreground);

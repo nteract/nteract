@@ -8,7 +8,7 @@ import { schema, CodeBlock, CodeBlockLanguage } from "./wordgard-model.mjs";
 
 // These tests exercise native editor transactions; styles and SVG mounting
 // are qualified separately by the real-browser Wordgard smoke.
-const stylesheet = new URL("./table-preview.css", import.meta.url).href;
+const stylesheet = new URL("./table-fragment.css", import.meta.url).href;
 const css = registerHooks({
   load(url, context, next) {
     return url === stylesheet

@@ -6,6 +6,13 @@ const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
 const browser = await chromium.launch({ headless: true });
 const errors = [];
+const editor = (page) => page.locator("wg-content").first();
+const titleInput = (page) => page.getByRole("textbox", { name: "Page title", exact: true });
+const saveStatus = (page) => page.locator(".save-status");
+const saved = (page) =>
+  expect(page.getByRole("status", { name: "All changes saved", exact: true })).toBeVisible({
+    timeout: 20000,
+  });
 const api = async (page, operation, args = {}) => {
   const response = await page.request.post(origin + "/api/tools", {
     data: { operation, arguments: args },
@@ -32,30 +39,33 @@ try {
   });
   const started = performance.now();
   await page.getByRole("button", { name: "New Page", exact: true }).click();
-  await expect(page.locator(".ProseMirror")).toBeFocused({ timeout: 3000 });
-  const editableMs = Math.round(performance.now() - started);
+  await expect(titleInput(page)).toBeFocused({ timeout: 3000 });
+  const titleReadyMs = Math.round(performance.now() - started);
   await expect(page).toHaveURL(/\/p\/[0-9a-f-]{36}$/);
   const url = page.url(),
     id = new URL(url).pathname.split("/")[2];
   const title = "Local creation " + Date.now();
-  await page.getByRole("textbox", { name: "Page title", exact: true }).fill(title);
-  await page.locator(".ProseMirror").fill("Written while registration is held.");
+  await titleInput(page).fill(title);
+  await titleInput(page).press("Enter");
+  await expect(editor(page)).toBeFocused({ timeout: 3000 });
+  const editableMs = Math.round(performance.now() - started);
+  await editor(page).pressSequentially("Written while registration is held.");
   await expect.poll(() => registrations).toBeGreaterThan(0);
-  await expect(page.getByRole("status")).not.toHaveText("Saved");
+  await expect(saveStatus(page)).not.toHaveText("Saved");
   await page.getByRole("link", { name: "Pages", exact: true }).click();
   await expect(page).toHaveURL(origin + "/");
   await expect(page.getByRole("link", { name: new RegExp(title) })).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL(url);
-  await expect(page.locator(".ProseMirror")).toHaveText("Written while registration is held.");
+  await expect(editor(page)).toHaveText("Written while registration is held.");
   await page.goForward();
   await expect(page).toHaveURL(origin + "/");
   await page.getByRole("link", { name: new RegExp(title) }).click();
   await expect(page).toHaveURL(url);
   await page.reload();
-  await expect(page.locator(".ProseMirror")).toHaveText("Written while registration is held.");
+  await expect(editor(page)).toHaveText("Written while registration is held.");
   release();
-  await expect(page.getByRole("status")).toHaveText("Saved", { timeout: 20000 });
+  await saved(page);
   const remote = await api(page, "read_page", { page_id: id });
   assert.match(remote.blocks[0].markdown, /Written while registration is held/);
   const listing = await api(page, "list_pages");
@@ -72,7 +82,7 @@ try {
     origin + "/api/auth/login?return_to=" + encodeURIComponent(new URL(url).pathname),
   );
   await expect(peer).toHaveURL(url);
-  await expect(peer.locator(".ProseMirror")).toHaveText("Written while registration is held.", {
+  await expect(editor(peer)).toHaveText("Written while registration is held.", {
     timeout: 20000,
   });
   let releaseCatalog;
@@ -85,19 +95,21 @@ try {
   });
   await peer.goto(origin + "/?page=" + id);
   await expect(peer).toHaveURL(url);
-  await expect(peer.locator(".ProseMirror")).toHaveText("Written while registration is held.");
+  await expect(editor(peer)).toHaveText("Written while registration is held.");
   releaseCatalog();
   await peer.unroute("**/api/tools");
   // Stable native history still supports simultaneous edits after registration.
-  await peer.locator(".ProseMirror").press("ControlOrMeta+End");
-  await peer.locator(".ProseMirror").pressSequentially(" A second peer joined.");
-  await expect(page.locator(".ProseMirror")).toContainText("A second peer joined.");
+  await editor(peer).press("ControlOrMeta+End");
+  await editor(peer).pressSequentially(" A second peer joined.");
+  await expect(editor(page)).toContainText("A second peer joined.");
   // A new draft must publish edits from its first live session, without a reload.
   await page.getByRole("link", { name: "Pages", exact: true }).click();
   await page.getByRole("button", { name: "New Page", exact: true }).click();
-  await expect(page.locator(".ProseMirror")).toBeFocused();
+  await expect(titleInput(page)).toBeFocused();
   const plainUrl = page.url();
-  await page.getByRole("textbox", { name: "Page title", exact: true }).fill("First session saves");
+  await titleInput(page).fill("First session saves");
+  await titleInput(page).press("Enter");
+  await expect(editor(page)).toBeFocused();
   // One failed receipt must recover while leaving the healthy socket alone.
   let receiptCalls = 0;
   await page.route("**/api/saved?*", async (route) => {
@@ -109,8 +121,8 @@ try {
       });
     await route.continue();
   });
-  await page.locator(".ProseMirror").fill("Written and saved without reopening.");
-  await expect(page.getByRole("status")).toHaveText("Saved", { timeout: 20000 });
+  await editor(page).pressSequentially("Written and saved without reopening.");
+  await saved(page);
   assert.ok(receiptCalls >= 2, "temporary receipt error retries");
   await page.unroute("**/api/saved?*");
   const plainId = new URL(plainUrl).pathname.split("/")[2];
@@ -128,7 +140,7 @@ try {
     }),
   );
   await page.getByRole("button", { name: "New Page", exact: true }).click();
-  await expect(page.locator(".ProseMirror")).toBeFocused();
+  await expect(titleInput(page)).toBeFocused();
   const rejectedId = new URL(page.url()).pathname.split("/")[2];
   await page.getByLabel("Document actions", { exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());
@@ -152,13 +164,13 @@ try {
   // Deletion in one tab must survive the other tab's final local checkpoint.
   await page.locator('a.page-card[href="/p/' + plainId + '"]').click();
   await peer.goto(plainUrl);
-  await expect(peer.locator(".ProseMirror")).toHaveText("Written and saved without reopening.");
-  await expect(page.getByRole("status")).toHaveText("Saved");
+  await expect(editor(peer)).toHaveText("Written and saved without reopening.");
+  await saved(page);
   await page.getByLabel("Document actions", { exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Delete", exact: true }).click();
   await expect(page).toHaveURL(origin + "/");
-  await expect(peer.getByRole("status")).toHaveText("Deleted", { timeout: 20000 });
+  await expect(saveStatus(peer)).toHaveText("Deleted", { timeout: 20000 });
   await peer.getByRole("link", { name: "Pages", exact: true }).click();
   await expect(peer.locator('a.page-card[href="/p/' + plainId + '"]')).toHaveCount(0);
   await page.reload();
@@ -171,8 +183,10 @@ try {
     JSON.stringify({
       page_id: id,
       url,
+      title_ready_ms_with_registration_held: titleReadyMs,
       editable_ms_with_registration_held: editableMs,
       checks: [
+        "title-first creation and Enter to the body",
         "editing before registration",
         "pending local recovery after navigation/reload",
         "Back and Forward",
