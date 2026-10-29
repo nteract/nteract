@@ -1195,9 +1195,8 @@ mod tests {
         let data = encoding
             .decode(column["array"]["data"].as_str().unwrap())
             .unwrap();
-        data.chunks_exact(8)
-            .map(|chunk| f64::from_le_bytes(chunk.try_into().unwrap()))
-            .collect()
+        let (chunks, _) = data.as_chunks::<8>();
+        chunks.iter().copied().map(f64::from_le_bytes).collect()
     }
 
     fn event(value: Value) -> BokehSessionEvents {
