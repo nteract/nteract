@@ -448,11 +448,13 @@ details.document-actions > div button {
   padding: 1rem 1.5rem 3rem;
 }
 /* Desktop comments dock against the Page's right edge. The Page stays centered
-   while the right gutter fits the panel, then moves left, then narrows. Its
-   1.5rem side padding is the gap between text and panel. Percentages resolve
-   against the viewport for both the Page and the fixed panel, so both rules
-   compute the same edge. Below 901px the panel is a modal sheet instead. */
-@media screen and (min-width: 901px) {
+   while the right gutter fits the panel, then moves left, then narrows. Main
+   and article padding separate prose from the panel by 3rem. Percentages
+   resolve against the viewport for both the Page and the fixed panel, so both
+   rules compute the same edge. This query is the exact complement of
+   COMMENTS_SHEET_QUERY in comments-layout.mjs, which selects the modal sheet,
+   so fractional widths such as 900.5px under browser zoom get one layout. */
+@media screen and (width > 900px) {
   .document.with-comments {
     --comments-width: 312px;
     --comments-reserve: calc(var(--comments-width) + 24px);
