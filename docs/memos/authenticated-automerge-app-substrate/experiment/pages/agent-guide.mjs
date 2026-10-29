@@ -463,6 +463,8 @@ A selected section, search hit or node range has partial:true and node_range on
 each returned block slice. Never replace_block_markdown with a partial slice:
 that would discard the rest of the block. Use replace_match for the intended
 passage, using the current heads and original block ID.
+Replacing a whole block with its exported Markdown drops an empty first
+paragraph, because Markdown cannot represent one. Use replace_match to keep it.
 
 Selected reads default to comments:"summary"; outline-only reads default to none.
 Explicit comments modes none, summary, open and all use compact projections without
