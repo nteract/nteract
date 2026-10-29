@@ -393,6 +393,10 @@ Start by listing and reading:
 read_page returns title, ordered blocks, comments, heads, retry_token, retry_key_prefix, and
 retry_until. Keep the returned page_id and block IDs. list_pages also returns a
 retry_token for catalog operations (create_page and delete_page). Browser link: ${origin}/p/<page_id>.
+list_pages accepts optional query (title substring), limit (1-100, default 50) and cursor.
+Pass next_cursor back as cursor, with the same query, until it is null. Pagination is not a
+snapshot: concurrent title or sharing changes can move Pages across the cursor. A short or
+empty result does not prove a Page is absent.
 
 - create_page: title, optional markdown, and idempotency_key.
 - read_page: page_id, optional block_ids, section/section_occurrence, search/context_nodes,

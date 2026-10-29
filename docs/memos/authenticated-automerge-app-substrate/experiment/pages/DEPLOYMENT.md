@@ -49,7 +49,17 @@ Existing documents, sessions, ACLs, and assets must be preserved.
 
 Rollback must retain binary record readers and the `PageRecords` binding and
 buffered-storage implementation. A legacy hex-only build cannot read updated
-records, and an older synchronous-only build cannot read buffered Pages. Copying
+records, and an older synchronous-only build cannot read buffered Pages.
+
+The D1 catalog index (`PAGES_CATALOG_INDEX`) is additive: Catalog entries keep
+their keys and shape, and older builds ignore the `pages_catalog_*` tables. After
+a rollback, accounts repair their index within six hours of their next listing, or
+immediately when the `PAGES_CATALOG_INDEX` value changes. Index migrations run
+lazily on first use and must stay additive so a rollback build keeps working
+against the newer schema. Listing cursors are sealed with a key derived from the
+session secret and expire after 24 hours; rotating that secret invalidates
+outstanding cursors. Migration 2 adds per-principal title snapshots and clears the
+reconcile markers, so each account rebuilds its rows on its next listings. Copying
 a document or its assets between targets is separate from deployment; publishing
 does not migrate another environment's data.
 

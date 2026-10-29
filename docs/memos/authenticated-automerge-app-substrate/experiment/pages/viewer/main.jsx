@@ -29,7 +29,7 @@ import { maintainBrowserSession } from "./browser-session.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
 import { WordgardEditor } from "./WordgardEditor.jsx";
 import { PagePicker } from "./PagePicker.jsx";
-import { matchingPages } from "./page-list.mjs";
+import { listAllPages, matchingPages } from "./page-list.mjs";
 import { SharingControls } from "./SharingControls.jsx";
 import { AppearanceControls } from "./AppearanceControls.jsx";
 import { CommentsPanel } from "./CommentsPanel.jsx";
@@ -85,7 +85,7 @@ function App() {
     const identity = authentication.current?.identity;
     if (!identity) return [];
     const revision = ++catalogRevision.current;
-    const remoteRequest = tool("list_pages").then(
+    const remoteRequest = listAllPages(tool).then(
       (value) => ({ value }),
       (error) => ({ error }),
     );
