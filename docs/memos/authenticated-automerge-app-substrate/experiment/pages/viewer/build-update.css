@@ -1,0 +1,28 @@
+.build-update {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin: 0.75rem auto;
+  padding: 0.55rem 0.75rem 0.55rem 1rem;
+  width: fit-content;
+  max-width: calc(100% - 2rem);
+  background: var(--warning-soft);
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+.build-update--required {
+  border-color: var(--warning);
+}
+.build-update p {
+  margin: 0;
+}
+.build-update-problem {
+  flex-basis: 100%;
+  color: var(--destructive);
+}
+.build-update button {
+  padding: 0.35rem 0.8rem;
+}

@@ -22,9 +22,10 @@ const images = process.argv.includes("--images");
 const mcpImages = process.argv.includes("--mcp-images");
 const taskLists = process.argv.includes("--task-lists");
 const admission = process.argv.includes("--admission");
-if ([domainView, images, mcpImages, taskLists, admission].filter(Boolean).length > 1)
+const buildUpdate = process.argv.includes("--build-update");
+if ([domainView, images, mcpImages, taskLists, admission, buildUpdate].filter(Boolean).length > 1)
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --mcp-images, --task-lists or --admission",
+    "Choose one qualification: --domain-view, --images, --mcp-images, --task-lists, --admission or --build-update",
   );
 const children = new Set();
 let canceled = false;
@@ -109,7 +110,16 @@ try {
   const { keys, responses } = generateFixtureKeys();
   const keyFile = path.join(scratch, "fixture-keys.json");
   await writeFile(keyFile, JSON.stringify(keys), { mode: 0o600 });
-  await build({
+  // The fixture Worker advertises the same build id the viewer bundle embeds.
+  let buildId;
+  try {
+    buildId = JSON.parse(
+      await readFile(path.join(app, "dist/build-receipt.json"), "utf8"),
+    ).build_id;
+  } catch {
+    if (buildUpdate) throw new Error("--build-update needs dist/build-receipt.json; build first");
+  }
+  const workerBuild = {
     entryPoints: [
       path.join(
         app,
@@ -132,6 +142,7 @@ try {
     define: {
       PAGES_E2E_ORIGIN: JSON.stringify(origin),
       PAGES_E2E_RESPONSES: JSON.stringify(responses),
+      ...(buildId ? { __PAGES_BUILD__: JSON.stringify(buildId) } : {}),
     },
     plugins: [
       celldCborPlugin(),
@@ -147,7 +158,8 @@ try {
         },
       },
     ],
-  });
+  };
+  await build(workerBuild);
   await writeFile(
     path.join(runtime, ".dev.vars"),
     Object.entries({
@@ -221,12 +233,28 @@ try {
     }
   }
   await boot();
+  // Simulates a deploy for the build-update smoke: the Worker and the viewer
+  // assets both move to another build id while the browser tab stays open.
+  async function deploy(next) {
+    if (!/^[0-9a-f]{12}$/.test(next) || next === buildId) throw new Error("Invalid next build");
+    const viewer = path.join(runtime, "public/app.js");
+    const source = await readFile(viewer, "utf8");
+    if (!source.includes(JSON.stringify(buildId)))
+      throw new Error("Viewer bundle does not embed the build id");
+    await writeFile(viewer, source.replaceAll(JSON.stringify(buildId), JSON.stringify(next)));
+    await build({
+      ...workerBuild,
+      define: { ...workerBuild.define, __PAGES_BUILD__: JSON.stringify(next) },
+    });
+    buildId = next;
+  }
   // The admission smoke asks the harness to stop and restart the same runtime
   // directory, so persisted Pages, sessions, and bindings survive the restart.
   const restartOnRequest = async (message, child) => {
     if (message?.type !== "restart-celld") return;
     try {
       await stop(host);
+      if (message.build) await deploy(message.build);
       // celld dev's local node can release the listener after its parent exits.
       const deadline = Date.now() + 30000;
       while (!(await portFree(port))) {
@@ -253,7 +281,9 @@ try {
               ? "scripts/images-smoke.mjs"
               : domainView
                 ? "scripts/domain-sharing-smoke.mjs"
-                : "scripts/sharing-smoke.mjs",
+                : buildUpdate
+                  ? "scripts/build-update-smoke.mjs"
+                  : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {
@@ -263,15 +293,15 @@ try {
         PAGES_E2E_KEY_FILE: keyFile,
         PAGES_CELLD_LOG: path.join(output, "celld.log"),
       },
-      ...(admission && { stdio: ["inherit", "inherit", "inherit", "ipc"] }),
+      ...((admission || buildUpdate) && { stdio: ["inherit", "inherit", "inherit", "ipc"] }),
     },
-    admission ? restartOnRequest : undefined,
+    admission || buildUpdate ? restartOnRequest : undefined,
   );
   const result = JSON.parse(await readFile(path.join(output, "report.json"), "utf8"));
   if (!result.cleaned || result.failure)
     throw new Error("Sharing qualification did not complete cleanly");
   console.log(
-    `${admission ? "Local admission and reconnect" : "Local OIDC, sharing and MCP"} qualification passed. Artifacts: ${output}`,
+    `${admission ? "Local admission and reconnect" : buildUpdate ? "Deploy while open" : "Local OIDC, sharing and MCP"} qualification passed. Artifacts: ${output}`,
   );
 } finally {
   await Promise.all([...children].map(stop));

@@ -41,11 +41,17 @@ run private copies; deployment does not replace the shared executable. The
 installer refuses a downgrade from a newer runtime or replacement of a custom
 build carrying the same version. Session secrets are generated on the host.
 
-After publication, verify the exact release/build hashes, anonymous denial,
+After publication, verify the exact release/build hashes (`/health` reports
+`build` equal to the manifest's `build_receipt.build_id`), anonymous denial,
 real OIDC, MCP/API-key operations, live peers, durable receipts, and frozen-service
 fingerprints. Check reconnect and restart recovery with disposable QA Pages.
 A process restart is not proof of power-loss or object-store failover recovery.
 Existing documents, sessions, ACLs, and assets must be preserved.
+
+Open tabs from an earlier build show a reload banner after publication and keep
+working until the person reloads. A release that raises `MIN_VIEWER_PROTOCOL`
+pauses editing in older tabs until they reload. A rollback publishes a different
+build id too, so open tabs see the banner again.
 
 Rollback must retain binary record readers and the `PageRecords` binding and
 buffered-storage implementation. A legacy hex-only build cannot read updated

@@ -113,6 +113,7 @@ export class PageSession {
   socketOutcomes = new WeakMap();
   socketAdmittedAt = new WeakMap();
   nativeRefused = false;
+  editsPaused = false;
   static async open(pageId, options) {
     const session = new PageSession(pageId, options);
     try {
@@ -225,7 +226,7 @@ export class PageSession {
     return true;
   }
   updateCapabilities() {
-    const enabled = !this.accessDenied && !this.accessReloadRequired;
+    const enabled = !this.accessDenied && !this.accessReloadRequired && !this.editsPaused;
     this.canWrite = enabled && !!this.credentialCanWrite && !!this.access?.canWrite;
     this.canComment = enabled && !!this.credentialCanWrite && !!this.access?.canComment;
     this.canManageAccess = enabled && !!this.credentialCanWrite && !!this.access?.canManageAccess;
@@ -924,6 +925,14 @@ export class PageSession {
       )
         this.queueSaved({ restart: true });
     }
+  }
+  /** Stop or resume local edits without touching sync. Edits already made
+   * keep saving, so a reload can wait for them. */
+  pauseEdits(paused = true) {
+    if (this.editsPaused === paused) return;
+    this.editsPaused = paused;
+    this.updateCapabilities();
+    this.emit();
   }
   observeChange(fn) {
     this.observers.add(fn);

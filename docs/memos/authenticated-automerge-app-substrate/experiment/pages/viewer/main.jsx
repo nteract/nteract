@@ -42,6 +42,7 @@ import { orderedBlockIds } from "../model/order.mjs";
 import "./style.css";
 import "./formatting-toolbar.css";
 import { focusCreatedPageTitle, titleHandsOffToBody } from "./title-navigation.mjs";
+import { BuildUpdate } from "./BuildUpdate.jsx";
 
 function App() {
   const accountDisclosure = useDismissibleDisclosure(),
@@ -652,6 +653,7 @@ function App() {
         </div>
       </header>
       {page && <div id="page-formatting" className="toolbar-host" ref={setToolbar} />}
+      <BuildUpdate session={session} />
       {error && (
         <p role="alert" className="error app-error">
           {error}

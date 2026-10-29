@@ -12,6 +12,9 @@ const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 const dist = path.join(app, "dist");
 const expectedFingerprint = sourceFingerprint(app).sha256;
+// The Worker and viewer embed the same build id; shared/build-identity.mjs
+// reads it. Keep the length aligned with writeBuildReceipt's build_id.
+const buildDefine = { __PAGES_BUILD__: JSON.stringify(expectedFingerprint.slice(0, 12)) };
 // A failed in-place build must not leave an older receipt beside mixed outputs.
 await rm(path.join(dist, "build-receipt.json"), { force: true });
 await mkdir(path.join(dist, "public"), { recursive: true });
@@ -31,6 +34,7 @@ await build({
   tsconfig: path.join(app, "tsconfig.json"),
   external: ["node:*"],
   outfile: path.join(dist, "index.js"),
+  define: buildDefine,
   plugins: [
     celldCborPlugin(),
     {
@@ -72,7 +76,7 @@ await build({
   minify: true,
   tsconfig: path.join(app, "tsconfig.json"),
   outfile: path.join(dist, "public/app.js"),
-  define: { "process.env.NODE_ENV": '"production"' },
+  define: { "process.env.NODE_ENV": '"production"', ...buildDefine },
   plugins: [browserMermaidPlugin(app), browserWasmPlugin(app)],
 });
 await build({

@@ -82,6 +82,7 @@ Run targeted browser checks from `pages`:
 | MCP file import, insertion, and retries | `node scripts/local-sharing-e2e.mjs --mcp-images` | Starts an isolated fixture |
 | Collaborative checkboxes | `node scripts/local-sharing-e2e.mjs --task-lists` | Starts an isolated fixture |
 | Admission codes, celld restart, and reconnect to Saved | `node scripts/local-sharing-e2e.mjs --admission` | Starts and restarts an isolated fixture |
+| Reload prompt after a deploy under an open tab | `node scripts/local-sharing-e2e.mjs --build-update` | Starts an isolated fixture and swaps its build |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
@@ -337,11 +338,12 @@ A deleted Page returns `page_deleted` only to its owner and to holders of a
 current viewer/editor grant. Everyone else, including principals with a role
 "none" tombstone, receives the same `403 page_access_denied` body and headers as
 for an unreadable Page. Clients that send `X-Pages-Admission: 1` also get that
-response for a missing Page. Clients without it keep the legacy 404, because the
-deployed viewer renews an expired draft registration only on that 404 and the
-app does not force a reload on a new build. Until that compatibility path is
-removed, a caller that omits the header can still distinguish missing from
-existing Pages, as before. Tool and MCP routes also still distinguish them.
+response for a missing Page. Clients without it keep the legacy 404, because
+viewers built before that header renew an expired draft registration only on
+that 404. Retiring it means raising the protocol floor (see
+[Build updates](#build-updates)) so those tabs must reload first. Until then, a
+caller that omits the header can still distinguish missing from existing Pages,
+as before. Tool and MCP routes also still distinguish them.
 
 The browser reconnects with backoff on transient codes, rechecks access through
 `/api/connect` on access and sign-in codes, and stops on `signing_key_rejected`
@@ -453,6 +455,35 @@ qualification. Runtime adaptations such as the Worker-only CBOR Uint8Array path
 are source-checked and regression-tested; a passing storage probe alone does not
 qualify ephemeral presence. Diagnostics exclude provider messages, credentials,
 request bodies, and document content.
+
+## Build updates
+
+Each build has a 12-character id: the start of its source fingerprint, also
+recorded as `build_id` in `dist/build-receipt.json`. The Worker reports it as
+`build` in `/health` and in an `X-Pages-Build` header on every `/api/*`
+response; the viewer bundle embeds the same id. The Worker also advertises
+`minViewerProtocol` (header `X-Pages-Min-Viewer-Protocol`), the oldest viewer
+protocol it serves. Both live in [build-identity.mjs](shared/build-identity.mjs).
+
+The viewer compares on every response it already reads (reconnect, saves,
+session refresh), when a hidden tab becomes visible, and every 10 minutes while
+visible. It never polls while hidden and never reloads by itself.
+
+| Server advertises | Viewer shows | Editing |
+| --- | --- | --- |
+| Same build | Nothing | Unchanged |
+| Different build, floor at or below this viewer | "Pages was updated. Reload to get the latest version." | Unchanged |
+| Floor above this viewer's protocol | "This tab can't edit until you reload." | Paused; accepted edits keep saving |
+
+Reload pauses edits and waits until every accepted edit has a durable host
+receipt. If they can't be saved (signed out, access removed, local storage
+failed, or 15 seconds without a receipt), the banner says why and the tab stays
+open; a voluntary reload resumes editing.
+
+To retire a compatibility path kept for old tabs, raise `MIN_VIEWER_PROTOCOL`
+and `VIEWER_PROTOCOL` together in one release. Tabs from older builds then pause
+edits and ask to reload; tabs from the new build are unaffected. The old path can
+go in a following release, once the raised floor is deployed.
 
 ## HTTP and MCP tools
 
