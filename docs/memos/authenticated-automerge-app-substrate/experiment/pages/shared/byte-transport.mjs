@@ -107,10 +107,19 @@ export class WebSocketByteTransport {
     this.#callbacks.clear();
   }
 
-  async disconnect() {
+  /** Close with 1000, or an application code (4000-4999) and a short ASCII
+   * reason. Invalid values fall back to the normal close. */
+  async disconnect(code, reason) {
+    const application =
+      Number.isInteger(code) &&
+      code >= 4000 &&
+      code <= 4999 &&
+      typeof reason === "string" &&
+      /^[a-z_]{1,64}$/.test(reason);
     this.#finish();
     try {
-      this.socket.close(1000, "Disconnected");
+      if (application) this.socket.close(code, reason);
+      else this.socket.close(1000, "Disconnected");
     } catch {
       /* Already closed. */
     }

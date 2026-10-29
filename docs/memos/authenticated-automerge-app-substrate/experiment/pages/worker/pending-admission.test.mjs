@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import { test } from "node:test";
 import { proposeAccessUpdate } from "./access.mjs";
-import { DocumentPolicy } from "./policy.mjs";
+import { DocumentPolicy, admissionCancelled } from "./policy.mjs";
 
 const key = "1".repeat(64);
 const otherKey = "2".repeat(64);
@@ -511,5 +511,75 @@ test(
     assert.equal(f.policy.bindings.size, 0);
     assert.equal(f.policy.admissions.size, 0);
     assert.equal(f.policy.sessions.size, 0);
+  },
+);
+
+// Known limitation: the host cannot bound a binding write that never settles.
+// A rejected write may still have taken effect, so neither a competing write
+// nor releasing the reservation is safe. These tests pin the current shape.
+test(
+  "a binding write that never settles blocks only its key and each deadline reports a stall",
+  options,
+  async () => {
+    const f = fixture();
+    f.identity.expiresAt = Number.MAX_SAFE_INTEGER;
+    const member = { ...f.identity, principal: "user:member" };
+    f.grant(member.principal, "editor");
+    const stuck = f.storage.deferPut();
+    for (const at of [1000, 60_000, 6 * 60 * 60 * 1000]) {
+      f.advance(at);
+      const deadline = new AbortController();
+      const attempt = f.bind(key, member, { signal: deadline.signal });
+      await setImmediate();
+      deadline.abort(admissionCancelled("native_admission_timeout"));
+      await assert.rejects(attempt, { code: "native_binding_stalled", status: 503 });
+      assert.equal(f.policy.sessions.size, 0);
+      assert.equal(f.policy.admissions.get(key).state, "pending");
+      assert.equal(f.storage.writes.length, 1, "reconnects never issue a competing write");
+    }
+    await stuck.entered;
+    // Other signing keys are admitted independently of the stuck key.
+    (await f.bind(otherKey, member))();
+
+    // A late write finalizes the binding but cannot activate a session. The
+    // next connection still runs current access checks.
+    f.grant(member.principal, null);
+    await f.policy.refreshAccess({ persist: false });
+    stuck.resolve();
+    await f.drain();
+    assert.equal(f.policy.sessions.size, 0);
+    assert.equal(f.policy.admissions.size, 0);
+    await assert.rejects(f.bind(key, member), {
+      code: "page_access_denied",
+      reason: "page_access_removed",
+    });
+  },
+);
+
+test(
+  "retiring a key whose binding write never settles holds the access refresh open",
+  options,
+  async () => {
+    const f = fixture();
+    const editor = { ...f.identity, principal: "user:editor" };
+    f.grant(editor.principal, "editor");
+    const stuck = f.storage.deferPut();
+    const admission = f.bind(key, editor);
+    await stuck.entered;
+    f.grant(editor.principal, null);
+    let settled = false;
+    const refresh = f.policy.refreshAccess().finally(() => {
+      settled = true;
+    });
+    // Authority is removed in memory before any storage wait.
+    assert.equal(f.policy.authorAllowed(f.policy.bindings.get(key)), false);
+    await assert.rejects(admission, { code: "native_access_changed" });
+    for (let turn = 0; turn < 20; turn++) await setImmediate();
+    // Page.installAccess awaits this refresh inside the Page's serialized
+    // request queue, so later HTTP work on the Page waits behind it too.
+    assert.equal(settled, false, "retirement persistence is queued behind the stuck write");
+    stuck.resolve();
+    await refresh;
+    assert.equal((await f.storage.get(bindingKey(key))).retired, true);
   },
 );

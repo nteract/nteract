@@ -183,16 +183,23 @@ test("unknown Page lookups write no signer, repository, or host state", async (t
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   const token = auth.apiKey();
-  for (const [path, body] of [
-    ["/api/connect"],
-    ["/api/sync"],
-    ["/api/saved", { heads: ["a".repeat(64)] }],
-    ["/internal/tool", { operation: "read_page", arguments: { page_id: pageId } }],
+  for (const [path, body, status] of [
+    // Admission routes answer a missing Page exactly as an unreadable one.
+    ["/api/connect", undefined, 403],
+    ["/api/sync", undefined, 403],
+    ["/api/saved", { heads: ["a".repeat(64)] }, 403],
+    ["/internal/tool", { operation: "read_page", arguments: { page_id: pageId } }, 404],
   ]) {
     const storage = new Storage();
     const page = new Page(contextFor(storage), auth.env);
     await page.ready;
-    assert.equal((await page.fetch(requestFor(token, path, body))).status, 404);
+    const response = await page.fetch(requestFor(token, path, body));
+    assert.equal(response.status, status);
+    if (status === 403)
+      assert.deepEqual(await response.json(), {
+        error: "Document access denied",
+        code: "page_access_denied",
+      });
     assert.equal(storage.values.size, 0);
     assert.deepEqual(storage.writes, []);
     assert.equal(page.signer, undefined);

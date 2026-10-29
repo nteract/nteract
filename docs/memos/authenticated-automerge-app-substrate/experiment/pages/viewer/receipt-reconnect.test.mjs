@@ -65,7 +65,10 @@ function fixture(t) {
     value: { href: "http://localhost:9894/" },
   });
   t.mock.method(globalThis, "WebSocket", function () {
+    const events = new EventTarget();
     Object.defineProperty(this, "binaryType", { value: "blob", writable: true });
+    this.addEventListener = events.addEventListener.bind(events);
+    this.dispatchEvent = events.dispatchEvent.bind(events);
     this.close = () => {};
     sockets.push(this);
   });
@@ -469,5 +472,75 @@ test("native completion after socket loss or expired sign-in cannot announce a c
         assert.equal(f.counts().freed, phase === "setup" ? 1 : 0);
       });
     }
+  }
+});
+
+const hostClose = (socket, code, reason) =>
+  socket.dispatchEvent(Object.assign(new Event("close"), { code, reason }));
+
+test("refused native admission does not reset reconnect backoff", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  for (const attempts of [1, 2, 3]) {
+    const socket = f.sockets.at(-1);
+    hostClose(socket, 4503, "temporarily_unavailable");
+    f.session.socketDisconnected(socket);
+    assert.equal(f.session.retryAttempts, attempts, "an unadmitted socket proves nothing");
+    assert.ok(f.session.retryTimer);
+    await f.advance(500 * 2 ** (attempts - 1));
+    assert.equal(f.sockets.length, attempts + 1);
+  }
+  // A connection that outlived the host's admission deadline was admitted.
+  const stable = f.sockets.at(-1);
+  f.session.socketAdmittedAt.set(stable, Date.now() - 20_000);
+  hostClose(stable, 4409, "access_changed");
+  f.session.socketDisconnected(stable);
+  assert.equal(f.session.retryAttempts, 1);
+});
+
+test("a refused signing key stops automatic reconnects until an explicit retry", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  const socket = f.sockets.at(-1);
+  hostClose(socket, 4422, "signing_key_rejected");
+  f.session.socketDisconnected(socket);
+  assert.equal(f.session.retryTimer, undefined);
+  assert.equal(f.session.nativeRefused, true);
+  assert.match(f.session.problem, /refused this tab's signing key/);
+  f.session.scheduleReconnect();
+  assert.equal(f.session.retryTimer, undefined);
+  await f.advance(60_000);
+  assert.equal(f.sockets.length, 1, "no automatic reconnect");
+
+  // Refusal during the native handshake is reported the same way.
+  f.hooks.setup = () => {
+    hostClose(f.sockets.at(-1), 4422, "signing_key_rejected");
+    throw Error("Native handshake failed");
+  };
+  await f.session.retryConnection();
+  assert.equal(f.sockets.length, 2, "explicit Retry makes one attempt");
+  assert.equal(f.session.nativeRefused, true);
+  assert.equal(f.session.retryTimer, undefined);
+
+  f.hooks.setup = undefined;
+  await f.session.retryConnection();
+  assert.equal(f.session.nativeRefused, false);
+  assert.equal(f.session.connectionProblem, "");
+});
+
+test("transient and mismatched close outcomes keep normal backoff", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  for (const [code, reason] of [
+    [4503, "temporarily_unavailable"],
+    [4422, "temporarily_unavailable"],
+    [1006, ""],
+  ]) {
+    const socket = f.sockets.at(-1);
+    hostClose(socket, code, reason);
+    f.session.socketDisconnected(socket);
+    assert.ok(f.session.retryTimer, `${code} ${reason} reconnects`);
+    assert.equal(f.session.nativeRefused, false);
+    await f.advance(10_000);
   }
 });

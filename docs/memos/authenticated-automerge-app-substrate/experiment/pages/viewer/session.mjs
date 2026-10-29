@@ -18,6 +18,7 @@ export { listLocalPages, forgetLocalPage } from "./local-pages.mjs";
 import { BACKEND_LIMITS } from "../model/limits.mjs";
 import { retryKey } from "../model/retry-key.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
+import { admissionCloseOutcome } from "../shared/admission.mjs";
 import { request } from "./request.mjs";
 import { activitySnapshot } from "./activity.mjs";
 export { request } from "./request.mjs";
@@ -39,6 +40,11 @@ const accessFailure = () =>
     status: 409,
   });
 const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 16));
+// Longer than the host's 10-second native admission deadline. A socket that
+// closes sooner never proved admission, so it must not reset reconnect backoff.
+export const STABLE_CONNECTION_MS = 15_000;
+const SIGNING_KEY_REFUSED =
+  "This Page refused this tab's signing key. Your edits stay on this device. Retry, or open the Page in a new tab.";
 export function tool(operation, args = {}) {
   return request("/api/tools", {
     method: "POST",
@@ -97,6 +103,9 @@ export class PageSession {
   accessDenied = false;
   accessReloadRequired = false;
   sockets = new Set();
+  socketOutcomes = new WeakMap();
+  socketAdmittedAt = new WeakMap();
+  nativeRefused = false;
   static async open(pageId, options) {
     const session = new PageSession(pageId, options);
     try {
@@ -233,10 +242,31 @@ export class PageSession {
     // callback from that retired connection must not reconnect its successor.
     if (!this.sockets.delete(socket)) return;
     this.clearPresence();
+    const admittedAt = this.socketAdmittedAt.get(socket);
+    if (admittedAt !== undefined && Date.now() - admittedAt >= STABLE_CONNECTION_MS)
+      this.retryAttempts = 0;
     if (!this.alive || this.authRequired || this.accessDenied || this.accessReloadRequired) return;
+    if (this.socketOutcomes.get(socket)?.retry === "stop") {
+      this.refuseNative();
+      return;
+    }
     this.status = "Reconnecting";
     this.emit();
     this.scheduleReconnect();
+  }
+  /** The host refused this tab's signing key. Reconnecting with the same key
+   * cannot succeed, so wait for an explicit Retry or a new tab. */
+  refuseNative() {
+    this.nativeRefused = true;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+    this.connectionProblem = SIGNING_KEY_REFUSED;
+    if (!this.localProblem) this.problem = SIGNING_KEY_REFUSED;
+    if (this.receiptState) this.showReceiptState();
+    else {
+      this.status = this.localPage ? "Saved locally" : "Offline";
+      this.emit();
+    }
   }
   pauseForAccess(message, { denied = false, checkpoint = true } = {}) {
     if (!this.alive || this.deleted) return;
@@ -624,7 +654,13 @@ export class PageSession {
       if (!current()) return;
       // A denied/failed lookup is not evidence that this Page never existed.
       // Keep its local history and original request for a later attempt.
-      if (error.status !== 404 || error.message !== "Page not found") throw error;
+      // The host answers a missing Page as an unreadable one. This account
+      // would own the Page if it existed, so here that answer means "absent";
+      // registration still checks ownership and deletion tombstones.
+      const absent =
+        (error.status === 404 && error.message === "Page not found") ||
+        (error.status === 403 && error.code === "page_access_denied");
+      if (!absent) throw error;
       const prepared = await this.requestWithRenewal("/api/tools", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -749,6 +785,12 @@ export class PageSession {
     // whereas the raw socket remains cancellable when account/page access changes.
     const socket = new WebSocket(address);
     socket.binaryType = "arraybuffer";
+    // Registered before the native wrapper's own listener, so the host's
+    // admission outcome is known when the disconnect callback runs.
+    socket.addEventListener("close", (event) => {
+      const outcome = admissionCloseOutcome(event);
+      if (outcome) this.socketOutcomes.set(socket, outcome);
+    });
     this.sockets.add(socket);
     try {
       const authenticated = await N.SubductionWebSocket.setup(socket, this.signer, expected, () => {
@@ -780,7 +822,7 @@ export class PageSession {
         !this.sockets.has(socket)
       )
         return;
-      this.retryAttempts = 0;
+      this.socketAdmittedAt.set(socket, Date.now());
       this.clearConnectionProblem();
       if (this.handle) this.queueSaved();
       else {
@@ -792,6 +834,11 @@ export class PageSession {
       socket.close();
       if (!current) return;
       this.clearPresence();
+      const admission = this.socketOutcomes.get(socket);
+      if (admission)
+        throw Object.assign(Error(error?.message ?? String(error), { cause: error }), {
+          admission,
+        });
       throw error;
     } finally {
       expected.free();
@@ -803,6 +850,7 @@ export class PageSession {
       this.authRequired ||
       this.accessDenied ||
       this.accessReloadRequired ||
+      this.nativeRefused ||
       this.retryTimer
     )
       return;
@@ -816,11 +864,18 @@ export class PageSession {
   async retryConnection({ recheckDeniedAccess = false, retryReceipt = false } = {}) {
     clearTimeout(this.retryTimer);
     this.retryTimer = undefined;
+    // Automatic backoff never runs while refused; this call is an explicit
+    // Retry, an online event, or a returning tab, each worth one attempt.
+    this.nativeRefused = false;
     try {
       await this.connect(true, recheckDeniedAccess);
     } catch (error) {
       if (!this.alive || this.accessReloadRequired || this.accessDenied) return;
       if (error.code === "PAGE_ACCESS_CHANGED") return;
+      if (error.admission?.retry === "stop") {
+        this.refuseNative();
+        return;
+      }
       if (error.status === 401) this.requireSignIn(this.authProblem || undefined);
       else if (error.status === 403)
         this.pauseForAccess(

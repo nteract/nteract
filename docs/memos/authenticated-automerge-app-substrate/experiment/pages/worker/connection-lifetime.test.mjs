@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as N from "@automerge/subduction";
 import { Page } from "./index.mjs";
-import { DocumentPolicy } from "./policy.mjs";
+import { DocumentPolicy, PermissionDenied } from "./policy.mjs";
 
 const drain = () => new Promise(setImmediate);
 
@@ -29,8 +29,9 @@ function fixture(
   class Socket extends EventTarget {
     closeCalls = 0;
     accept() {}
-    close() {
+    close(code, reason) {
       this.closeCalls++;
+      this.closed ??= { code, reason };
       this.dispatchEvent(new Event("close"));
     }
   }
@@ -70,6 +71,8 @@ function fixture(
     return transport;
   });
   t.mock.method(console, "error", () => {});
+  const admissionLogs = [];
+  t.mock.method(console, "warn", (line) => admissionLogs.push(JSON.parse(line)));
   const page = Object.assign(Object.create(Page.prototype), {
     ctx: {
       waitUntil: (promise) => background.push(promise),
@@ -103,6 +106,8 @@ function fixture(
         events.push("bind");
         bindings.push(options);
         if (failure === "binding") throw Error("Fixture binding failed");
+        if (failure === "binding-mismatch")
+          throw new PermissionDenied("Signing key has another binding", "native_binding_mismatch");
         return () => {
           released = true;
         };
@@ -184,6 +189,7 @@ function fixture(
     socket: initial.socket,
     open,
     released: () => released,
+    admissionLogs,
   };
 }
 
@@ -331,6 +337,66 @@ for (const cancellation of ["timeout", "disconnect"]) {
     assert.equal(f.page.wires.size, 0);
   });
 }
+
+for (const [failure, reason, close] of [
+  ["handshake", "native_handshake_failed", [4503, "temporarily_unavailable"]],
+  ["handshake-timeout", "native_admission_timeout", [4503, "temporarily_unavailable"]],
+  ["binding", "server_error", [4503, "temporarily_unavailable"]],
+  ["binding-mismatch", "native_binding_mismatch", [4422, "signing_key_rejected"]],
+  ["backend", "native_connection_failed", [4503, "temporarily_unavailable"]],
+]) {
+  test(`native ${failure} failure logs ${reason} and closes with its client code`, async (t) => {
+    const f = fixture(t, failure);
+    if (failure === "handshake-timeout") t.mock.timers.tick(10000);
+    await f.background;
+    assert.deepEqual(f.socket.closed, { code: close[0], reason: close[1] });
+    assert.equal(f.admissionLogs.length, 1);
+    assert.equal(f.admissionLogs[0].reason, reason);
+    assert.equal(f.admissionLogs[0].stage, "native");
+    assert.equal(f.admissionLogs[0].code, close[1]);
+  });
+}
+
+test("a handshake deadline during an unsettled binding write is reported as a storage stall", async (t) => {
+  const f = fixture(t, undefined, { reauthenticate: async (identity) => identity });
+  f.page.ctx.storage.put = () => new Promise(() => {});
+  await drain();
+  t.mock.timers.tick(10000);
+  await f.background;
+  assert.deepEqual(f.socket.closed, { code: 4503, reason: "temporarily_unavailable" });
+  assert.deepEqual(
+    f.admissionLogs.map(({ reason }) => reason),
+    ["native_binding_stalled"],
+  );
+});
+
+test("lease endings close with access, sign-in and shutdown codes", async (t) => {
+  const f = fixture(t, undefined, { reauthenticate: async (identity) => identity });
+  await drain();
+  assert.equal(f.page.policy.sessions.size, 1);
+  // An ACL change that alters this session's role closes it for a recheck.
+  f.page.metadata = { ...f.page.metadata, acl: { revision: 1, members: {} } };
+  f.page.metadata.owner = "user:someone-else";
+  await f.page.policy.refreshAccess({ persist: false });
+  await f.background;
+  assert.deepEqual(f.socket.closed, { code: 4409, reason: "access_changed" });
+
+  f.page.metadata = { owner: "user:owner" };
+  const expiring = f.open();
+  await drain();
+  t.mock.timers.tick(60_001);
+  await expiring.background;
+  assert.deepEqual(expiring.socket.closed, { code: 4401, reason: "sign_in_required" });
+  assert.equal(f.admissionLogs.length, 0, "lease endings are not admission denials");
+});
+
+test("closing the Page policy ends leases with a transient code", async (t) => {
+  const f = fixture(t, undefined, { reauthenticate: async (identity) => identity });
+  await drain();
+  await f.page.policy.close();
+  await f.background;
+  assert.deepEqual(f.socket.closed, { code: 4503, reason: "temporarily_unavailable" });
+});
 
 test("pending native handshakes count toward each authenticated account's connection quota", async (t) => {
   const f = fixture(t, "handshake-timeout");
