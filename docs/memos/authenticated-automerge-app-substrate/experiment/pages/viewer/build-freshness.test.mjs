@@ -666,3 +666,17 @@ test("Reload waits for an access reload that closes its old replica", async () =
   finish();
   assert.deepEqual(await result, { ok: true });
 });
+
+test("a failed access reload keeps its live session blocking Reload", async () => {
+  const g = gate();
+  const writer = new FakeSession("page-switch-failed");
+  g.reloadGate.hold(writer);
+  await g.reloadGate.track(writer, Promise.reject(Error("checkpoint failed"))).catch(() => {});
+  await settle();
+  const result = g.reload();
+  await settle();
+  assert.equal(g.reloaded(), 0, "unsent edits on the live session still block Reload");
+  writer.set({ status: "Saved", pending: false });
+  assert.deepEqual(await result, { ok: true });
+  assert.equal(g.reloaded(), 1);
+});

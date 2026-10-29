@@ -294,12 +294,19 @@ export class ReloadGate {
     return closed;
   }
   /** A session closing through its own flow, such as an access reload,
-   * archives its recovery itself. Reload still waits for that close. */
+   * archives its recovery itself. Reload still waits for that close. If the
+   * flow fails while the session is still alive, it returns to the open set so
+   * its unsent edits keep blocking Reload. */
   track(session, closing) {
     this.epoch++;
     this.sessions.delete(session);
     const settled = Promise.resolve(closing)
-      .catch(() => {})
+      .catch(() => {
+        if (session.alive) {
+          this.sessions.add(session);
+          this.epoch++;
+        }
+      })
       .then(() => this.draining.delete(settled));
     this.draining.add(settled);
     return closing;
