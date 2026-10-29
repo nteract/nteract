@@ -145,12 +145,20 @@ pub async fn get_cell(
     // only tool that honors `full_output=true`; all other paths hardcode
     // preview mode to protect the agent's context budget.
     let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
+    let live_views = crate::live_views::collect(
+        &handle,
+        &raw_outputs,
+        metadata.blob_base_url.as_deref(),
+        metadata.blob_store_path.as_deref(),
+    )
+    .await;
     let outputs = output_resolver::resolve_cell_outputs_for_llm(
         &raw_outputs,
         output_resolver::ResolveCtx {
             blob_base_url: metadata.blob_base_url.as_deref(),
             blob_store_path: metadata.blob_store_path.as_deref(),
             comms: comms.as_ref(),
+            live_views: Some(&live_views),
             length: if full_output {
                 output_resolver::OutputLength::Full
             } else {
@@ -340,6 +348,25 @@ pub async fn get_all_cells(
     let execution_cell_map = crate::execution::execution_cell_map(&handle);
     let outputs_by_cell = handle.get_all_outputs();
     let empty_outputs: Vec<serde_json::Value> = Vec::new();
+    let resolves_outputs =
+        !matches!(format, GetAllCellsFormat::Summary) || include_output_summaries;
+    let live_views = if resolves_outputs {
+        // Collected so no closure is held across the await (Send inference).
+        let manifests: Vec<&serde_json::Value> = slice
+            .iter()
+            .filter_map(|cell| outputs_by_cell.get(&cell.id))
+            .flatten()
+            .collect();
+        crate::live_views::collect(
+            &handle,
+            manifests,
+            metadata.blob_base_url.as_deref(),
+            metadata.blob_store_path.as_deref(),
+        )
+        .await
+    } else {
+        Default::default()
+    };
 
     match format {
         GetAllCellsFormat::Json => {
@@ -362,6 +389,7 @@ pub async fn get_all_cells(
                         blob_base_url: metadata.blob_base_url.as_deref(),
                         blob_store_path: metadata.blob_store_path.as_deref(),
                         comms: comms.as_ref(),
+                        live_views: Some(&live_views),
                         execution_cell_map: Some(&execution_cell_map),
                         ..Default::default()
                     },
@@ -412,6 +440,7 @@ pub async fn get_all_cells(
                         blob_base_url: metadata.blob_base_url.as_deref(),
                         blob_store_path: metadata.blob_store_path.as_deref(),
                         comms: comms.as_ref(),
+                        live_views: Some(&live_views),
                         execution_cell_map: Some(&execution_cell_map),
                         ..Default::default()
                     },
@@ -464,6 +493,7 @@ pub async fn get_all_cells(
                             blob_base_url: metadata.blob_base_url.as_deref(),
                             blob_store_path: metadata.blob_store_path.as_deref(),
                             comms: comms.as_ref(),
+                            live_views: Some(&live_views),
                             execution_cell_map: Some(&execution_cell_map),
                             ..Default::default()
                         },

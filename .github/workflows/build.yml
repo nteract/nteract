@@ -847,7 +847,8 @@ jobs:
     # Keep the generic browser lane on GitHub-hosted runners for predictable
     # per-job latency. The Anaconda pool is reserved for Linux/env-heavy lanes.
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Allow cold Rust compilation, the serial browser suite, and production smokes.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
         with:

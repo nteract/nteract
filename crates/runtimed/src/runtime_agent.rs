@@ -51,12 +51,14 @@ use crate::blob_store::BlobStore;
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::kernel_dispatch::Kernel;
 use crate::kernel_state::KernelState;
-use crate::keyed_doc::{AgentDocs, AgentKeyedDoc};
+use crate::keyed_doc::AgentDocs;
 use crate::output_blob_publisher::OutputBlobPublisher;
-use crate::output_prep::{
-    KernelStatus, LifecycleSignal, QueueCommandReceivers, VisualizationStateCommand, WorkCommand,
-};
+use crate::output_prep::{KernelStatus, LifecycleSignal, QueueCommandReceivers, WorkCommand};
 use crate::protocol::QueueEntry;
+use crate::runtime_agent_extension::{
+    AgentExtensionInit, AgentExtensions, AgentKernelView, AgentLifecycleCtx, AgentRequestCtx,
+    ExtensionStart,
+};
 
 mod echo_suppression;
 use echo_suppression::EchoSuppressor;
@@ -113,10 +115,6 @@ impl LaunchTrigger {
 /// coordinator room broadcast capacity so the runtime-agent bridge can absorb
 /// the same burst size before reporting lag.
 const RUNTIME_AGENT_KERNEL_BROADCAST_CAPACITY: usize = 256;
-
-/// 25 ms polls for ingest to reach a kernel checkpoint's revision, bounded
-/// like the checkpoint request itself (10 s).
-const BOKEH_CHECKPOINT_CATCH_UP_POLLS: usize = 400;
 
 /// How long to sleep before a reconnect to enforce [`RECOVERABLE_RECONNECT_FLOOR`].
 ///
@@ -203,6 +201,17 @@ struct RuntimeAgentContext {
     presence_tx: broadcast::Sender<(String, Vec<u8>)>,
     runtime_agent_id: String,
     kernel_actor_principal: Option<String>,
+    extensions: Arc<AgentExtensions>,
+}
+
+impl RuntimeAgentContext {
+    fn lifecycle_ctx(&self) -> AgentLifecycleCtx<'_> {
+        AgentLifecycleCtx {
+            state: &self.state,
+            blob_store: &self.blob_store,
+            blob_publisher: &self.output_blob_publisher,
+        }
+    }
 }
 
 /// Run the runtime agent, connecting to the daemon socket as a peer.
@@ -238,7 +247,7 @@ pub async fn run_runtime_agent(
         // The daemon/UDS path never launches on attach: the daemon drives launch
         // via an inbound `LaunchKernel` RPC. Always `None` here.
         None,
-        crate::keyed_doc::agent_kinds(),
+        crate::extensions::agent_extensions,
     )
     .await
 }
@@ -318,7 +327,7 @@ pub async fn run_cloud_runtime_agent(
         },
         output_blob_publisher,
         initial_launch,
-        crate::keyed_doc::agent_kinds(),
+        crate::extensions::agent_extensions,
     )
     .await
 }
@@ -500,9 +509,8 @@ struct KernelSession {
     /// RuntimeStateDoc syncs do not re-queue the same entry.
     seen_execution_ids: HashSet<String>,
     lifecycle_rx: Option<mpsc::UnboundedReceiver<LifecycleSignal>>,
-    visualization_rx: Option<mpsc::Receiver<VisualizationStateCommand>>,
-    visualization_tasks: HashMap<String, tokio::task::JoinHandle<()>>,
-    retirement_tasks: HashMap<String, tokio::task::JoinHandle<()>>,
+    /// Extension tasks bound to the current kernel's channels.
+    extension_tasks: HashMap<String, tokio::task::JoinHandle<()>>,
     work_rx: Option<mpsc::Receiver<WorkCommand>>,
     interrupt_handle: Option<crate::jupyter_kernel::InterruptHandle>,
 }
@@ -514,9 +522,7 @@ impl KernelSession {
             kernel_state,
             seen_execution_ids: HashSet::new(),
             lifecycle_rx: None,
-            visualization_rx: None,
-            visualization_tasks: HashMap::new(),
-            retirement_tasks: HashMap::new(),
+            extension_tasks: HashMap::new(),
             work_rx: None,
             interrupt_handle: None,
         }
@@ -533,16 +539,12 @@ impl KernelSession {
     /// drain through them.
     fn install_kernel_channels(&mut self, receivers: Option<QueueCommandReceivers>) {
         if receivers.is_some() || self.kernel.is_none() {
-            for (_, task) in self.retirement_tasks.drain() {
+            for (_, task) in self.extension_tasks.drain() {
                 task.abort();
             }
         }
         if let Some(rx) = receivers {
-            for (_, task) in self.visualization_tasks.drain() {
-                task.abort();
-            }
             self.lifecycle_rx = Some(rx.lifecycle_rx);
-            self.visualization_rx = Some(rx.visualization_rx);
             self.work_rx = Some(rx.work_rx);
         }
         self.interrupt_handle = self.kernel.as_ref().and_then(|k| k.interrupt_handle());
@@ -566,18 +568,23 @@ impl KernelSession {
 /// differs from the authenticated one, so a cloud agent must author under
 /// `<principal>/<operator>` (decision #6). Authoring under the wrong actor is
 /// silent — the room discards every change and convergence stalls.
-async fn run_runtime_agent_on_transport<T, F>(
+///
+/// `build_extensions` builds the agent's extensions once the agent knows
+/// which keyed document kinds the coordinator will route (production:
+/// `crate::extensions::agent_extensions`).
+pub(crate) async fn run_runtime_agent_on_transport<T, F, E>(
     transport: T,
     notebook_id: String,
     blob_root: PathBuf,
     resolve_actor: F,
     output_blob_publisher: OutputBlobPublisher,
     initial_launch: Option<(LaunchTrigger, RuntimeAgentRequest)>,
-    keyed_doc_kinds: Vec<Arc<dyn AgentKeyedDoc>>,
+    build_extensions: E,
 ) -> anyhow::Result<()>
 where
     T: FrameTransport,
     F: FnOnce(&T) -> anyhow::Result<String>,
+    E: FnOnce(&AgentExtensionInit) -> AgentExtensions,
 {
     // -- 1. Connect ---------------------------------------------------------
 
@@ -627,9 +634,13 @@ where
     // Per-connection sync states for RuntimeStateDoc, CommsDoc and keyed
     // documents; every reconnect resets them together.
     let mut docs = AgentDocs::new(state_kick_tx.clone(), comms_kick_tx);
-    for kind in keyed_doc_kinds {
-        docs.register(kind);
-    }
+    let extensions = Arc::new(build_extensions(&AgentExtensionInit {
+        availability: docs.availability(),
+    }));
+    extensions.register_keyed_docs(&mut docs);
+    // Replies extensions send after their kernel work finishes.
+    let (extension_response_tx, mut extension_response_rx) =
+        mpsc::unbounded_channel::<notebook_protocol::protocol::RuntimeAgentResponseEnvelope>();
 
     // -- 3. Create local infrastructure -------------------------------------
 
@@ -649,6 +660,7 @@ where
         presence_tx,
         runtime_agent_id,
         kernel_actor_principal,
+        extensions,
     };
 
     // -- Local variables owned by the select! loop (no mutex) ---------------
@@ -747,7 +759,7 @@ where
 
     loop {
         if session.kernel.is_none() {
-            for (_, task) in session.retirement_tasks.drain() {
+            for (_, task) in session.extension_tasks.drain() {
                 task.abort();
             }
         }
@@ -900,14 +912,26 @@ where
                                             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                     }
 
-                                    if let RuntimeAgentRequest::RetireBokehSessions { kernel_id, session_ids } = &envelope.request {
-                                        if let Some(kernel) = session.kernel.as_ref() {
-                                            if let Err(error) = retire_bokeh_sessions(
-                                                &ctx.state, kernel, kernel_id, session_ids,
-                                                &mut session.retirement_tasks,
-                                            ) {
-                                                warn!("[bokeh-session] Failed to retire output sessions: {error}");
-                                            }
+                                    if let Some(ext) = ctx.extensions.claim(&envelope.request) {
+                                        // Extensions never await the kernel here.
+                                        debug!("[runtime-agent] Request {} handled by extension {}", envelope.id, ext.name());
+                                        let id = envelope.id.clone();
+                                        let started = ext.start(
+                                            envelope.id,
+                                            envelope.request,
+                                            AgentRequestCtx {
+                                                state: &ctx.state,
+                                                blob_store: &ctx.blob_store,
+                                                blob_publisher: &ctx.output_blob_publisher,
+                                                kernel: session.kernel.as_ref().map(|kernel| AgentKernelView {
+                                                    kernel_id: kernel.kernel_id(),
+                                                }),
+                                                responses: &extension_response_tx,
+                                                kernel_tasks: &mut session.extension_tasks,
+                                            },
+                                        );
+                                        if let ExtensionStart::Reply(response) = started {
+                                            send_runtime_agent_response(&mut frame_sink, id, response).await?;
                                         }
                                         continue;
                                     }
@@ -969,6 +993,7 @@ where
                                     match sync_result {
                                         Ok(Some(queued)) => {
                                             runtime_state_doc_seen = true;
+                                            ctx.extensions.on_runtime_state_synced(ctx.lifecycle_ctx());
                                             inbound_queued_count = queued.len();
                                             queued_nonempty = !queued.is_empty();
                                             accepted_queued_count = queue_synced_executions(
@@ -1279,7 +1304,11 @@ where
                             }
 
                             NotebookFrameType::SessionControl => {
-                                handle_agent_session_control(&mut docs, &typed_frame.payload);
+                                for kind in handle_agent_session_control(&mut docs, &typed_frame.payload) {
+                                    ctx.extensions
+                                        .on_keyed_doc_unavailable(kind, ctx.lifecycle_ctx())
+                                        .await;
+                                }
                             }
 
                             _ => {
@@ -1453,32 +1482,14 @@ where
                 }
             }
 
-            // Bounded Bokeh checkpoint work has its own lane. Drain reliable
-            // lifecycle signals before awaiting a kernel snapshot.
-            Some(command) = async {
-                match session.visualization_rx.as_mut() {
-                    Some(rx) => rx.recv().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                if let Some(rx) = session.lifecycle_rx.as_mut() {
-                    if let Err(error) = drain_lifecycle_commands(
-                        rx,
-                        &ctx,
-                        &mut session.kernel,
-                        &mut session.kernel_state,
-                        &mut session.seen_execution_ids,
-                    ).await {
-                        warn!("[runtime-agent] Error draining lifecycle commands: {error}");
+            // Replies to extension requests that waited on the kernel.
+            Some(envelope) = extension_response_rx.recv() => {
+                if let Err(e) = send_runtime_agent_response_envelope(&mut frame_sink, envelope).await {
+                    // Lost replies are not replayed; the reader arm reconnects.
+                    warn!("[runtime-agent] Extension response send failed: {}", e);
+                    if !transport.clean_eof_is_recoverable() {
+                        break;
                     }
-                }
-                if let Err(error) = start_visualization_state_command(
-                    command,
-                    &ctx,
-                    session.kernel.as_ref(),
-                    &mut session.visualization_tasks,
-                ) {
-                    warn!("[runtime-agent] Error handling visualization state: {error}");
                 }
             }
 
@@ -1797,10 +1808,7 @@ where
     // -- 5. Cleanup ---------------------------------------------------------
 
     info!("[runtime-agent] Shutting down");
-    for (_, task) in session.retirement_tasks.drain() {
-        task.abort();
-    }
-    for (_, task) in session.visualization_tasks.drain() {
+    for (_, task) in session.extension_tasks.drain() {
         task.abort();
     }
     if let Some(ref mut k) = session.kernel {
@@ -1814,20 +1822,21 @@ where
 }
 
 /// Session-control frames from the coordinator: the keyed document kinds it
-/// routes, and rejections of frames this agent sent.
-fn handle_agent_session_control(docs: &mut AgentDocs, payload: &[u8]) {
+/// routes, and rejections of frames this agent sent. Returns the kinds a
+/// rejection disabled.
+fn handle_agent_session_control(docs: &mut AgentDocs, payload: &[u8]) -> Vec<&'static str> {
     if let Ok(SessionControlMessage::RuntimeAgentCapabilities { keyed_doc_kinds }) =
         serde_json::from_slice::<SessionControlMessage>(payload)
     {
         info!("[runtime-agent] Coordinator routes keyed document kinds {keyed_doc_kinds:?}");
         docs.set_coordinator_kinds(keyed_doc_kinds);
-        return;
+        return Vec::new();
     }
     let Ok(control) = serde_json::from_slice::<serde_json::Value>(payload) else {
-        return;
+        return Vec::new();
     };
     if control.get("type").and_then(|v| v.as_str()) != Some("cloud_frame_rejected") {
-        return;
+        return Vec::new();
     }
     let reason = control
         .get("reason")
@@ -1838,10 +1847,11 @@ fn handle_agent_session_control(docs: &mut AgentDocs, payload: &[u8]) {
         control.get("frame_type"),
         reason
     );
-    if let Some(frame_type) = notebook_cloud_transport::rejected_frame_type(&control)
+    match notebook_cloud_transport::rejected_frame_type(&control)
         .filter(|frame_type| notebook_wire::is_optional_frame(*frame_type))
     {
-        docs.on_optional_frame_rejected(frame_type, reason);
+        Some(frame_type) => docs.on_optional_frame_rejected(frame_type, reason),
+        None => Vec::new(),
     }
 }
 
@@ -2083,6 +2093,7 @@ async fn handle_runtime_agent_request(
                 presence: ctx.presence.clone(),
                 presence_tx: ctx.presence_tx.clone(),
                 kernel_actor_principal: ctx.kernel_actor_principal.clone(),
+                extensions: ctx.extensions.clone(),
             };
             let launch_kernel_type = kernel_type.clone();
             let launch_env_source = env_source.as_str().to_string();
@@ -2226,6 +2237,7 @@ async fn handle_runtime_agent_request(
                 presence: ctx.presence.clone(),
                 presence_tx: ctx.presence_tx.clone(),
                 kernel_actor_principal: ctx.kernel_actor_principal.clone(),
+                extensions: ctx.extensions.clone(),
             };
             let launch_kernel_type = kernel_type.clone();
             let launch_env_source = env_source.as_str().to_string();
@@ -2268,12 +2280,14 @@ async fn handle_runtime_agent_request(
                     _ => {}
                 }
                 sd.set_queue(None, &[])?;
-                if let Some(kernel_id) = restarting_kernel_id.as_deref() {
-                    sd.disconnect_bokeh_sessions_for_kernel(kernel_id)?;
-                }
                 Ok(())
             }) {
                 warn!("[runtime-state] {}", e);
+            }
+            if let Some(kernel_id) = restarting_kernel_id.as_deref() {
+                ctx.extensions
+                    .on_kernel_lost(kernel_id, ctx.lifecycle_ctx())
+                    .await;
             }
 
             if let Err(e) =
@@ -2387,12 +2401,9 @@ async fn handle_runtime_agent_request(
                 warn!("[runtime-state] Failed to terminalize shutdown executions: {error}");
             }
             if let Some(kernel_id) = shutdown_kernel_id {
-                if let Err(error) = ctx.state.with_doc(|state_doc| {
-                    state_doc.disconnect_bokeh_sessions_for_kernel(&kernel_id)?;
-                    Ok(())
-                }) {
-                    warn!("[runtime-state] Failed to disconnect Bokeh sessions: {error}");
-                }
+                ctx.extensions
+                    .on_kernel_lost(&kernel_id, ctx.lifecycle_ctx())
+                    .await;
             }
             (RuntimeAgentResponse::Ok, None)
         }
@@ -2404,88 +2415,6 @@ async fn handle_runtime_agent_request(
                     Err(e) => (
                         RuntimeAgentResponse::Error {
                             error: format!("Failed to send comm: {}", e),
-                        },
-                        None,
-                    ),
-                }
-            } else {
-                (
-                    RuntimeAgentResponse::Error {
-                        error: "No kernel running".to_string(),
-                    },
-                    None,
-                )
-            }
-        }
-
-        RuntimeAgentRequest::RetireBokehSessions { .. } => (
-            RuntimeAgentResponse::Error {
-                error: "Bokeh retirement requires the session task owner".to_string(),
-            },
-            None,
-        ),
-        RuntimeAgentRequest::ApplyBokehSessionPatch { request } => {
-            if let Some(ref mut kernel) = kernel {
-                let owns_session = ctx
-                    .state
-                    .read(|state_doc| {
-                        state_doc
-                            .get_bokeh_session(&request.session_id)
-                            .is_some_and(|session| {
-                                session.kernel_id == kernel.kernel_id()
-                                    && session.status == runtime_doc::BokehSessionStatus::Connected
-                            })
-                    })
-                    .unwrap_or(false);
-                if !owns_session {
-                    return (
-                        RuntimeAgentResponse::Error {
-                            error: format!(
-                                "Bokeh session {} is not owned by the active kernel",
-                                request.session_id
-                            ),
-                        },
-                        None,
-                    );
-                }
-
-                match kernel.apply_bokeh_session_patch(*request).await {
-                    Ok(response) => {
-                        let session_id = match &response.reply {
-                            notebook_protocol::protocol::BokehSessionPatchReply::Accepted {
-                                session_id,
-                                ..
-                            }
-                            | notebook_protocol::protocol::BokehSessionPatchReply::Stale {
-                                session_id,
-                                ..
-                            }
-                            | notebook_protocol::protocol::BokehSessionPatchReply::Error {
-                                session_id,
-                                ..
-                            } => session_id.clone(),
-                        };
-                        if let Err(error) = crate::bokeh_session::append_callback_outputs(
-                            &session_id,
-                            &response,
-                            &ctx.state,
-                            &ctx.blob_store,
-                            &ctx.output_blob_publisher,
-                        )
-                        .await
-                        {
-                            warn!("[bokeh-session] Failed to append callback output: {error}");
-                        }
-                        (
-                            RuntimeAgentResponse::BokehSessionPatch {
-                                reply: response.reply,
-                            },
-                            None,
-                        )
-                    }
-                    Err(error) => (
-                        RuntimeAgentResponse::Error {
-                            error: format!("Failed to apply Bokeh patch: {error}"),
                         },
                         None,
                     ),
@@ -2561,6 +2490,15 @@ async fn handle_runtime_agent_request(
                 None,
             )
         }
+
+        // Extension requests are claimed before dispatch; reaching here means
+        // no registered extension handles this one.
+        _ => (
+            RuntimeAgentResponse::Error {
+                error: "no runtime agent extension handles this request".to_string(),
+            },
+            None,
+        ),
     }
 }
 
@@ -2815,12 +2753,14 @@ async fn handle_lifecycle_signal(
                 // missing_ipykernel incident.
                 sd.set_lifecycle_with_error(&RuntimeLifecycle::Error, None)?;
                 sd.set_queue(None, &[])?;
-                if let Some(kernel_id) = dead_kernel_id.as_deref() {
-                    sd.disconnect_bokeh_sessions_for_kernel(kernel_id)?;
-                }
                 Ok(())
             }) {
                 warn!("[runtime-state] {}", e);
+            }
+            if let Some(kernel_id) = dead_kernel_id.as_deref() {
+                ctx.extensions
+                    .on_kernel_lost(kernel_id, ctx.lifecycle_ctx())
+                    .await;
             }
         }
     }
@@ -2840,142 +2780,6 @@ async fn handle_session_lifecycle_signal(
     if invalidates_kernel_generation {
         seen_execution_ids.clear();
     }
-    Ok(())
-}
-
-fn retire_bokeh_sessions(
-    state: &RuntimeStateHandle,
-    kernel: &impl KernelConnection,
-    expected_kernel_id: &str,
-    session_ids: &[String],
-    tasks: &mut HashMap<String, tokio::task::JoinHandle<()>>,
-) -> anyhow::Result<()> {
-    if kernel.kernel_id() != expected_kernel_id {
-        return Ok(());
-    }
-    tasks.retain(|_, task| !task.is_finished());
-    for session_id in session_ids {
-        let Some(close) = kernel.bokeh_session_close_request(session_id.clone()) else {
-            continue;
-        };
-        let retired = state.with_doc(|doc| {
-            let Some(mut session) = doc.get_bokeh_session(session_id) else {
-                return Ok(false);
-            };
-            if session.kernel_id != expected_kernel_id
-                || session.status != runtime_doc::BokehSessionStatus::Connected
-            {
-                return Ok(false);
-            }
-            // Reject in-flight events/checkpoints before dispatching the close.
-            // Only the runtime agent writes this terminal transition.
-            session.status = runtime_doc::BokehSessionStatus::Closed;
-            doc.put_bokeh_session(session_id, &session)?;
-            Ok(true)
-        })?;
-        if retired {
-            let id = session_id.clone();
-            let task =
-                crate::task_supervisor::spawn_best_effort("bokeh-session-close", async move {
-                    if let Err(error) = close.await {
-                        warn!("[bokeh-session] Failed to close retired session {id}: {error}");
-                    }
-                });
-            tasks.insert(session_id.clone(), task);
-        }
-    }
-    Ok(())
-}
-
-fn start_visualization_state_command(
-    command: VisualizationStateCommand,
-    ctx: &RuntimeAgentContext,
-    kernel: Option<&Kernel>,
-    tasks: &mut HashMap<String, tokio::task::JoinHandle<()>>,
-) -> anyhow::Result<()> {
-    let VisualizationStateCommand::CheckpointBokehSession { session_id, force } = command;
-    let Some(kernel) = kernel else {
-        return Ok(());
-    };
-    if tasks
-        .get(&session_id)
-        .is_some_and(|task| !task.is_finished())
-    {
-        return Ok(());
-    }
-    tasks.remove(&session_id);
-
-    let should_checkpoint = ctx
-        .state
-        .read(|state_doc| {
-            state_doc
-                .get_bokeh_session(&session_id)
-                .is_some_and(|session| {
-                    session.kernel_id == kernel.kernel_id()
-                        && session.status == runtime_doc::BokehSessionStatus::Connected
-                        && (force
-                            || session.patch_tail.len()
-                                >= crate::bokeh_session::BOKEH_PATCH_CHECKPOINT_THRESHOLD)
-                })
-        })
-        .unwrap_or(false);
-    if !should_checkpoint {
-        return Ok(());
-    }
-
-    let Some(checkpoint_request) = kernel.bokeh_session_checkpoint_request(session_id.clone())
-    else {
-        return Ok(());
-    };
-    let expected_kernel_id = kernel.kernel_id().to_string();
-    let state = ctx.state.clone();
-    let blob_store = ctx.blob_store.clone();
-    let blob_publisher = ctx.output_blob_publisher.clone();
-    let task_session_id = session_id.clone();
-    let task = crate::task_supervisor::spawn_best_effort("bokeh-checkpoint-persist", async move {
-        let result = async {
-            let checkpoint = checkpoint_request.await?;
-            if !force {
-                // The kernel snapshots at its own head, which can run well ahead
-                // of ingest while a callback streams updates. Giving up early
-                // lets the tail reach its hard limit and forces a resync.
-                for _ in 0..BOKEH_CHECKPOINT_CATCH_UP_POLLS {
-                    let caught_up = state
-                        .read(|state_doc| {
-                            state_doc
-                                .get_bokeh_session(&task_session_id)
-                                .is_some_and(|session| session.head_revision >= checkpoint.revision)
-                        })
-                        .unwrap_or(false);
-                    if caught_up {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-                }
-            }
-            // If the catch-up wait expires, persist_checkpoint rejects a
-            // still-ahead revision after publishing its content-addressed
-            // artifact. It remains unreferenced and the normal blob GC grace
-            // reclaims it while the prior checkpoint stays canonical.
-            crate::bokeh_session::persist_checkpoint(
-                &checkpoint,
-                &expected_kernel_id,
-                force,
-                &state,
-                &blob_store,
-                &blob_publisher,
-            )
-            .await
-        }
-        .await;
-        if let Err(error) = result {
-            warn!(
-                "[bokeh-session] Failed to checkpoint session {}: {error}",
-                task_session_id
-            );
-        }
-    });
-    tasks.insert(session_id, task);
     Ok(())
 }
 
@@ -3346,7 +3150,7 @@ fn set_json_path(root: &mut serde_json::Value, path: &[String], value: serde_jso
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
     use crate::output_prep::queue_command_channels;
@@ -3553,17 +3357,17 @@ mod tests {
 
     // -- keyed documents through the agent loop ----------------------------
 
-    type InboundTx = mpsc::UnboundedSender<std::io::Result<TypedNotebookFrame>>;
-    type OutboundRx = mpsc::UnboundedReceiver<(NotebookFrameType, Vec<u8>)>;
+    pub(crate) type InboundTx = mpsc::UnboundedSender<std::io::Result<TypedNotebookFrame>>;
+    pub(crate) type OutboundRx = mpsc::UnboundedReceiver<(NotebookFrameType, Vec<u8>)>;
 
-    struct ChannelSource(mpsc::UnboundedReceiver<std::io::Result<TypedNotebookFrame>>);
+    pub(crate) struct ChannelSource(mpsc::UnboundedReceiver<std::io::Result<TypedNotebookFrame>>);
     impl FrameSource for ChannelSource {
         async fn recv_frame(&mut self) -> Option<std::io::Result<TypedNotebookFrame>> {
             self.0.recv().await
         }
     }
 
-    struct ChannelSink(mpsc::UnboundedSender<(NotebookFrameType, Vec<u8>)>);
+    pub(crate) struct ChannelSink(mpsc::UnboundedSender<(NotebookFrameType, Vec<u8>)>);
     impl FrameSink for ChannelSink {
         async fn send_frame(
             &mut self,
@@ -3578,8 +3382,8 @@ mod tests {
 
     /// Hands out prepared in-memory connections in order. Read errors are
     /// recoverable and a clean EOF ends the agent, like the UDS transport.
-    struct ChannelTransport(
-        std::sync::Mutex<std::collections::VecDeque<(ChannelSource, ChannelSink)>>,
+    pub(crate) struct ChannelTransport(
+        pub(crate) std::sync::Mutex<std::collections::VecDeque<(ChannelSource, ChannelSink)>>,
     );
     impl FrameTransport for ChannelTransport {
         type Source = ChannelSource;
@@ -3594,7 +3398,7 @@ mod tests {
         }
     }
 
-    fn channel_connection() -> ((ChannelSource, ChannelSink), InboundTx, OutboundRx) {
+    pub(crate) fn channel_connection() -> ((ChannelSource, ChannelSink), InboundTx, OutboundRx) {
         let (in_tx, in_rx) = mpsc::unbounded_channel();
         let (out_tx, out_rx) = mpsc::unbounded_channel();
         ((ChannelSource(in_rx), ChannelSink(out_tx)), in_tx, out_rx)
@@ -3607,7 +3411,7 @@ mod tests {
         })
     }
 
-    fn coordinator_kinds(kinds: &[&str]) -> std::io::Result<TypedNotebookFrame> {
+    pub(crate) fn coordinator_kinds(kinds: &[&str]) -> std::io::Result<TypedNotebookFrame> {
         session_control(serde_json::json!({
             "type": "runtime_agent_capabilities",
             "keyed_doc_kinds": kinds,
@@ -3615,7 +3419,10 @@ mod tests {
     }
 
     /// Keyed frames the agent sent within `window`.
-    async fn keyed_frames_within(out: &mut OutboundRx, window: Duration) -> Vec<Vec<u8>> {
+    pub(crate) async fn keyed_frames_within(
+        out: &mut OutboundRx,
+        window: Duration,
+    ) -> Vec<Vec<u8>> {
         let mut frames = Vec::new();
         let deadline = tokio::time::Instant::now() + window;
         while let Ok(Some((frame_type, payload))) =
@@ -3628,7 +3435,7 @@ mod tests {
         frames
     }
 
-    async fn next_keyed_frame(out: &mut OutboundRx) -> Vec<u8> {
+    pub(crate) async fn next_keyed_frame(out: &mut OutboundRx) -> Vec<u8> {
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let (frame_type, payload) = out.recv().await.expect("agent connection open");
@@ -3663,7 +3470,13 @@ mod tests {
             |_| Ok("runtime-agent:keyed-doc-test".to_string()),
             OutputBlobPublisher::none(),
             None,
-            vec![producer.clone() as Arc<dyn AgentKeyedDoc>],
+            {
+                let producer = producer.clone();
+                move |_: &AgentExtensionInit| {
+                    AgentExtensions::default()
+                        .with_keyed_docs(vec![producer as Arc<dyn crate::keyed_doc::AgentKeyedDoc>])
+                }
+            },
         ));
 
         let quiet = Duration::from_millis(300);
@@ -4180,12 +3993,6 @@ mod tests {
         fn kernel_id(&self) -> &str {
             "kernel-test"
         }
-        fn bokeh_session_close_request(
-            &self,
-            _: String,
-        ) -> Option<crate::bokeh_session::BokehCloseFuture> {
-            Some(Box::pin(std::future::pending()))
-        }
         async fn complete(
             &mut self,
             _: &str,
@@ -4220,56 +4027,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bokeh_retirement_closes_before_reply_and_rejects_old_kernel_identity() {
-        let (_, _, state) = test_fixtures();
-        let original: runtime_doc::BokehSessionState = serde_json::from_value(serde_json::json!({
-            "output_id": "output-1", "execution_id": "exec-1", "cell_id": "cell-1",
-            "kernel_id": "kernel-test", "status": "connected", "head_revision": 2,
-            "producer_name": "panel", "producer_version": "1", "bokeh_version": "3"
-        }))
-        .unwrap();
-        state
-            .with_doc(|doc| doc.put_bokeh_session("session-1", &original))
-            .unwrap();
-        let ids = vec!["session-1".to_string()];
-        let mut tasks = HashMap::new();
-        retire_bokeh_sessions(&state, &MockKernel, "previous-kernel", &ids, &mut tasks).unwrap();
-        assert!(tasks.is_empty());
-        assert_eq!(
-            state
-                .read(|doc| doc.get_bokeh_session("session-1"))
-                .unwrap(),
-            Some(original.clone())
-        );
-
-        retire_bokeh_sessions(&state, &MockKernel, "kernel-test", &ids, &mut tasks).unwrap();
-        let closed = state
-            .read(|doc| doc.get_bokeh_session("session-1"))
-            .unwrap()
-            .unwrap();
-        assert_eq!(closed.status, runtime_doc::BokehSessionStatus::Closed);
-        assert_eq!(closed.head_revision, original.head_revision);
-        assert_eq!(tasks.len(), 1);
-        assert!(
-            !tasks["session-1"].is_finished(),
-            "kernel acknowledgement must not block the agent loop"
-        );
-        retire_bokeh_sessions(&state, &MockKernel, "kernel-test", &ids, &mut tasks).unwrap();
-        assert_eq!(tasks.len(), 1, "duplicate retirement is idempotent");
-        tasks.remove("session-1").unwrap().abort();
-    }
-
-    #[tokio::test]
-    async fn bokeh_retirement_tasks_are_cancelled_when_kernel_channels_change() {
+    async fn extension_tasks_are_cancelled_when_kernel_channels_change() {
         let (_, state, _) = test_fixtures();
         let mut session = KernelSession::new(state);
         let task = tokio::spawn(std::future::pending::<()>());
         let aborted = task.abort_handle();
-        session.retirement_tasks.insert("session-1".into(), task);
+        session.extension_tasks.insert("task-1".into(), task);
         session.install_kernel_channels(None);
         tokio::task::yield_now().await;
         assert!(aborted.is_finished());
-        assert!(session.retirement_tasks.is_empty());
+        assert!(session.extension_tasks.is_empty());
     }
 
     fn comm_state(state: serde_json::Value) -> serde_json::Value {
@@ -4297,6 +4064,7 @@ mod tests {
             presence_tx,
             runtime_agent_id: "test-runtime-agent".to_string(),
             kernel_actor_principal: None,
+            extensions: Default::default(),
         };
         let state = KernelState::new(handle.clone());
         (ctx, state, handle)
@@ -4332,6 +4100,7 @@ mod tests {
             presence: ctx.presence.clone(),
             presence_tx: ctx.presence_tx.clone(),
             kernel_actor_principal: ctx.kernel_actor_principal.clone(),
+            extensions: ctx.extensions.clone(),
         }
     }
 
@@ -4910,7 +4679,7 @@ mod tests {
     async fn lifecycle_drain_runs_before_queued_work() {
         let (ctx, mut state, handle) = test_fixtures();
         state.set_idle();
-        let (lifecycle_tx, _visualization_tx, work_tx, mut receivers) = queue_command_channels(1);
+        let (lifecycle_tx, work_tx, mut receivers) = queue_command_channels(1);
 
         work_tx
             .try_send(WorkCommand::SendCommUpdate {

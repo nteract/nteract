@@ -11,6 +11,8 @@
  * `useRuntimeState()` instead of subscribing to broadcasts.
  */
 
+import type { BokehSessionEvents } from "./request-types";
+
 // ── Broadcast interfaces ────────────────────────────────────────────
 
 export interface CommBroadcast {
@@ -20,42 +22,14 @@ export interface CommBroadcast {
   buffers: number[][];
 }
 
-export interface BokehSessionBufferRef {
-  id: string;
-  blob: string;
-  size: number;
-  media_type: string;
-}
-
-export interface BokehSessionPatchPayload {
-  patch: Record<string, unknown>;
-  buffers: BokehSessionBufferRef[];
-}
-
-export interface BokehSessionCheckpointPayload {
-  session_id: string;
-  revision: number;
-  document: Record<string, unknown>;
-  buffers: BokehSessionBufferRef[];
-}
-
-export interface BokehSessionPatchEvent {
-  session_id: string;
-  transaction_id: string;
-  base_revision: number;
-  revision: number;
-  client_patch?: BokehSessionPatchPayload;
-  server_patch?: BokehSessionPatchPayload;
-  checkpoint?: BokehSessionCheckpointPayload;
-}
-
-export interface BokehSessionPatchBroadcast {
-  event: "bokeh_session_patch";
-  patch: BokehSessionPatchEvent;
+/** Bokeh data events and Python messages for one session. */
+export interface BokehSessionEventsBroadcast {
+  event: "bokeh_session_events";
+  events: BokehSessionEvents;
 }
 
 /** Union of all known broadcast types with an `event` field. */
-export type KnownBroadcast = CommBroadcast | BokehSessionPatchBroadcast;
+export type KnownBroadcast = CommBroadcast | BokehSessionEventsBroadcast;
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -72,8 +46,8 @@ export function isCommBroadcast(payload: unknown): payload is CommBroadcast {
   return hasBroadcastEvent(payload) && payload.event === "comm";
 }
 
-export function isBokehSessionPatchBroadcast(
+export function isBokehSessionEventsBroadcast(
   payload: unknown,
-): payload is BokehSessionPatchBroadcast {
-  return hasBroadcastEvent(payload) && payload.event === "bokeh_session_patch";
+): payload is BokehSessionEventsBroadcast {
+  return hasBroadcastEvent(payload) && payload.event === "bokeh_session_events";
 }

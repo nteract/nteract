@@ -1197,6 +1197,119 @@
   {
     "annotations": {
       "destructiveHint": true,
+      "openWorldHint": true
+    },
+    "description": "Set a property value in a cell's Bokeh/Panel output; runs Python callbacks. Values only, not structure.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
+      "properties": {
+        "cell_id": {
+          "description": "Cell whose output holds the Bokeh/Panel session.",
+          "type": "string"
+        },
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "description": "Model id from the output summary (a unique prefix works), or a\nwidget's label, title or name.",
+          "type": "string"
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_id": {
+          "default": null,
+          "description": "Output id, when the cell displays more than one session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "property": {
+          "description": "Property name, e.g. \"value\". Properties that hold model references\n(children, renderers, ...) cannot be set.",
+          "type": "string"
+        },
+        "value": {
+          "description": "New value in Bokeh's JSON encoding, e.g. 42, \"abc\" or [0, 10]."
+        },
+        "wait_ms": {
+          "default": null,
+          "description": "Milliseconds to wait for values Python sets (0–5000, default\n1500). Python does not echo a value it accepts unchanged.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "cell_id",
+        "model",
+        "property",
+        "value"
+      ],
+      "title": "SetBokehPropertyParams",
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
+    },
+    "name": "set_bokeh_property"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
       "idempotentHint": true,
       "openWorldHint": false
     },

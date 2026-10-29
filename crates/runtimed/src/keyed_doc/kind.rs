@@ -20,7 +20,8 @@ use crate::blob_store::BlobStore;
 /// room-side state.
 ///
 /// The hub calls `write_permission`, `validate_peer_changes`,
-/// `referenced_blobs` and `on_runtime_change` while holding its document
+/// `referenced_blobs`, `is_runtime_snapshot_ready` and `on_runtime_change`
+/// while holding its document
 /// lock; those must not touch `RuntimeStateHandle` or the hub, or they invert
 /// the lock order. `kind`, `frame_limits`, `record`, `room_blob_roots`,
 /// `observe_runtime_broadcast` and `on_runtime_agent_lost` run without it.
@@ -69,6 +70,13 @@ pub(crate) trait KeyedDocKind: Send + Sync + 'static {
     /// Every runtime-agent broadcast, after validation, before fan-out.
     fn observe_runtime_broadcast(&self, _broadcast: &NotebookBroadcast) {}
 
+    /// Whether a fully received runtime document can replace the previous
+    /// epoch's recovery replica. Called under the hub lock after all advertised
+    /// heads and dependencies arrived; kinds may require their own scaffold.
+    fn is_runtime_snapshot_ready(&self, _epoch: u64, _doc: &AutoCommit) -> bool {
+        true
+    }
+
     /// A runtime-agent frame changed `id`; `doc` is the hub replica after it.
     fn on_runtime_change(&self, _id: &str, _epoch: u64, _doc: &AutoCommit) {}
 
@@ -86,10 +94,6 @@ pub(crate) trait KeyedDocKind: Send + Sync + 'static {
     }
 }
 
-#[expect(
-    dead_code,
-    reason = "kind-facing seam; production callers arrive with the first registered kind"
-)]
 pub(crate) struct RoomKindCtx<'a> {
     pub state: &'a RuntimeStateHandle,
     pub blob_store: &'a Arc<BlobStore>,

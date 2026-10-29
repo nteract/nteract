@@ -21,6 +21,7 @@ import {
   type SessionStatus,
 } from "runtimed";
 import {
+  type BokehSessionDocReplica,
   installBokehSessionPlugin,
   IsolationTest,
   useBokehSessionPlugin,
@@ -94,6 +95,7 @@ import {
   setCommentsProjectionSnapshot,
   useCommentsProjection,
 } from "./lib/comments-projection-store";
+import { connectionScopeAllowsNotebookWrite } from "./lib/connection-scope";
 import { createDesktopConnectionStatusSource } from "./lib/desktop-connection-status";
 import {
   CondaDependencyPanel as CondaDependencyHeader,
@@ -156,6 +158,7 @@ import { getTrustApprovalHandoffDisplayStatus, KERNEL_STATUS } from "./lib/kerne
 import { useNotebookActionPolicy } from "./lib/notebook-action-policy";
 import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
+import { BokehSessionDocHandle } from "./lib/runtimed-wasm";
 import { hostedNotebookWindowTitle } from "./lib/hosted-notebook-url";
 import { fileSourceIssueNotice, notebookDocumentIsDirty } from "./lib/notebook-file-state";
 import {
@@ -243,10 +246,6 @@ function createClientExecutionId(): string {
 
 function createLocalCommentEntityId(prefix: "thread" | "message"): string {
   return `${prefix}-${globalThis.crypto.randomUUID()}`;
-}
-
-function canConnectionScopeMutateComments(connectionScope: string | null): boolean {
-  return connectionScope === null || connectionScope === "editor" || connectionScope === "owner";
 }
 
 function commentAnchorThreadOrderScope(anchor: CommentAnchor): string {
@@ -632,11 +631,24 @@ function AppContent() {
     [host, getHandle, getEngine],
   );
 
+  const createBokehReplica = useCallback(
+    (sessionId: string, epoch: number) =>
+      new BokehSessionDocHandle(
+        sessionId,
+        epoch,
+        getHandle()?.get_actor_id() ?? "",
+      ) as unknown as BokehSessionDocReplica,
+    [getHandle],
+  );
   const outputSessionRuntimes = useBokehSessionPlugin({
     sessions: runtimeState.bokeh_sessions,
+    engine: getEngine(),
     blobResolver: useBlobResolver(),
-    patches: getEngine()?.bokehSessionPatchBroadcasts$ ?? null,
     client: notebookClient,
+    createReplica: createBokehReplica,
+    // The hub refuses a viewer's session writes.
+    canWrite: connectionScopeAllowsNotebookWrite(connectionScope),
+    logger,
   });
 
   // Daemon-owned kernel execution
@@ -756,7 +768,7 @@ function AppContent() {
   const canMutateComments =
     commentsEnabled &&
     Boolean(commentsProjection) &&
-    canConnectionScopeMutateComments(connectionScope);
+    connectionScopeAllowsNotebookWrite(connectionScope);
   const commentsPanelStatus =
     commentsProjection === null
       ? "Comments sync unavailable."

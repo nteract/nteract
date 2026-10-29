@@ -1,3 +1,4 @@
+mod bokeh_session_doc;
 mod bokeh_session_policy;
 mod comms;
 mod doc;
@@ -8,6 +9,15 @@ mod policy;
 mod projection;
 mod types;
 
+pub use bokeh_session_doc::{
+    bokeh_prop_blob_threshold, bokeh_prop_needs_blob, BokehBlobRef, BokehColumnRef,
+    BokehForeignSyncView, BokehModelState, BokehReplacementPolicy, BokehReplacementTracker,
+    BokehSessionChangeset, BokehSessionDoc, BokehSessionDocDelta, BokehSessionDocMut,
+    BokehSessionDocOf, BokehSessionDocRef, BokehSessionIngressError, BokehSessionMeta,
+    BokehSessionReplacement, BokehSessionSnapshot, BokehSessionWriteContext,
+    BokehSessionWriteRejection, BokehWritePermission, BOKEH_ARRAY_PROP_BLOB_THRESHOLD,
+    BOKEH_PROP_BLOB_THRESHOLD, BOKEH_SESSION_DOC_SCHEMA_VERSION,
+};
 pub use comms::{CommsDoc, CommsDocHandle, CommsForeignSyncView, CommsState};
 pub use doc::*;
 pub use error::RuntimeStateError;

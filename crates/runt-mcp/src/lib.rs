@@ -22,6 +22,7 @@ use rmcp::{ErrorData as McpError, ServerHandler};
 use tokio::sync::RwLock;
 
 pub mod attachments;
+mod bokeh;
 pub mod cli;
 pub mod cloud;
 pub mod daemon_watch;
@@ -29,6 +30,7 @@ pub mod editing;
 pub mod execution;
 pub mod formatting;
 mod icons;
+mod live_views;
 mod notebook_target;
 pub mod observation;
 pub mod presence;

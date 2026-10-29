@@ -16,7 +16,12 @@ presence, blobs, and session status.
   `0x00` NotebookDoc, `0x05` RuntimeStateDoc, `0x06` PoolDoc, `0x09` CommsDoc,
   and `0x0a` CommentsDocSync, plus request, response, presence, session-control,
   and `PUT_BLOB` frames. Frontend WASM (`runtimed-wasm`) relays CommentsDocSync
-  via `relay_task` for UI integration.
+  via `relay_task` for UI integration. `0x0b` KeyedDocSync is piped by
+  `relay_task` for the frontend; `sync_task` keeps keyed replicas
+  (`keyed_doc.rs`) only for documents a caller opened and only for kinds the
+  daemon advertises. `bokeh.rs` builds the Bokeh session API on them
+  (`BokehDocHandleExt`, used by the MCP summary and `set_bokeh_property`);
+  writes are property values, and the daemon hub refuses with `doc_resync`.
 - `execution_wait` / `execution_watch` observe RuntimeStateDoc terminal state;
   RuntimeStateDoc is the durable execution/output record, not broadcast replay.
 - `relay` / `relay_task` are byte-pipe helpers for app relay paths; they do not

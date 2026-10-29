@@ -6,7 +6,7 @@
  * plugin; the nteract payload remaps the sibling data into one object.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { RendererInstallContext, RendererProps } from "@/lib/renderer-registry";
 import {
   BOKEHJS_EXEC_MIME_TYPE,
@@ -226,6 +226,7 @@ function nativeBokehRuntime(expectedVersion: string): BokehRuntime {
   };
   const serializationModule = bokeh.require("core/serialization") as {
     Buffer?: BokehRuntime["Buffer"];
+    Serializer?: BokehRuntime["Serializer"];
   };
   const deserializerModule = bokeh.require("core/serialization/deserializer") as {
     Deserializer?: BokehRuntime["Deserializer"];
@@ -240,6 +241,7 @@ function nativeBokehRuntime(expectedVersion: string): BokehRuntime {
   return {
     Document: documentModule.Document,
     Buffer: serializationModule.Buffer,
+    Serializer: serializationModule.Serializer,
     Deserializer: deserializerModule.Deserializer,
     addDocumentStandalone: embedModule.add_document_standalone,
   };
@@ -432,8 +434,10 @@ function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<BokehSessionController | null>(null);
   const [status, setStatus] = useState<NteractBokehSessionStatus | null>(null);
+  const [readOnly, setReadOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasMountedDocument, setHasMountedDocument] = useState(false);
+  const viewOnlyLabelId = useId();
   // The host re-sends output payloads as fresh structured clones whenever the
   // output area re-renders. A session is identified by its id, so only a new
   // session (or output) may tear down and remount the live document.
@@ -446,6 +450,7 @@ function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
     if (!container) return;
     const data = dataRef.current;
     setStatus(null);
+    setReadOnly(false);
     setError(null);
     setHasMountedDocument(false);
     if (!isBokehSessionMimePayload(data)) {
@@ -480,6 +485,9 @@ function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
           setStatus(nextStatus);
           setError(nextError ?? null);
         },
+        onReadOnly: (nextReadOnly) => {
+          if (!cancelled) setReadOnly(nextReadOnly);
+        },
         onLayout: () => {
           if (cancelled) return;
           setHasMountedDocument(container.childNodes.length > 0);
@@ -503,13 +511,26 @@ function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
     };
   }, [sessionKey, outputId]);
 
+  useEffect(() => {
+    if (hasMountedDocument) requestHostResize();
+  }, [readOnly, hasMountedDocument]);
+
   const disconnected = status !== null && status !== "connected";
   const statusLabel =
     status === "closed" ? "Session closed" : status === "error" ? "Session error" : "Disconnected";
 
   return (
     <div className="relative" data-slot="bokeh-session-output">
-      <div ref={containerRef} />
+      <div ref={containerRef} aria-describedby={readOnly ? viewOnlyLabelId : undefined} />
+      {readOnly ? (
+        <div
+          id={viewOnlyLabelId}
+          className="mt-1 text-right text-xs text-muted-foreground"
+          title="This connection cannot change the session"
+        >
+          View only
+        </div>
+      ) : null}
       {disconnected && hasMountedDocument ? (
         <div className="absolute inset-0 flex items-center justify-center bg-background/60 text-sm font-medium text-foreground backdrop-blur-[1px]">
           <span title={error ?? undefined}>{statusLabel}</span>

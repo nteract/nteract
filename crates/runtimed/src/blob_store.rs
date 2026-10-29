@@ -14,10 +14,13 @@
 //! All writes are atomic: data is written to a temp file in the shard
 //! directory and renamed into place, so readers never see partial writes.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex, MutexGuard,
+};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -34,19 +37,11 @@ pub const MAX_BLOB_SIZE: usize = 100 * 1024 * 1024;
 /// Maximum bytes retained in the ephemeral in-memory layer (64 MiB).
 pub const EPHEMERAL_BLOB_CAP_BYTES: usize = 64 * 1024 * 1024;
 const BLOB_FILE_LOCK_RETRY_MS: u64 = 10;
-const BLOB_FILE_LOCK_STALE_SECS: u64 = 60;
 const BLOB_FILE_LOCK_TIMEOUT_SECS: u64 = 10;
 
+// Stable shard inode: never unlink a lock file while another process may hold it.
 struct BlobFileLock {
-    path: PathBuf,
-    file: Option<std::fs::File>,
-}
-
-impl Drop for BlobFileLock {
-    fn drop(&mut self) {
-        self.file.take();
-        std::fs::remove_file(&self.path).ok();
-    }
+    _file: std::fs::File,
 }
 
 /// Metadata stored alongside each blob.
@@ -57,6 +52,40 @@ pub struct BlobMeta {
     pub created_at: DateTime<Utc>,
     #[serde(default = "default_blob_durability")]
     pub durability: BlobDurability,
+    /// Explicit producer leases. Legacy/unmanaged ephemeral blobs have none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    ephemeral_leases: BTreeMap<String, u64>,
+}
+
+/// One producer's independent ownership of ephemeral blobs in the shared store.
+#[derive(Clone, Debug)]
+pub(crate) struct EphemeralBlobOwner {
+    id: String,
+    generation: Arc<AtomicU64>,
+}
+
+impl Default for EphemeralBlobOwner {
+    fn default() -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            generation: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl EphemeralBlobOwner {
+    pub(crate) fn next_lease(&self) -> EphemeralBlobLease {
+        EphemeralBlobLease {
+            owner: self.id.clone(),
+            generation: self.generation.fetch_add(1, Ordering::Relaxed) + 1,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct EphemeralBlobLease {
+    owner: String,
+    pub(crate) generation: u64,
 }
 
 fn default_blob_durability() -> BlobDurability {
@@ -69,13 +98,6 @@ fn merged_durability(existing: BlobDurability, incoming: BlobDurability) -> Blob
     } else {
         BlobDurability::Ephemeral
     }
-}
-
-fn lock_is_stale(path: &Path) -> bool {
-    std::fs::metadata(path)
-        .and_then(|meta| meta.modified())
-        .and_then(|modified| modified.elapsed().map_err(io::Error::other))
-        .is_ok_and(|age| age > Duration::from_secs(BLOB_FILE_LOCK_STALE_SECS))
 }
 
 #[derive(Debug)]
@@ -117,6 +139,7 @@ impl MemoryEntry {
             size: self.data.len() as u64,
             created_at: self.created_at,
             durability: self.durability,
+            ephemeral_leases: BTreeMap::new(),
         }
     }
 }
@@ -303,6 +326,29 @@ impl BlobStore {
         media_type: &str,
         durability: BlobDurability,
     ) -> io::Result<String> {
+        self.put_with_lease(data, media_type, durability, None)
+            .await
+    }
+
+    /// Acquire a producer lease in the same file-lock transaction as the write.
+    /// Other producers must release their own leases before eager deletion.
+    pub(crate) async fn put_leased_ephemeral(
+        &self,
+        data: &[u8],
+        media_type: &str,
+        lease: &EphemeralBlobLease,
+    ) -> io::Result<String> {
+        self.put_with_lease(data, media_type, BlobDurability::Ephemeral, Some(lease))
+            .await
+    }
+
+    async fn put_with_lease(
+        &self,
+        data: &[u8],
+        media_type: &str,
+        durability: BlobDurability,
+        lease: Option<&EphemeralBlobLease>,
+    ) -> io::Result<String> {
         if data.len() > MAX_BLOB_SIZE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -320,7 +366,7 @@ impl BlobStore {
         match durability {
             BlobDurability::Durable => {
                 let effective_durability = self
-                    .put_disk(&hash, data, media_type, created_at, BlobDurability::Durable)
+                    .put_disk(&hash, data, media_type, BlobDurability::Durable, None)
                     .await?;
                 self.insert_memory(
                     &hash,
@@ -333,13 +379,7 @@ impl BlobStore {
             }
             BlobDurability::Ephemeral => {
                 let effective_durability = self
-                    .put_disk(
-                        &hash,
-                        data,
-                        media_type,
-                        created_at,
-                        BlobDurability::Ephemeral,
-                    )
+                    .put_disk(&hash, data, media_type, BlobDurability::Ephemeral, lease)
                     .await?;
                 if data.len() > self.memory_cap() {
                     // A single entry larger than the cap can never be cached
@@ -370,37 +410,55 @@ impl BlobStore {
         hash: &str,
         data: &[u8],
         media_type: &str,
-        created_at: DateTime<Utc>,
         durability: BlobDurability,
+        lease: Option<&EphemeralBlobLease>,
     ) -> io::Result<BlobDurability> {
         let (shard_dir, blob_path, meta_path) = self.paths(hash);
         let _lock = self.acquire_blob_file_lock(&shard_dir, &meta_path).await?;
-
+        // Timestamp the actual write, after any lock wait, so a mark pass that
+        // ran during the wait cannot sweep the new upload with zero grace.
+        let created_at = Utc::now();
         // Fast path: both files already present.
         // If the caller provides a different media_type than what's stored,
         // update the metadata sidecar (e.g., blob was first stored as
         // application/json but is now text/javascript for anywidget _esm).
-        if blob_path.exists() && meta_path.exists() {
-            if let Ok(existing_meta_json) = tokio::fs::read_to_string(&meta_path).await {
-                if let Ok(existing_meta) = serde_json::from_str::<BlobMeta>(&existing_meta_json) {
-                    let updated_durability =
-                        merged_durability(existing_meta.durability, durability);
-                    if existing_meta.media_type != media_type
-                        || existing_meta.durability != updated_durability
-                    {
-                        let updated = BlobMeta {
-                            media_type: media_type.to_string(),
-                            durability: updated_durability,
-                            ..existing_meta
-                        };
-                        if let Ok(json) = serde_json::to_string(&updated) {
-                            tokio::fs::write(&meta_path, json).await.ok();
-                        }
-                    }
-                    return Ok(updated_durability);
+        if meta_path.exists() {
+            // Fail closed on unreadable metadata: discarding another producer's
+            // lease would turn a harmless write into a later data-loss hazard.
+            let json = tokio::fs::read_to_string(&meta_path).await?;
+            let mut meta: BlobMeta = serde_json::from_str(&json).map_err(io::Error::other)?;
+            let mixed_ownership = meta.durability == BlobDurability::Ephemeral
+                && durability == BlobDurability::Ephemeral
+                && (lease.is_some() != !meta.ephemeral_leases.is_empty());
+            meta.durability = if mixed_ownership {
+                // Unmanaged comm buffers have no release token. On a shared hash
+                // keep both producers safe and let ordinary mark-and-sweep own
+                // reclamation. Normal leased animation blobs still retire eagerly.
+                BlobDurability::Durable
+            } else {
+                merged_durability(meta.durability, durability)
+            };
+            meta.media_type = media_type.to_string();
+            meta.created_at = created_at;
+            if meta.durability == BlobDurability::Durable {
+                meta.ephemeral_leases.clear();
+            } else if let Some(lease) = lease {
+                let generation = meta
+                    .ephemeral_leases
+                    .entry(lease.owner.clone())
+                    .or_default();
+                *generation = (*generation).max(lease.generation);
+            }
+            if !blob_path.exists() {
+                let tmp = shard_dir.join(format!(".tmp.{}", uuid::Uuid::new_v4()));
+                tokio::fs::write(&tmp, data).await?;
+                if let Err(error) = tokio::fs::rename(&tmp, &blob_path).await {
+                    tokio::fs::remove_file(&tmp).await.ok();
+                    return Err(error);
                 }
             }
-            return Ok(durability);
+            self.write_meta(&shard_dir, &meta_path, &meta).await?;
+            return Ok(meta.durability);
         }
 
         // --- Blob ---
@@ -437,6 +495,9 @@ impl BlobStore {
             size: data.len() as u64,
             created_at,
             durability,
+            ephemeral_leases: lease
+                .map(|lease| BTreeMap::from([(lease.owner.clone(), lease.generation)]))
+                .unwrap_or_default(),
         };
         let meta_json = serde_json::to_string(&meta).map_err(io::Error::other)?;
 
@@ -450,7 +511,7 @@ impl BlobStore {
             Ok(()) => {}
             Err(e) => {
                 tokio::fs::remove_file(&tmp_meta).await.ok();
-                if meta_path.exists() {
+                if meta_path.exists() && lease.is_none() {
                     // Concurrent writer placed metadata — done.
                     return Ok(durability);
                 }
@@ -487,31 +548,29 @@ impl BlobStore {
             ));
         }
 
-        let created_at = Utc::now();
         let (shard_dir, blob_path, meta_path) = self.paths(expected_hash);
         let _lock = self.acquire_blob_file_lock(&shard_dir, &meta_path).await?;
-
-        if blob_path.exists() && meta_path.exists() {
-            if let Ok(existing_meta_json) = tokio::fs::read_to_string(&meta_path).await {
-                if let Ok(existing_meta) = serde_json::from_str::<BlobMeta>(&existing_meta_json) {
-                    let updated_durability =
-                        merged_durability(existing_meta.durability, durability);
-                    if existing_meta.media_type != media_type
-                        || existing_meta.durability != updated_durability
-                    {
-                        let updated = BlobMeta {
-                            media_type: media_type.to_string(),
-                            durability: updated_durability,
-                            ..existing_meta
-                        };
-                        if let Ok(json) = serde_json::to_string(&updated) {
-                            tokio::fs::write(&meta_path, json).await.ok();
-                        }
-                    }
-                    return Ok(expected_hash.to_string());
-                }
+        let created_at = Utc::now();
+        let existing_meta = if meta_path.exists() {
+            let json = tokio::fs::read_to_string(&meta_path).await?;
+            let mut meta: BlobMeta = serde_json::from_str(&json).map_err(io::Error::other)?;
+            meta.durability = if !meta.ephemeral_leases.is_empty() {
+                BlobDurability::Durable
+            } else {
+                merged_durability(meta.durability, durability)
+            };
+            meta.ephemeral_leases.clear();
+            meta.media_type = media_type.to_string();
+            meta.created_at = created_at;
+            Some(meta)
+        } else {
+            None
+        };
+        if blob_path.exists() {
+            if let Some(meta) = &existing_meta {
+                self.write_meta(&shard_dir, &meta_path, meta).await?;
+                return Ok(expected_hash.to_string());
             }
-            return Ok(expected_hash.to_string());
         }
 
         let tmp_blob = shard_dir.join(format!(".tmp.{}", uuid::Uuid::new_v4()));
@@ -573,12 +632,13 @@ impl BlobStore {
             }
         }
 
-        let meta = BlobMeta {
+        let meta = existing_meta.unwrap_or_else(|| BlobMeta {
             media_type: media_type.to_string(),
             size: expected_size,
             created_at,
             durability,
-        };
+            ephemeral_leases: BTreeMap::new(),
+        });
         let meta_json = serde_json::to_string(&meta).map_err(io::Error::other)?;
         let tmp_meta = shard_dir.join(format!(".tmp.{}.meta", uuid::Uuid::new_v4()));
         match async {
@@ -635,29 +695,22 @@ impl BlobStore {
     async fn acquire_blob_file_lock(
         &self,
         shard_dir: &Path,
-        meta_path: &Path,
+        _meta_path: &Path,
     ) -> io::Result<BlobFileLock> {
         tokio::fs::create_dir_all(shard_dir).await?;
-        let lock_path = meta_path.with_extension("lock");
+        // At most 256 persistent lock files, independent of animation churn.
+        let lock_path = shard_dir.join(".writer.lock");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
         let started = Instant::now();
-
         loop {
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&lock_path)
-            {
-                Ok(file) => {
-                    return Ok(BlobFileLock {
-                        path: lock_path,
-                        file: Some(file),
-                    });
-                }
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                    if lock_is_stale(&lock_path) {
-                        std::fs::remove_file(&lock_path).ok();
-                        continue;
-                    }
+            match file.try_lock() {
+                Ok(()) => return Ok(BlobFileLock { _file: file }),
+                Err(std::fs::TryLockError::WouldBlock) => {
                     if started.elapsed() >= Duration::from_secs(BLOB_FILE_LOCK_TIMEOUT_SECS) {
                         return Err(io::Error::new(
                             io::ErrorKind::WouldBlock,
@@ -669,7 +722,7 @@ impl BlobStore {
                     }
                     sleep(Duration::from_millis(BLOB_FILE_LOCK_RETRY_MS)).await;
                 }
-                Err(e) => return Err(e),
+                Err(std::fs::TryLockError::Error(error)) => return Err(error),
             }
         }
     }
@@ -788,6 +841,33 @@ impl BlobStore {
         Ok(existed || existed_in_memory)
     }
 
+    /// GC rechecks age under the writer lock. A re-put after the mark pass
+    /// refreshes metadata and must not be swept using the older observation.
+    pub(crate) async fn delete_if_older_than(
+        &self,
+        hash: &str,
+        cutoff: DateTime<Utc>,
+    ) -> io::Result<bool> {
+        if !Self::validate_hash(hash) {
+            return Ok(false);
+        }
+        let (shard, blob, meta_path) = self.paths(hash);
+        let _lock = self.acquire_blob_file_lock(&shard, &meta_path).await?;
+        let json = match tokio::fs::read_to_string(&meta_path).await {
+            Ok(json) => json,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        let meta: BlobMeta = serde_json::from_str(&json).map_err(io::Error::other)?;
+        if meta.created_at >= cutoff {
+            return Ok(false);
+        }
+        tokio::fs::remove_file(&blob).await?;
+        tokio::fs::remove_file(&meta_path).await?;
+        self.memory_layer().remove(hash);
+        Ok(true)
+    }
+
     /// Delete a blob only when it is known ephemeral.
     ///
     /// Durable entries are left intact because they may be referenced by
@@ -796,36 +876,80 @@ impl BlobStore {
         if !Self::validate_hash(hash) {
             return Ok(false);
         }
-
-        let (memory_was_ephemeral, memory_was_durable) = {
-            let mut memory = self.memory_layer();
-            match memory.get(hash).map(|entry| entry.durability) {
-                Some(BlobDurability::Ephemeral) => (memory.remove(hash), false),
-                Some(BlobDurability::Durable) => (false, true),
-                None => (false, false),
-            }
+        let (shard, blob, meta_path) = self.paths(hash);
+        let _lock = self.acquire_blob_file_lock(&shard, &meta_path).await?;
+        let json = match tokio::fs::read_to_string(&meta_path).await {
+            Ok(json) => json,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
         };
-
-        if memory_was_durable {
+        let meta: BlobMeta = serde_json::from_str(&json).map_err(io::Error::other)?;
+        if meta.durability != BlobDurability::Ephemeral || !meta.ephemeral_leases.is_empty() {
             return Ok(false);
         }
-
-        let (shard_dir, blob_path, meta_path) = self.paths(hash);
-        let _lock = self.acquire_blob_file_lock(&shard_dir, &meta_path).await?;
-        let disk_was_ephemeral = match tokio::fs::read_to_string(&meta_path).await {
-            Ok(json) => serde_json::from_str::<BlobMeta>(&json)
-                .map(|meta| meta.durability == BlobDurability::Ephemeral)
-                .unwrap_or(false),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => false,
-            Err(e) => return Err(e),
-        };
-
-        if disk_was_ephemeral {
-            tokio::fs::remove_file(&blob_path).await.ok();
-            tokio::fs::remove_file(&meta_path).await.ok();
+        match tokio::fs::remove_file(&blob).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
+        tokio::fs::remove_file(&meta_path).await?;
+        self.memory_layer().remove(hash);
+        Ok(true)
+    }
 
-        Ok(memory_was_ephemeral || disk_was_ephemeral)
+    async fn write_meta(&self, shard: &Path, path: &Path, meta: &BlobMeta) -> io::Result<()> {
+        let tmp = shard.join(format!(".tmp.{}.meta", uuid::Uuid::new_v4()));
+        let result = async {
+            tokio::fs::write(&tmp, serde_json::to_vec(meta).map_err(io::Error::other)?).await?;
+            tokio::fs::rename(&tmp, path).await
+        }
+        .await;
+        if result.is_err() {
+            tokio::fs::remove_file(&tmp).await.ok();
+        }
+        result
+    }
+
+    /// Release only the generation that was retired. A concurrent re-put renews
+    /// that owner's generation, so a delayed release cannot delete reused bytes.
+    /// Crashed owners leave safe leases behind; the ordinary all-room GC reclaims
+    /// unreferenced leftovers after its grace period rather than guessing liveness.
+    pub(crate) async fn release_ephemeral_lease(
+        &self,
+        hash: &str,
+        lease: &EphemeralBlobLease,
+    ) -> io::Result<bool> {
+        if !Self::validate_hash(hash) {
+            return Ok(false);
+        }
+        let (shard, blob, meta_path) = self.paths(hash);
+        let _lock = self.acquire_blob_file_lock(&shard, &meta_path).await?;
+        let json = match tokio::fs::read_to_string(&meta_path).await {
+            Ok(json) => json,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        let mut meta: BlobMeta = serde_json::from_str(&json).map_err(io::Error::other)?;
+        if meta.durability != BlobDurability::Ephemeral
+            || meta.ephemeral_leases.get(&lease.owner) != Some(&lease.generation)
+        {
+            return Ok(false);
+        }
+        meta.ephemeral_leases.remove(&lease.owner);
+        if !meta.ephemeral_leases.is_empty() {
+            self.write_meta(&shard, &meta_path, &meta).await?;
+            return Ok(false);
+        }
+        // Hold the same cross-process file lock through removal. A writer either
+        // renewed a lease before this check or recreates complete bytes afterward.
+        match tokio::fs::remove_file(&blob).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        tokio::fs::remove_file(&meta_path).await?;
+        self.memory_layer().remove(hash);
+        Ok(true)
     }
 
     /// List all blob hashes in the store.
@@ -911,6 +1035,187 @@ mod tests {
         serde_json::from_str::<BlobMeta>(&json)
             .ok()
             .map(|meta| meta.durability)
+    }
+
+    #[tokio::test]
+    async fn leased_blob_survives_other_agent_retirement_then_is_reclaimed() {
+        let dir = TempDir::new().unwrap();
+        let a = BlobStore::with_ephemeral_cap(dir.path().to_path_buf(), 0);
+        let b = BlobStore::with_ephemeral_cap(dir.path().to_path_buf(), 0);
+        let a_lease = EphemeralBlobOwner::default().next_lease();
+        let b_lease = EphemeralBlobOwner::default().next_lease();
+        let hash = a
+            .put_leased_ephemeral(b"shared", "x/test", &a_lease)
+            .await
+            .unwrap();
+        assert_eq!(
+            hash,
+            b.put_leased_ephemeral(b"shared", "x/test", &b_lease)
+                .await
+                .unwrap()
+        );
+        assert!(!a.release_ephemeral_lease(&hash, &a_lease).await.unwrap());
+        assert_eq!(b.get(&hash).await.unwrap().unwrap(), b"shared");
+        assert!(
+            !a.delete_if_ephemeral(&hash).await.unwrap(),
+            "unmanaged retirement cannot remove another producer's lease"
+        );
+        assert!(b.release_ephemeral_lease(&hash, &b_lease).await.unwrap());
+        assert!(a.get(&hash).await.unwrap().is_none());
+        assert!(b.get_meta(&hash).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn retired_generation_cannot_release_reused_content() {
+        let dir = TempDir::new().unwrap();
+        let store = BlobStore::with_ephemeral_cap(dir.path().to_path_buf(), 0);
+        let owner = EphemeralBlobOwner::default();
+        let retired = owner.next_lease();
+        let current = owner.next_lease();
+        let hash = store
+            .put_leased_ephemeral(b"reused", "x/test", &retired)
+            .await
+            .unwrap();
+        store
+            .put_leased_ephemeral(b"reused", "x/test", &current)
+            .await
+            .unwrap();
+        // An earlier in-flight put can complete after a newer one too.
+        store
+            .put_leased_ephemeral(b"reused", "x/test", &retired)
+            .await
+            .unwrap();
+        assert!(!store
+            .release_ephemeral_lease(&hash, &retired)
+            .await
+            .unwrap());
+        assert!(store.get(&hash).await.unwrap().is_some());
+        assert!(store
+            .release_ephemeral_lease(&hash, &current)
+            .await
+            .unwrap());
+        // The inverse interleaving recreates complete bytes after deletion.
+        let next = owner.next_lease();
+        store
+            .put_leased_ephemeral(b"reused", "x/test", &next)
+            .await
+            .unwrap();
+        assert_eq!(store.get(&hash).await.unwrap().unwrap(), b"reused");
+    }
+
+    #[tokio::test]
+    async fn leased_and_unmanaged_writes_promote_both_collision_orders() {
+        for managed_first in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let a = BlobStore::with_ephemeral_cap(dir.path().to_path_buf(), 0);
+            let b = BlobStore::with_ephemeral_cap(dir.path().to_path_buf(), 0);
+            let lease = EphemeralBlobOwner::default().next_lease();
+            let hash = if managed_first {
+                let hash = a
+                    .put_leased_ephemeral(b"overlap", "x/test", &lease)
+                    .await
+                    .unwrap();
+                b.put_with_durability(b"overlap", "x/test", BlobDurability::Ephemeral)
+                    .await
+                    .unwrap();
+                hash
+            } else {
+                let hash = b
+                    .put_with_durability(b"overlap", "x/test", BlobDurability::Ephemeral)
+                    .await
+                    .unwrap();
+                a.put_leased_ephemeral(b"overlap", "x/test", &lease)
+                    .await
+                    .unwrap();
+                hash
+            };
+            assert_eq!(
+                disk_blob_durability(&a, &hash).await,
+                Some(BlobDurability::Durable)
+            );
+            assert!(!a.release_ephemeral_lease(&hash, &lease).await.unwrap());
+            assert!(!b.delete_if_ephemeral(&hash).await.unwrap());
+            a.put_leased_ephemeral(b"overlap", "x/test", &lease)
+                .await
+                .unwrap();
+            assert_eq!(
+                disk_blob_durability(&a, &hash).await,
+                Some(BlobDurability::Durable)
+            );
+            assert_eq!(b.get(&hash).await.unwrap().unwrap(), b"overlap");
+        }
+    }
+
+    #[tokio::test]
+    async fn multipart_write_promotes_a_leased_blob() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store_with_cap(&dir, 0);
+        let lease = EphemeralBlobOwner::default().next_lease();
+        let hash = store
+            .put_leased_ephemeral(b"overlap", "x/test", &lease)
+            .await
+            .unwrap();
+        store
+            .put_part_files_with_hash(&[], "x/test", 7, &hash, BlobDurability::Ephemeral)
+            .await
+            .unwrap();
+        assert_eq!(
+            disk_blob_durability(&store, &hash).await,
+            Some(BlobDurability::Durable)
+        );
+        assert!(!store.release_ephemeral_lease(&hash, &lease).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn gc_rechecks_reused_blob_age_under_writer_lock() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store_with_cap(&dir, 0);
+        let owner = EphemeralBlobOwner::default();
+        let lease = owner.next_lease();
+        let hash = store
+            .put_leased_ephemeral(b"reused", "x/test", &lease)
+            .await
+            .unwrap();
+        let (_, _, path) = store.paths(&hash);
+        let mut meta: BlobMeta =
+            serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+        meta.created_at = Utc::now() - chrono::Duration::days(31);
+        tokio::fs::write(&path, serde_json::to_vec(&meta).unwrap())
+            .await
+            .unwrap();
+        let cutoff = Utc::now() - chrono::Duration::days(30);
+        // GC's mark pass does not know about this newly announced reference.
+        store
+            .put_leased_ephemeral(b"reused", "x/test", &owner.next_lease())
+            .await
+            .unwrap();
+        assert!(!store.delete_if_older_than(&hash, cutoff).await.unwrap());
+        assert!(store.get(&hash).await.unwrap().is_some());
+        // An abandoned old lease remains reclaimable by normal mark-and-sweep.
+        tokio::fs::write(&path, serde_json::to_vec(&meta).unwrap())
+            .await
+            .unwrap();
+        assert!(store.delete_if_older_than(&hash, cutoff).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn invalid_lease_metadata_fails_closed() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store_with_cap(&dir, 0);
+        let lease = EphemeralBlobOwner::default().next_lease();
+        let hash = store
+            .put_leased_ephemeral(b"safe", "x/test", &lease)
+            .await
+            .unwrap();
+        let (_, blob, meta) = store.paths(&hash);
+        tokio::fs::write(&meta, b"not JSON").await.unwrap();
+        assert!(store
+            .put_leased_ephemeral(b"safe", "x/test", &lease)
+            .await
+            .is_err());
+        assert!(store.release_ephemeral_lease(&hash, &lease).await.is_err());
+        assert!(store.delete_if_ephemeral(&hash).await.is_err());
+        assert!(blob.exists());
     }
 
     #[tokio::test]
@@ -1315,5 +1620,105 @@ mod tests {
         let missing = "a".repeat(64);
 
         assert!(!store.delete_if_ephemeral(&missing).await.unwrap());
+    }
+    #[tokio::test]
+    async fn metadata_only_reupload_preserves_other_producer_lease() {
+        let dir = TempDir::new().unwrap();
+        let a = test_store_with_cap(&dir, 0);
+        let b = test_store_with_cap(&dir, 0);
+        let owner_a = EphemeralBlobOwner::default();
+        let lease_a = owner_a.next_lease();
+        let lease_b = EphemeralBlobOwner::default().next_lease();
+        let hash = a
+            .put_leased_ephemeral(b"restore", "text/plain", &lease_a)
+            .await
+            .unwrap();
+        b.put_leased_ephemeral(b"restore", "text/plain", &lease_b)
+            .await
+            .unwrap();
+        tokio::fs::remove_file(a.paths(&hash).1).await.unwrap();
+        let renewed = owner_a.next_lease();
+        a.put_leased_ephemeral(b"restore", "text/plain", &renewed)
+            .await
+            .unwrap();
+        assert_eq!(b.get(&hash).await.unwrap().unwrap(), b"restore");
+        a.release_ephemeral_lease(&hash, &renewed).await.unwrap();
+        assert!(
+            disk_blob_exists(&b, &hash),
+            "restoring bytes must preserve B's lease"
+        );
+        b.release_ephemeral_lease(&hash, &lease_b).await.unwrap();
+        assert!(!disk_blob_exists(&a, &hash));
+    }
+
+    #[tokio::test]
+    async fn metadata_only_multipart_reupload_keeps_managed_bytes_safe() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store_with_cap(&dir, 0);
+        let lease = EphemeralBlobOwner::default().next_lease();
+        let hash = store
+            .put_leased_ephemeral(b"restore", "text/plain", &lease)
+            .await
+            .unwrap();
+        tokio::fs::remove_file(store.paths(&hash).1).await.unwrap();
+        let part = dir.path().join("part");
+        tokio::fs::write(&part, b"restore").await.unwrap();
+        store
+            .put_part_files_with_hash(&[part], "text/plain", 7, &hash, BlobDurability::Ephemeral)
+            .await
+            .unwrap();
+        assert_eq!(store.get(&hash).await.unwrap().unwrap(), b"restore");
+        store.release_ephemeral_lease(&hash, &lease).await.unwrap();
+        assert!(!store.delete_if_ephemeral(&hash).await.unwrap());
+        assert_eq!(
+            disk_blob_durability(&store, &hash).await,
+            Some(BlobDurability::Durable)
+        );
+    }
+
+    #[tokio::test]
+    async fn shard_lock_keeps_one_inode_even_when_old_and_contended() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+        let (shard, _, meta) = store.paths(&"a".repeat(64));
+        let first = store.acquire_blob_file_lock(&shard, &meta).await.unwrap();
+        let path = shard.join(".writer.lock");
+        let witness = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        witness
+            .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+            .unwrap();
+        let contender_store = store.clone();
+        let contender_shard = shard.clone();
+        let contender = tokio::spawn(async move {
+            contender_store
+                .acquire_blob_file_lock(&contender_shard, &meta)
+                .await
+                .unwrap()
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !contender.is_finished(),
+            "age must never evict a live lock holder"
+        );
+        assert!(matches!(
+            witness.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        drop(first);
+        let second = contender.await.unwrap();
+        assert!(
+            matches!(witness.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+            "contender must lock the same inode"
+        );
+        drop(second);
+        witness.try_lock().unwrap();
+        assert!(
+            path.exists(),
+            "release must not unlink the stable lock file"
+        );
     }
 }

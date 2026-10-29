@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use base64::Engine as _;
 use runtime_doc::CommDocEntry;
@@ -46,6 +47,9 @@ pub struct ResolveCtx<'a> {
     pub blob_store_path: Option<&'a std::path::Path>,
     /// Widget state for comm-view synthesis on display_data outputs.
     pub comms: Option<&'a HashMap<String, CommDocEntry>>,
+    /// Live state of outputs backed by a session, by output id. Outputs
+    /// without an entry are summarized from their payload alone.
+    pub live_views: Option<&'a LiveOutputViews>,
     /// Whether to render the blob-preview marker (default) or fetch the
     /// full blob text. See [`OutputLength`].
     pub length: OutputLength,
@@ -56,6 +60,26 @@ pub struct ResolveCtx<'a> {
     /// the cell that still points at each execution.
     pub execution_cell_map: Option<&'a HashMap<String, String>>,
 }
+
+/// Live state of one output, provided by whoever follows its session (e.g.
+/// an MCP server's replica of a Bokeh session document).
+pub trait LiveOutputView: Send + Sync + std::fmt::Debug {
+    /// Summary from the live state alone; `None` when it is unavailable.
+    fn summarize(&self) -> Option<String>;
+    /// Summary from the output's payload, annotated with what the live view
+    /// still knows (e.g. the session's status).
+    fn summarize_with_payload(&self, payload: &Value) -> Option<String>;
+}
+
+pub type LiveOutputViews = HashMap<String, Arc<dyn LiveOutputView>>;
+
+/// Summarizes one MIME's payload as `text/llm+plain`.
+pub struct PayloadSummarizer {
+    pub mime: &'static str,
+    pub summarize: fn(&Value) -> Option<String>,
+}
+
+static PAYLOAD_SUMMARIZERS: &[PayloadSummarizer] = &[crate::bokeh_summary::PAYLOAD_SUMMARIZER];
 
 /// MIME type for Jupyter widget view references.
 const WIDGET_VIEW_MIME: &str = "application/vnd.jupyter.widget-view+json";
@@ -709,6 +733,7 @@ pub async fn resolve_output_for_llm(
                 &blob_base_url,
                 &blob_store_path,
                 ctx.comms,
+                ctx.live_views,
             )
             .await
         }
@@ -903,6 +928,40 @@ fn rich_syntax_caret_line(syntax: &Value) -> Option<String> {
     ))
 }
 
+async fn summarize_payload_mimes(
+    data_map: &serde_json::Map<String, Value>,
+    live: Option<&Arc<dyn LiveOutputView>>,
+    blob_base_url: &Option<String>,
+    blob_store_path: &Option<PathBuf>,
+) -> Option<String> {
+    for summarizer in PAYLOAD_SUMMARIZERS {
+        let Some(payload_ref) = data_map.get(summarizer.mime) else {
+            continue;
+        };
+        if let Some(summary) = live.and_then(|view| view.summarize()) {
+            return Some(summary);
+        }
+        let Some(DataValue::Json(payload)) = resolve_content_ref(
+            payload_ref,
+            blob_base_url,
+            blob_store_path,
+            Some(summarizer.mime),
+        )
+        .await
+        else {
+            continue;
+        };
+        let summary = match live {
+            Some(view) => view.summarize_with_payload(&payload),
+            None => (summarizer.summarize)(&payload),
+        };
+        if summary.is_some() {
+            return summary;
+        }
+    }
+    None
+}
+
 /// Selectively resolve a display_data or execute_result manifest for LLM use.
 ///
 /// 1. Walk [`CONTENT_PRIORITY`] against the manifest's MIME keys.
@@ -919,6 +978,7 @@ async fn resolve_display_for_llm(
     blob_base_url: &Option<String>,
     blob_store_path: &Option<PathBuf>,
     comms: Option<&HashMap<String, CommDocEntry>>,
+    live_views: Option<&LiveOutputViews>,
 ) -> Option<Output> {
     let data_map = manifest.get("data")?.as_object()?;
 
@@ -945,6 +1005,20 @@ async fn resolve_display_for_llm(
         .await
         {
             output_data.insert("text/llm+plain".to_string(), content);
+        }
+    }
+
+    // Session-backed MIMEs: prefer the live view; the payload (often a
+    // large blob) is fetched only when the live state is unavailable.
+    if !output_data.contains_key("text/llm+plain") {
+        let live = manifest
+            .get("output_id")
+            .and_then(Value::as_str)
+            .and_then(|id| live_views?.get(id));
+        if let Some(summary) =
+            summarize_payload_mimes(data_map, live, blob_base_url, blob_store_path).await
+        {
+            output_data.insert("text/llm+plain".to_string(), DataValue::Text(summary));
         }
     }
 

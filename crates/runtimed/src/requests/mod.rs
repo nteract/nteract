@@ -150,6 +150,7 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::RunAllCellsGuarded { .. } => "RunAllCellsGuarded",
         NotebookRequest::SendComm { .. } => "SendComm",
         NotebookRequest::ApplyBokehSessionPatch { .. } => "ApplyBokehSessionPatch",
+        NotebookRequest::GetBokehSessionData { .. } => "GetBokehSessionData",
         NotebookRequest::GetHistory { .. } => "GetHistory",
         NotebookRequest::Complete { .. } => "Complete",
         NotebookRequest::SaveNotebook { .. } => "SaveNotebook",
@@ -468,7 +469,8 @@ pub(crate) async fn handle_notebook_request(
             | NotebookRequest::ApplyBokehSessionPatch { .. }
             | NotebookRequest::ApproveProjectEnvironment { .. }
             | NotebookRequest::ApproveProjectTrust { .. }
-            | NotebookRequest::DeclineProjectTrust { .. } => {
+            | NotebookRequest::DeclineProjectTrust { .. }
+            | NotebookRequest::GetBokehSessionData { .. } => {
                 return NotebookResponse::Error {
                     error: format!(
                         "{} is not supported on a daemon-bridged hosted notebook yet; \
@@ -573,6 +575,15 @@ pub(crate) async fn handle_notebook_request(
 
         NotebookRequest::ApplyBokehSessionPatch { request } => {
             apply_bokeh_session_patch::handle(room, *request).await
+        }
+
+        NotebookRequest::GetBokehSessionData {
+            session_id,
+            source_ids,
+        } => {
+            // Peer connections answer this in their request worker, which
+            // knows the connection's scope; other callers never fold.
+            apply_bokeh_session_patch::handle_get_data(room, session_id, source_ids, false).await
         }
 
         NotebookRequest::GetHistory { pattern, n, unique } => {

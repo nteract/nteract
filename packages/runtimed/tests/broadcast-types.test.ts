@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it } from "vite-plus/test";
-import { isBokehSessionPatchBroadcast, isCommBroadcast } from "../src/broadcast-types";
+import { isBokehSessionEventsBroadcast, isCommBroadcast } from "../src/broadcast-types";
 
 // All guards share `hasBroadcastEvent` — exercise the invalid-payload
 // matrix once so every guard inherits the coverage.
@@ -51,13 +51,15 @@ describe("isCommBroadcast", () => {
   });
 });
 
-describe("isBokehSessionPatchBroadcast", () => {
-  it("accepts only the Bokeh session event discriminator", () => {
-    expect(isBokehSessionPatchBroadcast({ event: "bokeh_session_patch" })).toBe(true);
-    expect(isBokehSessionPatchBroadcast({ event: "comm" })).toBe(false);
+describe("isBokehSessionEventsBroadcast", () => {
+  it("accepts only the Bokeh session events discriminator", () => {
+    expect(isBokehSessionEventsBroadcast({ event: "bokeh_session_events" })).toBe(true);
+    // The revision-based broadcast it replaced must not be misread.
+    expect(isBokehSessionEventsBroadcast({ event: "bokeh_session_patch" })).toBe(false);
+    expect(isBokehSessionEventsBroadcast({ event: "comm" })).toBe(false);
   });
 
   it.each(INVALID_PAYLOADS)("rejects %s", (_label, payload) => {
-    expect(isBokehSessionPatchBroadcast(payload)).toBe(false);
+    expect(isBokehSessionEventsBroadcast(payload)).toBe(false);
   });
 });

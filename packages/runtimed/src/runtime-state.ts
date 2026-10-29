@@ -226,37 +226,26 @@ export interface CommDocEntry {
 
 export type BokehSessionStatus = "connected" | "disconnected" | "closed" | "error";
 
-export interface BokehSessionContentRef {
-  blob: string;
-  size: number;
-  media_type: string;
-}
-
-export interface BokehSessionCheckpoint {
-  revision: number;
-  content_ref: BokehSessionContentRef;
-}
-
-export interface BokehSessionPatchRef {
-  base_revision: number;
-  revision: number;
-  content_ref: BokehSessionContentRef;
-}
-
-/** Durable topology and replay coordinates for a live Bokeh document. */
+/**
+ * Topology, lifecycle and current document identity of one Bokeh session.
+ * The state itself lives in the session's BokehSessionDoc (frame `0x0b`).
+ */
 export interface BokehSessionState {
   output_id: string;
   cell_id: string;
   execution_id: string;
   kernel_id: string;
   status: BokehSessionStatus;
-  head_revision: number;
   producer_name: string;
   producer_version: string;
   bokeh_version: string;
   root_ids: string[];
-  checkpoint: BokehSessionCheckpoint | null;
-  patch_tail: BokehSessionPatchRef[];
+  /** Current document epoch; peers sync only this epoch's document. */
+  epoch: number;
+  /** Hex heads of the epoch's freshly built document. */
+  doc_heads: string[];
+  /** Hex heads of the previous epoch's document when it was replaced. */
+  previous_heads?: string[];
 }
 
 /** A detected status transition for a single execution. */

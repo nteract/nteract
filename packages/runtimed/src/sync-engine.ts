@@ -35,9 +35,9 @@ import {
 } from "rxjs";
 
 import {
-  type BokehSessionPatchBroadcast,
+  type BokehSessionEventsBroadcast,
   type CommBroadcast,
-  isBokehSessionPatchBroadcast,
+  isBokehSessionEventsBroadcast,
   isCommBroadcast,
 } from "./broadcast-types";
 import { type CellChangeset, mergeChangesets } from "./cell-changeset";
@@ -372,9 +372,9 @@ export class SyncEngine {
   readonly cellChanges$: Observable<CellChangeset | null>;
 
   /**
-   * Daemon broadcast payloads. Ephemeral Comm traffic and low-latency Bokeh
-   * document transactions flow here. Durable runtime topology and replay
-   * coordinates live in RuntimeStateDoc.
+   * Daemon broadcast payloads. Ephemeral Comm traffic and one-off Bokeh
+   * session events flow here. Durable runtime topology lives in
+   * RuntimeStateDoc.
    */
   readonly broadcasts$: Observable<unknown>;
 
@@ -430,8 +430,8 @@ export class SyncEngine {
   /** Custom comm messages (buttons, model.send()). */
   readonly commBroadcasts$: Observable<CommBroadcast>;
 
-  /** Ordered Bokeh document transactions projected by the runtime. */
-  readonly bokehSessionPatchBroadcasts$: Observable<BokehSessionPatchBroadcast>;
+  /** Bokeh column data events and Python messages, per session. */
+  readonly bokehSessionEventsBroadcasts$: Observable<BokehSessionEventsBroadcast>;
 
   /**
    * Comm state projection from RuntimeStateDoc topology + CommsDoc state.
@@ -591,7 +591,9 @@ export class SyncEngine {
 
     // Typed broadcast sub-observables (derived from broadcasts$)
     this.commBroadcasts$ = this.broadcasts$.pipe(filter(isCommBroadcast));
-    this.bokehSessionPatchBroadcasts$ = this.broadcasts$.pipe(filter(isBokehSessionPatchBroadcast));
+    this.bokehSessionEventsBroadcasts$ = this.broadcasts$.pipe(
+      filter(isBokehSessionEventsBroadcast),
+    );
 
     // Queue-only projection derived from the execution view changeset.
     this.executionQueue$ = this.executionViewChanges$.pipe(

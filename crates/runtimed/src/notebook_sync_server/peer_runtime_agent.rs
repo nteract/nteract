@@ -763,7 +763,18 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     }
 
     // Fence the disconnected agent before releasing pending or queued sync leases.
-    cleanup_runtime_agent_disconnect(&room, &runtime_agent_id).await;
+    if cleanup_runtime_agent_disconnect(&room, &runtime_agent_id).await {
+        // The agent-loss freeze wrote each live output's final `snapshot`
+        // into RuntimeStateDoc. Rewrite the changed durable records so they
+        // carry that frozen state too; `document` is unchanged, so they still
+        // match saves made before the freeze.
+        persist_terminal_execution_records(
+            &room,
+            &execution_store,
+            &mut persisted_execution_records,
+        )
+        .await;
+    }
 
     // Drain any pending query replies so callers get an error instead of hanging.
     for (_id, (reply_tx, _sync_lease)) in pending_replies.drain() {
@@ -890,14 +901,14 @@ fn validate_runtime_agent_broadcast(broadcast: &NotebookBroadcast) -> anyhow::Re
             );
             Ok(())
         }
-        NotebookBroadcast::BokehSessionPatch { patch } => {
+        NotebookBroadcast::BokehSessionEvents { events } => {
             anyhow::ensure!(
-                !patch.session_id.is_empty() && !patch.transaction_id.is_empty(),
-                "runtime agent Bokeh patch is missing session or transaction identity"
+                !events.session_id.is_empty() && !events.transaction_id.is_empty(),
+                "runtime agent Bokeh events are missing session or transaction identity"
             );
             anyhow::ensure!(
-                patch.revision == patch.base_revision + 1,
-                "runtime agent Bokeh patch revision is not contiguous"
+                !events.data_events.is_empty() || !events.messages.is_empty(),
+                "runtime agent Bokeh events are empty"
             );
             Ok(())
         }
@@ -1633,7 +1644,7 @@ mod tests {
                 assert_eq!(content["data"]["content"]["type"], "draw");
                 assert_eq!(buffers, vec![vec![1, 2, 3]]);
             }
-            NotebookBroadcast::BokehSessionPatch { .. }
+            NotebookBroadcast::BokehSessionEvents { .. }
             | NotebookBroadcast::EnvironmentSelectionChanged { .. } => {
                 panic!("expected comm broadcast")
             }
@@ -1705,19 +1716,25 @@ mod tests {
     }
 
     #[test]
-    fn accepts_runtime_agent_bokeh_noop_revision() {
-        let broadcast = NotebookBroadcast::BokehSessionPatch {
-            patch: Box::new(notebook_protocol::protocol::BokehSessionPatchEvent {
-                session_id: "session-1".to_string(),
-                transaction_id: "tx-button-click".to_string(),
-                base_revision: 0,
-                revision: 1,
-                client_patch: None,
-                server_patch: None,
-                checkpoint: None,
+    fn validates_runtime_agent_bokeh_events() {
+        let events = notebook_protocol::protocol::BokehSessionEvents {
+            session_id: "session-1".to_string(),
+            epoch: 0,
+            transaction_id: "tx-toast".to_string(),
+            messages: vec![serde_json::json!({"msg_type": "toast"})],
+            ..Default::default()
+        };
+        let broadcast = NotebookBroadcast::BokehSessionEvents {
+            events: Box::new(events.clone()),
+        };
+        validate_runtime_agent_broadcast(&broadcast).expect("valid message broadcast");
+
+        let empty = NotebookBroadcast::BokehSessionEvents {
+            events: Box::new(notebook_protocol::protocol::BokehSessionEvents {
+                messages: Vec::new(),
+                ..events
             }),
         };
-
-        validate_runtime_agent_broadcast(&broadcast).expect("valid no-op revision");
+        validate_runtime_agent_broadcast(&empty).expect_err("empty events");
     }
 }

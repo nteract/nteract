@@ -50,6 +50,7 @@
 // Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod bokeh;
 pub mod broadcast;
 pub mod connect;
 pub mod error;
@@ -66,6 +67,7 @@ mod snapshot;
 pub mod status;
 pub mod sync_task;
 
+pub use bokeh::BokehDocHandleExt;
 pub use broadcast::BroadcastReceiver;
 pub use error::SyncError;
 pub use execution_wait::{

@@ -419,6 +419,7 @@ pub fn notebook_scoped_tool(name: &str) -> bool {
             | "execute_cell"
             | "run_all_cells"
             | "get_results"
+            | "set_bokeh_property"
             | "interrupt_kernel"
             | "restart_kernel"
             | "manage_dependencies"

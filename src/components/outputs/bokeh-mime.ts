@@ -47,13 +47,23 @@ export interface BokehSessionInitialBufferRef {
 export interface BokehSessionMimePayload {
   schema_version: 1;
   session_id: string;
-  revision: number;
   producer: {
     name: string;
     version: string;
   };
   bokeh_version: string;
+  /**
+   * DocJson at display time, or the materialized last state once the session
+   * froze or the notebook was saved (then `buffers` is empty).
+   */
   document: Record<string, unknown>;
+  /**
+   * The session's state at the last save or freeze, everything inlined
+   * (`buffers` is always empty). Read only when the output renders
+   * statically; `document` stays the display-time state recorded with the
+   * execution.
+   */
+  snapshot?: { document: Record<string, unknown>; buffers: unknown[] } | null;
   root_ids: string[];
   resources: BokehSessionResources;
   buffers: BokehSessionInitialBufferRef[];
@@ -66,7 +76,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function isBokehSessionMimePayload(value: unknown): value is BokehSessionMimePayload {
   if (!isRecord(value) || value.schema_version !== 1) return false;
   if (typeof value.session_id !== "string" || value.session_id.length === 0) return false;
-  if (typeof value.revision !== "number" || !Number.isSafeInteger(value.revision)) return false;
   if (typeof value.bokeh_version !== "string" || value.bokeh_version.length === 0) return false;
   if (!isRecord(value.document) || !isRecord(value.producer) || !isRecord(value.resources)) {
     return false;

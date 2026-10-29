@@ -85,6 +85,7 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
             { "name": "execute_cell", "description": "Execute a code cell and return execution_id, status, and compact output summary." },
             { "name": "run_all_cells", "description": "Execute all code cells in order." },
             { "name": "get_results", "description": "Read an execution_id's outputs/status; optionally wait up to 50 seconds." },
+            { "name": "set_bokeh_property", "description": "Set a property value in a cell's Bokeh/Panel output; runs Python callbacks. Values only, not structure." },
             { "name": "interrupt_kernel", "description": "Interrupt execution." },
             { "name": "restart_kernel", "description": "Restart the kernel, clearing all state." },
             { "name": "manage_dependencies", "description": "Review or update notebook dependencies. Returns current deps, fingerprint, and trust state." },

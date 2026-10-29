@@ -2,6 +2,14 @@ import { expect, test, type Page } from "@playwright/test";
 import { openNotebookRoom, waitForKernelStatus, waitForNotebookSessionReady } from "./helpers";
 import { McpPeer } from "./mcp-peer";
 
+// Panel version under test; override to run the suite against another release.
+const PANEL_DEPENDENCIES = (
+  process.env.NTERACT_E2E_PANEL_DEPENDENCIES ?? "panel==1.9.4,bokeh==3.9.1"
+)
+  .split(",")
+  .map((dependency) => dependency.trim())
+  .filter(Boolean);
+
 function outputArea(page: Page, cellId: string) {
   return page.locator(`[data-cell-id="${cellId}"] [data-slot="output-area"]`);
 }
@@ -27,9 +35,7 @@ test("Bokeh callbacks survive viewer reload and stop after output retirement", a
     await waitForKernelStatus(page, "idle", 120_000);
     mcp = await McpPeer.start();
     await mcp.connectNotebook(notebookId);
-    await mcp.manageDependencies(
-      (process.env.NTERACT_E2E_PANEL_DEPENDENCIES ?? "panel==1.9.4,bokeh==3.9.1").split(","),
-    );
+    await mcp.manageDependencies(PANEL_DEPENDENCIES);
     const displayCode = [
       "import panel as pn",
       "from IPython.display import display",

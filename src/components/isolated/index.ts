@@ -4,14 +4,18 @@ export type { BokehSessionOutputBinding } from "./bokeh-session-bridge-manager";
 export {
   BOKEH_SESSION_PLUGIN_ID,
   bokehSessionPlugin,
+  followBokehSessionDocs,
   installBokehSessionPlugin,
   useBokehSessionPlugin,
 } from "./bokeh-session-plugin";
 export type {
+  BokehSessionEngine,
   BokehSessionPluginSources,
   BokehSessionRuntime,
   BokehSessionTransport,
 } from "./bokeh-session-plugin";
+export { BOKEH_SESSION_DOC_KIND, BokehSessionDocStore } from "./bokeh-session-doc-store";
+export type { BokehSessionDocReplica } from "./bokeh-session-doc-store";
 // Message protocol types
 export type {
   ClearMessage,

@@ -2482,6 +2482,7 @@ impl NotebookRoom {
             }
         }
         let initial_load = RoomInitialLoad::new(Arc::clone(&lifecycle));
+        let extensions = crate::extensions::room_extensions(&blob_store, &state);
 
         Ok(Self {
             id,
@@ -2501,16 +2502,14 @@ impl NotebookRoom {
             preparing_kernel_env_path: std::sync::Mutex::new(None),
             evicted: AtomicBool::new(false),
             blob_store,
-            output_hooks: crate::extensions::room_output_hooks(),
+            output_hooks: extensions.output_hooks,
             trust_state: Arc::new(RwLock::new(trust_state)),
             trusted_packages,
             project_trust_session_decline: std::sync::Mutex::new(None),
             project_trust_prompt: Default::default(),
             state,
             comms,
-            keyed_docs: Arc::new(crate::keyed_doc::KeyedDocHub::new(
-                crate::keyed_doc::room_kinds(),
-            )),
+            keyed_docs: extensions.keyed_docs,
             comments,
             comments_store,
             runtime_agent_handle: Arc::new(Mutex::new(None)),

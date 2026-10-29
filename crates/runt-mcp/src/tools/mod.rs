@@ -91,6 +91,7 @@ fn cell_resource_content(notebook_id: &str, cell_id: &str) -> ContentBlock {
     ))
 }
 
+mod bokeh;
 mod cell_crud;
 mod cell_meta;
 pub(crate) mod cell_read;
@@ -241,6 +242,12 @@ pub fn all_tools() -> Vec<Tool> {
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false))
         .with_meta(app_tool_meta()),
+        Tool::new(
+            "set_bokeh_property",
+            "Set a property value in a cell's Bokeh/Panel output; runs Python callbacks. Values only, not structure.",
+            schema_for::<bokeh::SetBokehPropertyParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true).open_world(true)),
         // -- Kernel --
         Tool::new(
             "interrupt_kernel",
@@ -420,6 +427,7 @@ pub async fn dispatch(
         "execute_cell" => execution::execute_cell(server, request).await,
         "run_all_cells" => execution::run_all_cells(server, request).await,
         "get_results" => execution::get_results(server, request).await,
+        "set_bokeh_property" => bokeh::set_bokeh_property(server, request).await,
         // Kernel
         "interrupt_kernel" => kernel::interrupt_kernel(server, request).await,
         "restart_kernel" => kernel::restart_kernel(server, request).await,

@@ -1,15 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   NTERACT_BOKEH_APPLY_PATCH,
+  NTERACT_BOKEH_SESSION_DATA,
+  NTERACT_BOKEH_SESSION_DOC,
+  NTERACT_BOKEH_SESSION_EVENTS,
   NTERACT_BOKEH_SESSION_OPEN,
-  NTERACT_BOKEH_SESSION_PATCH,
   NTERACT_BOKEH_SESSION_STATE,
-  type NteractBokehResolvedPatchEvent,
+  NTERACT_BOKEH_SET_PROPS,
+  type NteractBokehDocUpdate,
+  type NteractBokehResolvedEvents,
+  type NteractBokehSessionDataParams,
+  type NteractBokehSessionDataResult,
+  type NteractBokehSessionOpenResult,
 } from "@/components/isolated/bokeh-session-rpc";
 import {
   BokehSessionController,
   deferExistingModelUpdates,
   extractBokehPatchBuffers,
+  materializeDocJson,
+  ModelExpander,
   type BokehRuntime,
 } from "../bokeh-session-controller";
 
@@ -17,11 +26,49 @@ class FakeBuffer {
   constructor(readonly buffer: ArrayBuffer) {}
 }
 
+interface FakeProp {
+  syncable?: boolean;
+  may_have_refs?: boolean;
+}
+
+class FakeBokehModel {
+  data: unknown = undefined;
+  setv = vi.fn((attrs: Record<string, unknown>) => {
+    Object.assign(this, attrs);
+  });
+
+  constructor(
+    readonly id: string,
+    readonly type: string,
+    readonly properties: Record<string, FakeProp> = {},
+    readonly stream_to?: () => void,
+  ) {}
+}
+
 class FakeDocument {
-  all_roots = [{ id: "root-1" }];
+  all_roots: Array<{ id: string }>;
+  models = new Map<string, FakeBokehModel>();
   listeners = new Set<(event: Record<string, unknown>) => void>();
-  applied: Array<Record<string, unknown>> = [];
+  applied: Array<{ patch: Record<string, unknown>; buffers?: Map<string, ArrayBuffer> }> = [];
   cleared = false;
+
+  constructor(readonly json: Record<string, unknown>) {
+    const roots = (json.roots ?? []) as Array<{ id: string }>;
+    this.all_roots = roots.map((root) => ({ id: root.id }));
+    this.add(new FakeBokehModel("root-1", "Column"));
+    this.add(new FakeBokehModel("slider", "Slider"));
+    this.add(
+      new FakeBokehModel("source", "ColumnDataSource", { data: { syncable: true } }, () => {}),
+    );
+  }
+
+  add(model: FakeBokehModel) {
+    this.models.set(model.id, model);
+  }
+
+  get_model_by_id(id: string) {
+    return this.models.get(id) ?? null;
+  }
 
   on_change(listener: (event: Record<string, unknown>) => void) {
     this.listeners.add(listener);
@@ -33,13 +80,17 @@ class FakeDocument {
 
   create_json_patch(events: Record<string, unknown>[]) {
     return {
-      events,
-      binary: new FakeBuffer(new Uint8Array([4, 5, 6]).buffer),
+      events: events.map((event) => ({
+        kind: event.kind,
+        msg_type: event.msg_type,
+        model: event.model ? { id: (event.model as { id: string }).id } : undefined,
+        payload: new FakeBuffer(new Uint8Array([4, 5, 6]).buffer),
+      })),
     };
   }
 
-  apply_json_patch(patch: Record<string, unknown>) {
-    this.applied.push(patch);
+  apply_json_patch(patch: Record<string, unknown>, buffers?: Map<string, ArrayBuffer>) {
+    this.applied.push({ patch: structuredClone(patch), buffers });
   }
 
   clear() {
@@ -49,35 +100,100 @@ class FakeDocument {
   emit(event: Record<string, unknown>) {
     for (const listener of this.listeners) listener(event);
   }
+
+  appliedEvents(): Array<Record<string, unknown>> {
+    return this.applied.flatMap(
+      (entry) => (entry.patch.events ?? []) as Array<Record<string, unknown>>,
+    );
+  }
 }
 
-const payload = {
-  schema_version: 1 as const,
-  session_id: "session-1",
-  revision: 0,
-  producer: { name: "panel", version: "1.9.3" },
-  bokeh_version: "3.9.1",
-  document: { roots: [{ id: "root-1" }] },
-  root_ids: ["root-1"],
-  resources: {
-    javascript: [],
-    stylesheets: [],
-    javascript_modules: [],
-    module_exports: {},
-  },
-  buffers: [],
-};
-
-function settle(): Promise<void> {
-  return Promise.resolve().then(() => Promise.resolve());
+function makePayload(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: 1 as const,
+    session_id: "session-1",
+    producer: { name: "panel", version: "1.9.4" },
+    bokeh_version: "3.9.2",
+    document: { roots: [{ id: "root-1" }] },
+    root_ids: ["root-1"],
+    resources: {
+      javascript: [],
+      stylesheets: [],
+      javascript_modules: [],
+      module_exports: {},
+    },
+    buffers: [] as Array<{ id: string; hash: string; size: number }>,
+    ...overrides,
+  };
 }
 
-function harness() {
+function fullUpdate(overrides: Partial<NteractBokehDocUpdate> = {}): NteractBokehDocUpdate {
+  return {
+    sessionId: "session-1",
+    epoch: 3,
+    kind: "full",
+    canSwitch: false,
+    meta: { rootIds: ["root-1"], title: "Page", bokehVersion: "3.9.2", docExtras: null },
+    models: {
+      "root-1": { type: "Column", refProps: ["children"], props: { children: [{ id: "slider" }] } },
+      slider: { type: "Slider", refProps: [], props: { value: 0.5 } },
+      source: { type: "ColumnDataSource", refProps: [], props: {} },
+    },
+    props: {},
+    removed: [],
+    columns: { source: { x: { version: 2, size: 10 } } },
+    ...overrides,
+  };
+}
+
+function deltaUpdate(overrides: Partial<NteractBokehDocUpdate> = {}): NteractBokehDocUpdate {
+  return {
+    sessionId: "session-1",
+    epoch: 3,
+    kind: "delta",
+    canSwitch: false,
+    meta: null,
+    models: {},
+    props: {},
+    removed: [],
+    columns: {},
+    ...overrides,
+  };
+}
+
+function eventsFor(
+  overrides: Partial<NteractBokehResolvedEvents> = {},
+): NteractBokehResolvedEvents {
+  return {
+    sessionId: "session-1",
+    epoch: 3,
+    transactionId: "kernel-tx",
+    dataEvents: [],
+    messages: [],
+    buffers: [],
+    ...overrides,
+  };
+}
+
+const settle = () => vi.advanceTimersByTimeAsync(0);
+
+function harness(
+  options: {
+    /** A function is called per open, e.g. to send state while the open is in flight. */
+    open?:
+      | Partial<NteractBokehSessionOpenResult>
+      | Error
+      | ((count: number) => Partial<NteractBokehSessionOpenResult>);
+    payload?: Record<string, unknown>;
+    data?: (params: NteractBokehSessionDataParams) => NteractBokehSessionDataResult;
+    setProps?: () => unknown;
+  } = {},
+) {
   const documents: FakeDocument[] = [];
   const runtime: BokehRuntime = {
     Document: {
-      from_json: () => {
-        const document = new FakeDocument();
+      from_json: (json) => {
+        const document = new FakeDocument(json);
         documents.push(document);
         return document as unknown as ReturnType<BokehRuntime["Document"]["from_json"]>;
       },
@@ -89,32 +205,44 @@ function harness() {
     },
   };
   const notifications = new Map<string, Set<(params: unknown) => void>>();
-  const patchRequests: Array<Record<string, unknown>> = [];
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const data =
+    options.data ??
+    ((params: NteractBokehSessionDataParams): NteractBokehSessionDataResult => ({
+      epoch: 3,
+      columns: Object.fromEntries(
+        Object.keys(params.sources).map((sourceId) => [
+          sourceId,
+          { x: { version: 2, data: { type: "ndarray", array: [1, 2] } } },
+        ]),
+      ),
+      events: [],
+      foldRequested: [],
+    }));
   const requestHost = vi.fn(async (method: string, params?: unknown) => {
+    calls.push({ method, params: params as Record<string, unknown> });
     if (method === NTERACT_BOKEH_SESSION_OPEN) {
+      if (options.open instanceof Error) throw options.open;
+      const open =
+        typeof options.open === "function"
+          ? options.open(calls.filter((call) => call.method === method).length)
+          : options.open;
       return {
-        schemaVersion: 1,
         sessionId: "session-1",
         outputId: "output-1",
         status: "connected",
-        headRevision: 0,
-        checkpoint: {
-          revision: 0,
-          document: { roots: [{ id: "root-1" }] },
-          buffers: [],
-        },
-        patchTail: [] as NteractBokehResolvedPatchEvent[],
+        epoch: 3,
+        live: true,
+        ...open,
       };
     }
+    if (method === NTERACT_BOKEH_SESSION_DATA) {
+      return data(params as NteractBokehSessionDataParams);
+    }
+    if (method === NTERACT_BOKEH_SET_PROPS) return options.setProps?.() ?? { status: "written" };
     if (method === NTERACT_BOKEH_APPLY_PATCH) {
-      patchRequests.push(params as Record<string, unknown>);
-      const request = params as { transactionId: string; baseRevision: number };
-      return {
-        status: "accepted",
-        sessionId: "session-1",
-        transactionId: request.transactionId,
-        revision: request.baseRevision + 1,
-      };
+      const request = params as { transactionId: string };
+      return { status: "accepted", sessionId: "session-1", transactionId: request.transactionId };
     }
     throw new Error(`Unexpected method ${method}`);
   });
@@ -127,28 +255,53 @@ function harness() {
   const notify = (method: string, params: unknown) => {
     for (const listener of notifications.get(method) ?? []) listener(params);
   };
+  const sendDoc = async (update: NteractBokehDocUpdate) => {
+    notify(NTERACT_BOKEH_SESSION_DOC, { outputId: "output-1", update });
+    await settle();
+  };
+  const sendEvents = async (events: NteractBokehResolvedEvents) => {
+    notify(NTERACT_BOKEH_SESSION_EVENTS, { outputId: "output-1", events });
+    await settle();
+  };
   const container = document.createElement("div");
   const onStatus = vi.fn();
+  const onReadOnly = vi.fn();
   const controller = new BokehSessionController({
     outputId: "output-1",
-    payload,
+    payload: makePayload(options.payload),
     container,
     runtime,
     requestHost,
     subscribeHostNotification,
     onStatus,
+    onReadOnly,
     onLayout: vi.fn(),
   });
+  const callsTo = (method: string) => calls.filter((call) => call.method === method);
   return {
+    calls,
+    callsTo,
     container,
     controller,
     documents,
     notify,
+    onReadOnly,
     onStatus,
-    patchRequests,
     requestHost,
-    runtime,
+    sendDoc,
+    sendEvents,
   };
+}
+
+/** A live controller that applied its first full update at epoch 3. */
+async function synced(options: Parameters<typeof harness>[0] = {}) {
+  const h = harness(options);
+  await h.controller.start();
+  await h.sendDoc(fullUpdate());
+  const document = h.documents[0];
+  document.applied.length = 0;
+  h.calls.length = 0;
+  return { ...h, document };
 }
 
 describe("BokehSessionController", () => {
@@ -170,408 +323,1303 @@ describe("BokehSessionController", () => {
     expect(patch.data).toEqual({ id: "transaction-1:0" });
     expect(buffers[0].data).not.toBe(source);
     expect(new Uint8Array(buffers[0].data)).toEqual(new Uint8Array([1, 2, 3]));
-    expect(source.byteLength).toBe(3);
   });
 
-  it("serializes one optimistic transaction until its canonical event arrives", async () => {
-    const { controller, documents, notify, patchRequests } = harness();
-    await controller.start();
-    const document = documents[0];
+  describe("read-only outputs", () => {
+    it("renders a frozen output from the payload's document and sends nothing", async () => {
+      const { controller, documents, onStatus, callsTo } = harness({
+        open: { status: "disconnected", live: false },
+      });
+      await controller.start();
 
-    document.emit({
-      kind: "ModelChanged",
-      sync: true,
-      attr: "value",
-      model: { properties: { value: { syncable: true } } },
-    });
-    await vi.advanceTimersByTimeAsync(50);
-    await settle();
+      expect(documents).toHaveLength(1);
+      expect(documents[0].json).toEqual({ roots: [{ id: "root-1" }] });
+      expect(onStatus).toHaveBeenLastCalledWith("disconnected", undefined);
 
-    expect(patchRequests).toHaveLength(1);
-    const transactionId = patchRequests[0].transactionId as string;
-    expect(patchRequests[0].baseRevision).toBe(0);
-    expect(patchRequests[0].buffers as unknown[]).toHaveLength(1);
-
-    document.emit({ kind: "ModelChanged", sync: true, attr: "value" });
-    await vi.advanceTimersByTimeAsync(100);
-    expect(patchRequests).toHaveLength(1);
-
-    const canonical: NteractBokehResolvedPatchEvent = {
-      sessionId: "session-1",
-      transactionId,
-      baseRevision: 0,
-      revision: 1,
-      clientPatch: { patch: { events: [{ kind: "ModelChanged", new: 5 }] }, buffers: [] },
-      serverPatch: { patch: { events: [{ kind: "ModelChanged", new: 10 }] }, buffers: [] },
-    };
-    notify(NTERACT_BOKEH_SESSION_PATCH, { outputId: "output-1", event: canonical });
-    await vi.advanceTimersByTimeAsync(50);
-    await settle();
-
-    expect(document.applied).toEqual([{ events: [{ kind: "ModelChanged", new: 10 }] }]);
-    expect(patchRequests).toHaveLength(2);
-    expect(patchRequests[1].baseRevision).toBe(1);
-    controller.dispose();
-  });
-
-  it("re-applies its own patch when the kernel rebased it onto newer events", async () => {
-    const { controller, documents, notify, patchRequests, requestHost } = harness();
-    await controller.start();
-    const document = documents[0];
-
-    document.emit({ kind: "ModelChanged", sync: true, attr: "start" });
-    await vi.advanceTimersByTimeAsync(50);
-    await settle();
-    const transactionId = patchRequests[0].transactionId as string;
-    expect(patchRequests[0].baseRevision).toBe(0);
-
-    const serverChange: NteractBokehResolvedPatchEvent = {
-      sessionId: "session-1",
-      transactionId: "server-change-1",
-      baseRevision: 0,
-      revision: 1,
-      serverPatch: { patch: { events: [{ kind: "ModelChanged", new: 1 }] }, buffers: [] },
-    };
-    const rebased: NteractBokehResolvedPatchEvent = {
-      sessionId: "session-1",
-      transactionId,
-      baseRevision: 1,
-      revision: 2,
-      clientPatch: { patch: { events: [{ kind: "ModelChanged", new: 2 }] }, buffers: [] },
-    };
-    notify(NTERACT_BOKEH_SESSION_PATCH, { outputId: "output-1", event: serverChange });
-    notify(NTERACT_BOKEH_SESSION_PATCH, { outputId: "output-1", event: rebased });
-    await settle();
-    await vi.advanceTimersByTimeAsync(200);
-
-    expect(document.applied).toEqual([
-      { events: [{ kind: "ModelChanged", new: 1 }] },
-      { events: [{ kind: "ModelChanged", new: 2 }] },
-    ]);
-    expect(documents).toHaveLength(1);
-    expect(requestHost).toHaveBeenCalledTimes(2);
-    controller.dispose();
-  });
-
-  it("keeps a queued local change when its in-flight patch comes back rebased", async () => {
-    const { controller, documents, notify, patchRequests } = harness();
-    await controller.start();
-    const document = documents[0];
-    const setv = vi.fn();
-    const page = { properties: { dark_theme: { syncable: true } }, setv };
-
-    document.emit({
-      kind: "ModelChanged",
-      sync: true,
-      attr: "dark_theme",
-      value: false,
-      model: page,
-    });
-    await vi.advanceTimersByTimeAsync(50);
-    await settle();
-    const transactionId = patchRequests[0].transactionId as string;
-    document.emit({
-      kind: "ModelChanged",
-      sync: true,
-      attr: "dark_theme",
-      value: true,
-      model: page,
+      documents[0].emit({
+        kind: "ModelChanged",
+        attr: "value",
+        value: 1,
+        model: documents[0].get_model_by_id("slider"),
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(callsTo(NTERACT_BOKEH_SET_PROPS)).toHaveLength(0);
+      controller.dispose();
     });
 
-    notify(NTERACT_BOKEH_SESSION_PATCH, {
-      outputId: "output-1",
-      event: {
-        sessionId: "session-1",
-        transactionId: "server-change-1",
-        baseRevision: 0,
-        revision: 1,
-        serverPatch: { patch: { events: [{ kind: "ModelChanged", new: 1 }] }, buffers: [] },
-      },
-    });
-    notify(NTERACT_BOKEH_SESSION_PATCH, {
-      outputId: "output-1",
-      event: {
-        sessionId: "session-1",
-        transactionId,
-        baseRevision: 1,
-        revision: 2,
-        clientPatch: {
-          patch: { events: [{ kind: "ModelChanged", attr: "dark_theme", new: false }] },
-          buffers: [],
+    it("renders the state saved on save over the display-time document", async () => {
+      const saved = { roots: [{ id: "root-1" }], title: "saved" };
+      const { controller, documents } = harness({
+        open: { status: "connected", live: false },
+        // Out-of-band buffers belong to the display-time document only.
+        payload: {
+          snapshot: { document: saved, buffers: [] },
+          buffers: [{ id: "b0", hash: "h", size: 3 }],
         },
-      },
-    });
-    await settle();
+      });
+      await controller.start();
 
-    expect(document.applied.at(-1)).toEqual({
-      events: [{ kind: "ModelChanged", attr: "dark_theme", new: false }],
+      expect(documents).toHaveLength(1);
+      expect(documents[0].json).toEqual(saved);
+      controller.dispose();
     });
-    expect(setv).toHaveBeenLastCalledWith({ dark_theme: true }, { sync: false });
 
-    await vi.advanceTimersByTimeAsync(200);
-    await settle();
-    expect(patchRequests).toHaveLength(2);
-    controller.dispose();
+    it("mounts a live session from the document, not the saved state", async () => {
+      const { controller, documents } = harness({
+        payload: { snapshot: { document: { roots: [{ id: "stale" }] }, buffers: [] } },
+      });
+      await controller.start();
+
+      expect(documents[0].json).toEqual({ roots: [{ id: "root-1" }] });
+      controller.dispose();
+    });
+
+    it("renders the payload when the host has no session support", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { controller, documents, onStatus } = harness({ open: new Error("unavailable") });
+      await controller.start();
+
+      expect(documents).toHaveLength(1);
+      expect(onStatus).toHaveBeenLastCalledWith("disconnected", undefined);
+      controller.dispose();
+    });
+
+    it("stops writing and keeps the document once the session disconnects", async () => {
+      const { controller, document, notify, callsTo, onStatus } = await synced();
+      const slider = document.get_model_by_id("slider")!;
+      slider.properties.value = { syncable: true };
+
+      document.emit({ kind: "ModelChanged", attr: "value", value: 0.7, model: slider });
+      notify(NTERACT_BOKEH_SESSION_STATE, {
+        sessionId: "session-1",
+        outputId: "output-1",
+        status: "disconnected",
+        epoch: 3,
+      });
+      document.emit({ kind: "ModelChanged", attr: "value", value: 0.8, model: slider });
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(onStatus).toHaveBeenLastCalledWith("disconnected", undefined);
+      expect(callsTo(NTERACT_BOKEH_SET_PROPS)).toHaveLength(0);
+      expect(document.cleared).toBe(false);
+      controller.dispose();
+    });
   });
 
-  it("does not publish Bokeh document-ready lifecycle events", async () => {
-    const { controller, documents, patchRequests } = harness();
-    await controller.start();
-
-    documents[0].emit({
-      kind: "MessageSent",
-      sync: true,
-      msg_type: "bokeh_event",
-      msg_data: { event_name: "document_ready" },
-    });
-    await vi.advanceTimersByTimeAsync(100);
-
-    expect(patchRequests).toHaveLength(0);
-    controller.dispose();
-  });
-
-  it("cancels state-triggered resync when the canonical event catches up", async () => {
-    const { controller, documents, notify, requestHost } = harness();
-    await controller.start();
-
-    notify(NTERACT_BOKEH_SESSION_STATE, {
+  describe("host changes", () => {
+    const state = (overrides: Record<string, unknown> = {}) => ({
       sessionId: "session-1",
       outputId: "output-1",
       status: "connected",
-      headRevision: 1,
+      epoch: 3,
+      live: true,
+      writable: true,
+      ...overrides,
     });
-    notify(NTERACT_BOKEH_SESSION_PATCH, {
-      outputId: "output-1",
-      event: {
-        sessionId: "session-1",
-        transactionId: "server-change-1",
-        baseRevision: 0,
-        revision: 1,
-        serverPatch: { patch: { events: [{ kind: "ModelChanged", new: 3 }] }, buffers: [] },
-      },
+
+    it("re-opens when a new host does not follow its live session yet", async () => {
+      const { controller, document, documents, notify, sendDoc, callsTo } = await synced();
+      const slider = document.get_model_by_id("slider")!;
+      slider.properties.value = { syncable: true };
+
+      notify(NTERACT_BOKEH_SESSION_STATE, state());
+      await settle();
+      expect(callsTo(NTERACT_BOKEH_SESSION_OPEN)).toHaveLength(0);
+
+      // A transport reconnect replaced the host's bridge, which has no
+      // subscription for this frame while the session stays connected.
+      notify(NTERACT_BOKEH_SESSION_STATE, state({ live: false }));
+      await settle();
+      expect(callsTo(NTERACT_BOKEH_SESSION_OPEN)).toHaveLength(1);
+
+      await sendDoc(fullUpdate());
+      expect(documents).toHaveLength(1);
+      document.emit({ kind: "ModelChanged", attr: "value", value: 0.6, model: slider });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(callsTo(NTERACT_BOKEH_SET_PROPS).map((call) => call.params.props)).toEqual([
+        { slider: { value: "0.6" } },
+      ]);
+      controller.dispose();
     });
-    await settle();
-    await vi.advanceTimersByTimeAsync(200);
 
-    expect(requestHost).toHaveBeenCalledTimes(1);
-    expect(documents).toHaveLength(1);
-    controller.dispose();
-  });
-
-  it("reconciles checkpoint events into the mounted document", async () => {
-    const { container, controller, documents, notify, requestHost } = harness();
-    await controller.start();
-    const mounted = container.firstElementChild;
-
-    notify(NTERACT_BOKEH_SESSION_PATCH, {
-      outputId: "output-1",
-      event: {
-        sessionId: "session-1",
-        transactionId: "checkpoint-1",
-        baseRevision: 0,
-        revision: 1,
-        checkpoint: {
-          revision: 1,
-          document: { title: "Panel", roots: [{ id: "root-1" }] },
-          buffers: [],
+    it("opens once when the host reports the state it opened while the open is in flight", async () => {
+      // The record arrives after the frame first opened: the host reports the
+      // session connected, and while the re-open is in flight it reports
+      // itself following the session, as the bridge manager may.
+      let h: ReturnType<typeof harness> | null = null;
+      h = harness({
+        open: (count) => {
+          if (count === 1) return { status: "disconnected", live: false, epoch: null };
+          h!.notify(NTERACT_BOKEH_SESSION_STATE, state());
+          return {};
         },
-      },
-    });
-    notify(NTERACT_BOKEH_SESSION_PATCH, {
-      outputId: "output-1",
-      event: {
-        sessionId: "session-1",
-        transactionId: "server-change-2",
-        baseRevision: 1,
-        revision: 2,
-        serverPatch: { patch: { events: [{ kind: "ModelChanged", new: 7 }] }, buffers: [] },
-      },
-    });
-    await vi.advanceTimersByTimeAsync(200);
-    await settle();
+      });
+      await h.controller.start();
+      h.notify(NTERACT_BOKEH_SESSION_STATE, state({ live: false }));
+      await settle();
+      await h.sendDoc(fullUpdate());
+      await settle();
 
-    expect(requestHost).toHaveBeenCalledTimes(1);
-    expect(documents).toHaveLength(1);
-    expect(documents[0].cleared).toBe(false);
-    expect(container.firstElementChild).toBe(mounted);
-    expect(documents[0].applied).toEqual([
-      {
-        events: [
-          { kind: "RootAdded", model: { id: "root-1" } },
-          { kind: "TitleChanged", title: "Panel" },
-        ],
-      },
-      { events: [{ kind: "ModelChanged", new: 7 }] },
-    ]);
-    controller.dispose();
+      expect(h.callsTo(NTERACT_BOKEH_SESSION_OPEN)).toHaveLength(2);
+      h.controller.dispose();
+    });
+
+    it("opens again when a new host appears while an open is in flight", async () => {
+      let h: ReturnType<typeof harness> | null = null;
+      h = harness({
+        open: (count) => {
+          // The bridge serving this open is replaced before it answers.
+          if (count === 2) h!.notify(NTERACT_BOKEH_SESSION_STATE, state({ live: false }));
+          return {};
+        },
+      });
+      await h.controller.start();
+      await h.sendDoc(fullUpdate());
+      h.notify(NTERACT_BOKEH_SESSION_STATE, state({ live: false }));
+      await settle();
+      await settle();
+
+      expect(h.callsTo(NTERACT_BOKEH_SESSION_OPEN)).toHaveLength(3);
+      h.controller.dispose();
+    });
+
+    /** A synced viewer whose document also has a range and a paginated table. */
+    async function viewer() {
+      const h = harness({ open: { writable: false } });
+      await h.controller.start();
+      const document = h.documents[0];
+      document.add(new FakeBokehModel("x_range", "Range1d", { start: { syncable: true } }));
+      document.add(new FakeBokehModel("table", "DataTabulator", { page: { syncable: true } }));
+      await h.sendDoc(
+        fullUpdate({
+          models: {
+            ...fullUpdate().models,
+            x_range: { type: "Range1d", refProps: [], props: { start: 0 } },
+            table: { type: "DataTabulator", refProps: ["source"], props: { page: 1 } },
+          },
+        }),
+      );
+      document.applied.length = 0;
+      h.calls.length = 0;
+      document.get_model_by_id("slider")!.properties.value = { syncable: true };
+      const change = (id: string, attr: string, value: unknown) =>
+        document.emit({ kind: "ModelChanged", attr, value, model: document.get_model_by_id(id) });
+      return { ...h, document, change };
+    }
+
+    it("keeps a viewer's local changes to any model in its view and sends nothing", async () => {
+      const { controller, document, change, calls, onReadOnly } = await viewer();
+      expect(onReadOnly).toHaveBeenLastCalledWith(true);
+
+      change("slider", "value", 0.6);
+      change("x_range", "start", 5);
+      change("table", "page", 2);
+      document.emit({ kind: "MessageSent", msg_type: "bokeh_event", msg_data: {} });
+      document.emit({ kind: "ColumnsPatched", model: document.get_model_by_id("source") });
+      document.emit({ kind: "ColumnsStreamed", model: document.get_model_by_id("source") });
+      await vi.advanceTimersByTimeAsync(1000);
+
+      // Nothing is restored, reloaded or sent.
+      expect(document.applied).toEqual([]);
+      expect(calls).toEqual([]);
+      controller.dispose();
+    });
+
+    it("overwrites a viewer's local values when the document changes them", async () => {
+      const { controller, document, change, sendDoc, sendEvents, calls } = await viewer();
+      change("slider", "value", 0.6);
+      change("table", "page", 2);
+      document.emit({ kind: "ColumnsStreamed", model: document.get_model_by_id("source") });
+      await vi.advanceTimersByTimeAsync(100);
+
+      await sendDoc(deltaUpdate({ props: { slider: { value: 0.9 } } }));
+      await sendEvents(
+        eventsFor({
+          dataEvents: [
+            {
+              kind: "ColumnsStreamed",
+              source_id: "source",
+              base_version: 2,
+              new_version: 3,
+              data: { type: "map", entries: [["x", [3]]] },
+            },
+          ],
+        }),
+      );
+      expect(document.appliedEvents()).toEqual([
+        { kind: "ModelChanged", model: { id: "slider" }, attr: "value", new: 0.9 },
+        expect.objectContaining({ kind: "ColumnsStreamed", model: { id: "source" } }),
+      ]);
+
+      // A full update of a new epoch reconciles the view to the document's state.
+      change("slider", "value", 0.6);
+      document.applied.length = 0;
+      await sendDoc(
+        fullUpdate({
+          epoch: 4,
+          models: {
+            ...fullUpdate().models,
+            x_range: { type: "Range1d", refProps: [], props: { start: 0 } },
+            table: { type: "DataTabulator", refProps: ["source"], props: { page: 1 } },
+          },
+          columns: { source: { x: { version: 3, size: 10 } } },
+        }),
+      );
+      expect(document.appliedEvents()).toContainEqual(
+        expect.objectContaining({
+          kind: "RootAdded",
+          model: expect.objectContaining({
+            id: "root-1",
+            attributes: {
+              children: [expect.objectContaining({ id: "slider", attributes: { value: 0.5 } })],
+            },
+          }),
+        }),
+      );
+      expect(calls.filter((call) => call.method !== NTERACT_BOKEH_SESSION_DATA)).toEqual([]);
+      controller.dispose();
+    });
+
+    it("writes only new edits once a viewer becomes an editor", async () => {
+      const { controller, document, change, notify, sendDoc, onReadOnly, callsTo } = await viewer();
+      change("slider", "value", 0.6);
+      change("table", "page", 2);
+      await vi.advanceTimersByTimeAsync(100);
+
+      notify(NTERACT_BOKEH_SESSION_STATE, state({ writable: true }));
+      expect(onReadOnly).toHaveBeenLastCalledWith(false);
+      await vi.advanceTimersByTimeAsync(100);
+      // The values it changed while viewing are not written.
+      expect(callsTo(NTERACT_BOKEH_SET_PROPS)).toEqual([]);
+      // Nor do they hold off the document.
+      await sendDoc(deltaUpdate({ props: { table: { page: 3 } } }));
+      expect(document.appliedEvents()).toEqual([
+        { kind: "ModelChanged", model: { id: "table" }, attr: "page", new: 3 },
+      ]);
+
+      change("slider", "value", 0.7);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(callsTo(NTERACT_BOKEH_SET_PROPS).map((call) => call.params.props)).toEqual([
+        { slider: { value: "0.7" } },
+      ]);
+      controller.dispose();
+    });
+
+    it("drops an editor's unflushed edit when it becomes a viewer", async () => {
+      const { controller, document, notify, sendDoc, onReadOnly, callsTo } = await synced();
+      const slider = document.get_model_by_id("slider")!;
+      slider.properties.value = { syncable: true };
+
+      document.emit({ kind: "ModelChanged", attr: "value", value: 0.6, model: slider });
+      notify(NTERACT_BOKEH_SESSION_STATE, state({ writable: false }));
+      expect(onReadOnly).toHaveBeenLastCalledWith(true);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(callsTo(NTERACT_BOKEH_SET_PROPS)).toEqual([]);
+
+      await sendDoc(deltaUpdate({ props: { slider: { value: 0.9 } } }));
+      expect(document.appliedEvents()).toEqual([
+        { kind: "ModelChanged", model: { id: "slider" }, attr: "value", new: 0.9 },
+      ]);
+      controller.dispose();
+    });
   });
 
-  it("catches up from the snapshot tail without remounting the document", async () => {
-    const { controller, documents, notify, requestHost } = harness();
-    await controller.start();
-    const tailEvent = (revision: number): NteractBokehResolvedPatchEvent => ({
-      sessionId: "session-1",
-      transactionId: `server-${revision}`,
-      baseRevision: revision - 1,
-      revision,
-      serverPatch: { patch: { events: [{ kind: "ModelChanged", new: revision }] }, buffers: [] },
-    });
-    requestHost.mockResolvedValueOnce({
-      schemaVersion: 1,
-      sessionId: "session-1",
-      outputId: "output-1",
-      status: "connected",
-      headRevision: 2,
-      checkpoint: { revision: 0, document: { roots: [{ id: "root-1" }] }, buffers: [] },
-      patchTail: [tailEvent(1), tailEvent(2)],
-    });
+  describe("document updates", () => {
+    it("loads every column and the tail on the first full update", async () => {
+      const { controller, documents, callsTo, sendDoc } = harness();
+      await controller.start();
+      await sendDoc(fullUpdate());
 
-    notify(NTERACT_BOKEH_SESSION_STATE, {
-      sessionId: "session-1",
-      outputId: "output-1",
-      status: "connected",
-      headRevision: 2,
-    });
-    await vi.advanceTimersByTimeAsync(200);
-    await settle();
-
-    expect(requestHost).toHaveBeenCalledTimes(2);
-    expect(documents).toHaveLength(1);
-    expect(documents[0].applied).toEqual([
-      { events: [{ kind: "ModelChanged", new: 1 }] },
-      { events: [{ kind: "ModelChanged", new: 2 }] },
-    ]);
-    controller.dispose();
-  });
-
-  it("reconciles a checkpoint by applying its roots to the mounted document", async () => {
-    const { controller, documents, notify } = harness();
-    await controller.start();
-    const newChild = { type: "object", name: "Div", id: "div-2", attributes: { text: "new" } };
-
-    notify(NTERACT_BOKEH_SESSION_PATCH, {
-      outputId: "output-1",
-      event: {
+      expect(callsTo(NTERACT_BOKEH_SESSION_DATA)[0].params).toEqual({
         sessionId: "session-1",
-        transactionId: "checkpoint-1",
-        baseRevision: 0,
-        revision: 1,
-        checkpoint: {
-          revision: 1,
-          document: {
-            roots: [
-              {
-                type: "object",
-                name: "Row",
-                id: "root-1",
-                attributes: { children: [newChild], dark_theme: true },
-              },
+        outputId: "output-1",
+        sources: { source: null },
+        tail: true,
+      });
+      const events = documents[0].appliedEvents();
+      expect(events[0]).toMatchObject({
+        kind: "RootAdded",
+        model: {
+          type: "object",
+          name: "Column",
+          id: "root-1",
+          attributes: {
+            children: [
+              { type: "object", name: "Slider", id: "slider", attributes: { value: 0.5 } },
             ],
           },
-          buffers: [],
         },
-      },
+      });
+      expect(events).toContainEqual({ kind: "TitleChanged", title: "Page" });
+      expect(events).toContainEqual({
+        kind: "ColumnDataChanged",
+        model: { id: "source" },
+        attr: "data",
+        data: { type: "map", entries: [["x", { type: "ndarray", array: [1, 2] }]] },
+      });
+      controller.dispose();
     });
-    await vi.advanceTimersByTimeAsync(200);
-    await settle();
 
-    expect(documents).toHaveLength(1);
-    expect(documents[0].applied).toEqual([
-      {
-        events: [
-          {
-            kind: "RootAdded",
-            model: {
-              type: "object",
-              name: "Row",
-              id: "root-1",
-              attributes: { children: [newChild], dark_theme: true },
+    it("mounts a live payload with out-of-band buffers from the first full update", async () => {
+      const { controller, documents, sendDoc } = harness({
+        payload: { buffers: [{ id: "b0", hash: "abc", size: 3 }] },
+      });
+      await controller.start();
+      expect(documents).toHaveLength(0);
+
+      await sendDoc(fullUpdate());
+
+      expect(documents).toHaveLength(1);
+      expect(documents[0].json).toMatchObject({
+        version: "3.9.2",
+        title: "Page",
+        roots: [{ type: "object", name: "Column", id: "root-1" }],
+      });
+      controller.dispose();
+    });
+
+    it("replays the tail before creating views when it mounts from the first full update", async () => {
+      const h = harness({
+        payload: { buffers: [{ id: "b0", hash: "abc", size: 3 }] },
+        data: () => ({
+          epoch: 3,
+          columns: { source: { x: { version: 2, data: [1, 2] } } },
+          events: [
+            eventsFor({
+              dataEvents: [
+                {
+                  kind: "ColumnsPatched",
+                  source_id: "source",
+                  base_version: 2,
+                  new_version: 3,
+                  patches: { type: "map", entries: [["x", [[0, 9]]]] },
+                },
+              ],
+            }),
+          ],
+          foldRequested: [],
+        }),
+      });
+      const appliedBeforeViews: number[] = [];
+      const addDocumentStandalone = h.controller["options"].runtime.addDocumentStandalone;
+      h.controller["options"].runtime.addDocumentStandalone = async (document, element) => {
+        appliedBeforeViews.push(h.documents[0].appliedEvents().length);
+        return addDocumentStandalone(document, element);
+      };
+      await h.controller.start();
+      await h.sendDoc(fullUpdate());
+
+      expect(h.documents[0].appliedEvents()).toEqual([
+        expect.objectContaining({ kind: "ColumnsPatched", model: { id: "source" } }),
+      ]);
+      expect(appliedBeforeViews).toEqual([1]);
+      h.controller.dispose();
+    });
+
+    it("turns changed properties into ModelChanged events with new models inlined once", async () => {
+      const { controller, document, sendDoc } = await synced();
+
+      await sendDoc(
+        deltaUpdate({
+          models: {
+            glyph: { type: "Line", refProps: ["source"], props: { source: { id: "source" } } },
+            renderer: {
+              type: "GlyphRenderer",
+              refProps: ["glyph"],
+              props: { glyph: { id: "glyph" } },
             },
           },
-        ],
-      },
-    ]);
-    controller.dispose();
-  });
+          props: {
+            "root-1": { children: [{ id: "slider" }, { id: "renderer" }] },
+            slider: { value: 0.9, tags: [{ id: "renderer" }] },
+            unknown: { value: 1 },
+          },
+        }),
+      );
 
-  it("reconciles instead of remounting after the kernel rejected a local patch", async () => {
-    const { controller, documents, requestHost } = harness();
-    await controller.start();
-    requestHost.mockImplementationOnce(async (_method, params) => ({
-      status: "error",
-      sessionId: "session-1",
-      transactionId: (params as { transactionId: string }).transactionId,
-      revision: 0,
-    }));
-
-    documents[0].emit({ kind: "ModelChanged", sync: true, attr: "value" });
-    await vi.advanceTimersByTimeAsync(50);
-    await settle();
-    await vi.advanceTimersByTimeAsync(200);
-    await settle();
-
-    expect(requestHost.mock.calls.map(([method]) => method)).toEqual([
-      NTERACT_BOKEH_SESSION_OPEN,
-      NTERACT_BOKEH_APPLY_PATCH,
-      NTERACT_BOKEH_SESSION_OPEN,
-    ]);
-    expect(documents).toHaveLength(1);
-    expect(documents[0].cleared).toBe(false);
-    expect(documents[0].applied).toEqual([
-      { events: [{ kind: "RootAdded", model: { id: "root-1" } }] },
-    ]);
-    controller.dispose();
-  });
-
-  it("cleans up and retries when the initial document fails to mount", async () => {
-    const { container, controller, documents, onStatus, requestHost, runtime } = harness();
-    const mountDocument = runtime.addDocumentStandalone;
-    let failNextMount = true;
-    runtime.addDocumentStandalone = async (document, element) => {
-      if (failNextMount) {
-        failNextMount = false;
-        element.appendChild(window.document.createElement("div"));
-        throw new Error("mount failed");
-      }
-      return mountDocument(document, element);
-    };
-
-    await controller.start();
-    await settle();
-
-    expect(documents[0].cleared).toBe(true);
-    expect(onStatus).toHaveBeenLastCalledWith("error", "mount failed");
-    expect(container.querySelectorAll("div")).toHaveLength(0);
-
-    await vi.advanceTimersByTimeAsync(1_000);
-    await settle();
-
-    expect(requestHost).toHaveBeenCalledTimes(2);
-    expect(documents).toHaveLength(2);
-    expect(documents[1].cleared).toBe(false);
-    expect(onStatus).toHaveBeenLastCalledWith("connected", undefined);
-    controller.dispose();
-  });
-
-  it("freezes the current document when RuntimeState marks the session disconnected", async () => {
-    const { controller, documents, notify, onStatus, patchRequests } = harness();
-    await controller.start();
-    const document = documents[0];
-
-    notify(NTERACT_BOKEH_SESSION_STATE, {
-      sessionId: "session-1",
-      outputId: "output-1",
-      status: "disconnected",
-      headRevision: 0,
+      expect(document.appliedEvents()).toEqual([
+        {
+          kind: "ModelChanged",
+          model: { id: "root-1" },
+          attr: "children",
+          new: [
+            { id: "slider" },
+            {
+              type: "object",
+              name: "GlyphRenderer",
+              id: "renderer",
+              attributes: {
+                glyph: {
+                  type: "object",
+                  name: "Line",
+                  id: "glyph",
+                  attributes: { source: { id: "source" } },
+                },
+              },
+            },
+          ],
+        },
+        { kind: "ModelChanged", model: { id: "slider" }, attr: "value", new: 0.9 },
+        { kind: "ModelChanged", model: { id: "slider" }, attr: "tags", new: [{ id: "renderer" }] },
+      ]);
+      controller.dispose();
     });
-    document.emit({ kind: "ModelChanged", sync: true, attr: "value" });
-    await vi.advanceTimersByTimeAsync(100);
 
-    expect(onStatus).toHaveBeenLastCalledWith("disconnected", undefined);
-    expect(patchRequests).toHaveLength(0);
-    expect(documents).toHaveLength(1);
-    expect(document.cleared).toBe(false);
-    controller.dispose();
+    it("adds and removes roots when the meta changes", async () => {
+      const { controller, document, sendDoc } = await synced();
+
+      await sendDoc(
+        deltaUpdate({
+          meta: { rootIds: ["new-root"], title: null, bokehVersion: "3.9.2", docExtras: null },
+          models: { "new-root": { type: "Div", refProps: [], props: { text: "hi" } } },
+        }),
+      );
+
+      expect(document.appliedEvents()).toEqual([
+        {
+          kind: "RootAdded",
+          model: { type: "object", name: "Div", id: "new-root", attributes: { text: "hi" } },
+        },
+        { kind: "RootRemoved", model: { id: "root-1" } },
+      ]);
+      controller.dispose();
+    });
+
+    it("loads only columns newer than the frame's version from document changes", async () => {
+      const { controller, document, sendDoc, callsTo } = await synced();
+
+      // A fold moves refs at the version the frame already has.
+      await sendDoc(deltaUpdate({ columns: { source: { x: { version: 2, size: 8 } } } }));
+      expect(callsTo(NTERACT_BOKEH_SESSION_DATA)).toHaveLength(0);
+
+      await sendDoc(
+        deltaUpdate({
+          columns: { source: { x: { version: 2, size: 8 }, y: { version: 5, size: 8 }, z: null } },
+        }),
+      );
+      expect(callsTo(NTERACT_BOKEH_SESSION_DATA)[0].params).toMatchObject({
+        sources: { source: ["y"] },
+        tail: false,
+      });
+      expect(document.appliedEvents()[0]).toMatchObject({
+        kind: "ColumnDataChanged",
+        model: { id: "source" },
+        cols: ["x"],
+      });
+      controller.dispose();
+    });
+
+    it("switches epochs without touching BokehJS when it showed the replaced document", async () => {
+      const { controller, document, sendDoc, callsTo } = await synced();
+
+      await sendDoc(fullUpdate({ epoch: 4, canSwitch: true }));
+      expect(document.applied).toHaveLength(0);
+      expect(callsTo(NTERACT_BOKEH_SESSION_DATA)).toHaveLength(0);
+
+      await sendDoc(deltaUpdate({ epoch: 4, props: { slider: { value: 0.1 } } }));
+      expect(document.appliedEvents()).toEqual([
+        { kind: "ModelChanged", model: { id: "slider" }, attr: "value", new: 0.1 },
+      ]);
+      // Deltas of the replaced epoch are stale.
+      document.applied.length = 0;
+      await sendDoc(deltaUpdate({ epoch: 3, props: { slider: { value: 0.2 } } }));
+      expect(document.applied).toHaveLength(0);
+      controller.dispose();
+    });
+
+    it("reconciles a new epoch in place with full-state defaults otherwise", async () => {
+      const { controller, document, sendDoc, callsTo } = await synced();
+
+      await sendDoc(fullUpdate({ epoch: 4, columns: { source: { x: { version: 2, size: 10 } } } }));
+
+      // Versions are unchanged, so no column is reloaded.
+      expect(callsTo(NTERACT_BOKEH_SESSION_DATA)).toHaveLength(0);
+      expect(document.appliedEvents().map((event) => event.kind)).toEqual([
+        "RootAdded",
+        "TitleChanged",
+      ]);
+      controller.dispose();
+    });
+  });
+
+  describe("local property writes", () => {
+    it("writes debounced values and suppresses their echo during the grace window", async () => {
+      const { controller, document, sendDoc, callsTo } = await synced();
+      const slider = document.get_model_by_id("slider")!;
+      slider.properties.value = { syncable: true };
+
+      document.emit({ kind: "ModelChanged", attr: "value", value: 0.6, model: slider });
+      document.emit({ kind: "ModelChanged", attr: "value", value: 0.7, model: slider });
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(callsTo(NTERACT_BOKEH_SET_PROPS).map((call) => call.params)).toEqual([
+        { sessionId: "session-1", outputId: "output-1", props: { slider: { value: "0.7" } } },
+      ]);
+
+      // A remote change this host's value won re-delivers a written value.
+      await sendDoc(
+        deltaUpdate({
+          props: { slider: { value: 0.6 } },
+          propOrigins: { slider: { value: "local" } },
+        }),
+      );
+      expect(document.applied).toHaveLength(0);
+      await sendDoc(deltaUpdate({ props: { slider: { value: 0.3 } } }));
+      expect(document.appliedEvents()).toEqual([
+        { kind: "ModelChanged", model: { id: "slider" }, attr: "value", new: 0.3 },
+      ]);
+
+      await vi.advanceTimersByTimeAsync(500);
+      document.applied.length = 0;
+      await sendDoc(deltaUpdate({ props: { slider: { value: 0.6 } } }));
+      expect(document.applied).toHaveLength(1);
+      controller.dispose();
+    });
+
+    it("applies a kernel correction to an intermediate value it wrote", async () => {
+      const { controller, document, sendDoc, callsTo } = await synced();
+      const range = new FakeBokehModel("range", "Range1d", { start: { syncable: true } });
+      document.add(range);
+      await sendDoc(
+        deltaUpdate({ models: { range: { type: "Range1d", refProps: [], props: { start: 0 } } } }),
+      );
+      document.applied.length = 0;
+
+      document.emit({ kind: "ModelChanged", attr: "start", value: 1, model: range });
+      document.emit({ kind: "ModelChanged", attr: "start", value: 2, model: range });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(callsTo(NTERACT_BOKEH_SET_PROPS).map((call) => call.params.props)).toEqual([
+        { range: { start: "2" } },
+      ]);
+
+      // A Python callback clamps `2` back to `1`.
+      await sendDoc(
+        deltaUpdate({
+          props: { range: { start: 1 } },
+          propOrigins: { range: { start: "kernel" } },
+        }),
+      );
+      expect(document.appliedEvents()).toEqual([
+        { kind: "ModelChanged", model: { id: "range" }, attr: "start", new: 1 },
+      ]);
+
+      // Another peer's value is applied too, even if this frame wrote it.
+      document.applied.length = 0;
+      await sendDoc(
+        deltaUpdate({ props: { range: { start: 2 } }, propOrigins: { range: { start: "peer" } } }),
+      );
+      expect(document.appliedEvents()).toEqual([
+        { kind: "ModelChanged", model: { id: "range" }, attr: "start", new: 2 },
+      ]);
+      controller.dispose();
+    });
+
+    it("keeps an unflushed local edit over any remote value", async () => {
+      const { controller, document, sendDoc, callsTo } = await synced();
+      const slider = document.get_model_by_id("slider")!;
+      slider.properties.value = { syncable: true };
+
+      document.emit({ kind: "ModelChanged", attr: "value", value: 0.6, model: slider });
+      await sendDoc(
+        deltaUpdate({
+          props: { slider: { value: 0.1 } },
+          propOrigins: { slider: { value: "kernel" } },
+        }),
+      );
+      expect(document.applied).toHaveLength(0);
+
+      // The edit is written after the remote value and wins in the document.
+      await vi.advanceTimersByTimeAsync(50);
+      expect(callsTo(NTERACT_BOKEH_SET_PROPS).map((call) => call.params.props)).toEqual([
+        { slider: { value: "0.6" } },
+      ]);
+      controller.dispose();
+    });
+
+    it("never writes reference, unsyncable or columnar data properties", async () => {
+      const { controller, document, callsTo } = await synced();
+      const root = document.get_model_by_id("root-1")!;
+      root.properties.children = { syncable: true, may_have_refs: true };
+      const slider = document.get_model_by_id("slider")!;
+      slider.properties.hidden = { syncable: false };
+      const local = new FakeBokehModel("frame-only", "Div", { text: { syncable: true } });
+      document.add(local);
+
+      document.emit({ kind: "ModelChanged", attr: "children", value: [], model: root });
+      document.emit({ kind: "ModelChanged", attr: "text", value: "x", model: local });
+      document.emit({ kind: "ModelChanged", attr: "hidden", value: 1, model: slider });
+      document.emit({
+        kind: "ModelChanged",
+        attr: "data",
+        value: { x: [1] },
+        model: document.get_model_by_id("source"),
+      });
+      document.emit({ kind: "ModelChanged", attr: "value", sync: false, value: 1, model: slider });
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(callsTo(NTERACT_BOKEH_SET_PROPS)).toHaveLength(0);
+      controller.dispose();
+    });
+
+    it("writes values whose BokehJS type may hold refs when Python says it cannot", async () => {
+      // panel-material-ui declares widget values generically, so BokehJS sets
+      // may_have_refs on a slider value the session document lists as a value.
+      const { controller, document, callsTo } = await synced();
+      const slider = document.get_model_by_id("slider")!;
+      slider.properties.value_throttled = { syncable: true, may_have_refs: true };
+
+      document.emit({ kind: "ModelChanged", attr: "value_throttled", value: 2.2, model: slider });
+      await vi.advanceTimersByTimeAsync(60);
+
+      expect(callsTo(NTERACT_BOKEH_SET_PROPS).map((call) => call.params)).toEqual([
+        {
+          sessionId: "session-1",
+          outputId: "output-1",
+          props: { slider: { value_throttled: "2.2" } },
+        },
+      ]);
+      controller.dispose();
+    });
+
+    it("asks for the document again when the host rejects a write", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { controller, document, callsTo } = await synced({
+        setProps: () => ({ status: "rejected", error: "refused" }),
+      });
+      const slider = document.get_model_by_id("slider")!;
+      slider.properties.value = { syncable: true };
+
+      document.emit({ kind: "ModelChanged", attr: "value", value: 0.6, model: slider });
+      await vi.advanceTimersByTimeAsync(60);
+
+      expect(callsTo(NTERACT_BOKEH_SESSION_OPEN)).toHaveLength(1);
+      controller.dispose();
+    });
+
+    it("sends one-off events after the property writes made before them", async () => {
+      const { controller, document, calls } = await synced();
+      const slider = document.get_model_by_id("slider")!;
+      slider.properties.value = { syncable: true };
+
+      document.emit({ kind: "ModelChanged", attr: "value", value: 0.6, model: slider });
+      document.emit({ kind: "MessageSent", msg_type: "bokeh_event", msg_data: {} });
+      document.emit({
+        kind: "MessageSent",
+        msg_type: "bokeh_event",
+        msg_data: { event_name: "document_ready" },
+      });
+      await settle();
+
+      expect(calls.map((call) => call.method)).toEqual([
+        NTERACT_BOKEH_SET_PROPS,
+        NTERACT_BOKEH_APPLY_PATCH,
+      ]);
+      const request = calls[1].params as { transactionId: string; buffers: unknown[] };
+      expect(request.buffers).toHaveLength(1);
+      controller.dispose();
+    });
+  });
+
+  describe("data events", () => {
+    it("applies contiguous data events with Bokeh's stream and patch", async () => {
+      const { controller, document, sendEvents } = await synced();
+      const buffer = new Uint8Array([1]).buffer;
+
+      await sendEvents(
+        eventsFor({
+          dataEvents: [
+            {
+              kind: "ColumnsStreamed",
+              source_id: "source",
+              base_version: 2,
+              new_version: 3,
+              data: { type: "map", entries: [["x", { type: "bytes", data: { id: "b0" } }]] },
+              rollover: 100,
+            },
+            {
+              kind: "ColumnsPatched",
+              source_id: "source",
+              base_version: 3,
+              new_version: 4,
+              patches: { type: "map", entries: [["x", [[0, 9]]]] },
+            },
+            // Already applied.
+            {
+              kind: "ColumnsPatched",
+              source_id: "source",
+              base_version: 1,
+              new_version: 2,
+              patches: {},
+            },
+          ],
+          messages: [{ msg_type: "custom", msg_data: { a: 1 } }],
+          buffers: [{ id: "b0", data: buffer }],
+        }),
+      );
+
+      expect(document.applied).toHaveLength(1);
+      expect(document.applied[0].buffers?.get("b0")).toBe(buffer);
+      expect(document.appliedEvents()).toEqual([
+        {
+          kind: "ColumnsStreamed",
+          model: { id: "source" },
+          attr: "data",
+          data: { type: "map", entries: [["x", { type: "bytes", data: { id: "b0" } }]] },
+          rollover: 100,
+        },
+        {
+          kind: "ColumnsPatched",
+          model: { id: "source" },
+          attr: "data",
+          patches: { type: "map", entries: [["x", [[0, 9]]]] },
+        },
+        { kind: "MessageSent", msg_type: "custom", msg_data: { a: 1 } },
+      ]);
+      controller.dispose();
+    });
+
+    it("adopts the version of its own stream or patch without applying it again", async () => {
+      const { controller, document, sendEvents, calls } = await synced();
+      document.emit({ kind: "ColumnsPatched", model: document.get_model_by_id("source") });
+      await settle();
+      const transactionId = (calls[0].params as { transactionId: string }).transactionId;
+
+      await sendEvents(
+        eventsFor({
+          transactionId,
+          dataEvents: [
+            {
+              kind: "ColumnsPatched",
+              source_id: "source",
+              base_version: 2,
+              new_version: 3,
+              patches: {},
+              echo_of: 0,
+            },
+          ],
+        }),
+      );
+      expect(document.applied).toHaveLength(0);
+
+      await sendEvents(
+        eventsFor({
+          dataEvents: [
+            {
+              kind: "ColumnsPatched",
+              source_id: "source",
+              base_version: 3,
+              new_version: 4,
+              patches: {},
+            },
+          ],
+        }),
+      );
+      expect(document.appliedEvents()).toHaveLength(1);
+      controller.dispose();
+    });
+
+    it("applies data events callbacks derived from its own edit", async () => {
+      const h = harness();
+      await h.controller.start();
+      const document = h.documents[0];
+      document.add(
+        new FakeBokehModel("source-b", "ColumnDataSource", { data: { syncable: true } }, () => {}),
+      );
+      await h.sendDoc(
+        fullUpdate({
+          models: {
+            ...fullUpdate().models,
+            "source-b": { type: "ColumnDataSource", refProps: [], props: {} },
+          },
+          columns: {
+            source: { x: { version: 2, size: 10 } },
+            "source-b": { x: { version: 2, size: 10 } },
+          },
+        }),
+      );
+      document.applied.length = 0;
+      h.calls.length = 0;
+
+      // A browser stream on source A; a Python callback streams source B and
+      // then source A again, all under the request's transaction.
+      document.emit({ kind: "ColumnsStreamed", model: document.get_model_by_id("source") });
+      await settle();
+      const transactionId = (h.calls[0].params as { transactionId: string }).transactionId;
+      const stream = (sourceId: string, base: number, echoOf?: number) => ({
+        kind: "ColumnsStreamed" as const,
+        source_id: sourceId,
+        base_version: base,
+        new_version: base + 1,
+        data: { type: "map", entries: [["x", [base]]] },
+        ...(echoOf !== undefined ? { echo_of: echoOf } : {}),
+      });
+      await h.sendEvents(
+        eventsFor({
+          transactionId,
+          dataEvents: [stream("source", 2, 0), stream("source-b", 2), stream("source", 3)],
+        }),
+      );
+
+      expect(document.appliedEvents()).toEqual([
+        {
+          kind: "ColumnsStreamed",
+          model: { id: "source-b" },
+          attr: "data",
+          data: { type: "map", entries: [["x", [2]]] },
+        },
+        {
+          kind: "ColumnsStreamed",
+          model: { id: "source" },
+          attr: "data",
+          data: { type: "map", entries: [["x", [3]]] },
+        },
+      ]);
+
+      // Both sources continue from the versions they reached.
+      document.applied.length = 0;
+      await h.sendEvents(eventsFor({ dataEvents: [stream("source", 4), stream("source-b", 3)] }));
+      expect(document.appliedEvents().map((event) => event.model)).toEqual([
+        { id: "source" },
+        { id: "source-b" },
+      ]);
+      expect(h.callsTo(NTERACT_BOKEH_SESSION_DATA)).toHaveLength(0);
+      h.controller.dispose();
+    });
+
+    it("applies an echo marker only for its own edit's source, index and transaction", async () => {
+      const patch = (base: number, echoOf: number) => ({
+        kind: "ColumnsPatched" as const,
+        source_id: "source",
+        base_version: base,
+        new_version: base + 1,
+        patches: {},
+        echo_of: echoOf,
+      });
+      const ownPatch = async () => {
+        const h = await synced();
+        h.document.emit({ kind: "ColumnsPatched", model: h.document.get_model_by_id("source") });
+        await settle();
+        const transactionId = (h.calls[0].params as { transactionId: string }).transactionId;
+        return { ...h, transactionId };
+      };
+
+      // Another frame's transaction, or another edit index, is not the echo.
+      for (const [transaction, index] of [
+        ["other", 0],
+        ["own", 1],
+      ] as const) {
+        const h = await ownPatch();
+        const transactionId = transaction === "own" ? h.transactionId : "other";
+        await h.sendEvents(eventsFor({ transactionId, dataEvents: [patch(2, index)] }));
+        expect(h.document.appliedEvents()).toHaveLength(1);
+        h.controller.dispose();
+      }
+
+      // The echo is matched once; a repeat marker is applied.
+      const h = await ownPatch();
+      await h.sendEvents(
+        eventsFor({ transactionId: h.transactionId, dataEvents: [patch(2, 0), patch(3, 0)] }),
+      );
+      expect(h.document.appliedEvents()).toHaveLength(1);
+      expect(h.callsTo(NTERACT_BOKEH_SESSION_DATA)).toHaveLength(0);
+      h.controller.dispose();
+    });
+
+    it.each([
+      {
+        label: "patch",
+        local: "ColumnsPatched" as const,
+        echo: { kind: "ColumnsPatched" as const, patches: { x: [[0, 9]] } },
+      },
+      {
+        label: "rollover stream",
+        local: "ColumnsStreamed" as const,
+        echo: {
+          kind: "ColumnsStreamed" as const,
+          data: { type: "map", entries: [["x", [9]]] },
+          rollover: 2,
+        },
+      },
+    ])(
+      "reloads the source when a callback event lands before the echo of its own $label",
+      async ({ local, echo }) => {
+        let reload = false;
+        const { controller, document, sendEvents, calls, callsTo } = await synced({
+          data: (): NteractBokehSessionDataResult => ({
+            epoch: 3,
+            columns: { source: { x: { version: reload ? 4 : 2, data: reload ? [7, 9] : [0] } } },
+            events: [],
+            foldRequested: [],
+          }),
+        });
+        document.emit({ kind: local, model: document.get_model_by_id("source") });
+        await settle();
+        const transactionId = (calls[0].params as { transactionId: string }).transactionId;
+        reload = true;
+
+        // A Python callback's event for the source, versioned before the edit.
+        await sendEvents(
+          eventsFor({
+            transactionId: "callback-tx",
+            dataEvents: [
+              {
+                kind: "ColumnsPatched",
+                source_id: "source",
+                base_version: 2,
+                new_version: 3,
+                patches: { x: [[0, 7]] },
+              },
+            ],
+          }),
+        );
+        expect(callsTo(NTERACT_BOKEH_SESSION_DATA)).toHaveLength(0);
+
+        // The echo now sits on version 3, not on the 2 the edit was applied on.
+        await sendEvents(
+          eventsFor({
+            transactionId,
+            dataEvents: [
+              { ...echo, source_id: "source", base_version: 3, new_version: 4, echo_of: 0 },
+            ],
+          }),
+        );
+
+        expect(callsTo(NTERACT_BOKEH_SESSION_DATA)).toHaveLength(1);
+        expect(document.appliedEvents().at(-1)).toEqual({
+          kind: "ColumnDataChanged",
+          model: { id: "source" },
+          attr: "data",
+          data: { type: "map", entries: [["x", [7, 9]]] },
+        });
+
+        // The source continues from the reloaded version.
+        document.applied.length = 0;
+        await sendEvents(
+          eventsFor({
+            dataEvents: [
+              {
+                kind: "ColumnsPatched",
+                source_id: "source",
+                base_version: 4,
+                new_version: 5,
+                patches: {},
+              },
+            ],
+          }),
+        );
+        expect(document.appliedEvents()).toHaveLength(1);
+        expect(callsTo(NTERACT_BOKEH_SESSION_DATA)).toHaveLength(1);
+        controller.dispose();
+      },
+    );
+
+    it("drops its own edit when a callback replaces the source in the same transaction", async () => {
+      const { controller, document, sendEvents, calls, callsTo } = await synced();
+      document.emit({ kind: "ColumnsStreamed", model: document.get_model_by_id("source") });
+      await settle();
+      const transactionId = (calls[0].params as { transactionId: string }).transactionId;
+
+      // The launcher folds the stream into one replacement from Python's
+      // values, versioned from the base the edit was applied on, without
+      // `echo_of`.
+      await sendEvents(
+        eventsFor({
+          transactionId,
+          dataEvents: [
+            {
+              kind: "ColumnDataChanged",
+              source_id: "source",
+              base_version: 2,
+              new_version: 3,
+              columns: { x: { version: 3, data: [9] } },
+              columns_removed: [],
+            },
+          ],
+        }),
+      );
+      expect(document.appliedEvents()).toEqual([
+        {
+          kind: "ColumnDataChanged",
+          model: { id: "source" },
+          attr: "data",
+          data: { type: "map", entries: [["x", [9]]] },
+          cols: ["x"],
+        },
+      ]);
+
+      // The edit is settled: a later marker in this transaction is not its echo.
+      await sendEvents(
+        eventsFor({
+          transactionId,
+          dataEvents: [
+            {
+              kind: "ColumnsStreamed",
+              source_id: "source",
+              base_version: 3,
+              new_version: 4,
+              data: { type: "map", entries: [["x", [10]]] },
+              echo_of: 0,
+            },
+          ],
+        }),
+      );
+      expect(document.appliedEvents()).toHaveLength(2);
+      expect(callsTo(NTERACT_BOKEH_SESSION_DATA)).toHaveLength(0);
+      controller.dispose();
+    });
+
+    it("keeps its own edit when its echo follows a replacement in the same transaction", async () => {
+      let reload = false;
+      const { controller, document, sendEvents, calls, callsTo } = await synced({
+        data: (): NteractBokehSessionDataResult => ({
+          epoch: 3,
+          columns: { source: { x: { version: reload ? 4 : 2, data: reload ? [9, 10] : [0] } } },
+          events: [],
+          foldRequested: [],
+        }),
+      });
+      document.emit({ kind: "ColumnsStreamed", model: document.get_model_by_id("source") });
+      await settle();
+      const transactionId = (calls[0].params as { transactionId: string }).transactionId;
+      reload = true;
+
+      // A callback replaced the source before the launcher re-emitted the edit.
+      await sendEvents(
+        eventsFor({
+          transactionId,
+          dataEvents: [
+            {
+              kind: "ColumnDataChanged",
+              source_id: "source",
+              base_version: 2,
+              new_version: 3,
+              columns: { x: { version: 3, data: [9] } },
+              columns_removed: [],
+            },
+            {
+              kind: "ColumnsStreamed",
+              source_id: "source",
+              base_version: 3,
+              new_version: 4,
+              data: { type: "map", entries: [["x", [10]]] },
+              echo_of: 0,
+            },
+          ],
+        }),
+      );
+
+      // The replacement wiped the optimistic edit, so the echo is not applied
+      // again on top of it: the source reloads to the kernel's state.
+      expect(document.appliedEvents().map((event) => event.kind)).toEqual([
+        "ColumnDataChanged",
+        "ColumnDataChanged",
+      ]);
+      expect(document.appliedEvents().at(-1)).toMatchObject({
+        data: { type: "map", entries: [["x", [9, 10]]] },
+      });
+      expect(callsTo(NTERACT_BOKEH_SESSION_DATA)).toHaveLength(1);
+      controller.dispose();
+    });
+
+    it("reloads a source from its blobs and tail after a version gap", async () => {
+      const tailBuffer = new Uint8Array([2]).buffer;
+      let reload = false;
+      const { controller, document, sendEvents, callsTo } = await synced({
+        data: (): NteractBokehSessionDataResult => ({
+          epoch: 3,
+          columns: {
+            source: reload
+              ? {
+                  x: { version: 6, data: [1, 2, 3] },
+                  y: {
+                    version: 4,
+                    data: { type: "ndarray", array: { type: "bytes", data: "AQI=" } },
+                  },
+                }
+              : { x: { version: 2, data: [0] } },
+          },
+          events: reload
+            ? [
+                eventsFor({
+                  transactionId: "tail-1",
+                  dataEvents: [
+                    {
+                      kind: "ColumnsStreamed",
+                      source_id: "source",
+                      base_version: 6,
+                      new_version: 7,
+                      data: {},
+                    },
+                    {
+                      kind: "ColumnsStreamed",
+                      source_id: "source",
+                      base_version: 9,
+                      new_version: 10,
+                      data: {},
+                    },
+                  ],
+                  buffers: [{ id: "t0", data: tailBuffer }],
+                }),
+              ]
+            : [],
+          foldRequested: [],
+        }),
+      });
+      reload = true;
+
+      await sendEvents(
+        eventsFor({
+          dataEvents: [
+            {
+              kind: "ColumnsStreamed",
+              source_id: "source",
+              base_version: 5,
+              new_version: 6,
+              data: {},
+            },
+          ],
+        }),
+      );
+
+      expect(callsTo(NTERACT_BOKEH_SESSION_DATA)[0].params).toMatchObject({
+        sources: { source: null },
+        tail: true,
+      });
+      expect(document.appliedEvents()).toEqual([
+        {
+          kind: "ColumnDataChanged",
+          model: { id: "source" },
+          attr: "data",
+          data: {
+            type: "map",
+            entries: [
+              ["x", [1, 2, 3]],
+              ["y", { type: "ndarray", array: { type: "bytes", data: "AQI=" } }],
+            ],
+          },
+        },
+        { kind: "ColumnsStreamed", model: { id: "source" }, attr: "data", data: {} },
+      ]);
+      expect(document.applied.at(-1)?.buffers?.get("t0")).toBe(tailBuffer);
+      controller.dispose();
+    });
+
+    it("replaces columns from loaded blobs and drops removed ones", async () => {
+      const { controller, document, sendEvents } = await synced();
+      const source = document.get_model_by_id("source")!;
+      source.data = { x: [1], y: [2], z: [3] };
+
+      await sendEvents(
+        eventsFor({
+          dataEvents: [
+            {
+              kind: "ColumnDataChanged",
+              source_id: "source",
+              base_version: 2,
+              new_version: 3,
+              columns: { x: { version: 3, data: { type: "map", entries: [["a", 1]] } } },
+              columns_removed: ["z"],
+            },
+          ],
+        }),
+      );
+
+      expect(document.appliedEvents()).toEqual([
+        {
+          kind: "ColumnDataChanged",
+          model: { id: "source" },
+          attr: "data",
+          data: { type: "map", entries: [["x", { type: "map", entries: [["a", 1]] }]] },
+          cols: ["x"],
+        },
+      ]);
+      expect(source.setv).toHaveBeenCalledWith({ data: { x: [1], y: [2] } }, { sync: false });
+      controller.dispose();
+    });
+
+    it("ignores data events until the first full update loaded the columns", async () => {
+      const { controller, documents, sendEvents } = harness();
+      await controller.start();
+
+      await sendEvents(
+        eventsFor({
+          dataEvents: [
+            {
+              kind: "ColumnsStreamed",
+              source_id: "source",
+              base_version: 0,
+              new_version: 1,
+              data: {},
+            },
+          ],
+        }),
+      );
+
+      expect(documents[0].applied).toHaveLength(0);
+      controller.dispose();
+    });
+  });
+});
+
+describe("ModelExpander", () => {
+  it("defines each listed model at its first reference only", () => {
+    const expander = new ModelExpander({
+      a: { type: "A", refProps: ["b"], props: { b: { id: "b" }, other: { id: "existing" } } },
+      b: { type: "B", refProps: [], props: { n: 1 } },
+    });
+
+    expect(expander.value([{ id: "a" }, { id: "b" }, { id: "a" }, { id: "x", k: 1 }])).toEqual([
+      {
+        type: "object",
+        name: "A",
+        id: "a",
+        attributes: {
+          b: { type: "object", name: "B", id: "b", attributes: { n: 1 } },
+          other: { id: "existing" },
+        },
+      },
+      { id: "b" },
+      { id: "a" },
+      { id: "x", k: 1 },
+    ]);
+  });
+
+  it("materializes DocJson with columns as Bokeh map encodings", () => {
+    const json = materializeDocJson(
+      fullUpdate({
+        meta: {
+          rootIds: ["root-1"],
+          title: null,
+          bokehVersion: "3.9.2",
+          docExtras: { defs: [{ name: "Custom" }] },
+        },
+        models: {
+          "root-1": { type: "Plot", refProps: ["source"], props: { source: { id: "source" } } },
+          source: { type: "ColumnDataSource", refProps: [], props: { name: "s" } },
+        },
+      }),
+      { source: { x: { version: 1, data: [1, 2] } } },
+    );
+
+    expect(json).toEqual({
+      defs: [{ name: "Custom" }],
+      version: "3.9.2",
+      roots: [
+        {
+          type: "object",
+          name: "Plot",
+          id: "root-1",
+          attributes: {
+            source: {
+              type: "object",
+              name: "ColumnDataSource",
+              id: "source",
+              attributes: { name: "s", data: { type: "map", entries: [["x", [1, 2]]] } },
+            },
+          },
+        },
+      ],
+    });
   });
 });
 
@@ -585,10 +1633,13 @@ class FakeDeserializer {
   decode(value: unknown) {
     if (this._decoding) return this._decode(value);
     this._decoding = true;
-    const decoded = this._decode(value);
-    this._decoding = false;
-    for (const model of this.finalizable.splice(0)) this.log.push(`finalize ${model.id}`);
-    return decoded;
+    try {
+      const decoded = this._decode(value);
+      for (const model of this.finalizable.splice(0)) this.log.push(`finalize ${model.id}`);
+      return decoded;
+    } finally {
+      this._decoding = false;
+    }
   }
 
   _decode(value: unknown): unknown {
@@ -598,6 +1649,11 @@ class FakeDeserializer {
       if (obj.type === "object" && obj.id && obj.name) {
         return this._decode_object_ref(obj as { id: string; name: string; attributes?: unknown });
       }
+      if (obj.type === "ref" && obj.id) {
+        const model = this.references.get(obj.id);
+        if (!model) throw new Error(`reference ${obj.id} isn't known`);
+        return model;
+      }
       return Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, this._decode(v)]));
     }
     return value;
@@ -606,7 +1662,9 @@ class FakeDeserializer {
   _decode_object_ref(obj: { id: string; name: string; attributes?: unknown }) {
     const existing = this.references.get(obj.id);
     if (existing) {
-      existing.setv(this._decode(obj.attributes ?? {}), { sync: false });
+      existing.setv(this._decode(obj.attributes ?? {}) as Record<string, unknown>, {
+        sync: false,
+      });
       return existing;
     }
     const model = new FakeModel(obj.id, obj.name, this.log);
@@ -617,25 +1675,56 @@ class FakeDeserializer {
   }
 }
 
+interface FakeProperty {
+  syncable: boolean;
+  readonly: boolean;
+  may_have_refs: boolean;
+  default_value(obj: unknown): unknown;
+}
+
+function fakeProperty(defaultValue: unknown, options: Partial<FakeProperty> = {}): FakeProperty {
+  return {
+    syncable: true,
+    readonly: false,
+    may_have_refs: false,
+    default_value: () => defaultValue,
+    ...options,
+  };
+}
+
 class FakeModel {
+  properties: Record<string, FakeProperty> = {};
+  values: Record<string, unknown> = {};
+  stream_to?: () => void;
+  /** Attributes each `setv` actually changed, as BokehJS skips equal values. */
+  changes: Array<Record<string, unknown>> = [];
+
   constructor(
     readonly id: string,
     readonly type: string,
     private readonly log: string[],
   ) {}
 
-  setv(_attrs: unknown, _options: { sync: boolean }) {
+  setv(attrs: Record<string, unknown>, _options: { sync: boolean }) {
     this.log.push(`setv ${this.id}`);
+    const changed = Object.fromEntries(
+      Object.entries(attrs).filter(([attr, value]) => !Object.is(this.values[attr], value)),
+    );
+    Object.assign(this.values, changed);
+    if (Object.keys(changed).length > 0) this.changes.push(changed);
   }
+}
+
+function fakeRuntime(): BokehRuntime {
+  return {
+    Deserializer: FakeDeserializer as unknown as BokehRuntime["Deserializer"],
+  } as BokehRuntime;
 }
 
 describe("deferExistingModelUpdates", () => {
   it("updates existing models only after the patch's new models are finalized", () => {
     const deserializer = new FakeDeserializer();
     deserializer.references.set("row", new FakeModel("row", "Row", deserializer.log));
-    const runtime = {
-      Deserializer: FakeDeserializer as unknown as BokehRuntime["Deserializer"],
-    } as BokehRuntime;
     const original = FakeDeserializer.prototype._decode_object_ref;
     const patch = [
       {
@@ -646,7 +1735,7 @@ describe("deferExistingModelUpdates", () => {
       },
     ];
 
-    deferExistingModelUpdates(runtime, () => deserializer.decode(patch));
+    deferExistingModelUpdates(fakeRuntime(), () => deserializer.decode(patch));
 
     expect(deserializer.log).toEqual(["finalize div", "setv row"]);
     expect(FakeDeserializer.prototype._decode_object_ref).toBe(original);
@@ -654,25 +1743,104 @@ describe("deferExistingModelUpdates", () => {
 
   it("removes models a failed decode registered", () => {
     const deserializer = new FakeDeserializer();
-    const runtime = {
-      Deserializer: FakeDeserializer as unknown as BokehRuntime["Deserializer"],
-    } as BokehRuntime;
-
-    const decode = deserializer._decode.bind(deserializer);
-    vi.spyOn(deserializer, "_decode").mockImplementation((value) => {
-      if (value === "missing") throw new Error("reference missing isn't known");
-      return decode(value);
-    });
 
     expect(() =>
-      deferExistingModelUpdates(runtime, () =>
+      deferExistingModelUpdates(fakeRuntime(), () =>
         deserializer.decode([
-          { type: "object", name: "Div", id: "div", attributes: { child: "missing" } },
+          {
+            type: "object",
+            name: "Div",
+            id: "div",
+            attributes: { child: { type: "ref", id: "missing" } },
+          },
         ]),
       ),
     ).toThrow("isn't known");
 
     expect(deserializer.references.has("div")).toBe(false);
+  });
+
+  it("keeps finalized models when applying the patch's events fails", () => {
+    const deserializer = new FakeDeserializer();
+
+    expect(() =>
+      deferExistingModelUpdates(fakeRuntime(), () => {
+        deserializer.decode([{ type: "object", name: "Div", id: "div", attributes: {} }]);
+        throw new Error("event failed");
+      }),
+    ).toThrow("event failed");
+
+    expect(deserializer.references.has("div")).toBe(true);
+  });
+
+  it("resets properties a full-state definition omits to their defaults", () => {
+    const deserializer = new FakeDeserializer();
+    const slider = new FakeModel("slider", "Slider", deserializer.log);
+    deserializer.references.set("slider", slider);
+    slider.properties = {
+      value: fakeProperty(0),
+      start: fakeProperty(0),
+      end: fakeProperty(1),
+      title: fakeProperty("", { readonly: true }),
+      css_classes: fakeProperty("", { syncable: false }),
+      child: fakeProperty(null, { may_have_refs: true }),
+      required: { ...fakeProperty(null), default_value: () => Symbol("unset") },
+    };
+    slider.values = {
+      value: 3,
+      start: 10,
+      end: 1,
+      title: "local",
+      css_classes: "local",
+      child: "local",
+      required: "local",
+    };
+    const definition = [{ type: "object", name: "Slider", id: "slider", attributes: { value: 5 } }];
+
+    deferExistingModelUpdates(fakeRuntime(), () => deserializer.decode(definition), {
+      fullState: true,
+    });
+
+    expect(slider.changes).toEqual([{ value: 5, start: 0 }]);
+    expect(slider.values).toMatchObject({ title: "local", css_classes: "local", child: "local" });
+    expect(slider.values.required).toBe("local");
+  });
+
+  it("keeps columnar data, which reconciles from columns/, out of the reset", () => {
+    const deserializer = new FakeDeserializer();
+    const source = new FakeModel("source", "ColumnDataSource", deserializer.log);
+    source.stream_to = () => {};
+    source.properties = { data: fakeProperty({}), name: fakeProperty(null) };
+    source.values = { data: { x: [1] }, name: "local" };
+    deserializer.references.set("source", source);
+
+    deferExistingModelUpdates(
+      fakeRuntime(),
+      () =>
+        deserializer.decode([
+          { type: "object", name: "ColumnDataSource", id: "source", attributes: {} },
+        ]),
+      { fullState: true },
+    );
+
+    expect(source.changes).toEqual([{ name: null }]);
+    expect(source.values.data).toEqual({ x: [1] });
+  });
+
+  it("leaves omitted properties alone for incremental patches", () => {
+    const deserializer = new FakeDeserializer();
+    const slider = new FakeModel("slider", "Slider", deserializer.log);
+    deserializer.references.set("slider", slider);
+    slider.properties = { value: fakeProperty(0), start: fakeProperty(0) };
+    slider.values = { value: 3, start: 10 };
+
+    deferExistingModelUpdates(fakeRuntime(), () =>
+      deserializer.decode([
+        { type: "object", name: "Slider", id: "slider", attributes: { value: 5 } },
+      ]),
+    );
+
+    expect(slider.changes).toEqual([{ value: 5 }]);
   });
 
   it("keeps BokehJS's immediate update outside a patch application", () => {

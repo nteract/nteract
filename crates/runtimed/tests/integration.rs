@@ -2171,6 +2171,66 @@ async fn test_parallel_daemon_requests_same_session_no_disconnect() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
+#[tokio::test]
+async fn test_bokeh_session_requests_without_a_session_answer_without_a_kernel() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let handle = connect::connect_create(socket_path.clone(), create_spec("test"))
+        .await
+        .unwrap()
+        .handle;
+    assert_session_ready(&handle, "bokeh client").await;
+
+    // A frozen or unknown session has no tail to catch up on.
+    let response = handle
+        .send_request(NotebookRequest::GetBokehSessionData {
+            session_id: "session-missing".to_string(),
+            source_ids: None,
+        })
+        .await
+        .unwrap();
+    let NotebookResponse::BokehSessionData { data } = response else {
+        panic!("expected a Bokeh data tail, got {response:?}");
+    };
+    assert_eq!(data.session_id, "session-missing");
+    assert!(data.events.is_empty() && data.fold_requested.is_empty());
+
+    let response = handle
+        .send_request(NotebookRequest::ApplyBokehSessionPatch {
+            request: Box::new(notebook_protocol::protocol::BokehSessionPatchRequest {
+                session_id: "session-missing".to_string(),
+                transaction_id: "tx-1".to_string(),
+                patch: serde_json::json!({"events": [{"kind": "MessageSent"}]}),
+                buffers: Vec::new(),
+                buffer_refs: Vec::new(),
+            }),
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            &response,
+            NotebookResponse::BokehSessionPatch {
+                reply: notebook_protocol::protocol::BokehSessionPatchReply::Error { error, .. },
+            } if error.contains("unknown Bokeh session")
+        ),
+        "{response:?}"
+    );
+    assert_eq!(handle.status().connection, ConnectionState::Connected);
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
 /// Test that untitled notebook state survives room eviction via Automerge persistence.
 ///
 /// Design: Untitled notebooks (UUID IDs) have no .ipynb on disk — their Automerge
