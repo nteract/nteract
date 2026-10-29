@@ -28,7 +28,7 @@ const SUMMARY_MAX_CHARS: usize = 6000;
 /// Blob-backed values worth fetching for display; larger ones are named only.
 const MAX_PROP_BLOB_BYTES: u64 = 64 * 1024;
 /// Column refs carry no length, so rows are counted by fetching a column;
-/// sources whose columns are all larger go without a count.
+/// sources whose columns are all larger are listed as not counted.
 const MAX_COLUMN_BLOB_BYTES: u64 = 256 * 1024;
 
 /// Props a summary displays; only these are fetched when blob-backed.
@@ -181,6 +181,9 @@ struct Node {
 struct Source {
     columns: Vec<String>,
     rows: Option<usize>,
+    /// A live source whose columns were too large to fetch (or unreadable),
+    /// so a missing count is not mistaken for an empty source.
+    rows_skipped: bool,
 }
 
 #[derive(Default)]
@@ -228,6 +231,7 @@ fn graph_from_snapshot(
                 Source {
                     columns: columns.keys().cloned().collect(),
                     rows: source_rows.get(id).copied(),
+                    rows_skipped: !columns.is_empty() && !source_rows.contains_key(id),
                 },
             )
         })
@@ -310,6 +314,7 @@ fn source_from_data(data: &Value) -> Source {
         rows: entries
             .first()
             .and_then(|(_, column)| column_length(column)),
+        rows_skipped: false,
     }
 }
 
@@ -1066,10 +1071,11 @@ fn source_line(graph: &Graph, id: &str, source: &Source) -> String {
             source.columns.len() - MAX_COLUMNS
         ));
     }
-    let rows = source
-        .rows
-        .map(|rows| format!(" ({} rows)", group_thousands(rows)))
-        .unwrap_or_default();
+    let rows = match source.rows {
+        Some(rows) => format!(" ({} rows)", group_thousands(rows)),
+        None if source.rows_skipped => " (rows not counted)".into(),
+        None => String::new(),
+    };
     format!("{} {kind}: {columns}{rows}", short(id, 12))
 }
 
@@ -1742,9 +1748,18 @@ mod tests {
             },
         )
         .await;
-        // Counted from the smallest column; omitted when every column is large.
+        // Counted from the smallest column; skipped when every column is large.
         assert_eq!(view.source_rows.get("p18"), Some(&4));
         assert_eq!(view.source_rows.get("p19"), None);
+        let text = summarize_bokeh_session(&view).unwrap();
+        assert!(
+            text.contains("p18 ColumnDataSource: x, y (4 rows)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("p19 ColumnDataSource: x (rows not counted)"),
+            "{text}"
+        );
     }
 
     #[test]

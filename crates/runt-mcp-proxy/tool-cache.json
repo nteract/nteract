@@ -1286,7 +1286,7 @@
         },
         "wait_ms": {
           "default": null,
-          "description": "Milliseconds to wait for Python to correct the value (0–5000,\ndefault 1500). Accepted values are not echoed back.",
+          "description": "Milliseconds to wait for values Python sets (0–5000, default\n1500). Python does not echo a value it accepts unchanged.",
           "format": "uint64",
           "minimum": 0,
           "type": [

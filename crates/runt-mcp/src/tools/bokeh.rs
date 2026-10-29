@@ -47,8 +47,8 @@ pub struct SetBokehPropertyParams {
     /// Output id, when the cell displays more than one session.
     #[serde(default)]
     pub output_id: Option<String>,
-    /// Milliseconds to wait for Python to correct the value (0–5000,
-    /// default 1500). Accepted values are not echoed back.
+    /// Milliseconds to wait for values Python sets (0–5000, default
+    /// 1500). Python does not echo a value it accepts unchanged.
     #[serde(default)]
     pub wait_ms: Option<u64>,
 }
@@ -208,7 +208,7 @@ pub async fn set_bokeh_property(
         "requested": shown(&target.model_id, &encoded),
         "value": written.and_then(|w| w.value.as_deref()).map(|v| shown(&target.model_id, v)),
         "set_by": source.map(source_label),
-        "corrected": written.is_some_and(|w| is_correction(w, &encoded)),
+        "kernel_overwrote": written.is_some_and(|w| kernel_overwrote(w, &encoded)),
         "confirmed_by_python": source == Some(BokehValueSource::Kernel),
         "changed": report.changed,
         "acknowledged": report.acknowledged,
@@ -224,10 +224,13 @@ fn source_label(source: BokehValueSource) -> &'static str {
         BokehValueSource::Kernel => "python",
         BokehValueSource::OtherClient => "other_client",
         BokehValueSource::Lost => "lost",
+        BokehValueSource::Unknown => "unknown",
     }
 }
 
-fn is_correction(written: &BokehWrittenValue, requested: &str) -> bool {
+/// The kernel set a different value after the write. That may be Python
+/// correcting it, but a callback or periodic update looks the same.
+fn kernel_overwrote(written: &BokehWrittenValue, requested: &str) -> bool {
     written.source == BokehValueSource::Kernel && written.value.as_deref() != Some(requested)
 }
 
@@ -270,6 +273,10 @@ fn describe(
             format!(
                 "The write {name} = {shown_request} was lost: the session document was replaced (epoch {epoch}) before the write reached Python, and the new document has {now}. Set it again to retry."
             )
+        } else if source == Some(BokehValueSource::Unknown) {
+            format!(
+                "The session document was replaced (epoch {epoch}) while waiting and the new document did not sync within {wait_ms} ms, so it is unknown whether it kept {name} = {shown_request}. Read the cell's output to check before setting it again."
+            )
         } else {
             format!(
                 "The session document was replaced (epoch {epoch}) while waiting; the new document holds {name} = {shown_request}, but Python has not confirmed it."
@@ -277,11 +284,15 @@ fn describe(
         }
     } else {
         match source {
-            Some(BokehValueSource::Kernel) if written.is_some_and(|w| is_correction(w, requested)) => {
-                format!("Python corrected {name}: requested {shown_request}, now {now}.")
+            Some(BokehValueSource::Kernel)
+                if written.is_some_and(|w| kernel_overwrote(w, requested)) =>
+            {
+                format!(
+                    "Python set {name} to {now} after this write (requested {shown_request}), through validation, a callback or an unrelated update."
+                )
             }
             Some(BokehValueSource::Kernel) => {
-                format!("Python applied {name} = {shown_request}.")
+                format!("Python set {name} = {shown_request} after this write.")
             }
             Some(BokehValueSource::OtherClient) => format!(
                 "Another client set {name} to {now} after this write (requested {shown_request})."
@@ -757,17 +768,24 @@ mod tests {
         assert!(message.contains("p4.text = \"value is 0.25\""), "{message}");
         let data = result.structured_content.as_ref().unwrap();
         assert_eq!(data["acknowledged"], true);
-        assert_eq!(data["corrected"], false);
+        assert_eq!(data["kernel_overwrote"], false);
         assert_eq!(fixture.hub_prop("p2", "value").as_deref(), Some("0.25"));
 
-        // Corrected: the kernel clamps and the tool reports the final value.
+        // The kernel clamps; the tool reports the final value without
+        // claiming why the kernel set it.
         let result = fixture.set("p2", "value", serde_json::json!(5)).await;
         let message = text(&result);
         assert!(
-            message.contains("Python corrected Slider \"Alpha\" (p2.value): requested 5, now 1."),
+            message.contains(
+                "Python set Slider \"Alpha\" (p2.value) to 1 after this write (requested 5)"
+            ),
             "{message}"
         );
-        assert_eq!(result.structured_content.as_ref().unwrap()["value"], 1.0);
+        assert!(!message.contains("corrected"), "{message}");
+        let data = result.structured_content.as_ref().unwrap();
+        assert_eq!(data["value"], 1.0);
+        assert_eq!(data["set_by"], "python");
+        assert_eq!(data["kernel_overwrote"], true);
 
         // The live summary reads the replica, including the correction.
         let manifest = serde_json::json!({
@@ -864,11 +882,11 @@ mod tests {
         fixture.room.lock().unwrap().kernel = Kernel::Browser;
         let result = fixture.set("Alpha", "value", serde_json::json!(0.25)).await;
         let message = text(&result);
-        assert!(!message.contains("Python corrected"), "{message}");
+        assert!(!message.contains("Python set"), "{message}");
         assert!(message.contains("Another client"), "{message}");
         assert!(!message.contains("p4.text"), "{message}");
         assert_eq!(
-            result.structured_content.as_ref().unwrap()["corrected"],
+            result.structured_content.as_ref().unwrap()["kernel_overwrote"],
             false
         );
     }
@@ -984,6 +1002,24 @@ mod tests {
                 "holds Slider \"Alpha\" (p2.value) = 0.25, but Python has not confirmed it"
             ),
             "{kept}"
+        );
+        let mut unsynced = report("", BokehValueSource::Unknown);
+        unsynced
+            .values
+            .get_mut("p2")
+            .unwrap()
+            .get_mut("value")
+            .unwrap()
+            .value = None;
+        let unknown = super::describe(&target, "value", "0.25", &unsynced, 300, &|_| false);
+        assert!(
+            unknown.contains("did not sync within 300 ms")
+                && unknown.contains("unknown whether it kept"),
+            "{unknown}"
+        );
+        assert!(
+            !unknown.contains("lost") && !unknown.contains("(unset)"),
+            "{unknown}"
         );
     }
 }

@@ -33,13 +33,16 @@ pub enum BokehValueSource {
     /// Still this write's value. Python echoes only corrections, so this
     /// does not show that Python applied it.
     Requested,
-    /// The session's kernel set it after the write, normally Python
-    /// correcting it.
+    /// The session's kernel set it after the write: a correction, a
+    /// callback or an unrelated update, which look the same here.
     Kernel,
     /// Another client set it after the write.
     OtherClient,
     /// The document was replaced (new epoch) without the write.
     Lost,
+    /// The document was replaced and the new epoch had not synced by the
+    /// end of the wait, so whether it kept the write is not known.
+    Unknown,
 }
 
 /// The value a written property has after the write.
@@ -60,7 +63,7 @@ pub struct BokehWriteReport {
     pub rejected: Option<String>,
     /// The producer replaced the document during the wait. The new epoch
     /// keeps the write only if it reached the runtime agent first; `values`
-    /// read the new document.
+    /// read the new document, or are `Unknown` if it did not sync in time.
     pub replaced_epoch: Option<u64>,
     pub values: BTreeMap<String, BTreeMap<String, BokehWrittenValue>>,
     /// Other properties the kernel changed while waiting. Callback results
@@ -104,8 +107,8 @@ pub trait BokehDocHandleExt {
     ) -> impl Future<Output = Result<Option<BokehSessionSnapshot>, SyncError>> + Send;
 
     /// Write property values to a synced session as one change and follow
-    /// it for up to `wait`: the daemon's acknowledgement or refusal, kernel
-    /// corrections of the written values, and other values callbacks set.
+    /// it for up to `wait`: the daemon's acknowledgement or refusal, values
+    /// the kernel set over the written ones, and other kernel changes.
     ///
     /// Writes are limited to existing models' non-reference properties of a
     /// connected session at the current epoch; the daemon additionally
@@ -368,6 +371,14 @@ async fn observe_write(
             _ => {}
         }
     }
+    if let Some(epoch) = report.replaced_epoch {
+        // A restarted replica stays empty until the new epoch's build
+        // arrives, which can take several frames.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        handle
+            .await_bokeh_session(session_id, epoch, remaining)
+            .await?;
+    }
     if report.rejected.is_none() {
         for (model, prop, value) in written_values(handle, session_id, props, written)? {
             report.values.entry(model).or_default().insert(prop, value);
@@ -390,12 +401,15 @@ fn written_values(
             let ours = view.doc.get_actor().clone();
             let replaced = view.epoch != written.epoch;
             let doc = BokehSessionDocRef::from_doc(&*view.doc);
+            let synced = doc.epoch().is_some();
             props
                 .iter()
                 .flat_map(|(model, values)| {
                     values.iter().map(|(prop, requested)| {
                         let value = doc.get_prop(model, prop);
-                        let source = if replaced {
+                        let source = if replaced && !synced {
+                            BokehValueSource::Unknown
+                        } else if replaced {
                             if value.as_ref() == Some(requested) {
                                 BokehValueSource::Requested
                             } else {
@@ -494,6 +508,9 @@ mod tests {
         state: State,
         refuse: bool,
         react: React,
+        /// Holds back the client's replies to a new epoch, so the replica
+        /// sits restarted and empty for this long before the build arrives.
+        new_epoch_delay: Option<Duration>,
         tx: mpsc::UnboundedSender<TypedNotebookFrame>,
     }
 
@@ -605,8 +622,24 @@ mod tests {
             frame_type: NotebookFrameType,
             payload: &[u8],
         ) -> std::io::Result<()> {
-            if frame_type == NotebookFrameType::KeyedDocSync {
-                self.0.lock().unwrap().receive(payload);
+            if frame_type != NotebookFrameType::KeyedDocSync {
+                return Ok(());
+            }
+            let delay = {
+                let hub = self.0.lock().unwrap();
+                let (header, _) = KeyedDocFrameHeader::try_parse(payload).unwrap();
+                hub.new_epoch_delay.filter(|_| header.epoch > 0)
+            };
+            match delay {
+                Some(delay) => {
+                    let hub = self.0.clone();
+                    let payload = payload.to_vec();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        hub.lock().unwrap().receive(&payload);
+                    });
+                }
+                None => self.0.lock().unwrap().receive(payload),
             }
             Ok(())
         }
@@ -619,6 +652,7 @@ mod tests {
             state: State::new(),
             refuse: false,
             react: React::Clamp,
+            new_epoch_delay: None,
             tx,
         }));
         let handle = crate::connect::connect_frame_io(
@@ -765,19 +799,29 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_write_lost_to_an_epoch_replacement_is_not_acknowledged() {
+    async fn write_through_replacement(new_epoch_delay: Duration) -> BokehWriteReport {
         let (handle, hub) = connect(&[BOKEH_SESSION_KIND]).await;
         handle
             .await_bokeh_session("s1", 0, Duration::from_secs(1))
             .await
             .unwrap()
             .expect("document synced");
-        hub.lock().unwrap().react = React::Replace;
-        let report = handle
+        {
+            let mut hub = hub.lock().unwrap();
+            hub.react = React::Replace;
+            hub.new_epoch_delay = Some(new_epoch_delay);
+        }
+        handle
             .write_bokeh_session_props("s1", BokehSessionStatus::Connected, &props("0.25"), WAIT)
             .await
-            .unwrap();
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_write_lost_to_an_epoch_replacement_is_not_acknowledged() {
+        // The new epoch arrives over several frames, the build well after
+        // the replica restarted empty.
+        let report = write_through_replacement(Duration::from_millis(100)).await;
         assert!(!report.acknowledged, "{report:?}");
         let value = &report.values["p1"]["value"];
         assert_eq!(value.value.as_deref(), Some("0.5"), "{report:?}");
@@ -786,6 +830,16 @@ mod tests {
         // The new epoch's build is all kernel-authored; none of it is a
         // reaction to the write.
         assert!(report.kernel_changes.is_empty(), "{report:?}");
+    }
+
+    #[tokio::test]
+    async fn a_replacement_that_never_syncs_leaves_the_value_unknown() {
+        let report = write_through_replacement(Duration::from_secs(2)).await;
+        assert!(!report.acknowledged, "{report:?}");
+        assert_eq!(report.replaced_epoch, Some(1), "{report:?}");
+        let value = &report.values["p1"]["value"];
+        assert_eq!(value.value, None, "{report:?}");
+        assert_eq!(value.source, BokehValueSource::Unknown, "{report:?}");
     }
 
     #[tokio::test]
