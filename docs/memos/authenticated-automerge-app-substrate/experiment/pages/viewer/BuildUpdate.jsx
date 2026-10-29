@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useSyncExternalStore } from "react";
 import { RefreshCw } from "lucide-react";
 import { observeResponses, request } from "./request.mjs";
-import { BuildMonitor, reloadWhenSaved } from "./build-freshness.mjs";
+import { BuildMonitor, reloadGate } from "./build-freshness.mjs";
 import "./build-update.css";
 
 // One monitor per tab. It outlives Page sessions: a deploy can land while the
@@ -22,15 +22,15 @@ export function BuildUpdate({ session }) {
   useEffect(() => {
     // This viewer's protocol is retired: keep what it already accepted saving,
     // but take no new edits, on this Page or any Page opened after it.
-    if (required) session?.pauseEdits(true);
+    if (required) session?.pauseEdits("protocol");
   }, [required, session]);
   if (state === "current") return null;
   async function reload() {
     setReloading(true);
     setProblem("");
-    const result = await reloadWhenSaved(session, { keepPaused: required });
+    const result = await reloadGate.reload();
     if (!result.ok) {
-      setProblem(result.message);
+      setProblem(result.message ?? "");
       setReloading(false);
     }
   }
@@ -41,8 +41,8 @@ export function BuildUpdate({ session }) {
     >
       <p>
         {required
-          ? "Pages was updated. This tab can't edit until you reload."
-          : "Pages was updated. Reload to get the latest version."}
+          ? "Pages changed on the server. This tab can't edit until you reload."
+          : "Pages changed on the server. Reload to use the current version."}
       </p>
       <button type="button" className="primary" onClick={reload} disabled={reloading}>
         <RefreshCw size={15} aria-hidden="true" />

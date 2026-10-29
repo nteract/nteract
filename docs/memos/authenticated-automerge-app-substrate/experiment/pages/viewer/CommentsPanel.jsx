@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Check, MessageSquare, RotateCcw, X, Maximize2, Minimize2 } from "lucide-react";
 import { resolveCommentDraft } from "./comment-draft.mjs";
+import { reloadGate } from "./build-freshness.mjs";
 import { COMMENTS_SHEET_QUERY } from "./comments-layout.mjs";
 import { CommentRichText, CommentContent } from "./CommentRichText.jsx";
 import "./comments.css";
@@ -107,6 +108,13 @@ export function CommentsPanel({
     return () => cancelAnimationFrame(frame);
   }, [open, target]);
   const changeDraft = (id, value) => setDrafts((previous) => ({ ...previous, [id]: value }));
+  // Drafts exist only here, so a reload must ask about the ones a person can
+  // still reach: the composer and replies on open threads.
+  const unsent = useRef(false);
+  unsent.current = [composer?.key, ...threads.filter((t) => t.state === "open").map((t) => t.id)]
+    .filter(Boolean)
+    .some((id) => hasDraft(drafts[id]));
+  useEffect(() => reloadGate.watchDrafts(() => unsent.current), []);
   let quote = composer?.quote || "",
     draftProblem = "";
   if (composer) {
@@ -229,7 +237,7 @@ export function CommentsPanel({
             {problem}
           </p>
         )}
-        {composer && session.canWrite && (
+        {composer && (session.canWrite || keptWhilePaused(session, drafts[composer.key])) && (
           <div className="comment-composer" ref={composerElement}>
             {quote && <blockquote className="composer-context">{quote}</blockquote>}
             {draftProblem && (
@@ -246,7 +254,7 @@ export function CommentsPanel({
               }
               value={drafts[composer.key] || ""}
               onChange={(body) => changeDraft(composer.key, body)}
-              disabled={Boolean(draftProblem)}
+              disabled={Boolean(draftProblem) || !session.canWrite}
               submit={(body, spans) => {
                 // No await between resolving the surviving cursors and creating the comment.
                 const target = resolveCommentDraft(session.doc, composer.draft);
@@ -284,6 +292,11 @@ export function CommentsPanel({
   );
 }
 
+const hasDraft = (value) => Boolean((value?.markdown ?? value)?.trim());
+/** Paused edits (a reload or a retired viewer) hide comment forms, except a
+ * draft already typed: it stays visible, read-only, and can be discarded. */
+const keptWhilePaused = (session, value) => session.editsPaused && hasDraft(value);
+
 function CommentThread({
   thread,
   session,
@@ -308,6 +321,7 @@ function CommentThread({
   const blockId =
     thread.target.kind === "selection" ? thread.target.anchor.blockId : thread.target.blockId;
   const blockSurvives = Object.hasOwn(session.doc.blocks, blockId);
+  const canReply = session.canWrite || keptWhilePaused(session, value);
   useEffect(() => {
     if (!session.canWrite) setPending(false);
   }, [session.canWrite]);
@@ -406,7 +420,7 @@ function CommentThread({
             {replies.length} {replies.length === 1 ? "reply" : "replies"}
           </button>
         )}
-        {session.canWrite && thread.state === "open" && (
+        {canReply && thread.state === "open" && (
           <button
             ref={replyButton}
             type="button"
@@ -434,13 +448,18 @@ function CommentThread({
           </div>
         ))}
       </div>
-      {session.canWrite && thread.state === "open" && replyStarted && (
+      {canReply && thread.state === "open" && replyStarted && (
         <div ref={form} hidden={!replying}>
           <CommentForm
             label="Reply"
             compact
             value={value}
             onChange={onChange}
+            disabled={!session.canWrite}
+            onDiscard={() => {
+              onChange("");
+              hideReply();
+            }}
             submit={(body, spans) =>
               session.comment(
                 {
@@ -478,6 +497,7 @@ function CommentForm({
   compact = false,
   cancelLabel = "Cancel",
   onBusyChange,
+  onDiscard,
 }) {
   const body = value.markdown ?? value;
   const [busy, setBusy] = useState(false);
@@ -537,6 +557,11 @@ function CommentForm({
         {onCancel && (
           <button type="button" className="subtle-button" onClick={onCancel} disabled={busy}>
             {cancelLabel}
+          </button>
+        )}
+        {onDiscard && body.trim() && (
+          <button type="button" className="subtle-button" onClick={onDiscard} disabled={busy}>
+            Discard
           </button>
         )}
       </div>

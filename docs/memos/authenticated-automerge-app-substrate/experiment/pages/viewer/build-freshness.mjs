@@ -150,15 +150,131 @@ export function saveBeforeReload(
   });
 }
 
-/** Pause edits, wait for accepted edits to save, then reload. If they can't
- * be saved, edits resume (unless `keepPaused`) and the reason is returned. */
-export async function reloadWhenSaved(
+// A Page being left keeps syncing this long for its receipt before closing.
+export const CLOSE_DRAIN_MS = 10_000;
+const drainingStates = new Set(["Connecting", "Reconnecting", "Saving"]);
+export const UNSENT_COMMENT = "You have an unsent comment. Send or discard it before reloading.";
+export const LEFT_PAGE_UNSAVED =
+  "Edits on a Page you left haven't saved yet. Open it until it shows Saved, then reload.";
+const pageKey = (session) => `${session.identity?.principal}:${session.pageId}`;
+
+/** Wait, without retrying, while a Page being left is still saving. Leaving
+ * must not hang: offline or failed states end the wait and the local
+ * checkpoint keeps the edits. Resolves true when the host has every edit. */
+export function settleBeforeClose(
   session,
-  { reload = () => globalThis.location.reload(), keepPaused = false, ...options } = {},
+  {
+    timeoutMs = CLOSE_DRAIN_MS,
+    setTimeout: schedule = globalThis.setTimeout,
+    clearTimeout: cancel = globalThis.clearTimeout,
+  } = {},
 ) {
-  session?.pauseEdits?.(true);
-  const result = await saveBeforeReload(session, options);
-  if (result.ok) reload();
-  else if (!keepPaused) session?.pauseEdits?.(false);
-  return result;
+  // A deleted Page has nothing left to save. A closed replica can't report.
+  const saved = () => {
+    if (session.deleted) return true;
+    try {
+      return !session.recoveryPending;
+    } catch {
+      return false;
+    }
+  };
+  const settled = () =>
+    !session.alive || session.deleted || saved() || !drainingStates.has(session.status);
+  if (settled()) return Promise.resolve(saved());
+  return new Promise((resolve) => {
+    const finish = () => {
+      cancel(timer);
+      unsubscribe();
+      resolve(saved());
+    };
+    const unsubscribe = session.subscribe(() => {
+      if (settled()) finish();
+    });
+    const timer = schedule(finish, timeoutMs);
+  });
 }
+
+/** App-scope reload coordination. A reload replaces every Page this tab holds,
+ * not only the visible one, so it waits for:
+ * - the open Page's accepted edits (its receipt);
+ * - Pages being left, which keep syncing until their receipt or CLOSE_DRAIN_MS;
+ * - unsent comment drafts, which live only in React state.
+ * Navigation during the wait cancels the attempt. */
+export class ReloadGate {
+  sessions = new Set();
+  closing = new Map();
+  draftSources = new Set();
+  epoch = 0;
+  constructor({ timers = {}, closeTimeoutMs = CLOSE_DRAIN_MS } = {}) {
+    Object.assign(this, { timers, closeTimeoutMs });
+  }
+  /** Track the open Page. Opening a Page also supersedes an unsaved record a
+   * previous session of it left: this session loads that local checkpoint
+   * and owns its receipt. */
+  hold(session) {
+    this.epoch++;
+    this.closing.delete(pageKey(session));
+    this.sessions.add(session);
+  }
+  /** Leave a Page: let it finish saving, then close it. Returns the close. */
+  drainAndClose(session) {
+    this.epoch++;
+    this.sessions.delete(session);
+    const key = pageKey(session);
+    const closed = settleBeforeClose(session, { ...this.timers, timeoutMs: this.closeTimeoutMs })
+      .catch(() => false)
+      .then(async (saved) => {
+        await session.close();
+        return saved;
+      });
+    const record = { session, saved: closed.catch(() => false) };
+    this.closing.set(key, record);
+    void record.saved.then((saved) => {
+      if (saved && this.closing.get(key) === record) this.closing.delete(key);
+    });
+    return closed.then(() => {});
+  }
+  watchDrafts(hasDraft) {
+    this.draftSources.add(hasDraft);
+    return () => this.draftSources.delete(hasDraft);
+  }
+  hasDrafts() {
+    for (const hasDraft of this.draftSources) if (hasDraft()) return true;
+    return false;
+  }
+  /** Returns { ok: true } after calling reload, { ok: false, message }, or
+   * { ok: false, cancelled: true } when navigation changed what to save. */
+  async reload({ reload = () => globalThis.location.reload(), timeoutMs } = {}) {
+    if (this.hasDrafts()) return { ok: false, message: UNSENT_COMMENT };
+    const epoch = this.epoch;
+    const live = [...this.sessions].filter((session) => {
+      if (session.alive && !session.deleted) return true;
+      // Closed by its own flow (deletion, access reload, sign-out), which
+      // keeps any recovery itself.
+      this.sessions.delete(session);
+      return false;
+    });
+    for (const session of live) session.pauseEdits?.("reload");
+    let reloaded = false;
+    try {
+      const results = await Promise.all([
+        ...live.map((session) => saveBeforeReload(session, { ...this.timers, timeoutMs })),
+        ...[...this.closing.values()].map(async ({ saved }) =>
+          (await saved) ? { ok: true } : { ok: false, message: LEFT_PAGE_UNSAVED },
+        ),
+      ]);
+      if (epoch !== this.epoch) return { ok: false, cancelled: true };
+      if (this.hasDrafts()) return { ok: false, message: UNSENT_COMMENT };
+      const failed = results.find((result) => !result.ok);
+      if (failed) return failed;
+      reloaded = true;
+      reload();
+      return { ok: true };
+    } finally {
+      // Release only this attempt's pause; a protocol floor keeps its own.
+      if (!reloaded) for (const session of live) session.pauseEdits?.("reload", false);
+    }
+  }
+}
+
+export const reloadGate = new ReloadGate();

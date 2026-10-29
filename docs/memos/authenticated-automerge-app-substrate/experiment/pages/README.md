@@ -340,10 +340,10 @@ current viewer/editor grant. Everyone else, including principals with a role
 for an unreadable Page. Clients that send `X-Pages-Admission: 1` also get that
 response for a missing Page. Clients without it keep the legacy 404, because
 viewers built before that header renew an expired draft registration only on
-that 404. Retiring it means raising the protocol floor (see
-[Build updates](#build-updates)) so those tabs must reload first. Until then, a
-caller that omits the header can still distinguish missing from existing Pages,
-as before. Tool and MCP routes also still distinguish them.
+that 404. Those viewers predate the protocol floor and never read it, so it
+stays until the removal policy in [Build updates](#build-updates) is met. Until
+then, a caller that omits the header can still distinguish missing from existing
+Pages, as before. Tool and MCP routes also still distinguish them.
 
 The browser reconnects with backoff on transient codes, rechecks access through
 `/api/connect` on access and sign-in codes, and stops on `signing_key_rejected`
@@ -472,18 +472,34 @@ visible. It never polls while hidden and never reloads by itself.
 | Server advertises | Viewer shows | Editing |
 | --- | --- | --- |
 | Same build | Nothing | Unchanged |
-| Different build, floor at or below this viewer | "Pages was updated. Reload to get the latest version." | Unchanged |
-| Floor above this viewer's protocol | "This tab can't edit until you reload." | Paused; accepted edits keep saving |
+| Different build (newer or a rollback), floor at or below this viewer | "Pages changed on the server. Reload to use the current version." | Unchanged |
+| Floor above this viewer's protocol | "Pages changed on the server. This tab can't edit until you reload." | Paused; accepted edits keep saving |
 
-Reload pauses edits and waits until every accepted edit has a durable host
-receipt. If they can't be saved (signed out, access removed, local storage
-failed, or 15 seconds without a receipt), the banner says why and the tab stays
-open; a voluntary reload resumes editing.
+Reload covers everything the tab holds. It pauses edits and waits until every
+accepted edit on the open Page has a durable host receipt. A Page the person
+just left keeps syncing for up to 10 seconds before it closes, and Reload waits
+for that too. An unsent comment or reply blocks Reload until it is sent or
+discarded; while edits are paused, a typed draft stays visible read-only so it
+can be copied or discarded. If edits can't be saved (signed out, access removed,
+local storage failed, a left Page without its receipt, or 15 seconds without a
+receipt), the banner says why and the tab stays open. Opening another Page while
+Reload waits cancels it. A voluntary attempt that fails resumes editing; a
+raised floor keeps its own pause.
 
-To retire a compatibility path kept for old tabs, raise `MIN_VIEWER_PROTOCOL`
-and `VIEWER_PROTOCOL` together in one release. Tabs from older builds then pause
-edits and ask to reload; tabs from the new build are unaffected. The old path can
-go in a following release, once the raised floor is deployed.
+The floor pauses supporting browser viewers; it does not enforce compatibility
+for older viewers or API clients. Viewers built before this mechanism never read
+it, and a tab that was offline can reconnect later with edits it accepted under
+an older protocol. Remove a server compatibility path only after all of these
+hold:
+
+1. Every supported viewer reads the floor.
+2. The floor has excluded the older viewers for a full support window.
+3. The server can still drain edits older clients already accepted, or rejects
+   them without losing them (the client keeps a local draft and says so).
+
+Raise `MIN_VIEWER_PROTOCOL` and `VIEWER_PROTOCOL` together in one release. MCP
+and HTTP tool compatibility is versioned separately and does not follow this
+floor.
 
 ## HTTP and MCP tools
 

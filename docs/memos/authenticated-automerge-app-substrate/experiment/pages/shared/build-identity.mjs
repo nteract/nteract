@@ -5,10 +5,12 @@
 // tests, tsx) reports "dev", which never asks a tab to reload.
 //
 // VIEWER_PROTOCOL is the contract this viewer speaks. MIN_VIEWER_PROTOCOL is
-// the oldest viewer contract this Worker still serves edits to. Raise
-// MIN_VIEWER_PROTOCOL to retire a compatibility shim kept for older open tabs;
-// raise VIEWER_PROTOCOL to at least the same value in the same change, or the
-// new viewer would refuse itself. Integers only; never lower either value.
+// the oldest viewer contract this Worker asks browser tabs to edit with. It is
+// advice to viewers that read it, not server enforcement: older viewers and API
+// clients ignore it. The README's Build updates section says when a server
+// compatibility path may go. Raise VIEWER_PROTOCOL to at least the same value
+// in the same change, or the new viewer would refuse itself. Integers only;
+// never lower either value.
 export const VIEWER_PROTOCOL = 1;
 export const MIN_VIEWER_PROTOCOL = 1;
 

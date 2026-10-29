@@ -113,7 +113,7 @@ export class PageSession {
   socketOutcomes = new WeakMap();
   socketAdmittedAt = new WeakMap();
   nativeRefused = false;
-  editsPaused = false;
+  editPauses = new Set();
   static async open(pageId, options) {
     const session = new PageSession(pageId, options);
     try {
@@ -926,11 +926,16 @@ export class PageSession {
         this.queueSaved({ restart: true });
     }
   }
-  /** Stop or resume local edits without touching sync. Edits already made
-   * keep saving, so a reload can wait for them. */
-  pauseEdits(paused = true) {
-    if (this.editsPaused === paused) return;
-    this.editsPaused = paused;
+  get editsPaused() {
+    return this.editPauses.size > 0;
+  }
+  /** Stop or resume local edits for one reason without touching sync. Edits
+   * already made keep saving, so a reload can wait for them. Edits resume only
+   * when every reason is released. */
+  pauseEdits(reason, paused = true) {
+    if (this.editPauses.has(reason) === paused) return;
+    if (paused) this.editPauses.add(reason);
+    else this.editPauses.delete(reason);
     this.updateCapabilities();
     this.emit();
   }

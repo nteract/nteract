@@ -77,7 +77,7 @@ async function reloadFromBanner(page) {
   await page.waitForLoadState("domcontentloaded");
 }
 
-const content = (page) => page.locator("wg-content");
+const content = (page) => page.locator(".page-block wg-content");
 const saved = (page) => page.locator(".save-status--saved");
 const banner = (page) => page.locator(".build-update");
 
@@ -119,28 +119,77 @@ try {
   await owner.keyboard.insertText(" During deploy.");
   await deployed;
   await expect(banner(owner)).toContainText(
-    "Pages was updated. Reload to get the latest version.",
+    "Pages changed on the server. Reload to use the current version.",
     { timeout: 60000 },
   );
   await expect(banner(owner)).toHaveAttribute("role", "status");
   await owner.screenshot({ path: `${output}/update-banner.png` });
   // An optional update never pauses editing.
   await expect(content(owner)).toHaveAttribute("contenteditable", "true");
+
+  // Leave the Page while its receipt is in flight, then Reload from the
+  // library. The left Page keeps syncing, and Reload waits for its receipt.
+  const receipts = { inFlight: 0, fulfilledAt: 0 };
+  await owner.route("**/api/saved?*", async (route) => {
+    receipts.inFlight++;
+    try {
+      const response = await route.fetch();
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+      await route.fulfill({ response });
+      receipts.fulfilledAt = Date.now();
+    } finally {
+      receipts.inFlight--;
+    }
+  });
   await owner.keyboard.insertText(" After banner.");
-  await reloadFromBanner(owner);
+  await owner.getByRole("link", { name: "Pages", exact: true }).click();
+  await expect(owner.getByRole("heading", { name: "Your pages" })).toBeVisible();
+  await expect.poll(() => receipts.inFlight, { timeout: 15000 }).toBeGreaterThan(0);
+  let loadedAt = 0;
+  owner.once("load", () => {
+    loadedAt = Date.now();
+  });
+  const leftReload = reloadFromBanner(owner);
+  await expect(banner(owner).getByRole("button", { name: "Saving edits…" })).toBeVisible();
+  await leftReload;
+  assert.ok(
+    receipts.fulfilledAt > 0 && loadedAt >= receipts.fulfilledAt,
+    JSON.stringify({ ...receipts, loadedAt }),
+  );
+  await owner.unrouteAll({ behavior: "wait" });
+  await expect(banner(owner)).toHaveCount(0);
+  await owner.goto(`${origin}/p/${pageId}`);
   await expect(content(owner)).toContainText("Before deploy. During deploy. After banner.", {
     timeout: 30000,
   });
-  await expect(banner(owner)).toHaveCount(0);
   assert.equal((await api(owner, "/health")).body.build, buildB);
   const afterUpdate = await tool(owner, "read_page", { page_id: pageId });
   assert.match(JSON.stringify(afterUpdate.body), /Before deploy\. During deploy\. After banner\./);
   report.completed.push(
-    `Deploy to ${buildB} under an open tab: banner on reconnect, Reload saved every edit first`,
+    `Deploy to ${buildB} under an open tab: banner on reconnect; Reload after leaving the Page waited for its receipt`,
   );
 
-  // The Worker raises its protocol floor above this viewer: edits pause, what
-  // the tab already accepted still saves, and Reload restores editing.
+  // An unsent reply, then the Worker raises its protocol floor above this
+  // viewer: edits pause, the draft stays reachable, Reload refuses until the
+  // draft is discarded, and what the tab already accepted still saves.
+  const authority = (await tool(owner, "read_page", { page_id: pageId })).body;
+  const comment = await tool(owner, "manage_page_comment", {
+    page_id: pageId,
+    action: "add",
+    block_id: authority.blocks[0].id,
+    body: "Deploy thread",
+    body_format: "plain",
+    base_heads: authority.heads,
+    retry_token: authority.retry_token,
+    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+  });
+  assert.equal(comment.status, 200, JSON.stringify(comment.body));
+  await owner.getByRole("button", { name: /^Comments/ }).click();
+  const thread = owner.locator(".thread", { hasText: "Deploy thread" });
+  await thread.getByRole("button", { name: "Reply", exact: true }).click();
+  const reply = thread.getByRole("textbox", { name: "Reply", exact: true });
+  await expect(reply).toBeFocused();
+  await reply.pressSequentially("Unsent reply");
   await expect(content(owner)).toHaveAttribute("contenteditable", "true", { timeout: 15000 });
   await owner.route(
     (url) => url.pathname.startsWith("/api/") || url.pathname === "/health",
@@ -155,17 +204,32 @@ try {
   await content(owner).focus();
   await owner.keyboard.press("ControlOrMeta+End");
   await owner.keyboard.insertText(" Floor raised.");
-  await expect(banner(owner)).toContainText("This tab can't edit until you reload.", {
-    timeout: 30000,
-  });
+  await expect(banner(owner)).toContainText(
+    "Pages changed on the server. This tab can't edit until you reload.",
+    { timeout: 30000 },
+  );
   await expect(banner(owner)).toHaveAttribute("role", "alert");
-  await owner.screenshot({ path: `${output}/required-banner.png` });
   await expect(content(owner)).toHaveAttribute("contenteditable", "false");
   await expect(owner.getByRole("textbox", { name: "Page title" })).toHaveAttribute("readonly", "");
   await expect(saved(owner)).toBeVisible({ timeout: 30000 });
   await content(owner).click();
   await owner.keyboard.insertText(" Ignored.");
   await expect(content(owner)).not.toContainText("Ignored.");
+  // The draft stays visible and read-only; it can't be sent from this tab.
+  await expect(reply).toContainText("Unsent reply");
+  await expect(reply).toHaveAttribute("contenteditable", "false");
+  await expect(thread.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
+  await owner.screenshot({ path: `${output}/required-banner.png` });
+  await owner.evaluate(() => {
+    window.__pagesBeforeReload = true;
+  });
+  await banner(owner).getByRole("button", { name: "Reload" }).click();
+  await expect(banner(owner)).toContainText(
+    "You have an unsent comment. Send or discard it before reloading.",
+  );
+  assert.equal(await owner.evaluate(() => window.__pagesBeforeReload), true, "no reload");
+  await thread.getByRole("button", { name: "Discard", exact: true }).click();
+  await expect(thread.getByRole("button", { name: /^(Continue reply|Reply)$/ })).toHaveCount(0);
   await owner.unrouteAll({ behavior: "wait" });
   await reloadFromBanner(owner);
   await expect(content(owner)).toContainText("After banner. Floor raised.", { timeout: 30000 });
@@ -174,9 +238,9 @@ try {
   await expect(content(owner)).toHaveAttribute("contenteditable", "true", { timeout: 15000 });
   const afterFloor = await tool(owner, "read_page", { page_id: pageId });
   assert.match(JSON.stringify(afterFloor.body), /After banner\. Floor raised\./);
-  assert.doesNotMatch(JSON.stringify(afterFloor.body), /Ignored/);
+  assert.doesNotMatch(JSON.stringify(afterFloor.body), /Ignored|Unsent reply/);
   report.completed.push(
-    "Protocol floor above the viewer: edits paused, accepted edit saved, Reload resumed editing",
+    "Protocol floor above the viewer: edits paused, unsent reply kept read-only and blocked Reload until discarded, accepted edit saved",
   );
   assert.deepEqual(report.errors, []);
 } catch (error) {

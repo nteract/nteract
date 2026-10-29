@@ -50,8 +50,9 @@ Existing documents, sessions, ACLs, and assets must be preserved.
 
 Open tabs from an earlier build show a reload banner after publication and keep
 working until the person reloads. A release that raises `MIN_VIEWER_PROTOCOL`
-pauses editing in older tabs until they reload. A rollback publishes a different
-build id too, so open tabs see the banner again.
+pauses editing in tabs that read the floor until they reload; it does not stop
+older viewers or API clients (see the Build updates policy in the README). A
+rollback publishes a different build id too, so open tabs see the banner again.
 
 Rollback must retain binary record readers and the `PageRecords` binding and
 buffered-storage implementation. A legacy hex-only build cannot read updated
