@@ -97,7 +97,7 @@ pub async fn evict_stale_envs(
     }
 
     // Sort by last-used time descending (newest first)
-    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    candidates.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
     let now = SystemTime::now();
 

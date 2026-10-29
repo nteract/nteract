@@ -49,10 +49,7 @@ where
     tokio::task::yield_now().await;
     let mut notebook_doc_converged = None;
 
-    loop {
-        let Some(frame) = drain.framed_reader.try_recv() else {
-            break;
-        };
+    while let Some(frame) = drain.framed_reader.try_recv() {
         let frame = frame.map_err(|error| format!("Failed to read initial-load reply: {error}"))?;
 
         if frame.frame_type != NotebookFrameType::AutomergeSync {

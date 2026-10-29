@@ -1396,6 +1396,10 @@ impl McpProxy {
 
     // ── Internal helpers ──────────────────────────────────────────────
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Keep forwarding provenance together with the complete MCP error"
+    )]
     async fn try_forward_tool_call(
         &self,
         params: &CallToolRequestParams,

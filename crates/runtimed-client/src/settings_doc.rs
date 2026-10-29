@@ -1677,7 +1677,7 @@ impl SettingsDoc {
     #[cfg(debug_assertions)]
     fn panic_if_requested(counter: &AtomicUsize, operation: &str) {
         if counter
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
                 count.checked_sub(1)
             })
             .is_ok()
@@ -1689,7 +1689,7 @@ impl SettingsDoc {
     #[cfg(debug_assertions)]
     fn patch_log_mismatch_if_requested(counter: &AtomicUsize) -> Result<(), AutomergeError> {
         if counter
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
                 count.checked_sub(1)
             })
             .is_ok()

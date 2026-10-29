@@ -821,7 +821,7 @@ impl RangeSetReader {
         // One copy out of the wasm-bindgen buffer; segments are slices of it.
         let data = Bytes::copy_from_slice(data);
         let mut cursor = 0usize;
-        for pair in ranges.chunks_exact(2) {
+        for pair in ranges.as_chunks::<2>().0 {
             let offset = range_component(pair[0], "offset")?;
             let length = range_component(pair[1], "length")?;
             if offset.saturating_add(length) > file_len {
@@ -991,7 +991,7 @@ mod tests {
     /// Simulates the host fetching exactly the ranges Rust asked for.
     fn fetch_ranges(file: &[u8], ranges: &[f64]) -> Vec<u8> {
         let mut data = Vec::new();
-        for pair in ranges.chunks_exact(2) {
+        for pair in ranges.as_chunks::<2>().0 {
             let start = pair[0] as usize;
             let end = start + pair[1] as usize;
             data.extend_from_slice(&file[start..end]);
@@ -1052,11 +1052,15 @@ mod tests {
         // The host may fetch one span covering every column chunk.
         let ranges = row_group_ranges(handle, 1).unwrap();
         let start = ranges
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|p| p[0])
             .fold(f64::INFINITY, f64::min);
         let end = ranges
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|p| p[0] + p[1])
             .fold(0.0, f64::max);
         let coalesced = vec![start, end - start];
@@ -1697,7 +1701,7 @@ mod tests {
         free(store);
         parquet_close(full);
 
-        let compressed: u64 = ranges.chunks_exact(2).map(|p| p[1] as u64).sum();
+        let compressed: u64 = ranges.as_chunks::<2>().0.iter().map(|p| p[1] as u64).sum();
         let mut budget = limits();
         budget.decoded_bytes = (one_group * 3 / 4) as u32;
         assert!(compressed < u64::from(budget.decoded_bytes));
@@ -1730,7 +1734,7 @@ mod tests {
         let handle = open_truncating(&file, limits()).unwrap();
         let ranges = row_group_ranges(handle, 0).unwrap();
         parquet_close(handle);
-        let compressed: u64 = ranges.chunks_exact(2).map(|p| p[1] as u64).sum();
+        let compressed: u64 = ranges.as_chunks::<2>().0.iter().map(|p| p[1] as u64).sum();
 
         let mut budget = limits();
         budget.decoded_bytes = (compressed - 1) as u32;
@@ -1752,7 +1756,7 @@ mod tests {
         let handle = open_truncating(&file, limits()).unwrap();
         let ranges = row_group_ranges(handle, 0).unwrap();
         parquet_close(handle);
-        let compressed: u64 = ranges.chunks_exact(2).map(|p| p[1] as u64).sum();
+        let compressed: u64 = ranges.as_chunks::<2>().0.iter().map(|p| p[1] as u64).sum();
 
         let mut budget = limits();
         budget.decoded_bytes = compressed as u32;

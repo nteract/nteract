@@ -1230,6 +1230,10 @@ fn attach_ready_payload(
 
 /// The UUID attach handshake carries no creation or workstation defaults.
 /// A refused/missing room propagates as an error, with no create fallback.
+#[allow(
+    clippy::result_large_err,
+    reason = "This wrapper preserves notebook-sync's typed connection errors"
+)]
 async fn connect_attach_relay(
     socket_path: PathBuf,
     notebook_id: String,

@@ -79,7 +79,7 @@ pub fn value_counts(
         .into_iter()
         .map(|(label, count)| CategoryCount { label, count })
         .collect();
-    counts.sort_by(|a, b| b.count.cmp(&a.count));
+    counts.sort_by_key(|category| std::cmp::Reverse(category.count));
 
     Ok(counts)
 }

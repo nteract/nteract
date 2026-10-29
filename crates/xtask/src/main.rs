@@ -1000,10 +1000,8 @@ fn pnpm_install_reason() -> Option<&'static str> {
         return Some("missing node_modules metadata");
     }
 
-    for link in [Path::new("packages/sift/node_modules/@chenglou/pretext")] {
-        if !link.exists() {
-            return Some("workspace package links missing");
-        }
+    if !Path::new("packages/sift/node_modules/@chenglou/pretext").exists() {
+        return Some("workspace package links missing");
     }
 
     let Some(install_time) = modified_time(install_marker) else {

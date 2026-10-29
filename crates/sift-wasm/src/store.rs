@@ -1587,7 +1587,7 @@ pub fn store_value_counts(handle: u32, col: usize) -> Result<JsValue, JsValue> {
             .into_iter()
             .map(|(label, count)| CategoryCount { label, count })
             .collect();
-        counts.sort_by(|a, b| b.count.cmp(&a.count));
+        counts.sort_by_key(|category| std::cmp::Reverse(category.count));
         // Returns Vec<CategoryCount> — simple structs with String/u32 fields
         serde_wasm_bindgen::to_value(&counts).unwrap_or(JsValue::NULL)
     })
@@ -2065,7 +2065,7 @@ pub fn store_filtered_value_counts(
             .into_iter()
             .map(|(label, count)| CategoryCount { label, count })
             .collect();
-        counts.sort_by(|a, b| b.count.cmp(&a.count));
+        counts.sort_by_key(|category| std::cmp::Reverse(category.count));
         // Returns Vec<CategoryCount> or Vec<HistogramBin> — simple structs with String/f64/u32 fields
         serde_wasm_bindgen::to_value(&counts).unwrap_or(JsValue::NULL)
     })

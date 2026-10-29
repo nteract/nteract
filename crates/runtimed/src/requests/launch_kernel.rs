@@ -160,6 +160,10 @@ async fn existing_kernel_response(room: &NotebookRoom) -> Option<NotebookRespons
     })
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "Launch completion returns the existing notebook protocol response on failure"
+)]
 async fn complete_manual_launch(
     room: &NotebookRoom,
     launch_attempt: &mut Option<KernelLaunchAttempt>,
