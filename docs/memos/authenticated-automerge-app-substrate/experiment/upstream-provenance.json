@@ -62,12 +62,12 @@
       {
         "path": "packages/automerge-repo-subduction/src/storage.ts",
         "before": "070bf534188442d664b7e5066d9a4490fa8c998b257d7a700909059bd9b9a951",
-        "after": "c5950649dce480cd1fff27915263724f5169ab96258d8828ef8a608d896ec6cd"
+        "after": "3a335064a7741c16677f374b67957b5033479a7a6168631c54cbea2f1a9005ec"
       },
       {
         "path": "packages/automerge-repo/src/DocumentDelegate.ts",
         "before": "9c529b2bd424837397ba735085a01992edf1ed46c2c61fca2d68bdc027159240",
-        "after": "4ede1ce967a8b3eaab18423fc116a226a9e2bcedeae1e1d1a84b220db7a92922"
+        "after": "25bb4f4bb9471ecd22ed59784b9f7055bc87e3163ccc2271f6ff28e14c2247f0"
       }
     ]
   }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
-import { Repo } from "@automerge/automerge-repo";
+import { Repo, generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
 import { recordBytes } from "@automerge/automerge-repo/sedimentree";
 import { SubductionBackend } from "@automerge/automerge-repo-subduction";
@@ -13,6 +13,7 @@ import { DocumentAdmission, isHistoryCapacityError } from "./history-admission.m
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
 import { issueRetryToken, RETRY_LIFETIME_MS } from "./operation-journal.mjs";
 import { retryKey } from "../model/retry-key.mjs";
+import { buildPersistenceFixture } from "../../persistence-workload.mjs";
 
 class Storage {
   values = new Map();
@@ -106,11 +107,20 @@ const apiEdit = (doc) => {
 const nativeEdit = (doc) => {
   doc.native = noise(2048, 12);
 };
-function host(mode, maxSnapshotBytes, storage = new Storage(), records = new Storage()) {
+function host(
+  mode,
+  maxSnapshotBytes,
+  storage = new Storage(),
+  records = new Storage(),
+  { maxBatchKeys } = {},
+) {
   const owner = new PageRecords({ storage: records });
   const recordStore =
     mode === "buffered"
-      ? new BufferedRecordStore(new RemoteRecordSink({ fetch: (request) => owner.fetch(request) }))
+      ? new BufferedRecordStore(
+          new RemoteRecordSink({ fetch: (request) => owner.fetch(request) }),
+          { maxBatchKeys },
+        )
       : new DurableByteStore(storage);
   const signer = N.MemorySigner.fromBytes(new Uint8Array(32).fill(23));
   const backend = new SubductionBackend({ signer, storage: recordStore, maxSnapshotBytes });
@@ -667,3 +677,249 @@ for (const mode of ["local", "buffered"]) {
     }
   });
 }
+
+// Every persistence cut of a flush must restart: ready on what the durable
+// records build, or unavailable only when they build nothing. Each PageRecords
+// write here holds one key (`maxBatchKeys: 1`), or one atomic record group, so
+// the cuts are every boundary a production flush could stop at.
+const CUT_CAP = 4 * 1024 * 1024;
+const RECORD_PATH = /\/(commits|fragments)\/([0-9a-f]{64})$/;
+
+function linearEdits(base, count = 5) {
+  let doc = base;
+  for (let i = 0; i < count; i++)
+    doc = edit(doc, ACTOR.api, (draft) => {
+      draft[`line${i}`] = noise(512, 40 + i);
+    });
+  return doc;
+}
+
+function mergeHeavy(base, rounds = 3) {
+  const actors = ["1a", "1b", "1c"].map((actor) => actor.repeat(16));
+  let doc = base;
+  let time = TIME + 100;
+  for (let round = 0; round < rounds; round++) {
+    const branches = actors.map((actor, i) =>
+      A.change(A.clone(doc, { actor }), { time: time++ }, (draft) => {
+        draft[`round${round}actor${i}`] = noise(256, 20 + round * 3 + i);
+      }),
+    );
+    doc = branches.reduce(
+      (merged, branch) => A.merge(merged, branch),
+      A.clone(doc, { actor: actors[0] }),
+    );
+  }
+  return A.change(doc, { time: time++ }, (draft) => {
+    draft.merged = true;
+  });
+}
+
+/** Capture each atomic PageRecords write of one flush. */
+async function recordFlush(peer) {
+  const before = peer.records.clone();
+  const writes = [];
+  const put = peer.records.put.bind(peer.records);
+  peer.records.put = async (key, value) => {
+    const entries = typeof key === "string" ? [[key, value]] : Object.entries(key);
+    const repo = entries.filter(([path]) => path.startsWith("repo/"));
+    if (repo.length) writes.push(repo.map(([path, data]) => [path, structuredClone(data)]));
+    return put(key, value);
+  };
+  try {
+    await peer.flush();
+  } finally {
+    peer.records.put = put;
+  }
+  return { before, writes };
+}
+
+/** The history a set of durable records builds, from their Automerge payloads. */
+function buildable(records, byPath) {
+  let doc = A.init();
+  try {
+    for (const path of records.values.keys()) {
+      const match = RECORD_PATH.exec(path);
+      const record = match && byPath.get(`${match[1]}/${match[2]}`);
+      if (record) doc = A.loadIncremental(doc, record.blob);
+    }
+    return { heads: A.getHeads(doc).sort(), missing: A.getMissingDeps(doc, []) };
+  } finally {
+    A.free(doc);
+  }
+}
+
+const recordIndex = (...lists) =>
+  new Map(
+    lists
+      .flat()
+      .map((record) => [
+        recordPath(record).replace("commit/", "commits/").replace("fragment/", "fragments/"),
+        record,
+      ]),
+  );
+
+async function restartAt(scenario, writes, label) {
+  const records = scenario.before.clone();
+  for (const write of writes)
+    for (const [path, data] of write) records.values.set(path, structuredClone(data));
+  const expected = buildable(records, scenario.byPath);
+  const restored = host("buffered", CUT_CAP, scenario.storage.clone(), records);
+  try {
+    if (!expected.heads.length) {
+      await assert.rejects(findWithin(restored.repo, scenario.documentId), /is unavailable/, label);
+      return expected;
+    }
+    const handle = await findWithin(restored.repo, scenario.documentId);
+    assert.deepEqual(A.getHeads(handle.doc()).sort(), expected.heads, label);
+    if (scenario.entry) {
+      await recoverDocumentMutations(
+        restored.storage,
+        handle,
+        () => restored.flush(),
+        new DocumentAdmission(restored.backend, treeId(scenario.documentId)),
+      );
+      assert.ok(A.hasHeads(handle.doc(), scenario.entry.receipt.heads), label);
+      assert.deepEqual(A.getMissingDeps(handle.doc(), []), [], label);
+    }
+    return expected;
+  } finally {
+    assert.deepEqual(await closePeers([restored], []), []);
+  }
+}
+
+async function journaledScenario(name, base, candidate) {
+  const peer = host("buffered", CUT_CAP, undefined, undefined, { maxBatchKeys: 1 });
+  try {
+    const handle = await peer.repo.import(A.save(base));
+    await peer.flush();
+    const entry = await stageIntent(peer, handle, base, candidate, `host/operation/${name}`);
+    const { before, writes } = await recordFlush(peer);
+    return {
+      name,
+      before,
+      writes,
+      entry,
+      storage: peer.storage.clone(),
+      documentId: handle.documentId,
+      byPath: recordIndex(extractRecords(base), extractRecords(candidate)),
+    };
+  } finally {
+    assert.deepEqual(await closePeers([peer], []), []);
+  }
+}
+
+async function importScenario(name, records, documentId, store) {
+  const peer = host("buffered", CUT_CAP, undefined, undefined, { maxBatchKeys: 1 });
+  try {
+    documentId = await store(peer);
+    const { before, writes } = await recordFlush(peer);
+    return {
+      name,
+      before,
+      writes,
+      storage: peer.storage.clone(),
+      documentId,
+      byPath: recordIndex(records),
+    };
+  } finally {
+    assert.deepEqual(await closePeers([peer], []), []);
+  }
+}
+
+function shuffled(items, seed) {
+  const result = [...items];
+  for (let i = result.length - 1; i > 0; i--) {
+    seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31;
+    const j = seed % (i + 1);
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
+
+test(
+  "buffered: every persistence cut of a flush restarts on the history it builds",
+  { timeout: 120_000 },
+  async () => {
+    const base = baseDoc();
+    const fresh = mergeHeavy(baseDoc());
+    const fixture = buildPersistenceFixture({ rounds: 8 });
+    try {
+      const compacted = [...fixture.loose, ...fixture.covering].filter(
+        (record, index, all) =>
+          all.findIndex((o) => recordPath(o) === recordPath(record)) === index,
+      );
+      assert.ok(
+        compacted.some((record) => record.kind === "fragment"),
+        "a compacted history",
+      );
+      const scenarios = [
+        await journaledScenario("linear", base, linearEdits(base)),
+        await journaledScenario("merge-heavy", base, mergeHeavy(base)),
+        await journaledScenario("fragment-parent", base, fragmentParentCandidate(base).candidate),
+        await importScenario(
+          "fresh merge-heavy",
+          extractRecords(fresh),
+          undefined,
+          async (peer) => {
+            const handle = await peer.repo.import(A.save(fresh));
+            return handle.documentId;
+          },
+        ),
+        await importScenario("compacted snapshot", compacted, undefined, async (peer) => {
+          const documentId = interpretAsDocumentId(generateAutomergeUrl());
+          await peer.backend.storeSnapshot(treeId(documentId), compacted);
+          return documentId;
+        }),
+      ];
+      let restarts = 0;
+      for (const scenario of scenarios) {
+        assert.ok(scenario.writes.length > 1, `${scenario.name} splits into several writes`);
+        for (let cut = 0; cut <= scenario.writes.length; cut++) {
+          const expected = await restartAt(
+            scenario,
+            scenario.writes.slice(0, cut),
+            `${scenario.name} cut ${cut}/${scenario.writes.length}`,
+          );
+          restarts++;
+          // Causal order: every prefix holds the parents of what it holds.
+          assert.deepEqual(expected.missing, [], `${scenario.name} cut ${cut} is causally closed`);
+        }
+      }
+      // Readiness does not depend on that order: arbitrary write orders of the
+      // fresh history, including children before parents, still restart.
+      const [, , , unordered] = scenarios;
+      const single = unordered.writes.flat().map((entry) => [entry]);
+      for (const seed of [7, 19]) {
+        const order = shuffled(single, seed);
+        for (let cut = 0; cut <= order.length; cut++) {
+          await restartAt(
+            unordered,
+            order.slice(0, cut),
+            `shuffle ${seed} cut ${cut}/${order.length}`,
+          );
+          restarts++;
+        }
+      }
+      assert.ok(restarts > 60, `${restarts} restarts`);
+    } finally {
+      fixture.free();
+    }
+  },
+);
+
+test("local: records saved together reach Durable Object storage in one put", async () => {
+  const storage = new Storage();
+  const calls = [];
+  const put = storage.put.bind(storage);
+  storage.put = async (key, value) => {
+    calls.push(typeof key === "string" ? [key] : Object.keys(key));
+    return put(key, value);
+  };
+  const store = new DurableByteStore(storage);
+  await store.saveMany([
+    ["tree/a", Uint8Array.of(1)],
+    ["tree/b", Uint8Array.of(2)],
+  ]);
+  assert.deepEqual(calls, [["repo/tree/a", "repo/tree/b"]]);
+  assert.deepEqual(await store.load("tree/b"), Uint8Array.of(2));
+});

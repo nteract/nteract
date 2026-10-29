@@ -42,6 +42,7 @@ import {
 import { DurableByteStore, persistentSeed } from "./storage.mjs";
 import {
   DocumentAdmission,
+  incompleteHistory,
   isHistoryCapacityError,
   logIncompleteHistory,
 } from "./history-admission.mjs";
@@ -1292,6 +1293,9 @@ export class Page {
             ...(this.recoveryBlocked && { canWrite: false, canComment: false }),
           },
           ...(this.recoveryBlocked && { recovery: this.recoveryBlocked }),
+          ...(incompleteHistory(this.handle.doc()) && {
+            historyIncomplete: incompleteHistory(this.handle.doc()),
+          }),
           peerProfiles: this.profiles(),
           activity: this.activityState().snapshot(),
         });
@@ -1325,6 +1329,7 @@ export class Page {
           this.cacheTitle(identity);
           const options = {
             recovery: this.recoveryBlocked,
+            historyIncomplete: incompleteHistory(this.handle.doc()),
             getPresence: (doc) => this.activityState().read(doc),
             issueAuthority: () =>
               issueRetryToken(this.ctx.storage, {

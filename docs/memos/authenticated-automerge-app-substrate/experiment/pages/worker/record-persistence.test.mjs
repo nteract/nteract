@@ -126,6 +126,67 @@ test("large native records stay binary and are split below request limits", asyn
   assert.equal((await reopened.list("")).length, 2);
 });
 
+test("records saved together persist in one write or are split with a bounded log", async (t) => {
+  const warnings = [];
+  t.mock.method(console, "warn", (line) => warnings.push(JSON.parse(line)));
+  const f = fixture({ maxBatchKeys: 1 });
+  const writes = [];
+  const put = f.storage.put.bind(f.storage);
+  f.storage.put = async (values) => {
+    const keys = Object.keys(values).filter((key) => key.startsWith("repo/"));
+    if (keys.length) writes.push(keys);
+    return put(values);
+  };
+  await f.live.save("tree/before", bytes("0"));
+  await f.live.saveMany([
+    ["tree/a", bytes("1")],
+    ["tree/b", bytes("2")],
+    ["tree/c", bytes("3")],
+  ]);
+  await f.live.save("tree/after", bytes("4"));
+  await f.live.flush();
+  assert.deepEqual(writes, [
+    ["repo/tree/before", "repo/tree/a", "repo/tree/b", "repo/tree/c"],
+    ["repo/tree/after"],
+  ]);
+  assert.deepEqual(warnings, []);
+  // A failed flush keeps the group whole on retry.
+  writes.length = 0;
+  await f.live.saveMany([
+    ["tree/d", bytes("5")],
+    ["tree/e", bytes("6")],
+  ]);
+  f.storage.barrier = deferred();
+  const failing = assert.rejects(f.live.flush(), /persist/);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  f.storage.barrier.reject(Error("bucket unavailable"));
+  await failing;
+  f.storage.barrier = undefined;
+  await f.live.flush();
+  assert.deepEqual(writes.at(-1), ["repo/tree/d", "repo/tree/e"]);
+  // A group over one request's 128 keys cannot be atomic.
+  writes.length = 0;
+  await f.live.saveMany(
+    Array.from({ length: 130 }, (_, i) => [`tree/g${String(i).padStart(3, "0")}`, bytes("g")]),
+  );
+  await f.live.flush();
+  assert.equal(writes.length, 130);
+  assert.deepEqual(
+    warnings.map(({ event, records }) => ({ event, records })),
+    [{ event: "records.group_split", records: 130 }],
+  );
+  // Installation is all-or-nothing under the replica cap.
+  const small = fixture({ maxBytes: 4 });
+  await assert.rejects(
+    small.live.saveMany([
+      ["tree/x", bytes("12")],
+      ["tree/y", bytes("345")],
+    ]),
+  );
+  assert.equal(await small.live.load("tree/x"), undefined);
+  assert.equal(small.live.dirty, false);
+});
+
 test("capacity rejects before replacing accepted data; failed restore never exposes a partial replica", async () => {
   const f = fixture({ maxBytes: 12 });
   await f.live.save("key", bytes("123456789"));

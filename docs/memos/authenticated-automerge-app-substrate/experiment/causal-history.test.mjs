@@ -4,7 +4,7 @@ import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
 import { MemoryByteStore } from "@automerge/automerge-repo-subduction";
 import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
-import { commitId, checkpointId, sedimentreeId } from "@automerge/automerge-repo/sedimentree";
+import { sedimentreeId } from "@automerge/automerge-repo/sedimentree";
 import {
   StorageBridge,
   nativeId,
@@ -12,14 +12,18 @@ import {
   unsignedFragment,
 } from "./upstream/packages/automerge-repo-subduction/src/storage.ts";
 import { closePeers, createPeer } from "./backend.mjs";
+import { buildPersistenceFixture } from "./persistence-workload.mjs";
 
-const tree = sedimentreeId("cd".repeat(16));
-const cid = (n) => commitId(n.toString(16).padStart(2, "0").repeat(32));
-const limits = { maxRecordBytes: 4096, maxSnapshotBytes: 65536, maxRecords: 100 };
+const limits = { maxRecordBytes: 1 << 20, maxSnapshotBytes: 16 << 20, maxRecords: 1000 };
+const TIME = 1_790_000_000;
 
+/** Records each storage call; saveMany is one atomic call. */
 class Store {
   values = new Map();
-  saved = [];
+  calls = [];
+  constructor({ atomic = true } = {}) {
+    if (!atomic) this.saveMany = undefined;
+  }
   async load(key) {
     return this.values.get(key)?.slice();
   }
@@ -28,57 +32,35 @@ class Store {
   }
   async save(key, value) {
     this.values.set(key, value.slice());
-    this.saved.push(key);
+    this.calls.push([key]);
+  }
+  async saveMany(entries) {
+    for (const [key, value] of entries) this.values.set(key, value.slice());
+    this.calls.push(entries.map(([key]) => key));
   }
   async remove(key) {
     this.values.delete(key);
   }
 }
 
-// Fragment members other than head and checkpoints are opaque without decoding
-// the bundle. Metadata alone still orders every edge it can name.
-const member = cid(0x31); // inside `low`, named by its checkpoint prefix
-const hidden = cid(0x32); // inside some fragment, named by nothing
-const base = { kind: "commit", id: cid(0x01), parents: [], blob: Uint8Array.of(1) };
-const low = {
-  kind: "fragment",
-  head: cid(0x10),
-  boundary: [],
-  checkpoints: [checkpointId(member.slice(0, 24))],
-  blob: Uint8Array.of(16),
-};
-const high = {
-  kind: "fragment",
-  head: cid(0x20),
-  boundary: [cid(0x10), base.id],
-  checkpoints: [],
-  blob: Uint8Array.of(32),
-};
-const childOfHead = { kind: "commit", id: cid(0x02), parents: [cid(0x20)], blob: Uint8Array.of(2) };
-const childOfMember = { kind: "commit", id: cid(0x03), parents: [member], blob: Uint8Array.of(3) };
-const merge = {
-  kind: "commit",
-  id: cid(0x04),
-  parents: [childOfHead.id, childOfMember.id],
-  blob: Uint8Array.of(4),
-};
-const childOfHidden = { kind: "commit", id: cid(0x05), parents: [hidden], blob: Uint8Array.of(5) };
-// A loose chain above the merge, newest first.
-const tail = Array.from({ length: 40 }, (_, n) => ({
-  kind: "commit",
-  id: cid(0x40 + n),
-  parents: [n ? cid(0x40 + n - 1) : merge.id],
-  blob: Uint8Array.of(0x40 + n),
-})).reverse();
-// Children before parents, as a native batch may arrive.
-const batch = [...tail, merge, childOfHidden, childOfMember, childOfHead, high, base, low];
+const recordKey = (record) =>
+  record.kind === "commit" ? `commits/${record.id}` : `fragments/${record.head}`;
 
-test("a native batch reaches storage parents first, so every prefix is causally closed", async () => {
+/** What a record actually holds and needs, read from its Automerge payload. */
+function payload(record) {
+  const changes =
+    record.kind === "commit" ? [A.decodeChange(record.blob)] : A.readBundle(record.blob).changes;
+  const holds = new Set(changes.map((change) => change.hash));
+  const needs = new Set(changes.flatMap((change) => change.deps).filter((h) => !holds.has(h)));
+  return { holds, needs };
+}
+
+async function store(batch, options) {
   const signer = N.MemorySigner.fromBytes(new Uint8Array(32).fill(43));
-  const store = new Store();
-  const bridge = new StorageBridge(store, limits, () => {});
+  const bytes = new Store(options);
+  const bridge = new StorageBridge(bytes, limits, () => {});
   const engine = new N.Subduction({ signer, storage: bridge });
-  const id = nativeId(tree);
+  const id = nativeId(sedimentreeId("cd".repeat(16)));
   try {
     await engine.storeBuiltBatch(
       id,
@@ -89,29 +71,6 @@ test("a native batch reaches storage parents first, so every prefix is causally 
         .filter((r) => r.kind === "fragment")
         .map((r) => new N.FragmentInput(unsignedFragment(id, r), r.blob)),
     );
-    const position = (record) => {
-      const key = record.kind === "commit" ? `commits/${record.id}` : `fragments/${record.head}`;
-      const index = store.saved.findIndex((path) => path.endsWith(key));
-      assert.ok(index >= 0, `${key} was saved`);
-      return index;
-    };
-    const before = (parent, child) =>
-      assert.ok(position(parent) < position(child), `${position(parent)} < ${position(child)}`);
-    before(low, high); // boundary names the lower fragment's head
-    before(base, high); // boundary names a loose commit
-    before(high, childOfHead); // parent is a fragment head
-    before(low, childOfMember); // parent is a fragment checkpoint
-    before(childOfHead, merge);
-    before(childOfMember, merge);
-    // A parent no metadata names waits for every fragment in the batch.
-    before(low, childOfHidden);
-    before(high, childOfHidden);
-    for (const record of tail)
-      for (const parent of record.parents)
-        before(
-          batch.find((r) => r.id === parent),
-          record,
-        );
   } finally {
     await engine.disconnectAll();
     await bridge.drain();
@@ -119,91 +78,195 @@ test("a native batch reaches storage parents first, so every prefix is causally 
     id.free();
     signer.free();
   }
-});
-
-// Fixed actor and timestamps keep every change a loose commit (no leading zero
-// byte in its hash), so the stored shape is the same on every run.
-function chain() {
-  let doc = A.init({ actor: "0d".repeat(16) });
-  for (const [time, key] of [
-    [1_790_000_000, "first"],
-    [1_790_000_001, "second"],
-    [1_790_000_002, "third"],
-  ])
-    doc = A.change(doc, { time }, (draft) => {
-      draft[key] = key;
-    });
-  return doc;
+  return bytes;
 }
 
-test("lookup becomes ready on the stored history that materializes", async () => {
-  const doc = chain();
-  assert.deepEqual(
-    extractRecords(doc).map((record) => record.kind),
-    ["commit", "commit", "commit"],
-  );
-  const changes = A.getAllChanges(doc).map((change) => A.decodeChange(change));
-  const storage = new MemoryByteStore();
-  const writer = createPeer({ storage });
-  const peers = [writer];
+/** Every prefix of storage calls holds, for each record in it, a holder of
+ * every change the record needs that some batch record holds. */
+function assertCausalPrefixes(batch, bytes) {
+  const call = (record) => {
+    const index = bytes.calls.findIndex((keys) => keys.some((k) => k.endsWith(recordKey(record))));
+    assert.ok(index >= 0, `${recordKey(record)} was saved`);
+    return index;
+  };
+  const shapes = batch.map((record) => ({ record, ...payload(record) }));
+  for (const { record, needs } of shapes)
+    for (const need of needs) {
+      const holders = shapes.filter((other) => other.holds.has(need));
+      if (!holders.length) continue;
+      assert.ok(
+        holders.some((holder) => call(holder.record) <= call(record)),
+        `${recordKey(record)} (call ${call(record)}) needs ${need.slice(0, 8)}, held later`,
+      );
+    }
+  return call;
+}
+
+// r -> x -> c -> z -> w, one actor, fixed timestamps.
+function chain() {
+  let doc = A.init({ actor: "0d".repeat(16) });
+  const hashes = [];
+  for (const [index, key] of ["r", "x", "c", "z", "w"].entries()) {
+    doc = A.change(doc, { time: TIME + index }, (draft) => {
+      draft[key] = key;
+    });
+    hashes.push(A.getHeads(doc)[0]);
+  }
+  return { doc, hashes };
+}
+const loose = (doc, hash) => {
+  const blob = A.getChanges(A.init(), doc).find((change) => A.decodeChange(change).hash === hash);
+  return { kind: "commit", id: hash, parents: A.decodeChange(blob).deps, blob };
+};
+// A valid fragment whose boundary omits its external dependencies.
+const bundle = (doc, hashes) => ({
+  kind: "fragment",
+  head: hashes.at(-1),
+  boundary: [],
+  checkpoints: [],
+  blob: A.saveBundle(doc, hashes),
+});
+
+test("fragment dependencies come from the bundle, not its boundary", async () => {
+  const { doc, hashes } = chain();
+  const [r, x, c, z, w] = hashes;
+  const upper = bundle(doc, [z, w]);
+  assert.deepEqual(A.readBundle(upper.blob).deps, [c], "fixture needs c outside its boundary");
+  const lower = bundle(doc, [r, x]);
+  const middle = loose(doc, c);
+  const batch = [upper, middle, lower];
+  const bytes = await store(batch);
+  const call = assertCausalPrefixes(batch, bytes);
+  assert.ok(call(lower) < call(middle) && call(middle) < call(upper));
+});
+
+test("records that depend on each other persist through one atomic save", async () => {
+  const { doc, hashes } = chain();
+  const [r, x, c, z] = hashes;
+  // The fragment holds x and z; the loose commit c needs x and z needs c.
+  const cycle = bundle(doc, [x, z]);
+  const between = loose(doc, c);
+  const root = loose(doc, r);
+  const batch = [cycle, between, root];
+  const bytes = await store(batch);
+  const call = assertCausalPrefixes(batch, bytes);
+  assert.equal(call(cycle), call(between), "one saveMany call");
+  assert.ok(call(root) < call(cycle));
+  // Without saveMany the group is still written, in sequence.
+  const sequential = await store(batch, { atomic: false });
+  for (const record of batch)
+    assert.ok(sequential.calls.some((keys) => keys.some((k) => k.endsWith(recordKey(record)))));
+});
+
+test("a reversed compacted history reaches storage in causal order", async () => {
+  const fixture = buildPersistenceFixture({ rounds: 8 });
   try {
-    const handle = await writer.repo.import(A.save(doc));
-    await writer.repo.flush();
-    await writer.backend.flush();
-    // Lose the middle commit: the newest one is stored without its parent.
-    const [lost] = (await storage.list("")).filter((key) =>
-      key.endsWith(`/commits/${changes[1].hash}`),
-    );
-    assert.ok(lost);
-    await storage.remove(lost);
-    const reader = createPeer({ storage });
-    peers.push(reader);
-    let timer;
-    const found = await Promise.race([
-      reader.repo.find(handle.documentId),
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(Error("lookup did not settle")), 5000);
-      }),
-    ]).finally(() => clearTimeout(timer));
-    assert.deepEqual(A.getHeads(found.doc()), [changes[0].hash]);
-    assert.equal(found.doc().third, undefined);
-    // The orphan stays queued and applies once its parent arrives.
-    assert.deepEqual(A.getMissingDeps(found.doc(), []), [changes[1].hash]);
-    await found.update((current) => A.applyChanges(current, [A.getAllChanges(doc)[1]])[0]);
-    assert.deepEqual(A.getHeads(found.doc()), A.getHeads(doc));
-    assert.equal(found.doc().third, "third");
+    const fragments = fixture.covering.filter((record) => record.kind === "fragment");
+    assert.ok(fragments.length > 0, "the fixture is compacted");
+    // Loose copies of covered changes and the fragment, newest first.
+    const batch = [...fixture.loose, ...fixture.covering]
+      .filter(
+        (record, index, all) => all.findIndex((o) => recordKey(o) === recordKey(record)) === index,
+      )
+      .reverse();
+    assertCausalPrefixes(batch, await store(batch));
   } finally {
-    assert.deepEqual(await closePeers(peers), []);
+    fixture.free();
   }
 });
 
-test("lookup over stored history with no materializable head fails instead of hanging", async () => {
-  const doc = chain();
-  const changes = A.getAllChanges(doc).map((change) => A.decodeChange(change));
+// Fixed actors and timestamps keep every change here a loose commit.
+function diamond() {
+  let root = A.change(A.init({ actor: "0d".repeat(16) }), { time: TIME }, (draft) => {
+    draft.root = true;
+  });
+  const left = A.change(A.clone(root, { actor: "0e".repeat(16) }), { time: TIME + 1 }, (draft) => {
+    draft.left = true;
+  });
+  const right = A.change(A.clone(root, { actor: "0f".repeat(16) }), { time: TIME + 2 }, (draft) => {
+    draft.right = true;
+  });
+  let merged = A.merge(A.clone(left), right);
+  merged = A.change(merged, { time: TIME + 3 }, (draft) => {
+    draft.merged = true;
+  });
+  const [r] = A.getHeads(root);
+  const [a] = A.getHeads(left);
+  const [b] = A.getHeads(right);
+  return { doc: merged, r, a, b };
+}
+
+async function reopenWithout(doc, lose) {
   const storage = new MemoryByteStore();
   const writer = createPeer({ storage });
   const peers = [writer];
+  const handle = await writer.repo.import(A.save(doc));
+  await writer.repo.flush();
+  await writer.backend.flush();
+  for (const hash of lose) {
+    const [key] = (await storage.list("")).filter((k) => k.endsWith(`/commits/${hash}`));
+    assert.ok(key, `${hash.slice(0, 8)} is stored as a loose commit`);
+    await storage.remove(key);
+  }
+  const reader = createPeer({ storage });
+  peers.push(reader);
+  let timer;
+  const found = Promise.race([
+    reader.repo.find(handle.documentId),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Error("lookup did not settle")), 5000);
+    }),
+  ]).finally(() => clearTimeout(timer));
+  return { found, close: () => closePeers(peers) };
+}
+
+for (const [shape, lose, frontier, missing] of [
+  // A stored merge whose other branch is lost: no checkpoint tip materializes.
+  ["missing branch of a merge", ({ b }) => [b], ({ a }) => [a], ({ b }) => [b]],
+  ["missing middle of a chain", ({ a }) => [a], ({ r }) => [r], ({ a }) => [a]],
+]) {
+  test(`lookup becomes ready on the materialized frontier: ${shape}`, async () => {
+    const fixture = diamond();
+    assert.deepEqual(
+      extractRecords(fixture.doc).map((record) => record.kind),
+      ["commit", "commit", "commit", "commit"],
+    );
+    const { found, close } = await reopenWithout(
+      shape.includes("chain") ? linear(fixture) : fixture.doc,
+      lose(fixture),
+    );
+    try {
+      const handle = await found;
+      assert.deepEqual(A.getHeads(handle.doc()), frontier(fixture));
+      assert.deepEqual(A.getMissingDeps(handle.doc(), []), missing(fixture));
+      // The queued changes apply once the lost change arrives.
+      const all = A.getChanges(A.init(), fixture.doc);
+      const lost = all.filter((change) => lose(fixture).includes(A.decodeChange(change).hash));
+      await handle.update((doc) => A.applyChanges(doc, lost)[0]);
+      assert.deepEqual(A.getMissingDeps(handle.doc(), []), []);
+    } finally {
+      assert.deepEqual(await close(), []);
+    }
+  });
+}
+// r -> a -> (the left branch only) for the chain shape.
+function linear({ doc, a }) {
+  let chain = A.init({ actor: "0d".repeat(16) });
+  for (const change of A.getChanges(A.init(), doc)) {
+    const decoded = A.decodeChange(change);
+    if (decoded.hash === a || decoded.deps.length === 0) [chain] = A.applyChanges(chain, [change]);
+  }
+  return A.change(chain, { time: TIME + 9 }, (draft) => {
+    draft.after = true;
+  });
+}
+
+test("lookup over stored history with no materializable change is unavailable", async () => {
+  const fixture = diamond();
+  const { found, close } = await reopenWithout(fixture.doc, [fixture.r]);
   try {
-    const handle = await writer.repo.import(A.save(doc));
-    await writer.repo.flush();
-    await writer.backend.flush();
-    const [root] = (await storage.list("")).filter((key) =>
-      key.endsWith(`/commits/${changes[0].hash}`),
-    );
-    await storage.remove(root);
-    const reader = createPeer({ storage });
-    peers.push(reader);
-    let timer;
-    await assert.rejects(
-      Promise.race([
-        reader.repo.find(handle.documentId),
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(Error("lookup did not settle")), 5000);
-        }),
-      ]).finally(() => clearTimeout(timer)),
-      /is unavailable/,
-    );
+    await assert.rejects(found, /is unavailable/);
   } finally {
-    assert.deepEqual(await closePeers(peers), []);
+    assert.deepEqual(await close(), []);
   }
 });

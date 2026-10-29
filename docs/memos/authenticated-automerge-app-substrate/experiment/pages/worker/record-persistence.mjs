@@ -66,22 +66,68 @@ export function decodeRecordBatch(bytes) {
   return entries;
 }
 
-function batches(entries) {
+/** One PageRecords POST is one atomic storage.put of at most 128 keys and
+ * MAX_BATCH_BYTES. A group saved through saveMany stays inside one batch when
+ * it fits, so its records persist together or not at all. A group that cannot
+ * fit is split and logged; lookup readiness then covers an interrupted prefix.
+ * `maxKeys` bounds ungrouped batches only. */
+function batches(entries, groupOf = () => undefined, maxKeys = 128) {
+  const sized = (entry) => 8 + keyBytes(entry[0]).length + (entry[1]?.byteLength ?? 0);
+  const members = new Map();
+  for (const entry of entries) {
+    const group = groupOf(entry[0]);
+    if (group !== undefined) members.set(group, [...(members.get(group) ?? []), entry]);
+  }
   const result = [];
+  const placed = new Set();
   let batch = [],
     size = 0;
-  for (const entry of entries) {
-    const bytes = 8 + keyBytes(entry[0]).length + (entry[1]?.byteLength ?? 0);
-    if ((size + bytes > MAX_BATCH_BYTES || batch.length === 128) && batch.length) {
-      result.push(batch);
-      batch = [];
-      size = 0;
-    }
+  const close = () => {
+    if (batch.length) result.push(batch);
+    batch = [];
+    size = 0;
+  };
+  const add = (entry) => {
+    const bytes = sized(entry);
+    if ((size + bytes > MAX_BATCH_BYTES || batch.length >= maxKeys) && batch.length) close();
     batch.push(entry);
     size += bytes;
+  };
+  for (const entry of entries) {
+    const group = groupOf(entry[0]);
+    const together = group === undefined ? [] : members.get(group);
+    if (together.length < 2) {
+      add(entry);
+      continue;
+    }
+    if (placed.has(group)) continue;
+    placed.add(group);
+    const bytes = together.reduce((n, item) => n + sized(item), 0);
+    if (together.length > 128 || bytes > MAX_BATCH_BYTES) {
+      logGroupSplit(together.length, bytes);
+      together.forEach(add);
+      continue;
+    }
+    if (batch.length && (size + bytes > MAX_BATCH_BYTES || batch.length + together.length > 128))
+      close();
+    batch.push(...together);
+    size += bytes;
   }
-  if (batch.length) result.push(batch);
+  close();
   return result;
+}
+
+/** Counts only, like the other structured Pages logs. */
+function logGroupSplit(records, bytes) {
+  console.warn(
+    JSON.stringify({
+      service: "nteract-pages-native",
+      event: "records.group_split",
+      records,
+      bytes,
+      timestamp: new Date().toISOString(),
+    }),
+  );
 }
 
 /** A separate object owns record durability. Its output gate never closes the
@@ -225,12 +271,15 @@ export class RemoteRecordSink {
  * local history until /api/saved confirms that second boundary.
  */
 export class BufferedRecordStore {
-  constructor(sink, { onDirty = () => {}, maxBytes = MAX_REPLICA_BYTES } = {}) {
+  constructor(sink, { onDirty = () => {}, maxBytes = MAX_REPLICA_BYTES, maxBatchKeys = 128 } = {}) {
     this.sink = sink;
     this.onDirty = onDirty;
     this.maxBytes = maxBytes;
+    this.maxBatchKeys = maxBatchKeys;
     this.values = new Map();
     this.pending = new Map();
+    // Pending keys saved together through saveMany, by group token.
+    this.groups = new Map();
     this.size = 0;
     this.tail = Promise.resolve();
     this.ready = this.restore();
@@ -272,6 +321,24 @@ export class BufferedRecordStore {
     this.pending.set(key, this.values.get(key));
     this.onDirty({ key, byteLength: value.byteLength });
   }
+  /** Persist these new records in one PageRecords write. Installation is
+   * all-or-nothing: a capacity failure leaves the replica unchanged. */
+  async saveMany(entries) {
+    await this.ready;
+    const previous = entries.map(([key]) => [key, this.values.get(key)]);
+    try {
+      for (const [key, value] of entries) this.install(key, value);
+    } catch (error) {
+      for (const [key, value] of previous) this.install(key, value);
+      throw error;
+    }
+    const group = Symbol("record group");
+    for (const [key] of entries) {
+      this.pending.set(key, this.values.get(key));
+      this.groups.set(key, group);
+    }
+    for (const [key, value] of entries) this.onDirty({ key, byteLength: value.byteLength });
+  }
   async remove(key) {
     await this.ready;
     this.install(key, undefined);
@@ -288,7 +355,10 @@ export class BufferedRecordStore {
       this.pending = new Map();
       this.flushing = true;
       try {
-        for (const batch of batches(pending)) await this.sink.commit(batch);
+        const groupOf = (key) => this.groups.get(key);
+        for (const batch of batches(pending, groupOf, this.maxBatchKeys))
+          await this.sink.commit(batch);
+        for (const key of pending.keys()) if (!this.pending.has(key)) this.groups.delete(key);
       } catch (error) {
         // Newer values/deletions win over the failed batch, which may already
         // have partially persisted. Retry the rest without losing local edits.
