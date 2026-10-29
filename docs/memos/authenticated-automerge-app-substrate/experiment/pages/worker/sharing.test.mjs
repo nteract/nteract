@@ -70,9 +70,12 @@ test("invitation requires verified email, trusted namespace, live expiry and bec
   assert.equal(claimed.acl.members[editor.principal].role, "editor");
   assert.equal(claimed.acl.members[editor.principal].generation, 1);
   assert.equal(Object.keys(claimed.acl.invites).length, 0);
-  assert.equal(sharingProjection(claimed, editor).access.canWrite, true);
-  assert.equal(sharingProjection(claimed, { ...editor, canWrite: false }).access.canWrite, false);
-  assert.equal(sharingProjection(claimed, editor).members, undefined);
+  assert.equal((await sharingProjection(claimed, editor)).access.canWrite, true);
+  assert.equal(
+    (await sharingProjection(claimed, { ...editor, canWrite: false })).access.canWrite,
+    false,
+  );
+  assert.equal((await sharingProjection(claimed, editor)).members, undefined);
   const revoked = await proposeSharingMutation(
     claimed,
     owner,
@@ -85,7 +88,7 @@ test("invitation requires verified email, trusted namespace, live expiry and bec
     },
     now,
   );
-  assert.throws(() => sharingProjection(revoked.metadata, editor), /no longer have access/);
+  await assert.rejects(sharingProjection(revoked.metadata, editor), /no longer have access/);
   assert.equal(await claimInvitation(revoked.metadata, editor, {}, now), null);
 });
 test("OIDC invitation proof is bound to the signed-in account, exact email and freshness", async () => {

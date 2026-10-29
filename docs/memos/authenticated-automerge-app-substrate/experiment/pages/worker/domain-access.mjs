@@ -27,16 +27,24 @@ export function configuredDomainView(metadata, env) {
     : null;
 }
 
-/** Project verified evidence into a short-lived, host-only authorization lease. */
-export async function domainAccessForIdentity(env, identity, now = Date.now()) {
+/**
+ * Every host-allowed company domain this identity proves with fresh verified
+ * email evidence, each as a short-lived, host-only lease. The same evidence
+ * gates reading a company-shared Page and an owner offering or choosing that
+ * company audience.
+ */
+export async function verifiedCompanyDomains(env, identity, now = Date.now()) {
   const namespace = env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE?.trim();
   if (
+    !identity ||
     identity.namespace !== namespace ||
+    typeof identity.principal !== "string" ||
     !identity.principal.startsWith(`${namespace}:`) ||
     !Number.isFinite(identity.expiresAt) ||
     identity.expiresAt <= now
   )
-    return undefined;
+    return [];
+  const leases = [];
   for (const domain of companyViewDomains(env)) {
     if (identity.credentialKind === "api-key" && identity.verifiedEmail) {
       let email;
@@ -46,9 +54,8 @@ export async function domainAccessForIdentity(env, identity, now = Date.now()) {
         continue;
       }
       if (email.slice(email.lastIndexOf("@") + 1) === domain)
-        return { domain, namespace, expiresAt: identity.expiresAt };
-    }
-    if (
+        leases.push({ domain, namespace, expiresAt: identity.expiresAt });
+    } else if (
       ["oidc", "oauth"].includes(identity.credentialKind) &&
       identity.emailProof &&
       (await appSessionHasFreshVerifiedEmailDomain(
@@ -58,7 +65,7 @@ export async function domainAccessForIdentity(env, identity, now = Date.now()) {
         Math.floor(now / 1000),
       ))
     ) {
-      return {
+      leases.push({
         domain,
         namespace,
         expiresAt: Math.min(
@@ -66,8 +73,55 @@ export async function domainAccessForIdentity(env, identity, now = Date.now()) {
           (identity.emailProof.identityVerifiedAt + NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS) *
             1000,
         ),
-      };
+      });
     }
   }
-  return undefined;
+  return leases;
+}
+
+/**
+ * Bounded, PII-free proof state for each host-allowed company domain:
+ * "verified" (fresh proof), "expired" (browser/OAuth proof that bound this
+ * domain but is past its freshness window), or "missing" (no proof for it).
+ * Only "verified" authorizes anything; "expired" tells an owner that signing in
+ * again with the same account restores it.
+ */
+export async function companyDomainProof(env, identity, now = Date.now()) {
+  const verified = new Set(
+    (await verifiedCompanyDomains(env, identity, now)).map(({ domain }) => domain),
+  );
+  const namespace = env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE?.trim();
+  const verifiedAt = identity?.emailProof?.identityVerifiedAt;
+  const mayHaveExpired =
+    !!identity &&
+    identity.namespace === namespace &&
+    typeof identity.principal === "string" &&
+    identity.principal.startsWith(`${namespace}:`) &&
+    ["oidc", "oauth"].includes(identity.credentialKind) &&
+    Number.isSafeInteger(verifiedAt) &&
+    verifiedAt > 0 &&
+    verifiedAt * 1000 <= now;
+  const proof = {};
+  for (const domain of companyViewDomains(env)) {
+    if (verified.has(domain)) proof[domain] = "verified";
+    else if (
+      mayHaveExpired &&
+      // Evaluated at its own verification time, the binding shows which domain
+      // this stale proof covered. It authorizes nothing by itself.
+      (await appSessionHasFreshVerifiedEmailDomain(
+        env,
+        { principal: identity.principal, metadata: identity.emailProof },
+        domain,
+        verifiedAt,
+      ))
+    )
+      proof[domain] = "expired";
+    else proof[domain] = "missing";
+  }
+  return proof;
+}
+
+/** Project verified evidence into a short-lived, host-only authorization lease. */
+export async function domainAccessForIdentity(env, identity, now = Date.now()) {
+  return (await verifiedCompanyDomains(env, identity, now))[0];
 }

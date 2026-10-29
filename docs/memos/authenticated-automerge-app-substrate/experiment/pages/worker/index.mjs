@@ -1248,7 +1248,7 @@ export class Page {
       }
       if (url.pathname === "/internal/access") {
         const args = await readJson(request);
-        if (args.read) return json(sharingProjection(this.metadata, identity, this.env));
+        if (args.read) return json(await sharingProjection(this.metadata, identity, this.env));
         const result = await proposeSharingMutation(
           this.metadata,
           identity,
@@ -1260,7 +1260,7 @@ export class Page {
         // installing the in-memory ACL and receipt.
         await this.installAccess(result.metadata);
         return json({
-          ...sharingProjection(this.metadata, identity, this.env),
+          ...(await sharingProjection(this.metadata, identity, this.env)),
           receipt: result.receipt,
         });
       }

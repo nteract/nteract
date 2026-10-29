@@ -121,6 +121,34 @@ test("a conflict refreshes the ledger while retaining the actionable error", asy
   assert.equal(calls, 3);
 });
 
+test("a company-proof refusal keeps the ledger and reloads its proof state", async () => {
+  let calls = 0;
+  const refused = Object.assign(Error("Your anaconda.com email verification expired."), {
+    status: 403,
+    code: "company_email_proof_required",
+  });
+  const cache = createSharingAccess(session(), {
+    request: (_url, options) => {
+      calls++;
+      if (options.method === "POST") throw refused;
+      return {
+        ...ledger(),
+        domainOptions: calls === 1 ? ["anaconda.com"] : [],
+        domainProof: { "anaconda.com": calls === 1 ? "verified" : "expired" },
+      };
+    },
+  });
+  await cache.read();
+  await assert.rejects(
+    cache.mutate({ action: "set_domain_view", domain: "anaconda.com" }, "domain-view"),
+    refused,
+  );
+  assert.equal(calls, 3);
+  assert.deepEqual(cache.getSnapshot().value.domainProof, { "anaconda.com": "expired" });
+  assert.equal(cache.getSnapshot().error, null);
+  assert.equal(cache.getSnapshot().busy, null);
+});
+
 for (const status of [401, 403, 404]) {
   test(`HTTP ${status} clears cached private access and refresh can recover`, async () => {
     let failure = false;

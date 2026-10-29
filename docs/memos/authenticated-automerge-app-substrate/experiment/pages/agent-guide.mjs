@@ -208,7 +208,8 @@ edits use the same document. Pages start private. The owner can invite signed-in
 people as viewers or editors. If enabled by the deployment, the owner can also
 allow signed-in people with a verified company email domain to view by link.
 Pages stay Restricted until the owner chooses that audience. Personal email
-providers are never offered, and ownership need not move to a company account. Editors
+providers are never offered, and only an owner signed in with a verified email at
+that company domain can choose it. Editors
 can write and comment, viewers can read, and only the owner can manage access or
 delete a Page. Credential scope further limits the account's Page permissions.
 
@@ -289,12 +290,18 @@ the account has opened by link while access is still allowed. No anonymous link 
 or Space inheritance is implemented in this pass.
 
 GET ${origin}/api/access?page=<page_id> returns your effective access; owners also
-receive members, pending invitations, and the host's domainOptions/domainView.
-Owners may POST to the same endpoint with
+receive members, pending invitations, domainOptions, and domainView.
+domainOptions lists only company domains your own credential proves with a fresh
+verified email; it is empty otherwise. domainProof maps each company domain to
+verified, expired (sign in again with the same account), or missing.
+domainViewOwnerVerified: false means the
+Page is still shared with that company but you cannot currently prove it; you can
+set Restricted. Owners may POST to the same endpoint with
 an action, expected_revision from access.revision, and a new idempotency_key.
 Actions are invite (email, role: viewer or editor), set_role (principal, role: viewer,
 editor or null to remove), revoke_invite (invite_id), and set_domain_view (domain
-from domainOptions, or null for Restricted). Company access is always view-only;
+from domainOptions, or null for Restricted; a company domain you cannot prove
+returns 403 with code company_email_proof_required). Company access is always view-only;
 individual editor grants still work, and explicit removals override the domain.
 Browser/OAuth company proof expires after six hours without fresh sign-in;
 refreshing an OAuth token does not renew that identity proof. A 409 requires reading

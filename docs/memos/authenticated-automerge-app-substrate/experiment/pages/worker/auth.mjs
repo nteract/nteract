@@ -246,6 +246,7 @@ export function errorResponse(error, stage = "request") {
         "progress_budget_exceeded",
         "invalid_cursor",
         "invalid_list_arguments",
+        "company_email_proof_required",
       ].includes(error.code) && { code: error.code }),
       ...(["edit_conflict", "resync_required"].includes(error.code) && {
         ...(Array.isArray(error.details?.conflicts) && {
