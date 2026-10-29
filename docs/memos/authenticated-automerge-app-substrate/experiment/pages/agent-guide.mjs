@@ -633,6 +633,16 @@ block; occurrence is one-based and defaults to 1. Replies use thread_id and body
 editing or deleting a message also uses message_id. Comment author labels are
 editable document content, not an audit log.
 
+For formatted comments, set body_format to "markdown". Bold, italic, links,
+code, lists, checklists, and pipe tables become native rich-text content that
+people can read in the discussion. Rich message reads return body as Markdown
+with body_format: "markdown". Omitted format keeps new messages literal plain
+text and retains Markdown for edits to an existing rich message. Explicit
+body_format: "plain" inserts the supplied text literally, including its markers.
+Existing plain messages are not automatically reinterpreted. Bodies are limited
+to 16,000 characters and rich structure to 64 KiB; split larger discussions into
+replies or put the detailed table in the document.
+
 ## Hosted MCP
 
 Endpoint: ${origin}/mcp (Streamable HTTP, POST).

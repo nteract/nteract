@@ -898,8 +898,8 @@ export class PageSession {
       this.localDepth--;
     }
   }
-  comment(input) {
-    return this.change((doc) => applyComment(doc, input, this.identity));
+  comment(input, nativeSpans) {
+    return this.change((doc) => applyComment(doc, input, this.identity, nativeSpans));
   }
   actorDisplayName(actor) {
     return this.actorNames.get(actor) ?? "Collaborator";

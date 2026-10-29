@@ -1,5 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { isRich } from "./richtext.mjs";
+import { commentBodyProjection, setCommentContent } from "./comment-content.mjs";
 const field = (block) => (isRich(block) ? "richText" : "markdown");
 
 // The text object and final selected character must both survive. Repeated
@@ -40,11 +41,14 @@ export function projectComments(doc) {
     state: t.status.value,
     selectionContext: selectionContext(doc, t.target),
     messages: Object.entries(t.messages)
-      .map(([id, m]) => ({ ...m, id }))
+      .map(([id, m]) => {
+        const { body: _body, richText: _richText, ...rest } = m;
+        return { ...rest, id, ...(!m.deletedAt && commentBodyProjection(m)) };
+      })
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
   }));
 }
-export function applyComment(doc, input, identity) {
+export function applyComment(doc, input, identity, nativeSpans) {
   const action = input.action ?? "add",
     now = new Date().toISOString();
   const author = {
@@ -90,12 +94,14 @@ export function applyComment(doc, input, identity) {
       status: { value: "open", at: now },
       messages: { [messageId]: { body, author, createdAt: now, deletedAt: null } },
     };
+    setCommentContent(doc, ["comments", threadId, "messages", messageId], input, nativeSpans);
   } else {
     const thread = Object.hasOwn(doc.comments, threadId) && doc.comments[threadId];
     if (!thread) throw Error("Comment not found");
-    if (action === "reply")
+    if (action === "reply") {
       thread.messages[messageId] = { body, author, createdAt: now, deletedAt: null };
-    else if (action === "resolve" || action === "reopen")
+      setCommentContent(doc, ["comments", threadId, "messages", messageId], input, nativeSpans);
+    } else if (action === "resolve" || action === "reopen")
       thread.status = { value: action === "resolve" ? "resolved" : "open", at: now };
     else if (action === "edit" || action === "delete_message") {
       const message = Object.hasOwn(thread.messages, messageId) && thread.messages[messageId];
@@ -103,7 +109,7 @@ export function applyComment(doc, input, identity) {
       // Generic Page writers can change comments. These labels are document
       // content, not an authorization or audit mechanism.
       if (action === "edit")
-        A.updateText(doc, ["comments", threadId, "messages", messageId, "body"], body);
+        setCommentContent(doc, ["comments", threadId, "messages", messageId], input, nativeSpans);
       else message.deletedAt = now;
     } else throw Error("Unsupported comment action");
   }

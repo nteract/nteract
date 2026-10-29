@@ -72,6 +72,7 @@ export function TableMenu({ editor, inTable, editable, onError }) {
   function keys(event) {
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       close(true);
     }
     if (inTable && event.key === "Tab") close();
@@ -131,6 +132,9 @@ export function TableMenu({ editor, inTable, editable, onError }) {
               <form
                 onSubmit={(event) => {
                   event.preventDefault();
+                  // Portals still bubble through React parents, including a
+                  // comment composer form. Inserting a table must not send it.
+                  event.stopPropagation();
                   try {
                     if (insertTable(editor, Number(columns), Number(rows))) {
                       close();
@@ -169,7 +173,7 @@ export function TableMenu({ editor, inTable, editable, onError }) {
               </form>
             )}
           </div>,
-          document.body,
+          button.current?.closest("dialog") ?? document.body,
         )}
     </>
   );

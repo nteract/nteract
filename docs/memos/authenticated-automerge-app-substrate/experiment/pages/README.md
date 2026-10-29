@@ -81,6 +81,7 @@ Run targeted browser checks from `pages`:
 | Browser uploads and image permissions | `node scripts/local-sharing-e2e.mjs --images` | Starts an isolated fixture |
 | MCP file import, insertion, and retries | `node scripts/local-sharing-e2e.mjs --mcp-images` | Starts an isolated fixture |
 | Collaborative checkboxes | `node scripts/local-sharing-e2e.mjs --task-lists` | Starts an isolated fixture |
+| Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
 | Passage edits and revision deltas | `PAGES_ORIGIN=http://localhost:9894 node scripts/passages-changes-smoke.mjs` | Uses the running Wordgard fixture |
 | Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
@@ -123,7 +124,19 @@ references; it does not publish the Page or change asset access.
   Highlighted passages and thread quotes navigate between text and discussion.
   Draft anchors capture native object identity and text cursors; deleted or
   replaced passages reject submission rather than moving a comment elsewhere.
-  Replies survive responsive rail/sheet changes; changing Pages clears local drafts.
+  New browser comments use Wordgard for formatting, links, lists, and native
+  table cells. Drafts retain their native spans until Send and survive responsive
+  rail/sheet changes; changing Pages clears local drafts. Expand the sidebar for
+  wider discussions. Agent comments opt in with `body_format: "markdown"` on
+  `manage_page_comment`; rich comment reads return Markdown and the same format
+  marker. Existing unmarked comments remain literal. Omitting the format when
+  editing retains the message's current kind; `plain` can preserve literal syntax.
+  Thread/message IDs and passage anchors stay unchanged. The original `body`
+  string is frozen import provenance, not a current-content mirror for old
+  clients; native `richText` is authoritative once marked rich. If native content
+  cannot be decoded, reads return that original text with
+  `content_error: "rich_text_unavailable"` rather than failing the entire Page. Source is limited to 16,000 characters and native structure
+  to 64 KiB. Formatting-only changes appear in `read_page_changes`.
 - **Links:** click for Open, Edit, and Remove; Cmd/Ctrl-click opens directly and
   Cmd/Ctrl+K edits. Incoming edits update or dismiss the link control, and URL
   policy applies both to stored content and navigation.

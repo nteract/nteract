@@ -49,6 +49,20 @@ const bundled = await build({
     {
       name: "test-component",
       setup(build) {
+        // These tests exercise thread/draft lifetime, not editor layout. The
+        // native Wordgard surface is exercised by rich-comments-smoke.mjs.
+        build.onResolve({ filter: /CommentRichText\.jsx$/ }, () => ({
+          path: "comment-editor",
+          namespace: "test-comment-editor",
+        }));
+        build.onLoad({ filter: /.*/, namespace: "test-comment-editor" }, () => ({
+          contents: `import React from "react";
+            export function CommentRichText({value, onChange, disabled, label}) {
+              return React.createElement("textarea", {role: "textbox", "aria-label": label, value, disabled, onChange: e => onChange(e.target.value)});
+            }
+            export function CommentContent({message}) { return React.createElement("p", null, message.body); }`,
+          loader: "js",
+        }));
         build.onResolve({ filter: /^[^./]/ }, ({ path }) => ({
           path: pathToFileURL(require.resolve(path)).href,
           external: true,
