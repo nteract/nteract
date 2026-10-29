@@ -293,6 +293,17 @@ export class ReloadGate {
     this.draining.add(settled);
     return closed;
   }
+  /** A session closing through its own flow, such as an access reload,
+   * archives its recovery itself. Reload still waits for that close. */
+  track(session, closing) {
+    this.epoch++;
+    this.sessions.delete(session);
+    const settled = Promise.resolve(closing)
+      .catch(() => {})
+      .then(() => this.draining.delete(settled));
+    this.draining.add(settled);
+    return closing;
+  }
   /** A host receipt for `savedHeads` makes a failed record covered by those
    * heads redundant. */
   acknowledge(key, savedHeads = []) {

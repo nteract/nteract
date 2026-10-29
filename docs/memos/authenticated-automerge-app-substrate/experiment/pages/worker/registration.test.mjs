@@ -19,6 +19,10 @@ class Storage {
     return structuredClone(this.values.get(key));
   }
   async put(key, value) {
+    if (typeof key === "object") {
+      for (const [name, entry] of Object.entries(key)) await this.put(name, entry);
+      return;
+    }
     if (this.fault === key) throw Error("simulated storage failure");
     this.values.set(key, structuredClone(value));
   }
@@ -72,7 +76,7 @@ async function fixture(t) {
             env,
             ctx: { id: { name: id }, storage },
             tail: Promise.resolve(),
-            policy: { async close() {} },
+            policy: { async close() {}, async refreshAccess() {}, profiles: () => ({}) },
             wires: new Set(),
             repo: {
               async delete() {
@@ -412,7 +416,7 @@ test("deletion cancels a reserved registration that never reached its Page inten
   assert.equal(p.page.metadata, undefined);
 });
 
-test("deletion prevents completed registration receipts from reviving a deleted Page", async (t) => {
+test("Trash keeps completed registrations replayable and purge prevents revival", async (t) => {
   const f = await fixture(t),
     { args } = registration();
   const receipt = await (await f.send(args)).json();
@@ -424,13 +428,43 @@ test("deletion prevents completed registration receipts from reviving a deleted 
       idempotency_key: "delete-registered",
     },
   };
-  const deleted = await f.send(removal, { path: "/api/tools" });
-  assert.equal(deleted.status, 200);
-  assert.equal((await f.send(args)).status, 409);
+  const trashed = await f.send(removal, { path: "/api/tools" });
+  assert.equal(trashed.status, 200);
+  assert.equal((await trashed.json()).state, "trashed");
+  // The browser forgets its local copy on "Page was deleted", so a trashed
+  // Page must still replay its completed registration.
+  const replay = await f.send(args);
+  assert.equal(replay.status, 200);
+  assert.deepEqual(await replay.json(), receipt);
   assert.equal((await f.send({ ...args, idempotency_key: "new-register-key" })).status, 409);
   assert.equal((await f.send(removal, { path: "/api/tools" })).status, 200);
   assert.equal(await f.catalog().storage.get(`page/${pageId}`), undefined);
+  assert.ok(await f.catalog().storage.get(`trash/${pageId}`));
   assert.equal(f.page().page.metadata.deleted, true);
+  assert.ok(f.page().page.metadata.trash);
+
+  const preview = await (
+    await f.send(
+      { operation: "purge_page", arguments: { page_id: pageId, action: "preview" } },
+      { path: "/api/tools" },
+    )
+  ).json();
+  const purged = await f.send(
+    {
+      operation: "purge_page",
+      arguments: {
+        page_id: pageId,
+        action: "confirm",
+        preview_token: preview.preview_token,
+        idempotency_key: "purge-registered",
+      },
+    },
+    { path: "/api/tools" },
+  );
+  assert.equal(purged.status, 200);
+  assert.equal((await f.send({ ...args, idempotency_key: "after-purge" })).status, 409);
+  assert.equal(await f.catalog().storage.get(`trash/${pageId}`), undefined);
+  assert.equal(await f.catalog().storage.get(`host/deleted/${pageId}`), true);
 });
 
 test("an account changed after local creation cannot register the draft under the new cookie", async (t) => {

@@ -69,7 +69,9 @@ export async function authenticate(request, env) {
           "/internal/catalog",
           "/internal/tool",
           "/internal/create",
-          "/internal/delete",
+          "/internal/trash",
+          "/internal/restore",
+          "/internal/purge",
           "/internal/assets/authorize",
         ].includes(new URL(request.url).pathname)
       )
@@ -235,6 +237,11 @@ export function errorResponse(error, stage = "request") {
         "operation_receipt_capacity",
         "pending_operation_capacity",
         "page_recovery_blocked",
+        "page_trashed",
+        "page_not_in_trash",
+        "trash_capacity",
+        "purge_preview_required",
+        "purge_preview_invalid",
         "invalid_edit_selector",
         "edit_conflict",
         "resync_required",

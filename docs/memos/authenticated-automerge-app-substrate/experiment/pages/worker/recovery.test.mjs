@@ -14,6 +14,10 @@ class Storage {
     return structuredClone(this.values.get(key));
   }
   async put(key, value) {
+    if (typeof key === "object") {
+      for (const [name, entry] of Object.entries(key)) await this.put(name, entry);
+      return;
+    }
     this.writes.push(key);
     this.values.set(key, structuredClone(value));
   }
@@ -257,12 +261,12 @@ test("valid creation and concurrent initialization share one persisted signer", 
   assert.equal(await storage.get("host/creation"), undefined);
 });
 
-test("a new delete key completes failed tombstone barriers before clearing its catalog row", async (t) => {
+test("a new purge key completes failed deletion barriers before clearing its catalog row", async (t) => {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   const token = auth.apiKey();
   const storage = new Storage();
-  let failing = true;
+  let failing = false;
   storage.sync = async () => {
     storage.syncs++;
     if (failing) throw Error("deletion sync failed");
@@ -281,7 +285,7 @@ test("a new delete key completes failed tombstone barriers before clearing its c
     },
     handle: { doc: () => doc },
     wires: new Set(),
-    policy: { async close() {} },
+    policy: { async close() {}, async refreshAccess() {} },
     repo: {
       async delete() {
         deletions++;
@@ -298,33 +302,41 @@ test("a new delete key completes failed tombstone barriers before clearing its c
       PAGES: { getByName: () => ({ fetch: (request) => page.run(request) }) },
     },
   );
-  const args = { page_id: pageId, base_heads: A.getHeads(doc) };
-  const remove = (key, extra = {}) =>
-    catalog.fetch(
-      requestFor(token, "/internal/catalog", {
-        operation: "delete_page",
-        arguments: { ...args, idempotency_key: key, ...extra },
-      }),
-    );
-  assert.equal((await remove("original-delete")).status, 500);
-  assert.equal((await remove("replacement-delete")).status, 500);
-  assert.ok(await catalogStorage.get(`page/${pageId}`));
-  assert.equal((await catalogStorage.get("host/operation/replacement-delete")).pending, true);
+  const call = (operation, args) =>
+    catalog.fetch(requestFor(token, "/internal/catalog", { operation, arguments: args }));
+  const trashed = await call("delete_page", {
+    page_id: pageId,
+    base_heads: A.getHeads(doc),
+    idempotency_key: "trash-first",
+  });
+  assert.equal(trashed.status, 200);
+  assert.equal(deletions, 0);
+  const preview = await (await call("purge_page", { page_id: pageId, action: "preview" })).json();
+  const args = { page_id: pageId, action: "confirm", preview_token: preview.preview_token };
+  const purge = (key, extra = {}) =>
+    call("purge_page", { ...args, idempotency_key: key, ...extra });
+  failing = true;
+  const syncs = storage.syncs;
+  assert.equal((await purge("original-purge")).status, 500);
+  assert.equal((await purge("replacement-purge")).status, 500);
+  assert.ok(await catalogStorage.get(`trash/${pageId}`));
+  assert.equal((await catalogStorage.get("host/operation/replacement-purge")).pending, true);
   assert.equal(deletions, 2);
   failing = false;
-  const response = await remove("replacement-delete");
+  const response = await purge("replacement-purge");
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { page_id: pageId, deleted: true });
-  assert.equal(await catalogStorage.get(`page/${pageId}`), undefined);
+  assert.deepEqual(await response.json(), { page_id: pageId, deleted: true, purged: true });
+  assert.equal(await catalogStorage.get(`trash/${pageId}`), undefined);
+  assert.equal(await catalogStorage.get(`host/deleted/${pageId}`), true);
   assert.equal(deletions, 3);
-  assert.equal(storage.syncs, 3);
-  assert.equal((await remove("original-delete", { extra: true })).status, 409);
+  assert.equal(storage.syncs - syncs, 3);
+  assert.equal((await purge("original-purge", { extra: true })).status, 409);
   assert.equal(
     (
       await page.run(
-        requestFor(token, "/internal/delete", {
+        requestFor(token, "/internal/purge", {
           ...args,
-          idempotency_key: "original-delete",
+          idempotency_key: "original-purge",
           extra: true,
         }),
       )

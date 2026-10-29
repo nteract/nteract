@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { chromium, expect } from "@playwright/test";
+import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
 const origin = process.env.PAGES_ORIGIN;
 assert.equal(new URL(origin).origin, origin);
@@ -508,6 +509,12 @@ try {
         ...retry(catalog),
       });
       assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+      const invoke = async (operation, args) => {
+        const result = await tool(owner, operation, args);
+        assert.equal(result.status, 200, JSON.stringify(result.body));
+        return result.body;
+      };
+      await purgeTrashedFixture(invoke, id, async () => retry(await invoke("list_pages")));
       if (id === pageId && assetUrl)
         assert.equal((await owner.context().request.get(origin + assetUrl)).status(), 404);
     } catch (error) {

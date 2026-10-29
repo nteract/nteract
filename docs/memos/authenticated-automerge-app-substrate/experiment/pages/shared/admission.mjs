@@ -12,6 +12,9 @@ export const ADMISSION_OUTCOMES = Object.freeze({
   sign_in_required: Object.freeze({ status: 401, close: 4401, retry: "refresh" }),
   page_access_denied: Object.freeze({ status: 403, close: 4403, retry: "recheck" }),
   page_deleted: Object.freeze({ status: 404, close: 4404, retry: "stop" }),
+  // Only the owner and current viewers/editors learn a Page is in Trash.
+  // Restore brings access back, so clients keep their local copy.
+  page_trashed: Object.freeze({ status: 403, close: 4410, retry: "recheck" }),
   access_changed: Object.freeze({ status: 409, close: 4409, retry: "recheck" }),
   signing_key_rejected: Object.freeze({ status: 403, close: 4422, retry: "stop" }),
   temporarily_unavailable: Object.freeze({ status: 503, close: 4503, retry: "backoff" }),

@@ -1402,6 +1402,29 @@ dialog::backdrop {
   margin: 0 8px 0 0;
 }
 
+/* Trash reuses library rows; a permanent-deletion review spans the row. */
+.library-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.trash-row {
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.purge-confirmation {
+  flex-basis: 100%;
+  margin: 0 0 0.75rem;
+}
+.purge-confirmation ul {
+  margin: 0 0 8px;
+  padding-left: 1.25rem;
+}
+.picker-trash {
+  margin: 0.5rem 1.2rem 1rem;
+  color: var(--muted-foreground);
+}
+
 /* Public agent setup stays usable without booting the document editor. */
 details.account-actions > div a {
   padding: 0.55rem 0.75rem;

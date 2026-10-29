@@ -12,6 +12,7 @@ import {
   MoreHorizontal,
   Plus,
   Plug,
+  RotateCcw,
   Search,
   Type,
   Trash2,
@@ -29,6 +30,8 @@ import { maintainBrowserSession } from "./browser-session.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
 import { WordgardEditor } from "./WordgardEditor.jsx";
 import { PagePicker } from "./PagePicker.jsx";
+import { TrashView } from "./TrashView.jsx";
+import { closeTrashedSessions, restorePage } from "./trash.mjs";
 import { listAllPages, matchingPages } from "./page-list.mjs";
 import { SharingControls } from "./SharingControls.jsx";
 import { AppearanceControls } from "./AppearanceControls.jsx";
@@ -56,7 +59,8 @@ function App() {
     [error, setError] = useState(""),
     [authError, setAuthError] = useState(""),
     [notice, setNotice] = useState(""),
-    [libraryQuery, setLibraryQuery] = useState("");
+    [libraryQuery, setLibraryQuery] = useState(""),
+    [trashOpen, setTrashOpen] = useState(false);
   const [toolbar, setToolbar] = useState(null),
     [toolbarOpen, setToolbarOpen] = useState(false),
     [active, setActive] = useState(null),
@@ -145,23 +149,25 @@ function App() {
     setTitleFocusRequest(null);
     setLocalRecoveries([]);
   }
+  /** Close a Page being left through the reload gate and track the close. */
+  function drainSession(old, close = (session) => reloadGate.drainAndClose(session)) {
+    old.publishPresence(null);
+    const key = old.identity.principal + ":" + old.pageId;
+    // Keep syncing until its receipt (bounded) so leaving never drops a save.
+    const closing = Promise.resolve(close(old))
+      .catch((error) => setError(error.message))
+      .finally(() => {
+        if (closingPages.current.get(key) === closing) closingPages.current.delete(key);
+      });
+    closingPages.current.set(key, closing);
+    return closing;
+  }
   function releaseCurrent() {
     const old = current.current;
     current.current = null;
     setSession(null);
     resetDocumentUI();
-    if (old) {
-      old.publishPresence(null);
-      const key = old.identity.principal + ":" + old.pageId;
-      // Keep syncing until its receipt (bounded) so leaving never drops a save.
-      const closing = reloadGate
-        .drainAndClose(old)
-        .catch((error) => setError(error.message))
-        .finally(() => {
-          if (closingPages.current.get(key) === closing) closingPages.current.delete(key);
-        });
-      closingPages.current.set(key, closing);
-    }
+    if (old) drainSession(old);
   }
   async function install(next, revision, { focus = false } = {}) {
     if (
@@ -197,7 +203,9 @@ function App() {
     reloadingAccess.current = previous;
     const revision = nextGeneration();
     try {
-      const next = await previous.reloadForAccess();
+      // Reload waits while the old replica archives and closes, e.g. when a
+      // restored Page moves from its reader replica to the writer replica.
+      const next = await reloadGate.track(previous, previous.reloadForAccess());
       await install(next, revision);
     } catch (error) {
       if (current.current === previous) setError(error.message);
@@ -261,8 +269,31 @@ function App() {
     setNotice("");
     setOpening(false);
     setPickerOpen(false);
+    setTrashOpen(false);
     if (historyMode !== "none") writePageRoute(null, { replace: historyMode === "replace" });
     if (refreshCatalog) void refresh().catch((error) => setError(error.message));
+  }
+  function showTrash() {
+    home(null, { refreshCatalog: false });
+    setTrashOpen(true);
+  }
+  async function reopen(id) {
+    // Access changed on the host; open a fresh session for the current grant.
+    nextGeneration();
+    releaseCurrent();
+    await open(id, { historyMode: "none" });
+  }
+  async function restoreCurrent() {
+    const restoring = current.current;
+    if (!restoring) return;
+    try {
+      await restorePage(tool, restoring.pageId, restoring.identity.principal);
+      await reopen(restoring.pageId);
+      setNotice("Page restored");
+      void refresh().catch(() => {});
+    } catch (error) {
+      setError(error.message);
+    }
   }
   function followRoute() {
     const route = readPageRoute(location.href);
@@ -411,21 +442,28 @@ function App() {
       deleting.authRequired ||
       deleting.identity.principal !== authentication.current?.identity?.principal
     ) {
-      setError("Sign in with this Page's original account to delete it.");
+      setError("Sign in with this Page's original account to move it to Trash.");
       return;
     }
-    if (!confirm("Delete this Page?")) return;
+    if (
+      !confirm(
+        "Move this Page to Trash? Collaborators lose access until you restore it from Trash.",
+      )
+    )
+      return;
     try {
       const prepared = await tool("list_pages");
       if (deleting.identity.principal !== authentication.current?.identity?.principal)
-        throw Error("Sign in with this Page's original account to delete it.");
-      await tool("delete_page", {
+        throw Error("Sign in with this Page's original account to move it to Trash.");
+      const trashed = await tool("delete_page", {
         page_id: deleting.pageId,
         expected_principal: deleting.identity.principal,
         retry_token: prepared.retry_token,
         base_heads: A.getHeads(deleting.doc),
         idempotency_key: await retryKey(prepared.retry_token),
       });
+      if (trashed?.superseded)
+        throw Error("This Page changed before it could move to Trash. Try again.");
       const activeDeletion = current.current?.pageId === deleting.pageId ? current.current : null;
       if (activeDeletion || readPageRoute(location.href).pageId === deleting.pageId) {
         nextGeneration();
@@ -435,9 +473,12 @@ function App() {
         setOpening(false);
         writePageRoute(null, { replace: true });
       }
-      await deleting.close();
-      if (activeDeletion && activeDeletion !== deleting) await activeDeletion.close();
-      await forgetLocalPage(deleting.identity, deleting.pageId);
+      // Close through the reload gate so Reload waits for the checkpoint and
+      // a failed one keeps its recovery export.
+      for (const leaving of new Set([deleting, activeDeletion].filter(Boolean)))
+        drainSession(leaving, (session) => closeTrashedSessions(reloadGate, [session]));
+      // Keep the local replica: the Page can be restored from Trash.
+      setNotice("Moved to Trash");
       await refresh();
     } catch (error) {
       setError(error.message);
@@ -613,9 +654,14 @@ function App() {
                           Download previous local draft
                         </button>
                       )}
+                      {session.canRestore && (
+                        <button onClick={restoreCurrent}>
+                          <RotateCcw size={16} aria-hidden="true" /> Restore from Trash
+                        </button>
+                      )}
                       {session.canDelete && (
                         <button className="danger" onClick={remove}>
-                          <Trash2 size={16} aria-hidden="true" /> Delete
+                          <Trash2 size={16} aria-hidden="true" /> Move to Trash
                         </button>
                       )}
                     </div>
@@ -699,6 +745,7 @@ function App() {
             onClose={() => setPickerOpen(false)}
             onOpen={open}
             onCreate={create}
+            onTrash={showTrash}
             creating={creating || !!session?.authRequired}
             error={pickerError}
           />
@@ -732,6 +779,13 @@ function App() {
                   <p className="error" role="alert">
                     {session.problem}
                   </p>
+                )}
+                {session.trash && (
+                  <div className="access-notice trash-notice" role="status">
+                    <p>This Page is in Trash. It is read-only and hidden from collaborators.</p>
+                    {session.canRestore && <button onClick={restoreCurrent}>Restore</button>}
+                    <button onClick={showTrash}>Open Trash</button>
+                  </div>
                 )}
                 <input
                   ref={titleInput}
@@ -807,13 +861,34 @@ function App() {
             <main className="welcome">
               <p role="status">Opening…</p>
             </main>
+          ) : trashOpen ? (
+            <TrashView
+              tool={tool}
+              principal={account.principal}
+              onBack={() => home(null)}
+              onOpen={(id) => open(id)}
+              onRestored={async () => {
+                setNotice("Page restored");
+                await refresh().catch(() => {});
+              }}
+              onPurged={async (id) => {
+                await forgetLocalPage(authentication.current?.identity, id);
+                setNotice("Page deleted permanently");
+                await refresh().catch(() => {});
+              }}
+            />
           ) : (
             <main className="page-library">
               <div className="library-heading">
                 <h1>Your pages</h1>
-                <button className="primary" onClick={create} disabled={creating}>
-                  <Plus size={18} aria-hidden="true" /> New Page
-                </button>
+                <div className="library-actions">
+                  <button className="subtle-button" onClick={showTrash}>
+                    <Trash2 size={16} aria-hidden="true" /> Trash
+                  </button>
+                  <button className="primary" onClick={create} disabled={creating}>
+                    <Plus size={18} aria-hidden="true" /> New Page
+                  </button>
+                </div>
               </div>
               <label className="picker-search library-search">
                 <Search size={18} aria-hidden="true" />

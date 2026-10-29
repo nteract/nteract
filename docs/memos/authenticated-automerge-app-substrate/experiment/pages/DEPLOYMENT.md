@@ -75,7 +75,26 @@ lazily on first use and must stay additive so a rollback build keeps working
 against the newer schema. Listing cursors are sealed with a key derived from the
 session secret and expire after 24 hours; rotating that secret invalidates
 outstanding cursors. Migration 2 adds per-principal title snapshots and clears the
-reconcile markers, so each account rebuilds its rows on its next listings. Copying
+reconcile markers, so each account rebuilds its rows on its next listings. Migration 3
+adds `lifecycle_revision` to Page rows; older builds ignore it. Lifecycle state
+changes, retirements and access writes apply only from a revision at least as
+new as the row's, so a delayed trash retirement cannot undo a restore.
+
+Trashed Pages keep `deleted: true` in the Page record, so a build without Trash
+returns `404` to every caller, including the owner, and never loads or serves
+the document. Its listing ignores `trash/` catalog entries, and its Catalog
+rejects replays of Trash receipts as idempotency conflicts. Its delete path sees
+a deletion record with a different fingerprint: a retried trash request
+conflicts, and an owner delete with a fresh key deletes the Page permanently.
+That older delete removes the document and writes the owner's `host/deleted`
+tombstone, but leaves the Page record and the `trash/` entry unchanged. After
+rolling forward, the Trash listing drops entries with a tombstone and the
+Catalog refuses every lifecycle request for that Page with `404` before
+forwarding, including resumed ones. It also tells the Page about the tombstone
+on a host-only route, and the Page records the deletion and answers like a
+missing Page from then on. Until the Catalog has done so, a direct open finds no
+document, answers `503`, and tries again on the next request. The Page never
+calls its owner's Catalog. Copying
 a document or its assets between targets is separate from deployment; publishing
 does not migrate another environment's data.
 

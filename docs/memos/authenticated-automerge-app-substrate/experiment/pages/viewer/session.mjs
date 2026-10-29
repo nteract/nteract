@@ -35,6 +35,10 @@ const ownerAccess = () => ({
   canDelete: true,
 });
 const replicaKey = (access, writer) => `${access?.generation ?? 0}:${writer ? "writer" : "reader"}`;
+// A trashed Page previews on a reader replica. The host binds any key first
+// admitted there as a reader, so restore reloads onto the writer replica and
+// never promotes preview history.
+const READER_REPLICA = ":reader";
 const accessFailure = () =>
   Object.assign(Error("Page access changed; reload its current version"), {
     code: "PAGE_ACCESS_CHANGED",
@@ -232,8 +236,12 @@ export class PageSession {
     this.canComment = enabled && !!this.credentialCanWrite && !!this.access?.canComment;
     this.canManageAccess = enabled && !!this.credentialCanWrite && !!this.access?.canManageAccess;
     this.canDelete = enabled && !!this.credentialCanWrite && !!this.access?.canDelete;
+    this.canRestore = enabled && !!this.credentialCanWrite && !!this.access?.canRestore;
   }
   get recoveryPending() {
+    // A reader replica cannot author changes the host accepts, so it has no
+    // draft to recover when access grows.
+    if (this.replicaKey?.endsWith(READER_REPLICA)) return false;
     return (
       !!this.localPage?.pending ||
       (!!this.doc && !A.getHeads(this.doc).every((head) => this.savedHeads.includes(head)))
@@ -346,7 +354,9 @@ export class PageSession {
     if (this.replicaKey !== nextKey) {
       if (this.handle) {
         this.pauseForAccess(
-          "Your permissions changed. Reload the current Page; unsynced edits remain available as a local draft.",
+          access.trashed
+            ? "This Page was moved to Trash. Reload to preview it read-only; unsynced edits remain available as a local draft."
+            : "Your permissions changed. Reload the current Page; unsynced edits remain available as a local draft.",
         );
         throw accessFailure();
       }
@@ -788,6 +798,8 @@ export class PageSession {
       await this.acceptPageAccess(connection.access);
       if (!this.alive) return;
       this.connection = connection;
+      // Only the owner can open a trashed Page; it is a read-only preview.
+      this.trash = connection.trash ?? null;
       if (connection.recovery?.code === "page_recovery_blocked")
         this.problem = connection.recovery.message;
       if (this.localPage && !this.localPage.resetReplica)
@@ -797,8 +809,11 @@ export class PageSession {
       if (error.status === 404) await this.markDeleted();
       else if (this.alive && error.status === 401 && !this.authRequired) this.requireSignIn();
       else if (this.alive && error.status === 403)
+        // A trashed Page can be restored, so keep the local copy either way.
         this.pauseForAccess(
-          "You no longer have access to this Page. Your local copy is kept on this device.",
+          error.code === "page_trashed"
+            ? "This Page is in its owner's Trash. Your local copy is kept on this device."
+            : "You no longer have access to this Page. Your local copy is kept on this device.",
           { denied: true },
         );
       throw error;

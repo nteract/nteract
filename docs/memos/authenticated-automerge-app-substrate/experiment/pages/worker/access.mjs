@@ -23,10 +23,26 @@ export function validateAccessPrincipal(principal) {
   return principal;
 }
 
-/** Stable grant identity, independent of a particular credential's lifetime. */
+/** Host lifecycle state of a Page record.
+ *
+ * A trashed record keeps `deleted: true` so builds that predate Trash treat it
+ * as unavailable to every caller. It is distinguished from a permanent
+ * deletion by its `trash` entry and the absence of `purged`. Records deleted
+ * before Trash existed have neither field and remain permanently deleted.
+ */
+export function pageState(metadata) {
+  if (!metadata) return "missing";
+  if (!metadata.deleted) return "active";
+  return metadata.trash && !metadata.purged ? "trashed" : "deleted";
+}
+
+/** Stable grant identity, independent of a particular credential's lifetime.
+ * Trash retains every grant and generation: restoring a Page must not revive
+ * or retire signing keys, so only `pageAccess` withholds access while trashed.
+ */
 export function pageGrant(metadata, principal) {
   const revision = revisionOf(metadata);
-  if (!metadata || metadata.deleted || typeof principal !== "string")
+  if (!metadata || pageState(metadata) === "deleted" || typeof principal !== "string")
     return { role: "none", revision, generation: 0 };
   if (principal === metadata.owner) return { role: "owner", revision, generation: 0 };
   const members = metadata.acl?.members;
@@ -44,6 +60,24 @@ export function pageGrant(metadata, principal) {
 export function pageAccess(metadata, identity, { now = Date.now() } = {}) {
   const grant = pageGrant(metadata, identity?.principal);
   const authenticated = Number.isFinite(identity?.expiresAt) && identity.expiresAt > now;
+  if (pageState(metadata) === "trashed") {
+    // Only the owner can see a trashed Page, read-only. Members keep their
+    // grant generation for restore, but have no current role.
+    const owner = authenticated && grant.role === "owner";
+    const canRestore = owner && !!identity?.canWrite;
+    return {
+      ...grant,
+      role: owner ? "owner" : "none",
+      canRead: owner,
+      canWrite: false,
+      canComment: false,
+      canManageAccess: false,
+      canDelete: false,
+      canRestore,
+      canPurge: canRestore,
+      trashed: true,
+    };
+  }
   const domain = metadata?.acl?.domainView;
   const evidence = identity?.domainAccess;
   // Explicit grants, invalid member rows and removal tombstones all take

@@ -28,6 +28,10 @@ class Storage {
     return structuredClone(this.values.get(key));
   }
   async put(key, value) {
+    if (typeof key === "object") {
+      for (const [name, entry] of Object.entries(key)) await this.put(name, entry);
+      return;
+    }
     this.values.set(key, structuredClone(value));
   }
   async delete(key) {
@@ -185,6 +189,59 @@ test("cursors are sealed, opaque and bound to principal, query and in_trash", as
   await rejects(openCursor(env, context, `c2_${bytes.toString("base64url")}`));
   const legacy = `c1_${Buffer.from(JSON.stringify([at(5), id(42)])).toString("base64url")}`;
   await rejects(openCursor(env, context, legacy));
+});
+
+test("a delayed trash retirement cannot undo a restore or a later regrant", async (t) => {
+  const { db, env } = await seededIndex(t);
+  const viewer = { [member]: { role: "viewer", generation: 1 } };
+  const metadata = (lifecycleRevision, revision, members, trashed = false) => ({
+    pageId: id(1),
+    owner,
+    deleted: trashed,
+    lifecycleRevision,
+    acl: { revision, members },
+    ...(trashed && { trash: { trashed_at: at(2) } }),
+  });
+  const rows = () =>
+    db.rows(
+      "SELECT principal, role FROM pages_catalog_access WHERE page_id = ? ORDER BY principal",
+      id(1),
+    );
+  const state = () =>
+    db.rows("SELECT state, lifecycle_revision FROM pages_catalog_pages WHERE page_id = ?", id(1));
+  await reportPageIndex(env, {
+    metadata: metadata(0, 1, viewer),
+    title: "Plan",
+    observedAt: at(1),
+  });
+  const trashed = metadata(1, 1, viewer, true);
+  // Trash's index writes outlive their timeout; the Page is restored first.
+  const restored = metadata(2, 1, viewer);
+  await reportPageIndex(env, { metadata: restored, title: "Plan", observedAt: at(3) });
+  await restrictPageIndex(env, trashed);
+  await retirePageIndex(env, trashed, at(4));
+  assert.deepEqual(state(), [{ state: "active", lifecycle_revision: 2 }]);
+  assert.deepEqual(
+    rows().map((row) => row.principal),
+    [member, owner].sort(),
+  );
+  // A regrant after restore survives the same delayed writes.
+  const regranted = metadata(2, 2, { [member]: { role: "editor", generation: 1 } });
+  await reportPageIndex(env, { metadata: regranted, title: "Plan", observedAt: at(5) });
+  await retirePageIndex(env, trashed, at(6));
+  await restrictPageIndex(env, trashed);
+  assert.deepEqual(state(), [{ state: "active", lifecycle_revision: 2 }]);
+  assert.equal(rows().find((row) => row.principal === member).role, "editor");
+  // A report from before Trash cannot reactivate a trashed row or re-add members.
+  const again = metadata(3, 2, { [member]: { role: "editor", generation: 1 } }, true);
+  await restrictPageIndex(env, again);
+  await retirePageIndex(env, again, at(7));
+  await reportPageIndex(env, { metadata: regranted, title: "Plan", observedAt: at(8) });
+  assert.deepEqual(state(), [{ state: "trashed", lifecycle_revision: 3 }]);
+  assert.deepEqual(
+    rows().map((row) => row.principal),
+    [owner],
+  );
 });
 
 test("delayed reports from an older ACL revision change nothing", async (t) => {
@@ -752,54 +809,106 @@ test("reconcile passes are bounded per listing and resume where they stopped", a
   assert.ok(Date.now() - started < 1000);
 });
 
-test("a crash between deletion barriers leaves the Page indexable", async (t) => {
+test("a crash between trash barriers leaves the Page indexable; trash and purge retire it", async (t) => {
   const f = await catalogFixture(t);
-  const page = f.addPage(id(60), "Team plan", {
-    revision: 1,
-    members: { [member]: { role: "viewer", generation: 1 } },
-  });
+  const acl = { revision: 1, members: { [member]: { role: "viewer", generation: 1 } } };
+  const page = f.addPage(id(60), "Team plan", acl);
   page.cacheTitle();
   await f.settle();
-  const remove = () =>
-    page.fetch(
-      f.request(owner, "/internal/delete", {
+  const trash = (target) =>
+    target.fetch(
+      f.request(owner, "/internal/trash", {
         page_id: id(60),
-        base_heads: A.getHeads(page.handle.doc()),
-        idempotency_key: "delete-index-fixture",
+        base_heads: A.getHeads(target.handle.doc()),
+        idempotency_key: "trash-index-fixture",
       }),
     );
   const put = page.ctx.storage.put.bind(page.ctx.storage);
   page.ctx.storage.put = async (key, value) => {
-    if (key === "host/document") throw Error("crash before the tombstone is durable");
+    if (typeof key === "object" && "host/document" in key)
+      throw Error("crash before the trash record is durable");
     return put(key, value);
   };
-  assert.equal((await remove()).status, 500);
+  assert.equal((await trash(page)).status, 500);
+  // The member row was restricted before commit; the owner row stays active.
   assert.deepEqual(f.db.rows("SELECT state, title FROM pages_catalog_pages"), [
     { state: "active", title: "Team plan" },
   ]);
-  // Restart: the durable record never saw the deletion, and the Page reports again.
-  const restarted = f.addPage(id(60), "Team plan", {
-    revision: 1,
-    members: { [member]: { role: "viewer", generation: 1 } },
-  });
+  // Restart: the durable record never saw Trash, and the Page reports again.
+  const restarted = f.addPage(id(60), "Team plan", acl);
   restarted.cacheTitle();
   await f.settle();
   assert.deepEqual(
     (await f.list(member)).body.pages.map((entry) => entry.page_id),
     [id(60)],
   );
-  const deleted = await restarted.fetch(
-    f.request(owner, "/internal/delete", {
+  assert.equal((await trash(restarted)).status, 200);
+  assert.deepEqual(f.db.rows("SELECT state FROM pages_catalog_pages"), [{ state: "trashed" }]);
+  assert.deepEqual(f.db.rows("SELECT source FROM pages_catalog_access"), [{ source: "owner" }]);
+  const preview = await (
+    await restarted.fetch(
+      f.request(owner, "/internal/purge", { page_id: id(60), action: "preview" }),
+    )
+  ).json();
+  const purged = await restarted.fetch(
+    f.request(owner, "/internal/purge", {
       page_id: id(60),
-      base_heads: A.getHeads(restarted.handle.doc()),
-      idempotency_key: "delete-index-fixture",
+      action: "confirm",
+      preview_token: preview.preview_token,
+      idempotency_key: "purge-index-fixture",
     }),
   );
-  assert.equal(deleted.status, 200);
+  assert.equal(purged.status, 200);
   assert.deepEqual(f.db.rows("SELECT state, title FROM pages_catalog_pages"), [
     { state: "deleted", title: "" },
   ]);
   assert.equal(f.db.rows("SELECT count(*) AS n FROM pages_catalog_access")[0].n, 0);
+});
+
+test("Trash and restore through the Catalog move a Page between indexed listings", async (t) => {
+  const f = await catalogFixture(t);
+  const acl = { revision: 1, members: { [member]: { role: "viewer", generation: 1 } } };
+  const page = f.addPage(id(70), "Quarterly plan", acl);
+  await f.catalog(owner).ctx.storage.put(`page/${id(70)}`, {
+    page_id: id(70),
+    title: "Quarterly plan",
+    created_at: at(0),
+    updated_at: at(1),
+  });
+  page.cacheTitle();
+  await f.settle();
+  const call = async (operation, args) =>
+    (
+      await f
+        .catalog(owner)
+        .fetch(f.request(owner, "/internal/catalog", { operation, arguments: args }))
+    ).json();
+  const ids = async (principal, args) =>
+    (await f.list(principal, args)).body.pages.map((entry) => entry.page_id);
+  // Settle the account's first reconcile so listings read D1.
+  for (let pass = 0; pass < 3; pass++) await f.list(owner);
+  const trashed = await call("delete_page", {
+    page_id: id(70),
+    base_heads: A.getHeads(page.handle.doc()),
+    idempotency_key: "index-trash-request",
+  });
+  assert.equal(trashed.state, "trashed");
+  assert.deepEqual(f.db.rows("SELECT state FROM pages_catalog_pages"), [{ state: "trashed" }]);
+  assert.deepEqual(await ids(owner), []);
+  assert.deepEqual(await ids(owner, { in_trash: true }), [id(70)]);
+  assert.deepEqual(await ids(member), []);
+  const listed = await f.list(owner, { in_trash: true });
+  assert.equal(listed.body.pages[0].state, "trashed");
+  assert.equal(listed.body.pages[0].trashed_by, owner);
+  const restored = await call("restore_page", {
+    page_id: id(70),
+    idempotency_key: "index-restore-request",
+  });
+  assert.equal(restored.restored, true);
+  await f.settle();
+  assert.deepEqual(await ids(owner), [id(70)]);
+  assert.deepEqual(await ids(owner, { in_trash: true }), []);
+  assert.deepEqual(await ids(member), [id(70)]);
 });
 
 test("pagination is best-effort across concurrent title changes", async (t) => {

@@ -1,6 +1,7 @@
 // Real local celld + OIDC + native Subduction exercise. No production credentials.
 import assert from "node:assert/strict";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { purgeTrashedFixture } from "./purge-fixture.mjs";
 const origin = process.env.PAGES_ORIGIN ?? "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost", "Generated fixture requires local OIDC");
 export async function login(user) {
@@ -202,6 +203,32 @@ const deletion = {
   idempotency_key: crypto.randomUUID(),
 };
 const deleted = await tool(cookie, "delete_page", deletion);
+assert.equal(deleted.state, "trashed");
 assert.deepEqual(await tool(cookie, "delete_page", deletion), deleted);
+const trashed = await tool(cookie, "read_page", { page_id: disposable.page_id });
+assert.equal(trashed.trash.state, "trashed");
+const restored = await tool(cookie, "restore_page", {
+  page_id: disposable.page_id,
+  idempotency_key: crypto.randomUUID(),
+});
+assert.equal(restored.state, "active");
+const restoredRead = await tool(cookie, "read_page", { page_id: disposable.page_id });
+await tool(cookie, "delete_page", {
+  page_id: disposable.page_id,
+  base_heads: restoredRead.heads,
+  idempotency_key: crypto.randomUUID(),
+});
+await purgeTrashedFixture(
+  (operation, args) => tool(cookie, operation, args),
+  disposable.page_id,
+  () => ({ idempotency_key: crypto.randomUUID() }),
+);
 await tool(cookie, "read_page", { page_id: disposable.page_id }, 404);
-console.log(JSON.stringify({ staleDeleteRejected: true, idempotentDelete: true }));
+console.log(
+  JSON.stringify({
+    staleDeleteRejected: true,
+    idempotentDelete: true,
+    restored: true,
+    purged: true,
+  }),
+);

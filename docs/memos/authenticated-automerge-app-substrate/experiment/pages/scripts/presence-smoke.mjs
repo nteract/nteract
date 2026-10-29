@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
+import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9896";
 const url = new URL(origin);
@@ -403,6 +404,17 @@ try {
     try {
       const current = await read();
       await mutate("delete_page", { page_id: pageId, base_heads: current.heads });
+      await purgeTrashedFixture(
+        (name, args) => mcp(a, name, args),
+        pageId,
+        async () => {
+          const authority = await mcp(a, "list_pages");
+          return {
+            retry_token: authority.retry_token,
+            idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+          };
+        },
+      );
       report.cleanedUp = true;
     } catch (error) {
       report.cleanedUp = false;

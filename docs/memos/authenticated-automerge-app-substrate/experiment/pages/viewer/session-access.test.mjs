@@ -130,6 +130,48 @@ test("the recovery Markdown lists comments and replies the host never acknowledg
   assert.doesNotMatch(session.exportRecovery().markdown, /Unsent comments/);
 });
 
+test("a Page in its owner's Trash keeps the local copy instead of forgetting it", async (t) => {
+  const { session, doc } = fixture();
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json(
+      { error: "This Page is in its owner's Trash", code: "page_trashed" },
+      { status: 403 },
+    ),
+  );
+  t.after(() => session.close());
+  await session.retryConnection();
+  await session.cacheTail;
+  assert.equal(session.deleted, undefined);
+  assert.equal(session.accessDenied, true);
+  assert.match(session.accessProblem, /owner's Trash/);
+  const checkpoint = await readLocalPage(session.identity, session.pageId);
+  assert.equal(A.load(decodeSnapshot(checkpoint.snapshot)).title, doc.title);
+});
+
+test("a trashed owner previews on a reader replica and restore reloads without a draft", async (t) => {
+  const { session } = fixture();
+  t.after(() => session.close());
+  const trashed = {
+    ...access("owner"),
+    canWrite: false,
+    canComment: false,
+    canManageAccess: false,
+    canDelete: false,
+    canRestore: true,
+    trashed: true,
+  };
+  // An open writer replica pauses with a Trash-specific message.
+  await assert.rejects(session.acceptPageAccess(trashed), { code: "PAGE_ACCESS_CHANGED" });
+  assert.match(session.accessProblem, /moved to Trash/);
+  // The preview replica is a reader replica; its key never authors history.
+  session.replicaKey = "1:reader";
+  session.localPage.pending = true;
+  session.accessReloadRequired = false;
+  await assert.rejects(session.acceptPageAccess(access("owner")), { code: "PAGE_ACCESS_CHANGED" });
+  assert.equal(session.accessReloadRequired, true);
+  assert.equal(session.recoveryPending, false);
+});
+
 test("changed grant generation freezes both clean and dirty old replicas before native connection", async (t) => {
   for (const pending of [false, true]) {
     await t.test(String(pending), async (t) => {

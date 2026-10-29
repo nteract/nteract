@@ -150,7 +150,9 @@ test("Pages-issued tokens authenticate MCP and each host-only forwarding hop loc
     "/internal/catalog",
     "/internal/tool",
     "/internal/create",
-    "/internal/delete",
+    "/internal/trash",
+    "/internal/restore",
+    "/internal/purge",
   ]) {
     const identity = await authenticate(request(path, f.tokens.access_token), f.env);
     assert.equal(identity.principal, person.principal);
@@ -225,8 +227,10 @@ test("read-only OAuth scope rejects every mutating MCP tool before forwarding", 
     "patch_page",
     "manage_page_comment",
     "delete_page",
+    "restore_page",
+    "purge_page",
   ]) {
-    const result = await call(f, name, { page_id: pageId });
+    const result = await call(f, name, { page_id: pageId, action: "preview" });
     assert.equal(result.isError, true, name);
     assert.match(result.content[0].text, /read-only/, name);
     assert.deepEqual(result._meta, {
@@ -262,7 +266,9 @@ test("MCP grants cannot call direct APIs or reach internal routes through the ga
     "/internal/tool",
     "/internal/catalog",
     "/internal/create",
-    "/internal/delete",
+    "/internal/trash",
+    "/internal/restore",
+    "/internal/purge",
   ]) {
     const response = await worker.fetch(request(path, f.tokens.access_token), f.env);
     assert.equal(response.status, 404, path);
@@ -301,6 +307,10 @@ class Storage {
     return structuredClone(this.values.get(key));
   }
   async put(key, value) {
+    if (typeof key === "object") {
+      for (const [name, entry] of Object.entries(key)) await this.put(name, entry);
+      return;
+    }
     this.values.set(key, structuredClone(value));
   }
   async delete(key) {
@@ -637,4 +647,71 @@ test("OAuth domain viewing rechecks company policy, explicit denial, and proof e
     "OAuth refresh cannot renew company identity proof",
   );
   assert.equal((await call(f, "read_page", { page_id: pageId })).isError, true);
+});
+
+test("OAuth MCP clients trash, restore, preview and confirm permanent deletion", async (t) => {
+  const f = await fixture(t);
+  const doc = A.change(A.from(createPageData({ pageId, title: "OAuth lifecycle" })), (draft) =>
+    initializePage(draft, "Kept through Trash."),
+  );
+  t.after(() => A.free(doc));
+  const pageStorage = new Storage();
+  const catalogStorage = new Storage();
+  let removed = 0;
+  const page = Object.assign(Object.create(Page.prototype), {
+    env: f.env,
+    ready: Promise.resolve(),
+    tail: Promise.resolve(),
+    ctx: { storage: pageStorage, waitUntil() {} },
+    metadata: { pageId, owner: person.principal, documentId: "doc", deleted: false },
+    handle: { doc: () => doc, broadcast() {} },
+    wires: new Set(),
+    repo: {
+      async delete() {
+        removed++;
+      },
+    },
+    backend: { async flush() {} },
+  });
+  page.policy = new DocumentPolicy({ storage: pageStorage, metadata: () => page.metadata });
+  const catalog = new Catalog({ id: { name: person.principal }, storage: catalogStorage }, f.env);
+  await catalogStorage.put(`page/${pageId}`, { page_id: pageId, title: "OAuth lifecycle" });
+  f.env.CATALOGS = { getByName: () => ({ fetch: (request) => catalog.fetch(request) }) };
+  f.env.PAGES = { getByName: () => ({ fetch: (request) => page.fetch(request) }) };
+  const parsed = async (name, args) => {
+    const result = await call(f, name, args);
+    assert.equal(result.isError, undefined, `${name}: ${result.content[0].text}`);
+    return JSON.parse(result.content[0].text);
+  };
+  const authority = async () => {
+    const listed = await parsed("list_pages");
+    return {
+      retry_token: listed.retry_token,
+      idempotency_key: listed.retry_key_prefix + crypto.randomUUID(),
+    };
+  };
+  const trashed = await parsed("delete_page", {
+    page_id: pageId,
+    base_heads: A.getHeads(doc),
+    ...(await authority()),
+  });
+  assert.equal(trashed.state, "trashed");
+  assert.equal((await parsed("list_pages", { in_trash: true })).pages.length, 1);
+  const restored = await parsed("restore_page", { page_id: pageId, ...(await authority()) });
+  assert.equal(restored.restored, true);
+  await parsed("delete_page", {
+    page_id: pageId,
+    base_heads: A.getHeads(doc),
+    ...(await authority()),
+  });
+  const preview = await parsed("purge_page", { page_id: pageId, action: "preview" });
+  assert.equal(preview.title, "OAuth lifecycle");
+  const purged = await parsed("purge_page", {
+    page_id: pageId,
+    action: "confirm",
+    preview_token: preview.preview_token,
+    ...(await authority()),
+  });
+  assert.deepEqual(purged, { page_id: pageId, deleted: true, purged: true });
+  assert.equal(removed, 1);
 });
