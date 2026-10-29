@@ -326,6 +326,138 @@ test(
   },
 );
 
+for (const repairFailures of [0, 2]) {
+  test(
+    `retired failed candidates preserve durable retirement after ${repairFailures} repair failures`,
+    options,
+    async () => {
+      const f = fixture();
+      const editor = { ...f.identity, principal: "user:editor" };
+      f.grant(editor.principal, "editor");
+      const initialWrite = f.storage.deferPut({ commitBeforeWait: true });
+      const initialAdmission = f.bind(key, editor);
+      await initialWrite.entered;
+      const candidate = structuredClone(f.storage.writes[0]);
+      initialWrite.reject(new Error("fixture lost initial acknowledgement"));
+      await assert.rejects(initialAdmission, { code: "native_binding_persistence_failed" });
+
+      f.grant(editor.principal, null);
+      await f.storage.put("host/document", f.metadata);
+      await f.storage.sync();
+      await f.policy.refreshAccess();
+      const retired = await f.storage.get(bindingKey(key));
+      assert.equal(retired.retired, true);
+      assert.equal(retired.writer, false);
+      f.grant(editor.principal, "editor");
+      await f.storage.put("host/document", f.metadata);
+      await f.storage.sync();
+      await f.policy.refreshAccess();
+
+      for (let attempt = 0; attempt < repairFailures; attempt++) {
+        const offset = f.storage.writes.length;
+        const replay = f.storage.deferPut();
+        replay.resolve();
+        const repair = f.storage.deferPut();
+        const admission = f.bind(key, editor);
+        await repair.entered;
+        assert.deepEqual(f.storage.writes[offset], candidate);
+        assert.deepEqual(f.storage.writes[offset + 1], {
+          name: bindingKey(key),
+          value: retired,
+        });
+        assert.equal(f.policy.sessions.size, 0, "a lease must wait for retirement repair");
+        assert.equal(f.policy.bindings.get(key).pending, true);
+        assert.equal(f.policy.authorAllowed(f.policy.bindings.get(key)), false);
+        repair.reject(new Error("fixture retirement repair failed"));
+        await assert.rejects(admission, { code: "native_binding_persistence_failed" });
+        await f.drain();
+        assert.equal(f.policy.sessions.size, 0);
+        assert.equal(f.policy.bindings.get(key).pending, true);
+        assert.equal(f.policy.bindings.get(key).retired, true);
+
+        // The grant generation also denies the original row while a repair is uncertain.
+        const restored = new DocumentPolicy({
+          storage: f.storage,
+          metadata: () => f.metadata,
+          serverKey,
+          now: () => 1000,
+        });
+        await restored.load();
+        assert.equal(restored.authorAllowed(restored.bindings.get(key)), false);
+      }
+
+      const offset = f.storage.writes.length;
+      const release = await f.bind(key, editor);
+      assert.equal(f.storage.writes.length, offset + 2);
+      assert.deepEqual(f.storage.writes[offset], candidate, "replay remains exact");
+      assert.deepEqual(await f.storage.get(bindingKey(key)), retired);
+      assert.equal(f.policy.bindings.get(key).pending, false);
+      assert.equal(f.policy.bindings.get(key).retired, true);
+      assert.equal(f.policy.sessions.get(key).canWrite, false);
+      await f.policy.active(key);
+      await assert.rejects(f.policy.active(key, true), /read-only/i);
+      release();
+    },
+  );
+}
+
+test(
+  "finishing a candidate during an ACL commit cannot persist the new retirement early",
+  options,
+  async () => {
+    const f = fixture();
+    const editor = { ...f.identity, principal: "user:editor" };
+    f.grant(editor.principal, "editor");
+    const write = f.storage.deferPut();
+    const admission = f.bind(key, editor);
+    await write.entered;
+    f.grant(editor.principal, null);
+    f.metadata.aclCommitting = true;
+    await f.policy.refreshAccess({ persist: false });
+    await assert.rejects(admission);
+    write.resolve();
+    await f.drain();
+    assert.equal(
+      f.storage.writes.length,
+      1,
+      "only the originally authorized candidate was written",
+    );
+    assert.equal((await f.storage.get(bindingKey(key))).retired, false);
+    assert.equal(f.policy.bindings.get(key).retired, true);
+    assert.equal(f.policy.authorAllowed(f.policy.bindings.get(key)), false);
+
+    await f.storage.put("host/document", f.metadata);
+    await f.storage.sync();
+    delete f.metadata.aclCommitting;
+    await f.policy.refreshAccess();
+    assert.equal((await f.storage.get(bindingKey(key))).retired, true);
+    assert.equal((await f.storage.get(bindingKey(key))).writer, false);
+  },
+);
+
+test(
+  "ordinary writer retry retains its authority without a retirement repair",
+  options,
+  async () => {
+    const f = fixture();
+    (await f.bind())();
+    const write = f.storage.deferPut();
+    const admission = f.bind();
+    await write.entered;
+    const candidate = structuredClone(f.storage.writes.at(-1));
+    write.reject(new Error("fixture uncertain writer reconnect"));
+    await assert.rejects(admission, { code: "native_binding_persistence_failed" });
+    const offset = f.storage.writes.length;
+    const release = await f.bind();
+    assert.equal(f.storage.writes.length, offset + 1);
+    assert.deepEqual(f.storage.writes[offset], candidate);
+    assert.equal((await f.storage.get(bindingKey(key))).writer, true);
+    assert.equal((await f.storage.get(bindingKey(key))).retired, false);
+    await f.policy.active(key, true);
+    release();
+  },
+);
+
 test(
   "expiry during binding persistence rejects the waiter without leaving a live lease",
   options,

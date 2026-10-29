@@ -158,7 +158,20 @@ export class DocumentPolicy {
 
   persistAdmission(admission, waitUntil) {
     admission.state = "pending";
-    admission.promise = this.writeBinding(admission.key, admission.payload).then(
+    // bind has already fenced aclCommitting. Capture any prior retirement now:
+    // an exact retry must not leave its original writer payload over that row.
+    // Do not capture restrictions installed while this write is in flight,
+    // because their host ACL may not have committed yet.
+    const current = this.bindings.get(admission.key);
+    const retirement =
+      current.retired && !admission.payload.retired ? { ...current, pending: false } : undefined;
+    if (retirement) this.dirtyBindings.add(admission.key);
+    const persisted = this.writeBinding(admission.key, admission.payload).then(async () => {
+      if (!retirement) return;
+      await this.writeBinding(admission.key, retirement);
+      if (this.bindings.get(admission.key) === current) this.dirtyBindings.delete(admission.key);
+    });
+    admission.promise = persisted.then(
       () => {
         admission.state = "persisted";
         // Finalize even if the socket that started the write is gone. Preserve
@@ -271,9 +284,9 @@ export class DocumentPolicy {
     admission.claim = claim;
     const abort = () => claim.cancel(signal.reason ?? admissionCancelled());
     signal?.addEventListener("abort", abort, { once: true });
-    if (admission.state !== "pending" && admission.state !== "persisted")
-      this.persistAdmission(admission, waitUntil);
     try {
+      if (admission.state !== "pending" && admission.state !== "persisted")
+        this.persistAdmission(admission, waitUntil);
       await Promise.race([admission.promise, cancelled]);
       const current = this.account(identity);
       if (
