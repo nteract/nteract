@@ -1,6 +1,11 @@
 import fs from "node:fs";
 import { expect, test, type FrameLocator, type Page } from "@playwright/test";
-import { openNotebookRoom, waitForKernelStatus, waitForNotebookSessionReady } from "./helpers";
+import {
+  openNotebookPath,
+  openNotebookRoom,
+  waitForKernelStatus,
+  waitForNotebookSessionReady,
+} from "./helpers";
 import { McpPeer } from "./mcp-peer";
 
 // Panel version under test; override to run the suite against another release.
@@ -1187,4 +1192,215 @@ test.describe("Bokeh session documents", () => {
       await mcp.close();
     }
   });
+
+  test("a viewer keeps view-local interaction and its other edits snap back", async ({
+    context,
+    page,
+  }, testInfo) => {
+    await recordBokehMessages(page);
+    const { mcp } = await openPanelNotebook(page);
+    // The daemon scopes a local connection to `viewer` when the room's file is
+    // not writable when it connects, so save, then make the file read-only.
+    const notebookPath = testInfo.outputPath(`viewer-${crypto.randomUUID()}.ipynb`);
+    let viewer: Page | undefined;
+    try {
+      const displayId = await displayPanel(mcp, [
+        "import pandas as pd",
+        "from bokeh.plotting import figure",
+        "slider = pn.widgets.IntSlider(name='viewer slider', start=0, end=10, value=3)",
+        "received = []",
+        "slider.param.watch(lambda e: received.append(e.new), 'value')",
+        "df = pd.DataFrame({'row': [f'r{i}' for i in range(12)]})",
+        "remote = pn.widgets.Tabulator(df, pagination='remote', page_size=3)",
+        "local = pn.widgets.Tabulator(df, pagination='local', page_size=3)",
+        "pages = []",
+        "remote.param.watch(lambda e: pages.append(('remote', e.new)), 'page')",
+        "local.param.watch(lambda e: pages.append(('local', e.new)), 'page')",
+        "plot = figure(height=250, width=350, tools='pan,wheel_zoom', active_drag='pan', active_scroll='wheel_zoom')",
+        "plot.scatter([0, 1, 2, 3], [0, 1, 4, 9])",
+        "ranges = []",
+        "plot.x_range.on_change('start', lambda attr, old, new: ranges.append(new))",
+        "display(pn.Column(slider, remote, local, pn.pane.Bokeh(plot)))",
+        "print(plot.x_range.id)",
+      ]);
+      const rangeId = (await outputArea(page, displayId).innerText()).trim().split(/\s+/).at(-1)!;
+      const ownerFrame = outputFrame(page, displayId);
+      await expect.poll(() => modelValue(ownerFrame, "viewer slider"), { timeout: 60_000 }).toBe(3);
+      await expect(ownerFrame.getByText("View only", { exact: true })).toHaveCount(0);
+
+      await mcp.saveNotebook(notebookPath);
+      fs.chmodSync(notebookPath, 0o444);
+      viewer = await context.newPage();
+      await recordBokehMessages(viewer);
+      const warnings: string[] = [];
+      viewer.on("console", (message) => {
+        if (["warning", "error"].includes(message.type())) {
+          warnings.push(`${message.type()}: ${message.text()}`);
+        }
+      });
+      viewer.on("pageerror", (error) => warnings.push(`pageerror: ${error.message}`));
+      await openNotebookPath(viewer, notebookPath, { environmentMode: "notebook" });
+      await expect(viewer.locator('[data-slot="notebook-document-shell"]')).toHaveAttribute(
+        "data-access-level",
+        "viewer",
+      );
+      const frame = outputFrame(viewer, displayId);
+      await expect.poll(() => modelValue(frame, "viewer slider"), { timeout: 60_000 }).toBe(3);
+      await expect(frame.getByText("View only", { exact: true })).toBeVisible();
+      await markMountedRoot(frame);
+      await recordModelChanges(frame);
+      await engageFrame(viewer, displayId);
+
+      // Slider: the drag changes the model, then the document value returns.
+      const handle = frame.locator(".noUi-handle").first();
+      await handle.scrollIntoViewIfNeeded();
+      const box = (await handle.boundingBox())!;
+      await viewer.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await viewer.mouse.down();
+      await viewer.mouse.move(box.x + box.width / 2 + 120, box.y + box.height / 2, { steps: 8 });
+      await viewer.mouse.up();
+      await expect.poll(() => modelValue(frame, "viewer slider")).toBe(3);
+      const sliderChanges = (await modelChanges(frame)).filter((change) => change.attr === "value");
+      expect(
+        sliderChanges.some((change) => change.value !== 3),
+        "the drag moved the slider locally before it was reverted",
+      ).toBe(true);
+      expect(sliderChanges.at(-1)?.value).toBe(3);
+
+      // Pan and zoom are view-local: the range moves and stays.
+      const canvas = frame.locator(".bk-Canvas").first();
+      await canvas.scrollIntoViewIfNeeded();
+      const plotBox = (await canvas.boundingBox())!;
+      const before = await rangeBounds(frame, rangeId);
+      const centerX = plotBox.x + plotBox.width / 2;
+      const centerY = plotBox.y + plotBox.height / 2;
+      await viewer.mouse.move(centerX, centerY);
+      await viewer.mouse.down();
+      await viewer.mouse.move(centerX - 80, centerY, { steps: 8 });
+      await viewer.mouse.up();
+      await viewer.mouse.wheel(0, -200);
+      await expect.poll(() => rangeBounds(frame, rangeId)).not.toEqual(before);
+      const panned = await rangeBounds(frame, rangeId);
+      await viewer.waitForTimeout(2_000);
+      expect(await rangeBounds(frame, rangeId)).toEqual(panned);
+
+      // Tabulator paging: record what each pagination mode does.
+      const tables = frame.locator(".tabulator");
+      for (const [index, mode] of ["remote", "local"].entries()) {
+        const table = tables.nth(index);
+        await table.scrollIntoViewIfNeeded();
+        const firstRow = table.locator('.tabulator-row .tabulator-cell[tabulator-field="row"]');
+        await expect(firstRow.first()).toHaveText("r0");
+        await table.locator('.tabulator-page[data-page="2"]').click();
+        await viewer.waitForTimeout(2_000);
+        const shown = await firstRow.allInnerTexts();
+        const active = await table.locator(".tabulator-page.active").innerText();
+        const pageChanges = (await modelChanges(frame)).filter((change) => change.attr === "page");
+        console.log(
+          `[viewer tabulator ${mode}] rows ${JSON.stringify(shown)}, active page ${active},`,
+          `page changes ${JSON.stringify(pageChanges)}`,
+        );
+      }
+
+      // Nothing the viewer did reached Python or the session document.
+      const writes = (await hostMessages(viewer)).filter((message) =>
+        ["nteract/bokehSetProps", "nteract/bokehApplyPatch"].includes(message.method),
+      );
+      expect(writes).toEqual([]);
+      const checkId = await mcp.createCell("pass");
+      await expectPython(
+        page,
+        mcp,
+        checkId,
+        [
+          "assert received == [], received",
+          "assert slider.value == 3, slider.value",
+          "assert pages == [], pages",
+          "assert ranges == [], ranges",
+        ],
+        "VIEWER_EDITS_NOT_SENT",
+      );
+      await expect.poll(() => modelValue(ownerFrame, "viewer slider")).toBe(3);
+
+      // A revert must not trigger another change: an idle viewer stays quiet.
+      await resetModelChanges(frame);
+      const warningsBefore = warnings.length;
+      await viewer.waitForTimeout(5_000);
+      const idle = await modelChanges(frame);
+      console.log(
+        `[viewer idle] ${idle.length} model changes, ${warnings.length - warningsBefore} warnings`,
+        JSON.stringify(idle.slice(0, 20)),
+        JSON.stringify(warnings.slice(warningsBefore, warningsBefore + 10)),
+      );
+      expect(idle).toEqual([]);
+      expect(warnings.slice(warningsBefore)).toEqual([]);
+      await expectSameMountedRoot(frame);
+    } finally {
+      await viewer?.close();
+      await mcp.close();
+      if (fs.existsSync(notebookPath)) fs.chmodSync(notebookPath, 0o644);
+    }
+  });
 });
+
+interface ModelChange {
+  id: string;
+  type: string;
+  attr: string;
+  value: unknown;
+}
+
+interface ChangeRecordingWindow extends Window {
+  Bokeh?: {
+    documents?: Array<{
+      on_change(callback: (event: unknown) => void): void;
+      get_model_by_id(id: string): { start?: number; end?: number } | null;
+    }>;
+  };
+  e2eModelChanges?: ModelChange[];
+}
+
+/** Record every ModelChanged in the frame's mounted document, including reverts. */
+async function recordModelChanges(frame: FrameLocator) {
+  await frame.locator("body").evaluate(() => {
+    const w = window as unknown as ChangeRecordingWindow;
+    const changes: ModelChange[] = (w.e2eModelChanges = []);
+    const document = w.Bokeh?.documents?.at(-1);
+    const record = (event: unknown) => {
+      const { events, model, attr, value } = event as {
+        events?: unknown[];
+        model?: { id: string; type: string };
+        attr?: string;
+        value?: unknown;
+      };
+      if (events) return events.forEach(record);
+      if (!model || !attr) return;
+      const plain = typeof value === "object" && value !== null ? String(value) : value;
+      w.e2eModelChanges?.push({ id: model.id, type: model.type, attr, value: plain });
+    };
+    document?.on_change(record);
+    return changes.length;
+  });
+}
+
+async function modelChanges(frame: FrameLocator): Promise<ModelChange[]> {
+  return frame
+    .locator("body")
+    .evaluate(() => (window as unknown as ChangeRecordingWindow).e2eModelChanges ?? []);
+}
+
+async function resetModelChanges(frame: FrameLocator) {
+  await frame.locator("body").evaluate(() => {
+    const w = window as unknown as ChangeRecordingWindow;
+    w.e2eModelChanges?.splice(0);
+  });
+}
+
+async function rangeBounds(frame: FrameLocator, rangeId: string) {
+  return frame.locator("body").evaluate((_, id) => {
+    const range = (window as unknown as ChangeRecordingWindow).Bokeh?.documents
+      ?.at(-1)
+      ?.get_model_by_id(id);
+    return { start: range?.start, end: range?.end };
+  }, rangeId);
+}
