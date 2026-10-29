@@ -90,6 +90,86 @@
 .comments .comment-composer {
   padding-top: 1rem;
 }
+.comments.comments-expanded {
+  width: 680px;
+  right: 24px;
+}
+.comments-expand {
+  margin-left: auto;
+}
+.comment-rich-editor {
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  margin: 0.5rem 0;
+  padding: 0.35rem 0.5rem;
+}
+.comment-formatting {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.25rem;
+}
+.comment-formatting .toolbar-button {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+}
+.comment-link-editor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  padding-top: 0.35rem;
+}
+.comment-link-editor input {
+  min-width: 0;
+  flex: 1 1 120px;
+}
+.comment-rich-editor .wordgard-document wg-content {
+  min-height: 70px;
+  font-size: 16px;
+}
+.comments .comment-rich-content p,
+.comments .comment-rich-editor p {
+  white-space: normal;
+}
+.comments .wordgard-document wg-content {
+  line-height: 1.5;
+  padding: 0.3rem 0;
+}
+.comments .wordgard-document wg-content p {
+  margin: 0.25rem 0 0.5rem;
+}
+.comments .wordgard-document wg-content pre {
+  padding: 0.65rem 0.85rem;
+}
+.comments .wordgard-document wg-content blockquote {
+  border-left: 3px solid var(--border);
+  margin: 0.75rem 0;
+  padding: 0.1rem 0.75rem;
+  color: var(--muted-foreground);
+}
+.comments .wordgard-task-control:has(input:disabled) {
+  cursor: default;
+}
+.comments .wordgard-document wg-content table {
+  display: block;
+  min-width: 0;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.comments .wordgard-document wg-content td,
+.comments .wordgard-document wg-content th {
+  min-width: 100px;
+  max-width: 320px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.comment-rich-content pre {
+  white-space: pre-wrap;
+}
 .comments .resolved-threads > summary {
   padding: 0.8rem 0;
   font-size: 0.8rem;
@@ -97,6 +177,11 @@
   cursor: pointer;
 }
 @media (pointer: coarse), (max-width: 900px) {
+  .comments .comment-formatting .toolbar-button {
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+  }
   .comments .thread-state-action {
     width: 40px;
     height: 40px;

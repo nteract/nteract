@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { Check, MessageSquare, RotateCcw, X } from "lucide-react";
+import { Check, MessageSquare, RotateCcw, X, Maximize2, Minimize2 } from "lucide-react";
 import { resolveCommentDraft } from "./comment-draft.mjs";
+import { CommentRichText, CommentContent } from "./CommentRichText.jsx";
 import "./comments.css";
 
 function CommentAuthor({ author }) {
@@ -32,6 +33,11 @@ export function CommentsPanel({
     resolvedDisclosure = useRef(null);
   const [mobile, setMobile] = useState(() => matchMedia("(max-width: 900px)").matches);
   const [drafts, setDrafts] = useState({});
+  const [expanded, setExpanded] = useState(false);
+  const [visited, setVisited] = useState(open);
+  useEffect(() => {
+    if (open) setVisited(true);
+  }, [open]);
   const [problem, setProblem] = useState("");
   const [changing, setChanging] = useState(null);
   useEffect(() => {
@@ -60,6 +66,11 @@ export function CommentsPanel({
       focused?.tagName === "TEXTAREA"
         ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection]
         : null;
+    const browserSelection = document.getSelection();
+    const richSelection =
+      focused?.closest(".comment-rich-editor") && browserSelection?.rangeCount
+        ? browserSelection.getRangeAt(0).cloneRange()
+        : null;
     // Keep the same forms mounted when the viewport changes. Only modality changes.
     if (element.open) element.close();
     if (open) {
@@ -68,13 +79,17 @@ export function CommentsPanel({
       if (focused?.isConnected && element.contains(focused)) {
         focused.focus({ preventScroll: true });
         if (selection) focused.setSelectionRange(...selection);
+        if (richSelection?.startContainer.isConnected && richSelection.endContainer.isConnected) {
+          browserSelection.removeAllRanges();
+          browserSelection.addRange(richSelection);
+        }
       }
     }
   }, [open, mobile]);
   useEffect(() => {
     if (!open || !composer?.key || target) return;
     const frame = requestAnimationFrame(() => {
-      const textarea = composerElement.current?.querySelector("textarea");
+      const textarea = composerElement.current?.querySelector('[role="textbox"]');
       textarea?.focus({ preventScroll: true });
       composerElement.current?.scrollIntoView({ block: "nearest" });
     });
@@ -170,7 +185,7 @@ export function CommentsPanel({
     <dialog
       ref={dialog}
       id="page-comments"
-      className={"comments" + (mobile ? " comments-sheet" : "")}
+      className={"comments" + (mobile ? " comments-sheet" : expanded ? " comments-expanded" : "")}
       aria-labelledby="comments-title"
       onClose={() => {
         if (!dialog.current.open && open) onClose();
@@ -179,7 +194,7 @@ export function CommentsPanel({
         if (mobile && event.target === dialog.current) onClose();
       }}
       onKeyDown={(event) => {
-        if (!mobile && event.key === "Escape") {
+        if (!event.defaultPrevented && !mobile && event.key === "Escape") {
           event.preventDefault();
           onClose();
         }
@@ -189,6 +204,20 @@ export function CommentsPanel({
         <h2 id="comments-title">
           <MessageSquare size={18} aria-hidden="true" /> Comments
         </h2>
+        {!mobile && (
+          <button
+            className="icon-button comments-expand"
+            aria-label={expanded ? "Narrow comments" : "Expand comments"}
+            title={expanded ? "Narrow comments" : "Expand comments"}
+            onClick={() => setExpanded(!expanded)}
+          >
+            {expanded ? (
+              <Minimize2 size={17} aria-hidden="true" />
+            ) : (
+              <Maximize2 size={17} aria-hidden="true" />
+            )}
+          </button>
+        )}
         <button className="icon-button" aria-label="Close comments" onClick={onClose}>
           <X size={19} aria-hidden="true" />
         </button>
@@ -217,10 +246,13 @@ export function CommentsPanel({
               value={drafts[composer.key] || ""}
               onChange={(body) => changeDraft(composer.key, body)}
               disabled={Boolean(draftProblem)}
-              submit={(body) => {
+              submit={(body, spans) => {
                 // No await between resolving the surviving cursors and creating the comment.
                 const target = resolveCommentDraft(session.doc, composer.draft);
-                return session.comment({ ...target, action: "add", body });
+                return session.comment(
+                  { ...target, action: "add", body, body_format: "markdown" },
+                  spans,
+                );
               }}
               onSuccess={() => onClearComposer(composer.key)}
               onCancel={() => {
@@ -239,11 +271,11 @@ export function CommentsPanel({
                 : "No comments yet."}
           </p>
         )}
-        {unresolved.map(renderThread)}
+        {(open || visited) && unresolved.map(renderThread)}
         {resolved.length > 0 && (
           <details className="resolved-threads" ref={resolvedDisclosure}>
             <summary>Resolved ({resolved.length})</summary>
-            {resolved.map(renderThread)}
+            {(open || visited) && resolved.map(renderThread)}
           </details>
         )}
       </div>
@@ -264,6 +296,7 @@ function CommentThread({
 }) {
   const [repliesExpanded, setRepliesExpanded] = useState(false);
   const [replying, setReplying] = useState(false);
+  const [replyStarted, setReplyStarted] = useState(false);
   const [pending, setPending] = useState(false);
   const replyButton = useRef(null),
     form = useRef(null),
@@ -280,7 +313,7 @@ function CommentThread({
   useEffect(() => {
     if (!replying) return;
     const frame = requestAnimationFrame(() =>
-      form.current?.querySelector("textarea")?.focus({ preventScroll: true }),
+      form.current?.querySelector('[role="textbox"]')?.focus({ preventScroll: true }),
     );
     return () => cancelAnimationFrame(frame);
   }, [replying]);
@@ -353,7 +386,10 @@ function CommentThread({
       </div>
       {first && (
         <div className="message">
-          <p>{first.body}</p>
+          <CommentContent
+            message={first}
+            source={session.doc.comments?.[thread.id]?.messages[first.id]}
+          />
         </div>
       )}
       <div className="thread-conversation-actions">
@@ -375,9 +411,12 @@ function CommentThread({
             type="button"
             className="subtle-button thread-reply-button"
             hidden={replying}
-            onClick={() => setReplying(true)}
+            onClick={() => {
+              setReplyStarted(true);
+              setReplying(true);
+            }}
           >
-            {value ? "Continue reply" : "Reply"}
+            {(value.markdown ?? value) ? "Continue reply" : "Reply"}
           </button>
         )}
       </div>
@@ -385,18 +424,33 @@ function CommentThread({
         {replies.map((message) => (
           <div className="message" key={message.id}>
             <CommentAuthor author={message.author} />
-            <p>{message.body}</p>
+            {repliesExpanded && (
+              <CommentContent
+                message={message}
+                source={session.doc.comments?.[thread.id]?.messages[message.id]}
+              />
+            )}
           </div>
         ))}
       </div>
-      {session.canWrite && thread.state === "open" && (
+      {session.canWrite && thread.state === "open" && replyStarted && (
         <div ref={form} hidden={!replying}>
           <CommentForm
             label="Reply"
             compact
             value={value}
             onChange={onChange}
-            submit={(body) => session.comment({ action: "reply", thread_id: thread.id, body })}
+            submit={(body, spans) =>
+              session.comment(
+                {
+                  action: "reply",
+                  thread_id: thread.id,
+                  body,
+                  body_format: "markdown",
+                },
+                spans,
+              )
+            }
             onBusyChange={setPending}
             onSuccess={() => {
               const restoreFocus = form.current?.contains(document.activeElement);
@@ -424,8 +478,10 @@ function CommentForm({
   cancelLabel = "Cancel",
   onBusyChange,
 }) {
+  const body = value.markdown ?? value;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [draftError, setDraftError] = useState("");
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -438,12 +494,12 @@ function CommentForm({
       className={compact ? "comment-reply-form" : undefined}
       onSubmit={async (event) => {
         event.preventDefault();
-        if (busy || disabled || !value.trim()) return;
+        if (busy || disabled || draftError || !body.trim()) return;
         setBusy(true);
         onBusyChange?.(true);
         setError("");
         try {
-          await submit(value);
+          await submit(body, value.spans);
           if (!mounted.current) return;
           onChange("");
           onSuccess?.();
@@ -457,24 +513,24 @@ function CommentForm({
         }
       }}
     >
-      <label>
+      <div>
         <span className={compact ? "sr-only" : undefined}>{label}</span>
-        <textarea
-          placeholder={compact ? "Write a reply…" : undefined}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          rows={2}
-          maxLength={16000}
-          disabled={busy}
+        <CommentRichText
+          label={label}
+          value={body}
+          nativeSpans={value.spans}
+          onChange={(markdown, spans) => onChange(spans ? { markdown, spans } : markdown)}
+          onError={setDraftError}
+          disabled={busy || disabled}
         />
-      </label>
-      {error && (
+      </div>
+      {(draftError || error) && (
         <p className="error" role="alert">
-          {error}
+          {draftError || error}
         </p>
       )}
       <div className="comment-form-actions">
-        <button className="primary" disabled={busy || disabled || !value.trim()}>
+        <button className="primary" disabled={busy || disabled || draftError || !body.trim()}>
           Send
         </button>
         {onCancel && (

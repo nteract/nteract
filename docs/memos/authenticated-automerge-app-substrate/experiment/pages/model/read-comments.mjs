@@ -1,4 +1,5 @@
 import { selectionContext } from "./comments.mjs";
+import { commentBodyProjection } from "./comment-content.mjs";
 
 const encoder = new TextEncoder();
 const fields = new Set(["state", "block_id", "thread_ids", "include_messages"]);
@@ -71,7 +72,7 @@ function message(id, value) {
     return { ...base, ...strings(value, ["deletedAt"]) };
   return {
     ...base,
-    ...strings(value, ["body"]),
+    ...commentBodyProjection(value),
     // Author labels are mutable document content, not verified audit identity.
     author: strings(value.author, ["principal", "displayName", "driver"]),
   };

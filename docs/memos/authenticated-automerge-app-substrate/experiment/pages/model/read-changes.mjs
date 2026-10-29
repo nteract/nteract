@@ -2,6 +2,7 @@ import * as A from "@automerge/automerge/slim";
 import { eventsWithIndexChanges, traverseSpans } from "@automerge/prosemirror/dist/traversal.js";
 import { orderedBlockIds } from "./order.mjs";
 import { projectReadComments } from "./read-comments.mjs";
+import { commentMessageState, commentThreadState } from "./comment-content.mjs";
 import {
   adapter,
   blockMarkdown,
@@ -218,7 +219,11 @@ function commentChanges(before, after, mode) {
   for (const id of Object.keys(prior))
     if (!Object.hasOwn(current, id)) changes.push({ thread_id: id, change: "deleted" });
   for (const id of Object.keys(current)) {
-    if (Object.hasOwn(prior, id) && canonical(prior[id]) === canonical(current[id])) continue;
+    if (
+      Object.hasOwn(prior, id) &&
+      canonical(commentThreadState(prior[id])) === canonical(commentThreadState(current[id]))
+    )
+      continue;
     const [thread] = projectReadComments(after, {
       thread_ids: [id],
       include_messages: mode === "all",
@@ -229,7 +234,8 @@ function commentChanges(before, after, mode) {
       thread.messages = thread.messages.filter(
         (message) =>
           !Object.hasOwn(prior[id].messages ?? {}, message.id) ||
-          canonical(prior[id].messages[message.id]) !== canonical(current[id].messages[message.id]),
+          canonical(commentMessageState(prior[id].messages[message.id])) !==
+            canonical(commentMessageState(current[id].messages[message.id])),
       );
       thread.removed_message_ids = Object.keys(prior[id].messages ?? {}).filter(
         (key) => !Object.hasOwn(current[id].messages ?? {}, key),
