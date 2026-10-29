@@ -4,13 +4,17 @@ import {
   BUILD_CHECK_INTERVAL_MS,
   BuildMonitor,
   VISIBLE_RECHECK_MS,
-  LEFT_PAGE_UNSAVED,
   ReloadGate,
   UNSENT_COMMENT,
   saveBeforeReload,
 } from "./build-freshness.mjs";
 import { observeResponses, request } from "./request.mjs";
 import { PageSession } from "./session.mjs";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
+
+setFlagsFromString("--expose-gc");
+const gc = runInNewContext("gc");
 
 const A = "aaaaaaaaaaaa",
   B = "bbbbbbbbbbbb";
@@ -192,9 +196,15 @@ class FakeSession {
   queueSaved() {
     this.calls.push("queueSaved");
   }
+  doc = { title: "Garden notes" };
+  exportRecovery() {
+    return { markdown: `# ${this.doc.title}\n\nUnsent edit\n` };
+  }
+  checkpointFails = false;
   async close() {
     this.calls.push("close");
     this.alive = false;
+    this.checkpointWritten = !this.checkpointFails;
   }
 }
 
@@ -337,25 +347,160 @@ test("a Page being left keeps saving, and Reload waits for its receipt", async (
   await closed;
   assert.deepEqual(left.calls, ["close"]);
   assert.deepEqual(await result, { ok: true });
-  assert.equal(g.reloadGate.closing.size, 0);
+  assert.equal(g.reloadGate.draining.size, 0);
+  assert.equal(g.reloadGate.closed.size, 0);
 });
 
-test("a Page left without its receipt blocks Reload until it is opened again", async () => {
+/** Leave a Page that goes offline before its receipt: the drain ends and
+ * close writes the IndexedDB checkpoint (or fails to). */
+async function leaveUnsaved(g, session) {
+  g.reloadGate.hold(session);
+  const closed = g.reloadGate.drainAndClose(session);
+  session.set({ status: "Offline" });
+  await closed;
+  await settle();
+}
+
+test("a closed Page keeps only metadata, never its session", async () => {
   const g = gate();
   const left = new FakeSession("page-left");
-  g.reloadGate.hold(left);
-  const closed = g.reloadGate.drainAndClose(left);
-  // Leaving never hangs: offline ends the drain and the checkpoint keeps it.
-  left.set({ status: "Offline" });
-  await closed;
+  await leaveUnsaved(g, left);
   assert.deepEqual(left.calls, ["close"]);
-  assert.deepEqual(await g.reload(), { ok: false, message: LEFT_PAGE_UNSAVED });
-  // Reopening loads that checkpoint; the new session owns the receipt.
+  assert.equal(left.listeners.size, 0, "no listener keeps the session alive");
+  assert.equal(g.reloadGate.draining.size, 0);
+  assert.equal(g.reloadGate.sessions.size, 0);
+  assert.deepEqual(
+    [...g.reloadGate.closed.values()],
+    [{ account: "dev", pageId: "page-left", title: "Garden notes", checkpointWritten: true }],
+  );
+  // Plain data only: nothing the gate retains reaches the session or its doc.
+  const seen = new Set();
+  (function walk(value) {
+    if (value === null || typeof value !== "object" || seen.has(value)) return;
+    assert.notEqual(value, left);
+    assert.notEqual(value, left.doc);
+    seen.add(value);
+    for (const child of value instanceof Map || value instanceof Set
+      ? [...value.values(), ...(value instanceof Map ? value.keys() : [])]
+      : Object.values(value))
+      walk(child);
+  })({ ...g.reloadGate });
+  // A saved leave keeps nothing at all.
+  const saved = new FakeSession();
+  g.reloadGate.hold(saved);
+  const closing = g.reloadGate.drainAndClose(saved);
+  saved.set({ status: "Saved", pending: false });
+  await closing;
+  await settle();
+  assert.equal(g.reloadGate.closed.size, 1);
+});
+
+test("the gate releases a closed session for garbage collection", async () => {
+  const g = gate();
+  let left = new FakeSession("page-gc");
+  const ref = new WeakRef(left);
+  await leaveUnsaved(g, left);
+  left = null;
+  await settle();
+  gc();
+  assert.equal(ref.deref(), undefined);
+  assert.equal(g.reloadGate.closed.size, 1);
+});
+
+test("Reload names closed Pages waiting in IndexedDB and asks before reloading", async () => {
+  const g = gate();
+  await leaveUnsaved(g, new FakeSession("page-left"));
+  const second = new FakeSession("page-two");
+  second.doc = { title: "Plans" };
+  await leaveUnsaved(g, second);
+  const result = await g.reload();
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "checkpointed");
+  assert.deepEqual(
+    result.pages.map((page) => page.pageId),
+    ["page-left", "page-two"],
+  );
+  assert.equal(
+    result.message,
+    "Edits on Garden notes and Plans haven't reached the server yet. They're saved in this browser and sync when you open those Pages again.",
+  );
+  assert.equal(g.reloaded(), 0);
+  // Opening one of them supersedes its record; the new session owns the receipt.
   const reopened = new FakeSession("page-left");
   g.reloadGate.hold(reopened);
-  const result = g.reload();
+  const waiting = g.reload();
   reopened.set({ status: "Saved", pending: false });
-  assert.deepEqual(await result, { ok: true });
+  const again = await waiting;
+  assert.equal(
+    again.message,
+    "Edits on Plans haven't reached the server yet. They're saved in this browser and sync when you open that Page again.",
+  );
+  // Reload anyway: the checkpoints stay in IndexedDB for the next open.
+  assert.deepEqual(await g.reloadGate.reload({ reload: () => {}, acceptCheckpoints: true }), {
+    ok: true,
+  });
+});
+
+test("a failed checkpoint blocks Reload until its Markdown is downloaded or discarded", async () => {
+  const g = gate();
+  const left = new FakeSession("page-lost");
+  left.checkpointFails = true;
+  await leaveUnsaved(g, left);
+  await leaveUnsaved(g, new FakeSession("page-kept"));
+  const result = await g.reload();
+  assert.equal(result.reason, "unsaved");
+  assert.deepEqual(result.pages, [
+    {
+      account: "dev",
+      pageId: "page-lost",
+      title: "Garden notes",
+      checkpointWritten: false,
+      markdown: "# Garden notes\n\nUnsent edit\n",
+    },
+  ]);
+  assert.match(result.message, /^Edits on Garden notes couldn't be saved in this browser/);
+  // Reload anyway does not cover edits that exist nowhere else.
+  assert.equal(
+    (await g.reloadGate.reload({ acceptCheckpoints: true, reload() {} })).reason,
+    "unsaved",
+  );
+  assert.equal(g.reloaded(), 0);
+  g.reloadGate.discard(result.pages[0]);
+  assert.equal((await g.reload()).reason, "checkpointed");
+  // A close that throws keeps the export too.
+  const broken = new FakeSession("page-broken");
+  broken.close = async () => {
+    throw new Error("disk");
+  };
+  g.reloadGate.hold(broken);
+  const closing = g.reloadGate.drainAndClose(broken);
+  broken.set({ status: "Offline" });
+  await assert.rejects(closing, /disk/);
+  await settle();
+  assert.equal(g.reloadGate.closed.get("dev:page-broken").checkpointWritten, false);
+});
+
+test("a closed Page whose access was removed never traps Reload", async () => {
+  const g = gate();
+  const left = new FakeSession("page-revoked");
+  g.reloadGate.hold(left);
+  // Access removal stops the drain at once; close still writes the checkpoint.
+  left.set({ status: "Access removed" });
+  await g.reloadGate.drainAndClose(left);
+  await settle();
+  const result = await g.reload();
+  assert.equal(result.reason, "checkpointed");
+  assert.deepEqual(await g.reloadGate.reload({ acceptCheckpoints: true, reload() {} }), {
+    ok: true,
+  });
+  // A deleted Page has nothing to keep.
+  const deleted = new FakeSession("page-deleted");
+  g.reloadGate.hold(deleted);
+  const closing = g.reloadGate.drainAndClose(deleted);
+  deleted.set({ deleted: true });
+  await closing;
+  await settle();
+  assert.equal(g.reloadGate.closed.has("dev:page-deleted"), false);
 });
 
 test("navigation during the wait cancels the reload", async () => {

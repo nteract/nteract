@@ -476,15 +476,25 @@ visible. It never polls while hidden and never reloads by itself.
 | Floor above this viewer's protocol | "Pages changed on the server. This tab can't edit until you reload." | Paused; accepted edits keep saving |
 
 Reload covers everything the tab holds. It pauses edits and waits until every
-accepted edit on the open Page has a durable host receipt. A Page the person
-just left keeps syncing for up to 10 seconds before it closes, and Reload waits
-for that too. An unsent comment or reply blocks Reload until it is sent or
-discarded; while edits are paused, a typed draft stays visible read-only so it
-can be copied or discarded. If edits can't be saved (signed out, access removed,
-local storage failed, a left Page without its receipt, or 15 seconds without a
-receipt), the banner says why and the tab stays open. Opening another Page while
-Reload waits cancels it. A voluntary attempt that fails resumes editing; a
-raised floor keeps its own pause.
+accepted edit on the open Page has a durable host receipt. If those edits can't
+be saved (signed out, access removed, local storage failed, or 15 seconds
+without a receipt), the banner says why and the tab stays open. Opening another
+Page while Reload waits cancels it. A voluntary attempt that fails resumes
+editing; a raised floor keeps its own pause.
+
+A Page the person just left keeps syncing for up to 10 seconds, then closes and
+writes its IndexedDB checkpoint, which reopening imports. The tab then releases
+that Page's session and keeps only its account, id, title and whether the
+checkpoint was written. When a closed Page's edits never reached the server:
+
+| Checkpoint | Reload shows |
+| --- | --- |
+| Written | "Edits on _title_ haven't reached the server yet. They're saved in this browser and sync when you open that Page again." with Reload anyway and Open _title_ |
+| Failed | Names the Page and blocks Reload. Download edits as Markdown, then Discard and reload (or acknowledge the loss first) |
+
+An unsent comment or reply, on an open or resolved thread, blocks Reload until
+it is sent or discarded. A draft that can't be sent (edits paused, write access
+gone, or the thread resolved) stays visible read-only with Copy and Discard.
 
 The floor pauses supporting browser viewers; it does not enforce compatibility
 for older viewers or API clients. Viewers built before this mechanism never read

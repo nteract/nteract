@@ -656,7 +656,11 @@ function App() {
         </div>
       </header>
       {page && <div id="page-formatting" className="toolbar-host" ref={setToolbar} />}
-      <BuildUpdate session={session} />
+      <BuildUpdate
+        session={session}
+        principal={authentication.current?.identity?.principal}
+        onOpenPage={(id) => void open(id)}
+      />
       {error && (
         <p role="alert" className="error app-error">
           {error}

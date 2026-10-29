@@ -154,9 +154,19 @@ export function saveBeforeReload(
 export const CLOSE_DRAIN_MS = 10_000;
 const drainingStates = new Set(["Connecting", "Reconnecting", "Saving"]);
 export const UNSENT_COMMENT = "You have an unsent comment. Send or discard it before reloading.";
-export const LEFT_PAGE_UNSAVED =
-  "Edits on a Page you left haven't saved yet. Open it until it shows Saved, then reload.";
-const pageKey = (session) => `${session.identity?.principal}:${session.pageId}`;
+const keyOf = (account, pageId) => `${account}:${pageId}`;
+const pageKey = (session) => keyOf(session.identity?.principal, session.pageId);
+const names = (pages) => {
+  const titles = pages.map((page) => page.title);
+  return titles.length === 1 ? titles[0] : `${titles.slice(0, -1).join(", ")} and ${titles.at(-1)}`;
+};
+/** Closed Pages whose edits are only in this browser's IndexedDB checkpoint.
+ * Reopening a Page imports its checkpoint and syncs it. */
+export const checkpointedMessage = (pages) =>
+  `Edits on ${names(pages)} haven't reached the server yet. They're saved in this browser and sync when you open ${pages.length === 1 ? "that Page" : "those Pages"} again.`;
+/** Closed Pages whose final checkpoint failed: the edits exist nowhere else. */
+export const unsavedMessage = (pages) =>
+  `Edits on ${names(pages)} couldn't be saved in this browser and haven't reached the server. Download them before reloading, or they'll be lost.`;
 
 /** Wait, without retrying, while a Page being left is still saving. Leaving
  * must not hang: offline or failed states end the wait and the local
@@ -199,21 +209,29 @@ export function settleBeforeClose(
  * - the open Page's accepted edits (its receipt);
  * - Pages being left, which keep syncing until their receipt or CLOSE_DRAIN_MS;
  * - unsent comment drafts, which live only in React state.
- * Navigation during the wait cancels the attempt. */
+ * Navigation during the wait cancels the attempt.
+ *
+ * A left Page holds its session only while it drains. Once closed, the gate
+ * keeps plain metadata for a Page whose edits never reached the server:
+ * { account, pageId, title, checkpointWritten }, plus the Markdown export when
+ * the IndexedDB checkpoint failed, since that export is the only copy left. */
 export class ReloadGate {
   sessions = new Set();
-  closing = new Map();
+  draining = new Map();
+  closed = new Map();
   draftSources = new Set();
   epoch = 0;
   constructor({ timers = {}, closeTimeoutMs = CLOSE_DRAIN_MS } = {}) {
     Object.assign(this, { timers, closeTimeoutMs });
   }
-  /** Track the open Page. Opening a Page also supersedes an unsaved record a
-   * previous session of it left: this session loads that local checkpoint
-   * and owns its receipt. */
+  /** Track the open Page. Opening a Page also supersedes what a previous
+   * session of it left: this session loads that local checkpoint and owns its
+   * receipt. */
   hold(session) {
     this.epoch++;
-    this.closing.delete(pageKey(session));
+    const key = pageKey(session);
+    this.draining.delete(key);
+    this.closed.delete(key);
     this.sessions.add(session);
   }
   /** Leave a Page: let it finish saving, then close it. Returns the close. */
@@ -221,18 +239,48 @@ export class ReloadGate {
     this.epoch++;
     this.sessions.delete(session);
     const key = pageKey(session);
+    const page = { account: session.identity?.principal, pageId: session.pageId };
+    let markdown;
     const closed = settleBeforeClose(session, { ...this.timers, timeoutMs: this.closeTimeoutMs })
       .catch(() => false)
       .then(async (saved) => {
-        await session.close();
-        return saved;
+        if (!saved) {
+          // Read what a failed checkpoint would need while the document is live.
+          try {
+            page.title = session.doc?.title;
+            markdown = session.exportRecovery?.().markdown;
+          } catch {}
+        }
+        try {
+          await session.close();
+        } finally {
+          page.saved = saved || !!session.deleted;
+          page.checkpointWritten = session.checkpointWritten === true;
+        }
       });
-    const record = { session, saved: closed.catch(() => false) };
-    this.closing.set(key, record);
-    void record.saved.then((saved) => {
-      if (saved && this.closing.get(key) === record) this.closing.delete(key);
-    });
-    return closed.then(() => {});
+    const token = {};
+    token.settled = closed
+      .catch(() => {})
+      .then(() => {
+        if (this.draining.get(key) !== token) return;
+        this.draining.delete(key);
+        if (page.saved) return;
+        const { account, pageId, checkpointWritten } = page;
+        this.closed.set(key, {
+          account,
+          pageId,
+          title: page.title?.trim() || "Untitled",
+          checkpointWritten,
+          ...(checkpointWritten ? {} : { markdown: markdown ?? "" }),
+        });
+      });
+    this.draining.set(key, token);
+    return closed;
+  }
+  /** Forget a closed Page's unsent edits, after the person downloaded or
+   * explicitly discarded them. */
+  discard({ account, pageId }) {
+    this.closed.delete(keyOf(account, pageId));
   }
   watchDrafts(hasDraft) {
     this.draftSources.add(hasDraft);
@@ -242,9 +290,18 @@ export class ReloadGate {
     for (const hasDraft of this.draftSources) if (hasDraft()) return true;
     return false;
   }
-  /** Returns { ok: true } after calling reload, { ok: false, message }, or
-   * { ok: false, cancelled: true } when navigation changed what to save. */
-  async reload({ reload = () => globalThis.location.reload(), timeoutMs } = {}) {
+  /** Returns { ok: true } after calling reload, or { ok: false, ... }:
+   * - { message } when an open Page or comment draft can't be saved;
+   * - { reason: "unsaved", pages, message } when a closed Page's checkpoint
+   *   failed: download or discard each, then try again;
+   * - { reason: "checkpointed", pages, message } when closed Pages wait in
+   *   IndexedDB; pass acceptCheckpoints to reload anyway;
+   * - { cancelled: true } when navigation changed what to save. */
+  async reload({
+    reload = () => globalThis.location.reload(),
+    timeoutMs,
+    acceptCheckpoints = false,
+  } = {}) {
     if (this.hasDrafts()) return { ok: false, message: UNSENT_COMMENT };
     const epoch = this.epoch;
     const live = [...this.sessions].filter((session) => {
@@ -259,14 +316,23 @@ export class ReloadGate {
     try {
       const results = await Promise.all([
         ...live.map((session) => saveBeforeReload(session, { ...this.timers, timeoutMs })),
-        ...[...this.closing.values()].map(async ({ saved }) =>
-          (await saved) ? { ok: true } : { ok: false, message: LEFT_PAGE_UNSAVED },
-        ),
+        ...[...this.draining.values()].map(({ settled }) => settled.then(() => ({ ok: true }))),
       ]);
       if (epoch !== this.epoch) return { ok: false, cancelled: true };
       if (this.hasDrafts()) return { ok: false, message: UNSENT_COMMENT };
       const failed = results.find((result) => !result.ok);
       if (failed) return failed;
+      const closed = [...this.closed.values()].map((page) => ({ ...page }));
+      const unsaved = closed.filter((page) => !page.checkpointWritten);
+      if (unsaved.length)
+        return { ok: false, reason: "unsaved", pages: unsaved, message: unsavedMessage(unsaved) };
+      if (closed.length && !acceptCheckpoints)
+        return {
+          ok: false,
+          reason: "checkpointed",
+          pages: closed,
+          message: checkpointedMessage(closed),
+        };
       reloaded = true;
       reload();
       return { ok: true };

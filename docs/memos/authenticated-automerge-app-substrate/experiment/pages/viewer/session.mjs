@@ -1414,10 +1414,15 @@ export class PageSession {
     clearTimeout(this.retryTimer);
     clearInterval(this.presenceTimer);
     globalThis.removeEventListener?.("online", this.onlineListener);
+    // checkpointWritten: an IndexedDB record holds every edit this replica
+    // accepted, so reopening the Page imports it. The flow that sets
+    // skipCloseCheckpoint has already written its own recovery record.
+    this.checkpointWritten = !!this.skipCloseCheckpoint;
     try {
       if (!this.deleted && !this.skipCloseCheckpoint) {
         await this.repo?.flush();
         await this.persistLocal({ pending: this.status !== "Saved" }, { allowClosed: true });
+        this.checkpointWritten = !!this.localPage && !!this.handle;
       }
     } catch (error) {
       if (error.code === "LOCAL_PAGE_DELETED") {
@@ -1430,6 +1435,7 @@ export class PageSession {
         this.status = "Local save failed";
       }
     }
+    this.checkpointSnapshot = this.checkpointHeads = undefined;
     await this.releaseLocal();
   }
   async releaseLocal() {

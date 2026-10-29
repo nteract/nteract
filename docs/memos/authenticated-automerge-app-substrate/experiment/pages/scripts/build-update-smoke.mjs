@@ -95,8 +95,9 @@ try {
   assert.equal(session.minViewerProtocol, "1");
   const viewerSource = await (await fetch(`${origin}/app.js`)).text();
   assert.ok(viewerSource.includes(JSON.stringify(buildA)), "viewer embeds the Worker's build");
+  const title = `Deploy fixture ${Date.now()}`;
   const created = await tool(owner, "create_page", {
-    title: `Deploy fixture ${Date.now()}`,
+    title,
     markdown: "Deploy garden.",
     idempotency_key: crypto.randomUUID(),
   });
@@ -126,6 +127,37 @@ try {
   await owner.screenshot({ path: `${output}/update-banner.png` });
   // An optional update never pauses editing.
   await expect(content(owner)).toHaveAttribute("contenteditable", "true");
+
+  // Leave the Page while receipts fail. After the drain it closes with its
+  // IndexedDB checkpoint and the tab keeps only its title. Reload names it and
+  // asks first; Open brings the checkpoint back and it syncs.
+  await owner.route("**/api/saved?*", (route) => route.abort());
+  await owner.keyboard.insertText(" Checkpointed.");
+  await owner.getByRole("link", { name: "Pages", exact: true }).click();
+  await expect(owner.getByRole("heading", { name: "Your pages" })).toBeVisible();
+  await owner.evaluate(() => {
+    window.__pagesBeforeReload = true;
+  });
+  await banner(owner).getByRole("button", { name: "Reload" }).click();
+  await expect(banner(owner)).toContainText(
+    `Edits on ${title} haven't reached the server yet. They're saved in this browser and sync when you open that Page again.`,
+    { timeout: 30000 },
+  );
+  await expect(banner(owner).getByRole("button", { name: "Reload anyway" })).toBeVisible();
+  assert.equal(await owner.evaluate(() => window.__pagesBeforeReload), true, "no reload");
+  await owner.screenshot({ path: `${output}/checkpointed-confirm.png` });
+  await owner.unrouteAll({ behavior: "wait" });
+  await banner(owner)
+    .getByRole("button", { name: `Open ${title}` })
+    .click();
+  await expect(content(owner)).toContainText("During deploy. Checkpointed.", { timeout: 30000 });
+  await expect(saved(owner)).toBeVisible({ timeout: 30000 });
+  await expect(banner(owner).getByRole("button", { name: "Reload", exact: true })).toBeVisible();
+  report.completed.push(
+    "Left a Page without its receipt: Reload named it and asked first; Open restored the checkpoint and saved it",
+  );
+  await content(owner).focus();
+  await owner.keyboard.press("ControlOrMeta+End");
 
   // Leave the Page while its receipt is in flight, then Reload from the
   // library. The left Page keeps syncing, and Reload waits for its receipt.
@@ -159,12 +191,18 @@ try {
   await owner.unrouteAll({ behavior: "wait" });
   await expect(banner(owner)).toHaveCount(0);
   await owner.goto(`${origin}/p/${pageId}`);
-  await expect(content(owner)).toContainText("Before deploy. During deploy. After banner.", {
-    timeout: 30000,
-  });
+  await expect(content(owner)).toContainText(
+    "Before deploy. During deploy. Checkpointed. After banner.",
+    {
+      timeout: 30000,
+    },
+  );
   assert.equal((await api(owner, "/health")).body.build, buildB);
   const afterUpdate = await tool(owner, "read_page", { page_id: pageId });
-  assert.match(JSON.stringify(afterUpdate.body), /Before deploy\. During deploy\. After banner\./);
+  assert.match(
+    JSON.stringify(afterUpdate.body),
+    /Before deploy\. During deploy\. Checkpointed\. After banner\./,
+  );
   report.completed.push(
     `Deploy to ${buildB} under an open tab: banner on reconnect; Reload after leaving the Page waited for its receipt`,
   );

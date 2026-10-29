@@ -108,13 +108,18 @@ export function CommentsPanel({
     return () => cancelAnimationFrame(frame);
   }, [open, target]);
   const changeDraft = (id, value) => setDrafts((previous) => ({ ...previous, [id]: value }));
-  // Drafts exist only here, so a reload must ask about the ones a person can
-  // still reach: the composer and replies on open threads.
+  // Drafts exist only here, so a reload asks about every draft that still has
+  // a place in this panel: the composer and a reply on any thread, open or
+  // resolved. Each of those stays reachable to copy or discard.
   const unsent = useRef(false);
-  unsent.current = [composer?.key, ...threads.filter((t) => t.state === "open").map((t) => t.id)]
+  unsent.current = [composer?.key, ...threads.map((t) => t.id)]
     .filter(Boolean)
     .some((id) => hasDraft(drafts[id]));
   useEffect(() => reloadGate.watchDrafts(() => unsent.current), []);
+  const resolvedDraft = threads.some((t) => t.state === "resolved" && hasDraft(drafts[t.id]));
+  useEffect(() => {
+    if (resolvedDraft && resolvedDisclosure.current) resolvedDisclosure.current.open = true;
+  }, [resolvedDraft, visited]);
   let quote = composer?.quote || "",
     draftProblem = "";
   if (composer) {
@@ -237,7 +242,7 @@ export function CommentsPanel({
             {problem}
           </p>
         )}
-        {composer && (session.canWrite || keptWhilePaused(session, drafts[composer.key])) && (
+        {composer && (session.canWrite || hasDraft(drafts[composer.key])) && (
           <div className="comment-composer" ref={composerElement}>
             {quote && <blockquote className="composer-context">{quote}</blockquote>}
             {draftProblem && (
@@ -283,7 +288,9 @@ export function CommentsPanel({
         {(open || visited) && unresolved.map(renderThread)}
         {resolved.length > 0 && (
           <details className="resolved-threads" ref={resolvedDisclosure}>
-            <summary>Resolved ({resolved.length})</summary>
+            <summary>
+              Resolved ({resolved.length}){resolvedDraft ? " · unsent reply" : ""}
+            </summary>
             {(open || visited) && resolved.map(renderThread)}
           </details>
         )}
@@ -293,9 +300,6 @@ export function CommentsPanel({
 }
 
 const hasDraft = (value) => Boolean((value?.markdown ?? value)?.trim());
-/** Paused edits (a reload or a retired viewer) hide comment forms, except a
- * draft already typed: it stays visible, read-only, and can be discarded. */
-const keptWhilePaused = (session, value) => session.editsPaused && hasDraft(value);
 
 function CommentThread({
   thread,
@@ -321,7 +325,11 @@ function CommentThread({
   const blockId =
     thread.target.kind === "selection" ? thread.target.anchor.blockId : thread.target.blockId;
   const blockSurvives = Object.hasOwn(session.doc.blocks, blockId);
-  const canReply = session.canWrite || keptWhilePaused(session, value);
+  const canReply = session.canWrite && thread.state === "open";
+  // A typed reply that can't be sent (edits paused, access lost, or the
+  // thread resolved) stays visible, read-only, so it can be copied or
+  // discarded. Reload counts it until then.
+  const keptDraft = !canReply && hasDraft(value);
   useEffect(() => {
     if (!session.canWrite) setPending(false);
   }, [session.canWrite]);
@@ -420,7 +428,7 @@ function CommentThread({
             {replies.length} {replies.length === 1 ? "reply" : "replies"}
           </button>
         )}
-        {canReply && thread.state === "open" && (
+        {canReply && (
           <button
             ref={replyButton}
             type="button"
@@ -448,17 +456,18 @@ function CommentThread({
           </div>
         ))}
       </div>
-      {canReply && thread.state === "open" && replyStarted && (
-        <div ref={form} hidden={!replying}>
+      {((canReply && replyStarted) || keptDraft) && (
+        <div ref={form} hidden={!replying && !keptDraft}>
+          {keptDraft && <p className="muted thread-kept-draft">Unsent reply</p>}
           <CommentForm
             label="Reply"
             compact
             value={value}
             onChange={onChange}
-            disabled={!session.canWrite}
+            disabled={!canReply}
             onDiscard={() => {
               onChange("");
-              hideReply();
+              hideReply(!keptDraft);
             }}
             submit={(body, spans) =>
               session.comment(
@@ -477,7 +486,7 @@ function CommentThread({
               setRepliesExpanded(true);
               hideReply(restoreFocus);
             }}
-            onCancel={() => hideReply()}
+            onCancel={keptDraft ? undefined : () => hideReply()}
             cancelLabel="Hide reply"
           />
         </div>
@@ -503,7 +512,9 @@ function CommentForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [draftError, setDraftError] = useState("");
+  const [copied, setCopied] = useState(false);
   const mounted = useRef(true);
+  useEffect(() => setCopied(false), [body]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -557,6 +568,22 @@ function CommentForm({
         {onCancel && (
           <button type="button" className="subtle-button" onClick={onCancel} disabled={busy}>
             {cancelLabel}
+          </button>
+        )}
+        {disabled && body.trim() && (
+          <button
+            type="button"
+            className="subtle-button"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(body);
+                if (mounted.current) setCopied(true);
+              } catch {
+                if (mounted.current) setError("Couldn't copy. Select the text and copy it.");
+              }
+            }}
+          >
+            {copied ? "Copied" : "Copy"}
           </button>
         )}
         {onDiscard && body.trim() && (
