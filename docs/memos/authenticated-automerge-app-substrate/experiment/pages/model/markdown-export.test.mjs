@@ -120,9 +120,15 @@ test("unsent comments quote their passage and list only what the saved state lac
   };
   const section = unsentCommentsMarkdown(current, saved);
   assert.match(section, /^\n---\n\n## Unsent comments\n\nThese comments and replies never reached/);
-  assert.match(section, /### On “Block text”\n\nThread t1\n\n\*\*Ada\*\* · edited · 2\n\n> After edit/);
+  assert.match(
+    section,
+    /### On “Block text”\n\nThread t1\n\n\*\*Ada\*\* · edited · 2\n\n> After edit/,
+  );
   assert.match(section, /\*\*Ada\*\* · reply · 3\n\n> Two lines\n> of reply/);
-  assert.match(section, /### On “picked words”\n\nThread t2\n\n\*\*Ada\*\* · comment · 6\n\n> Fresh/);
+  assert.match(
+    section,
+    /### On “picked words”\n\nThread t2\n\n\*\*Ada\*\* · comment · 6\n\n> Fresh/,
+  );
   assert.doesNotMatch(section, /> Sent|Gone/);
   assert.equal(unsentCommentsMarkdown(saved, saved), "");
   assert.match(unsentCommentsMarkdown(saved, null), /may not have reached the server[\s\S]*> Sent/);
