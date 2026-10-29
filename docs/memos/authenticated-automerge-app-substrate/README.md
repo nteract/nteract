@@ -3,8 +3,10 @@
 **Status:** Research with an actively maintained application experiment.
 [Pages](experiment/pages/README.md) exercises the editor and authenticated backend
 in a separately deployable celld service. Its README describes current behavior,
-development, testing, and deployment. Production notebook adoption remains
-undecided.
+development, testing, and deployment. The Page8 QA service runs on celld 0.6.3
+on a lab host; that is an experiment deployment, not an accepted production
+substrate. The [celld memo](../celld-hosted-room-substrate.md) tracks its unmet
+promotion gates. Production notebook adoption remains undecided.
 
 We want another application to reuse document loading, synchronization,
 persistence, presence, and authenticated attribution without rebuilding our

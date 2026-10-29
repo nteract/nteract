@@ -1,6 +1,9 @@
 # celld as a Hosted Room Substrate
 
-**Status:** Memo / proposal, 2026-09-11. Not an accepted deployment decision.
+**Status:** Proposal. Deployment status as of 2026-10-29. Not an accepted
+deployment decision. celld hosts managed
+notebook-cloud previews and the Pages experiment's Page8 QA service. Neither
+is an accepted production substrate; the promotion gates below are unmet.
 
 This memo looks at what changes, and what doesn't, if hosted notebook rooms run
 on [celld](https://github.com/denoland/celld) instead of Cloudflare's own
@@ -14,16 +17,37 @@ depends on Cloudflare Tunnel for public ingress and Anaconda for identity).
 Related:
 
 - [Deployment Topology](../adr/deployment-topology.md) — Decision 1 names
-  Cloudflare as the current hosted document engine and points at
-  `aws-rust-room-host.md` as the only proposed alternative.
+  Cloudflare as the hosted document engine. Its "Current deployments" note
+  lists where each hosted deployment runs today.
 - [Authenticated Automerge application infrastructure](authenticated-automerge-app-substrate/README.md)
   explores reusable synchronization and account authorization independently
-  of the host runtime choice. It does not qualify Subduction on celld or
-  change the promotion gates below.
+  of the host runtime choice. Its [Pages experiment](authenticated-automerge-app-substrate/experiment/pages/DEPLOYMENT.md)
+  runs on celld as an isolated QA service. That deployment does not change
+  the promotion gates below.
 - [AWS Rust Room Host](aws-rust-room-host.md) — a from-scratch Rust
   reimplementation of the room host on Postgres/S3.
 - `~/projects/sandbox/celld-lab/{README.md,NOTES-celld.md}` — the proof's
   terraform, deploy scripts, and verified field notes (not in this repo).
+
+## celld deployments today
+
+celld hosts notebook-cloud previews and the Page8 QA service.
+
+| Deployment | What runs | Runtime and storage | Source |
+|------------|-----------|---------------------|--------|
+| `main.runtimed.run` and `<id>.runtimed.run` PR previews | `apps/notebook-cloud` Workers, packaged by `scripts/celld-local.mjs export` in CI | celld on EC2. The private `nteract/preview-infra` controller owns the runtime version, bindings, storage, and credentials. This repo does not pin that runtime. | `.github/preview/README.md`, `apps/notebook-cloud/DEPLOY.md` |
+| `page8.runtimed.run` | Pages experiment: `Page`, `Catalog`, and `PageRecords` Durable Objects; D1 for server sessions and MCP OAuth state; R2 `PAGES_ASSETS` for images | Official celld 0.6.3 Linux x86_64, SHA-256 pinned in `CELLD_RELEASE`. One profile host, `lab1`. `CELLD_DURABILITY=bucket` against an S3 fleet bucket under `standalone/page8`. Ingress through a dedicated Cloudflare Tunnel. Anaconda production OIDC. | `authenticated-automerge-app-substrate/experiment/pages/DEPLOYMENT.md`, `scripts/build.mjs`, `scripts/deployment/profiles.mjs`, `scripts/deployment/install.mjs` |
+
+Page7 and earlier Pages services are frozen; the deploy helpers refuse to
+mutate them. `preview.runt.run` stays on Cloudflare.
+
+Both lines still depend on Cloudflare: `runtimed.run` is a Cloudflare DNS
+zone, and Page8 ingress runs through a Cloudflare Tunnel. In `bucket` mode a
+celld node answers a write only after it reaches the bucket, one object-store
+round trip per write
+([celld README at v0.6.3](https://github.com/denoland/celld/blob/8702f6d186c77698dbfb30cf29e3b1922a88f008/README.md#ownership-and-durability)).
+Page8's own release checks cover process restart, not power loss or
+object-store failover.
 
 ## Why this is a different axis than the Rust room host
 
@@ -78,16 +102,49 @@ how fixable they are from our side:
 **Open, not yet proven either way:**
 - Multi-node failover: bring up a second node, kill the room owner mid-session,
   measure takeover (the August 0.3 proof saw 3–4s takeover, ~30s client
-  reconnect — the reconnect gap is ours to shorten, not celld's).
+  reconnect — the reconnect gap is ours to shorten, not celld's). The Page8
+  profile also names a single host, so Page8 has no failover measurement either.
 - Whether one celld deployment can host multiple Workers behind host-based
   routing, collapsing the app/outputs/renderer-assets split to one process.
-- `celld d1 migrations apply` against a fleet bucket instead of the ~30–120s
-  lazy schema bootstrap on first catalog access.
+- D1 schema setup on a fleet. See the D1 caveat below.
 
 None of these are blocking for a lab proof. Several are blocking for treating
 `app.runt.run` as more than a demo box: single-node means unattended-upgrade
 restarts are an outage (observed 2026-09-11, 16s down), and the 3–4s/30s
 failover numbers are unmeasured on this deployment's Cloudflare Tunnel path.
+The same single-node limit applies to Page8.
+
+### D1 caveat
+
+The September proof saw a ~30–120s lazy schema bootstrap on first catalog
+access. That number comes from the field notes outside this repo. No
+measurement in this repo repeats it on celld 0.6.3, so treat it as unverified
+for the runtime Page8 pins.
+
+What the source shows today:
+
+- celld 0.6.3 documents `celld d1 migrations apply`, which runs migrations
+  through a live node against the fleet bucket. celld also creates a database
+  on first use, so a misspelled `database_id` opens an empty database
+  ([D1 at v0.6.3](https://github.com/denoland/celld/blob/8702f6d186c77698dbfb30cf29e3b1922a88f008/docs/services/d1.md)).
+- No deploy path in this repo runs that command. The notebook-cloud exporter
+  ships `migrations_dir` for it; whether the private preview controller runs
+  it is not visible here. The app bootstraps its catalog schema on first use
+  either way (`ensureCatalogSchema` in
+  `apps/notebook-cloud/src/storage.ts`). Pages bootstraps its D1 tables the
+  same way, with `CREATE TABLE IF NOT EXISTS` in `worker/oauth-store.mjs` and
+  `apps/notebook-cloud/src/oidc-session-store.ts`. Pages `install.mjs` runs
+  `celld deploy`, not D1 migrations.
+- A celld D1 database has one writer. Every statement dispatches to the cell
+  that owns the database; `batch()` groups statements into one dispatch and
+  one transaction. A binding result is capped at 100,000 rows or 32 MiB.
+
+Pages stores sign-in sessions and MCP OAuth state in D1. Its Page catalog
+lives in `Catalog` Durable Objects. Moving a catalog index into D1 puts lazy schema
+bootstrap and single-writer dispatch on the listing path. Measure a cold first
+access on celld 0.6.3 before relying on it, and exercise
+`celld d1 migrations apply` on a fleet bucket before calling fleet migrations
+proven.
 
 ## Promotion gates
 
@@ -138,6 +195,26 @@ or all supported deployment platforms were retested. Native authority and the
 other promotion requirements remain open until reviewed exact-candidate evidence
 is complete.
 
+### Gate status by deployment
+
+Checked 2026-10-29 against this repo, the nteract issue tracker, and celld
+release notes v0.6.0 through v0.6.3. The first two rows are the promotion
+gates above. The last two are open items from "What the proof cost".
+
+| Gate or open item | notebook-cloud previews | Page8 (celld 0.6.3) |
+|------|-------------------------|---------------------|
+| Activation authority (#4295) | Unmet. Issue open. Controller runtime not pinned here. | Unmet. Issue open. No qualification record for the pinned 0.6.3 hash. The v0.6.x release notes do not mention activation revocation. |
+| HTTP shared-promise ownership (#4296) | Unmet. Issue open. | Unmet. Issue open. Not separately qualified. |
+| Multi-node failover | No measurement in this repo. Node count is controller-owned. | Unmeasured. The profile names one host. |
+| Fleet D1 migrations | Unknown here. The export ships `migrations_dir`; the controller owns schema setup; the app also bootstraps lazily. | The installer does not invoke fleet migrations. The application initializes its D1 schema on first use. |
+
+Page8 adds application-level defense for one part of the activation problem.
+A new Page incarnation acquires a durable generation, and `PageRecords` fences
+out record writes from an older incarnation
+([UPSTREAM.md](authenticated-automerge-app-substrate/experiment/UPSTREAM.md)).
+That covers buffered record writes only. It is not host revocation and does
+not meet the activation-authority gate.
+
 ## Open questions
 
 1. Is the product driver for celld actually BYOC/self-hosted, or is it ops
@@ -147,9 +224,11 @@ is complete.
 2. Does a second lab node change the failover story enough to trust celld for
    anything beyond a demo, or does the reconnect gap live in our client code
    regardless of host?
-3. Should `apps/notebook-cloud`'s export step (`scripts/celld-local.mjs`)
-   become a first-class, tested deploy target, or stay a lab-only script until
-   question 1 has an answer?
+3. `apps/notebook-cloud`'s export step (`scripts/celld-local.mjs export`)
+   packages the managed preview bundles. CI exports bundles on every `main`
+   push, qualifying Build runs, and authorized PR preview runs. Should it also become a supported self-hosted deploy target,
+   or stay tied to the private preview controller until question 1 has an
+   answer?
 4. Do we want to push the idle-isolate-retirement knob and the
    `X-Forwarded-Proto`-only trust option upstream to celld, or keep carrying
    local workarounds?

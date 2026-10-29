@@ -134,13 +134,32 @@ References:
 
 ## Decision 1: Cloudflare is the hosted document engine
 
-This decision records the current Cloudflare prototype and the shipped
-`preview.runt.run` path. `../memos/aws-rust-room-host.md` explores a native Rust
-room host on AWS as a possible future hosted target while preserving the
-typed-frame protocol and document model. As of 2026-09-04, that memo remains a
-proposal, not a superseding deployment decision or an implemented hosting
-alternative. The current hosted implementation still depends on Cloudflare
-Workers, Durable Objects, D1, and R2.
+This decision records the Cloudflare prototype and the shipped
+`preview.runt.run` path. The hosted implementation depends on the Workers API:
+Durable Objects, D1, and R2 bindings. Two proposals explore other hosts for the
+same document engine. `../memos/aws-rust-room-host.md` sketches a native Rust
+room host on AWS. `../memos/celld-hosted-room-substrate.md` describes running
+the same Worker code on [celld](https://github.com/denoland/celld), which hosts those
+bindings outside Cloudflare against a fleet bucket. Neither memo is an accepted
+deployment decision.
+
+### Current deployments
+
+**Status note, 2026-10-29.** The Worker and Durable Object room-host model in
+this decision runs on two substrates today. This note records where each
+deployment runs. Cloudflare remains the primary hosted topology described by
+this draft ADR.
+
+| Deployment | App | Substrate | Identity | Source |
+|------------|-----|-----------|----------|--------|
+| `preview.runt.run` | `apps/notebook-cloud` | Cloudflare Workers, Durable Objects, D1, R2 | Anaconda stage OIDC | `apps/notebook-cloud/wrangler.toml`, `apps/notebook-cloud/DEPLOY.md` |
+| `main.runtimed.run` and `<id>.runtimed.run` PR previews | `apps/notebook-cloud` | celld on EC2, run by the private `nteract/preview-infra` controller | Controller-owned | `.github/preview/README.md`, `celld-local.mjs export` in `.github/workflows/build.yml` and `preview-reusable.yml` |
+| `page8.runtimed.run` | Pages experiment | celld 0.6.3 on the `lab1` host, `CELLD_DURABILITY=bucket`, S3 fleet bucket, Cloudflare Tunnel ingress | Anaconda production OIDC | `../memos/authenticated-automerge-app-substrate/experiment/pages/DEPLOYMENT.md`, `scripts/deployment/profiles.mjs` and `install.mjs` |
+
+Pages is a separate application, not a notebook room host. Page8 is an
+isolated QA target; Page7 and earlier Pages services are frozen. The celld
+memo's promotion gates are unmet for every celld deployment above. See its
+"Promotion gates" section for the per-gate status.
 
 The primary hosted topology is a Cloudflare Worker routing room requests to one
 Durable Object per notebook room. The Durable Object is the live room host:
@@ -309,7 +328,9 @@ metadata and an ACL grant, not part of the room address.
 
 ## Decision 6: Durable state is split by responsibility
 
-The hosted room uses each Cloudflare storage product for the part it is good at:
+The hosted room uses each Workers storage binding for the part it is good at.
+On Cloudflare these are the named products. On celld the same bindings persist
+to the deployment's fleet bucket.
 
 - **Durable Object memory**: live WASM handle, per-peer sync state, pending
   debounced persistence, transient broadcast queues.
