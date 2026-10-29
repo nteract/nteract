@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import gzip
+import logging
 import sys
+import threading
 import time
 from types import SimpleNamespace
 from typing import Any, cast
@@ -25,6 +29,7 @@ from nteract_kernel_launcher._bokeh_session import (
     BokehBuffer,
     BokehDelta,
     BokehDocumentSession,
+    BokehFoldResult,
     BokehPatchApplyError,
     ref_props,
     session_registry,
@@ -721,6 +726,215 @@ def test_apply_error_publishes_current_values_of_all_touched_keys():
     }
 
 
+def test_equal_array_in_another_encoding_needs_no_correction():
+    """Peers gzip base64 buffers with other settings than Python, so the JSON differs."""
+    np = pytest.importorskip("numpy")
+    from bokeh.core.serialization import Serializer
+    from bokeh.document import Document
+    from bokeh.models import FixedTicker
+
+    document = Document()
+    ticker = FixedTicker(ticks=np.arange(300.0))
+    document.add_root(ticker)
+    session = BokehDocumentSession(document, [ticker], producer_name="test", producer_version="0")
+    requested = Serializer(deferred=False).encode(ticker.ticks)
+    raw = gzip.decompress(base64.b64decode(requested["array"]["data"]))
+    requested["array"]["data"] = base64.b64encode(
+        gzip.compress(raw, compresslevel=1, mtime=0)
+    ).decode()
+
+    result = session.apply_patch(patch={"events": [_model_changed(ticker.id, "ticks", requested)]})
+
+    assert result.delta is None
+    session.close()
+
+
+def test_callback_joining_a_thread_that_changes_the_document_does_not_deadlock():
+    pytest.importorskip("bokeh")
+    from bokeh.document import Document
+    from bokeh.models import Div, Row, Slider
+
+    document = Document()
+    slider = Slider(start=0, end=10, value=0)
+    div = Div(text="before")
+    row = Row(children=[slider, div])
+    document.add_root(row)
+    session = BokehDocumentSession(document, [row], producer_name="test", producer_version="0")
+    delivered: list[BokehDelta] = []
+    session.set_event_sink(delivered.append)
+
+    def on_value(attr, old, new):
+        worker = threading.Thread(target=setattr, args=(div, "text", f"worker {new}"), daemon=True)
+        worker.start()
+        worker.join()
+
+    slider.on_change("value", on_value)
+    results = []
+    patcher = threading.Thread(
+        target=lambda: results.append(
+            session.apply_patch(
+                transaction_id="tx", patch={"events": [_model_changed(slider.id, "value", 5)]}
+            )
+        ),
+        daemon=True,
+    )
+    patcher.start()
+    patcher.join(5)
+
+    assert not patcher.is_alive(), "apply_patch deadlocked"
+    [result] = results
+    assert result.delta is not None
+    assert result.delta.transaction_id == "tx"
+    assert result.delta.props_changed == {div.id: {"text": "worker 5"}}
+    assert delivered == [result.delta]
+    session.close()
+
+
+def test_fold_from_another_thread_during_a_foreign_patch_follows_its_delta():
+    """Folding mid-transaction would encode rows whose stream is not versioned yet."""
+    pytest.importorskip("bokeh")
+    session, source, checkpoint, delivered = _data_session(
+        {"x": list(range(100)), "y": list(range(100))}
+    )
+    plot = session.roots[0]
+    folds = []
+
+    def on_width(attr, old, new):
+        source.stream({"x": [100], "y": [100]})
+        worker = threading.Thread(
+            target=lambda: folds.append(session.fold([source.id], transaction_id="fold")),
+            daemon=True,
+        )
+        worker.start()
+        worker.join()
+
+    plot.on_change("width", on_width)
+    patcher = threading.Thread(
+        target=session.apply_patch,
+        kwargs={"patch": {"events": [_model_changed(plot.id, "width", 300)]}},
+        daemon=True,
+    )
+    patcher.start()
+    patcher.join(5)
+
+    assert not patcher.is_alive(), "apply_patch deadlocked"
+    assert folds == [BokehFoldResult([], deferred=True)]
+    events = _data_events(delivered)
+    assert [event["kind"] for event in events] == ["ColumnsStreamed", "ColumnsFolded"]
+    assert delivered[-1].transaction_id == "fold"
+    assert events[-1]["version"] == 1
+    replayed = _replayed_source(checkpoint, delivered, source.id)
+    assert list(replayed.data["x"]) == list(source.data["x"])
+    session.close()
+
+
+def _row_session():
+    from bokeh.document import Document
+    from bokeh.models import Row, Slider
+
+    document = Document()
+    slider = Slider(start=0, end=10, value=0)
+    row = Row(children=[slider])
+    document.add_root(row)
+    session = BokehDocumentSession(document, [row], producer_name="test", producer_version="0")
+    delivered: list[BokehDelta] = []
+    session.set_event_sink(delivered.append)
+    return session, row, slider, delivered
+
+
+def test_unencodable_property_is_logged_and_does_not_block_later_deltas(caplog):
+    pytest.importorskip("bokeh")
+    from bokeh.models import Div
+
+    session, row, slider, delivered = _row_session()
+    bad = Div(text="bad", tags=[object()])
+
+    with caplog.at_level(logging.WARNING, logger="nteract_kernel_launcher"):
+        # Without a loop each change flushes inline, inside the user's assignment.
+        row.children = [slider, bad]
+        slider.value = 3
+
+    added, changed = delivered
+    assert added.models_added[bad.id]["props"] == {"text": "bad"}
+    assert added.props_changed == {row.id: {"children": [{"id": slider.id}, {"id": bad.id}]}}
+    assert changed.props_changed == {slider.id: {"value": 3}}
+    assert "tags" in caplog.text
+    session.close()
+
+
+def test_unencodable_message_is_logged_and_dropped(caplog):
+    pytest.importorskip("bokeh")
+    from bokeh.document.events import MessageSentEvent
+
+    session, _row, slider, delivered = _row_session()
+
+    with caplog.at_level(logging.WARNING, logger="nteract_kernel_launcher"):
+        session.document.callbacks.trigger_on_change(
+            MessageSentEvent(session.document, "custom", object())
+        )
+        slider.value = 4
+
+    assert [delta.messages for delta in delivered] == [[]]
+    assert delivered[0].props_changed == {slider.id: {"value": 4}}
+    assert "custom" in caplog.text
+    session.close()
+
+
+def test_unencodable_stream_is_logged_and_sent_as_a_replacement(caplog):
+    pytest.importorskip("bokeh")
+    session, source, _checkpoint, delivered = _data_session({"x": [0, 1], "y": ["a", "b"]})
+
+    with caplog.at_level(logging.WARNING, logger="nteract_kernel_launcher"):
+        source.stream({"x": [2], "y": [object()]})
+        source.stream({"x": [3], "y": ["d"]})
+
+    replaced, streamed = [e for e in _data_events(delivered) if e["kind"] != "ColumnsFolded"]
+    assert replaced["kind"] == "ColumnDataChanged"
+    assert (replaced["base_version"], replaced["new_version"]) == (0, 1)
+    # The column that cannot be encoded is left out rather than failing the delta.
+    assert replaced["columns"] == {"x": [0, 1, 2]}
+    assert (streamed["base_version"], streamed["new_version"]) == (1, 2)
+    assert "ColumnsStreamed" in caplog.text
+    session.close()
+
+
+def test_failed_build_commits_no_versions_and_keeps_its_events(monkeypatch, caplog):
+    pytest.importorskip("bokeh")
+    session, source, checkpoint, delivered = _data_session(
+        {"x": list(range(10)), "y": list(range(10))}
+    )
+    plot = session.roots[0]
+
+    def on_width(attr, old, new):
+        source.stream({"x": [10], "y": [10]})
+        session.document.title = "streamed"
+
+    plot.on_change("width", on_width)
+    meta = BokehDocumentSession._meta
+    failures = []
+
+    def fail_once(self):
+        if not failures:
+            failures.append(True)
+            raise RuntimeError("build failed")
+        return meta(self)
+
+    monkeypatch.setattr(BokehDocumentSession, "_meta", fail_once)
+
+    with caplog.at_level(logging.ERROR, logger="nteract_kernel_launcher"):
+        session.apply_patch(patch={"events": [_model_changed(plot.id, "width", 300)]})
+        source.stream({"x": [11], "y": [11]})
+
+    assert failures
+    assert "build failed" in caplog.text
+    events = [event for event in _data_events(delivered) if event["kind"] != "ColumnsFolded"]
+    assert [(event["base_version"], event["new_version"]) for event in events] == [(0, 1), (1, 2)]
+    assert any(delta.meta == {"root_ids": [plot.id], "title": "streamed"} for delta in delivered)
+    replayed = _replayed_source(checkpoint, delivered, source.id)
+    assert list(replayed.data["x"]) == list(source.data["x"])
+    session.close()
+
+
 # ── Data events and folding ──────────────────────────────────────────────
 
 
@@ -837,13 +1051,109 @@ def test_fold_on_demand():
     )
     source.stream({"x": [1000], "y": [1000]})
 
-    assert session.fold(transaction_id="fold-1") == [source.id]
+    assert session.fold(transaction_id="fold-1") == BokehFoldResult([source.id])
     assert delivered[-1].transaction_id == "fold-1"
     assert delivered[-1].data_events[0]["kind"] == "ColumnsFolded"
     # Nothing left to fold unless a source is named explicitly.
-    assert session.fold() == []
-    assert session.fold([source.id, "missing"]) == [source.id]
+    assert session.fold() == BokehFoldResult([])
+    assert session.fold([source.id, "missing"]) == BokehFoldResult([source.id])
     session.close()
+
+
+@pytest.mark.parametrize("release", ["unhold", "drain"])
+def test_fold_requested_while_held_follows_once_the_hold_ends(kernel, release):
+    """A refused fold would leave a late joiner waiting for columns that never come."""
+    pytest.importorskip("bokeh")
+
+    async def run():
+        session, source, checkpoint, delivered = _data_session(
+            {"x": list(range(100)), "y": list(range(100))}
+        )
+        session_registry.register(session)
+        session.set_event_sink(delivered.append)
+        source.stream({"x": [100], "y": [100]})
+        session.document.hold()
+        source.stream({"x": [101], "y": [101]})
+        kernel.dispatch(
+            BOKEH_FOLD_REQUEST,
+            {
+                "content": {
+                    "schema_version": 1,
+                    "session_id": session.session_id,
+                    "transaction_id": "held-fold",
+                    "source_ids": [source.id],
+                }
+            },
+        )
+        reply = kernel.replies.pop()["content"]
+        if release == "unhold":
+            session.document.unhold()
+        else:
+            # Panel's ``_drain_unconnected_events`` clears a hold without dispatch.
+            session.document.callbacks._held_events = []
+            session.document.callbacks._hold = None
+        await asyncio.sleep(INLINE_FLUSH_DELAY * 4)
+        session.close()
+        return source, checkpoint, reply, delivered
+
+    source, checkpoint, reply, delivered = asyncio.run(run())
+    assert (reply["status"], reply["source_ids"], reply["deferred"]) == ("ok", [], True)
+    [fold] = [delta for delta in delivered if delta.transaction_id == "held-fold"]
+    assert [event["kind"] for event in fold.data_events] == ["ColumnsFolded"]
+    assert fold.data_events[0]["version"] == 2
+    replayed = _replayed_source(checkpoint, delivered, source.id)
+    assert list(replayed.data["x"]) == list(source.data["x"])
+
+
+@pytest.mark.parametrize("encoder", ["quiet-fold", "fold-request", "replacement"])
+def test_encoding_on_another_thread_waits_for_a_stream_in_flight(monkeypatch, encoder):
+    """Bokeh mutates ``source.data`` before it triggers the stream, as with Panel nthreads."""
+    pytest.importorskip("bokeh")
+    from bokeh.document.events import ColumnsStreamedEvent
+
+    monkeypatch.setattr(_bokeh_session, "FOLD_QUIET_SECONDS", 0.0)
+    session, source, checkpoint, delivered = _data_session(
+        {"x": list(range(100)), "y": list(range(100))}
+    )
+    source.stream({"x": [100], "y": [100]})
+    callbacks = session.document.callbacks
+    record = callbacks.trigger_on_change
+    mutated = threading.Event()
+    release = threading.Event()
+
+    def paused_trigger(event):
+        if isinstance(event, ColumnsStreamedEvent) and not release.is_set():
+            mutated.set()
+            release.wait(5)
+        record(event)
+
+    callbacks.trigger_on_change = paused_trigger
+    streamer = threading.Thread(target=source.stream, args=({"x": [101], "y": [101]},), daemon=True)
+    streamer.start()
+    assert mutated.wait(5)
+
+    def encode():
+        if encoder == "quiet-fold":
+            session._quiet_fold()
+        elif encoder == "fold-request":
+            session.fold([source.id])
+        else:
+            source.data.update(y=[value * 2 for value in range(102)])
+
+    other = threading.Thread(target=encode, daemon=True)
+    other.start()
+    other.join(0.2)
+    release.set()
+    streamer.join(5)
+    other.join(5)
+    assert not streamer.is_alive()
+    assert not other.is_alive()
+    session.close()
+
+    replayed = _replayed_source(checkpoint, delivered, source.id)
+    assert {name: list(values) for name, values in replayed.data.items()} == {
+        name: list(values) for name, values in source.data.items()
+    }
 
 
 def test_new_source_arrives_with_a_fold():
@@ -878,7 +1188,11 @@ def test_new_source_arrives_with_a_fold():
 
 
 def _replay_data_events(document: Any, delivered: list[BokehDelta]) -> None:
-    """Apply data events to a replica as a peer at the exact base would."""
+    """Apply data events to a replica as a peer at the exact base would.
+
+    A fold resets the source, as for a late joiner reading the folded columns
+    and the tail after them.
+    """
     from bokeh.core.serialization import Buffer, Deserializer, Serialized
     from bokeh.core.types import ID
 
@@ -888,6 +1202,12 @@ def _replay_data_events(document: Any, delivered: list[BokehDelta]) -> None:
         for event in delta.data_events:
             kind, source_id = event["kind"], event["source_id"]
             if kind == "ColumnsFolded":
+                assert event["version"] >= versions.get(source_id, 0)
+                versions[source_id] = event["version"]
+                source = document.get_model_by_id(source_id)
+                source.data = Deserializer().deserialize(
+                    Serialized(content=event["columns"], buffers=buffers)
+                )
                 continue
             assert event["base_version"] == versions.get(source_id, 0)
             versions[source_id] = event["new_version"]
@@ -1453,6 +1773,54 @@ def test_queued_next_tick_callback_observes_cancellation(operation):
     assert asyncio.run(schedule()) == []
 
 
+def test_session_created_off_the_kernel_thread_releases_a_threaded_hold(monkeypatch):
+    """Panel releases a threaded hold through a next tick callback on the kernel loop."""
+    pn = _load_panel()
+    from panel.io.document import hold
+    from panel.io.state import set_curdoc
+    from tornado.ioloop import IOLoop
+
+    slider = pn.widgets.IntSlider(start=0, end=10, value=1)
+
+    async def run():
+        loop = IOLoop.current()
+        monkeypatch.setattr(_bokeh_session, "_kernel_io_loop", lambda: loop)
+        created: dict[str, Any] = {}
+
+        def worker():
+            payload, session, delivered = _announced_panel(slider)
+            created.update(payload=payload, session=session, delivered=delivered)
+            with set_curdoc(session.document), hold(session.document):
+                slider.value = 5
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        while thread.is_alive():
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.2)
+        return created
+
+    created = asyncio.run(run())
+    session = created["session"]
+    assert not session._held()
+    slider_id = _bokeh_model(slider, created["payload"]).id
+    assert {slider_id: 5} in [_values(delta) for delta in created["delivered"]]
+
+
+def test_install_gives_off_thread_sessions_the_kernel_loop():
+    kernel = _FakeKernel()
+    ip = SimpleNamespace(kernel=kernel)
+    loop = object()
+    _bokeh_handlers.install_kernel_hooks(ip)
+    try:
+        kernel.io_loop = loop
+        assert _bokeh_session._kernel_io_loop is not None
+        assert _bokeh_session._kernel_io_loop() is loop
+    finally:
+        _bokeh_handlers.uninstall_kernel_hooks(ip)
+    assert _bokeh_session._kernel_io_loop is None
+
+
 def test_uninstall_closes_live_sessions():
     pn = _load_panel()
     slider = pn.widgets.FloatSlider(value=3)
@@ -1482,6 +1850,7 @@ class _FakeKernel:
         self.shell_handlers = {msg_type: Mock() for msg_type in IPythonKernel.msg_types}
         self.log = Mock()
         self.iopub_socket = object()
+        self.io_loop: Any = None
         self.session = SimpleNamespace(send=self._send_iopub)
 
     def _topic(self, msg_type: str) -> bytes:

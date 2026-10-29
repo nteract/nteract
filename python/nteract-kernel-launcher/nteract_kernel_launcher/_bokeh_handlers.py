@@ -25,6 +25,7 @@ from nteract_kernel_launcher._bokeh_session import (
     BokehDelta,
     BokehPatchApplyError,
     session_registry,
+    set_kernel_io_loop,
 )
 
 log = logging.getLogger("nteract_kernel_launcher")
@@ -184,13 +185,16 @@ def fold_request(kernel: Any, stream: Any, ident: Any, parent: dict[str, Any]) -
         ):
             raise TypeError("Bokeh fold request source_ids must be a list of strings")
         session = session_registry.require(session_id)
-        folded = session.fold(source_ids, transaction_id=transaction_id)
+        result = session.fold(source_ids, transaction_id=transaction_id)
         reply = {
             "status": "ok",
             "schema_version": BOKEH_SESSION_SCHEMA_VERSION,
             "session_id": session_id,
             "transaction_id": transaction_id,
-            "source_ids": folded,
+            "source_ids": result.folded,
+            # When true, the fold follows under this transaction id once the
+            # document is free.
+            "deferred": result.deferred,
         }
     except Exception as exc:  # noqa: BLE001
         reply = {
@@ -269,6 +273,8 @@ def install_kernel_hooks(ip: Any) -> None:
             unregister()
         raise
     _installation = installation
+    # Read lazily: ``Kernel.start`` sets ``io_loop`` after the bootstrap runs.
+    set_kernel_io_loop(lambda: getattr(kernel, "io_loop", None))
     session_registry.set_event_sink(installation.publisher.publish)
 
 
@@ -279,6 +285,7 @@ def uninstall_kernel_hooks(ip: Any) -> None:
     if installation is None:
         return
     session_registry.set_event_sink(None)
+    set_kernel_io_loop(None)
     installation.publisher.close()
     for unregister in installation.unregister:
         unregister()
