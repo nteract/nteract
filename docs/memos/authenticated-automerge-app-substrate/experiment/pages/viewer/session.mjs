@@ -5,6 +5,7 @@ import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo
 import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
 import { applyComment } from "../model/comments.mjs";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
+import { unsentCommentsMarkdown } from "../model/markdown-export.mjs";
 import {
   decodeSnapshot,
   encodeSnapshot,
@@ -113,6 +114,7 @@ export class PageSession {
   socketOutcomes = new WeakMap();
   socketAdmittedAt = new WeakMap();
   nativeRefused = false;
+  editPauses = new Set();
   static async open(pageId, options) {
     const session = new PageSession(pageId, options);
     try {
@@ -225,7 +227,7 @@ export class PageSession {
     return true;
   }
   updateCapabilities() {
-    const enabled = !this.accessDenied && !this.accessReloadRequired;
+    const enabled = !this.accessDenied && !this.accessReloadRequired && !this.editsPaused;
     this.canWrite = enabled && !!this.credentialCanWrite && !!this.access?.canWrite;
     this.canComment = enabled && !!this.credentialCanWrite && !!this.access?.canComment;
     this.canManageAccess = enabled && !!this.credentialCanWrite && !!this.access?.canManageAccess;
@@ -376,10 +378,18 @@ export class PageSession {
     if (!doc) throw Error("No local Page to export");
     try {
       const page = projectPage(doc);
+      // Comments are part of the draft: list the ones the host never
+      // acknowledged. An archived record has no receipt, so it lists them all.
+      let saved = null;
+      if (!record && this.savedHeads.length)
+        try {
+          saved = projectPage(A.view(doc, this.savedHeads));
+        } catch {}
       return {
         title: page.title,
-        markdown: `# ${page.title}\n\n${page.blocks.map((block) => block.markdown).join("\n\n")}\n`,
+        markdown: `# ${page.title}\n\n${page.blocks.map((block) => block.markdown).join("\n\n")}\n${unsentCommentsMarkdown(page, saved)}`,
         snapshot: record?.snapshot ?? encodeSnapshot(A.save(doc)),
+        heads: A.getHeads(doc),
         page_id: this.pageId,
       };
     } finally {
@@ -925,6 +935,19 @@ export class PageSession {
         this.queueSaved({ restart: true });
     }
   }
+  get editsPaused() {
+    return this.editPauses.size > 0;
+  }
+  /** Stop or resume local edits for one reason without touching sync. Edits
+   * already made keep saving, so a reload can wait for them. Edits resume only
+   * when every reason is released. */
+  pauseEdits(reason, paused = true) {
+    if (this.editPauses.has(reason) === paused) return;
+    if (paused) this.editPauses.add(reason);
+    else this.editPauses.delete(reason);
+    this.updateCapabilities();
+    this.emit();
+  }
   observeChange(fn) {
     this.observers.add(fn);
     return () => this.observers.delete(fn);
@@ -1400,10 +1423,15 @@ export class PageSession {
     clearTimeout(this.retryTimer);
     clearInterval(this.presenceTimer);
     globalThis.removeEventListener?.("online", this.onlineListener);
+    // checkpointWritten: an IndexedDB record holds every edit this replica
+    // accepted, so reopening the Page imports it. The flow that sets
+    // skipCloseCheckpoint has already written its own recovery record.
+    this.checkpointWritten = !!this.skipCloseCheckpoint;
     try {
       if (!this.deleted && !this.skipCloseCheckpoint) {
         await this.repo?.flush();
         await this.persistLocal({ pending: this.status !== "Saved" }, { allowClosed: true });
+        this.checkpointWritten = !!this.localPage && !!this.handle;
       }
     } catch (error) {
       if (error.code === "LOCAL_PAGE_DELETED") {
@@ -1416,6 +1444,7 @@ export class PageSession {
         this.status = "Local save failed";
       }
     }
+    this.checkpointSnapshot = this.checkpointHeads = undefined;
     await this.releaseLocal();
   }
   async releaseLocal() {

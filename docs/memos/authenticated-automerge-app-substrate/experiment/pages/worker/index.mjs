@@ -68,6 +68,8 @@ import {
   withAdmissionReason,
 } from "./admission-reasons.mjs";
 import { ADMISSION_CAPABILITY } from "../shared/admission.mjs";
+import { buildAdvertisement } from "../shared/build-identity.mjs";
+import { advertiseBuild } from "./build-advertisement.mjs";
 
 const unifiedMissing = (request) =>
   request.headers.get(ADMISSION_CAPABILITY.header) === ADMISSION_CAPABILITY.value;
@@ -200,6 +202,12 @@ async function invoke(request, env, operation, args = {}) {
 
 export default {
   async fetch(request, env) {
+    return advertiseBuild(request, await gateway.fetch(request, env));
+  },
+};
+
+const gateway = {
+  async fetch(request, env) {
     try {
       const url = new URL(request.url);
       // The test issuer is never mounted on a public hostname, even if a local
@@ -213,7 +221,8 @@ export default {
       }
       if (url.pathname === "/connect") return connectAgentResponse(request, env);
       if (url.pathname === "/llms.txt") return agentGuideResponse(request, env);
-      if (url.pathname === "/health") return json({ ok: true, prototype: "pages-celld-native" });
+      if (url.pathname === "/health")
+        return json({ ok: true, prototype: "pages-celld-native", ...buildAdvertisement() });
       const oauth = await handleOAuth(request, env);
       if (oauth) return oauth;
       if (url.pathname === "/api/auth/login" && request.method === "GET")

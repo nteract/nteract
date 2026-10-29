@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as A from "@automerge/automerge";
 import MarkdownIt from "markdown-it";
-import { pageMarkdown } from "./markdown-export.mjs";
+import { pageMarkdown, unsentCommentsMarkdown } from "./markdown-export.mjs";
 import { applyPageOperation, createPageData, initializePage, projectPage } from "./page.mjs";
 
 const page = (title, ...blocks) => ({ title, blocks: blocks.map((markdown) => ({ markdown })) });
@@ -85,4 +85,51 @@ test("export uses live rich text and fractional block order from the Page projec
   } finally {
     A.free(doc);
   }
+});
+
+test("unsent comments quote their passage and list only what the saved state lacks", () => {
+  const message = (id, body, createdAt, extra = {}) => ({
+    id,
+    body,
+    createdAt,
+    author: { displayName: "Ada" },
+    deletedAt: null,
+    ...extra,
+  });
+  const thread = (id, messages, selectionContext) => ({
+    id,
+    target: { kind: "block", blockId: "b1" },
+    selectionContext,
+    messages,
+  });
+  const saved = {
+    blocks: [{ id: "b1", markdown: "Block text" }],
+    comments: [thread("t1", [message("m1", "Sent", "1"), message("m2", "Before edit", "2")])],
+  };
+  const current = {
+    ...saved,
+    comments: [
+      thread("t1", [
+        message("m1", "Sent", "1"),
+        message("m2", "After edit", "2"),
+        message("m3", "Two lines\nof reply", "3"),
+        message("m4", "Gone", "4", { deletedAt: "5" }),
+      ]),
+      thread("t2", [message("m5", "Fresh", "6")], { status: "attached", text: "picked words" }),
+    ],
+  };
+  const section = unsentCommentsMarkdown(current, saved);
+  assert.match(section, /^\n---\n\n## Unsent comments\n\nThese comments and replies never reached/);
+  assert.match(
+    section,
+    /### On “Block text”\n\nThread t1\n\n\*\*Ada\*\* · edited · 2\n\n> After edit/,
+  );
+  assert.match(section, /\*\*Ada\*\* · reply · 3\n\n> Two lines\n> of reply/);
+  assert.match(
+    section,
+    /### On “picked words”\n\nThread t2\n\n\*\*Ada\*\* · comment · 6\n\n> Fresh/,
+  );
+  assert.doesNotMatch(section, /> Sent|Gone/);
+  assert.equal(unsentCommentsMarkdown(saved, saved), "");
+  assert.match(unsentCommentsMarkdown(saved, null), /may not have reached the server[\s\S]*> Sent/);
 });

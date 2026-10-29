@@ -63,6 +63,11 @@ const bundled = await build({
             export function CommentContent({message}) { return React.createElement("p", null, message.body); }`,
           loader: "js",
         }));
+        // Share the app's reload gate with this test instead of bundling a copy.
+        build.onResolve({ filter: /build-freshness\.mjs$/ }, () => ({
+          path: new URL("./build-freshness.mjs", import.meta.url).href,
+          external: true,
+        }));
         build.onResolve({ filter: /^[^./]/ }, ({ path }) => ({
           path: pathToFileURL(require.resolve(path)).href,
           external: true,
@@ -75,6 +80,7 @@ const bundled = await build({
 const { CommentsPanel } = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString("base64")}`
 );
+const { reloadGate } = await import("./build-freshness.mjs");
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const tick = () => act(() => new Promise((resolve) => setTimeout(resolve, 5)));
@@ -366,4 +372,61 @@ test("viewers retain discussion and passage access without reply or state-changi
   assert.equal(f.element("first").querySelector(".thread-replies").hidden, false);
   await f.click(f.element("first").querySelector(".quote"));
   assert.deepEqual(f.revealed, ["first"]);
+});
+
+test("a reply draft on a resolved thread blocks Reload and stays reachable to copy or discard", async (t) => {
+  const copied = [];
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: async (text) => void copied.push(text) },
+  });
+  t.after(() => delete navigator.clipboard);
+  const f = await fixture(t);
+  assert.equal(reloadGate.hasDrafts(), false);
+  await f.click(f.element("first").querySelector(".thread-reply-button"));
+  await f.type(f.element("first").querySelector("textarea"), "Reply typed before resolve");
+  assert.equal(reloadGate.hasDrafts(), true);
+  // Another collaborator resolves the thread while the reply is unsent.
+  f.props.threads = f.props.threads.map((thread) =>
+    thread.id === "first" ? { ...thread, state: "resolved" } : thread,
+  );
+  await f.render();
+  assert.equal(reloadGate.hasDrafts(), true, "resolved threads still count");
+  const disclosure = f.container.querySelector(".resolved-threads");
+  assert.ok(disclosure.open, "the disclosure opens to show the draft");
+  assert.match(disclosure.querySelector("summary").textContent, /unsent reply/);
+  const first = f.element("first");
+  assert.equal(first.querySelector("textarea").closest("[hidden]"), null);
+  assert.match(first.textContent, /Unsent reply/);
+  const textarea = first.querySelector("textarea");
+  assert.equal(textarea.value, "Reply typed before resolve");
+  assert.equal(textarea.disabled, true);
+  const button = (name) =>
+    [...first.querySelectorAll("button")].find((b) => b.textContent.trim() === name);
+  assert.equal(button("Send").disabled, true);
+  assert.equal(button("Hide reply"), undefined);
+  await f.click(button("Copy"));
+  assert.deepEqual(copied, ["Reply typed before resolve"]);
+  assert.ok(button("Copied"));
+  await f.click(button("Discard"));
+  assert.equal(reloadGate.hasDrafts(), false);
+  assert.equal(f.element("first").querySelector("textarea"), null);
+  assert.deepEqual(f.calls, []);
+});
+
+test("a reply draft kept after write access ends can still be copied or discarded", async (t) => {
+  const f = await fixture(t);
+  await f.click(f.element("next").querySelector(".thread-reply-button"));
+  await f.type(f.element("next").querySelector("textarea"), "Draft before downgrade");
+  f.props.session = { ...f.props.session, canWrite: false };
+  await f.render();
+  const next = f.element("next");
+  assert.equal(next.querySelector(".thread-reply-button"), null);
+  assert.equal(next.querySelector("textarea").disabled, true);
+  assert.equal(next.querySelector("textarea").closest("[hidden]"), null);
+  assert.equal(reloadGate.hasDrafts(), true);
+  const discard = [...next.querySelectorAll("button")].find((b) => b.textContent === "Discard");
+  await f.click(discard);
+  assert.equal(reloadGate.hasDrafts(), false);
+  assert.equal(f.element("next").querySelector("textarea"), null);
 });

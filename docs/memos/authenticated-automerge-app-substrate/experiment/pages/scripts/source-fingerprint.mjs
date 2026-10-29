@@ -124,6 +124,8 @@ export function writeBuildReceipt(app, { expectedFingerprint } = {}) {
     source_dirty: Boolean(
       execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }).trim(),
     ),
+    // Matches the X-Pages-Build header and /health `build` of this bundle.
+    build_id: fingerprint.sha256.slice(0, 12),
     fingerprint,
   };
   writeFileSync(path.join(app, "dist/build-receipt.json"), JSON.stringify(receipt, null, 2) + "\n");

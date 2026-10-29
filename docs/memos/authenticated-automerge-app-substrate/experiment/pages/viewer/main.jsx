@@ -42,6 +42,8 @@ import { orderedBlockIds } from "../model/order.mjs";
 import "./style.css";
 import "./formatting-toolbar.css";
 import { focusCreatedPageTitle, titleHandsOffToBody } from "./title-navigation.mjs";
+import { BuildUpdate } from "./BuildUpdate.jsx";
+import { reloadGate } from "./build-freshness.mjs";
 
 function App() {
   const accountDisclosure = useDismissibleDisclosure(),
@@ -151,8 +153,9 @@ function App() {
     if (old) {
       old.publishPresence(null);
       const key = old.identity.principal + ":" + old.pageId;
-      const closing = old
-        .close()
+      // Keep syncing until its receipt (bounded) so leaving never drops a save.
+      const closing = reloadGate
+        .drainAndClose(old)
         .catch((error) => setError(error.message))
         .finally(() => {
           if (closingPages.current.get(key) === closing) closingPages.current.delete(key);
@@ -169,6 +172,7 @@ function App() {
       return false;
     }
     current.current = next;
+    reloadGate.hold(next);
     setSession(next);
     next.subscribe(() => {
       if (current.current === next) {
@@ -652,6 +656,11 @@ function App() {
         </div>
       </header>
       {page && <div id="page-formatting" className="toolbar-host" ref={setToolbar} />}
+      <BuildUpdate
+        session={session}
+        principal={authentication.current?.identity?.principal}
+        onOpenPage={(id) => void open(id)}
+      />
       {error && (
         <p role="alert" className="error app-error">
           {error}
