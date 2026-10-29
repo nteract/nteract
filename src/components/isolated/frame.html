@@ -1035,15 +1035,35 @@
         });
         resizeObserver.observe(document.body);
 
+        // Document listeners see shadow-DOM events retargeted to the host
+        // element (Bokeh and Panel render into shadow roots), so look for the
+        // anchor along the composed path.
+        function eventLink(e) {
+          var path = e.composedPath ? e.composedPath() : [];
+          for (var i = 0; i < path.length; i++) {
+            if (path[i] instanceof HTMLAnchorElement) return path[i];
+          }
+          var target =
+            e.target && e.target.nodeType === Node.ELEMENT_NODE
+              ? e.target
+              : e.target && e.target.parentElement;
+          return target && target.closest ? target.closest("a") : null;
+        }
+
         // --- Link Click Interception ---
         document.addEventListener(
           "click",
           function (e) {
-            var target =
-              e.target && e.target.nodeType === Node.ELEMENT_NODE
-                ? e.target
-                : e.target && e.target.parentElement;
-            var link = target && target.closest ? target.closest("a") : null;
+            var link = eventLink(e);
+            // Keep blob/data downloads (including Panel's FileDownload) native.
+            // Cross-origin HTTP links can ignore download and navigate the frame,
+            // so they must still go through the host's navigation policy.
+            if (
+              link &&
+              link.hasAttribute("download") &&
+              (link.protocol === "blob:" || link.protocol === "data:")
+            )
+              return;
             if (link && link.href) {
               e.preventDefault();
               // link.href resolves "#x" against the frame's own URL; the host
@@ -1177,11 +1197,7 @@
             // Don't forward double-clicks on links (user is selecting text).
             // Capture phase keeps markdown renderers from swallowing the edit
             // affordance after the iframe has taken pointer ownership.
-            var target =
-              e.target && e.target.nodeType === Node.ELEMENT_NODE
-                ? e.target
-                : e.target && e.target.parentElement;
-            var link = target && target.closest ? target.closest("a") : null;
+            var link = eventLink(e);
             if (!link) {
               sendRpc("nteract/doubleClick", {});
             }
