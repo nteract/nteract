@@ -6,7 +6,7 @@ import { DocumentPolicy } from "./policy.mjs";
 import { proposeAccessUpdate } from "./access.mjs";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
 import { refreshCatalogTitle } from "./catalog.mjs";
-import { catalogCandidates } from "./catalog-index.mjs";
+import { catalogSource } from "./catalog-index.mjs";
 import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
 
 class Storage {
@@ -405,8 +405,7 @@ test("catalog lists stored projections and late title updates cannot revive dele
   const one = "11111111-1111-4111-8111-111111111111";
   const pending = "22222222-2222-4222-8222-222222222222";
   const list = async () =>
-    (await catalogCandidates(storage, { inTrash: false, needle: null, cursor: null, limit: 50 }))
-      .rows;
+    (await catalogSource(storage, { inTrash: false, needle: null })).next(null, 50);
   await storage.put(`page/${one}`, {
     page_id: one,
     title: "First",

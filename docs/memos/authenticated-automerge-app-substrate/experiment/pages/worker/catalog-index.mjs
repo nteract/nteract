@@ -5,7 +5,9 @@
  * own the owner, ACL and lifecycle state. A listing returns a non-owner title
  * only after its Page DO confirms access, and an owner title only while the
  * owner's Catalog DO still has the matching `page/` or `trash/` entry. A stale
- * or missing D1 row can hide a Page from a listing; it cannot reveal one.
+ * or missing D1 row can hide a Page from a listing; it cannot reveal one, and
+ * listings look ahead and seal their cursors so a rejected row cannot change a
+ * response either.
  *
  * Migrations are append-only and additive. Older builds ignore these tables,
  * and a build must keep working against a schema version newer than it knows.
@@ -61,14 +63,31 @@ const SCHEMA_TABLE = `CREATE TABLE IF NOT EXISTS pages_catalog_schema (
   applied_at TEXT NOT NULL
 )`;
 const DIRTY = "host/index/dirty";
+const SYNC = "host/index/sync";
 const schemas = new WeakMap();
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 /** Mutable so tests can shorten them; production uses these bounds. */
-export const catalogIndexTimeouts = { read: 2500, write: 1500, migration: 120_000 };
+export const catalogIndexTimeouts = {
+  read: 2500,
+  write: 1500,
+  migration: 120_000,
+  verify: 3000,
+  reconcile: 1000,
+};
+/** Per-listing reconcile budget, and the bounds on one listing's own scan. */
+export const catalogIndexBounds = {
+  entries: 64,
+  verifications: 16,
+  fallbackScan: 500,
+  reconcileIntervalMs: 6 * 60 * 60 * 1000,
+};
 
-/** The configured value is an epoch label. Change it after any period in which
- * a build without the index, or with it disabled, served traffic: every
- * account then reconciles from its Catalog DO on its next listing. */
+/** The configured value is an epoch label. Changing it reconciles every
+ * account on its next listing; without a change, accounts still reconcile
+ * every `reconcileIntervalMs`, and Page hosts re-report on first use after
+ * a restart. */
 export function catalogIndexEpoch(env) {
   const value = typeof env?.PAGES_CATALOG_INDEX === "string" ? env.PAGES_CATALOG_INDEX.trim() : "";
   if (!value || value === "false" || !/^[A-Za-z0-9._-]{1,32}$/.test(value)) return null;
@@ -117,14 +136,13 @@ export async function migrateCatalogIndex(
   return version;
 }
 
-/** One migration attempt per database binding; callers may time out while it
- * continues, so a slow first access warms the schema for later requests. */
+/** One migration attempt per database binding. A caller may time out while it
+ * continues, so a slow first access warms the schema for later requests; a
+ * stuck attempt expires instead of staying cached. */
 export function catalogIndexDatabase(env) {
   const db = env.DB;
   let ready = schemas.get(db);
   if (!ready) {
-    // Bounded separately from request reads: a first access may take far
-    // longer than one listing waits, but a stuck attempt must not stay cached.
     ready = withTimeout(
       migrateCatalogIndex(db),
       catalogIndexTimeouts.migration,
@@ -141,8 +159,10 @@ export function catalogIndexDatabase(env) {
   return ready;
 }
 
+/** A fresh token per mark: a reconcile pass clears it only if no newer mark
+ * arrived while the pass was running. */
 export async function markCatalogIndexDirty(storage) {
-  await storage.put(DIRTY, true);
+  await storage.put(DIRTY, crypto.randomUUID());
 }
 
 /** Lifecycle as the index stores it. Trash keeps a deleted tombstone plus a
@@ -198,7 +218,10 @@ export function listingRestricted(previous, next, env) {
 }
 
 const searchText = (title) => title.toLowerCase();
+const revisionOf = (metadata) => metadata?.acl?.revision ?? 0;
 
+/** Title and lifecycle state follow the latest observation time; the ACL
+ * revision only moves forward. A deleted tombstone never changes again. */
 function pageUpsert(db, page) {
   const title = catalogTitle(page.title);
   return db
@@ -211,10 +234,12 @@ function pageUpsert(db, page) {
           THEN excluded.title ELSE pages_catalog_pages.title END,
         title_search = CASE WHEN excluded.updated_at >= pages_catalog_pages.updated_at
           THEN excluded.title_search ELSE pages_catalog_pages.title_search END,
+        state = CASE WHEN excluded.updated_at >= pages_catalog_pages.updated_at
+          THEN excluded.state ELSE pages_catalog_pages.state END,
+        trashed_at = CASE WHEN excluded.updated_at >= pages_catalog_pages.updated_at
+          THEN excluded.trashed_at ELSE pages_catalog_pages.trashed_at END,
         created_at = min(pages_catalog_pages.created_at, excluded.created_at),
         updated_at = max(pages_catalog_pages.updated_at, excluded.updated_at),
-        state = excluded.state,
-        trashed_at = excluded.trashed_at,
         acl_revision = max(pages_catalog_pages.acl_revision, excluded.acl_revision)
       WHERE pages_catalog_pages.state != 'deleted'`,
     )
@@ -231,35 +256,46 @@ function pageUpsert(db, page) {
     );
 }
 
+/** Reconciliation deletes apply only from a revision at least as new as the
+ * newest one the index has seen, and only to rows written at or before it. */
+const revisionGuard = `updated_revision <= ? AND ? >= coalesce(
+  (SELECT acl_revision FROM pages_catalog_pages WHERE page_id = pages_catalog_access.page_id), 0)`;
+
 /** Drop owner/member rows the host record no longer lists. */
-function deleteUnlisted(db, pageId, rows) {
+function deleteUnlisted(db, pageId, rows, revision) {
   return db
     .prepare(
       `DELETE FROM pages_catalog_access
       WHERE page_id = ? AND source IN ('owner', 'member')
-        AND principal NOT IN (SELECT value FROM json_each(?))`,
+        AND principal NOT IN (SELECT value FROM json_each(?)) AND ${revisionGuard}`,
     )
     .bind(
       pageId,
       JSON.stringify(
         rows.filter((row) => row.source !== "domain_opened").map((row) => row.principal),
       ),
+      revision,
+      revision,
     );
 }
 
 /** Domain-reader rows survive only under the same active domain view, and
  * never for a principal with any explicit member record (including removal). */
-function deleteDomainReaders(db, pageId, domain, memberKeys) {
+function deleteDomainReaders(db, pageId, domain, memberKeys, revision) {
   return db
     .prepare(
       `DELETE FROM pages_catalog_access
       WHERE page_id = ? AND source = 'domain_opened'
-        AND (? IS NULL OR domain IS NOT ? OR principal IN (SELECT value FROM json_each(?)))`,
+        AND (? IS NULL OR domain IS NOT ? OR principal IN (SELECT value FROM json_each(?)))
+        AND ${revisionGuard}`,
     )
-    .bind(pageId, domain, domain, JSON.stringify(memberKeys));
+    .bind(pageId, domain, domain, JSON.stringify(memberKeys), revision, revision);
 }
 
-function upsertAccess(db, pageId, rows, revision) {
+/** Grants from a committed revision. A delayed write from an older revision
+ * finds a newer acl_revision and changes nothing. Owner rows imported from
+ * the owner's own Catalog are unguarded: ownership never changes. */
+function upsertAccess(db, pageId, rows, revision, { owner = false } = {}) {
   return db
     .prepare(
       `INSERT INTO pages_catalog_access
@@ -268,12 +304,16 @@ function upsertAccess(db, pageId, rows, revision) {
         json_extract(value, '$.source'), json_extract(value, '$.domain'), ?,
         (SELECT updated_at FROM pages_catalog_pages WHERE page_id = ?)
       FROM json_each(?)
-      WHERE EXISTS (SELECT 1 FROM pages_catalog_pages WHERE page_id = ? AND state != 'deleted')
+      WHERE EXISTS (
+        SELECT 1 FROM pages_catalog_pages
+        WHERE page_id = ? AND state != 'deleted' AND (? = 1 OR acl_revision <= ?)
+      )
       ON CONFLICT (page_id, principal) DO UPDATE SET
         role = excluded.role, source = excluded.source, domain = excluded.domain,
-        updated_revision = excluded.updated_revision`,
+        updated_revision = max(pages_catalog_access.updated_revision, excluded.updated_revision)
+      WHERE excluded.updated_revision >= pages_catalog_access.updated_revision`,
     )
-    .bind(pageId, revision, pageId, JSON.stringify(rows), pageId);
+    .bind(pageId, revision, pageId, JSON.stringify(rows), pageId, owner ? 1 : 0, revision);
 }
 
 /** Listings sort by the Page's last observed title/sharing change. The copy
@@ -295,15 +335,16 @@ function deleteAccess(db, pageId, principal) {
 }
 
 /** Full reconcile from a Page DO's committed host record. Runs after commit,
- * so it may add grants. */
+ * so it may add grants. A deleted Page is retired, never reported. */
 export async function reportPageIndex(env, { metadata, title, observedAt, reader }) {
   const state = indexedState(metadata);
-  if (state === "deleted") return restrictPageIndex(env, metadata);
+  if (state === "deleted") return;
   const db = await catalogIndexDatabase(env);
   const projection = accessRows(metadata, env, state === "active" ? reader : undefined);
   const rows =
     state === "active" ? projection.rows : projection.rows.filter((row) => row.source === "owner");
   const pageId = metadata.pageId;
+  const revision = revisionOf(metadata);
   await db.batch([
     pageUpsert(db, {
       page_id: pageId,
@@ -313,28 +354,52 @@ export async function reportPageIndex(env, { metadata, title, observedAt, reader
       created_at: observedAt,
       updated_at: observedAt,
       trashed_at: state === "trashed" ? trashedAt(metadata) : null,
-      revision: metadata.acl?.revision ?? 0,
+      revision,
     }),
-    deleteUnlisted(db, pageId, rows),
+    deleteUnlisted(db, pageId, rows, revision),
     deleteDomainReaders(
       db,
       pageId,
       state === "active" ? projection.domain : null,
       projection.memberKeys,
+      revision,
     ),
-    upsertAccess(db, pageId, rows, metadata.acl?.revision ?? 0),
+    upsertAccess(db, pageId, rows, revision),
     syncSortKey(db, pageId),
   ]);
 }
 
-/** Remove listing rows that `metadata` no longer allows. Runs before the host
- * record commits, so it only ever deletes rows or marks lifecycle state. */
-export async function restrictPageIndex(env, metadata) {
+/** Remove listing rows `metadata` no longer allows, before the host record
+ * that restricts them is durable. Delete-only and reversible: if that record
+ * never commits, the Page's next report restores the rows. A trashed or
+ * deleted record keeps only the owner row here; `retirePageIndex` changes
+ * lifecycle state after durability. */
+export async function restrictPageIndex(env, metadata, revision = revisionOf(metadata)) {
   const db = await catalogIndexDatabase(env);
   const pageId = metadata.pageId;
+  const active = indexedState(metadata) === "active";
+  const projection = accessRows(metadata, env);
+  const rows = active ? projection.rows : projection.rows.filter((row) => row.source === "owner");
+  await db.batch([
+    deleteUnlisted(db, pageId, rows, revision),
+    deleteDomainReaders(
+      db,
+      pageId,
+      active ? projection.domain : null,
+      projection.memberKeys,
+      revision,
+    ),
+  ]);
+}
+
+/** Record a durable trash or deletion. Only call after the host record that
+ * says so has crossed its durability barrier: a deleted tombstone is final. */
+export async function retirePageIndex(env, metadata, now = new Date().toISOString()) {
   const state = indexedState(metadata);
+  if (state === "active") return;
+  const db = await catalogIndexDatabase(env);
+  const pageId = metadata.pageId;
   if (state === "deleted") {
-    const now = new Date().toISOString();
     await db.batch([
       db
         .prepare(
@@ -348,31 +413,22 @@ export async function restrictPageIndex(env, metadata) {
     ]);
     return;
   }
-  const projection = accessRows(metadata, env);
-  const rows =
-    state === "active" ? projection.rows : projection.rows.filter((row) => row.source === "owner");
   await db.batch([
-    ...(state === "trashed"
-      ? [
-          db
-            .prepare(
-              `UPDATE pages_catalog_pages SET state = 'trashed', trashed_at = ?
-              WHERE page_id = ? AND state != 'deleted'`,
-            )
-            .bind(trashedAt(metadata) ?? new Date().toISOString(), pageId),
-        ]
-      : []),
-    deleteUnlisted(db, pageId, rows),
-    deleteDomainReaders(
-      db,
-      pageId,
-      state === "active" ? projection.domain : null,
-      projection.memberKeys,
-    ),
+    db
+      .prepare(
+        `UPDATE pages_catalog_pages
+        SET state = 'trashed', trashed_at = ?, updated_at = max(updated_at, ?)
+        WHERE page_id = ? AND state != 'deleted'`,
+      )
+      .bind(trashedAt(metadata) ?? now, now, pageId),
+    db
+      .prepare("DELETE FROM pages_catalog_access WHERE page_id = ? AND source != 'owner'")
+      .bind(pageId),
+    syncSortKey(db, pageId),
   ]);
 }
 
-/** Best-effort removal of one stale row found by listing verification. */
+/** Best-effort removal of rows a listing found stale. */
 export async function pruneIndexRows(db, rows) {
   if (!rows.length) return;
   await withTimeout(
@@ -381,25 +437,86 @@ export async function pruneIndexRows(db, rows) {
   );
 }
 
-const CURSOR_PREFIX = "c1_";
+const CURSOR_PREFIX = "c2_";
 const isoTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
-const base64url = (text) => btoa(text).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+const cursorKeys = new Map();
+const toBase64url = (bytes) =>
+  btoa(String.fromCharCode(...bytes))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+const fromBase64url = (text) =>
+  Uint8Array.from(atob(text.replaceAll("-", "+").replaceAll("_", "/")), (char) =>
+    char.charCodeAt(0),
+  );
 
-/** Opaque keyset position: (updated_at, page_id) of the last scanned row.
- * Entries from older builds may lack updated_at; they sort last. */
-export function encodeCursor({ updated_at, page_id }) {
-  return CURSOR_PREFIX + base64url(JSON.stringify([updated_at ?? "", page_id]));
+/** AES-GCM key derived from the deployment's session secret. Without one
+ * (tests), each isolate seals with its own random key; a cursor from another
+ * isolate then fails closed and the client restarts from the first page. */
+function cursorKey(env) {
+  const configured = env?.NOTEBOOK_CLOUD_APP_SESSION_SECRET;
+  const secret = typeof configured === "string" && configured.length >= 32 ? configured : "";
+  let key = cursorKeys.get(secret);
+  if (!key) {
+    key = secret
+      ? crypto.subtle
+          .importKey("raw", encoder.encode(secret), "HKDF", false, ["deriveKey"])
+          .then((material) =>
+            crypto.subtle.deriveKey(
+              {
+                name: "HKDF",
+                hash: "SHA-256",
+                salt: new Uint8Array(),
+                info: encoder.encode("pages-list-cursor-v1"),
+              },
+              material,
+              { name: "AES-GCM", length: 256 },
+              false,
+              ["encrypt", "decrypt"],
+            ),
+          )
+      : crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+    cursorKeys.set(secret, key);
+  }
+  return key;
 }
-export function decodeCursor(cursor) {
+const cursorContext = ({ principal, needle, inTrash }) =>
+  encoder.encode(
+    JSON.stringify(["pages-list-cursor-v1", principal, needle ?? "", inTrash === true]),
+  );
+
+/** Seal a keyset position. The position stays private, and the cursor only
+ * opens for the same principal, query and in_trash. */
+export async function sealCursor(env, context, { updated_at, page_id }) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const sealed = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv, additionalData: cursorContext(context) },
+      await cursorKey(env),
+      encoder.encode(JSON.stringify([updated_at ?? "", page_id])),
+    ),
+  );
+  const bytes = new Uint8Array(iv.length + sealed.length);
+  bytes.set(iv);
+  bytes.set(sealed, iv.length);
+  return CURSOR_PREFIX + toBase64url(bytes);
+}
+
+export async function openCursor(env, context, cursor) {
   const invalid = () =>
     new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
   if (typeof cursor !== "string" || cursor.length > 256 || !cursor.startsWith(CURSOR_PREFIX))
     throw invalid();
   let value;
   try {
-    value = JSON.parse(
-      atob(cursor.slice(CURSOR_PREFIX.length).replaceAll("-", "+").replaceAll("_", "/")),
+    const bytes = fromBase64url(cursor.slice(CURSOR_PREFIX.length));
+    if (bytes.length < 29) throw invalid();
+    const plain = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: bytes.slice(0, 12), additionalData: cursorContext(context) },
+      await cursorKey(env),
+      bytes.slice(12),
     );
+    value = JSON.parse(decoder.decode(plain));
   } catch {
     throw invalid();
   }
@@ -415,19 +532,26 @@ export function decodeCursor(cursor) {
 }
 
 export const LIST_DEFAULT_LIMIT = 50;
+export const LIST_LEGACY_LIMIT = 100;
 export const LIST_MAX_LIMIT = 100;
 
-/** Unknown keys are ignored: older clients sent arguments this tool never read. */
+/** Unknown keys are ignored: older clients sent arguments this tool never
+ * read. A call with none of the new arguments keeps the old page size. */
 export function parseListArguments(args = {}) {
   const fail = (message) => new HttpError(400, message, "invalid_list_arguments");
   if (!args || typeof args !== "object" || Array.isArray(args))
     throw fail("Invalid list arguments");
-  const options = { limit: LIST_DEFAULT_LIMIT, inTrash: false, needle: null, cursor: null };
+  const legacy = ["query", "cursor", "limit", "in_trash"].every((key) => args[key] === undefined);
+  const options = {
+    limit: legacy ? LIST_LEGACY_LIMIT : LIST_DEFAULT_LIMIT,
+    inTrash: false,
+    needle: null,
+    cursor: null,
+  };
   if (args.query !== undefined) {
     if (typeof args.query !== "string" || args.query.length > 200)
       throw fail("query must be a string of at most 200 characters");
-    const needle = searchText(args.query.trim());
-    options.needle = needle || null;
+    options.needle = searchText(args.query.trim()) || null;
   }
   if (args.limit !== undefined) {
     if (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > LIST_MAX_LIMIT)
@@ -438,23 +562,26 @@ export function parseListArguments(args = {}) {
     if (typeof args.in_trash !== "boolean") throw fail("in_trash must be a boolean");
     options.inTrash = args.in_trash;
   }
-  if (args.cursor !== undefined && args.cursor !== null) options.cursor = decodeCursor(args.cursor);
+  if (args.cursor !== undefined && args.cursor !== null) {
+    if (typeof args.cursor !== "string" || args.cursor.length > 256)
+      throw new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
+    options.cursor = args.cursor;
+  }
   return options;
 }
 
 export const escapeLike = (value) => value.replace(/[\\%_]/g, "\\$&");
 export const titleMatches = (title, needle) => !needle || searchText(title).includes(needle);
 const sortKey = (row) => row.updated_at ?? "";
-const before = (row, cursor) =>
-  !cursor ||
-  sortKey(row) < cursor.updated_at ||
-  (sortKey(row) === cursor.updated_at && row.page_id < cursor.page_id);
+const before = (row, position) =>
+  !position ||
+  sortKey(row) < position.updated_at ||
+  (sortKey(row) === position.updated_at && row.page_id < position.page_id);
 const newestFirst = (a, b) =>
   sortKey(a) === sortKey(b) ? (a.page_id < b.page_id ? 1 : -1) : sortKey(a) < sortKey(b) ? 1 : -1;
 
-/** Candidate rows from D1, newest first. Returns at most `limit` rows plus the
- * keyset position after the last scanned row, independent of verification. */
-export async function queryCatalogIndex(db, { principal, domain, inTrash, needle, cursor, limit }) {
+/** Up to `count` candidate rows from D1 after `after`, newest first. */
+export async function queryCatalogIndex(db, { principal, domain, inTrash, needle, after, count }) {
   const pattern = needle ? `%${escapeLike(needle)}%` : null;
   const result = await db
     .prepare(
@@ -476,15 +603,14 @@ export async function queryCatalogIndex(db, { principal, domain, inTrash, needle
       domain ?? null,
       pattern,
       pattern,
-      cursor?.updated_at ?? null,
-      cursor?.updated_at ?? null,
-      cursor?.updated_at ?? null,
-      cursor?.page_id ?? null,
-      limit + 1,
+      after?.updated_at ?? null,
+      after?.updated_at ?? null,
+      after?.updated_at ?? null,
+      after?.page_id ?? null,
+      count,
     )
     .all();
-  const scanned = result.results ?? [];
-  const rows = scanned.slice(0, limit).map((row) => ({
+  return (result.results ?? []).map((row) => ({
     page_id: row.page_id,
     title: row.title,
     created_at: row.created_at,
@@ -492,24 +618,23 @@ export async function queryCatalogIndex(db, { principal, domain, inTrash, needle
     owned: row.source === "owner",
     ...(row.trashed_at ? { trashed_at: row.trashed_at } : {}),
   }));
-  return { rows, next_cursor: scanned.length > limit ? encodeCursor(rows.at(-1)) : null };
 }
 
-async function listAll(storage, prefix) {
-  return [...(await storage.list({ prefix })).values()];
-}
-
-/** Candidate rows from the Catalog DO when the index is off or unavailable. */
-export async function catalogCandidates(storage, { inTrash, needle, cursor, limit }) {
+/** Candidate source over the Catalog entries, for when the index is off or
+ * unavailable. Each prefix read is bounded. */
+export async function catalogSource(storage, { inTrash, needle }) {
+  const list = async (prefix) => [
+    ...(await storage.list({ prefix, limit: catalogIndexBounds.fallbackScan })).values(),
+  ];
   const entries = inTrash
-    ? (await listAll(storage, "trash/")).map((entry) => ({ entry, owned: true }))
+    ? (await list("trash/")).map((entry) => ({ entry, owned: true }))
     : [
-        ...(await listAll(storage, "page/"))
+        ...(await list("page/"))
           .filter((entry) => !entry.pending)
           .map((entry) => ({ entry, owned: true })),
-        ...(await listAll(storage, "shared/")).map((entry) => ({ entry, owned: false })),
+        ...(await list("shared/")).map((entry) => ({ entry, owned: false })),
       ];
-  const scanned = entries
+  const rows = entries
     .filter(({ entry }) => validPageId(entry?.page_id))
     .map(({ entry, owned }) => ({
       page_id: entry.page_id,
@@ -519,152 +644,221 @@ export async function catalogCandidates(storage, { inTrash, needle, cursor, limi
       owned,
       ...(entry.trashed_at ? { trashed_at: entry.trashed_at } : {}),
     }))
-    .filter((row) => titleMatches(row.title, needle) && before(row, cursor))
+    .filter((row) => titleMatches(row.title, needle))
     .sort(newestFirst);
-  const rows = scanned.slice(0, limit);
-  return { rows, next_cursor: scanned.length > limit ? encodeCursor(rows.at(-1)) : null };
+  return { next: async (after, count) => rows.filter((row) => before(row, after)).slice(0, count) };
+}
+
+export class CatalogIndexUnavailable extends Error {}
+
+/** Candidate source over D1. Its errors are marked so the listing can fall
+ * back to the Catalog entries instead of failing. */
+export function indexSource(db, query) {
+  return {
+    next: async (after, count) => {
+      try {
+        return await read(queryCatalogIndex(db, { ...query, after, count }));
+      } catch (error) {
+        throw new CatalogIndexUnavailable("Catalog index query failed", { cause: error });
+      }
+    },
+  };
+}
+
+function sharedStatements(db, principal, pageId, page, updatedAt, createdAt) {
+  return [
+    pageUpsert(db, {
+      page_id: pageId,
+      owner: page.owner,
+      title: page.title,
+      state: "active",
+      created_at: createdAt ?? updatedAt,
+      updated_at: updatedAt,
+      revision: page.revision ?? 0,
+    }),
+    upsertAccess(
+      db,
+      pageId,
+      [
+        {
+          principal,
+          role: page.role === "editor" ? "editor" : "viewer",
+          source: page.source === "domain_opened" ? "domain_opened" : "member",
+          domain: page.source === "domain_opened" ? (page.domain ?? null) : null,
+        },
+      ],
+      page.revision ?? 0,
+    ),
+    syncSortKey(db, pageId),
+  ];
 }
 
 /**
- * Reconcile one account's D1 rows from its Catalog DO: the account's lazy
- * backfill, and its repair after a write that may not have reached D1. Owned
- * entries are imported directly. Shared entries missing from D1 are verified
- * against their Page DOs once; denied entries are pruned from the Catalog DO.
- * The marker is written only when every shared entry got a definite answer.
+ * Read whether this account's rows are usable, and advance its reconcile pass
+ * by one bounded step when they need repair. A pass rewrites owner rows from
+ * the Catalog's `page/` and `trash/` entries (title, timestamps, state),
+ * re-verifies every shared entry and every non-owner D1 row with its Page
+ * host, and drops owner rows the Catalog no longer has. Its position persists
+ * in the Catalog, so an incomplete pass resumes on the next listing instead of
+ * holding this Catalog's request queue.
+ *
+ * Returns true when the account's rows are complete for this epoch: a pass
+ * completed now, or one completed before under the same epoch.
  */
-export async function syncAccountIndex({ db, storage, principal, epoch, verify }) {
-  const [owned, trashed, shared] = await Promise.all([
-    listAll(storage, "page/"),
-    listAll(storage, "trash/"),
-    listAll(storage, "shared/"),
-  ]);
-  const existing = new Map(
-    (
-      await read(
-        db
-          .prepare(
-            `SELECT a.page_id, a.source, p.state FROM pages_catalog_access a
-            JOIN pages_catalog_pages p ON p.page_id = a.page_id
-            WHERE a.principal = ?`,
-          )
-          .bind(principal)
-          .all(),
-      )
-    ).results.map((row) => [row.page_id, row]),
+export async function reconcileAccountIndex({
+  db,
+  storage,
+  principal,
+  epoch,
+  verify,
+  now = Date.now(),
+}) {
+  const marker = await read(
+    db
+      .prepare("SELECT epoch, synced_at FROM pages_catalog_accounts WHERE principal = ?")
+      .bind(principal)
+      .first(),
   );
-  const statements = [];
-  const ownedIds = new Set();
-  for (const [entries, state] of [
-    [owned, "active"],
-    [trashed, "trashed"],
-  ]) {
-    for (const entry of entries) {
-      if (entry.pending || !validPageId(entry.page_id)) continue;
-      ownedIds.add(entry.page_id);
-      const row = existing.get(entry.page_id);
-      if (row?.source === "owner" && row.state === state) continue;
-      const updatedAt = entry.updated_at ?? entry.created_at ?? new Date().toISOString();
-      statements.push(
-        pageUpsert(db, {
-          page_id: entry.page_id,
-          owner: principal,
-          title: entry.title,
-          state,
-          created_at: entry.created_at ?? updatedAt,
-          updated_at: updatedAt,
-          trashed_at: state === "trashed" ? (entry.trashed_at ?? null) : null,
-        }),
-        upsertAccess(
-          db,
-          entry.page_id,
-          [{ principal, role: "owner", source: "owner", domain: null }],
-          0,
-        ),
-        syncSortKey(db, entry.page_id),
-      );
+  const current = marker?.epoch === epoch;
+  const dirty = await storage.get(DIRTY);
+  let pass = await storage.get(SYNC);
+  if (pass && pass.epoch !== epoch) pass = undefined;
+  const due =
+    !current ||
+    dirty !== undefined ||
+    pass !== undefined ||
+    !(Date.parse(marker.synced_at) > now - catalogIndexBounds.reconcileIntervalMs);
+  if (!due) return true;
+  pass ??= { epoch, phase: "owned", after: null, incomplete: false, dirty: dirty ?? null };
+  const deadline = Date.now() + catalogIndexTimeouts.reconcile;
+  let verifications = 0;
+  const checkShared = async (pageId, updatedAt, createdAt) => {
+    verifications++;
+    const result = await verify(pageId);
+    if (result.status === "ok" && result.page.state === "active" && result.page.owner)
+      return sharedStatements(db, principal, pageId, result.page, updatedAt, createdAt);
+    if (result.status === "ok" || result.status === "denied") {
+      await storage.delete(`shared/${pageId}`);
+      return [deleteAccess(db, pageId, principal)];
     }
-  }
-  for (const [pageId, row] of existing)
-    if (row.source === "owner" && !ownedIds.has(pageId))
-      statements.push(deleteAccess(db, pageId, principal));
-  const missing = shared.filter(
-    (entry) =>
-      validPageId(entry?.page_id) && !existing.has(entry.page_id) && !ownedIds.has(entry.page_id),
-  );
-  let complete = true;
-  for (let index = 0; index < missing.length; index += 8) {
-    const group = missing.slice(index, index + 8);
-    const results = await Promise.all(group.map((entry) => verify(entry.page_id)));
-    for (const [offset, result] of results.entries()) {
-      const entry = group[offset];
-      if (result.status === "denied") {
-        await storage.delete(`shared/${entry.page_id}`);
-      } else if (result.status !== "ok") {
-        complete = false;
-      } else if (result.page.state === "active" && result.page.owner) {
-        const updatedAt = entry.updated_at ?? new Date().toISOString();
+    pass.incomplete = true;
+    return [];
+  };
+  while (
+    pass.phase !== "done" &&
+    Date.now() < deadline &&
+    verifications < catalogIndexBounds.verifications
+  ) {
+    const statements = [];
+    if (pass.phase === "owned" || pass.phase === "trash") {
+      const prefix = pass.phase === "owned" ? "page/" : "trash/";
+      const entries = [
+        ...(
+          await storage.list({
+            prefix,
+            ...(pass.after && { startAfter: pass.after }),
+            limit: catalogIndexBounds.entries,
+          })
+        ).entries(),
+      ];
+      for (const [, entry] of entries) {
+        if (entry?.pending || !validPageId(entry?.page_id)) continue;
+        const updatedAt = entry.updated_at ?? entry.created_at ?? new Date(now).toISOString();
+        const state = pass.phase === "owned" ? "active" : "trashed";
         statements.push(
           pageUpsert(db, {
             page_id: entry.page_id,
-            owner: result.page.owner,
-            title: result.page.title,
-            state: "active",
+            owner: principal,
+            title: entry.title,
+            state,
             created_at: entry.created_at ?? updatedAt,
             updated_at: updatedAt,
-            revision: result.page.revision,
+            trashed_at: state === "trashed" ? (entry.trashed_at ?? null) : null,
           }),
           upsertAccess(
             db,
             entry.page_id,
-            [
-              {
-                principal,
-                role: result.page.role === "editor" ? "editor" : "viewer",
-                source: result.page.source === "domain_opened" ? "domain_opened" : "member",
-                domain: result.page.source === "domain_opened" ? result.page.domain : null,
-              },
-            ],
-            result.page.revision ?? 0,
+            [{ principal, role: "owner", source: "owner", domain: null }],
+            0,
+            { owner: true },
           ),
           syncSortKey(db, entry.page_id),
         );
       }
+      pass.after = entries.at(-1)?.[0] ?? null;
+      if (entries.length < catalogIndexBounds.entries)
+        Object.assign(pass, { phase: pass.phase === "owned" ? "trash" : "shared", after: null });
+    } else if (pass.phase === "shared") {
+      const room = catalogIndexBounds.verifications - verifications;
+      const entries = [
+        ...(
+          await storage.list({
+            prefix: "shared/",
+            ...(pass.after && { startAfter: pass.after }),
+            limit: room,
+          })
+        ).entries(),
+      ];
+      const valid = entries.filter(([, entry]) => validPageId(entry?.page_id));
+      for (let index = 0; index < valid.length; index += 8)
+        for (const result of await Promise.all(
+          valid
+            .slice(index, index + 8)
+            .map(([, entry]) => checkShared(entry.page_id, entry.updated_at, entry.created_at)),
+        ))
+          statements.push(...result);
+      pass.after = entries.at(-1)?.[0] ?? null;
+      if (entries.length < room) Object.assign(pass, { phase: "rows", after: null });
+    } else if (pass.phase === "rows" || pass.phase === "orphans") {
+      const owner = pass.phase === "orphans";
+      const room = owner
+        ? catalogIndexBounds.entries
+        : catalogIndexBounds.verifications - verifications;
+      const rows =
+        (
+          await read(
+            db
+              .prepare(
+                `SELECT a.page_id, a.updated_at, p.created_at FROM pages_catalog_access a
+                JOIN pages_catalog_pages p ON p.page_id = a.page_id
+                WHERE a.principal = ? AND (a.source = 'owner') = ? AND (? IS NULL OR a.page_id > ?)
+                ORDER BY a.page_id LIMIT ?`,
+              )
+              .bind(principal, owner ? 1 : 0, pass.after, pass.after, room)
+              .all(),
+          )
+        ).results ?? [];
+      for (const row of rows) {
+        if (owner) {
+          const entry =
+            (await storage.get(`page/${row.page_id}`)) ??
+            (await storage.get(`trash/${row.page_id}`));
+          if (!entry) statements.push(deleteAccess(db, row.page_id, principal));
+        } else if (!(await storage.get(`shared/${row.page_id}`))) {
+          // Shared entries were verified in the previous phase.
+          statements.push(...(await checkShared(row.page_id, row.updated_at, row.created_at)));
+        }
+      }
+      pass.after = rows.at(-1)?.page_id ?? null;
+      if (rows.length < room)
+        Object.assign(pass, { phase: owner ? "done" : "orphans", after: null });
     }
+    for (let index = 0; index < statements.length; index += 48)
+      await read(db.batch(statements.slice(index, index + 48)));
+    await storage.put(SYNC, pass);
   }
-  for (let index = 0; index < statements.length; index += 48)
-    await read(db.batch(statements.slice(index, index + 48)));
-  if (!complete) return false;
+  if (pass.phase !== "done") return current;
+  await storage.delete(SYNC);
+  if (pass.incomplete) return current;
   await read(
     db
       .prepare(
         `INSERT INTO pages_catalog_accounts (principal, epoch, synced_at) VALUES (?, ?, ?)
         ON CONFLICT (principal) DO UPDATE SET epoch = excluded.epoch, synced_at = excluded.synced_at`,
       )
-      .bind(principal, epoch, new Date().toISOString())
+      .bind(principal, epoch, new Date(now).toISOString())
       .run(),
   );
-  await storage.delete(DIRTY);
+  if ((await storage.get(DIRTY)) === (pass.dirty ?? undefined)) await storage.delete(DIRTY);
   return true;
-}
-
-/** Candidate rows from D1, reconciling the account first when needed. */
-export async function indexedCandidates({
-  env,
-  storage,
-  principal,
-  epoch,
-  domain,
-  options,
-  verify,
-}) {
-  const db = await read(catalogIndexDatabase(env));
-  const marker = await read(
-    db
-      .prepare("SELECT epoch FROM pages_catalog_accounts WHERE principal = ?")
-      .bind(principal)
-      .first(),
-  );
-  if (marker?.epoch !== epoch || (await storage.get(DIRTY)))
-    await syncAccountIndex({ db, storage, principal, epoch, verify });
-  return { db, ...(await read(queryCatalogIndex(db, { principal, domain, ...options }))) };
 }

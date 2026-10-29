@@ -214,17 +214,33 @@ shared Page. Migrations are versioned in
 [catalog-index.mjs](worker/catalog-index.mjs) and applied lazily on first use.
 
 D1 picks candidates; it never grants access. Every non-owner row returned by a
-listing is verified by its Page host with the caller's credentials, so a stale
-row can make a listing short but cannot reveal a title. Owner rows must match the
-account's own Catalog entry. Page hosts report their row after creation, title
-changes, and ACL commits, and remove rows best-effort before an ACL restriction or
-deletion commits. Editing and sync never wait on D1. If D1 errors or exceeds its
-read budget, listing falls back to the Catalog entries with the same cursor format.
+listing is verified by its Page host with the caller's credentials, and owner rows
+must match the account's own Catalog entry. Rejected rows are pruned when a listing
+meets them. A listing looks ahead for one verified row past its page, and its
+`next_cursor` is sealed (AES-GCM, keyed from `NOTEBOOK_CLOUD_APP_SESSION_SECRET`)
+to the caller, query and `in_trash`. Neither the items nor the cursor's presence or
+contents depend on a rejected candidate. Pagination is best-effort: a Page whose
+title or sharing changes mid-traversal can move across the cursor.
 
-An account's first listing under an epoch, and the first after a Catalog change
-that may have missed D1, reconciles that account from its Catalog entries; shared
-entries are verified once. Change the epoch value after any period in which a
-build without the index, or with it unset, served traffic.
+Page hosts report their row after creation, title changes and ACL commits. Writes
+carry the committed ACL revision, so a report that outlives its timeout changes
+nothing once a newer revision has landed. A failed report leaves a marker in the
+Page host and repeats on its next request. Before an ACL restriction or a deletion
+is durable, the host removes listing rows best-effort; the deleted tombstone is
+written only after the host record is durable. Editing and sync never wait on D1.
+If D1 errors or exceeds its read budget, listing falls back to the Catalog entries
+(at most 500 per prefix) with the same cursor format.
+
+Each account reconciles from its Catalog entries: on its first listing under an
+epoch, after a Catalog change that may have missed D1, and at least every six
+hours. A pass rewrites owner rows (title, timestamps, state), re-verifies shared
+entries and non-owner rows, and drops owner rows the Catalog no longer has. Each
+listing advances it by a bounded step (64 entries, 16 Page checks, about one
+second); its position persists, so a long pass does not hold the Catalog's queue.
+Until an account's first pass completes, its listings use the Catalog entries.
+Changing the epoch value forces an immediate pass everywhere; it is not required
+after a rollback, since the periodic pass and each Page host's first report after
+restart repair what an older build missed.
 
 ## Authentication and sharing
 

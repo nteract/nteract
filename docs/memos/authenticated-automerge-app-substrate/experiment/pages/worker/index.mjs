@@ -80,17 +80,23 @@ import { pageAccess, restrictAccessDuringCommit } from "./access.mjs";
 
 import { catalogTitle, refreshCatalogTitle } from "./catalog.mjs";
 import {
-  catalogCandidates,
+  CatalogIndexUnavailable,
+  catalogIndexDatabase,
   catalogIndexEpoch,
   catalogIndexTimeouts,
-  indexedCandidates,
+  catalogSource,
+  indexSource,
   indexedState,
   listingRestricted,
   markCatalogIndexDirty,
+  openCursor,
   parseListArguments,
   pruneIndexRows,
+  reconcileAccountIndex,
   reportPageIndex,
   restrictPageIndex,
+  retirePageIndex,
+  sealCursor,
   titleMatches,
   withTimeout,
 } from "./catalog-index.mjs";
@@ -117,6 +123,7 @@ const operations = new Set([
   "delete_page",
 ]);
 const noop = async () => {};
+const INDEX_REPORT_PENDING = "host/index/report-pending";
 const publicIdentity = ({ principal, displayName, driver }) => ({ principal, displayName, driver });
 
 function validateCreateInput(args) {
@@ -482,52 +489,114 @@ export class Catalog {
     }
   }
 
-  /** Ask the Page host, with the caller's own credentials, for one shared title. */
+  /** Ask the Page host, with the caller's own credentials, for one shared
+   * title. A host that does not answer within the deadline counts as
+   * unavailable, never as denied. */
   async verifyShared(request, pageId) {
-    const response = await this.env.PAGES.getByName(pageId).fetch(
-      forwarded(request, "/internal/catalog", {}),
-    );
-    if (response.ok) return { status: "ok", page: await response.json() };
-    if ([403, 404].includes(response.status)) return { status: "denied" };
+    try {
+      const response = await withTimeout(
+        this.env.PAGES.getByName(pageId).fetch(forwarded(request, "/internal/catalog", {})),
+        catalogIndexTimeouts.verify,
+        "Shared Page check timed out",
+      );
+      if (response.ok) return { status: "ok", page: await response.json() };
+      if ([403, 404].includes(response.status)) return { status: "denied" };
+    } catch (error) {
+      logFailure(error, "catalog-verify");
+    }
     return { status: "unavailable" };
   }
 
   /**
-   * D1 or this Catalog's entries choose one page of candidates; neither is
-   * authority for a title. Owner rows must match this account's own `page/`
-   * (or `trash/`) entry, and every other row is checked by its Page host.
-   * Dropped candidates leave a short page; next_cursor still advances.
+   * D1 or this Catalog's entries supply candidates; neither is authority for a
+   * title. Owner rows must match this account's own `page/` (or `trash/`)
+   * entry, and every other row is checked by its Page host. The scan looks
+   * ahead for one verified row past the page, so whether next_cursor is set
+   * does not depend on rejected candidates. The cursor is sealed to the
+   * caller, query and in_trash, and rejected rows are pruned on encounter.
    */
   async listPages(request, identity, args) {
     const options = parseListArguments(args);
     const storage = this.ctx.storage;
+    const context = {
+      principal: identity.principal,
+      needle: options.needle,
+      inTrash: options.inTrash,
+    };
+    const after = options.cursor ? await openCursor(this.env, context, options.cursor) : null;
     const epoch = catalogIndexEpoch(this.env);
-    let candidates;
+    let db;
+    let source;
     if (epoch) {
       try {
-        const evidence = identity.domainAccess;
-        candidates = await indexedCandidates({
-          env: this.env,
+        db = await withTimeout(catalogIndexDatabase(this.env), catalogIndexTimeouts.read);
+        const ready = await reconcileAccountIndex({
+          db,
           storage,
           principal: identity.principal,
           epoch,
-          domain: evidence?.expiresAt > Date.now() ? evidence.domain : null,
-          options,
           verify: (pageId) => this.verifyShared(request, pageId),
         });
+        const evidence = identity.domainAccess;
+        // Until an account's first reconcile completes, its D1 rows may be
+        // missing; the Catalog entries serve while the pass advances.
+        if (ready)
+          source = indexSource(db, {
+            principal: identity.principal,
+            domain: evidence?.expiresAt > Date.now() ? evidence.domain : null,
+            inTrash: options.inTrash,
+            needle: options.needle,
+          });
       } catch (error) {
         // Listing degrades to the Catalog entries; editing never waits on D1.
         logFailure(error, "catalog-index");
       }
     }
-    const source = candidates ? "index" : "catalog";
-    candidates ??= await catalogCandidates(storage, options);
+    let result;
+    if (source) {
+      try {
+        result = await this.scanCandidates(request, identity, source, options, after, db);
+        result.source = "index";
+      } catch (error) {
+        if (!(error instanceof CatalogIndexUnavailable)) throw error;
+        logFailure(error, "catalog-index");
+      }
+    }
+    result ??= {
+      ...(await this.scanCandidates(
+        request,
+        identity,
+        await catalogSource(storage, options),
+        options,
+        after,
+        null,
+      )),
+      source: "catalog",
+    };
+    const response = json({
+      pages: result.pages,
+      limit: options.limit,
+      next_cursor: result.next ? await sealCursor(this.env, context, result.next) : null,
+      ...(await issueRetryToken(storage, {
+        scope: `catalog:${identity.principal}`,
+        principal: identity.principal,
+      })),
+    });
+    response.headers.set("x-pages-catalog-source", result.source);
+    return response;
+  }
+
+  async scanCandidates(request, identity, source, options, after, db) {
+    const storage = this.ctx.storage;
     const pruned = [];
     let stale = false;
     const check = async (row) => {
       if (row.owned) {
         const entry = await storage.get(`${options.inTrash ? "trash/" : "page/"}${row.page_id}`);
-        if (!entry) stale = true;
+        if (!entry) {
+          stale = true;
+          pruned.push({ page_id: row.page_id, principal: identity.principal });
+        }
         if (!entry || entry.pending) return null;
         const title = catalogTitle(entry.title);
         if (!titleMatches(title, options.needle)) return null;
@@ -541,14 +610,13 @@ export class Catalog {
       }
       if (options.inTrash) return null;
       const result = await this.verifyShared(request, row.page_id);
-      if (result.status === "denied") {
+      if (result.status === "unavailable")
+        throw new HttpError(503, "Shared Pages are temporarily unavailable");
+      if (result.status === "denied" || (result.page.state && result.page.state !== "active")) {
         pruned.push({ page_id: row.page_id, principal: identity.principal });
         await storage.delete(`shared/${row.page_id}`);
         return null;
       }
-      if (result.status !== "ok")
-        throw new HttpError(503, "Shared Pages are temporarily unavailable");
-      if (result.page.state && result.page.state !== "active") return null;
       const title = catalogTitle(result.page.title);
       if (!titleMatches(title, options.needle)) return null;
       return {
@@ -559,27 +627,40 @@ export class Catalog {
         shared: true,
       };
     };
-    const pages = [];
-    for (let index = 0; index < candidates.rows.length; index += 8)
-      pages.push(...(await Promise.all(candidates.rows.slice(index, index + 8).map(check))));
-    if (source === "index") {
-      // An owner row without its Catalog entry means D1 missed a lifecycle change.
-      if (stale) await markCatalogIndexDirty(storage);
-      await pruneIndexRows(candidates.db, pruned).catch((error) =>
-        logFailure(error, "catalog-index-prune"),
-      );
+    const limit = options.limit;
+    const scanBound = limit * 2 + 16;
+    const verified = [];
+    let position = after;
+    let scanned = 0;
+    let exhausted = false;
+    while (verified.length <= limit && scanned < scanBound) {
+      const want = Math.min(limit + 1 - verified.length, scanBound - scanned);
+      const rows = await source.next(position, want);
+      for (let index = 0; index < rows.length; index += 8) {
+        const group = rows.slice(index, index + 8);
+        for (const [offset, page] of (await Promise.all(group.map(check))).entries())
+          if (page) verified.push({ page, row: group[offset] });
+      }
+      scanned += rows.length;
+      if (rows.length) position = rows.at(-1);
+      if (rows.length < want) {
+        exhausted = true;
+        break;
+      }
     }
-    const response = json({
-      pages: pages.filter(Boolean),
-      limit: options.limit,
-      next_cursor: candidates.next_cursor,
-      ...(await issueRetryToken(storage, {
-        scope: `catalog:${identity.principal}`,
-        principal: identity.principal,
-      })),
-    });
-    response.headers.set("x-pages-catalog-source", source);
-    return response;
+    if (db) {
+      // A rejected owner row means D1 missed a lifecycle change; reconcile it.
+      if (stale) await markCatalogIndexDirty(storage);
+      await pruneIndexRows(db, pruned).catch((error) => logFailure(error, "catalog-index-prune"));
+    }
+    if (verified.length > limit)
+      return {
+        pages: verified.slice(0, limit).map(({ page }) => page),
+        next: verified[limit - 1].row,
+      };
+    // Only a scan stopped by its bound, not by the end of the candidates,
+    // continues from the last scanned row.
+    return { pages: verified.map(({ page }) => page), next: exhausted ? null : position };
   }
 }
 
@@ -852,26 +933,73 @@ export class Page {
     );
   }
 
-  /** Post-commit catalog index reconcile. Writes run in order per Page. */
+  /** Post-commit catalog index reconcile. Writes start in order per Page; one
+   * that outlives its timeout carries an older ACL revision, which the index
+   * ignores once a newer report has landed. A failed report leaves a durable
+   * marker, and the next request to this Page repeats it. */
   reportIndex(details) {
-    const run = () =>
-      withTimeout(
-        reportPageIndex(this.env, { metadata: this.metadata, ...details }),
-        catalogIndexTimeouts.write,
-      );
+    const run = async () => {
+      try {
+        await withTimeout(
+          reportPageIndex(this.env, { metadata: this.metadata, ...details }),
+          catalogIndexTimeouts.write,
+        );
+      } catch (error) {
+        this.indexReportPending = true;
+        await this.ctx.storage.put(INDEX_REPORT_PENDING, true);
+        throw error;
+      }
+      if (this.indexReportPending !== false) {
+        this.indexReportPending = false;
+        await this.ctx.storage.delete(INDEX_REPORT_PENDING);
+      }
+    };
     const next = (this.indexTail ?? Promise.resolve()).then(run, run);
     this.indexTail = next.catch(() => {});
     return next;
   }
 
+  /** Repeat a report that failed earlier, possibly before a restart. */
+  async repairIndex() {
+    if (!catalogIndexEpoch(this.env) || !this.handle || this.metadata?.deleted) return;
+    this.indexReportPending ??= (await this.ctx.storage.get(INDEX_REPORT_PENDING)) === true;
+    if (!this.indexReportPending || this.indexRepairing) return;
+    this.indexRepairing = true;
+    this.ctx.waitUntil(
+      this.reportIndex({
+        title: catalogTitle(this.handle.doc().title),
+        observedAt: new Date().toISOString(),
+      })
+        .catch((error) => logFailure(error, "catalog-index-repair"))
+        .finally(() => {
+          this.indexRepairing = false;
+        }),
+    );
+  }
+
   /** Pre-commit removal of listing rows. Best-effort: revocation and deletion
    * never wait on D1 beyond a short bound, and listings verify every
    * non-owner title with this host, so a row left behind cannot leak one. */
-  async restrictIndex(metadata) {
+  async restrictIndex(metadata, revision) {
     try {
-      await withTimeout(restrictPageIndex(this.env, metadata), catalogIndexTimeouts.write);
+      await withTimeout(
+        restrictPageIndex(this.env, metadata, revision),
+        catalogIndexTimeouts.write,
+      );
     } catch (error) {
       logFailure(error, "catalog-index-restrict");
+    }
+  }
+
+  /** Lifecycle state for the index, after the host record is durable. */
+  async retireIndex() {
+    if (!catalogIndexEpoch(this.env)) return;
+    try {
+      await withTimeout(retirePageIndex(this.env, this.metadata), catalogIndexTimeouts.write);
+    } catch (error) {
+      // Owner rows are confirmed against the Catalog and non-owner rows were
+      // removed before commit, so a missed retirement cannot list the Page.
+      logFailure(error, "catalog-index-retire");
     }
   }
 
@@ -887,7 +1015,7 @@ export class Page {
     // this host record never commits, restart may legitimately retain old access.
     await this.policy.refreshAccess({ persist: false });
     if (catalogIndexEpoch(this.env) && listingRestricted(previous, restricted, this.env))
-      await this.restrictIndex(restricted);
+      await this.restrictIndex(restricted, metadata.acl?.revision ?? 0);
     await this.ctx.storage.put("host/document", metadata);
     await this.ctx.storage.sync();
     this.metadata = metadata;
@@ -1063,6 +1191,7 @@ export class Page {
         await this.backend.flush();
         await this.recordStore?.flush?.();
         await this.ctx.storage.sync();
+        await this.retireIndex();
         return json(this.metadata.deletion.receipt);
       }
       if (this.metadata.deleted) {
@@ -1072,6 +1201,7 @@ export class Page {
         throw withAdmissionReason(new HttpError(404, "Page not found"), "page_deleted");
       }
       if (!["/api/sync", "/api/saved"].includes(url.pathname)) {
+        await this.repairIndex();
         const claimed = await claimInvitation(this.metadata, identity, this.env);
         if (claimed) await this.installAccess(claimed);
       }

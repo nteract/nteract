@@ -34,7 +34,12 @@ export class SqliteD1 {
     const result = this.sqlite.prepare(sql).run(...values);
     return { success: true, meta: { changes: Number(result.changes) } };
   }
+  /** `holdNext` delays only the next batch until the given promise settles;
+   * its statements were already bound, like a D1 request still in flight. */
   async batch(statements) {
+    const hold = this.holdNext;
+    this.holdNext = undefined;
+    if (hold) await hold;
     const outage = this.#outage();
     if (outage) return outage;
     this.sqlite.exec("BEGIN");
