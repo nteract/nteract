@@ -236,6 +236,22 @@ sockets renew bounded leases through provider verification; caching means provid
 revocation is not instantaneous. A pending or late check cannot revive an expired,
 disconnected, or changed grant. Page ACL enforcement is independent of sign-in renewal.
 
+Native admission separates an active socket from its pending durable signing-key
+binding. A handshake timeout or disconnect cancels that socket's waiter; a compatible
+reconnect joins the same write and rechecks current access before becoming active.
+An unchanged ACL refresh cannot demote a pending writer. Retirement writes are
+ordered after earlier binding writes, while access reductions apply immediately.
+Storage that never settles still prevents admission; a reconnect is not a durability
+shortcut. Failed writes retain their original identity, author ceiling, and quota
+reservation because failure does not prove that the write had no effect. A matching
+retry uses the same payload. These pending reservations are resident state; after
+restart, the host loads the binding records that storage actually retained.
+
+Native admission logs include bounded reason codes for timeout, cancellation,
+pending/already-connected keys, changed access, binding mismatch, and persistence
+failure. They omit signing keys, account identities, document content, and provider
+error text. A reason identifies the rejected boundary, not the cause of storage delay.
+
 Membership, invitation, connection, and lifetime signing-key counts are bounded;
 retired keys remain recorded to prevent regained authority. See [access.mjs](worker/access.mjs) and the Worker tests for membership admission
 and the associated resource limits. Sharing

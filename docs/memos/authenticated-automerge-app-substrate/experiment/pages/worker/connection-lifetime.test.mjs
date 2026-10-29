@@ -283,6 +283,55 @@ for (const failure of ["handshake", "binding", "backend", "handshake-timeout"]) 
   });
 }
 
+for (const cancellation of ["timeout", "disconnect"]) {
+  test(`native ${cancellation} releases its admission while a reconnect joins pending persistence`, async (t) => {
+    const f = fixture(t, undefined, { reauthenticate: async (identity) => identity });
+    const put = f.page.ctx.storage.put;
+    let settleWrite,
+      puts = 0;
+    const pending = new Promise((resolve) => {
+      settleWrite = resolve;
+    });
+    f.page.ctx.storage.put = async (...args) => {
+      puts++;
+      await pending;
+      return put(...args);
+    };
+    await drain();
+    const key = "0".repeat(64);
+    assert.equal(puts, 1);
+    assert.equal(f.page.policy.sessions.size, 0, "a pending author is not an active socket");
+    assert.equal(f.page.policy.authorAllowed(f.page.policy.bindings.get(key)), false);
+    assert.equal(f.backgrounds.length, 2, "persistence has its own background lifetime");
+    if (cancellation === "timeout") t.mock.timers.tick(10000);
+    else f.socket.close();
+    await f.background;
+    assert.equal(f.page.wires.size, 0);
+    assert.equal(f.page.policy.admissions.get(key).claim, null);
+    assert.equal(f.events.includes("admitted"), false);
+
+    const replacement = f.open();
+    await drain();
+    assert.equal(puts, 1, "a reconnect must not start a competing binding write");
+    assert.equal(replacement.socket.closeCalls, 0);
+    settleWrite();
+    await drain();
+    assert.equal(f.page.wires.size, 1);
+    assert.equal(f.page.policy.sessions.size, 1);
+    assert.equal(f.page.policy.admissions.size, 0);
+    assert.equal(f.page.policy.authorAllowed(f.page.policy.bindings.get(key)), true);
+    assert.equal(
+      f.events.filter((event) => event === "admitted").length,
+      1,
+      "late persistence may admit only the replacement socket",
+    );
+    replacement.socket.close();
+    await Promise.all(f.backgrounds);
+    assert.equal(f.page.policy.sessions.size, 0);
+    assert.equal(f.page.wires.size, 0);
+  });
+}
+
 test("pending native handshakes count toward each authenticated account's connection quota", async (t) => {
   const f = fixture(t, "handshake-timeout");
   const member = [];

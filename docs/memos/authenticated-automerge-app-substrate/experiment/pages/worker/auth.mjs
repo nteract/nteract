@@ -191,6 +191,18 @@ export function logFailure(error, stage) {
     stage,
     status,
     errorType: name,
+    ...([
+      "native_admission_cancelled",
+      "native_admission_timeout",
+      "native_binding_pending",
+      "native_binding_persistence_failed",
+      "native_binding_mismatch",
+      "native_already_connected",
+      "native_access_changed",
+      "native_acl_committing",
+    ].includes(error.code)
+      ? { reason: error.code }
+      : {}),
     timestamp: new Date().toISOString(),
   });
 }
