@@ -55,8 +55,10 @@ import {
   ImagePlus,
 } from "lucide-react";
 import {
+  commitEditorTransactions,
   createWordgardBinding,
   wordgardCodeNewlines,
+  wordgardHistory,
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
 import { PagesLink, TaskList, elements } from "./wordgard-model.mjs";
@@ -246,6 +248,7 @@ export function WordgardEditor(props) {
       lastPresenceAt = 0;
     const bound = createWordgardBinding(replica, id);
     binding.current = bound;
+    const undoHistory = wordgardHistory();
     const collab = createWordgardCollaboration({
       replica,
       id,
@@ -310,7 +313,7 @@ export function WordgardEditor(props) {
         wordgardWidgets(),
         wordgardCodeNewlines,
         wordgardListStarts,
-        history(),
+        undoHistory.extension,
         permissions.current.of(editConfig(latest.current.editable)),
         Wordgard.domEventHandler("paste", (event) => acceptImages(imageFiles(event.clipboardData))),
         Wordgard.domEventHandler("drop", (event) => {
@@ -335,14 +338,12 @@ export function WordgardEditor(props) {
           if (!alive) return;
           writing = true;
           try {
-            for (const tr of transactions)
-              if (!tr.annotation(Transaction.remote)) bound.applyEditorTransaction(tr);
+            commitEditorTransactions(editor, bound, transactions, {
+              annotations: remoteAnnotations(),
+              undoHistory,
+            });
           } catch (error) {
             report(error);
-            editor.dispatch({
-              changes: projectChanges(editor.state.doc, bound.current.doc),
-              annotations: [...remoteAnnotations(), history.isolate.of(true)],
-            });
           } finally {
             writing = false;
           }

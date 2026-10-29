@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { GardState, Transaction } from "wordgard/state";
+import { GardState, GardSelection, Transaction } from "wordgard/state";
 import { history, undo, redo } from "wordgard/history";
-import { Command, enter, toggleMark } from "wordgard/command";
+import { Command, deleteUnit, enter, toggleMark } from "wordgard/command";
 import { codeBlock, codeBlockLanguage, orderedList } from "wordgard/schema";
 import { createPeer, connectPeers, closePeers, eventually } from "../../backend.mjs";
-import { createPageData, initializePage } from "../model/page.mjs";
+import { applyPageOperation, createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
 import { Leaf, Slice } from "wordgard/doc";
 import { enableRich, textPath, blockMarkdown } from "../model/richtext.mjs";
@@ -21,15 +21,19 @@ import {
   OrderedList,
   ListItem,
   CodeBlockLanguage,
+  PagesImage,
   decode,
   encode,
 } from "./wordgard-model.mjs";
 import {
+  commitEditorTransactions,
   createWordgardBinding,
   wordgardCodeNewlines,
+  wordgardHistory,
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
+import { encode as previousEncode } from "../test/wordgard-encode-d53a6e64b.mjs";
 function fixture(markdown = "hello 🌊 world") {
   let doc = A.change(A.from({ blocks: { one: { id: "one", kind: "markdown", markdown } } }), (d) =>
     enableRich(d, "one"),
@@ -497,4 +501,279 @@ test("non-default ordered-list input and paste normalize before native commit wi
     assert.equal(editorState.doc.textContent(), mode === "paste" ? "Pasted 🌊" : "");
     binding.destroy();
   }
+});
+
+const imageSrc = `/api/pages/${"3".repeat(8)}/assets/${"a".repeat(64)}`;
+const image = PagesImage.of({ src: imageSrc, alt: "cat", title: null });
+// The browser editor's commit path: local transactions through the binding,
+// remote projections back into the editor, Backspace/Delete as deleteUnit.
+// `previousBuild` stands in for a tab running d53a6e64b: its encoder, and a
+// rejection path that restores the projection but keeps the undo history.
+function editorFor(replica, id, { previousBuild = false } = {}) {
+  const binding = createWordgardBinding(
+      replica,
+      id,
+      previousBuild ? { encodeSpans: previousEncode } : {},
+    ),
+    undoHistory = wordgardHistory(),
+    errors = [];
+  let editorState = GardState.create({
+    doc: binding.current.doc,
+    config: [
+      GardState.schemaElement.of(schema.elements),
+      wordgardCodeNewlines,
+      wordgardListStarts,
+      undoHistory.extension,
+    ],
+  });
+  const editor = {
+    binding,
+    errors,
+    get state() {
+      return editorState;
+    },
+    dispatch(spec) {
+      // Each keystroke here is its own undo step, as when a person pauses.
+      const annotations = [spec.annotations ?? []].flat().concat(history.isolate.of(true));
+      const trs = Transaction.append(editorState.update({ ...spec, annotations }));
+      editorState = trs.at(-1).state;
+      try {
+        commitEditorTransactions(editor, binding, trs, {
+          annotations: [Transaction.remote.of(true), Transaction.addToHistory.of(false)],
+          undoHistory: previousBuild ? null : undoHistory,
+        });
+      } catch (error) {
+        errors.push(error.message);
+      }
+    },
+    run(command, arg) {
+      return Command.dispatch(editor, command, arg);
+    },
+  };
+  return editor;
+}
+const nativeSpans = (replica, id) => A.spans(replica.doc, ["blocks", id, "richText"]);
+const imagePositions = (doc) => {
+  const positions = [];
+  for (let pos = 0; pos < doc.length; pos++)
+    if (doc.nodeAt(pos)?.type === PagesImage) positions.push(pos);
+  return positions;
+};
+function assertInSync(editor, replica, id, label) {
+  assert.deepEqual(editor.errors, [], label);
+  assert.ok(editor.binding.current.doc.eq(editor.state.doc), `${label}: ${editor.state.doc}`);
+  assert.ok(decode(nativeSpans(replica, id)).doc.eq(editor.state.doc), label);
+}
+const deletions = {
+  "Backspace on the selected image"(editor, pos) {
+    editor.dispatch({ selection: GardSelection.node(pos, editor.state.doc.nodeAt(pos)) });
+    assert.equal(editor.run(deleteUnit, "backward"), true);
+  },
+  "Delete on the selected image"(editor, pos) {
+    editor.dispatch({ selection: GardSelection.node(pos, editor.state.doc.nodeAt(pos)) });
+    assert.equal(editor.run(deleteUnit, "forward"), true);
+  },
+  "a range spanning the image"(editor, pos) {
+    const doc = editor.state.doc;
+    editor.dispatch({ selection: { anchor: pos, head: pos + 1 } });
+    // Widen to the neighbouring text when there is any, crossing block edges.
+    const from = Math.max(1, pos - 2),
+      to = Math.min(doc.length - 1, pos + 3);
+    editor.dispatch({ selection: { anchor: from, head: to } });
+    assert.equal(editor.run(deleteUnit, "backward"), true);
+  },
+};
+// Each shape builds a block the way the browser does: type, Enter, insert the
+// uploaded image at the cursor with the same transaction as image-upload.mjs.
+const shapes = {
+  "alone in the first paragraph, before text (the reported Page)": {
+    markdown: "Hope you can edit this with me.",
+    place(editor) {
+      editor.dispatch({ changes: { from: 1, insert: [image], fit: true } });
+      editor.dispatch({ selection: { anchor: 2 } });
+      assert.equal(editor.run(enter), true);
+    },
+  },
+  "alone in a middle paragraph": {
+    markdown: "With image!\n\nHope you can edit this with me.",
+    place(editor) {
+      editor.dispatch({ selection: { anchor: 12 } });
+      assert.equal(editor.run(enter), true);
+      editor.dispatch({
+        changes: { from: editor.state.selection.head, insert: [image], fit: true },
+      });
+    },
+  },
+  "alone at the end of the document": {
+    markdown: "With image!",
+    place(editor) {
+      editor.dispatch({ selection: { anchor: 12 } });
+      assert.equal(editor.run(enter), true);
+      editor.dispatch({
+        changes: { from: editor.state.selection.head, insert: [image], fit: true },
+      });
+    },
+  },
+  "inline at the start of the document": {
+    markdown: "Hope",
+    place(editor) {
+      editor.dispatch({ changes: { from: 1, insert: [image], fit: true } });
+    },
+  },
+};
+test("deleting an image keeps the editor and native Page projection identical", () => {
+  for (const [shape, { markdown, place }] of Object.entries(shapes))
+    for (const [method, remove] of Object.entries(deletions)) {
+      const label = `${shape} / ${method}`,
+        replica = fixture(markdown),
+        editor = editorFor(replica, "one");
+      place(editor);
+      assertInSync(editor, replica, "one", `${label} (inserted)`);
+      const inserted = editor.state.doc,
+        [pos] = imagePositions(inserted);
+      assert.ok(pos > 0, label);
+      remove(editor, pos);
+      assertInSync(editor, replica, "one", `${label} (deleted)`);
+      assert.deepEqual(imagePositions(editor.state.doc), [], label);
+      assert.ok(!JSON.stringify(nativeSpans(replica, "one")).includes(imageSrc), label);
+      assert.ok(!blockMarkdown(replica.doc.blocks.one).includes(imageSrc), label);
+      editor.dispatch(undo({ state: editor.state }));
+      assertInSync(editor, replica, "one", `${label} (undo)`);
+      assert.equal(imagePositions(editor.state.doc).length, 1, label);
+      assert.ok(blockMarkdown(replica.doc.blocks.one).includes(imageSrc), label);
+      editor.dispatch(redo({ state: editor.state }));
+      assertInSync(editor, replica, "one", `${label} (redo)`);
+      assert.deepEqual(imagePositions(editor.state.doc), [], label);
+      editor.binding.destroy();
+    }
+});
+
+test("deleting an insert_image block by hand leaves an empty, exportable block", () => {
+  for (const [method, remove] of Object.entries(deletions)) {
+    let doc = A.change(A.from(createPageData({ pageId: "3".repeat(8) })), (d) =>
+      initializePage(d, "With image!"),
+    );
+    let result;
+    doc = A.change(doc, (d) => {
+      result = applyPageOperation(d, {
+        operation: "edit_page",
+        arguments: { operations: [{ op: "insert_image", asset_id: "a".repeat(64), alt: "cat" }] },
+      });
+    });
+    const id = result.inserted_images[0].block_id,
+      replica = {
+        get doc() {
+          return doc;
+        },
+        change(fn) {
+          doc = A.change(doc, fn);
+        },
+        observeChange: () => () => {},
+      };
+    const editor = editorFor(replica, id),
+      [pos] = imagePositions(editor.state.doc);
+    remove(editor, pos);
+    assert.deepEqual(editor.errors, [], method);
+    assert.ok(decode(nativeSpans(replica, id)).doc.eq(editor.state.doc), method);
+    assert.deepEqual(imagePositions(editor.state.doc), [], method);
+    const page = projectPage(doc);
+    assert.equal(page.blocks.find((block) => block.id === id).markdown, "", method);
+    assert.ok(!JSON.stringify(page).includes(imageSrc.split("/assets/")[1]), method);
+    editor.binding.destroy();
+  }
+});
+
+test("Enter at the start of a block keeps the empty paragraph it creates", () => {
+  const replica = fixture("Hope"),
+    editor = editorFor(replica, "one");
+  editor.dispatch({ selection: { anchor: 1 } });
+  assert.equal(editor.run(enter), true);
+  assertInSync(editor, replica, "one", "Enter at start");
+  assert.equal(editor.state.doc.content.length, 2);
+  editor.binding.destroy();
+});
+
+test("a rejected local transaction restores the editor and drops its undo history", () => {
+  const replica = fixture("Hope"),
+    editor = editorFor(replica, "one");
+  editor.dispatch({ changes: { from: 1, insert: [image] } });
+  const accepted = editor.state.doc,
+    heads = A.getHeads(replica.doc);
+  // Force the safety check to fail for one structural commit.
+  const original = replica.change;
+  replica.change = (fn) =>
+    original((d) => {
+      fn(d);
+      throw Error("Wordgard operation did not reproduce its native Pages projection");
+    });
+  editor.dispatch({ changes: { from: 1, to: 2 } });
+  replica.change = original;
+  assert.deepEqual(editor.errors, [
+    "Wordgard operation did not reproduce its native Pages projection",
+  ]);
+  editor.errors.length = 0;
+  assert.deepEqual(A.getHeads(replica.doc), heads, "the native change rolled back");
+  assert.ok(editor.state.doc.eq(accepted), "the editor shows the accepted document");
+  assertInSync(editor, replica, "one", "after rejection");
+  // Undo must not replay the inverse of the rejected deletion (a second image).
+  assert.equal(undo({ state: editor.state }), false);
+  editor.dispatch({ changes: { from: 2, insert: [Leaf.text(" again")] } });
+  assertInSync(editor, replica, "one", "later edits");
+  assert.equal(replica.doc.blocks.one.richText.length, " again".length + "Hope".length + 1);
+  editor.binding.destroy();
+});
+
+test("a tab from the previous build rejects structural edits to the new shape without corruption", () => {
+  // The current build writes an explicit marker for an empty first paragraph:
+  // Paragraph(), Paragraph(image), Paragraph("Hope").
+  const replica = fixture("Hope"),
+    current = editorFor(replica, "one");
+  current.dispatch({ changes: { from: 1, insert: [image] } });
+  current.dispatch({ selection: { anchor: 2 } });
+  assert.equal(current.run(enter), true);
+  current.dispatch({ selection: { anchor: 1 } });
+  assert.equal(current.run(enter), true);
+  assertInSync(current, replica, "one", "current build");
+  assert.equal(current.state.doc.content.length, 3);
+  assert.equal(String(nativeSpans(replica, "one")[0].value.type), "paragraph");
+  current.binding.destroy();
+
+  // The previous build decodes it, and plain typing still commits.
+  const previous = editorFor(replica, "one", { previousBuild: true }),
+    text = () =>
+      nativeSpans(replica, "one")
+        .filter((span) => span.type === "text")
+        .map((span) => span.value)
+        .join("");
+  assert.ok(previous.state.doc.eq(decode(nativeSpans(replica, "one")).doc));
+  const hope = previous.state.doc.length - 1 - "Hope".length;
+  previous.dispatch({ changes: { from: hope, insert: [Leaf.text("Still ")] } });
+  assertInSync(previous, replica, "one", "previous build typing");
+  assert.equal(text(), "Still Hope");
+
+  // Its encoder drops the empty first paragraph, so the safety check rejects
+  // any structural edit that keeps it. The native change rolls back and the
+  // editor shows the accepted Page again.
+  const rejection = ["Wordgard operation did not reproduce its native Pages projection"],
+    accepted = A.save(replica.doc),
+    restored = previous.state.doc,
+    [pos] = imagePositions(restored);
+  previous.dispatch({ selection: GardSelection.node(pos, restored.nodeAt(pos)) });
+  assert.equal(previous.run(deleteUnit, "backward"), true);
+  assert.deepEqual(previous.errors, rejection);
+  assert.deepEqual(A.save(replica.doc), accepted, "the Page is unchanged");
+  assert.ok(previous.state.doc.eq(restored), "the editor shows the accepted Page");
+
+  // That build keeps the rejected deletion in its undo history, and undo would
+  // insert a second image. The inverse is structural too, so it is rejected
+  // the same way while the empty first paragraph remains.
+  previous.errors.length = 0;
+  const undoSpec = undo({ state: previous.state });
+  assert.ok(undoSpec);
+  assert.equal(imagePositions(previous.state.update(undoSpec).newDoc).length, 2);
+  previous.dispatch(undoSpec);
+  assert.deepEqual(previous.errors, rejection);
+  assert.deepEqual(A.save(replica.doc), accepted, "no duplicate image reaches the Page");
+  assert.ok(previous.state.doc.eq(restored));
+  previous.binding.destroy();
 });

@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { request } from "node:http";
 import { chromium, expect } from "@playwright/test";
 
 const origin = process.env.PAGES_ORIGIN;
@@ -18,6 +19,57 @@ const browser = await chromium.launch({
     "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1",
   ],
 });
+// POST that observes an early response. celld can answer 413 from the
+// headers and close the socket before an oversized body is written, so fetch
+// reports EPIPE instead of the status. Ask for 100-continue, stream the body in
+// chunks only after the server allows it, and stop writing once any response
+// arrives. A reset counts only after a status was received.
+function postObservingEarlyResponse(url, headers, body, chunk = 64 * 1024) {
+  return new Promise((resolve, reject) => {
+    let status = null,
+      offset = 0,
+      started = false;
+    const finish = (text = "") => {
+      req.destroy();
+      resolve({ status, text });
+    };
+    const req = request(url, {
+      method: "POST",
+      headers: { ...headers, "Content-Length": body.length, Expect: "100-continue" },
+    });
+    const write = () => {
+      if (status !== null) return;
+      if (offset >= body.length) return void req.end();
+      const next = body.subarray(offset, offset + chunk);
+      offset += next.length;
+      // Yield between chunks so a response can be parsed before the next write.
+      if (req.write(next)) setImmediate(write);
+      else req.once("drain", write);
+    };
+    const start = () => {
+      if (started) return;
+      started = true;
+      write();
+    };
+    req.on("continue", start);
+    // Servers may ignore Expect; send the body after a short wait.
+    const fallback = setTimeout(start, 1000);
+    req.on("response", (response) => {
+      clearTimeout(fallback);
+      status = response.statusCode;
+      const parts = [];
+      response.on("data", (part) => parts.push(part));
+      response.on("end", () => finish(Buffer.concat(parts).toString()));
+      response.on("error", () => finish());
+    });
+    req.on("error", (error) => {
+      clearTimeout(fallback);
+      if (status !== null) finish();
+      else reject(error);
+    });
+    req.flushHeaders();
+  });
+}
 const report = { completed: [], errors: [] };
 const people = new Map();
 const created = [];
@@ -199,12 +251,12 @@ try {
     [fixture, "image/jpeg", 415],
     [Buffer.alloc(5 * 1024 * 1024 + 1), "image/png", 413],
   ]) {
-    const rejected = await fetch(origin + uploadPath, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${keys.owner}`, "Content-Type": mime },
-      body,
-    });
-    assert.equal(rejected.status, status, await rejected.text());
+    const rejected = await postObservingEarlyResponse(
+      origin + uploadPath,
+      { Authorization: `Bearer ${keys.owner}`, "Content-Type": mime },
+      Buffer.from(body),
+    );
+    assert.equal(rejected.status, status, rejected.text);
   }
   for (const key of [keys.reader, keys.viewer]) {
     const denied = await fetch(origin + uploadPath, {
@@ -232,6 +284,41 @@ try {
     "Real R2 bytes match SHA-256; read/write scopes, Page roles and Page-scoped hashes enforced",
   );
 
+  // An image alone in a block's first paragraph, deleted by hand. Its empty
+  // paragraph must survive the native round trip with no projection error.
+  const firstBlock = content(owner);
+  await firstBlock.click();
+  await owner.keyboard.press("ControlOrMeta+Home");
+  await imageEvent(owner, "paste", fixtures[1], "first-paragraph.png");
+  for (const page of [owner, editor, viewer]) await expectImages(page, 1);
+  const leading = images(owner).first();
+  await leading.click();
+  await expect(leading).toHaveClass(/wg-selected-node/);
+  await owner.keyboard.press("ArrowRight");
+  await owner.keyboard.press("Enter");
+  await expect(firstBlock.locator("p")).toHaveCount(3);
+  await leading.click();
+  await expect(leading).toHaveClass(/wg-selected-node/);
+  await owner.keyboard.press("Backspace");
+  for (const page of [owner, editor, viewer]) await expectImages(page, 0);
+  const projectionError = /did not reproduce|is behind its Pages document/;
+  await expect(owner.getByText(projectionError)).toHaveCount(0);
+  await expect(firstBlock.locator("p")).toHaveCount(3);
+  await expect
+    .poll(async () => {
+      const read = (await tool(owner, "read_page", { page_id: pageId })).body;
+      return read.blocks.map((block) => block.markdown).join("\n");
+    })
+    .not.toContain("![");
+  await owner.keyboard.press("ControlOrMeta+z");
+  for (const page of [owner, editor, viewer]) await expectImages(page, 1);
+  await owner.keyboard.press("ControlOrMeta+Shift+z");
+  for (const page of [owner, editor, viewer]) await expectImages(page, 0);
+  await expect(owner.getByText(projectionError)).toHaveCount(0);
+  for (const page of [owner, editor, viewer])
+    await expect(content(page)).toContainText("Images stay private with this Page.");
+  complete("Deleting an image alone in a block's first paragraph keeps the Page in sync");
+
   let resumeUpload;
   const holdUpload = new Promise((resolve) => {
     resumeUpload = resolve;
@@ -250,6 +337,8 @@ try {
     { times: 1 },
   );
   await atEnd(owner);
+  // A collapsed caret hides contextual formatting; open the dock for Insert image.
+  await owner.keyboard.press("Alt+F10");
   const chooser = owner.waitForEvent("filechooser");
   await owner.getByRole("button", { name: "Insert image", exact: true }).click();
   await (
@@ -335,7 +424,8 @@ try {
   );
   await viewer.reload();
   await expectImages(viewer, 3);
-  await expect(viewer.getByRole("button", { name: "Insert image", exact: true })).toBeDisabled();
+  // Readers get no formatting dock, so no Insert image control at all.
+  await expect(viewer.getByRole("button", { name: "Insert image", exact: true })).toHaveCount(0);
   let readonlyUploads = 0;
   viewer.on("request", (request) => {
     if (request.url() === origin + uploadPath && request.method() === "POST") readonlyUploads++;

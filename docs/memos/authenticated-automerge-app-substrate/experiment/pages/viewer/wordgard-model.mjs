@@ -411,6 +411,11 @@ export function encode(doc) {
       marker("image", parents, node.param, true);
     } else throw Error(`Unsupported Wordgard inline node: ${node.name}`);
   };
+  // A first paragraph can omit its marker when it has content or is the
+  // container's only child. Otherwise, emit a marker to preserve the empty
+  // paragraph.
+  const implicitAt = (siblings, i) =>
+    i === 0 && (siblings.length === 1 || siblings[0].content?.length > 0);
   const block = (node, parents, implicit = false, listType = null) => {
     if (node.type === OpaqueBlock) {
       marker("pages-opaque", parents, node.param);
@@ -460,8 +465,11 @@ export function encode(doc) {
     if (!(implicit && type === "paragraph")) marker(type, parents, attrs);
     if (node.inlineContent)
       for (const child of node.content) inline(child, [...parents, type], type === "code-block");
-    else node.content.forEach((child, i) => block(child, [...parents, type], i === 0));
+    else
+      node.content.forEach((child, i, siblings) =>
+        block(child, [...parents, type], implicitAt(siblings, i)),
+      );
   };
-  doc.content.forEach((node, i) => block(node, [], i === 0));
+  doc.content.forEach((node, i, siblings) => block(node, [], implicitAt(siblings, i)));
   return spans;
 }

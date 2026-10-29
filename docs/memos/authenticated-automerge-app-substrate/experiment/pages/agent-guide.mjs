@@ -463,6 +463,8 @@ A selected section, search hit or node range has partial:true and node_range on
 each returned block slice. Never replace_block_markdown with a partial slice:
 that would discard the rest of the block. Use replace_match for the intended
 passage, using the current heads and original block ID.
+Replacing a whole block with its exported Markdown drops an empty first
+paragraph, because Markdown cannot represent one. Use replace_match to keep it.
 
 Selected reads default to comments:"summary"; outline-only reads default to none.
 Explicit comments modes none, summary, open and all use compact projections without
@@ -624,6 +626,8 @@ matching or applying the text again.
 For formatting or structural edits, use patch_block_markdown with replacements
 [{"old":"exact Markdown","new":"replacement Markdown"}]. Each old string must
 occur exactly once in that block's Markdown. Regex replacement is not supported.
+It refuses a block whose Markdown can't reproduce it, such as one with an empty
+paragraph; use replace_match for text in that block.
 Copy the whole heads array, even when it has more than one entry. On a stale-revision error,
 read again, reconsider the edit, and use a new key. After a timeout or unknown
 outcome, retry the exact request body, key, token, account, and driver label.
