@@ -443,7 +443,7 @@ mod tests {
     /// refuses as model references or blob refs, so the frame learns at write
     /// time instead of through a resync.
     #[test]
-    fn handle_refuses_model_references_and_blob_refs() {
+    fn handle_refuses_model_references_blob_refs_and_unknown_reps() {
         let mut hub = kernel_doc();
         let mut handle = BokehSessionDocHandle::new("s1", 2, "user:dev:alice/browser").unwrap();
         sync_with_hub(&mut handle, &mut hub, &mut sync::State::new()).unwrap();
@@ -451,6 +451,7 @@ mod tests {
         for value in [
             r#"{"id":"p1"}"#,
             r#"{"blob":"ee","size":10,"media_type":"application/json"}"#,
+            r#"{"type":"bogus"}"#,
         ] {
             let patch = serde_json::json!({"p1": {"value": value}}).to_string();
             assert!(

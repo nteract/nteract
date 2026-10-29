@@ -900,6 +900,37 @@ pub(crate) mod tests {
         assert_eq!(hub_prop(&room, "p2", "value").as_deref(), Some("0.5"));
     }
 
+    /// Review R6b open question: a local same-UID connection may author
+    /// under any operator-only label, including the kernel's
+    /// `rt:kernel:<id>`. Its writes would read as the kernel's: never
+    /// forwarded to Python, and reported by the MCP tool as Python's.
+    #[tokio::test]
+    async fn a_local_peer_cannot_write_as_the_kernel() {
+        let mut room = Room::new();
+        let store = store_with_session();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        store.set_forwarder(Some(tx));
+        room.pump(&store);
+        room.set_record(BokehSessionStatus::Connected, 0);
+        let identity = RoomConnectionIdentity::local(None).await.unwrap();
+        // The actor check alone admits the kernel's label.
+        identity.validate_actor_labels([KERNEL]).unwrap();
+
+        let mut peer = Peer::with_identity(identity, KERNEL);
+        peer.sync(&room);
+        peer.doc.set_prop("p2", "value", "0.8").unwrap();
+        peer.doc.commit();
+        peer.sync(&room);
+        assert!(
+            peer.resync_reason().contains(KERNEL),
+            "{}",
+            peer.resync_reason()
+        );
+        room.pump(&store);
+        assert_eq!(hub_prop(&room, "p2", "value").as_deref(), Some("0.5"));
+        assert!(rx.try_recv().is_err());
+    }
+
     /// Send only the peer's last change, as a Bloom false positive can, and
     /// apply the hub's reply.
     fn send_last_change_only(peer: &mut Peer, room: &Room) -> Option<SessionControlMessage> {
@@ -1415,39 +1446,61 @@ pub(crate) mod tests {
         assert_eq!(room.hub.blob_roots(), roots);
     }
 
-    /// Item 5: a kernel-offloaded value whose blob is gone (GC, a deleted
-    /// cache) drops that value from saves and freezes instead of failing them.
+    /// Review R6b: a missing value, column or `doc_extras` blob means a GC
+    /// or cache bug. Dropping the entry would write a partial document (a
+    /// source with unequal columns, custom models without their `defs`), so
+    /// saves and freezes keep the stored display-time payload instead.
     #[tokio::test]
-    async fn saves_and_freezes_survive_a_missing_value_blob() {
-        let mut snap = snapshot();
-        snap.models.get_mut("p2").unwrap().props.insert(
-            "title".into(),
+    async fn saves_and_freezes_keep_the_stored_payload_when_a_blob_is_missing() {
+        let missing = |blob: char| {
             runtime_doc::BokehBlobRef {
-                blob: "d".repeat(64),
+                blob: blob.to_string().repeat(64),
                 size: 2000,
                 media_type: crate::bokeh_session::BOKEH_PROP_MEDIA_TYPE.into(),
             }
-            .encode(),
+            .encode()
+        };
+        let mut prop = snapshot();
+        prop.models
+            .get_mut("p2")
+            .unwrap()
+            .props
+            .insert("title".into(), missing('d'));
+        let mut column = snapshot();
+        column.columns.insert(
+            "p3".into(),
+            BTreeMap::from([(
+                "x".to_string(),
+                BokehColumnRef {
+                    blob: "c".repeat(64),
+                    size: 10,
+                    version: 2,
+                },
+            )]),
         );
-        let store = BokehSessionStore::default();
-        store.insert(
-            "session-1",
-            BokehSessionDoc::build(&snap, KERNEL).unwrap(),
-            "kernel-1",
-            KERNEL,
-        );
-        let mut room = Room::new();
-        room.pump(&store);
-        room.add_session_output().await;
+        let mut extras = snapshot();
+        extras.meta.doc_extras = Some(missing('e'));
 
-        let saved = room.save(display_output()).await;
-        let snapshot = &saved["data"][BOKEH_SESSION_MIME]["snapshot"]["document"];
-        assert!(snapshot["roots"].is_array(), "{saved}");
-        assert!(!snapshot.to_string().contains("d".repeat(64).as_str()));
+        for (what, snap) in [("prop", prop), ("column", column), ("doc_extras", extras)] {
+            let store = BokehSessionStore::default();
+            store.insert(
+                "session-1",
+                BokehSessionDoc::build(&snap, KERNEL).unwrap(),
+                "kernel-1",
+                KERNEL,
+            );
+            let mut room = Room::new();
+            room.pump(&store);
+            room.add_session_output().await;
 
-        room.lose_runtime_agent().await;
-        let frozen = room.stored_payload().await;
-        assert!(frozen["snapshot"]["document"]["roots"].is_array());
+            assert_eq!(
+                room.save(display_output()).await,
+                display_output(),
+                "{what}"
+            );
+            room.lose_runtime_agent().await;
+            assert_eq!(room.stored_payload().await, payload(), "{what}");
+        }
     }
 
     /// Item 8 (review 2026-10-29): a late `update_display_data` from the
@@ -1469,25 +1522,27 @@ pub(crate) mod tests {
             .read(|doc| doc.get_output("exec-1", "output-1"))
             .unwrap();
 
-        // Runs at the freeze's first await, after it read the manifest.
+        // Lands after the freeze read the manifest and before it writes.
         let state = room.state.clone();
-        let updated = {
-            let late = late.clone();
-            tokio::spawn(async move {
-                state
+        let updated = std::rc::Rc::new(std::cell::RefCell::new(None));
+        crate::bokeh_session::materialize::before_freeze_write({
+            let (late, updated) = (late.clone(), updated.clone());
+            move || {
+                let before = state
                     .with_doc(|doc| {
                         let before = doc.get_output("exec-1", "output-1");
                         doc.replace_output("exec-1", "output-1", &late)?;
                         Ok(before)
                     })
-                    .unwrap()
-            })
-        };
+                    .unwrap();
+                *updated.borrow_mut() = Some(before);
+            }
+        });
         room.lose_runtime_agent().await;
         assert_eq!(
-            updated.await.unwrap(),
-            original,
-            "the update ran before the freeze wrote"
+            updated.borrow_mut().take(),
+            Some(original),
+            "the update ran after the freeze read the manifest"
         );
         let output = room
             .state

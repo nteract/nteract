@@ -226,6 +226,9 @@ impl BokehKernelOutbox {
     /// Queue foreign property writes. They merge into the session's pending
     /// writes unless a one-off event was queued since: a callback for that
     /// event must see the values written before it, and only those.
+    /// Merging can move a write ahead of another session's queued writes;
+    /// sessions are separate Bokeh documents, so only per-session order
+    /// matters.
     pub(crate) fn forward_props(&self, session_id: &str, changes: Vec<(String, String, String)>) {
         if changes.is_empty() {
             return;
@@ -295,8 +298,10 @@ impl BokehKernelOutbox {
         }
         self.wake.notify_one();
         Ok(async move {
+            // Dropped unsent on close, or in flight when shutdown aborted the
+            // outbox, after which the kernel may still have run it.
             response.await.map_err(|_| {
-                anyhow::anyhow!("the kernel stopped before the Bokeh event was sent")
+                anyhow::anyhow!("the kernel stopped before it replied to the Bokeh event")
             })?
         })
     }
@@ -684,7 +689,7 @@ mod tests {
         states: crate::keyed_doc::KeyedSyncStates,
         peer: runtime_doc::BokehSessionDoc,
         peer_state: automerge::sync::State,
-        _launched: KernelExtensions,
+        launched: KernelExtensions,
         _blob_dir: tempfile::TempDir,
     }
 
@@ -722,7 +727,7 @@ mod tests {
                 states: crate::keyed_doc::KeyedSyncStates::new(),
                 peer: runtime_doc::BokehSessionDoc::new_empty("user:dev:alice/browser"),
                 peer_state: automerge::sync::State::new(),
-                _launched: launched,
+                launched,
                 _blob_dir: dir,
             };
             harness.sync();
@@ -854,6 +859,22 @@ mod tests {
         pending.remove(0).await.unwrap();
         next_command(&mut h.shell_rx).await;
         assert!(outbox.one_off(one_off("room-again")).is_ok());
+    }
+
+    /// Review R6b: shutdown aborts the outbox with an event in flight, which
+    /// the kernel may already have run; the error must not claim otherwise.
+    #[tokio::test]
+    async fn an_event_in_flight_at_shutdown_is_not_reported_as_unsent() {
+        let mut h = Harness::new();
+        let outbox = h.store.outbox("kernel-1").unwrap();
+        let in_flight = outbox.one_off(one_off("click-1")).unwrap();
+        let queued = outbox.one_off(one_off("click-2")).unwrap();
+        let _sent = next_command(&mut h.shell_rx).await;
+        h.launched.shutdown();
+        for reply in [in_flight, queued] {
+            let error = reply.await.expect_err("no reply").to_string();
+            assert!(error.contains("before it replied"), "{error}");
+        }
     }
 
     #[tokio::test]

@@ -9,7 +9,7 @@
 //! ([`AgentKeyedDoc`]). It creates sessions only while the coordinator routes
 //! that kind; otherwise Panel outputs stay static.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -46,6 +46,10 @@ const INGEST_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
 /// peers that just received a broadcast or ref can still fetch them.
 const RETIRED_BLOB_GRACE_MS: u64 = 60_000;
 const REPLACEMENT_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+/// A deferred fold whose delta never arrived (a failed flush, or the
+/// kernel's fold raising) stops blocking new requests after twice the
+/// launcher's quiet-fold interval (`FOLD_QUIET_SECONDS`, 2 s).
+pub(crate) const FOLD_CLAIM_TTL_MS: u64 = 4_000;
 
 /// Test-only replacement policy, honored only in dev mode:
 /// `<change bytes>[,<min interval ms>]`, with no saved-size factor. Lets
@@ -119,10 +123,10 @@ struct AgentSession {
     kernel_actor: String,
     tracker: BokehReplacementTracker,
     tails: HashMap<String, SourceTail>,
-    /// Sources with a fold requested from the kernel and not yet answered,
-    /// or deferred by the kernel and not yet delivered; repeated data
-    /// requests must not queue more.
-    folds_pending: HashSet<String>,
+    /// Sources with a fold requested from the kernel and not yet answered
+    /// (`None`), or deferred by the kernel at the given time and not yet
+    /// delivered; repeated data requests must not queue more.
+    folds_pending: HashMap<String, Option<u64>>,
 }
 
 impl AgentSession {
@@ -192,6 +196,8 @@ pub(crate) struct BokehSessionStore {
     /// `None` only in tests, where every session is accepted.
     availability: Option<KeyedDocAvailability>,
     started: Instant,
+    #[cfg(test)]
+    clock_offset_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[cfg(test)]
@@ -227,6 +233,8 @@ impl BokehSessionStore {
             waker: Arc::new(StdMutex::new(None)),
             availability,
             started: Instant::now(),
+            #[cfg(test)]
+            clock_offset_ms: Arc::default(),
         }
     }
 
@@ -263,7 +271,19 @@ impl BokehSessionStore {
 
     /// Monotonic milliseconds for the replacement tracker.
     pub(crate) fn now_ms(&self) -> u64 {
-        self.started.elapsed().as_millis() as u64
+        let now = self.started.elapsed().as_millis() as u64;
+        #[cfg(test)]
+        let now = now
+            + self
+                .clock_offset_ms
+                .load(std::sync::atomic::Ordering::Relaxed);
+        now
+    }
+
+    #[cfg(test)]
+    pub(crate) fn advance_clock_for_test(&self, ms: u64) {
+        self.clock_offset_ms
+            .fetch_add(ms, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[cfg(test)]
@@ -374,7 +394,7 @@ impl BokehSessionStore {
                 kernel_actor: kernel_actor.to_string(),
                 tracker,
                 tails: HashMap::new(),
-                folds_pending: HashSet::new(),
+                folds_pending: HashMap::new(),
             },
         );
         drop(inner);
@@ -763,22 +783,50 @@ impl BokehSessionStore {
     }
 
     /// Mark folds as requested from the kernel and return the sources that
-    /// had none pending, which the caller must request.
+    /// had none pending, or only an expired deferred one, which the caller
+    /// must request.
     pub(crate) fn claim_folds(&self, session_id: &str, sources: &[String]) -> Vec<String> {
+        let now = self.now_ms();
         let mut inner = self.lock();
         let Some(session) = inner.sessions.get_mut(session_id) else {
             return Vec::new();
         };
         sources
             .iter()
-            .filter(|source| session.folds_pending.insert((*source).clone()))
+            .filter(|source| {
+                let free = match session.folds_pending.get(*source) {
+                    None => true,
+                    Some(None) => false,
+                    Some(Some(deferred_at)) => {
+                        now.saturating_sub(*deferred_at) >= FOLD_CLAIM_TTL_MS
+                    }
+                };
+                if free {
+                    session.folds_pending.insert((*source).clone(), None);
+                }
+                free
+            })
             .cloned()
             .collect()
     }
 
-    /// End claims the kernel answered without deferring, or failed. A
-    /// deferred fold stays claimed until its `ColumnsFolded` lands, the
-    /// source is removed or the epoch is replaced.
+    /// Keep claims the kernel deferred until their `ColumnsFolded` lands,
+    /// the source is removed, the epoch is replaced or
+    /// [`FOLD_CLAIM_TTL_MS`] passes.
+    pub(crate) fn defer_folds(&self, session_id: &str, sources: &[String]) {
+        let now = self.now_ms();
+        if let Some(session) = self.lock().sessions.get_mut(session_id) {
+            for source in sources {
+                // The fold delta may have landed before the reply and ended
+                // the claim already.
+                if let Some(claim) = session.folds_pending.get_mut(source) {
+                    *claim = Some(now);
+                }
+            }
+        }
+    }
+
+    /// End claims the kernel answered without deferring, or failed.
     pub(crate) fn release_folds(&self, session_id: &str, sources: &[String]) {
         if let Some(session) = self.lock().sessions.get_mut(session_id) {
             for source in sources {
@@ -793,7 +841,7 @@ impl BokehSessionStore {
         let mut pending: Vec<String> = inner
             .sessions
             .get(session_id)
-            .map(|session| session.folds_pending.iter().cloned().collect())
+            .map(|session| session.folds_pending.keys().cloned().collect())
             .unwrap_or_default();
         pending.sort();
         pending

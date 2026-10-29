@@ -207,6 +207,8 @@ pub enum BokehSessionWriteRejection {
     InvalidValue { model: String, prop: String },
     #[error("{model}.{prop} value holds a model reference")]
     ModelReferenceValue { model: String, prop: String },
+    #[error("{model}.{prop} value has a type Bokeh cannot decode")]
+    UndecodableValue { model: String, prop: String },
     #[error("{model}.{prop} value is shaped like a blob ref")]
     BlobRefValue { model: String, prop: String },
     #[error("{0} operations are not allowed for peers")]
@@ -1023,6 +1025,15 @@ impl<D: Borrow<AutoCommit>> BokehSessionDocOf<D> {
                 });
             }
         }
+        // Readers take the epoch actor for the kernel: the agent does not
+        // forward its writes and the MCP tool reports them as Python's.
+        if let Some(kernel) = self.epoch_actor() {
+            if let Some(change) = changes.iter().find(|c| c.actor_id() == &kernel) {
+                return Err(BokehSessionWriteRejection::UnauthorizedActor(
+                    String::from_utf8_lossy(change.actor_id().to_bytes()).into_owned(),
+                ));
+            }
+        }
         let writable = self.writable_props();
         changes
             .iter()
@@ -1138,20 +1149,29 @@ fn validate_peer_change(
 
 /// Value rules shared by the hub filter and the client pre-check. Peers may
 /// write only plain values: both Bokeh deserializers turn the reference
-/// shapes into models, and readers dereference a blob-ref shape (and GC roots
-/// it), so only the kernel may author either.
+/// shapes into models and throw on unknown rep types, and readers
+/// dereference a blob-ref shape (and GC roots it), so only the kernel may
+/// author those.
 fn check_peer_value(
     model_id: &str,
     name: &str,
     encoded: &str,
 ) -> Result<(), BokehSessionWriteRejection> {
-    use BokehSessionWriteRejection::{BlobRefValue, InvalidValue, ModelReferenceValue};
+    use BokehSessionWriteRejection::{
+        BlobRefValue, InvalidValue, ModelReferenceValue, UndecodableValue,
+    };
     let (model, prop) = (model_id.to_string(), name.to_string());
-    match serde_json::from_str::<serde_json::Value>(encoded) {
-        Err(_) => Err(InvalidValue { model, prop }),
-        Ok(value) if is_blob_ref_shape(&value) => Err(BlobRefValue { model, prop }),
-        Ok(value) if holds_model_reference(&value) => Err(ModelReferenceValue { model, prop }),
-        Ok(_) => Ok(()),
+    let value = match serde_json::from_str::<serde_json::Value>(encoded) {
+        Ok(value) => value,
+        Err(_) => return Err(InvalidValue { model, prop }),
+    };
+    if is_blob_ref_shape(&value) {
+        return Err(BlobRefValue { model, prop });
+    }
+    match undecodable_rep(&value) {
+        Some(Undecodable::ModelReference) => Err(ModelReferenceValue { model, prop }),
+        Some(Undecodable::UnknownType) => Err(UndecodableValue { model, prop }),
+        None => Ok(()),
     }
 }
 
@@ -1166,18 +1186,48 @@ fn is_blob_ref_shape(value: &serde_json::Value) -> bool {
     })
 }
 
-/// A superset of what Python's `Deserializer._decode` and BokehJS's
-/// `Deserializer._decode` read as a model: `ref` and `object` reps, and an
-/// object with `id` and no string `type`.
-fn holds_model_reference(value: &serde_json::Value) -> bool {
+/// Rep types that both Bokeh 3.9's Python `Deserializer._decode` (built in,
+/// plus the `value`/`field`/`expr` decoders registered by
+/// `core/property/vectorization.py`) and BokehJS's `Deserializer._decode`
+/// turn into plain values. Left out: `ref` and `object` (models), `symbol`
+/// (both throw), `date` (BokehJS only), `event` and `model` (registered
+/// decoders that build events and model classes).
+const DECODABLE_REP_TYPES: &[&str] = &[
+    "number",
+    "array",
+    "set",
+    "map",
+    "bytes",
+    "slice",
+    "typed_array",
+    "ndarray",
+    "value",
+    "field",
+    "expr",
+];
+
+enum Undecodable {
+    ModelReference,
+    UnknownType,
+}
+
+/// What, at any depth, either deserializer would read as a model or fail
+/// on. An object with `id` and no string `type` is a reference to both; a
+/// non-string `type` makes Python's decoder throw.
+fn undecodable_rep(value: &serde_json::Value) -> Option<Undecodable> {
     match value {
-        serde_json::Value::Array(items) => items.iter().any(holds_model_reference),
-        serde_json::Value::Object(map) => match map.get("type").and_then(|t| t.as_str()) {
-            Some("ref" | "object") => true,
-            Some(_) => map.values().any(holds_model_reference),
-            None => map.contains_key("id") || map.values().any(holds_model_reference),
+        serde_json::Value::Array(items) => items.iter().find_map(undecodable_rep),
+        serde_json::Value::Object(map) => match map.get("type") {
+            Some(serde_json::Value::String(rep)) => match rep.as_str() {
+                "ref" | "object" => Some(Undecodable::ModelReference),
+                rep if DECODABLE_REP_TYPES.contains(&rep) => map.values().find_map(undecodable_rep),
+                _ => Some(Undecodable::UnknownType),
+            },
+            _ if map.contains_key("id") => Some(Undecodable::ModelReference),
+            Some(_) => Some(Undecodable::UnknownType),
+            None => map.values().find_map(undecodable_rep),
         },
-        _ => false,
+        _ => None,
     }
 }
 
@@ -2005,6 +2055,76 @@ mod tests {
                 },
             );
         }
+    }
+
+    /// Review R6b: both deserializers throw on a rep type they do not know,
+    /// so one peer's value would break every other peer's frame.
+    #[test]
+    fn filter_rejects_rep_types_bokeh_cannot_decode() {
+        for encoded in [
+            r#"{"type":"bogus"}"#,
+            r#"{"type":"symbol","name":"x"}"#,
+            // BokehJS only; Python's Deserializer has no `date` decoder.
+            r#"{"type":"date","iso":"2026-01-01"}"#,
+            r#"{"type":"model","name":"Custom"}"#,
+            r#"{"type":"event","name":"button_click","values":{}}"#,
+            r#"{"type":1}"#,
+            r#"[1,{"type":"map","entries":[["k",{"type":"bogus"}]]}]"#,
+        ] {
+            assert_peer_value_refused(
+                encoded,
+                BokehSessionWriteRejection::UndecodableValue {
+                    model: "p2".into(),
+                    prop: "value".into(),
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn filter_accepts_every_rep_type_both_deserializers_decode() {
+        let mut hub = BokehSessionDoc::build(&snapshot(), KERNEL).unwrap();
+        let mut peer = join(&mut hub, BROWSER);
+        for encoded in [
+            r#"{"type":"number","value":"+inf"}"#,
+            r#"{"type":"array","entries":[1,2]}"#,
+            r#"{"type":"set","entries":[1]}"#,
+            r#"{"type":"map","entries":[["a",1]]}"#,
+            r#"{"type":"bytes","data":"AAAA"}"#,
+            r#"{"type":"slice","start":0,"stop":2,"step":null}"#,
+            r#"{"type":"typed_array","array":{"type":"bytes","data":"AAAAAA=="},"order":"little","dtype":"float32"}"#,
+            r#"{"type":"ndarray","array":{"type":"bytes","data":"AAAAAA=="},"order":"little","dtype":"float32","shape":[1]}"#,
+            r#"{"type":"value","value":1}"#,
+            r#"{"type":"field","field":"x"}"#,
+            r#"{"type":"expr","expr":{"type":"map","entries":[]}}"#,
+        ] {
+            peer.check_peer_write("p2", "value", encoded).unwrap();
+            peer.set_prop("p2", "value", encoded).unwrap();
+            peer.commit();
+            push_through_filter(
+                &mut hub,
+                &mut peer,
+                &connected(RuntimeStateWriteScope::Editor),
+            )
+            .unwrap();
+            assert_eq!(hub.get_prop("p2", "value").as_deref(), Some(encoded));
+        }
+    }
+
+    /// Review R6b open question: readers treat the epoch actor as the
+    /// kernel (the agent does not forward its writes, the MCP tool reports
+    /// them as Python's), so a peer must not author under it.
+    #[test]
+    fn filter_rejects_changes_under_the_kernel_actor() {
+        assert_rejected(
+            |peer| {
+                peer.doc_mut()
+                    .set_actor(automerge::ActorId::from(KERNEL.as_bytes()));
+                peer.set_prop("p2", "value", "0.9").unwrap();
+            },
+            connected(RuntimeStateWriteScope::Editor),
+            BokehSessionWriteRejection::UnauthorizedActor(KERNEL.into()),
+        );
     }
 
     #[test]

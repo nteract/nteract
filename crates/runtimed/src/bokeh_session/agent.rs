@@ -201,11 +201,13 @@ impl BokehAgentExtension {
             match fold.await {
                 // The delta clears the claim; asking again would only queue
                 // another fold behind the deferred one.
-                Ok(true) => return,
-                Ok(false) => {}
-                Err(error) => warn!("[bokeh-session] On-demand fold failed: {error}"),
+                Ok(true) => store.defer_folds(&session_id, &new),
+                Ok(false) => store.release_folds(&session_id, &new),
+                Err(error) => {
+                    warn!("[bokeh-session] On-demand fold failed: {error}");
+                    store.release_folds(&session_id, &new);
+                }
             }
-            store.release_folds(&session_id, &new);
         });
     }
 
@@ -918,6 +920,34 @@ mod tests {
         assert!(
             ext.store().folds_pending("session-1").is_empty(),
             "the fold delta ends the claim"
+        );
+    }
+
+    /// Review R6b: the delta carrying a deferred fold can be lost (a failed
+    /// `prepare_flush`, or the kernel's deferred fold raising). The claim
+    /// must not block on-demand folds of that source for good.
+    #[tokio::test]
+    async fn a_deferred_fold_whose_delta_never_lands_expires() {
+        let (mut fx, ext, mut shell_rx) = oversized_tail().await;
+        request_data(&mut fx, &ext, "writer-1", true);
+        let fold = shell_rx.try_recv().expect("one fold");
+        reply_to_fold(
+            fold,
+            json!({"status": "ok", "source_ids": [], "deferred": true}),
+        );
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        let half = super::super::store::FOLD_CLAIM_TTL_MS / 2;
+        ext.store().advance_clock_for_test(half);
+        request_data(&mut fx, &ext, "writer-2", true);
+        assert!(shell_rx.try_recv().is_err(), "still within the claim's TTL");
+
+        ext.store().advance_clock_for_test(half);
+        request_data(&mut fx, &ext, "writer-3", true);
+        assert!(
+            shell_rx.try_recv().is_ok(),
+            "an expired claim lets readers ask again"
         );
     }
 
