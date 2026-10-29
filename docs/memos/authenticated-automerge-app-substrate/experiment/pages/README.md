@@ -192,7 +192,8 @@ Browser Repo + Wordgard                 Authorized HTTP / MCP operations
 ```
 
 Catalog objects index owned/shared Pages; D1 stores server sessions and MCP OAuth
-state. Ownership, ACLs, signing-key bindings, credential leases, and deletion are
+state, and (with `PAGES_CATALOG_INDEX`) a catalog projection for paginated, searchable
+listings. See [Catalog index](#catalog-index). Ownership, ACLs, signing-key bindings, credential leases, and deletion are
 host state outside the document. Unknown document fields are preserved; projecting
 known content is not authority to rewrite the whole schema.
 
@@ -201,6 +202,29 @@ replication and recovery; the application does not create a second SQLite store
 or upload a new document snapshot for every edit. Images have a separate private
 blob binding. See [upstream integration contracts](../UPSTREAM.md) and celld's
 [durability guarantees](https://celld.dev/docs/guarantees/).
+
+## Catalog index
+
+Each account's `Catalog` Durable Object remains its discovery list: `page/<id>`
+for owned Pages, `shared/<id>` for shared or company-opened Pages. Setting
+`PAGES_CATALOG_INDEX` to an epoch label (for example `1`) also projects those
+entries into D1 tables (`pages_catalog_pages`, `pages_catalog_access`) so
+`list_pages` can paginate by cursor and search titles without opening every
+shared Page. Migrations are versioned in
+[catalog-index.mjs](worker/catalog-index.mjs) and applied lazily on first use.
+
+D1 picks candidates; it never grants access. Every non-owner row returned by a
+listing is verified by its Page host with the caller's credentials, so a stale
+row can make a listing short but cannot reveal a title. Owner rows must match the
+account's own Catalog entry. Page hosts report their row after creation, title
+changes, and ACL commits, and remove rows best-effort before an ACL restriction or
+deletion commits. Editing and sync never wait on D1. If D1 errors or exceeds its
+read budget, listing falls back to the Catalog entries with the same cursor format.
+
+An account's first listing under an epoch, and the first after a Catalog change
+that may have missed D1, reconciles that account from its Catalog entries; shared
+entries are verified once. Change the epoch value after any period in which a
+build without the index, or with it unset, served traffic.
 
 ## Authentication and sharing
 

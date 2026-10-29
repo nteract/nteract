@@ -21,6 +21,7 @@ await writeFile(
     "NOTEBOOK_CLOUD_LOCAL_OIDC=true",
     `PAGES_ASYNC_PERSISTENCE=${process.env.PAGES_ASYNC_PERSISTENCE === "true"}`,
     `PAGES_COMPACT_RECORDS=${process.env.PAGES_COMPACT_RECORDS === "true"}`,
+    `PAGES_CATALOG_INDEX=${process.env.PAGES_CATALOG_INDEX ?? "1"}`,
     "NOTEBOOK_CLOUD_OIDC_FLOW=server",
     `NOTEBOOK_CLOUD_PUBLIC_ORIGIN=${origin}`,
     `NOTEBOOK_CLOUD_OIDC_ISSUER=${origin}/dev/oidc`,

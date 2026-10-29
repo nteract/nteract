@@ -5,7 +5,8 @@ import { DurableByteStore, persistentSeed } from "./storage.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { proposeAccessUpdate } from "./access.mjs";
 import { documentMutation, recoverDocumentMutations } from "./mutations.mjs";
-import { listCatalog, refreshCatalogTitle } from "./catalog.mjs";
+import { refreshCatalogTitle } from "./catalog.mjs";
+import { catalogCandidates } from "./catalog-index.mjs";
 import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
 
 class Storage {
@@ -401,35 +402,40 @@ test("recovery keeps an intent pending when its dependencies are missing", async
 
 test("catalog lists stored projections and late title updates cannot revive deleted pages", async () => {
   const storage = new Storage();
-  await storage.put("page/one", {
-    page_id: "one",
+  const one = "11111111-1111-4111-8111-111111111111";
+  const pending = "22222222-2222-4222-8222-222222222222";
+  const list = async () =>
+    (await catalogCandidates(storage, { inTrash: false, needle: null, cursor: null, limit: 50 }))
+      .rows;
+  await storage.put(`page/${one}`, {
+    page_id: one,
     title: "First",
     created_at: "2026-10-01T00:00:00Z",
     updated_at: "2026-10-01T00:00:00Z",
   });
-  await storage.put("page/pending", { page_id: "pending", pending: true });
+  await storage.put(`page/${pending}`, { page_id: pending, pending: true });
   assert.deepEqual(
-    (await listCatalog(storage)).map((page) => page.title),
+    (await list()).map((page) => page.title),
     ["First"],
   );
   await refreshCatalogTitle(storage, {
-    page_id: "one",
+    page_id: one,
     title: "Renamed",
     observed_at: "2026-10-02T00:00:00Z",
   });
   await refreshCatalogTitle(storage, {
-    page_id: "one",
+    page_id: one,
     title: "Stale",
     observed_at: "2026-10-01T00:00:00Z",
   });
-  assert.equal((await listCatalog(storage))[0].title, "Renamed");
-  await storage.delete("page/one");
+  assert.equal((await list())[0].title, "Renamed");
+  await storage.delete(`page/${one}`);
   await refreshCatalogTitle(storage, {
-    page_id: "one",
+    page_id: one,
     title: "Deleted",
     observed_at: "2026-10-03T00:00:00Z",
   });
-  assert.deepEqual(await listCatalog(storage), []);
+  assert.deepEqual(await list(), []);
 });
 
 function grant(f, principal, role) {
