@@ -1386,4 +1386,156 @@ pub(crate) mod tests {
             json!([1, 2])
         );
     }
+
+    /// Item 5 (review 2026-10-29): a peer cannot alias a model through a
+    /// generically typed property, nor forge a blob ref that the hub would
+    /// root against GC and freezes would dereference.
+    #[test]
+    fn forged_references_and_blob_refs_are_refused_and_never_rooted() {
+        let mut room = Room::new();
+        let store = store_with_session();
+        room.pump(&store);
+        room.set_record(BokehSessionStatus::Connected, 0);
+        let roots = room.hub.blob_roots();
+        let forged = runtime_doc::BokehBlobRef {
+            blob: "f".repeat(64),
+            size: 10,
+            media_type: crate::bokeh_session::BOKEH_PROP_MEDIA_TYPE.into(),
+        }
+        .encode();
+        for value in [forged.as_str(), r#"{"id":"p3"}"#] {
+            let mut peer = Peer::new(ConnectionScope::Editor);
+            peer.sync(&room);
+            peer.doc.set_prop("p2", "value", value).unwrap();
+            peer.doc.commit();
+            peer.sync(&room);
+            assert!(!peer.resyncs.is_empty(), "{value} was accepted");
+            assert_eq!(hub_prop(&room, "p2", "value").as_deref(), Some("0.5"));
+        }
+        assert_eq!(room.hub.blob_roots(), roots);
+    }
+
+    /// Item 5: a kernel-offloaded value whose blob is gone (GC, a deleted
+    /// cache) drops that value from saves and freezes instead of failing them.
+    #[tokio::test]
+    async fn saves_and_freezes_survive_a_missing_value_blob() {
+        let mut snap = snapshot();
+        snap.models.get_mut("p2").unwrap().props.insert(
+            "title".into(),
+            runtime_doc::BokehBlobRef {
+                blob: "d".repeat(64),
+                size: 2000,
+                media_type: crate::bokeh_session::BOKEH_PROP_MEDIA_TYPE.into(),
+            }
+            .encode(),
+        );
+        let store = BokehSessionStore::default();
+        store.insert(
+            "session-1",
+            BokehSessionDoc::build(&snap, KERNEL).unwrap(),
+            "kernel-1",
+            KERNEL,
+        );
+        let mut room = Room::new();
+        room.pump(&store);
+        room.add_session_output().await;
+
+        let saved = room.save(display_output()).await;
+        let snapshot = &saved["data"][BOKEH_SESSION_MIME]["snapshot"]["document"];
+        assert!(snapshot["roots"].is_array(), "{saved}");
+        assert!(!snapshot.to_string().contains("d".repeat(64).as_str()));
+
+        room.lose_runtime_agent().await;
+        let frozen = room.stored_payload().await;
+        assert!(frozen["snapshot"]["document"]["roots"].is_array());
+    }
+
+    /// Item 8 (review 2026-10-29): a late `update_display_data` from the
+    /// dying kernel lands while the freeze awaits blob I/O. The freeze must
+    /// not write back the manifest it read before that.
+    #[tokio::test]
+    async fn a_freeze_does_not_clobber_a_display_update_that_lands_meanwhile() {
+        let mut room = Room::new();
+        let _store = room.with_streamed_tail().await;
+        room.add_session_output().await;
+        let late = json!({
+            "output_type": "display_data", "output_id": "output-1",
+            "data": {BOKEH_SESSION_MIME: {"inline": payload().to_string()}},
+            "metadata": {"late": true},
+        });
+
+        let original = room
+            .state
+            .read(|doc| doc.get_output("exec-1", "output-1"))
+            .unwrap();
+
+        // Runs at the freeze's first await, after it read the manifest.
+        let state = room.state.clone();
+        let updated = {
+            let late = late.clone();
+            tokio::spawn(async move {
+                state
+                    .with_doc(|doc| {
+                        let before = doc.get_output("exec-1", "output-1");
+                        doc.replace_output("exec-1", "output-1", &late)?;
+                        Ok(before)
+                    })
+                    .unwrap()
+            })
+        };
+        room.lose_runtime_agent().await;
+        assert_eq!(
+            updated.await.unwrap(),
+            original,
+            "the update ran before the freeze wrote"
+        );
+        let output = room
+            .state
+            .read(|doc| doc.get_output("exec-1", "output-1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(output["metadata"], late["metadata"]);
+        assert_eq!(
+            output["data"][BOKEH_SESSION_MIME], late["data"][BOKEH_SESSION_MIME],
+            "the newer payload wins"
+        );
+    }
+
+    /// Item 8: a change that leaves the session payload alone (here the
+    /// metadata) is kept, and the freeze still lands on top of it.
+    #[tokio::test]
+    async fn a_freeze_merges_into_an_output_whose_metadata_changed_meanwhile() {
+        let mut room = Room::new();
+        let _store = room.with_streamed_tail().await;
+        room.add_session_output().await;
+
+        let state = room.state.clone();
+        let updated = tokio::spawn(async move {
+            state
+                .with_doc(|doc| {
+                    let mut output = doc.get_output("exec-1", "output-1").unwrap();
+                    output["metadata"] = json!({"late": true});
+                    doc.replace_output("exec-1", "output-1", &output)?;
+                    Ok(output)
+                })
+                .unwrap()
+        });
+        room.lose_runtime_agent().await;
+        let updated = updated.await.unwrap();
+        let output = room
+            .state
+            .read(|doc| doc.get_output("exec-1", "output-1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(output["metadata"], json!({"late": true}));
+        assert_ne!(
+            output["data"][BOKEH_SESSION_MIME], updated["data"][BOKEH_SESSION_MIME],
+            "the freeze wrote after the update"
+        );
+        let frozen = room.stored_payload().await;
+        assert_eq!(
+            materialized_x(&frozen["snapshot"]["document"]),
+            json!([1, 2, 3])
+        );
+    }
 }

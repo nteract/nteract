@@ -438,4 +438,26 @@ mod tests {
         handle.set_read_only(true);
         assert!(handle.set_props_inner(r#"{"p1": {"value": "1"}}"#).is_err());
     }
+
+    /// Item 5 (review 2026-10-29): the pre-check refuses values the hub
+    /// refuses as model references or blob refs, so the frame learns at write
+    /// time instead of through a resync.
+    #[test]
+    fn handle_refuses_model_references_and_blob_refs() {
+        let mut hub = kernel_doc();
+        let mut handle = BokehSessionDocHandle::new("s1", 2, "user:dev:alice/browser").unwrap();
+        sync_with_hub(&mut handle, &mut hub, &mut sync::State::new()).unwrap();
+        let heads = handle.get_heads_hex();
+        for value in [
+            r#"{"id":"p1"}"#,
+            r#"{"blob":"ee","size":10,"media_type":"application/json"}"#,
+        ] {
+            let patch = serde_json::json!({"p1": {"value": value}}).to_string();
+            assert!(
+                handle.set_props_inner(&patch).is_err(),
+                "{value} was accepted"
+            );
+        }
+        assert_eq!(handle.get_heads_hex(), heads);
+    }
 }

@@ -56,29 +56,57 @@ pub(crate) struct SourceColumns {
 
 /// Decode a stored value, reading it from the blob store when offloaded.
 pub(crate) async fn resolve_value(encoded: &str, blob_store: &BlobStore) -> anyhow::Result<Value> {
+    read_value(encoded, blob_store).await?.ok_or_else(|| {
+        let hash = BokehBlobRef::parse(encoded).map(|blob| blob.blob);
+        anyhow::anyhow!("Bokeh value blob {} is missing", hash.unwrap_or_default())
+    })
+}
+
+/// [`resolve_value`], with `None` when the value's blob no longer exists.
+async fn read_value(encoded: &str, blob_store: &BlobStore) -> anyhow::Result<Option<Value>> {
     let text = match BokehBlobRef::parse(encoded) {
-        Some(blob) => {
-            let bytes = blob_store
-                .get(&blob.blob)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Bokeh value blob {} is missing", blob.blob))?;
-            String::from_utf8(bytes)?
-        }
+        Some(blob) => match blob_store.get(&blob.blob).await? {
+            Some(bytes) => String::from_utf8(bytes)?,
+            None => return Ok(None),
+        },
         None => encoded.to_string(),
     };
-    Ok(serde_json::from_str(&text)?)
+    Ok(Some(serde_json::from_str(&text)?))
+}
+
+/// [`read_value`] for the materialized state, which drops a value whose blob
+/// is gone: failing would fail every later freeze and save of the session.
+async fn read_stored_value(
+    encoded: &str,
+    what: &str,
+    blob_store: &BlobStore,
+) -> anyhow::Result<Option<Value>> {
+    let value = read_value(encoded, blob_store).await?;
+    if value.is_none() {
+        warn!("[bokeh-session] Dropping {what}: its value blob is missing");
+    }
+    Ok(value)
 }
 
 async fn load_column(column: &BokehColumnRef, blob_store: &BlobStore) -> anyhow::Result<Value> {
-    let bytes = blob_store
-        .get(&column.blob)
+    read_column(column, blob_store)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Bokeh column blob {} is missing", column.blob))?;
-    Ok(serde_json::from_slice(&bytes)?)
+        .ok_or_else(|| anyhow::anyhow!("Bokeh column blob {} is missing", column.blob))
+}
+
+async fn read_column(
+    column: &BokehColumnRef,
+    blob_store: &BlobStore,
+) -> anyhow::Result<Option<Value>> {
+    match blob_store.get(&column.blob).await? {
+        Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+        None => Ok(None),
+    }
 }
 
 /// Every source's column blobs, at the highest column version (a partial
-/// replacement leaves untouched columns at older versions).
+/// replacement leaves untouched columns at older versions). A column whose
+/// blob no longer exists is dropped, as in [`read_stored_value`].
 pub(crate) async fn load_columns(
     snapshot: &BokehSessionSnapshot,
     blob_store: &BlobStore,
@@ -90,9 +118,15 @@ pub(crate) async fn load_columns(
             columns: BTreeMap::new(),
         };
         for (name, column) in columns {
-            source
-                .columns
-                .insert(name.clone(), load_column(column, blob_store).await?);
+            match read_column(column, blob_store).await? {
+                Some(value) => {
+                    source.columns.insert(name.clone(), value);
+                }
+                None => warn!(
+                    "[bokeh-session] Dropping column {source_id}.{name}: blob {} is missing",
+                    column.blob
+                ),
+            }
         }
         sources.insert(source_id.clone(), source);
     }
@@ -119,7 +153,10 @@ pub(crate) async fn materialize_doc_json(
     for (id, model) in &snapshot.models {
         let mut attributes = Map::new();
         for (name, encoded) in &model.props {
-            attributes.insert(name.clone(), resolve_value(encoded, blob_store).await?);
+            let what = format!("{id}.{name}");
+            if let Some(value) = read_stored_value(encoded, &what, blob_store).await? {
+                attributes.insert(name.clone(), value);
+            }
         }
         if let Some(source) = sources.remove(id) {
             let entries: Vec<Value> = source
@@ -146,7 +183,9 @@ pub(crate) async fn materialize_doc_json(
 
     let mut doc = Map::new();
     if let Some(extras) = &snapshot.meta.doc_extras {
-        if let Value::Object(extras) = resolve_value(extras, blob_store).await? {
+        if let Some(Value::Object(extras)) =
+            read_stored_value(extras, "doc_extras", blob_store).await?
+        {
             doc.extend(extras);
         }
     }
@@ -1061,20 +1100,17 @@ pub(crate) async fn freeze_session_output(
     let Some(record) = state.read(|doc| doc.get_bokeh_session(session_id))? else {
         anyhow::bail!("unknown Bokeh session {session_id}");
     };
-    let Some(mut manifest) = state
-        .read(|doc| doc.get_outputs(&record.execution_id))?
-        .into_iter()
-        .find(|output| output.get("output_id").and_then(Value::as_str) == Some(&record.output_id))
+    let Some(manifest) =
+        state.read(|doc| doc.get_output(&record.execution_id, &record.output_id))?
     else {
         anyhow::bail!("Bokeh session {session_id} has no output");
     };
-    let content: ContentRef = serde_json::from_value(
-        manifest
-            .get("data")
-            .and_then(|data| data.get(BOKEH_SESSION_MIME))
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("output for {session_id} has no session payload"))?,
-    )?;
+    let stored = manifest
+        .get("data")
+        .and_then(|data| data.get(BOKEH_SESSION_MIME))
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("output for {session_id} has no session payload"))?;
+    let content: ContentRef = serde_json::from_value(stored.clone())?;
     let payload: Value = serde_json::from_str(&content.resolve(blob_store).await?)?;
     // The stored payload is the display-time document, older than any fold,
     // so a tail that cannot be replayed freezes the folded state instead.
@@ -1095,14 +1131,30 @@ pub(crate) async fn freeze_session_output(
             blob_store,
         )
         .await?;
-    manifest["data"][BOKEH_SESSION_MIME] = serde_json::to_value(ContentRef::Blob {
+    let frozen_ref = serde_json::to_value(ContentRef::Blob {
         blob: hash,
         size: frozen.len() as u64,
     })?;
-    state.transact_at_current_heads(actor, "runtime-state-bokeh-freeze", |doc| {
-        doc.replace_output(&record.execution_id, &record.output_id, &manifest)
-            .map(|_| ())
+    // Compare-and-swap against the manifest as it is now: a late
+    // `update_display_data` from the dying kernel can land during the awaits
+    // above. A newer session payload wins; other changes are kept.
+    let written = state.transact_at_current_heads(actor, "runtime-state-bokeh-freeze", |doc| {
+        let Some(mut current) = doc.get_output(&record.execution_id, &record.output_id) else {
+            return Ok(false);
+        };
+        if current
+            .get("data")
+            .and_then(|data| data.get(BOKEH_SESSION_MIME))
+            != Some(&stored)
+        {
+            return Ok(false);
+        }
+        current["data"][BOKEH_SESSION_MIME] = frozen_ref;
+        doc.replace_output(&record.execution_id, &record.output_id, &current)
     })?;
+    if !written {
+        warn!("[bokeh-session] Not freezing {session_id}: its output changed while freezing");
+    }
     Ok(())
 }
 
@@ -1605,5 +1657,78 @@ mod tests {
         // A second freeze replaces the snapshot and still keeps `document`.
         let refrozen = frozen_payload(&frozen, &state, &blobs).await.unwrap();
         assert_eq!(refrozen, frozen);
+    }
+
+    /// Item 5 (review 2026-10-29): a value, extras or column blob that no
+    /// longer exists drops only that entry, so every later freeze and save
+    /// does not fail on it.
+    #[tokio::test]
+    async fn missing_blobs_drop_only_their_values() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let blobs = BlobStore::new(dir.path().to_path_buf());
+        let kept = blobs.put(br#"[1,2]"#, "application/json").await.unwrap();
+        let missing = |size| {
+            BokehBlobRef {
+                blob: "0".repeat(64),
+                size,
+                media_type: "application/json".into(),
+            }
+            .encode()
+        };
+        let snapshot = BokehSessionSnapshot {
+            meta: BokehSessionMeta {
+                bokeh_version: "3.9.2".into(),
+                root_ids: vec!["p1".into()],
+                doc_extras: Some(missing(10)),
+                ..Default::default()
+            },
+            models: BTreeMap::from([(
+                "p1".to_string(),
+                BokehModelState {
+                    type_name: "ColumnDataSource".into(),
+                    ref_props: Vec::new(),
+                    props: BTreeMap::from([
+                        ("name".to_string(), r#""src""#.to_string()),
+                        ("tags".to_string(), missing(2000)),
+                    ]),
+                },
+            )]),
+            columns: BTreeMap::from([(
+                "p1".to_string(),
+                BTreeMap::from([
+                    (
+                        "x".to_string(),
+                        BokehColumnRef {
+                            blob: kept,
+                            size: 5,
+                            version: 1,
+                        },
+                    ),
+                    (
+                        "y".to_string(),
+                        BokehColumnRef {
+                            blob: "1".repeat(64),
+                            size: 5,
+                            version: 1,
+                        },
+                    ),
+                ]),
+            )]),
+            ..Default::default()
+        };
+        let state = SnapshotWithTail {
+            snapshot,
+            ..Default::default()
+        };
+        let doc = materialize_doc_json(&state, &blobs).await.unwrap();
+        let attributes = &doc["roots"][0]["attributes"];
+        assert_eq!(attributes["name"], "src");
+        assert!(attributes.get("tags").is_none());
+        assert_eq!(
+            attributes["data"]["entries"],
+            json!([["x", [1, 2]]]),
+            "the missing column is dropped"
+        );
+        assert!(doc.get("defs").is_none());
     }
 }
