@@ -60,7 +60,7 @@ const update: NteractBokehDocUpdate = {
   columns: {},
 };
 
-function makeHarness(options: { docs?: boolean } = {}) {
+function makeHarness(options: { docs?: boolean; writable?: boolean } = {}) {
   let eventsListener: ((events: BokehSessionEvents) => void) | null = null;
   const docListeners = new Set<BokehSessionDocListener>();
   const blobs = new Map<string, () => Response>([
@@ -93,6 +93,7 @@ function makeHarness(options: { docs?: boolean } = {}) {
   };
   const transport: BokehSessionTransport = {
     docs: options.docs === false ? null : (docs as unknown as BokehSessionDocStore),
+    writable: options.writable ?? true,
     fetchBlob,
     applyPatch: vi.fn(async (options) => ({
       status: "accepted" as const,
@@ -158,6 +159,8 @@ describe("BokehSessionBridgeManager", () => {
       outputId: "output-1",
       status: "connected",
       epoch: 3,
+      live: false,
+      writable: true,
     });
     vi.mocked(frame.notifyExtension).mockClear();
 
@@ -170,6 +173,8 @@ describe("BokehSessionBridgeManager", () => {
       outputId: "output-1",
       status: "disconnected",
       epoch: 3,
+      live: false,
+      writable: false,
     });
   });
 
@@ -187,8 +192,14 @@ describe("BokehSessionBridgeManager", () => {
       status: "connected",
       epoch: 3,
       live: true,
+      writable: true,
     });
     expect(docs.subscribe).toHaveBeenCalledWith("session-1", expect.any(Function));
+    // The frame learns it is followed, so a later `live: false` means a new bridge.
+    expect(frame.notifyExtension).toHaveBeenLastCalledWith(
+      NTERACT_BOKEH_SESSION_STATE,
+      expect.objectContaining({ status: "connected", live: true }),
+    );
 
     for (const listener of docListeners) listener(update);
     expect(frame.notifyExtension).toHaveBeenCalledWith(NTERACT_BOKEH_SESSION_DOC, {
@@ -281,6 +292,40 @@ describe("BokehSessionBridgeManager", () => {
       status: "read_only",
     });
     expect(docs.writeProps).toHaveBeenCalledOnce();
+  });
+
+  it("follows a viewer connection's sessions read-only", async () => {
+    const { docs, frame, manager, transport } = makeHarness({ writable: false });
+    expect(frame.notifyExtension).toHaveBeenCalledWith(
+      NTERACT_BOKEH_SESSION_STATE,
+      expect.objectContaining({ status: "connected", writable: false }),
+    );
+
+    await expect(
+      manager.handleRequest(NTERACT_BOKEH_SESSION_OPEN, {
+        sessionId: "session-1",
+        outputId: "output-1",
+      }),
+    ).resolves.toMatchObject({ live: true, writable: false });
+    expect(docs.subscribe).toHaveBeenCalledOnce();
+    await expect(
+      manager.handleRequest(NTERACT_BOKEH_SET_PROPS, {
+        sessionId: "session-1",
+        outputId: "output-1",
+        props: { slider: { value: "0.5" } },
+      }),
+    ).resolves.toEqual({ status: "read_only" });
+    expect(docs.writeProps).not.toHaveBeenCalled();
+    await expect(
+      manager.handleRequest(NTERACT_BOKEH_APPLY_PATCH, {
+        sessionId: "session-1",
+        outputId: "output-1",
+        transactionId: "tx-1",
+        patch: { events: [{ kind: "MessageSent" }] },
+        buffers: [],
+      }),
+    ).resolves.toMatchObject({ status: "error", error: "Bokeh session is read-only" });
+    expect(transport.applyPatch).not.toHaveBeenCalled();
   });
 
   it("sends only one-off events through apply_bokeh_session_patch", async () => {

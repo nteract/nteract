@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { BokehSessionState, KeyedDocFrame } from "runtimed";
 import {
   BOKEH_SESSION_DOC_KIND,
@@ -534,6 +534,146 @@ describe("BokehSessionDocStore", () => {
     expect(replicas[0].freed).toBe(true);
     store.receiveFrame(hubFrame(initialStep()));
     expect(replicas[0].synced).toBe(false);
+  });
+
+  describe("failed update builds", () => {
+    const blobProp = '{"blob":"late-blob","size":32,"media_type":"application/json"}';
+    const tick = () => vi.advanceTimersByTimeAsync(0);
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("retries the first full update until its blobs load", async () => {
+      vi.useFakeTimers();
+      const { store, blobs, updates } = harness();
+      store.updateSessions({ "session-1": record() });
+      store.subscribe("session-1", (update) => updates.push(update));
+      store.receiveFrame(
+        hubFrame(
+          initialStep({
+            models: { ...initialStep().models, div: { type: "Div", ref_props: [], props: {} } },
+            props: { div: { stylesheets: blobProp } },
+          }),
+        ),
+      );
+      await tick();
+      expect(updates).toEqual([]);
+
+      blobs.set("late-blob", '"loaded"');
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(updates).toHaveLength(1);
+      expect(updates[0]).toMatchObject({ kind: "full", canSwitch: false });
+      expect(updates[0].models.div.props).toEqual({ stylesheets: "loaded" });
+    });
+
+    it("sends a full update in place of a delta that failed to build", async () => {
+      vi.useFakeTimers();
+      const { store, blobs, updates } = harness();
+      store.updateSessions({ "session-1": record() });
+      store.subscribe("session-1", (update) => updates.push(update));
+      store.receiveFrame(hubFrame(initialStep()));
+      await tick();
+
+      store.receiveFrame(
+        hubFrame({
+          session_id: "session-1",
+          epoch: 0,
+          heads: ["h1"],
+          props: { slider: { stylesheets: blobProp } },
+        }),
+      );
+      await tick();
+      expect(updates).toHaveLength(1);
+
+      blobs.set("late-blob", '"loaded"');
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(updates).toHaveLength(2);
+      expect(updates[1]).toMatchObject({ kind: "full", canSwitch: false });
+      expect(updates[1].models.slider.props.stylesheets).toBe("loaded");
+    });
+
+    it("does not let an epoch switch skip a delta that failed to build", async () => {
+      vi.useFakeTimers();
+      const { store, updates } = harness();
+      store.updateSessions({ "session-1": record() });
+      store.subscribe("session-1", (update) => updates.push(update));
+      store.receiveFrame(hubFrame(initialStep()));
+      await tick();
+      store.receiveFrame(
+        hubFrame({
+          session_id: "session-1",
+          epoch: 0,
+          heads: ["h1"],
+          props: { slider: { stylesheets: blobProp } },
+        }),
+      );
+      await tick();
+
+      // The replacement was built from exactly the state that failed to reach
+      // the frame, so the frame must reconcile instead of switching.
+      store.updateSessions({
+        "session-1": record({ epoch: 1, doc_heads: ["e1"], previous_heads: ["h1"] }),
+      });
+      store.receiveFrame(hubFrame(initialStep({ epoch: 1, heads: ["e1"] })));
+      await tick();
+
+      expect(updates.at(-1)).toMatchObject({ kind: "full", epoch: 1, canSwitch: false });
+    });
+  });
+
+  describe("viewer connections", () => {
+    it("never writes, so a refusal cannot start a resync loop", async () => {
+      const { store, replicas, sent, settle } = harness();
+      store.setWritable(false);
+      store.updateSessions({ "session-1": record() });
+      store.subscribe("session-1", () => {});
+      expect(replicas[0].readOnly).toBe(true);
+      store.receiveFrame(hubFrame(initialStep()));
+      await settle();
+      const sentBefore = sent.length;
+
+      expect(store.writeProps("session-1", { slider: { value: "0.9" } })).toEqual({
+        status: "read_only",
+      });
+      expect(replicas[0].models.slider.props.value).toBe("0.5");
+      expect(sent.length).toBe(sentBefore);
+
+      store.handleResync({
+        kind: BOKEH_SESSION_DOC_KIND,
+        id: "session-1",
+        epoch: 0,
+        reason: "viewer cannot write",
+      });
+      expect(replicas[1].readOnly).toBe(true);
+      store.receiveFrame(hubFrame(initialStep()));
+      await settle();
+      expect(replicas[1].localWrites).toBe(0);
+    });
+
+    it("drops values written before the connection became read-only", async () => {
+      const { store, replicas, settle } = harness();
+      store.updateSessions({ "session-1": record() });
+      store.subscribe("session-1", () => {});
+      store.receiveFrame(hubFrame(initialStep()));
+      await settle();
+      store.writeProps("session-1", { slider: { value: "0.9" } });
+
+      store.setWritable(false);
+      expect(replicas[0].readOnly).toBe(true);
+      store.resubscribeAll();
+      store.receiveFrame(hubFrame(initialStep()));
+      await settle();
+      expect(replicas[1].localWrites).toBe(0);
+
+      store.setWritable(true);
+      expect(replicas[1].readOnly).toBe(false);
+      expect(store.writeProps("session-1", { slider: { value: "0.7" } })).toEqual({
+        status: "written",
+      });
+    });
   });
 
   it("reads column refs for data loads", async () => {

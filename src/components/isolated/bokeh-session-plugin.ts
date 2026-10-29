@@ -51,6 +51,8 @@ export interface BokehSessionTransport {
    * `null` when the connection does not sync them.
    */
   docs: BokehSessionDocStore | null;
+  /** False for viewer connections: outputs follow the session read-only. */
+  writable: boolean;
   fetchBlob(ref: BlobRef): Promise<Response>;
   /** One-off events (`MessageSent`, `ColumnsStreamed`, `ColumnsPatched`). */
   applyPatch(options: ApplyBokehSessionPatchOptions): Promise<BokehSessionPatchReply>;
@@ -78,7 +80,9 @@ function bokehSessionBindings(outputs: readonly JupyterOutput[]): BokehSessionOu
 
 /**
  * Owns at most one `BokehSessionBridgeManager` per frame, replaced when the
- * transport changes; session records alone only update the manager.
+ * transport changes; session records alone only update the manager. A new
+ * manager follows no session yet and tells each frame so (`live: false`),
+ * which makes a live frame open its session again.
  */
 class BokehSessionPluginBridge implements OutputSessionBridge {
   private manager: BokehSessionBridgeManager | null = null;
@@ -209,6 +213,8 @@ export interface BokehSessionPluginSources {
   };
   /** WASM `BokehSessionDocHandle` factory. */
   createReplica(sessionId: string, epoch: number): BokehSessionDocReplica;
+  /** Whether the connection's scope may write session documents. */
+  canWrite: boolean;
   logger?: BokehSessionDocStoreOptions["logger"];
 }
 
@@ -223,14 +229,15 @@ export function useBokehSessionPlugin({
   blobResolver,
   client,
   createReplica,
+  canWrite,
   logger,
 }: BokehSessionPluginSources): Readonly<Record<string, unknown>> {
   const [docs, setDocs] = useState<BokehSessionDocStore | null>(null);
   // Read through a ref so a new resolver or factory reaches the existing
   // store instead of rebuilding it, which would drop every replica.
-  const sources = useRef({ blobResolver, createReplica, logger });
+  const sources = useRef({ blobResolver, createReplica, canWrite, logger });
   useEffect(() => {
-    sources.current = { blobResolver, createReplica, logger };
+    sources.current = { blobResolver, createReplica, canWrite, logger };
   });
   const hasBlobResolver = blobResolver !== null;
   useEffect(() => {
@@ -247,9 +254,15 @@ export function useBokehSessionPlugin({
         },
         logger: { warn: (message, ...args) => sources.current.logger?.warn(message, ...args) },
       },
-      setDocs,
+      (next) => {
+        next?.setWritable(sources.current.canWrite);
+        setDocs(next);
+      },
     );
   }, [engine, hasBlobResolver]);
+  useEffect(() => {
+    docs?.setWritable(canWrite);
+  }, [docs, canWrite]);
   useEffect(() => {
     docs?.updateSessions(sessions);
   }, [docs, sessions]);
@@ -257,6 +270,7 @@ export function useBokehSessionPlugin({
     if (!blobResolver) return null;
     return {
       docs,
+      writable: canWrite,
       fetchBlob: (ref) => blobResolver.fetch(ref),
       applyPatch: (options) => client.applyBokehSessionPatch(options),
       getData: (sessionId, sourceIds) => client.getBokehSessionData(sessionId, sourceIds),
@@ -268,7 +282,7 @@ export function useBokehSessionPlugin({
         return () => subscription.unsubscribe();
       },
     };
-  }, [blobResolver, client, docs, engine]);
+  }, [blobResolver, canWrite, client, docs, engine]);
   return useMemo(
     () => ({ [BOKEH_SESSION_PLUGIN_ID]: { sessions, transport } satisfies BokehSessionRuntime }),
     [sessions, transport],

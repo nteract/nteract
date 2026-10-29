@@ -115,7 +115,9 @@ export class BokehSessionBridgeManager {
       const session = this.ownedSession(binding);
       const status = session?.status ?? "disconnected";
       const epoch = session?.epoch ?? null;
-      const signature = `${status}:${epoch}:${binding.outputId}`;
+      const live = this.docSubscriptions.has(sessionId);
+      const writable = this.writable(status);
+      const signature = `${status}:${epoch}:${binding.outputId}:${live}:${writable}`;
       if (this.stateSignatures.get(sessionId) === signature) continue;
       this.stateSignatures.set(sessionId, signature);
       this.frame.notifyExtension(NTERACT_BOKEH_SESSION_STATE, {
@@ -123,6 +125,8 @@ export class BokehSessionBridgeManager {
         outputId: binding.outputId,
         status,
         epoch,
+        live,
+        writable,
       } satisfies NteractBokehSessionStateParams);
     }
   }
@@ -164,14 +168,22 @@ export class BokehSessionBridgeManager {
       });
       this.docSubscriptions.set(sessionId, unsubscribe);
     }
-    return { sessionId, outputId: binding.outputId, status, epoch: session?.epoch ?? null, live };
+    this.notifyCurrentState();
+    return {
+      sessionId,
+      outputId: binding.outputId,
+      status,
+      epoch: session?.epoch ?? null,
+      live,
+      writable: this.writable(status),
+    };
   }
 
   setProps(params: NteractBokehSetPropsParams): NteractBokehSetPropsResult {
     const sessionId = requireString(params as unknown as Record<string, unknown>, "sessionId");
     const binding = this.requireBinding(sessionId, params.outputId);
     const docs = this.transport.docs;
-    if (!docs || this.ownedSession(binding)?.status !== "connected") return { status: "read_only" };
+    if (!docs || !this.writable(this.ownedSession(binding)?.status)) return { status: "read_only" };
     return docs.writeProps(sessionId, stringMap(params.props));
   }
 
@@ -190,6 +202,9 @@ export class BokehSessionBridgeManager {
         transactionId,
         error: `Bokeh session is ${session?.status ?? "disconnected"}`,
       };
+    }
+    if (!this.transport.writable) {
+      return { status: "error", sessionId, transactionId, error: "Bokeh session is read-only" };
     }
     const events = isRecord(params.patch) ? params.patch.events : null;
     if (
@@ -257,6 +272,10 @@ export class BokehSessionBridgeManager {
   private unsubscribeDoc(sessionId: string): void {
     this.docSubscriptions.get(sessionId)?.();
     this.docSubscriptions.delete(sessionId);
+  }
+
+  private writable(status: string | undefined): boolean {
+    return status === "connected" && this.transport.docs !== null && this.transport.writable;
   }
 
   private ownedSession(binding: BokehSessionOutputBinding): BokehSessionState | undefined {

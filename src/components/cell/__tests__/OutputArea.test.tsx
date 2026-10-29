@@ -542,6 +542,7 @@ describe("OutputArea iframe theme sync", () => {
     ];
     const transport: BokehSessionRuntime["transport"] = {
       docs: null,
+      writable: true,
       fetchBlob: vi.fn(),
       applyPatch: vi.fn(),
       getData: vi.fn(),
@@ -590,6 +591,8 @@ describe("OutputArea iframe theme sync", () => {
           outputId: "bokeh-output",
           status: "connected",
           epoch: 1,
+          live: false,
+          writable: false,
         });
       });
       expect(mockFrameHandle.renderBatch).toHaveBeenCalledTimes(initialRenders);

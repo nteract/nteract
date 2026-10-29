@@ -434,6 +434,7 @@ function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<BokehSessionController | null>(null);
   const [status, setStatus] = useState<NteractBokehSessionStatus | null>(null);
+  const [readOnly, setReadOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasMountedDocument, setHasMountedDocument] = useState(false);
   // The host re-sends output payloads as fresh structured clones whenever the
@@ -448,6 +449,7 @@ function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
     if (!container) return;
     const data = dataRef.current;
     setStatus(null);
+    setReadOnly(false);
     setError(null);
     setHasMountedDocument(false);
     if (!isBokehSessionMimePayload(data)) {
@@ -482,6 +484,9 @@ function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
           setStatus(nextStatus);
           setError(nextError ?? null);
         },
+        onReadOnly: (nextReadOnly) => {
+          if (!cancelled) setReadOnly(nextReadOnly);
+        },
         onLayout: () => {
           if (cancelled) return;
           setHasMountedDocument(container.childNodes.length > 0);
@@ -511,7 +516,8 @@ function NativeBokehSessionRenderer({ data, outputId }: RendererProps) {
 
   return (
     <div className="relative" data-slot="bokeh-session-output">
-      <div ref={containerRef} />
+      {/* A viewer sees the live session, but its edits would never reach Python. */}
+      <div ref={containerRef} inert={readOnly} />
       {disconnected && hasMountedDocument ? (
         <div className="absolute inset-0 flex items-center justify-center bg-background/60 text-sm font-medium text-foreground backdrop-blur-[1px]">
           <span title={error ?? undefined}>{statusLabel}</span>

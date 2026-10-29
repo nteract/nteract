@@ -257,6 +257,7 @@ function harness(
   };
   const container = document.createElement("div");
   const onStatus = vi.fn();
+  const onReadOnly = vi.fn();
   const controller = new BokehSessionController({
     outputId: "output-1",
     payload: makePayload(options.payload),
@@ -265,6 +266,7 @@ function harness(
     requestHost,
     subscribeHostNotification,
     onStatus,
+    onReadOnly,
     onLayout: vi.fn(),
   });
   const callsTo = (method: string) => calls.filter((call) => call.method === method);
@@ -275,6 +277,7 @@ function harness(
     controller,
     documents,
     notify,
+    onReadOnly,
     onStatus,
     requestHost,
     sendDoc,
@@ -391,6 +394,66 @@ describe("BokehSessionController", () => {
       expect(onStatus).toHaveBeenLastCalledWith("disconnected", undefined);
       expect(callsTo(NTERACT_BOKEH_SET_PROPS)).toHaveLength(0);
       expect(document.cleared).toBe(false);
+      controller.dispose();
+    });
+  });
+
+  describe("host changes", () => {
+    const state = (overrides: Record<string, unknown> = {}) => ({
+      sessionId: "session-1",
+      outputId: "output-1",
+      status: "connected",
+      epoch: 3,
+      live: true,
+      writable: true,
+      ...overrides,
+    });
+
+    it("re-opens when a new host does not follow its live session yet", async () => {
+      const { controller, document, documents, notify, sendDoc, callsTo } = await synced();
+      const slider = document.get_model_by_id("slider")!;
+      slider.properties.value = { syncable: true };
+
+      notify(NTERACT_BOKEH_SESSION_STATE, state());
+      await settle();
+      expect(callsTo(NTERACT_BOKEH_SESSION_OPEN)).toHaveLength(0);
+
+      // A transport reconnect replaced the host's bridge, which has no
+      // subscription for this frame while the session stays connected.
+      notify(NTERACT_BOKEH_SESSION_STATE, state({ live: false }));
+      await settle();
+      expect(callsTo(NTERACT_BOKEH_SESSION_OPEN)).toHaveLength(1);
+
+      await sendDoc(fullUpdate());
+      expect(documents).toHaveLength(1);
+      document.emit({ kind: "ModelChanged", attr: "value", value: 0.6, model: slider });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(callsTo(NTERACT_BOKEH_SET_PROPS).map((call) => call.params.props)).toEqual([
+        { slider: { value: "0.6" } },
+      ]);
+      controller.dispose();
+    });
+
+    it("keeps a viewer's edits local and marks the output read-only", async () => {
+      const { controller, document, notify, onReadOnly, calls, callsTo } = await synced({
+        open: { writable: false },
+      });
+      const slider = document.get_model_by_id("slider")!;
+      slider.properties.value = { syncable: true };
+      expect(onReadOnly).toHaveBeenLastCalledWith(true);
+
+      document.emit({ kind: "ModelChanged", attr: "value", value: 0.6, model: slider });
+      document.emit({ kind: "MessageSent", msg_type: "bokeh_event", msg_data: {} });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(calls).toEqual([]);
+
+      notify(NTERACT_BOKEH_SESSION_STATE, state({ writable: true }));
+      expect(onReadOnly).toHaveBeenLastCalledWith(false);
+      document.emit({ kind: "ModelChanged", attr: "value", value: 0.7, model: slider });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(callsTo(NTERACT_BOKEH_SET_PROPS).map((call) => call.params.props)).toEqual([
+        { slider: { value: "0.7" } },
+      ]);
       controller.dispose();
     });
   });
@@ -1083,6 +1146,61 @@ describe("BokehSessionController", () => {
         controller.dispose();
       },
     );
+
+    it("drops its own edit when a callback replaces the source in the same transaction", async () => {
+      const { controller, document, sendEvents, calls, callsTo } = await synced();
+      document.emit({ kind: "ColumnsStreamed", model: document.get_model_by_id("source") });
+      await settle();
+      const transactionId = (calls[0].params as { transactionId: string }).transactionId;
+
+      // The launcher folds the stream into one replacement from Python's
+      // values, versioned from the base the edit was applied on, without
+      // `echo_of`.
+      await sendEvents(
+        eventsFor({
+          transactionId,
+          dataEvents: [
+            {
+              kind: "ColumnDataChanged",
+              source_id: "source",
+              base_version: 2,
+              new_version: 3,
+              columns: { x: { version: 3, data: [9] } },
+              columns_removed: [],
+            },
+          ],
+        }),
+      );
+      expect(document.appliedEvents()).toEqual([
+        {
+          kind: "ColumnDataChanged",
+          model: { id: "source" },
+          attr: "data",
+          data: { type: "map", entries: [["x", [9]]] },
+          cols: ["x"],
+        },
+      ]);
+
+      // The edit is settled: a later marker in this transaction is not its echo.
+      await sendEvents(
+        eventsFor({
+          transactionId,
+          dataEvents: [
+            {
+              kind: "ColumnsStreamed",
+              source_id: "source",
+              base_version: 3,
+              new_version: 4,
+              data: { type: "map", entries: [["x", [10]]] },
+              echo_of: 0,
+            },
+          ],
+        }),
+      );
+      expect(document.appliedEvents()).toHaveLength(2);
+      expect(callsTo(NTERACT_BOKEH_SESSION_DATA)).toHaveLength(0);
+      controller.dispose();
+    });
 
     it("reloads a source from its blobs and tail after a version gap", async () => {
       const tailBuffer = new Uint8Array([2]).buffer;

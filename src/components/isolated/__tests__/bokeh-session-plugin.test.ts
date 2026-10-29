@@ -72,6 +72,7 @@ function transport(
   const unsubscribe = vi.fn();
   return {
     docs,
+    writable: true,
     fetchBlob: vi.fn(),
     applyPatch: vi.fn(async (options) => ({
       status: "accepted" as const,
@@ -127,11 +128,14 @@ function fakeEngine(kinds: string[]) {
 class RecordingReplica implements BokehSessionDocReplica {
   readonly frames: Uint8Array[] = [];
   freed = false;
+  readOnly = false;
   constructor(readonly epoch: number) {}
   is_synced() {
     return false;
   }
-  set_read_only() {}
+  set_read_only(readOnly: boolean) {
+    this.readOnly = readOnly;
+  }
   receive_frame(frame: Uint8Array): BokehReplicaFrameEvent {
     this.frames.push(frame);
     return { type: "applied", changed: false, changeset: emptyChangeset() };
@@ -243,6 +247,8 @@ describe("bokehSessionPlugin", () => {
       outputId: "output-1",
       status: "connected",
       epoch: 2,
+      live: false,
+      writable: true,
     });
 
     await expect(
@@ -269,10 +275,55 @@ describe("bokehSessionPlugin", () => {
       outputId: "output-1",
       status: "connected",
       epoch: 2,
+      live: false,
+      writable: true,
     });
 
     bridge.dispose();
     expect(second.unsubscribe).toHaveBeenCalledOnce();
+    docs.dispose();
+  });
+  it("tells a followed frame to re-open after a transport reconnect", async () => {
+    const frame = { notifyExtension: vi.fn() } as unknown as IsolatedFrameHandle;
+    const replicas: RecordingReplica[] = [];
+    const docs = new BokehSessionDocStore({
+      createReplica: (_sessionId, epoch) => {
+        const replica = new RecordingReplica(epoch);
+        replicas.push(replica);
+        return replica;
+      },
+      sendFrame: async () => {},
+      fetchBlob: vi.fn(),
+    });
+    docs.updateSessions({ "session-1": session(1) });
+    const bridge = bokehSessionPlugin.createBridge({
+      frame,
+      runtime: { sessions: {}, transport: null },
+      bindings: [{ outputId: "output-1", payload }],
+    })!;
+    const sessions = { "session-1": session(1) };
+    const open = { sessionId: "session-1", outputId: "output-1" };
+    bridge.updateRuntime({ sessions, transport: transport(docs) });
+    await expect(bridge.handleRequest(NTERACT_BOKEH_SESSION_OPEN, open)).resolves.toMatchObject({
+      live: true,
+    });
+    expect(replicas).toHaveLength(1);
+
+    // The session stays connected; only the daemon transport reconnected.
+    vi.mocked(frame.notifyExtension).mockClear();
+    bridge.updateRuntime({ sessions, transport: transport(docs) });
+    expect(replicas[0].freed).toBe(true);
+    expect(frame.notifyExtension).toHaveBeenCalledWith(
+      NTERACT_BOKEH_SESSION_STATE,
+      expect.objectContaining({ status: "connected", live: false }),
+    );
+    await expect(bridge.handleRequest(NTERACT_BOKEH_SESSION_OPEN, open)).resolves.toMatchObject({
+      live: true,
+    });
+    expect(replicas).toHaveLength(2);
+    expect(replicas[1].freed).toBe(false);
+
+    bridge.dispose();
     docs.dispose();
   });
 });
@@ -356,6 +407,7 @@ describe("useBokehSessionPlugin", () => {
           blobResolver,
           client,
           createReplica,
+          canWrite: true,
         }),
       { initialProps: { sessions } },
     );
@@ -388,10 +440,43 @@ describe("useBokehSessionPlugin", () => {
         blobResolver: null,
         client,
         createReplica,
+        canWrite: true,
       }),
     );
 
     expect((result.current[BOKEH_SESSION_PLUGIN_ID] as BokehSessionRuntime).transport).toBeNull();
+  });
+
+  it("follows sessions read-only on a viewer connection", () => {
+    const { asEngine } = fakeEngine([BOKEH_SESSION_DOC_KIND]);
+    const replicas: RecordingReplica[] = [];
+    const sessions = { "session-1": session(0) };
+    const blobResolver = { fetch: vi.fn() };
+    const { result, rerender, unmount } = renderHook(
+      ({ canWrite }: { canWrite: boolean }) =>
+        useBokehSessionPlugin({
+          sessions,
+          engine: asEngine,
+          blobResolver,
+          client,
+          createReplica: (_sessionId, epoch) => {
+            const replica = new RecordingReplica(epoch);
+            replicas.push(replica);
+            return replica;
+          },
+          canWrite,
+        }),
+      { initialProps: { canWrite: false } },
+    );
+    const runtime = () => result.current[BOKEH_SESSION_PLUGIN_ID] as BokehSessionRuntime;
+    expect(runtime().transport?.writable).toBe(false);
+    runtime().transport?.docs?.subscribe("session-1", () => {});
+    expect(replicas[0].readOnly).toBe(true);
+
+    rerender({ canWrite: true });
+    expect(runtime().transport?.writable).toBe(true);
+    expect(replicas[0].readOnly).toBe(false);
+    unmount();
   });
 
   it("serves outputs statically without the capability and live once it arrives", async () => {
@@ -405,6 +490,7 @@ describe("useBokehSessionPlugin", () => {
         blobResolver,
         client,
         createReplica,
+        canWrite: true,
       }),
     );
     const frame = { notifyExtension: vi.fn() } as unknown as IsolatedFrameHandle;

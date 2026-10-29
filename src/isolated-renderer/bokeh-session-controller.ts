@@ -102,6 +102,8 @@ interface BokehSessionControllerOptions {
   requestHost(method: string, params?: unknown): Promise<unknown>;
   subscribeHostNotification(method: string, listener: (params: unknown) => void): () => void;
   onStatus(status: NteractBokehSessionStatus, error?: string): void;
+  /** A live session this connection may not write (a viewer). */
+  onReadOnly?(readOnly: boolean): void;
   onLayout(): void;
 }
 
@@ -406,6 +408,9 @@ export class BokehSessionController {
   private views: BokehViewManager | null = null;
   private status: NteractBokehSessionStatus = "disconnected";
   private live = false;
+  /** Whether the host lets this frame write; false for viewer connections. */
+  private hostWritable = true;
+  private readOnlyShown: boolean | null = null;
   /** Epoch of the session state the mounted document shows; null before the first full update. */
   private epoch: number | null = null;
   /** A failed apply left the document out of step; the next full update reconciles. */
@@ -448,9 +453,14 @@ export class BokehSessionController {
     };
     subscribe(NTERACT_BOKEH_SESSION_STATE, (params) => {
       if (params.sessionId !== this.sessionId || typeof params.status !== "string") return;
+      if (typeof params.writable === "boolean") this.hostWritable = params.writable;
       this.setStatus(params.status as NteractBokehSessionStatus);
-      // The record can arrive after the frame opened; follow it from then on.
-      if (params.status === "connected" && this.opened && !this.live) this.reopen();
+      // The record can arrive after the frame opened, and a new host bridge
+      // (after a transport reconnect) does not follow the session until the
+      // frame opens it again.
+      if (params.status === "connected" && this.opened && (!this.live || params.live === false)) {
+        this.reopen();
+      }
     });
     subscribe(NTERACT_BOKEH_SESSION_DOC, (params) => {
       const update = params.update as NteractBokehDocUpdate | undefined;
@@ -511,6 +521,7 @@ export class BokehSessionController {
     }
     this.opened = true;
     this.live = result?.live === true;
+    this.hostWritable = result?.writable !== false;
     this.setStatus(result?.status ?? "disconnected");
     if (this.document) return;
     const saved = this.live ? null : savedDocument(this.options.payload);
@@ -716,6 +727,12 @@ export class BokehSessionController {
     const gaps = new Set<string>();
     for (const event of events.dataEvents) {
       const sourceId = event.source_id;
+      if (ownEdit?.sourceId === sourceId && event.kind === "ColumnDataChanged") {
+        // A callback replaced the source in the edit's transaction; the
+        // launcher folded the edit into this replacement, so no echo follows.
+        this.ownTransactions.delete(events.transactionId);
+        ownEdit = undefined;
+      }
       const version = this.versions.get(sourceId);
       if (gaps.has(sourceId) || version === undefined) continue;
       if (!this.hasModel(document, sourceId)) {
@@ -920,7 +937,7 @@ export class BokehSessionController {
   };
 
   private writable(): boolean {
-    return this.live && this.status === "connected" && this.epoch !== null;
+    return this.live && this.hostWritable && this.status === "connected" && this.epoch !== null;
   }
 
   private recordLocalProp(event: BokehDocumentEvent): void {
@@ -1084,6 +1101,11 @@ export class BokehSessionController {
     this.status = status;
     this.options.onStatus(status, error);
     if (status !== "connected") this.clearLocalState();
+    const readOnly = this.live && status === "connected" && !this.hostWritable;
+    if (readOnly === this.readOnlyShown) return;
+    this.readOnlyShown = readOnly;
+    if (readOnly) this.clearLocalState();
+    this.options.onReadOnly?.(readOnly);
   }
 
   private clearLocalState(): void {

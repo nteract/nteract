@@ -51,6 +51,8 @@ export interface NteractBokehSessionOpenResult {
    * false the frame renders the payload's saved state read-only.
    */
   live: boolean;
+  /** Whether this connection may write the session (viewers may not). */
+  writable: boolean;
 }
 
 /** Property values of the session document, decoded from their JSON text. */
@@ -201,6 +203,12 @@ export interface NteractBokehSessionStateParams {
   outputId: string;
   status: NteractBokehSessionStatus;
   epoch: number | null;
+  /**
+   * Whether the host follows the session document for this frame. False
+   * while connected means a new host bridge that the frame must open again.
+   */
+  live: boolean;
+  writable: boolean;
 }
 
 export interface NteractBokehSessionDocParams {

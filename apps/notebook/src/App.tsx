@@ -17,6 +17,8 @@ import {
   type ExecuteCellOptions,
   type NotebookResponse,
   type NotebookOutlineItem,
+  allowsNotebookWrite,
+  isConnectionScope,
   putBlob,
   type SessionStatus,
 } from "runtimed";
@@ -649,6 +651,10 @@ function AppContent() {
     blobResolver: useBlobResolver(),
     client: notebookClient,
     createReplica: createBokehReplica,
+    // The hub refuses a viewer's session writes; null is an unscoped local connection.
+    canWrite:
+      connectionScope === null ||
+      (isConnectionScope(connectionScope) && allowsNotebookWrite(connectionScope)),
     logger,
   });
 

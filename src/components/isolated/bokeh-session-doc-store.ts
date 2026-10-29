@@ -88,6 +88,8 @@ export interface BokehSessionDocStoreOptions {
   /** Send a header-framed payload as frame `0x0b`. */
   sendFrame(payload: Uint8Array): Promise<void>;
   fetchBlob(ref: BlobRef): Promise<Response>;
+  /** False for viewer connections, which the daemon refuses every write. */
+  writable?: boolean;
   now?: () => number;
   logger?: { warn(message: string, ...args: unknown[]): void };
 }
@@ -102,6 +104,9 @@ export type BokehSessionDocListener = (update: NteractBokehDocUpdate) => void;
  */
 const REWRITE_WINDOW_MS = 10_000;
 const PROP_BLOB_CACHE_LIMIT = 256;
+/** Backoff for rebuilding a full update after one failed (e.g. a blob fetch). */
+const RETRY_INITIAL_MS = 500;
+const RETRY_MAX_MS = 8_000;
 
 interface PendingValue {
   modelId: string;
@@ -116,8 +121,15 @@ interface SessionEntry {
   record: BokehSessionState | undefined;
   replica: BokehSessionDocReplica | null;
   synced: boolean;
-  /** Heads of the state every subscriber has been sent, local writes included. */
-  deliveredHeads: string[];
+  /**
+   * Heads of the state every subscriber shows once the queued updates are
+   * delivered, local writes included. Only valid while `missed` is false.
+   */
+  queuedHeads: string[];
+  /** An update failed to build since the last full update to every subscriber. */
+  missed: boolean;
+  retryDelay: number;
+  retryTimer: ReturnType<typeof setTimeout> | null;
   /** What subscribers showed when the replica was dropped, for the switch check. */
   previousHeads: string[] | null;
   rewrite: boolean;
@@ -189,10 +201,28 @@ export class BokehSessionDocStore {
   private readonly sessions = new Map<string, SessionEntry>();
   private readonly propBlobs = new Map<string, Promise<unknown>>();
   private records: Record<string, BokehSessionState> = {};
+  private writable: boolean;
   private disposed = false;
 
   constructor(options: BokehSessionDocStoreOptions) {
     this.options = options;
+    this.writable = options.writable ?? true;
+  }
+
+  /**
+   * Follow the connection's scope. A viewer's writes would be refused and
+   * each refusal resyncs the whole document, so a viewer never writes.
+   */
+  setWritable(writable: boolean): void {
+    this.writable = writable;
+    for (const entry of this.sessions.values()) {
+      entry.replica?.set_read_only(this.readOnly(entry));
+      if (!writable) entry.pending.clear();
+    }
+  }
+
+  private readOnly(entry: SessionEntry): boolean {
+    return !this.writable || entry.record?.status !== "connected";
   }
 
   private now(): number {
@@ -214,8 +244,8 @@ export class BokehSessionDocStore {
       } else if (record.epoch > entry.replica.epoch) {
         this.replaceReplica(entry, record.epoch);
       }
-      entry.replica?.set_read_only(record.status !== "connected");
-      if (record.status !== "connected") entry.pending.clear();
+      entry.replica?.set_read_only(this.readOnly(entry));
+      if (this.readOnly(entry)) entry.pending.clear();
     }
   }
 
@@ -232,7 +262,10 @@ export class BokehSessionDocStore {
         record: this.records[sessionId],
         replica: null,
         synced: false,
-        deliveredHeads: [],
+        queuedHeads: [],
+        missed: false,
+        retryDelay: RETRY_INITIAL_MS,
+        retryTimer: null,
         previousHeads: null,
         rewrite: false,
         pending: new Map(),
@@ -244,7 +277,7 @@ export class BokehSessionDocStore {
     if (!entry.replica && entry.record) {
       this.openReplica(entry, entry.record.epoch);
     } else if (entry.synced) {
-      this.emitFull(entry, new Set([listener]), false);
+      this.emitFull(entry, [listener], false);
     }
     const subscribed = entry;
     return () => {
@@ -254,6 +287,7 @@ export class BokehSessionDocStore {
       // once no replica is left to receive them.
       subscribed.replica?.free();
       subscribed.replica = null;
+      this.cancelRetry(subscribed);
       this.sessions.delete(sessionId);
     };
   }
@@ -320,7 +354,7 @@ export class BokehSessionDocStore {
   ): NteractBokehSetPropsResult {
     const entry = this.sessions.get(sessionId);
     const replica = entry?.replica;
-    if (!entry || !replica || !entry.synced || entry.record?.status !== "connected") {
+    if (!entry || !replica || !entry.synced || this.readOnly(entry)) {
       return { status: "read_only" };
     }
     const batch: Record<string, Record<string, string>> = {};
@@ -349,9 +383,9 @@ export class BokehSessionDocStore {
       }
     }
     if (!changed) return { status: "unchanged" };
-    // The writing frame already shows its own values, so its delivered state
-    // advances unless remote changes it has not been sent are in between.
-    if (sameHeads(before, entry.deliveredHeads)) entry.deliveredHeads = replica.get_heads_hex();
+    // The writing frame already shows its own values, so its state advances
+    // unless remote changes it has not been sent are in between.
+    if (sameHeads(before, entry.queuedHeads)) entry.queuedHeads = replica.get_heads_hex();
     this.send(replica, replica.flush_sync() ?? null);
     return { status: "written" };
   }
@@ -380,6 +414,7 @@ export class BokehSessionDocStore {
       entry.replica?.free();
       entry.replica = null;
       entry.listeners.clear();
+      this.cancelRetry(entry);
     }
     this.sessions.clear();
     this.propBlobs.clear();
@@ -387,7 +422,7 @@ export class BokehSessionDocStore {
 
   private openReplica(entry: SessionEntry, epoch: number): void {
     const replica = this.options.createReplica(entry.sessionId, epoch);
-    replica.set_read_only(entry.record?.status !== "connected");
+    replica.set_read_only(this.readOnly(entry));
     entry.replica = replica;
     entry.synced = false;
     // Any frame subscribes; an empty replica's first message asks for the doc.
@@ -395,7 +430,7 @@ export class BokehSessionDocStore {
   }
 
   private replaceReplica(entry: SessionEntry, epoch: number): void {
-    entry.previousHeads = entry.synced ? entry.deliveredHeads : null;
+    entry.previousHeads = entry.synced ? entry.queuedHeads : null;
     entry.rewrite = true;
     entry.replica?.free();
     entry.replica = null;
@@ -429,7 +464,7 @@ export class BokehSessionDocStore {
   private rewritePending(entry: SessionEntry, replica: BokehSessionDocReplica): void {
     if (!entry.rewrite) return;
     entry.rewrite = false;
-    if (entry.record?.status !== "connected") {
+    if (this.readOnly(entry)) {
       entry.pending.clear();
       return;
     }
@@ -478,14 +513,15 @@ export class BokehSessionDocStore {
     const replica = entry.replica;
     const snapshot = replica?.snapshot();
     if (!replica || !snapshot) return;
-    entry.deliveredHeads = replica.get_heads_hex();
+    const targets = [...listeners];
+    const everyone = targets.length === entry.listeners.size;
+    if (everyone) entry.queuedHeads = replica.get_heads_hex();
     const columns: NteractBokehDocUpdate["columns"] = {};
     for (const [sourceId, refs] of Object.entries(snapshot.columns)) {
       columns[sourceId] = Object.fromEntries(
         Object.entries(refs).map(([name, ref]) => [name, columnVersion(ref)]),
       );
     }
-    const targets = [...listeners];
     this.enqueue(
       entry,
       async () => {
@@ -506,6 +542,7 @@ export class BokehSessionDocStore {
         };
       },
       targets,
+      everyone ? "full" : "partial",
     );
   }
 
@@ -541,7 +578,7 @@ export class BokehSessionDocStore {
         touched.map((name) => [name, refs[name] ? columnVersion(refs[name]) : null]),
       );
     }
-    entry.deliveredHeads = replica.get_heads_hex();
+    entry.queuedHeads = replica.get_heads_hex();
     this.enqueue(
       entry,
       async () => {
@@ -564,24 +601,68 @@ export class BokehSessionDocStore {
         };
       },
       entry.listeners,
+      "delta",
     );
   }
 
+  /**
+   * Build concurrently, deliver in order. `full` goes to every subscriber,
+   * `partial` to a late one. A failed build means subscribers miss that state
+   * until a full update to everyone is delivered.
+   */
   private enqueue(
     entry: SessionEntry,
     build: () => Promise<NteractBokehDocUpdate>,
     listeners: Iterable<BokehSessionDocListener>,
+    kind: "full" | "partial" | "delta",
   ): void {
     const pending = build();
+    // Handled in order below; this keeps an early rejection from being unhandled.
+    pending.catch(() => {});
     entry.queue = entry.queue
       .then(async () => {
-        const update = await pending;
+        let update: NteractBokehDocUpdate;
+        try {
+          update = await pending;
+        } catch (error) {
+          if (this.disposed) return;
+          this.options.logger?.warn("[bokeh-session] Failed to build a session update:", error);
+          this.retryFull(entry);
+          return;
+        }
         if (this.disposed) return;
+        if (kind === "full") {
+          // A switch would keep the state subscribers never received.
+          if (entry.missed) update = { ...update, canSwitch: false };
+          entry.missed = false;
+          entry.retryDelay = RETRY_INITIAL_MS;
+          this.cancelRetry(entry);
+        }
         for (const listener of listeners) listener(update);
       })
       .catch((error: unknown) => {
         this.options.logger?.warn("[bokeh-session] Failed to deliver a session update:", error);
       });
+  }
+
+  /** Send everyone a full update after a backoff, until one is delivered. */
+  private retryFull(entry: SessionEntry): void {
+    entry.missed = true;
+    if (entry.retryTimer !== null) return;
+    const delay = entry.retryDelay;
+    entry.retryDelay = Math.min(delay * 2, RETRY_MAX_MS);
+    entry.retryTimer = setTimeout(() => {
+      entry.retryTimer = null;
+      // An unsynced replica sends its own full update once it syncs.
+      if (this.disposed || this.sessions.get(entry.sessionId) !== entry) return;
+      if (!entry.missed || !entry.synced) return;
+      this.emitFull(entry, entry.listeners, false);
+    }, delay);
+  }
+
+  private cancelRetry(entry: SessionEntry): void {
+    if (entry.retryTimer !== null) clearTimeout(entry.retryTimer);
+    entry.retryTimer = null;
   }
 
   private async resolveMeta(meta: BokehDocSnapshot["meta"]): Promise<NteractBokehDocMeta> {

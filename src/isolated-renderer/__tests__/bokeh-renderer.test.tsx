@@ -106,6 +106,7 @@ function setupNativeBokehSession() {
     status: "connected",
     epoch: 0,
     live: true,
+    writable: true,
   }));
   const notifications = new Map<string, (params: unknown) => void>();
   const subscribeHostNotification = vi.fn((method: string, listener: (params: unknown) => void) => {
@@ -333,6 +334,42 @@ describe("Bokeh renderer plugin", () => {
     });
     expect(container).toHaveTextContent("Disconnected");
     expect(container.querySelector('[data-testid="native-bokeh-root"]')).not.toBeNull();
+  });
+
+  it("blocks interaction with a live session the connection may not write", async () => {
+    const { NativeRenderer, requestHost, notifications } = setupNativeBokehSession();
+    requestHost.mockResolvedValue({
+      sessionId: "session-1",
+      outputId: "output-1",
+      status: "connected",
+      epoch: 0,
+      live: true,
+      writable: false,
+    });
+    const { container } = render(
+      <NativeRenderer
+        data={nativeSessionPayload()}
+        mimeType={NTERACT_BOKEH_SESSION_MIME_TYPE}
+        outputId="output-1"
+      />,
+    );
+    const root = () => container.querySelector('[data-testid="native-bokeh-root"]');
+
+    await waitFor(() => expect(root()).not.toBeNull());
+    expect(root()!.parentElement).toHaveAttribute("inert");
+    expect(container).not.toHaveTextContent("Disconnected");
+
+    await act(async () => {
+      notifications.get(NTERACT_BOKEH_SESSION_STATE)?.({
+        sessionId: "session-1",
+        outputId: "output-1",
+        status: "connected",
+        epoch: 0,
+        live: true,
+        writable: true,
+      });
+    });
+    expect(root()!.parentElement).not.toHaveAttribute("inert");
   });
 
   it("keeps a native session mounted when an equivalent payload is re-sent", async () => {
