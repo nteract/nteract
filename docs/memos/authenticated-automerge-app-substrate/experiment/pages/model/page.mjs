@@ -5,6 +5,8 @@ import {
   setRichImage,
   projectedBlock,
   blockMarkdown,
+  isRich,
+  markdownReproduces,
 } from "./richtext.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
 import { applyComment, projectComments } from "./comments.mjs";
@@ -94,6 +96,10 @@ function applyEdit(doc, op) {
     let source = blockMarkdown(doc.blocks[id]);
     if (!Array.isArray(op.replacements) || op.replacements.length > 100)
       throw Error("Provide up to 100 replacements");
+    if (isRich(doc.blocks[id]) && !markdownReproduces(doc.blocks[id], source))
+      throw Error(
+        "patch_block_markdown would change this block's structure: its Markdown cannot represent all of it (for example an empty paragraph). Use replace_match to edit text in place, or replace_block_markdown to replace the whole block.",
+      );
     for (const replacement of op.replacements) {
       const old = replacement.old,
         value = replacement.new;

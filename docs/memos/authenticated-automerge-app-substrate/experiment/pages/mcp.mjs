@@ -372,7 +372,7 @@ export const tools = [
   },
   tool(
     "edit_page",
-    "Apply an atomic structural edit batch at the observed heads. insert_image places an already uploaded Page-local asset in its own rich-text block and returns result.inserted_images with the actual block_id, asset_id, asset_url and alt; heads is the updated revision and url opens the Page. Unknown document fields are preserved. Prefer patch_page for targeted prose edits.",
+    "Apply an atomic structural edit batch at the observed heads. insert_image places an already uploaded Page-local asset in its own rich-text block and returns result.inserted_images with the actual block_id, asset_id, asset_url and alt; heads is the updated revision and url opens the Page. Unknown document fields are preserved. replace_block_markdown with a block's exported Markdown drops an empty first paragraph, because Markdown cannot represent it; use replace_match to keep it. Prefer patch_page for targeted prose edits.",
     {
       ...guard,
       operations: {
@@ -436,7 +436,7 @@ export const tools = [
   ),
   tool(
     "patch_page",
-    "Apply an atomic targeted edit batch. Prefer replace_match for visible prose: replace one literal range, optionally scoped by node_index and context, preserving untouched formatting and comment anchors. conflict_scope:target permits older base_heads only for unchanged native targets in replace_match batches; other edits retain the exact-page revision guard. Conflicts identify passages to reread with read_page_changes. patch_block_markdown edits Markdown syntax. Zero or multiple matches fail the whole batch. Tool edits arrive atomically, without a typing cursor.",
+    "Apply an atomic targeted edit batch. Prefer replace_match for visible prose: replace one literal range, optionally scoped by node_index and context, preserving untouched formatting and comment anchors. conflict_scope:target permits older base_heads only for unchanged native targets in replace_match batches; other edits retain the exact-page revision guard. Conflicts identify passages to reread with read_page_changes. patch_block_markdown edits Markdown syntax and refuses a block its Markdown can't reproduce, such as one with an empty paragraph. Zero or multiple matches fail the whole batch. Tool edits arrive atomically, without a typing cursor.",
     {
       ...guard,
       conflict_scope: {

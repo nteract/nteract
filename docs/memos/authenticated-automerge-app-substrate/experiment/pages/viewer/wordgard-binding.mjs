@@ -1,7 +1,8 @@
 // Adapted from rgbkrk/wordgard-automerge c9c6ea8 (BSD-3-Clause).
 import * as A from "@automerge/automerge/slim";
 import { Token } from "wordgard/doc";
-import { Correction, Transaction } from "wordgard/state";
+import { Correction, GardState, Transaction } from "wordgard/state";
+import { history } from "wordgard/history";
 import {
   decode,
   encode,
@@ -42,7 +43,46 @@ export const wordgardListStarts = Correction.onContent(OrderedList, (position) =
       },
 );
 
-export function createWordgardBinding(replica, id) {
+// Undo history for one editor, in a compartment so a rejected local
+// transaction can drop it. A rejected change stays in the history even though
+// the Page never accepted it, and undoing it would apply its inverse to the
+// restored document.
+export function wordgardHistory() {
+  const slot = new GardState.Compartment();
+  return {
+    extension: slot.of(history()),
+    // Separate transactions: reinstalling history in the same transaction
+    // keeps the existing field value.
+    reset: () => [slot.reconfigure([]), slot.reconfigure(history())],
+  };
+}
+
+// Commit local editor transactions through the binding. A rejected
+// transaction rolls back inside replica.change, so the Page keeps its last
+// accepted state. Put the editor back on that projection, reset its undo
+// history, and rethrow so the caller can show the error.
+export function commitEditorTransactions(
+  editor,
+  binding,
+  transactions,
+  { annotations = [], undoHistory = null } = {},
+) {
+  try {
+    for (const tr of transactions)
+      if (!tr.annotation(Transaction.remote)) binding.applyEditorTransaction(tr);
+  } catch (error) {
+    editor.dispatch({
+      changes: projectChanges(editor.state.doc, binding.current.doc),
+      annotations: [...annotations, history.isolate.of(true)],
+    });
+    for (const effects of undoHistory?.reset() ?? []) editor.dispatch({ effects, annotations });
+    throw error;
+  }
+}
+
+// `encodeSpans` exists for mixed-version tests that stand in for an older
+// build's encoder. The editor always uses the current `encode`.
+export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}) {
   const path = ["blocks", id, "richText"],
     listeners = new Set();
   let current = decode(A.spans(replica.doc, path));
@@ -130,7 +170,7 @@ export function createWordgardBinding(replica, id) {
         },
       );
       return replica.change((d) => {
-        if (structural) A.updateSpans(d, path, encode(tr.newDoc), expand);
+        if (structural) A.updateSpans(d, path, encodeSpans(tr.newDoc), expand);
         else {
           for (const range of [...replacements].reverse()) {
             const from = original.map.wgToAm[range.from],

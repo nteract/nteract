@@ -404,8 +404,11 @@ export function nativeTableSpans(source) {
   });
   return table && !opaque ? pmNodeToSpans(adapter, tree) : null;
 }
+// Markdown has no empty paragraph. The serializer writes an empty leading
+// paragraph as a blank line, which parsers ignore, so drop it rather than
+// suggest the newline is content.
 export function exportMarkdown(doc) {
-  return serializer.serialize(doc);
+  return serializer.serialize(doc).replace(/^\n+/, "");
 }
 
 export const RICH_FORMAT = "automerge-rich-text-v1";
@@ -431,6 +434,19 @@ export function blockMarkdown(block) {
   )
     return block.markdown;
   return current;
+}
+// Whether parsing `source` reproduces the block's current native structure.
+// Markdown edits reparse the whole block, so they must not run when the export
+// is lossy (an empty paragraph, for example). `isAmgBlock` only records whether
+// a paragraph had its own marker; both encoders' spans decode the same way, so
+// it is not structure.
+const structure = (node) =>
+  JSON.stringify(node.toJSON(), (key, value) => (key === "isAmgBlock" ? undefined : value));
+export function markdownReproduces(block, source = blockMarkdown(block)) {
+  return (
+    structure(richDoc(block)) ===
+    structure(pmDocFromSpans(adapter, pmNodeToSpans(adapter, parseMarkdown(source))))
+  );
 }
 export function richSize(block) {
   return isRich(block)
