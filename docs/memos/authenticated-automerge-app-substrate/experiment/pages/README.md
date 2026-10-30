@@ -359,6 +359,14 @@ that code as the reason. Byte-transport refusals (text frames, oversized frames,
 full queues) report a bounded category, log it once, and close with
 `request_rejected` or `temporarily_unavailable`.
 
+A Page holds at most 24 sockets, 4 per account, and 20 across members other than
+the owner. A socket over a quota still completes the upgrade, then closes at once
+with `temporarily_unavailable` and logs `connection_capacity`. A browser reads a
+refused HTTP upgrade only as close 1006, so the close code is what lets its
+reconnect count the refusal. A discovery epoch from an earlier host stays an HTTP
+409 before the upgrade: the next attempt's `/api/connect` returns the current
+epoch, so it clears without counting as a refusal.
+
 A deleted Page returns `page_deleted` only to its owner and to holders of a
 current viewer/editor grant. Everyone else, including principals with a role
 "none" tombstone, receives the same `403 page_access_denied` body and headers as

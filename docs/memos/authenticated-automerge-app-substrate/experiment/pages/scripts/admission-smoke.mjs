@@ -216,6 +216,42 @@ try {
     "Native admission: duplicate key 4503 temporarily_unavailable; reassigned key 4422 signing_key_rejected; text frame 4400 request_rejected",
   );
 
+  // Over the account's four-socket quota the upgrade still completes and
+  // closes with the transient code, so a browser can count the refusal.
+  // Each held socket stays reserved until its 10 s native deadline.
+  const memberCookie = await cookieFor(member);
+  const rawSocket = () => {
+    const address = new URL(`/api/sync?page=${pageId}`, origin);
+    address.protocol = "ws:";
+    const socket = new WebSocket(address, { headers: { cookie: memberCookie, origin } });
+    return {
+      socket,
+      opened: new Promise((resolve, reject) => {
+        socket.addEventListener("open", resolve, { once: true });
+        socket.addEventListener("error", () => reject(new Error("upgrade failed")), { once: true });
+      }),
+      closed: new Promise((resolve) =>
+        socket.addEventListener("close", ({ code, reason }) => resolve({ code, reason })),
+      ),
+    };
+  };
+  const held = [];
+  for (let i = 0; i < 4; i++) {
+    held.push(rawSocket());
+    await held.at(-1).opened;
+  }
+  const overQuota = rawSocket();
+  report.closes.capacity = await Promise.race([
+    overQuota.closed,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("over-quota socket was not refused")), 5000),
+    ),
+  ]);
+  assert.deepEqual(report.closes.capacity, { code: 4503, reason: "temporarily_unavailable" });
+  for (const { socket } of held) socket.close();
+  await Promise.all(held.map(({ closed }) => closed));
+  report.completed.push("Socket quota: over-quota upgrade closes 4503 temporarily_unavailable");
+
   // Open session, restart celld, keep editing, and reach Saved again.
   const content = (page) => page.locator("wg-content");
   const saved = (page) => page.locator(".save-status--saved");
@@ -267,6 +303,7 @@ try {
     "native_already_connected",
     "native_binding_mismatch",
     "native_frame_unsupported",
+    "connection_capacity",
   ];
   let logs = [];
   await expect
