@@ -954,9 +954,12 @@ dialog::backdrop {
   border-bottom: 2px solid var(--warning);
   animation: illumination 2s ease-out;
 }
-/* Highlights own background color; comment anchors are an underline. */
+/* Comment anchors and highlights are both translucent fills. Wherever they
+   overlap, the two tints composite, so each stays visible; the underline
+   marks the comment's extent when it sits inside a highlight. */
 .comment-passage {
-  border-bottom: 2px solid color-mix(in srgb, var(--warning) 75%, transparent);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border-bottom: 1px solid var(--warning);
 }
 .comment-passage-active {
   background: color-mix(in srgb, var(--warning) 24%, transparent);

@@ -19,8 +19,8 @@ import {
 } from "./page.mjs";
 import {
   blockMarkdown,
-  markdownReproduces,
   parseMarkdown,
+  richDoc,
   schema,
   textPath,
   validateRich,
@@ -39,6 +39,12 @@ function apply(doc, operations) {
   });
   return { after, result };
 }
+// Whether a block's Markdown projection parses back to the same structure.
+// `isAmgBlock` only records whether a paragraph had its own native marker.
+const structure = (node) =>
+  JSON.stringify(node.toJSON(), (key, value) => (key === "isAmgBlock" ? undefined : value));
+const markdownReproduces = (block) =>
+  structure(parseMarkdown(blockMarkdown(block))) === structure(richDoc(block));
 const textMarks = (doc, id) =>
   A.spans(doc.blocks[id], ["richText"])
     .filter((span) => span.type === "text")
@@ -160,7 +166,7 @@ test("highlights inside table cells round trip", () => {
   assert.ok(markdownReproduces(doc.blocks[id]));
 });
 
-test("a mark from a newer build reads as plain text and blocks Markdown patches", () => {
+test("a mark from a newer build reads as plain text and survives text edits", () => {
   const { doc, id } = fixture("future text");
   const marked = A.change(doc, (d) =>
     A.mark(d, textPath(id), { start: 0, end: 6, expand: "none" }, "underline", true),
@@ -168,14 +174,7 @@ test("a mark from a newer build reads as plain text and blocks Markdown patches"
   assert.equal(blockMarkdown(marked.blocks[id]), "future text");
   assert.equal(markdownReproduces(marked.blocks[id]), false);
   assert.throws(() => validateRich(marked.blocks[id]), /Unsupported rich mark/);
-  assert.throws(
-    () =>
-      apply(A.clone(marked), [
-        { op: "patch_block_markdown", block_id: id, replacements: [{ old: "text", new: "words" }] },
-      ]),
-    /format_match/,
-  );
-  // replace_match still edits the text and keeps the foreign mark.
+  // replace_match edits the text and keeps the foreign mark.
   const { after } = apply(marked, [
     { op: "replace_match", block_id: id, match_text: "text", replacement: "words" },
   ]);

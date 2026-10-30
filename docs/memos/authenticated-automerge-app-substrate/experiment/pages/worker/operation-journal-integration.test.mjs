@@ -164,12 +164,16 @@ for (const recovery of ["retry", "startup"]) {
         recovery === "startup"
           ? [
               {
-                op: "patch_block_markdown",
+                op: "replace_match",
                 block_id: f.blockId,
-                replacements: [
-                  { old: "## Introduction", new: "# Guide" },
-                  { old: "Original body.", new: "Accepted body." },
-                ],
+                match_text: "Introduction",
+                replacement: "Guide",
+              },
+              {
+                op: "replace_match",
+                block_id: f.blockId,
+                match_text: "Original body.",
+                replacement: "Accepted body.",
               },
             ]
           : [
@@ -225,9 +229,10 @@ test("patch removal omits warnings and comment operations do not report existing
     base_heads: A.getHeads(f.handle.doc()),
     operations: [
       {
-        op: "patch_block_markdown",
+        op: "replace_match",
         block_id: f.blockId,
-        replacements: [{ old: "# Guide", new: "## Different section" }],
+        match_text: "Guide",
+        replacement: "Different section",
       },
     ],
   };

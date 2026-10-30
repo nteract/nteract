@@ -86,11 +86,7 @@ const mutation = {
   base_heads: read.heads,
   idempotency_key: crypto.randomUUID(),
   operations: [
-    {
-      op: "patch_block_markdown",
-      block_id: read.blocks[0].id,
-      replacements: [{ old: "fox", new: "otter" }],
-    },
+    { op: "replace_match", block_id: read.blocks[0].id, match_text: "fox", replacement: "otter" },
   ],
 };
 const edited = await tool(cookie, "patch_page", mutation);

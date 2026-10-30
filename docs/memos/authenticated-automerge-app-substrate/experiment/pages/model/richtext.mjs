@@ -406,8 +406,8 @@ const plainImportParser = new MarkdownParser(
   { ...defaultMarkdownParser.tokens, image: imageToken },
 );
 // Marks with "markdown": "html" in the registry project as their one fixed tag.
-// A mark this build doesn't know projects as its plain text; the block then
-// can't reproduce from Markdown, so Markdown patches refuse it.
+// A mark this build doesn't know projects as its plain text. Edit it through
+// replace_match and format_match, which work on native spans.
 const markSerializers = {
   ...defaultMarkdownSerializer.marks,
   highlight: {
@@ -550,19 +550,6 @@ export function blockMarkdown(block) {
   )
     return block.markdown;
   return current;
-}
-// Whether parsing `source` reproduces the block's current native structure.
-// Markdown edits reparse the whole block, so they must not run when the export
-// is lossy (an empty paragraph, for example). `isAmgBlock` only records whether
-// a paragraph had its own marker; both encoders' spans decode the same way, so
-// it is not structure.
-const structure = (node) =>
-  JSON.stringify(node.toJSON(), (key, value) => (key === "isAmgBlock" ? undefined : value));
-export function markdownReproduces(block, source = blockMarkdown(block)) {
-  return (
-    structure(richDoc(block)) ===
-    structure(pmDocFromSpans(adapter, pmNodeToSpans(adapter, parseMarkdown(source))))
-  );
 }
 export function richSize(block) {
   return isRich(block)

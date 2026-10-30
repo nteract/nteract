@@ -245,9 +245,10 @@ try {
     idempotency_key: crypto.randomUUID(),
     operations: [
       {
-        op: "patch_block_markdown",
+        op: "replace_match",
         block_id: tableBlock.id,
-        replacements: [{ old: "Reviewed B", new: "Agent reviewed" }],
+        match_text: "Reviewed B",
+        replacement: "Agent reviewed",
       },
     ],
   });

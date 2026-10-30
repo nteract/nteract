@@ -486,7 +486,7 @@ export const tools = [
   ),
   tool(
     "patch_page",
-    "Apply an atomic targeted edit batch. Prefer replace_match for visible prose: replace one literal range, optionally scoped by node_index and context, preserving untouched formatting and comment anchors. Use format_match to add or remove formatting (bold, italic, code, links, highlights) over one literal range without changing its text. conflict_scope:target permits older base_heads only for unchanged native targets in replace_match batches; other edits retain the exact-page revision guard. Conflicts identify passages to reread with read_page_changes. patch_block_markdown reparses a whole block from Markdown and refuses a block its Markdown can't reproduce, such as one with an empty paragraph or formatting Markdown can't express. Zero or multiple matches fail the whole batch. Tool edits arrive atomically, without a typing cursor.",
+    "Apply an atomic targeted edit batch. Prefer replace_match for visible prose: replace one literal range, optionally scoped by node_index and context, preserving untouched formatting and comment anchors. Use format_match to add or remove formatting (bold, italic, code, links, highlights) over one literal range without changing its text. conflict_scope:target permits older base_heads only for unchanged native targets in replace_match batches; other edits retain the exact-page revision guard. Conflicts identify passages to reread with read_page_changes. Zero or multiple matches fail the whole batch. Tool edits arrive atomically, without a typing cursor.",
     {
       ...guard,
       conflict_scope: {
@@ -499,27 +499,7 @@ export const tools = [
         minItems: 1,
         maxItems: 100,
         items: {
-          oneOf: [
-            replaceMatchOperation,
-            formatMatchOperation,
-            {
-              type: "object",
-              properties: {
-                op: { const: "patch_block_markdown" },
-                block_id: string,
-                replacements: {
-                  type: "array",
-                  minItems: 1,
-                  items: {
-                    type: "object",
-                    properties: { old: string, new: string },
-                    required: ["old", "new"],
-                  },
-                },
-              },
-              required: ["op", "block_id", "replacements"],
-            },
-          ],
+          oneOf: [replaceMatchOperation, formatMatchOperation],
         },
       },
     },

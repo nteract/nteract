@@ -63,11 +63,7 @@ test("export uses live rich text and fractional block order from the Page projec
         arguments: {
           operations: [
             { op: "set_title", title: "Current title" },
-            {
-              op: "patch_block_markdown",
-              block_id: first,
-              replacements: [{ old: "Old", new: "Current" }],
-            },
+            { op: "replace_match", block_id: first, match_text: "Old", replacement: "Current" },
             { op: "insert_markdown", after_block_id: null, markdown: "First section" },
           ],
         },

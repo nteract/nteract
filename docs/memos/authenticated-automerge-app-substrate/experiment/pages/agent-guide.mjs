@@ -417,7 +417,7 @@ empty result does not prove a Page is absent.
 - report_page_progress: page_id and a short message; optional targets and expected_heads.
   Updates/clear require the returned progress_id and private lease_token. See progress below.
 - read_page_changes: complete net changes since previous heads, with current passage addresses and retry authority.
-- patch_page: replace_match for literal visible-text edits, optionally scoped by node_index; format_match to add or remove formatting over a literal range; patch_block_markdown for Markdown syntax edits.
+- patch_page: replace_match for literal visible-text edits, optionally scoped by node_index; format_match to add or remove formatting over a literal range.
 - edit_page: set_title, replace_block_markdown, insert_markdown, insert_image,
   move_block, or delete_block operations.
 - manage_page_comment: add, reply, resolve, reopen, edit, or delete_message.
@@ -727,12 +727,8 @@ Markdown is a projection of the rich text, not its storage. Highlights read as
 <mark data-color="green">text</mark>; insert_markdown, replace_block_markdown and
 create_page accept that tag. Other HTML stays literal text.
 
-For structural edits inside a block, patch_block_markdown takes replacements
-[{"old":"exact Markdown","new":"replacement Markdown"}]. Each old string must
-occur exactly once in that block's Markdown. Regex replacement is not supported.
-It reparses the whole block, so it refuses a block whose Markdown can't
-reproduce it, such as one with an empty paragraph or formatting this projection
-can't show; use replace_match and format_match in that block.
+To restructure a block (headings, lists, tables), replace it with
+edit_page replace_block_markdown, or insert, move and delete whole blocks.
 Copy the whole heads array, even when it has more than one entry. On a stale-revision error,
 read again, reconsider the edit, and use a new key. After a timeout or unknown
 outcome, retry the exact request body, key, token, account, and driver label.

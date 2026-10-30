@@ -169,13 +169,15 @@ references; it does not publish the Page or change asset access.
   colors and Remove; Cmd/Ctrl+Shift+H toggles yellow. A highlight is a text mark
   (`highlight`), so it syncs, merges, and follows edit permission like bold.
   Palette names resolve to theme tokens; agents can also set `#rrggbb`. Markdown
-  projects highlights as `<mark data-color="…">…</mark>`. Comment anchors are an
-  underline so highlights own background color.
+  projects highlights as `<mark data-color="…">…</mark>`. Comment anchors keep
+  their own tint and underline; where they overlap a highlight, both tints show.
 - **Mark registry:** [`model/marks.json`](model/marks.json) lists every inline
   mark with its value shape, expand rule, and Markdown projection. Validation,
   the Wordgard binding, Markdown import/export, the MCP `format_match` schema,
   and the Rust codec read it. Readers keep marks they don't know: they render as
-  plain text and survive edits, while Markdown patches refuse those blocks.
+  plain text and survive edits. Agents edit existing text through
+  `replace_match` and `format_match`, which work on native spans; Markdown is
+  for reading and for writing whole blocks.
 - **Links:** click for Open, Edit, and Remove; Cmd/Ctrl-click opens directly and
   Cmd/Ctrl+K edits. Incoming edits update or dismiss the link control, and URL
   policy applies both to stored content and navigation.
