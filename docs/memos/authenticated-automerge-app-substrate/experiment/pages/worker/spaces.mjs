@@ -18,6 +18,7 @@ import { HttpError, authenticate, json, readJson, requireWrite, errorResponse } 
 import { fingerprint, mutationKey } from "./mutations.mjs";
 import { validPageId } from "./registration.mjs";
 import { NO_ACTOR_CHAIN, decide, heldRelation, principalOf, projectObject } from "./authz.mjs";
+import { serialQueue } from "./serial-queue.mjs";
 
 export const SPACE_LIMIT = 50;
 /** Deepest allowed nesting; a top-level Page is at depth 1. */
@@ -174,12 +175,10 @@ export class Space {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
-    this.tail = Promise.resolve();
+    this.queue = serialQueue(ctx, "space-queue");
   }
   fetch(request) {
-    const next = this.tail.then(() => this.run(request));
-    this.tail = next.catch(() => {});
-    return next;
+    return this.queue(() => this.run(request));
   }
   async run(request) {
     try {

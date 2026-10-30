@@ -157,6 +157,7 @@ import {
 export { Space } from "./spaces.mjs";
 import { spaceCreationEffect, spaceCreationTransition } from "./space-lifecycle.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
+import { serialQueue } from "./serial-queue.mjs";
 import { readTool } from "./tool-reads.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
 import { PageActivity } from "./page-activity.mjs";
@@ -671,12 +672,10 @@ export class Catalog {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
-    this.tail = Promise.resolve();
+    this.queue = serialQueue(ctx, "catalog-queue");
   }
   fetch(request) {
-    const next = this.tail.then(() => this.run(request));
-    this.tail = next.catch(() => {});
-    return next;
+    return this.queue(() => this.run(request));
   }
   async countEntries(prefix) {
     return countCapacity(this.ctx.storage, prefix, {

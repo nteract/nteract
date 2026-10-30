@@ -1030,6 +1030,20 @@ moved, the leaf guard runs again and a child created meanwhile refuses it; if it
 has, forwarding replays a recorded receipt or comes back superseded, and a
 superseded Trash meets the guard again before it may retarget.
 
+Catalog and Space objects each run one request at a time through
+[serial-queue.mjs](worker/serial-queue.mjs). Not every await inside a request
+has its own deadline: Page and Space fetches and credential checks do not. So
+the queue has a watchdog. When the running request reaches 120 s, the object
+resets through `ctx.abort()`, which celld 0.6.3 supports, and the next request
+reaches a fresh instance. The running request's timer catches it, and so does
+the next request to arrive, which checks the running request's age. Requests
+already queued on the reset instance never settle, and their callers' 60 s
+deadlines answer them. Reset is safe here because Catalog and Space state is
+all in durable storage, and their operations recover from a restart through
+stored operation intents. The log line has stage `catalog-queue` or
+`space-queue`, status 503 and reason `request_timeout`. Pages don't use this
+queue: a Page holds live document state and sockets.
+
 `update_space` requires `expected_revision`. The Catalog records it in the
 journal intent before the Space sees the request, and every attempt carries it,
 so a retry can never apply once the Space has moved past that revision, even
