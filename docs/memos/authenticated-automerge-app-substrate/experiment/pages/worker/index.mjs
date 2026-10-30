@@ -199,6 +199,20 @@ const lifecycleFingerprint = {
   purge_page: "purge_page",
 };
 const noop = async () => {};
+/** Budgets for reading Page lifecycles while the Catalog queue waits. */
+export const lifecycleBounds = { readMs: 2000, passMs: 5000, concurrency: 4 };
+const lifecycleUnsettled = () =>
+  new HttpError(
+    409,
+    "A Page's Trash or restore is still settling. Retry shortly.",
+    "lifecycle_unsettled",
+  );
+const hasChildren = () =>
+  new HttpError(
+    409,
+    "This Page has sub-pages. Trash its sub-pages first; subtree Trash is not available yet.",
+    "page_has_children",
+  );
 /** A home Page sits first at its Space's top level. */
 const homePlacement = (spaceId) => ({
   space_id: spaceId,
@@ -581,12 +595,20 @@ export class Catalog {
   /** Read a Page's current lifecycle state. The Catalog may call its Pages;
    * a Page never calls its owner's Catalog.
    */
-  async pageLifecycle(pageId) {
-    const response = await this.env.PAGES.getByName(pageId).fetch(
-      new Request("https://pages.internal/internal/lifecycle-state"),
+  async pageLifecycle(pageId, ms = lifecycleBounds.readMs) {
+    // Every Catalog request shares one queue, so a read that stalls, in the
+    // fetch or its body, gives up instead of holding it.
+    return withTimeout(
+      (async () => {
+        const response = await this.env.PAGES.getByName(pageId).fetch(
+          new Request("https://pages.internal/internal/lifecycle-state"),
+        );
+        if (!response.ok) throw Error(`Page lifecycle state unavailable: ${response.status}`);
+        return response.json();
+      })(),
+      Math.max(1, ms),
+      "Page lifecycle read timed out",
     );
-    if (!response.ok) throw Error(`Page lifecycle state unavailable: ${response.status}`);
-    return response.json();
   }
   /** Tell a trashed Page that this account recorded its permanent deletion. */
   async notifyTombstone(pageId) {
@@ -832,7 +854,13 @@ export class Catalog {
         if (!(await holdsLifecycleSlot(this.ctx.storage, body.operation, pageId, key))) {
           const limit = body.operation === "delete_page" ? TRASH_LIMIT : CATALOG_LIMIT;
           const prefix = body.operation === "delete_page" ? "trash/" : "page/";
-          if ((await this.countEntries(prefix)) < limit)
+          const capacity = (await this.countEntries(prefix)) < limit;
+          // A trash that lost its slot never applied (an applied one leaves
+          // a real Trash entry), so it runs the leaf guard again before it
+          // may apply: a child can have arrived since.
+          if (capacity && body.operation === "delete_page")
+            await this.recheckLeafOnResume(pageId, key, intent);
+          if (capacity)
             await this.ctx.storage.put(
               lifecycleSlot(
                 body.operation,
@@ -1022,24 +1050,64 @@ export class Catalog {
         "A Space's home Page stays with its Space; it can't move to Trash on its own",
         "home_page_protected",
       );
-    for (let child of (await storage.list({ prefix: "page/", limit: 1000 })).values()) {
+    const unsettled = [];
+    for (const child of (await storage.list({ prefix: "page/", limit: 1000 })).values()) {
       if (!child?.page_id || child.page_id === pageId) continue;
       const trashed = await storage.get(`trash/${child.page_id}`);
       const parent =
         entryPlacement(child).parent_id ??
         (child.reservation && trashed ? entryPlacement(trashed).parent_id : null);
       if (parent !== pageId) continue;
-      if (child.reservation || trashed?.reservation) {
-        await this.settleReservation(child.page_id);
-        child = await storage.get(`page/${child.page_id}`);
-      }
-      if (child && !child.reservation)
-        throw new HttpError(
-          409,
-          "This Page has sub-pages. Trash its sub-pages first; subtree Trash is not available yet.",
-          "page_has_children",
-        );
+      if (child.reservation || trashed?.reservation) unsettled.push(child.page_id);
+      else throw hasChildren();
     }
+    await this.settleReservations(unsettled);
+    for (const childId of unsettled) {
+      const child = await storage.get(`page/${childId}`);
+      if (child && !child.reservation) throw hasChildren();
+    }
+  }
+
+  /** Rerun the leaf guard for a resumed trash before it re-acquires its
+   * slot. The Page decides whether the request already applied: if its
+   * lifecycle moved past the intent's revision, forwarding only replays the
+   * recorded receipt and the guard does not apply. Otherwise a new child
+   * refuses the request, and the intent is released like any other
+   * rejection before change. */
+  async recheckLeafOnResume(pageId, key, intent) {
+    const state = await this.boundedLifecycle(pageId, Date.now() + lifecycleBounds.passMs);
+    if (state.state !== "active" || (state.revision ?? 0) !== intent.expectedRevision) return;
+    try {
+      await this.requireLeafPage(pageId);
+    } catch (error) {
+      if (["page_has_children", "home_page_protected"].includes(error.code)) {
+        await this.ctx.storage.delete(key);
+        await this.ctx.storage.sync();
+      }
+      throw error;
+    }
+  }
+
+  /** Settle several Pages' reservations within one budget: at most
+   * `lifecycleBounds.concurrency` reads at a time, each bounded, and no read
+   * starts after the pass deadline. An exhausted budget refuses the request
+   * as retryable instead of holding the Catalog queue. */
+  async settleReservations(pageIds, deadline = Date.now() + lifecycleBounds.passMs) {
+    const queue = [...pageIds];
+    const failures = [];
+    const worker = async () => {
+      while (queue.length && !failures.length) {
+        try {
+          await this.settleReservation(queue.shift(), deadline);
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(lifecycleBounds.concurrency, queue.length) }, worker),
+    );
+    if (failures.length) throw failures[0];
   }
 
   /** Reconcile a Page's pending Trash or restore reservation with the Page,
@@ -1048,7 +1116,7 @@ export class Catalog {
    * reservation, since its intent may still apply on retry. A reservation
    * whose intent is no longer pending is stale and removed. When the Page
    * can't answer, the caller is refused rather than left to guess. */
-  async settleReservation(pageId) {
+  async settleReservation(pageId, deadline = Date.now() + lifecycleBounds.passMs) {
     const storage = this.ctx.storage;
     for (const key of [`page/${pageId}`, `trash/${pageId}`]) {
       const entry = await storage.get(key);
@@ -1058,20 +1126,22 @@ export class Catalog {
         await storage.delete(key);
         continue;
       }
-      let state;
-      try {
-        state = await this.pageLifecycle(pageId);
-      } catch (error) {
-        logFailure(error, "lifecycle-state");
-        throw new HttpError(
-          409,
-          "A Page's Trash or restore is still settling. Retry shortly.",
-          "lifecycle_unsettled",
-        );
-      }
+      const state = await this.boundedLifecycle(pageId, deadline);
       if (state.state === "missing") await projectLifecycle(storage, pageId, { state: "deleted" });
       else if ((state.revision ?? 0) !== intent.expectedRevision)
         await projectLifecycle(storage, pageId, state);
+    }
+  }
+
+  /** A Page's lifecycle read within `deadline`, or a retryable refusal. */
+  async boundedLifecycle(pageId, deadline) {
+    const left = deadline - Date.now();
+    if (left <= 0) throw lifecycleUnsettled();
+    try {
+      return await this.pageLifecycle(pageId, Math.min(lifecycleBounds.readMs, left));
+    } catch (error) {
+      logFailure(error, "lifecycle-state");
+      throw lifecycleUnsettled();
     }
   }
 

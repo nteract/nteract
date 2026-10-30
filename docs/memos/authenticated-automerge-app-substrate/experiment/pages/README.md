@@ -725,7 +725,14 @@ projects an applied transition. A child whose restore applied counts as a child.
 A parent with any Trash entry, or a pending Trash reservation, is unavailable,
 so a restored child goes to the top level even if that trash has not applied
 yet. When the Page can't answer, the request is refused with
-`lifecycle_unsettled` (retryable) rather than decided on a guess.
+`lifecycle_unsettled` (retryable) rather than decided on a guess. Every Catalog
+request shares one queue, so these reads are bounded: each read (fetch and body)
+gets 2 s, one pass gets 5 s with no read starting after its deadline, and at
+most four reads run at a time; an exhausted budget also returns
+`lifecycle_unsettled`. A resumed trash that lost its reservation never applied,
+so before it re-acquires one it asks the Page: if the Page's lifecycle has not
+moved, the leaf guard runs again and a child created meanwhile refuses it; if it
+has, forwarding only replays the recorded receipt.
 
 `update_space` requires `expected_revision`. The Catalog records it in the
 journal intent before the Space sees the request, and every attempt carries it,

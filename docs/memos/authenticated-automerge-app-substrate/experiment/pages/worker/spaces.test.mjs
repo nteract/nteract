@@ -3,7 +3,7 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
-import worker, { Catalog, Page, Space } from "./index.mjs";
+import worker, { Catalog, Page, Space, lifecycleBounds } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { pageState, proposeAccessUpdate } from "./access.mjs";
 import { CATALOG_MIGRATIONS, migrateCatalogIndex, reportPageIndex } from "./catalog-index.mjs";
@@ -57,8 +57,12 @@ async function world(t, { index = "1" } = {}) {
   // Inject a failure into the next request to one object: "before" fails
   // without reaching it, "lost" drops the response after it ran.
   const faults = new Map();
+  // Runs before every lifecycle-state read; a test can delay or stall it.
+  const hooks = { lifecycle: null };
   const faulty = (id, target) => ({
     fetch: async (request) => {
+      if (hooks.lifecycle && new URL(request.url).pathname === "/internal/lifecycle-state")
+        await hooks.lifecycle(id);
       const fault = faults.get(id);
       if (fault === "before") {
         faults.delete(id);
@@ -171,6 +175,7 @@ async function world(t, { index = "1" } = {}) {
     pages,
     spaces,
     faults,
+    hooks,
     jobs,
     call,
     key,
@@ -714,6 +719,121 @@ for (const variant of ["lost", "barrier"])
     assert.equal((await storage.get(`page/${child}`)).reservation, undefined, "settled");
     assert.equal((await w.call("owner", "restore_page", restore)).body.restored, true);
   });
+
+/** Children of one parent, each trashed with a restore reserved but never
+ * applied, so a leaf check has to read every child's lifecycle. */
+async function unsettledChildren(w, count) {
+  const { parent, trash, space } = await nested(w);
+  const children = [];
+  for (let index = 0; index < count; index++) {
+    const child = (await w.createPage({ title: `Child ${index}`, parent_id: parent })).body.page_id;
+    assert.equal((await trash(child)).status, 200);
+    w.faults.set(child, "before");
+    await w.call("owner", "restore_page", { page_id: child, idempotency_key: w.key() });
+    children.push(child);
+  }
+  // nested() made one more child; settle it into Trash too.
+  const first = (await w.call("owner", "list_pages", { parent_id: parent })).body.pages;
+  for (const page of first) assert.equal((await trash(page.page_id)).status, 200);
+  return { parent, trash, space, children };
+}
+
+test("a stalled lifecycle read is bounded and refuses the request as retryable", async (t) => {
+  const w = await world(t);
+  const { parent, trash, children } = await unsettledChildren(w, 1);
+  const saved = { ...lifecycleBounds };
+  t.after(() => Object.assign(lifecycleBounds, saved));
+  Object.assign(lifecycleBounds, { readMs: 50, passMs: 500 });
+  w.hooks.lifecycle = async (id) => {
+    if (id === children[0]) await new Promise(() => {});
+  };
+  const started = Date.now();
+  const stalled = await trash(parent);
+  assert.equal(stalled.status, 409);
+  assert.equal(stalled.body.code, "lifecycle_unsettled");
+  assert.ok(Date.now() - started < 400, "the read gave up after its own bound");
+  assert.equal(pageState(w.page(parent).metadata), "active");
+  w.hooks.lifecycle = null;
+  assert.equal((await trash(parent)).status, 200, "the retry settles and proceeds");
+});
+
+test("many slow children share one pass budget and at most four reads at a time", async (t) => {
+  const w = await world(t);
+  const { parent, trash } = await unsettledChildren(w, 12);
+  const saved = { ...lifecycleBounds };
+  t.after(() => Object.assign(lifecycleBounds, saved));
+  let active = 0;
+  let peak = 0;
+  w.hooks.lifecycle = async () => {
+    peak = Math.max(peak, ++active);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    active--;
+  };
+  // 12 reads of 40 ms at four at a time need about 120 ms.
+  Object.assign(lifecycleBounds, { readMs: 200, passMs: 60 });
+  const started = Date.now();
+  const exhausted = await trash(parent);
+  const elapsed = Date.now() - started;
+  assert.equal(exhausted.status, 409);
+  assert.equal(exhausted.body.code, "lifecycle_unsettled");
+  assert.ok(elapsed < 300, `the pass stopped near its budget (${elapsed} ms)`);
+  assert.equal(pageState(w.page(parent).metadata), "active");
+  assert.ok(peak <= 4, `at most four reads at once (${peak})`);
+
+  // Reads cut off at the deadline finish in the background; let them drain.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(active, 0);
+  peak = 0;
+  Object.assign(lifecycleBounds, { passMs: 2000 });
+  const settled = await trash(parent);
+  assert.equal(settled.status, 200, JSON.stringify(settled.body));
+  assert.equal(peak, 4);
+});
+
+test("a resumed parent trash that lost its slot runs the leaf guard again", async (t) => {
+  const w = await world(t);
+  const { space, parent, child, trash } = await nested(w);
+  assert.equal((await trash(child)).status, 200);
+  const storage = w.catalogStorage();
+  const args = { page_id: parent, base_heads: w.heads(parent), idempotency_key: "resumed-trash" };
+  // Forwarded, but the request never reached the Page.
+  w.faults.set(parent, "before");
+  assert.ok((await w.call("owner", "delete_page", args)).status >= 500);
+  const intent = await storage.get("host/operation/resumed-trash");
+  assert.equal(intent.forwarded, true);
+  // The slot expires; counting Trash capacity finds the Page unchanged and
+  // releases it.
+  const slot = await storage.get(`trash/${parent}`);
+  await storage.put(`trash/${parent}`, { ...slot, expires_at: Date.now() - 1 });
+  const other = (await w.createPage({ title: "Other", space_id: space.space_id })).body.page_id;
+  assert.equal((await trash(other)).status, 200);
+  assert.equal(await storage.get(`trash/${parent}`), undefined, "the slot was released");
+  const late = await w.createPage({ title: "Late child", parent_id: parent });
+  assert.equal(late.status, 200);
+
+  const retried = await w.call("owner", "delete_page", args);
+  assert.equal(retried.status, 409);
+  assert.equal(retried.body.code, "page_has_children");
+  assert.equal(pageState(w.page(parent).metadata), "active");
+  assert.equal(await storage.get("host/operation/resumed-trash"), undefined, "released");
+  assert.equal(await storage.get(`trash/${parent}`), undefined);
+});
+
+test("a resumed trash that already applied still replays its receipt", async (t) => {
+  const w = await world(t);
+  const { child, trash } = await nested(w);
+  const args = { page_id: child, base_heads: w.heads(child), idempotency_key: "applied-trash" };
+  w.faults.set(child, "lost");
+  assert.ok((await w.call("owner", "delete_page", args)).status >= 500);
+  const storage = w.catalogStorage();
+  const slot = await storage.get(`trash/${child}`);
+  await storage.put(`trash/${child}`, { ...slot, expires_at: Date.now() - 1 });
+  const replay = await w.call("owner", "delete_page", args);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.state, "trashed");
+  assert.equal(pageState(w.page(child).metadata), "trashed");
+  void trash;
+});
 
 test("an unapplied restore does not hold its parent, and returns to the top level later", async (t) => {
   const w = await world(t);
