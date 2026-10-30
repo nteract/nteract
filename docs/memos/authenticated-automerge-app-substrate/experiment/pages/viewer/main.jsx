@@ -27,6 +27,7 @@ import {
   pageListing,
 } from "../shared/routes.mjs";
 import { maintainBrowserSession } from "./browser-session.mjs";
+import { requestSession } from "./early-session.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
 import { WordgardEditor } from "./WordgardEditor.jsx";
 import { PagePicker } from "./PagePicker.jsx";
@@ -327,7 +328,8 @@ function App() {
   useEffect(() => {
     let alive = true;
     const maintenance = maintainBrowserSession({
-      request: () => request("/api/auth/session"),
+      // The first refresh takes the request theme.js started (early-session.mjs).
+      request: () => requestSession(request),
       onSession: (result) => {
         if (!alive) return;
         setAuthError("");

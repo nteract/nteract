@@ -204,7 +204,7 @@ test("the blocking theme asset applies preferences without loading the editor", 
     Object.keys(result.metafile.inputs)
       .map((file) => path.basename(file))
       .sort(),
-    ["theme-bootstrap.mjs", "theme.mjs"],
+    ["early-session.mjs", "routes.mjs", "theme-bootstrap.mjs", "theme.mjs"],
   );
   const classes = new Set();
   const root = {
@@ -212,12 +212,22 @@ test("the blocking theme asset applies preferences without loading the editor", 
     dataset: {},
     style: {},
   };
-  vm.runInNewContext(output, {
-    window: {
-      document: { documentElement: root },
-      localStorage: { getItem: (key) => (key === "nteract.pages.theme" ? "dark" : null) },
+  const fetches = [];
+  const listen = () => {};
+  const window = {
+    document: { documentElement: root, addEventListener: listen },
+    addEventListener: listen,
+    localStorage: { getItem: (key) => (key === "nteract.pages.theme" ? "dark" : null) },
+    location: { href: "https://pages.example/" },
+    fetch: (url, init) => {
+      fetches.push([url, Object.keys(init)]);
+      return new Promise(() => {});
     },
-  });
+  };
+  vm.runInNewContext(output, { window, URL, AbortController, performance });
+  // The viewer's first session refresh takes this request (early-session.mjs).
+  assert.deepEqual(fetches, [["/api/auth/session", ["signal"]]]);
+  assert.ok(window.__pagesEarlySession);
   assert.equal(root.dataset.theme, "dark");
   assert.equal(root.dataset.colorTheme, undefined);
   assert.equal(root.style.colorScheme, "dark");
