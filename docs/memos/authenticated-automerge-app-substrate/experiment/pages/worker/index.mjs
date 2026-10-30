@@ -25,6 +25,7 @@ import { handleMcp } from "../mcp.mjs";
 import { agentGuideResponse } from "../agent-guide.mjs";
 import { connectAgentResponse } from "../connect-agent.mjs";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
+import { sessionStoreReady } from "./isolate-setup.mjs";
 import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
@@ -542,6 +543,13 @@ const gateway = {
       if (url.pathname === "/llms.txt") return agentGuideResponse(request, env);
       if (url.pathname === "/health")
         return json({ ok: true, prototype: "pages-celld-native", ...buildAdvertisement() });
+      try {
+        await sessionStoreReady(request, env);
+      } catch (error) {
+        if (!ADMISSION_ROUTES.includes(url.pathname)) throw error;
+        if ((error.status ?? 500) >= 500) logFailure(error, "gateway");
+        return admissionErrorResponse(error, { stage: "gateway" });
+      }
       const oauth = await handleOAuth(request, env);
       if (oauth) return oauth;
       if (url.pathname === "/api/auth/login" && request.method === "GET")

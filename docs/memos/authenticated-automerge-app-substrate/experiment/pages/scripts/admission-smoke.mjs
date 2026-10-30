@@ -240,6 +240,33 @@ try {
   );
   report.completed.push("Open session survives celld restart; pending edit reaches Saved");
 
+  // A fresh isolate sets up its D1 session schema once, and the first requests
+  // after a restart arrive together. Each must answer on its own.
+  const { heads } = recovered.body;
+  await restartCelld();
+  report.firstRequests = await owner.evaluate(
+    ({ pageId, heads, capable }) => {
+      const status = (path, init = {}) =>
+        fetch(path, { ...init, signal: AbortSignal.timeout(15000) }).then(
+          (response) => response.status,
+          (error) => error.name,
+        );
+      return Promise.all([
+        status("/api/auth/session"),
+        status(`/api/saved?page=${pageId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...capable },
+          body: JSON.stringify({ heads }),
+        }),
+        status(`/api/connect?page=${pageId}`, { headers: capable }),
+      ]);
+    },
+    { pageId, heads, capable },
+  );
+  assert.deepEqual(report.firstRequests, [200, 200, 200]);
+  await expect(saved(owner)).toBeVisible({ timeout: 30000 });
+  report.completed.push("Concurrent first requests after a restart each answer");
+
   // Revocation while connected closes with access_changed, then the recheck
   // reports page_access_denied and the viewer stops reconnecting.
   await setRole(memberPrincipal, "editor");

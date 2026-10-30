@@ -587,6 +587,18 @@ within 60 seconds; a slower one returns a retryable `504 request_timeout` while
 the host finishes the work it accepted. Both responses tell the caller to retry
 with the same `idempotency_key` and `retry_token`.
 
+The gateway sets up each D1 schema (server sessions, MCP OAuth) once per isolate,
+and concurrent requests never await that setup. celld 0.6.3 resumes a promise
+continuation under the request whose I/O settled the promise. A request that
+awaits another request's pending setup runs inside it, including the Page fetch
+it forwards, and loses its timers and I/O when the other request responds.
+Without this rule, a tab's concurrent `/api/saved` and `/api/connect` after a
+restart can leave a stuck `/api/connect` holding the Page's serialized HTTP
+queue, and the tab stays at "Saved locally". The request that starts a setup
+awaits it; others wait on their own timers and give up with a retryable `503`
+after 10 seconds. Gateway code that caches a pending promise per isolate uses
+[isolate-setup.mjs](worker/isolate-setup.mjs) for the same reason.
+
 The storage backend keeps one representation per record key, but a fragment's
 bundle orders concurrent changes in each peer's application order. Stored
 history is never re-encoded. An API edit reserves and stores only the records
