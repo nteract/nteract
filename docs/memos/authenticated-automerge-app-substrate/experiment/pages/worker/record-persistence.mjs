@@ -146,6 +146,9 @@ export class PageRecords {
   }
   async run(request) {
     try {
+      // The Page stopped waiting for this request before its turn came. It
+      // has kept the batch pending, so a late write would only reorder it.
+      if (request.signal?.aborted) return new Response(null, { status: 503 });
       const url = new URL(request.url);
       if (url.pathname === "/lease" && request.method === "POST") {
         // A newly restored Page fences any late persistence request from its
@@ -228,18 +231,27 @@ export class RemoteRecordSink {
     this.timeoutMs = timeoutMs;
   }
   /** Every PageRecords request settles: an unanswered one rejects after
-   * `timeoutMs`, and the caller keeps its pending records for the next flush.
-   * An abandoned batch may still run later. Batches are immutable and a Page
-   * sends them in order, so a late one only rewrites the same record bytes or
-   * retains a record a later compaction removed.
+   * `timeoutMs` and aborts its request, and the caller keeps its pending
+   * records for the next flush. PageRecords skips an aborted request that is
+   * still queued. One already writing finishes; batches are immutable, so it
+   * only rewrites the same record bytes or retains a record a later
+   * compaction removed.
    */
-  async request(request, read) {
+  async request(url, init, read) {
+    const abort = new AbortController();
     let timer;
     const deadline = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(recordPersistenceTimeout()), this.timeoutMs);
+      timer = setTimeout(() => {
+        reject(recordPersistenceTimeout());
+        abort.abort();
+      }, this.timeoutMs);
     });
     try {
-      return await Promise.race([(async () => read(await this.stub.fetch(request)))(), deadline]);
+      return await Promise.race([
+        (async () =>
+          read(await this.stub.fetch(new Request(url, { ...init, signal: abort.signal }))))(),
+        deadline,
+      ]);
     } finally {
       clearTimeout(timer);
     }
@@ -248,9 +260,8 @@ export class RemoteRecordSink {
     // One lease per sink incarnation. A superseded writer must never silently
     // reacquire ownership while retrying its stale queued batches.
     return (this.lease ??= this.request(
-      new Request("https://records.internal/lease", {
-        method: "POST",
-      }),
+      "https://records.internal/lease",
+      { method: "POST" },
       async (response) => {
         if (!response.ok) throw Error("Could not establish record owner");
         const generation = await response.text();
@@ -266,9 +277,8 @@ export class RemoteRecordSink {
       const url = new URL("https://records.internal/records");
       if (after !== undefined) url.searchParams.set("after", after);
       const { entries, cursor } = await this.request(
-        new Request(url, {
-          headers: { "x-pages-record-generation": generation },
-        }),
+        url,
+        { headers: { "x-pages-record-generation": generation } },
         async (response) => {
           if (!response.ok) throw Error("Could not load persisted records");
           return {
@@ -287,14 +297,15 @@ export class RemoteRecordSink {
   async commit(entries) {
     const generation = await this.generation();
     await this.request(
-      new Request("https://records.internal/records", {
+      "https://records.internal/records",
+      {
         method: "POST",
         body: encodeRecordBatch(entries),
         headers: {
           "content-type": "application/octet-stream",
           "x-pages-record-generation": generation,
         },
-      }),
+      },
       (response) => {
         if (!response.ok) throw Error("Could not persist records");
       },

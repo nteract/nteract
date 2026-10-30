@@ -284,9 +284,9 @@ test(
     const sink = new RemoteRecordSink(
       {
         fetch(request) {
-          // The batch is lost on the way: the owner never answers it.
+          // The batch waits behind a stalled owner and is not answered in time.
           if (hold && request.method === "POST" && new URL(request.url).pathname === "/records")
-            return new Promise((resolve) => unanswered.push(resolve));
+            return new Promise((resolve) => unanswered.push({ request, resolve }));
           return owner.fetch(request);
         },
       },
@@ -299,7 +299,13 @@ test(
     await assert.rejects(live.flush(), { status: 503, code: "record_persistence_timeout" });
     assert.ok(Date.now() - started < 2000, "the flush settles at the request deadline");
     assert.equal(unanswered.length, 1);
+    assert.equal(unanswered[0].request.signal.aborted, true, "the abandoned request is aborted");
     assert.equal(live.dirty, true, "the unconfirmed batch stays pending");
+    // When the owner reaches the abandoned request, it skips the write.
+    const late = await owner.fetch(unanswered[0].request);
+    assert.equal(late.status, 503);
+    unanswered[0].resolve(late);
+    assert.equal(storage.puts, 0);
     // A later flush queues behind nothing and persists the retained records.
     hold = false;
     await live.save("tree/second", bytes("two"));
@@ -310,7 +316,5 @@ test(
     );
     assert.deepEqual(await reopened.load("tree/first"), bytes("one"));
     assert.deepEqual(await reopened.load("tree/second"), bytes("two"));
-    // The abandoned request settling late changes nothing.
-    unanswered[0](new Response(null, { status: 204 }));
   },
 );
