@@ -32,11 +32,15 @@
  * lifecycle revision (`known`). Projections copy the Page's placement,
  * including the `placement_epoch` a restore to the top level advances.
  *
- * `retarget` and `replayOnly` live in memory for one Catalog request:
- * `retarget` says the Page has never seen this key, so a superseded first
- * answer may be retried once at the Page's current revision. `replayOnly`
- * says a resumed request lost its slot with no room to take another, so the
- * Page may only replay what it already did.
+ * A forwarded intent's `retarget` and `replayOnly` live in memory for one
+ * Catalog request. `retarget` says the Page had never seen this key when it
+ * was forwarded, so a superseded first answer may be retried once at the
+ * Page's current revision. Every reserved intent qualifies, including one a
+ * restarted Catalog resumes: the forwarded mark is durable before the Page
+ * sees the request. A forwarded intent never retargets after a restart, since
+ * the Page may have applied it and evicted the receipt. `replayOnly` says a
+ * resumed request lost its slot with no room to take another, so the Page may
+ * only replay what it already did.
  *
  * Effects, which the Catalog runs in order: `persist` writes the intent row,
  * together with a new slot when `slot` is true, in one put; `reserve_slot`
@@ -83,7 +87,6 @@ function pending(state, extra) {
     (state.slot === "reconciling") === (state.check !== undefined),
     "check names why a reconciling slot is read, and only then",
   );
-  check(typeof state.retarget === "boolean", "retarget must be a boolean");
 }
 
 function terminal(state) {
@@ -154,12 +157,13 @@ export const operationIntentSpec = Object.freeze({
     states: {
       absent: (state) => only(state, ["name"]),
       reserved(state) {
-        pending(state, ["retarget"]);
+        pending(state, []);
         check(state.check !== "count", "capacity counting never reads a reserved slot");
         check(state.check === undefined || state.check === "settle", "check must be settle");
       },
       forwarded(state) {
         pending(state, ["retarget", "replayOnly"]);
+        check(typeof state.retarget === "boolean", "retarget must be a boolean");
         check(typeof state.replayOnly === "boolean", "replayOnly must be a boolean");
         check(
           state.check === undefined || ["count", "settle"].includes(state.check),
@@ -349,7 +353,6 @@ function reserve(state, event) {
       pageId,
       expectedRevision: revision,
       slot,
-      retarget: true,
     },
     effects: [
       {
@@ -388,7 +391,9 @@ function proceed(state, event) {
     name: "forwarded",
     ...pendingFields(state),
     slot,
-    retarget: state.retarget && !replayOnly,
+    // The forwarded mark lands before the Page sees the request, so a
+    // reserved intent's key is new to the Page.
+    retarget: state.name === "reserved" && !replayOnly,
     replayOnly,
   };
   effects.push(forward(next));

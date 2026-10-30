@@ -24,10 +24,8 @@ const serverKey = "f".repeat(64);
 const CREATED = "2026-10-01T00:00:00.000Z";
 const KEY = "sweep-key-0001";
 const LIMIT = 100;
-// Current behavior, fixed in a later commit: a cut before a new request's
-// forwarded mark loses its retarget.
-const UNREPAIRED = { count: [], settle: [] };
-const RETARGET_LOST = [1, 2, 3, 4, 5, 6];
+// The cuts after the forwarded mark and before the retarget's write.
+const RETARGET_LOST = [2, 3, 4, 5, 6];
 let swept = 0;
 const SWEPT = 63;
 // Counting keeps a fenced reservation and counts it.
@@ -509,7 +507,7 @@ test("capacity counting settles an applied restore from every cut", async (t) =>
       assert.equal(storage[`trash/${pageId}`], undefined);
     },
   });
-  assert.deepEqual(result.unrepaired, UNREPAIRED.count, result.differences);
+  assert.deepEqual(result.unrepaired, [], result.differences);
 });
 
 test("a placement check settles an applied restore from every cut", async (t) => {
@@ -522,7 +520,7 @@ test("a placement check settles an applied restore from every cut", async (t) =>
       assert.equal(storage[`trash/${pageId}`], undefined);
     },
   });
-  assert.deepEqual(result.unrepaired, UNREPAIRED.settle, result.differences);
+  assert.deepEqual(result.unrepaired, [], result.differences);
 });
 
 test("the sweeps cut every Catalog write in every scenario", () => {

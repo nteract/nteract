@@ -71,8 +71,8 @@ export function lifecycleSlot(operation, pageId, intentKey, now = Date.now(), pl
     : {};
 }
 /** The operation-intent state stored under `intentKey` for a request that
- * moves `pageId` by `operation`, with the slot it holds. Fields that live in
- * memory for one request start false. */
+ * moves `pageId` by `operation`, with the slot it holds. A forwarded intent's
+ * fields that live in memory for one request start false. */
 export async function intentState(storage, intentKey, operation, pageId) {
   const row = await storage.get(intentKey);
   if (!row) return { name: "absent" };
@@ -99,8 +99,7 @@ export async function intentState(storage, intentKey, operation, pageId) {
     pageId,
     ...(row.expectedRevision !== undefined && { expectedRevision: row.expectedRevision }),
     slot,
-    retarget: false,
-    ...(row.forwarded && { replayOnly: false }),
+    ...(row.forwarded && { retarget: false, replayOnly: false }),
   };
 }
 /** The newest lifecycle revision among this Page's own entries. A

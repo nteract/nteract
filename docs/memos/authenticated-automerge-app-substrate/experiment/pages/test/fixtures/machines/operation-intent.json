@@ -176,8 +176,7 @@
           "operation": "delete_page",
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 0,
-          "slot": "live",
-          "retarget": true
+          "slot": "live"
         },
         "effects": [
           {
@@ -208,8 +207,7 @@
           "operation": "restore_page",
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 2,
-          "slot": "entry",
-          "retarget": true
+          "slot": "entry"
         },
         "effects": [
           {
@@ -239,8 +237,7 @@
           "operation": "delete_page",
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 0,
-          "slot": "lapsed",
-          "retarget": true
+          "slot": "lapsed"
         },
         "effects": [
           {
@@ -325,8 +322,7 @@
           "operation": "purge_page",
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 1,
-          "slot": "none",
-          "retarget": true
+          "slot": "none"
         },
         "effects": [
           {
@@ -415,8 +411,7 @@
         "operation": "delete_page",
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 0,
-        "slot": "live",
-        "retarget": true
+        "slot": "live"
       },
       "event": {
         "type": "request",
@@ -445,15 +440,14 @@
       }
     },
     {
-      "label": "a resumed reserved request still holding its slot is forwarded",
+      "label": "a reserved request resumed after a restart is forwarded and may still retarget",
       "case": "held",
       "state": {
         "name": "reserved",
         "operation": "restore_page",
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 1,
-        "slot": "live",
-        "retarget": false
+        "slot": "live"
       },
       "event": {
         "type": "request",
@@ -466,7 +460,7 @@
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 1,
           "slot": "live",
-          "retarget": false,
+          "retarget": true,
           "replayOnly": false
         },
         "effects": [
@@ -489,8 +483,7 @@
         "operation": "purge_page",
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 1,
-        "slot": "none",
-        "retarget": false
+        "slot": "none"
       },
       "event": {
         "type": "request",
@@ -503,7 +496,7 @@
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 1,
           "slot": "none",
-          "retarget": false,
+          "retarget": true,
           "replayOnly": false
         },
         "effects": [
@@ -526,8 +519,7 @@
         "operation": "restore_page",
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 1,
-        "slot": "lapsed",
-        "retarget": false
+        "slot": "lapsed"
       },
       "event": {
         "type": "request",
@@ -541,7 +533,7 @@
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 1,
           "slot": "live",
-          "retarget": false,
+          "retarget": true,
           "replayOnly": false
         },
         "effects": [
@@ -560,15 +552,14 @@
       }
     },
     {
-      "label": "a new Trash request whose slot was taken passes the leaf guard and takes the slot",
+      "label": "a reserved Trash request without its slot passes the leaf guard and takes the slot",
       "case": "lost-room",
       "state": {
         "name": "reserved",
         "operation": "delete_page",
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 0,
-        "slot": "lapsed",
-        "retarget": true
+        "slot": "lapsed"
       },
       "event": {
         "type": "request",
@@ -609,8 +600,7 @@
         "operation": "delete_page",
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 0,
-        "slot": "lapsed",
-        "retarget": false
+        "slot": "lapsed"
       },
       "event": {
         "type": "request",
@@ -648,8 +638,7 @@
         "operation": "delete_page",
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 0,
-        "slot": "lapsed",
-        "retarget": false
+        "slot": "lapsed"
       },
       "event": {
         "type": "request",
@@ -693,8 +682,7 @@
         "operation": "delete_page",
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 0,
-        "slot": "live",
-        "retarget": false
+        "slot": "live"
       },
       "event": {
         "type": "tombstone"
@@ -705,8 +693,7 @@
           "operation": "delete_page",
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 0,
-          "slot": "lapsed",
-          "retarget": false
+          "slot": "lapsed"
         },
         "effects": [
           {
@@ -725,8 +712,7 @@
         "operation": "restore_page",
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 1,
-        "slot": "live",
-        "retarget": false
+        "slot": "live"
       },
       "event": {
         "type": "tombstone"
@@ -737,8 +723,7 @@
           "operation": "restore_page",
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 1,
-          "slot": "live",
-          "retarget": false
+          "slot": "live"
         },
         "effects": [
           {
@@ -758,8 +743,7 @@
         "operation": "restore_page",
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 1,
-        "slot": "live",
-        "retarget": false
+        "slot": "live"
       },
       "event": {
         "type": "count",
@@ -771,8 +755,7 @@
           "operation": "restore_page",
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 1,
-          "slot": "live",
-          "retarget": false
+          "slot": "live"
         },
         "effects": [],
         "response": {
@@ -788,8 +771,7 @@
         "operation": "restore_page",
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 1,
-        "slot": "live",
-        "retarget": false
+        "slot": "live"
       },
       "event": {
         "type": "count",
@@ -801,8 +783,7 @@
           "operation": "restore_page",
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 1,
-          "slot": "lapsed",
-          "retarget": false
+          "slot": "lapsed"
         },
         "effects": [
           {
@@ -821,8 +802,7 @@
         "operation": "restore_page",
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 1,
-        "slot": "live",
-        "retarget": false
+        "slot": "live"
       },
       "event": {
         "type": "settle"
@@ -834,7 +814,6 @@
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 1,
           "slot": "reconciling",
-          "retarget": false,
           "check": "settle"
         },
         "effects": [
@@ -853,7 +832,6 @@
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 1,
         "slot": "reconciling",
-        "retarget": false,
         "check": "settle"
       },
       "event": {
@@ -868,8 +846,7 @@
           "operation": "restore_page",
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 1,
-          "slot": "lapsed",
-          "retarget": false
+          "slot": "lapsed"
         },
         "effects": [
           {
@@ -890,7 +867,6 @@
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 1,
         "slot": "reconciling",
-        "retarget": false,
         "check": "settle"
       },
       "event": {
@@ -913,8 +889,7 @@
           "operation": "restore_page",
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 1,
-          "slot": "entry",
-          "retarget": false
+          "slot": "entry"
         },
         "effects": [
           {
@@ -942,7 +917,6 @@
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 1,
         "slot": "reconciling",
-        "retarget": false,
         "check": "settle"
       },
       "event": {
@@ -964,8 +938,7 @@
           "operation": "restore_page",
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 1,
-          "slot": "lapsed",
-          "retarget": false
+          "slot": "lapsed"
         },
         "effects": [
           {
@@ -992,7 +965,6 @@
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 1,
         "slot": "reconciling",
-        "retarget": false,
         "check": "settle"
       },
       "event": {
@@ -1014,8 +986,7 @@
           "operation": "restore_page",
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 1,
-          "slot": "live",
-          "retarget": false
+          "slot": "live"
         },
         "effects": []
       }
@@ -1029,7 +1000,6 @@
         "pageId": "33333333-3333-4333-8333-333333333333",
         "expectedRevision": 1,
         "slot": "reconciling",
-        "retarget": false,
         "check": "settle"
       },
       "event": {
@@ -1042,8 +1012,7 @@
           "operation": "restore_page",
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 1,
-          "slot": "live",
-          "retarget": false
+          "slot": "live"
         },
         "effects": [],
         "response": {

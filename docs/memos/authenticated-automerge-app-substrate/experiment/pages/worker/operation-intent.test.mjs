@@ -100,8 +100,7 @@ function persisted(values, operation) {
     pageId: row.pageId,
     ...(row.expectedRevision !== undefined && { expectedRevision: row.expectedRevision }),
     slot,
-    retarget: false,
-    ...(row.forwarded && { replayOnly: false }),
+    ...(row.forwarded && { retarget: false, replayOnly: false }),
   };
 }
 
@@ -139,10 +138,14 @@ class Drive {
     // Lifecycle reads reconcile on behalf of capacity counting or a
     // placement check; the row's state says which.
     this.reader = event.type === "lifecycle" ? state.check : this.mode;
+    // A forwarded row whose request may still retarget starts as a new
+    // request, which is the only way to reach that in-memory state.
     this.fresh =
       ["request", "tombstone"].includes(event.type) && state.name === "absent"
         ? event.type === "request"
-        : state.retarget === true;
+        : state.name === "forwarded" && state.retarget === true;
+    // Neither the Page nor this Catalog had forwarded the request yet.
+    this.unforwarded = this.fresh || state.name === "reserved";
     this.mutations = 0;
     this.effects = [];
     this.writes = [];
@@ -151,7 +154,7 @@ class Drive {
     this.forwards = 0;
     this.replayOnly = false;
     this.inProject = false;
-    this.recording = !(this.mode === "reply" || this.mode === "lifecycle" || this.continuesFresh);
+    this.recording = !(this.mode === "reply" || this.mode === "lifecycle");
     this.storage = new CrashStorage((mutation) => this.mutate(mutation));
     this.catalog = new Catalog(
       { id: { name: owner }, storage: this.storage },
@@ -160,12 +163,6 @@ class Drive {
         PAGES: { getByName: () => ({ fetch: (request) => this.respond(request) }) },
       },
     );
-  }
-
-  /** A row whose state is a request this run reserved starts after that
-   * reservation. */
-  get continuesFresh() {
-    return this.state.name !== "absent" && this.fresh && this.mode === "request";
   }
 
   get slotKey() {
@@ -273,10 +270,8 @@ class Drive {
     if (effect) this.record(effect, index);
     if (effect?.type === "persist") this.hadIntent = true;
     // A fresh request's reservation is the boundary of absent × request.
-    if (effect?.type === "persist" && effect.state === "reserved") {
-      if (this.state.name === "absent") this.stopAtNext = true;
-      else if (this.continuesFresh) this.recording = true;
-    }
+    if (effect?.type === "persist" && effect.state === "reserved" && this.state.name === "absent")
+      this.stopAtNext = true;
   }
 
   /** A projection's writes are one `project` effect. When it ends, the
@@ -488,8 +483,10 @@ class Drive {
     if (state.name === "absent" && this.hadIntent)
       return this.wrap({ name: "released", operation: this.operation }, response);
     if (["reserved", "forwarded"].includes(state.name)) {
-      state.retarget = this.fresh && !this.replayOnly && this.forwards <= 1;
-      if (state.name === "forwarded") state.replayOnly = this.replayOnly;
+      if (state.name === "forwarded") {
+        state.retarget = this.unforwarded && !this.replayOnly && this.forwards <= 1;
+        state.replayOnly = this.replayOnly;
+      }
       if (this.readPaused) {
         state.slot = "reconciling";
         state.check = this.reader;
