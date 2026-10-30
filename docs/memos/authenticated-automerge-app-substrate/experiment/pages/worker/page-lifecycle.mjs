@@ -341,10 +341,13 @@ const RESTORE_COMMIT = [
   effectOf("end"),
 ];
 /** Permanent deletion barriers. A purge commits its receipt with the record;
- * a retry after restart rewrites only the record. */
+ * a retry after restart rewrites only the record. The deleted record is
+ * durable before document storage goes, so a lost write never leaves a
+ * trashed record without its document. */
 const deletionBarriers = (receipt) => [
   effectOf("restrictIndex"),
   put(receipt, true),
+  effectOf("sync"),
   effectOf("closePolicy"),
   effectOf("deleteDocument"),
   effectOf("flush"),

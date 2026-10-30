@@ -122,14 +122,10 @@ function judge(run, reference, row, tally) {
 /** Inconsistencies the cuts find in the current host:
  * - leftover-intent boot: a creation intent beside the record is installed
  *   again, so the revision falls back.
- * - purge (trashed × purgeConfirm, purging × commitOk): the document is
- *   deleted before the record's sync.
  * - trashed × tombstone: the next tombstone does not repeat a failed write. */
 const CUT_INCONSISTENCIES = [
   "active × boot [leftover-intent] uncut: the lifecycle revision fell back",
   "active × boot [leftover-intent]: the lifecycle revision fell back",
-  "purging × commitOk: a trashed record without its document",
-  "trashed × purgeConfirm [preview-valid]: a trashed record without its document",
   "trashed × tombstone: replay differs at index access",
   "trashed × tombstone: replay differs at index page",
   "trashed × tombstone: reported success lost: told deleted, booted trashed",
@@ -169,6 +165,6 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
   assert.deepEqual([...found].sort(), CUT_INCONSISTENCIES);
   assert.deepEqual(
     { cuts, runs, ...tally },
-    { cuts: 142, runs: 528, tail: 44, prune: 20, index: 18 },
+    { cuts: 150, runs: 560, tail: 44, prune: 20, index: 18 },
   );
 });

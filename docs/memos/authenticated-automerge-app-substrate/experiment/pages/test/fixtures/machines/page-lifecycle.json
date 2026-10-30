@@ -1588,7 +1588,6 @@
     },
     {
       "label": "trashed × purgeConfirm deletes the document",
-      "note": "Current behavior: the document is deleted before the purge record's barrier (sync). The crash points record what a lost write leaves behind.",
       "case": "preview-valid",
       "state": {
         "name": "trashed",
@@ -1623,6 +1622,9 @@
             "type": "putRecord",
             "receipt": true,
             "record": true
+          },
+          {
+            "type": "sync"
           },
           {
             "type": "closePolicy"
@@ -2149,6 +2151,9 @@
             "record": true
           },
           {
+            "type": "sync"
+          },
+          {
             "type": "closePolicy"
           },
           {
@@ -2304,6 +2309,9 @@
             "record": true
           },
           {
+            "type": "sync"
+          },
+          {
             "type": "closePolicy"
           },
           {
@@ -2370,6 +2378,9 @@
             "type": "putRecord",
             "receipt": false,
             "record": true
+          },
+          {
+            "type": "sync"
           },
           {
             "type": "closePolicy"

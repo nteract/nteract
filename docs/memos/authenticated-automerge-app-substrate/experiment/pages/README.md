@@ -782,8 +782,8 @@ synchronous step that tombstones the Page. While trashed, the policy refuses
 native writes from every key, so only a change accepted before Trash and applied
 late could differ. `action:"confirm"` with the unchanged token then runs the
 permanent deletion path:
-it tombstones the record, closes admission, deletes the document, and writes the
-catalog deletion tombstone. Private image bytes stay in object storage but are
+it tombstones the record and waits for it to be durable, then closes admission,
+deletes the document, and writes the catalog deletion tombstone. Private image bytes stay in object storage but are
 no longer served.
 
 Trash has no automatic expiry. Pages stay there until the owner restores or
