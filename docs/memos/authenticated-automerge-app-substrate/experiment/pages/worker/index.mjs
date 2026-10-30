@@ -221,6 +221,17 @@ const lifecycleFingerprint = {
   purge_page: "purge_page",
 };
 const noop = async () => {};
+/** Complete the upgrade and close at once with the refusal's admission code.
+ * A browser reads a refused HTTP upgrade only as close 1006, which its
+ * reconnect treats as transient; the close code lets it count the refusal. */
+function refuseSocket(error, identity) {
+  logAdmissionDenied(error, { stage: "page", identity });
+  const pair = new WebSocketPair();
+  const socket = pair[1];
+  socket.accept();
+  socket.close(admissionCloseCode(error), admissionCode(error));
+  return new Response(null, { status: 101, webSocket: pair[0] });
+}
 /** Budgets for reading Page lifecycles while the Catalog queue waits. */
 export const lifecycleBounds = { readMs: 2000, passMs: 5000, concurrency: 4 };
 const lifecycleUnsettled = () =>
@@ -3333,6 +3344,22 @@ export class Page {
     });
   }
 
+  /** The Page, account and member socket quotas. Returns the refusal for a
+   * connection over one, or undefined. */
+  connectionCapacity(identity) {
+    const full = (message) =>
+      withAdmissionReason(new HttpError(429, message), "connection_capacity");
+    if (this.wires.size >= 24) return full("Too many connected peers");
+    const principals = [...this.wirePrincipals.values()];
+    if (principals.filter((principal) => principal === identity.principal).length >= 4)
+      return full("Too many connections for this account");
+    if (
+      identity.principal !== this.metadata.owner &&
+      principals.filter((principal) => principal !== this.metadata.owner).length >= 20
+    )
+      return full("Member connection capacity reached");
+  }
+
   connect(request, identity) {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket")
       throw new HttpError(426, "WebSocket upgrade required");
@@ -3352,15 +3379,8 @@ export class Page {
           "activity_epoch_changed",
         );
     }
-    if (this.wires.size >= 24) throw new HttpError(429, "Too many connected peers");
-    const principals = [...this.wirePrincipals.values()];
-    if (principals.filter((principal) => principal === identity.principal).length >= 4)
-      throw new HttpError(429, "Too many connections for this account");
-    if (
-      identity.principal !== this.metadata.owner &&
-      principals.filter((principal) => principal !== this.metadata.owner).length >= 20
-    )
-      throw new HttpError(429, "Member connection capacity reached");
+    const capacity = this.connectionCapacity(identity);
+    if (capacity) return refuseSocket(capacity, identity);
     const pair = new WebSocketPair();
     const client = pair[0],
       socket = pair[1];

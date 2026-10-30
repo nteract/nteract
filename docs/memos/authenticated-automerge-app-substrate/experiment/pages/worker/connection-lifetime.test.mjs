@@ -193,6 +193,35 @@ function fixture(
   };
 }
 
+/** A connection over a socket quota completes the upgrade, closes with the
+ * transient admission code, reserves nothing, and logs one denial. */
+function assertCapacityRefused(f, open) {
+  const wires = f.page.wires.size,
+    backgrounds = f.backgrounds.length,
+    logs = f.admissionLogs.length;
+  const { socket } = open();
+  assert.deepEqual(socket.closed, { code: 4503, reason: "temporarily_unavailable" });
+  assert.equal(f.page.wires.size, wires);
+  assert.equal(f.page.wirePrincipals.size, wires);
+  assert.equal(f.backgrounds.length, backgrounds, "a refused socket starts no admission");
+  assert.deepEqual(
+    f.admissionLogs.slice(logs).map(({ stage, reason, code, status }) => ({
+      stage,
+      reason,
+      code,
+      status,
+    })),
+    [
+      {
+        stage: "page",
+        reason: "connection_capacity",
+        code: "temporarily_unavailable",
+        status: 429,
+      },
+    ],
+  );
+}
+
 test("native admission rejects a discovery epoch from an earlier host before allocating a socket", async (t) => {
   const f = fixture(t);
   await drain();
@@ -434,10 +463,7 @@ test("pending native handshakes count toward each authenticated account's connec
   const f = fixture(t, "handshake-timeout");
   const member = [];
   for (let i = 0; i < 4; i++) member.push(f.open("user:viewer"));
-  assert.throws(() => f.open("user:viewer"), {
-    status: 429,
-    message: "Too many connections for this account",
-  });
+  assertCapacityRefused(f, () => f.open("user:viewer"));
   f.open("user:other");
   assert.equal(f.page.wires.size, 6);
   member[0].socket.close();
@@ -453,13 +479,10 @@ test("twenty member wires preserve four owner connections under the global cap",
   const f = fixture(t, "handshake-timeout");
   for (let principal = 0; principal < 5; principal++)
     for (let i = 0; i < 4; i++) f.open(`user:member-${principal}`);
-  assert.throws(() => f.open("user:sixth-member"), {
-    status: 429,
-    message: "Member connection capacity reached",
-  });
+  assertCapacityRefused(f, () => f.open("user:sixth-member"));
   for (let i = 0; i < 3; i++) f.open("user:owner");
   assert.equal(f.page.wires.size, 24);
-  assert.throws(() => f.open("user:another"), { status: 429, message: "Too many connected peers" });
+  assertCapacityRefused(f, () => f.open("user:another"));
   t.mock.timers.tick(10_000);
   await Promise.all(f.backgrounds);
   assert.equal(f.page.wires.size, 0);
