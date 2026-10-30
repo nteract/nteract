@@ -6,19 +6,23 @@ import { fixtureImageFetch } from "./local-mcp-images.mjs";
 export { Page, Catalog, PageRecords, Space } from "../../worker/index.mjs";
 
 const origin = PAGES_E2E_ORIGIN;
-const images = fixtureImageFetch(
-  fixtureFetch(origin, PAGES_E2E_RESPONSES, globalThis.fetch.bind(globalThis)),
-);
-globalThis.fetch = images.fetch;
+// Identifies this isolate in the image source's report. Nothing depends on it.
+const isolate = crypto.randomUUID();
+const realFetch = globalThis.fetch.bind(globalThis);
+globalThis.fetch = fixtureImageFetch(fixtureFetch(origin, PAGES_E2E_RESPONSES, realFetch), {
+  source: PAGES_E2E_IMAGE_SOURCE,
+  identity: PAGES_E2E_FIXTURE_ID,
+  isolate,
+  realFetch,
+});
 export default {
   fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.origin !== origin || env.PAGES_E2E_ONLY !== "true")
       return new Response("Local test fixture only", { status: 403 });
     if (url.pathname === "/__e2e/image-source") {
-      if (request.method === "POST") images.state.expired = true;
-      else if (request.method !== "GET") return new Response(null, { status: 405 });
-      return Response.json(images.state);
+      if (request.method !== "GET") return new Response(null, { status: 405 });
+      return Response.json({ fixture: PAGES_E2E_FIXTURE_ID, isolate });
     }
     return worker.fetch(request, env, ctx);
   },
