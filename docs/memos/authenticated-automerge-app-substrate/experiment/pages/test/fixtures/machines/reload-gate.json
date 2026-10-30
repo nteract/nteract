@@ -27,7 +27,8 @@
       "checkpointed",
       "accept-checkpoints",
       "discard",
-      "receipt-acknowledges"
+      "receipt-acknowledges",
+      "deleted-releasing"
     ],
     "idle/sessionPhase": [
       "held-new",
@@ -60,7 +61,8 @@
       "held-new",
       "left-mid-wait",
       "direct-close",
-      "direct-close-failed"
+      "direct-close-failed",
+      "deleted-released"
     ],
     "waiting/timeout": ["live-waiting", "closing-still", "none-waiting"]
   },
@@ -574,6 +576,53 @@
           "drafts": false
         },
         "effects": [{ "type": "pauseEdits", "ids": ["a"] }, { "type": "reload" }]
+      }
+    },
+    {
+      "label": "idle × reload waits for a deleted Page's backend release",
+      "note": "a deleted Page has nothing to keep, but its forget and release must finish first",
+      "case": "deleted-releasing",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "closing",
+            "alive": false,
+            "pending": false,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": { "type": "reload", "acceptCheckpoints": false, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "closing",
+              "alive": false,
+              "pending": false,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": false,
+            "navigated": false,
+            "live": [],
+            "closing": ["a"]
+          }
+        },
+        "effects": []
       }
     },
     {
@@ -2155,6 +2204,37 @@
           }
         },
         "effects": []
+      }
+    },
+    {
+      "case": "deleted-released",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "closing",
+            "alive": false,
+            "pending": false,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": { "acceptCheckpoints": false, "navigated": false, "live": [], "closing": ["a"] }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "deleted",
+        "savedHeads": []
+      },
+      "expect": {
+        "state": { "name": "reloading", "sessions": [], "records": [], "drafts": false },
+        "effects": [{ "type": "reload" }]
       }
     },
     {

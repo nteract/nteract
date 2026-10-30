@@ -362,7 +362,7 @@ async function drive(state, event) {
 }
 
 const table = loadTable(TABLE);
-const COUNTS = { rows: 76, pairs: 38, unreachable: 32, cases: 58 };
+const COUNTS = { rows: 78, pairs: 38, unreachable: 32, cases: 61 };
 
 test("the viewer-session table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(viewerSessionMachine, table), COUNTS);

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { VirtualTimeScheduler } from "rxjs";
+import "fake-indexeddb/auto";
+import { VirtualTimeScheduler, filter, firstValueFrom } from "rxjs";
 import {
   BUILD_CHECK_INTERVAL_MS,
   BuildMonitor,
@@ -620,7 +621,8 @@ test("a failed access reload keeps its live session blocking Reload", async () =
 });
 
 /** A real PageSession saving an unacknowledged edit, whose final checkpoint
- * waits for `flush` and `persist`. */
+ * waits for `flush` and `persist`, and whose backend release waits for
+ * `release`. */
 function closingSession() {
   const pageId = crypto.randomUUID();
   const doc = Automerge.change(
@@ -636,12 +638,21 @@ function closingSession() {
   session.localPage = { pending: true };
   session.persistLocal = (_, options) =>
     options?.allowClosed ? persist.promise : Promise.resolve();
-  session.releaseLocal = async () => {};
+  const release = deferred();
+  release.resolve();
+  const released = { ...release };
+  session.releaseLocal = () => released.promise;
   session.disconnectSockets = async () => {};
   session.queueSaved = () => {};
   session.status = "Saving";
   session.dispatch({ type: "opened", denied: false });
-  return { session, flush, persist };
+  /** Hold the backend release until the returned function runs. */
+  const holdRelease = () => {
+    const held = deferred();
+    released.promise = held.promise;
+    return held.resolve;
+  };
+  return { session, flush, persist, holdRelease };
 }
 
 test("a direct close during Reload never reloads before its final checkpoint", async () => {
@@ -689,4 +700,44 @@ test("a direct close whose checkpoint fails keeps its recovery export", async ()
   assert.match(page.markdown, /Garden notes/);
   assert.ok(page.heads.length > 0, "the export names the heads it holds");
   assert.equal(g.reloaded(), 0);
+});
+
+test("Reload waits for a deleted Page to forget its copy and release its backend", async () => {
+  const g = gate();
+  const { session, holdRelease } = closingSession();
+  const finishRelease = holdRelease();
+  g.hold(session);
+  // The open Page is deleted: it forgets its local copy, then closes.
+  const deleting = session.markDeleted();
+  assert.deepEqual(session.phase$.snapshot(), { name: "deleted" });
+  const result = g.reload();
+  await firstValueFrom(session.phase$.state$.pipe(filter((phase) => phase.closing)));
+  await settle();
+  assert.equal(g.reloaded(), 0, "Reload waits for the backend release");
+  assert.equal(g.host.store.snapshot().owned.length, 1, "the host still owns the session");
+  finishRelease();
+  await deleting;
+  assert.deepEqual(await result, { ok: true });
+  assert.equal(g.reloaded(), 1);
+  assert.deepEqual(g.records(), [], "a deleted Page keeps nothing");
+});
+
+test("a failed checkpoint's record waits for the backend release too", async () => {
+  const g = gate();
+  const { session, flush, persist, holdRelease } = closingSession();
+  const finishRelease = holdRelease();
+  g.hold(session);
+  const closed = g.host.close(session);
+  const result = g.reload();
+  flush.resolve();
+  persist.reject(new Error("disk"));
+  await settle();
+  assert.equal(session.phase$.snapshot().name, "closed", "the checkpoint settled");
+  assert.equal(g.reloaded(), 0, "Reload waits for the backend release");
+  finishRelease();
+  await closed;
+  const outcome = await result;
+  assert.equal(outcome.reason, "unsaved");
+  assert.equal(outcome.pages[0].pageId, session.pageId);
+  assert.match(outcome.pages[0].markdown, /Garden notes/);
 });

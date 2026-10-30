@@ -688,6 +688,8 @@ Deliberate differences from the earlier flag-based sessions:
   release settles, like a Page left through the drain, and keeps the same
   record if its edits never reached the server. Closing a held Page cancels a
   waiting Reload.
+- A deleted Page forgets its local copy before it starts closing. It counts as
+  closing, and Reload waits for it, until that close releases its backend.
 - Leaving during access reload waits for archiving and the replacement-open
   attempt.
 - If the replacement fails to open, the archived Page stays installed with

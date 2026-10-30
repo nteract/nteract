@@ -229,7 +229,12 @@ export class ReloadGate {
       }
       this.#report(session);
     }
-    for (const session of this.#tracked.keys()) if (!seen.has(session)) this.#release(session);
+    for (const session of this.#tracked.keys()) {
+      if (seen.has(session)) continue;
+      // A closing session stays followed until its own release settles,
+      // whenever the host lets go of it.
+      if (HELD.has(session.phase$.snapshot().name)) this.#release(session);
+    }
     if (current !== this.#current) {
       this.#current = current;
       this.#dispatch({ type: "navigate" });

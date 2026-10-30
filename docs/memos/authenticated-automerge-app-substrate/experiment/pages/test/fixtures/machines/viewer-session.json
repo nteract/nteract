@@ -127,10 +127,11 @@
     "draining/accessChanged": ["same", "changed", "denied", "deleted"],
     "draining/signIn": ["ok", "failed"],
     "draining/drained": ["saved", "unsaved", "paused"],
-    "checkpointing/accessChanged": ["closing", "archiving"],
+    "checkpointing/accessChanged": ["closing", "archiving", "deleted"],
     "checkpointing/signIn": ["closing", "archiving"],
     "checkpointing/checkpointOk": ["close", "drained", "archive"],
     "checkpointing/checkpointFail": ["error", "deleted", "archive"],
+    "closed/accessChanged": ["late-answer", "deleted"],
     "closed/reloadAccess": ["archived", "not-archived"],
     "deleted/leave": ["release", "already-closing"]
   },
@@ -236,6 +237,8 @@
       }
     },
     {
+      "label": "open × accessChanged deletes while open",
+      "note": "the local copy is forgotten before the close starts, so the session is not released yet",
       "case": "deleted",
       "state": { "name": "open" },
       "event": { "type": "accessChanged", "grant": "deleted" },
@@ -564,6 +567,13 @@
       }
     },
     {
+      "note": "a late 404 forgets the local copy; the release follows the forget",
+      "case": "deleted",
+      "state": { "name": "checkpointing", "drained": false },
+      "event": { "type": "accessChanged", "grant": "deleted" },
+      "expect": { "state": { "name": "deleted" }, "effects": [{ "type": "forget" }] }
+    },
+    {
       "note": "an archiving replica is still live; a failed archive returns to the new pause",
       "case": "archiving",
       "state": { "name": "checkpointing", "drained": false, "archive": true, "reason": "reload" },
@@ -689,12 +699,23 @@
       "expect": { "state": { "name": "paused", "reason": "reload" }, "effects": [] }
     },
     {
+      "case": "late-answer",
       "state": { "name": "closed", "checkpointWritten": true, "drained": true, "saved": false },
       "event": { "type": "accessChanged", "grant": "denied" },
       "expect": {
         "state": { "name": "closed", "checkpointWritten": true, "drained": true, "saved": false },
         "effects": [],
         "rejected": "The session is closed"
+      }
+    },
+    {
+      "note": "a late 404 still forgets the local copy; the release already ran",
+      "case": "deleted",
+      "state": { "name": "closed", "checkpointWritten": true, "drained": true, "saved": false },
+      "event": { "type": "accessChanged", "grant": "deleted" },
+      "expect": {
+        "state": { "name": "deleted", "closing": true },
+        "effects": [{ "type": "forget" }]
       }
     },
     {

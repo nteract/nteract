@@ -25,8 +25,9 @@
  *   this replica accepted. `archived` says an access reload archived it and
  *   its replacement still has to install: Reload current Page stays offered
  *   and retries the open without archiving again.
- * - deleted: the Page is gone. The local copy is forgotten; `closing` says the
- *   backend release has started.
+ * - deleted: the Page is gone. The local copy is forgotten first; `closing`
+ *   says the backend release has started. Nothing treats a deleted session as
+ *   released before then.
  *
  * `drained` and `saved` record how a session was left: through the drain, and
  * whether the host had every edit when the drain ended. The reload gate keeps
@@ -211,10 +212,11 @@ export const viewerSessionSpec = Object.freeze({
     "draining/accessChanged": ["same", "changed", "denied", "deleted"],
     "draining/signIn": ["ok", "failed"],
     "draining/drained": ["saved", "unsaved", "paused"],
-    "checkpointing/accessChanged": ["closing", "archiving"],
+    "checkpointing/accessChanged": ["closing", "archiving", "deleted"],
     "checkpointing/signIn": ["closing", "archiving"],
     "checkpointing/checkpointOk": ["close", "drained", "archive"],
     "checkpointing/checkpointFail": ["error", "deleted", "archive"],
+    "closed/accessChanged": ["late-answer", "deleted"],
     "closed/reloadAccess": ["archived", "not-archived"],
     "deleted/leave": ["release", "already-closing"],
   },

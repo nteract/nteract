@@ -195,6 +195,7 @@ export const reloadGateSpec = Object.freeze({
       "accept-checkpoints",
       "discard",
       "receipt-acknowledges",
+      "deleted-releasing",
     ],
     "idle/sessionPhase": [
       "held-new",
@@ -228,6 +229,7 @@ export const reloadGateSpec = Object.freeze({
       "left-mid-wait",
       "direct-close",
       "direct-close-failed",
+      "deleted-released",
     ],
     "waiting/timeout": ["live-waiting", "closing-still", "none-waiting"],
   },

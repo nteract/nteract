@@ -270,8 +270,16 @@ export class PageSession {
             scheduler: this.scheduler,
           }),
         );
-      case "forget":
-        return this.forgetLocal();
+      case "forget": {
+        const forgetting = this.forgetLocal();
+        // Deleted after its release started: the close also covers the
+        // forget, so nothing treats the Page as gone before its copy is.
+        if (this.phase$.snapshot().closing) {
+          const released = this.closing;
+          this.closing = forgetting.then(() => released);
+        }
+        return forgetting;
+      }
       case "rekey":
         return this.#rekey(context);
     }
@@ -401,10 +409,11 @@ export class PageSession {
   }
   /** The forget effect: drop the local copy of a deleted Page, then close. */
   async forgetLocal() {
+    const releasing = this.phase$.snapshot().closing === true;
     try {
       await forgetLocalPage(this.identity, this.pageId);
     } finally {
-      await this.close();
+      if (!releasing) await this.close();
     }
   }
   async #rekey({ access, key }) {

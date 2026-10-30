@@ -12,7 +12,11 @@ import { filter, take } from "rxjs";
 import { Store } from "./store.mjs";
 
 const keyOf = (session) => `${session.identity?.principal}:${session.pageId}`;
-const terminal = (phase) => phase.name === "closed" || phase.name === "deleted";
+// The release has started: the checkpoint settled, or a deleted Page's local
+// copy is forgotten and its close is under way.
+const releasing = (phase) =>
+  (phase.name === "closed" && !phase.archived) ||
+  (phase.name === "deleted" && phase.closing === true);
 
 export class SessionHost {
   store = new Store({ current: null, owned: [], generation: 0 });
@@ -160,19 +164,18 @@ export class SessionHost {
   }
 
   /** A held session can close on its own: deletion, sign-out, unmount. Drop
-   * it once its backend is released. An access reload drops its own. */
+   * it once its backend is released. A deleted session first forgets its
+   * local copy and only then starts closing, so `deleted` alone is not
+   * released. An access reload drops its own. */
   #watch(session) {
     if (this.#watched.has(session) || !session.phase$) return;
     this.#watched.add(session);
-    session.phase$.state$
-      .pipe(
-        filter((phase) => terminal(phase) && !phase.archived),
-        take(1),
-      )
-      .subscribe(() => {
-        void Promise.resolve(session.closing)
-          .catch(() => {})
-          .then(() => this.#drop(session));
-      });
+    session.phase$.state$.pipe(filter(releasing), take(1)).subscribe(() => {
+      // Read the close after the transition's effects have started it.
+      void Promise.resolve()
+        .then(() => session.closing)
+        .catch(() => {})
+        .then(() => this.#drop(session));
+    });
   }
 }
