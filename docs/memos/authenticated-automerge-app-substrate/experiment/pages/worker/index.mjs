@@ -224,6 +224,12 @@ const hasChildren = () =>
     "This Page has sub-pages. Trash its sub-pages first; subtree Trash is not available yet.",
     "page_has_children",
   );
+/** The reply for a leaf guard that refused a Trash, or undefined for any
+ * other failure. */
+const leafRefusalOf = (error) =>
+  ["page_has_children", "home_page_protected"].includes(error.code)
+    ? { status: error.status, body: { error: error.message, code: error.code } }
+    : undefined;
 /** A home Page sits first at its Space's top level. */
 const homePlacement = (spaceId) => ({
   space_id: spaceId,
@@ -1043,8 +1049,24 @@ export class Catalog {
         return;
       case "forward":
         return this.forwardIntent(run, effect);
+      case "check_leaf":
+        return this.checkLeaf(pageId);
     }
     throw new Error(`An operation intent can't run ${effect.type}`);
+  }
+
+  /** The leaf guard as a `leaf` event. It runs requireLeafPage whatever the
+   * Page's revision, settling children's unsettled reservations first. */
+  async checkLeaf(pageId) {
+    try {
+      await this.requireLeafPage(pageId);
+      return { type: "leaf" };
+    } catch (error) {
+      if (error.code === replies.unsettled.body.code) return { type: "leaf", unavailable: true };
+      const refusal = leafRefusalOf(error);
+      if (!refusal) throw error;
+      return { type: "leaf", refusal };
+    }
   }
 
   /** Forward the request to its Page and return the Page's answer as a
@@ -1132,18 +1154,20 @@ export class Catalog {
     return { event, state };
   }
 
-  /** The leaf guard for a resumed trash. The Page decides whether the
-   * request already applied: if its lifecycle moved past the intent's
-   * revision, forwarding only replays the recorded receipt and the guard does
-   * not apply. Otherwise a new child refuses the request. */
+  /** The leaf guard for a resumed trash that lost its slot. If the Page's
+   * lifecycle is still at the intent's revision, forwarding would apply the
+   * request, so a new child refuses it here. If the lifecycle moved,
+   * forwarding replays a recorded receipt or comes back superseded, and the
+   * machine runs the guard again before any retarget. */
   async leafRefusal(pageId, state) {
     const current = await this.boundedLifecycle(pageId, Date.now() + lifecycleBounds.passMs);
     if (current.state !== "active" || (current.revision ?? 0) !== state.expectedRevision) return;
     try {
       await this.requireLeafPage(pageId);
     } catch (error) {
-      if (!["page_has_children", "home_page_protected"].includes(error.code)) throw error;
-      return { status: error.status, body: { error: error.message, code: error.code } };
+      const refusal = leafRefusalOf(error);
+      if (!refusal) throw error;
+      return refusal;
     }
   }
 

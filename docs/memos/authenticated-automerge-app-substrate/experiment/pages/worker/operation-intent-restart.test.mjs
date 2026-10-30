@@ -26,8 +26,10 @@ const KEY = "sweep-key-0001";
 const LIMIT = 100;
 // The cuts after the forwarded mark and before the retarget's write.
 const RETARGET_LOST = [2, 3, 4, 5, 6];
+// The cuts after the forwarded mark and before the guarded release's sync.
+const GUARD_LOST = [2, 3, 4, 5];
 let swept = 0;
-const SWEPT = 63;
+const SWEPT = 70;
 // Counting keeps a fenced reservation and counts it.
 const RETAINED_COUNTED = true;
 // The projection's transaction rolls back: nothing it wrote stays.
@@ -40,6 +42,14 @@ const DOCUMENT = A.save(
     initializePage(draft, "We ship on Friday."),
   ),
 );
+
+/** Any other Page only accepts its creation, so a scenario can add a child. */
+async function createdChild(request) {
+  const path = new URL(request.url).pathname;
+  if (path !== "/internal/create") throw new Error(`Unexpected child request ${path}`);
+  const { page_id, title } = await request.json();
+  return Response.json({ page_id, title });
+}
 
 /** One owner's Catalog and one real Page, connected by a network that can
  * drop a request before the Page sees it or lose the Page's reply. */
@@ -66,8 +76,9 @@ async function world({ placement } = {}) {
   const env = {
     ...auth.env,
     PAGES: {
-      getByName: () => ({
+      getByName: (id) => ({
         fetch: async (request) => {
+          if (id !== pageId) return createdChild(request);
           if (network.drop > 0) {
             network.drop--;
             throw new Error("connection refused");
@@ -399,6 +410,79 @@ test("a Trash request against a stale index retargets once from every cut", asyn
     assert.deepEqual(actual.capacity, { trash: 0, pages: 1 });
     assert.equal(actual.storage[`page/${pageId}`].lifecycle_revision, 2);
     assert.equal(actual.storage[`trash/${pageId}`], undefined);
+  }
+});
+
+test("a resumed Trash reruns the leaf guard before it retargets, from every cut", async (t) => {
+  let heads;
+  let childId;
+  const result = await sweep(t, {
+    name: "retarget with children",
+    async setup(w) {
+      heads = w.heads();
+      // The parent's Trash is reserved at revision 0, and the Catalog
+      // crashes at the forwarded mark.
+      w.arm(1);
+      assert.equal((await trash(w, w.catalog(), KEY)).status, 500);
+      w.disarm();
+      assert.equal(w.writes[1].label, `put host/operation/${KEY}`);
+      // The never-forwarded reservation expires, and counting releases it.
+      expire(w, `trash/${pageId}`);
+      assert.equal(await w.catalog().countEntries("trash/"), 0);
+      // Another request trashes and restores the parent: revision 2.
+      const catalog = w.catalog();
+      assert.equal((await trash(w, catalog, "setup-trash")).status, 200);
+      assert.equal((await restore(w, catalog, "setup-restore")).status, 200);
+      // A child is created under the active parent.
+      const child = await w.call(catalog, "create_page", {
+        title: "Child",
+        parent_id: pageId,
+        idempotency_key: "setup-child",
+      });
+      assert.equal(child.status, 200, JSON.stringify(child.body));
+      childId = child.body.page_id;
+    },
+    // The original request resumes. The Page supersedes it at revision 0;
+    // the guard runs before the retarget at revision 2 and finds the child.
+    act: (w, catalog) => trash(w, catalog, KEY, heads),
+    check({ outcome, page, storage, capacity }) {
+      assert.equal(outcome.status, 409, JSON.stringify(outcome.body));
+      assert.equal(outcome.body.code, "page_has_children");
+      assert.deepEqual(page, { state: "active", revision: 2, placement: undefined, receipts: 2 });
+      assert.equal(storage[`host/operation/${KEY}`], undefined, "the request is released");
+      assert.equal(storage[`trash/${pageId}`], undefined);
+      assert.equal(storage[`page/${pageId}`].lifecycle_revision, 2);
+      assert.equal(storage[`page/${childId}`].parent_id, pageId);
+      assert.deepEqual(capacity, { trash: 0, pages: 2 });
+    },
+  });
+  assert.deepEqual(result.writes, [
+    "put trash/<id>",
+    "put host/operation/sweep-key-0001",
+    "put host/index/dirty",
+    "put page/<id>",
+    "delete trash/<id>",
+    "delete host/operation/sweep-key-0001",
+    "sync",
+  ]);
+  // A cut after the forwarded mark loses the retarget, as above: the retry
+  // ends superseded. The parent stays active beside its child either way.
+  assert.deepEqual(result.unrepaired, GUARD_LOST, result.differences);
+  for (const actual of result.diverged) {
+    assert.deepEqual(actual.outcome.body, {
+      page_id: pageId,
+      superseded: true,
+      applied: false,
+      state: "active",
+    });
+    assert.deepEqual(actual.page, {
+      state: "active",
+      revision: 2,
+      placement: undefined,
+      receipts: 2,
+    });
+    assert.equal(actual.storage[`page/${childId}`].parent_id, pageId);
+    assert.deepEqual(actual.capacity, { trash: 0, pages: 2 });
   }
 });
 

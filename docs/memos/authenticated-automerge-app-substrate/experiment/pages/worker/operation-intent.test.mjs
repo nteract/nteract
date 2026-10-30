@@ -104,6 +104,18 @@ function persisted(values, operation) {
   };
 }
 
+const childKey = "host/operation/child-restore-0001";
+const childEntry = {
+  page_id: childId,
+  title: "Child",
+  created_at: CREATED,
+  updated_at: CREATED,
+  space_id: null,
+  parent_id: pageId,
+  position: "a1",
+  placement_epoch: 0,
+};
+
 const catalogEntry = (prefix, revision) => ({
   page_id: pageId,
   title: "Launch plan",
@@ -132,18 +144,20 @@ class Drive {
     this.mode =
       event.type === "page_reply"
         ? "reply"
-        : ["count", "settle", "lifecycle", "tombstone"].includes(event.type)
+        : ["count", "settle", "lifecycle", "tombstone", "leaf"].includes(event.type)
           ? event.type
           : "request";
     // Lifecycle reads reconcile on behalf of capacity counting or a
     // placement check; the row's state says which.
     this.reader = event.type === "lifecycle" ? state.check : this.mode;
     // A forwarded row whose request may still retarget starts as a new
-    // request, which is the only way to reach that in-memory state.
+    // request, which is the only way to reach that in-memory state. A Trash
+    // waiting on its leaf guard starts as a reserved request a restarted
+    // Catalog resumes, the interleaving the guard is for (seedWaiting).
     this.fresh =
       ["request", "tombstone"].includes(event.type) && state.name === "absent"
         ? event.type === "request"
-        : state.name === "forwarded" && state.retarget === true;
+        : state.name === "forwarded" && state.retarget === true && event.type !== "leaf";
     // Neither the Page nor this Catalog had forwarded the request yet.
     this.unforwarded = this.fresh || state.name === "reserved";
     this.mutations = 0;
@@ -154,23 +168,95 @@ class Drive {
     this.forwards = 0;
     this.replayOnly = false;
     this.inProject = false;
-    this.recording = !(this.mode === "reply" || this.mode === "lifecycle");
+    this.recording = !["reply", "lifecycle", "leaf"].includes(this.mode);
     this.storage = new CrashStorage((mutation) => this.mutate(mutation));
     this.catalog = new Catalog(
       { id: { name: owner }, storage: this.storage },
       {
         ...auth.env,
-        PAGES: { getByName: () => ({ fetch: (request) => this.respond(request) }) },
+        PAGES: { getByName: (id) => ({ fetch: (request) => this.respond(request, id) }) },
       },
     );
+    // The leaf guard is an effect where the machine asks for it. A row that
+    // starts at the guard's answer begins recording there.
+    const checkLeaf = this.catalog.checkLeaf.bind(this.catalog);
+    this.catalog.checkLeaf = async (id) => {
+      if (this.mode === "leaf" && !this.recording) {
+        this.endProjection();
+        this.recording = true;
+        return checkLeaf(id);
+      }
+      this.record({ type: "check_leaf" });
+      this.paused = true;
+      this.leafPaused = true;
+      throw new Pause();
+    };
   }
 
   get slotKey() {
     return lifecycleSlotKey(this.operation, pageId);
   }
 
+  /** A Trash reserved at the row's revision, resumed by a restarted Catalog
+   * while it still holds its slot. The Page has since moved to the row's
+   * `target`, and the guard finds a child (refused) or a child whose restore
+   * can't settle (unavailable). */
+  seedWaiting(values) {
+    const { state, event } = this;
+    const set = (name, value) => values.set(name, structuredClone(value));
+    const slots = (...args) => {
+      for (const [name, value] of Object.entries(lifecycleSlot(...args))) set(name, value);
+    };
+    set(`page/${pageId}`, catalogEntry("page/", state.expectedRevision));
+    set(key, {
+      fingerprint: digests.delete_page,
+      pending: true,
+      pageId,
+      createdAt: CREATED,
+      expectedRevision: state.expectedRevision,
+    });
+    slots("delete_page", pageId, key, Date.now());
+    if (event.refusal) set(`page/${childId}`, childEntry);
+    if (event.unavailable) {
+      set(childKey, {
+        fingerprint: "child-restore",
+        pending: true,
+        forwarded: true,
+        pageId: childId,
+        createdAt: CREATED,
+        expectedRevision: 1,
+      });
+      set(`trash/${childId}`, {
+        ...childEntry,
+        lifecycle_revision: 1,
+        state: "trashed",
+        trashed_at: TRASHED_AT,
+        trashed_by: owner,
+        trash_root_id: childId,
+      });
+      slots("restore_page", childId, childKey, Date.now(), { space_id: null, parent_id: pageId });
+    }
+  }
+
+  /** What the Page reports when it supersedes a waiting row's first forward. */
+  waitingCurrent() {
+    const revision = this.state.target;
+    return this.state.slot === "entry"
+      ? {
+          page_id: pageId,
+          state: "trashed",
+          revision,
+          title: "Launch plan",
+          trashed_at: TRASHED_AT,
+          trashed_by: owner,
+          trash_root_id: pageId,
+        }
+      : { page_id: pageId, state: "active", revision, title: "Launch plan" };
+  }
+
   seed(values = this.storage.values) {
     const { state, event, operation } = this;
+    if (this.mode === "leaf") return this.seedWaiting(values);
     const set = (name, value) => values.set(name, structuredClone(value));
     const revision =
       event.known ??
@@ -235,17 +321,7 @@ class Drive {
       ))
         set(name, value);
     }
-    if (event.leaf === "refused")
-      set(`page/${childId}`, {
-        page_id: childId,
-        title: "Child",
-        created_at: CREATED,
-        updated_at: CREATED,
-        space_id: null,
-        parent_id: pageId,
-        position: "a1",
-        placement_epoch: 0,
-      });
+    if (event.leaf === "refused") set(`page/${childId}`, childEntry);
   }
 
   record(effect, first) {
@@ -353,8 +429,11 @@ class Drive {
     return { type: "unexpected", op: "put", keys: names };
   }
 
-  async respond(request) {
+  async respond(request, id) {
     const path = new URL(request.url).pathname;
+    // A child's restore can't settle: its Page doesn't answer.
+    if (id === childId && path === "/internal/lifecycle-state")
+      return Response.json({ error: "settling" }, { status: 503 });
     if (path === "/internal/lifecycle-state") return this.lifecycleRead();
     if (path === "/internal/tombstone") {
       this.record({ type: "notify_tombstone" });
@@ -382,6 +461,15 @@ class Drive {
       this.record(effect);
       this.paused = true;
       throw new Pause();
+    }
+    if (this.mode === "leaf" && this.forwards === 1) {
+      // The Page moved on to the row's target, so it supersedes the resumed
+      // request without recording it.
+      this.projected = this.waitingCurrent();
+      return Response.json({
+        receipt: { page_id: pageId, superseded: true, applied: false, state: this.projected.state },
+        current: this.projected,
+      });
     }
     if (this.mode !== "reply" || this.forwards !== 1) {
       this.paused = true;
@@ -486,6 +574,7 @@ class Drive {
       if (state.name === "forwarded") {
         state.retarget = this.unforwarded && !this.replayOnly && this.forwards <= 1;
         state.replayOnly = this.replayOnly;
+        if (this.leafPaused) state.target = this.event.current.revision;
       }
       if (this.readPaused) {
         state.slot = "reconciling";
@@ -513,9 +602,9 @@ async function drive(state, event) {
   return result;
 }
 
-const SUMMARY = { rows: 65, pairs: 21, unreachable: 15, cases: 42 };
+const SUMMARY = { rows: 70, pairs: 22, unreachable: 20, cases: 46 };
 /** Every storage write the table's rows make, and the projections among them. */
-const SWEEP = { points: 117, projections: 19 };
+const SWEEP = { points: 126, projections: 24 };
 
 test("the operation-intent machine gives every row's result", async () => {
   assert.deepEqual(await runTable(operationIntent, loadTable(TABLE)), SUMMARY);

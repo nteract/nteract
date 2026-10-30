@@ -729,8 +729,11 @@ only after `sync()`; if that barrier fails, the next request finishes the
 transition before doing anything else, so a receipt never replays for an
 unfinished transition. If a newly reserved request is
 superseded because the Catalog's index was stale, the Catalog retargets it once
-at the Page's current revision. The Catalog always projects the Page's current
-state, not the replayed receipt.
+at the Page's current revision. A Trash runs the leaf guard again first,
+whatever the revision: the Page can have been trashed, restored and given a
+child since the request was reserved. A refused or unsettled guard releases the
+request, which the Page never recorded. The Catalog always projects the Page's
+current state, not the replayed receipt.
 
 Pending trash and restore requests hold a hidden destination slot in the
 owner's Catalog, written in the same storage call as the intent. The intent is
@@ -852,7 +855,8 @@ reader the abort cancels, since an abort after the headers does not interrupt
 a body read. A resumed trash that lost its reservation never applied,
 so before it re-acquires one it asks the Page: if the Page's lifecycle has not
 moved, the leaf guard runs again and a child created meanwhile refuses it; if it
-has, forwarding only replays the recorded receipt.
+has, forwarding replays a recorded receipt or comes back superseded, and a
+superseded Trash meets the guard again before it may retarget.
 
 `update_space` requires `expected_revision`. The Catalog records it in the
 journal intent before the Space sees the request, and every attempt carries it,

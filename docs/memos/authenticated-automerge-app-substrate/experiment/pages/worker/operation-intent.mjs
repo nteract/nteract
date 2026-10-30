@@ -32,15 +32,22 @@
  * lifecycle revision (`known`). Projections copy the Page's placement,
  * including the `placement_epoch` a restore to the top level advances.
  *
- * A forwarded intent's `retarget` and `replayOnly` live in memory for one
- * Catalog request. `retarget` says the Page had never seen this key when it
- * was forwarded, so a superseded first answer may be retried once at the
- * Page's current revision. Every reserved intent qualifies, including one a
- * restarted Catalog resumes: the forwarded mark is durable before the Page
+ * A forwarded intent's `retarget`, `replayOnly` and `target` live in memory
+ * for one Catalog request. `retarget` says the Page had never seen this key
+ * when it was forwarded, so a superseded first answer may be retried once at
+ * the Page's current revision. Every reserved intent qualifies, including one
+ * a restarted Catalog resumes: the forwarded mark is durable before the Page
  * sees the request. A forwarded intent never retargets after a restart, since
  * the Page may have applied it and evicted the receipt. `replayOnly` says a
  * resumed request lost its slot with no room to take another, so the Page may
  * only replay what it already did.
+ *
+ * A Trash retarget moves the Page at a revision no leaf guard has seen: the
+ * Page may have been trashed and restored, and gained a child, since the
+ * request was reserved. So a Trash never retargets straight from the Page's
+ * answer. It holds the Page's revision as `target` and runs the leaf guard,
+ * whatever the revision; only a clear guard retargets. A refused or
+ * unsettled guard releases the request, which the Page never recorded.
  *
  * Effects, which the Catalog runs in order: `persist` writes the intent row,
  * together with a new slot when `slot` is true, in one put; `reserve_slot`
@@ -48,9 +55,11 @@
  * `delete_intent` removes the row; `sync` is the durability barrier before a
  * reply; `forward` sends the request to the Page, whose answer is the next
  * `page_reply`; `read_lifecycle` asks the Page for its lifecycle state, the
- * next `lifecycle`; `project` copies a Page state into the Catalog's entries;
- * `forget_trash` and `notify_tombstone` clean up after a permanent deletion
- * recorded by an earlier build.
+ * next `lifecycle`; `check_leaf` runs the Catalog's leaf guard, settling
+ * children's unsettled reservations first, and its answer is the next `leaf`;
+ * `project` copies a Page state into the Catalog's entries; `forget_trash` and
+ * `notify_tombstone` clean up after a permanent deletion recorded by an
+ * earlier build.
  *
  * Events carry what the Catalog read: `request` holds the facts gathered
  * before the step (capacity counts run this machine for every slot they
@@ -104,23 +113,28 @@ const noFields = (value) => only(value, ["type"]);
 export const operationIntentSpec = Object.freeze({
   name: "operation-intent",
   states: ["absent", "reserved", "forwarded", "completed", "superseded", "released"],
-  events: ["request", "tombstone", "page_reply", "count", "settle", "lifecycle"],
+  events: ["request", "tombstone", "page_reply", "count", "settle", "lifecycle", "leaf"],
   unreachable: [
     ["absent", "page_reply", "nothing is forwarded before the intent is reserved"],
     ["absent", "lifecycle", "only a pending intent's reservation is read against its Page"],
+    ["absent", "leaf", "only a superseded Trash waiting to retarget runs the leaf guard"],
     ["reserved", "page_reply", "an intent is marked forwarded before the Page sees it"],
+    ["reserved", "leaf", "only a superseded Trash waiting to retarget runs the leaf guard"],
     ["completed", "tombstone", "a completed intent replays its receipt before any other check"],
     ["completed", "page_reply", "a completed intent forwards nothing"],
     ["completed", "lifecycle", "a completed intent's stale slot is removed without a read"],
+    ["completed", "leaf", "only a superseded Trash waiting to retarget runs the leaf guard"],
     ["superseded", "tombstone", "a superseded intent replays its receipt before any other check"],
     ["superseded", "page_reply", "a superseded intent forwards nothing"],
     ["superseded", "lifecycle", "a superseded intent's stale slot is removed without a read"],
+    ["superseded", "leaf", "only a superseded Trash waiting to retarget runs the leaf guard"],
     ["released", "request", "release deletes the row; the next request reads absent"],
     ["released", "tombstone", "release deletes the row; the next request reads absent"],
     ["released", "page_reply", "the release answered the Page's reply"],
     ["released", "count", "release removes the slot before the row"],
     ["released", "settle", "release removes the slot before the row"],
     ["released", "lifecycle", "release removes the slot before the row"],
+    ["released", "leaf", "the release answered the leaf guard"],
   ],
   cases: {
     "absent/request": ["room", "entry", "taken", "full", "unslotted"],
@@ -131,12 +145,14 @@ export const operationIntentSpec = Object.freeze({
     "forwarded/page_reply": [
       "applied",
       "retarget",
+      "leaf-guard",
       "superseded",
       "rejected",
       "missing",
       "failed",
       "unavailable",
     ],
+    "forwarded/leaf": ["retarget", "retarget-with-children", "retarget-unsettled"],
     "forwarded/count": ["unexpired", "expired"],
     "forwarded/lifecycle": [
       "count-missing",
@@ -162,13 +178,26 @@ export const operationIntentSpec = Object.freeze({
         check(state.check === undefined || state.check === "settle", "check must be settle");
       },
       forwarded(state) {
-        pending(state, ["retarget", "replayOnly"]);
+        pending(state, ["retarget", "replayOnly", "target"]);
         check(typeof state.retarget === "boolean", "retarget must be a boolean");
         check(typeof state.replayOnly === "boolean", "replayOnly must be a boolean");
         check(
           state.check === undefined || ["count", "settle"].includes(state.check),
           "check must be count or settle",
         );
+        if (state.target === undefined) {
+          check(
+            !(state.retarget && !state.replayOnly && state.slot === "lapsed"),
+            "a request that may retarget holds its slot",
+          );
+          return;
+        }
+        check(isRevision(state.target), "target must be a lifecycle revision");
+        check(
+          state.operation === "delete_page" && state.retarget && !state.replayOnly,
+          "only a Trash that may retarget waits on the leaf guard",
+        );
+        check(state.slot !== "reconciling", "a Trash waiting on the leaf guard reads no slot");
       },
       completed: terminal,
       superseded: terminal,
@@ -242,6 +271,18 @@ export const operationIntentSpec = Object.freeze({
         check(isObject(event.current) && typeof event.current.state === "string", "current");
         optionalRevision(event.known, "known");
       },
+      leaf(event) {
+        // A clear guard has no fields. A refusal is the reply the guard
+        // gave; unavailable means a child's reservation could not settle.
+        only(event, ["type", "refusal", "unavailable"]);
+        check(event.unavailable === undefined || event.unavailable === true, "unavailable");
+        check(!(event.unavailable && event.refusal), "a guard is refused or unavailable, not both");
+        if (event.refusal) {
+          only(event.refusal, ["status", "body"]);
+          check(Number.isSafeInteger(event.refusal.status), "refusal.status");
+          check(isObject(event.refusal.body), "refusal.body");
+        }
+      },
     },
     effects: {
       persist(effect) {
@@ -274,6 +315,7 @@ export const operationIntentSpec = Object.freeze({
       forget_trash: noFields,
       notify_tombstone: noFields,
       read_lifecycle: noFields,
+      check_leaf: noFields,
     },
   },
 });
@@ -423,20 +465,13 @@ function answer(state, event) {
     ? event
     : { receipt: { page_id: state.pageId, deleted: true }, current: DELETED };
   const effects = [{ type: "project", current }];
-  let slot = projectedSlot(state, current, event.known);
+  const slot = projectedSlot(state, current, event.known);
   if (receipt.superseded && state.retarget && !state.replayOnly) {
-    // The Page has never seen this key, so retry it once at the Page's
-    // current revision. Projecting a Page away from the destination removes
-    // the slot this request held; the retry may apply, so it takes the slot
-    // back. Nothing else ran in between, so the capacity it frees is its own.
-    if (["live", "entry"].includes(state.slot) && slot === "lapsed") {
-      effects.push(effect("reserve_slot"));
-      slot = "live";
-    }
-    const next = { ...state, expectedRevision: current.revision, slot, retarget: false };
-    effects.push({ type: "persist", state: "forwarded", expectedRevision: current.revision });
-    effects.push(forward(next));
-    return { state: next, effects };
+    // The Page has never seen this key, so it may retry once at the Page's
+    // current revision. A Trash first runs the leaf guard at that revision.
+    const target = current.revision ?? 0;
+    if (state.operation !== "delete_page") return retarget({ ...state, slot }, target, effects);
+    return { state: { ...state, slot, target }, effects: [...effects, effect("check_leaf")] };
   }
   const name = receipt.superseded ? "superseded" : "completed";
   effects.push({ type: "persist", state: name, receipt }, effect("sync"));
@@ -444,6 +479,42 @@ function answer(state, event) {
     state: { name, operation: state.operation, receipt },
     effects,
     response: { status: 200, body: receipt },
+  };
+}
+
+/** Retry a superseded request once at the Page's revision `target`. A request
+ * that may retarget holds its slot until the Page's answer is projected, so a
+ * lapsed slot here is one that projection removed. The retry may apply, so it
+ * takes the slot back. Nothing in between adds to the destination's count: a
+ * leaf guard only settles children's own reservations, which already count. */
+function retarget(state, target, effects = []) {
+  const { target: _target, ...rest } = state;
+  let slot = rest.slot;
+  if (slot === "lapsed") {
+    effects.push(effect("reserve_slot"));
+    slot = "live";
+  }
+  const next = { ...rest, expectedRevision: target, slot, retarget: false };
+  effects.push({ type: "persist", state: "forwarded", expectedRevision: target });
+  effects.push(forward(next));
+  return { state: next, effects };
+}
+
+/** The leaf guard answered for a Trash waiting to retarget. A clear guard
+ * retargets. Otherwise the request is released: the Page superseded this key
+ * without recording it, so nothing applied, and a retry starts over as a new
+ * request, which meets the guard before it reserves. */
+function guarded(state, event) {
+  if (state.target === undefined) return reject(state, "no retarget waits on the leaf guard");
+  if (!event.refusal && !event.unavailable) return retarget(state, state.target);
+  return {
+    state: { name: "released", operation: state.operation },
+    effects: [
+      ...(state.slot === "live" ? [effect("release_slot")] : []),
+      effect("delete_intent"),
+      effect("sync"),
+    ],
+    response: event.refusal ?? replies.unsettled,
   };
 }
 
@@ -495,6 +566,9 @@ function reconcile(state, event) {
 }
 
 function transition(state, event) {
+  // A Trash waiting to retarget moves on only with its guard's answer.
+  if (state.target !== undefined && event.type !== "leaf")
+    return reject(state, "the leaf guard runs before the retarget");
   const terminal = state.name === "completed" || state.name === "superseded";
   // A slot whose intent row is gone or finished is stale.
   if ((terminal || state.name === "absent") && ["count", "settle"].includes(event.type))
@@ -537,6 +611,8 @@ function transition(state, event) {
             effects: [effect("read_lifecycle")],
           }
         : reject(state, "no reservation");
+    case "leaf":
+      return guarded(state, event);
     default:
       return reconcile(state, event);
   }

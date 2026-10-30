@@ -15,7 +15,8 @@
     "page_reply",
     "count",
     "settle",
-    "lifecycle"
+    "lifecycle",
+    "leaf"
   ],
   "unreachable": [
     [
@@ -29,9 +30,19 @@
       "only a pending intent's reservation is read against its Page"
     ],
     [
+      "absent",
+      "leaf",
+      "only a superseded Trash waiting to retarget runs the leaf guard"
+    ],
+    [
       "reserved",
       "page_reply",
       "an intent is marked forwarded before the Page sees it"
+    ],
+    [
+      "reserved",
+      "leaf",
+      "only a superseded Trash waiting to retarget runs the leaf guard"
     ],
     [
       "completed",
@@ -49,6 +60,11 @@
       "a completed intent's stale slot is removed without a read"
     ],
     [
+      "completed",
+      "leaf",
+      "only a superseded Trash waiting to retarget runs the leaf guard"
+    ],
+    [
       "superseded",
       "tombstone",
       "a superseded intent replays its receipt before any other check"
@@ -62,6 +78,11 @@
       "superseded",
       "lifecycle",
       "a superseded intent's stale slot is removed without a read"
+    ],
+    [
+      "superseded",
+      "leaf",
+      "only a superseded Trash waiting to retarget runs the leaf guard"
     ],
     [
       "released",
@@ -92,6 +113,11 @@
       "released",
       "lifecycle",
       "release removes the slot before the row"
+    ],
+    [
+      "released",
+      "leaf",
+      "the release answered the leaf guard"
     ]
   ],
   "cases": {
@@ -128,11 +154,17 @@
     "forwarded/page_reply": [
       "applied",
       "retarget",
+      "leaf-guard",
       "superseded",
       "rejected",
       "missing",
       "failed",
       "unavailable"
+    ],
+    "forwarded/leaf": [
+      "retarget",
+      "retarget-with-children",
+      "retarget-unsettled"
     ],
     "forwarded/count": [
       "unexpired",
@@ -1726,8 +1758,8 @@
       }
     },
     {
-      "label": "a new request reserved against a stale index retargets once at the Page's revision",
-      "case": "retarget",
+      "label": "a superseded Trash holds the Page's revision and runs the leaf guard before retargeting",
+      "case": "leaf-guard",
       "state": {
         "name": "forwarded",
         "operation": "delete_page",
@@ -1762,10 +1794,11 @@
           "name": "forwarded",
           "operation": "delete_page",
           "pageId": "33333333-3333-4333-8333-333333333333",
-          "expectedRevision": 1,
+          "expectedRevision": 0,
           "slot": "entry",
-          "retarget": false,
-          "replayOnly": false
+          "retarget": true,
+          "replayOnly": false,
+          "target": 1
         },
         "effects": [
           {
@@ -1781,21 +1814,15 @@
             }
           },
           {
-            "type": "persist",
-            "state": "forwarded",
-            "expectedRevision": 1
-          },
-          {
-            "type": "forward",
-            "expectedRevision": 1
+            "type": "check_leaf"
           }
         ]
       }
     },
     {
-      "label": "a retarget whose projection moved the Page away re-reserves its slot before forwarding",
-      "case": "retarget",
-      "note": "Projecting an active Page deletes this request's Trash slot. The retry may apply, so it takes the slot back before it is forwarded.",
+      "label": "a superseded Trash whose projection moved the Page away runs the leaf guard first",
+      "case": "leaf-guard",
+      "note": "Projecting an active Page deletes this request's Trash slot. The guard runs before the slot is taken back, so a refusal has nothing to release.",
       "state": {
         "name": "forwarded",
         "operation": "delete_page",
@@ -1827,10 +1854,11 @@
           "name": "forwarded",
           "operation": "delete_page",
           "pageId": "33333333-3333-4333-8333-333333333333",
-          "expectedRevision": 2,
-          "slot": "live",
-          "retarget": false,
-          "replayOnly": false
+          "expectedRevision": 0,
+          "slot": "lapsed",
+          "retarget": true,
+          "replayOnly": false,
+          "target": 2
         },
         "effects": [
           {
@@ -1843,16 +1871,78 @@
             }
           },
           {
+            "type": "check_leaf"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a superseded restore retargets once at the Page's revision and takes back its slot",
+      "case": "retarget",
+      "note": "The Page was restored and trashed again without this Catalog. Projecting it trashed deletes the restore's Page slot, which the retry takes back.",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "live",
+        "retarget": true,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "page_reply",
+        "status": 200,
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "superseded": true,
+          "applied": false,
+          "state": "trashed"
+        },
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "trashed",
+          "revision": 3,
+          "title": "Launch plan",
+          "trashed_at": "2026-10-29T12:00:00.000Z",
+          "trashed_by": "user:anaconda-fixture:fixture-user",
+          "trash_root_id": "33333333-3333-4333-8333-333333333333"
+        },
+        "known": 1
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 3,
+          "slot": "live",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "trashed",
+              "revision": 3,
+              "title": "Launch plan",
+              "trashed_at": "2026-10-29T12:00:00.000Z",
+              "trashed_by": "user:anaconda-fixture:fixture-user",
+              "trash_root_id": "33333333-3333-4333-8333-333333333333"
+            }
+          },
+          {
             "type": "reserve_slot"
           },
           {
             "type": "persist",
             "state": "forwarded",
-            "expectedRevision": 2
+            "expectedRevision": 3
           },
           {
             "type": "forward",
-            "expectedRevision": 2
+            "expectedRevision": 3
           }
         ]
       }
@@ -2199,6 +2289,172 @@
           "status": 500,
           "body": {
             "error": "Pages request failed"
+          }
+        }
+      }
+    },
+    {
+      "label": "a clear leaf guard retargets the Trash at the Page's revision and takes back its slot",
+      "case": "retarget",
+      "state": {
+        "name": "forwarded",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "lapsed",
+        "retarget": true,
+        "replayOnly": false,
+        "target": 2
+      },
+      "event": {
+        "type": "leaf"
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "delete_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 2,
+          "slot": "live",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "reserve_slot"
+          },
+          {
+            "type": "persist",
+            "state": "forwarded",
+            "expectedRevision": 2
+          },
+          {
+            "type": "forward",
+            "expectedRevision": 2
+          }
+        ]
+      }
+    },
+    {
+      "label": "a clear leaf guard retargets a Trash the Page already holds in Trash without a slot",
+      "case": "retarget",
+      "state": {
+        "name": "forwarded",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "entry",
+        "retarget": true,
+        "replayOnly": false,
+        "target": 1
+      },
+      "event": {
+        "type": "leaf"
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "delete_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "entry",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "persist",
+            "state": "forwarded",
+            "expectedRevision": 1
+          },
+          {
+            "type": "forward",
+            "expectedRevision": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "a leaf guard that finds a child created since the reservation releases the Trash",
+      "case": "retarget-with-children",
+      "note": "The Trash was reserved at revision 0. The Page was trashed and restored to revision 2, and gained a child, before the request resumed. The Page never recorded this key, so nothing applied.",
+      "state": {
+        "name": "forwarded",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "lapsed",
+        "retarget": true,
+        "replayOnly": false,
+        "target": 2
+      },
+      "event": {
+        "type": "leaf",
+        "refusal": {
+          "status": 409,
+          "body": {
+            "error": "This Page has sub-pages. Trash its sub-pages first; subtree Trash is not available yet.",
+            "code": "page_has_children"
+          }
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "released",
+          "operation": "delete_page"
+        },
+        "effects": [
+          {
+            "type": "delete_intent"
+          },
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "status": 409,
+          "body": {
+            "error": "This Page has sub-pages. Trash its sub-pages first; subtree Trash is not available yet.",
+            "code": "page_has_children"
+          }
+        }
+      }
+    },
+    {
+      "label": "a leaf guard that can't settle a child's reservation releases the Trash as retryable",
+      "case": "retarget-unsettled",
+      "state": {
+        "name": "forwarded",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "lapsed",
+        "retarget": true,
+        "replayOnly": false,
+        "target": 2
+      },
+      "event": {
+        "type": "leaf",
+        "unavailable": true
+      },
+      "expect": {
+        "state": {
+          "name": "released",
+          "operation": "delete_page"
+        },
+        "effects": [
+          {
+            "type": "delete_intent"
+          },
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "status": 409,
+          "body": {
+            "error": "A Page's Trash or restore is still settling. Retry shortly.",
+            "code": "lifecycle_unsettled"
           }
         }
       }
