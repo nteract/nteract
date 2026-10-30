@@ -8,11 +8,24 @@ export const MAX_DELAY_MS = 10_000;
 
 export const backoffDelay = (attempt) => Math.min(BASE_DELAY_MS * 2 ** (attempt - 1), MAX_DELAY_MS);
 
-export const reconnect = defineMachine({
+function count(object, key, min = 0) {
+  if (!Number.isInteger(object[key]) || object[key] < min)
+    throw new Error(`${key} must be an integer of at least ${min}`);
+}
+
+// Every state carries the dialing generation and the retry attempt.
+const counters = (state) => {
+  count(state, "generation");
+  count(state, "attempt");
+};
+const socket = (event) => count(event, "generation");
+
+/** The names, coverage and domain checks. Tables written against code
+ * without a transition use this alone. */
+export const reconnectSpec = {
   name: "example-reconnect",
   states: ["idle", "connecting", "open", "backoff"],
   events: ["connect", "opened", "closed", "timer"],
-  initial: { name: "idle", generation: 0, attempt: 0 },
   unreachable: [
     ["idle", "opened", "no socket exists before the first connect"],
     ["idle", "closed", "no socket exists before the first connect"],
@@ -20,6 +33,25 @@ export const reconnect = defineMachine({
     ["connecting", "timer", "leaving backoff cancels or consumes its timer"],
     ["open", "timer", "leaving backoff cancels or consumes its timer"],
   ],
+  cases: {
+    "connecting/opened": ["current-generation", "stale-generation"],
+    "connecting/closed": ["current-generation", "stale-generation"],
+    "open/closed": ["current-generation", "stale-generation"],
+  },
+  validate: {
+    states: { idle: counters, connecting: counters, open: counters, backoff: counters },
+    events: { opened: socket, closed: socket },
+    effects: {
+      dial: (effect) => count(effect, "generation", 1),
+      schedule: (effect) => count(effect, "delayMs", 1),
+      cancelTimer: () => {},
+    },
+  },
+};
+
+export const reconnect = defineMachine({
+  ...reconnectSpec,
+  initial: { name: "idle", generation: 0, attempt: 0 },
   transition(state, event) {
     // Socket events carry the generation that dialed them, so a late event from
     // an older socket can't move a newer connection.

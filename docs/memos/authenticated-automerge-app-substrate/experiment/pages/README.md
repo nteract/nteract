@@ -557,37 +557,53 @@ lamp.step({ name: "off" }, { type: "flip" }); // { state: { name: "on" }, effect
 - `unreachable` lists `[state, event, reason]` pairs that can't happen by
   construction. `step` throws on them. Late or duplicate events are reachable;
   answer them with `reject`.
+- `validate` holds domain checks keyed by name:
+  `{ states: { [name]: fn }, events: { [type]: fn }, effects: { [type]: fn } }`.
+  Each `fn` throws to reject. They run on the initial state, every input and
+  output, and every table row. Declaring `effects` makes its keys the only
+  effect types allowed.
+- `cases` names the guard outcomes of a pair, such as
+  `{ "connecting/closed": ["current-generation", "stale-generation"] }`. Each
+  row on that pair names its `case`, and every case needs a row. State and
+  event names can't contain `/`.
 - The transition never reads storage, the network, clocks or randomness. An
   interpreter at the edge runs the effects and turns replies and timers back
   into events. Worker interpreters keep the Durable Object's promise tails;
   viewer interpreters use RxJS.
+- Persist state and outbox together; return success only after the required durability barrier.
 
 To add a machine:
 
 1. Write the table as JSON in `test/fixtures/machines/<name>.json`: `machine`,
-   `states`, `events`, `unreachable`, and `rows` of
-   `{ state, event, expect: { state, effects, response?, rejected? } }`.
+   `states`, `events`, `unreachable`, optional `cases`, and `rows` of
+   `{ case?, state, event, expect: { state, effects, response?, rejected? } }`.
 2. Drive the current code through an adapter:
-   `await runTable({ name, states, events, unreachable }, loadTable(file), { drive })`.
+   `await runTable({ name, states, events, unreachable, cases, validate }, loadTable(file), { drive })`.
    `drive(state, event)` sets the old code up in `state`, delivers `event`, and
    reads the result back.
 3. Extract the transition with `defineMachine`, make the old code its
    interpreter, and run the same table with `runTable(machine, loadTable(file))`.
 
 [machine-test.mjs](shared/machine-test.mjs) fails when a state × event pair has
-neither a row nor an unreachable entry, when a row covers an unreachable pair,
-or when the file's names disagree with the machine. Without `drive` it also
-checks that the transition leaves its input untouched and returns the same
-result twice. The JSON file is the contract a port to Rust would replay.
-[machine.test.mjs](test/machine.test.mjs) runs one table against both a machine
-and flag-style code.
+neither a row nor an unreachable entry, when a declared case has no row, when a
+row covers an unreachable pair, or when the file's names, unreachable pairs or
+cases disagree with the machine. Coverage is exhaustive over names; add rows for each guard outcome.
+Rows compare `state`, `effects`, `rejected` and `response` exactly, including
+whether `rejected` and `response` are present. To skip one row's response,
+write `"response": { "$ignore": true }` (`IGNORE` in JavaScript). Without
+`drive`, the runner also checks that the transition leaves its input untouched
+and returns the same result twice. The JSON file is the contract a port to Rust
+would replay. [machine.test.mjs](test/machine.test.mjs) runs one table against
+both a machine and flag-style code.
 
 Viewer state lives in a [Store](viewer/store.mjs): one private
 `BehaviorSubject`, `snapshot()`, `update(fn)`, and `select(project, equals)`,
 which emits synchronously and then only on change. Components read
-`useStore(store, project, equals)`. Pass a named comparator when `project`
-allocates. Test timers with `TestScheduler` from `rxjs/testing`, as
-[store.test.mjs](viewer/store.test.mjs) does for a backoff interpreter.
+`useStore(store, project, equals)`, built on React's
+`useSyncExternalStoreWithSelector`. It memoizes on the store, `project` and
+`equals`, and compares with the last committed value. Pass a named comparator
+when `project` allocates. Test timers with `TestScheduler` from `rxjs/testing`,
+as [store.test.mjs](viewer/store.test.mjs) does for a backoff interpreter.
 
 ## HTTP and MCP tools
 

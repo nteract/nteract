@@ -19,7 +19,8 @@ export class MachineError extends Error {
   }
 }
 
-const ALPHABET_KEYS = new Set(["name", "states", "events", "unreachable"]);
+const ALPHABET_KEYS = new Set(["name", "states", "events", "unreachable", "cases", "validate"]);
+const VALIDATE_KEYS = new Set(["states", "events", "effects"]);
 const RESULT_KEYS = new Set(["state", "effects", "response", "rejected"]);
 
 /** A guard's answer: stay in `state`, emit nothing, and say why. `response`
@@ -30,9 +31,17 @@ export function reject(state, reason, options = {}) {
   return result;
 }
 
-/** Validate a machine's names and its `unreachable` list without a transition.
- * Tables written against existing code use this shape before a transition
- * function exists; `defineMachine` builds on it. */
+/**
+ * Validate a machine's names, `unreachable` list, guard cases and domain
+ * validators without a transition. Tables written against existing code use
+ * this shape before a transition function exists; `defineMachine` builds on it.
+ *
+ * - `cases: { "state/event": ["case-id", ...] }` names the guard outcomes of a
+ *   pair. runTable then needs a row for each one.
+ * - `validate: { states: { [name]: fn }, events: { [type]: fn }, effects:
+ *   { [type]: fn } }` checks domain fields. Each fn throws to reject. Declaring
+ *   `effects` also makes its keys the only effect types allowed.
+ */
 export function defineAlphabet(spec) {
   const name = spec?.name;
   if (typeof name !== "string" || name === "") throw new MachineError("A machine needs a name");
@@ -57,12 +66,15 @@ export function defineAlphabet(spec) {
     if (blocked.has(key)) fail(`unreachable lists ${state} × ${event} twice`);
     blocked.set(key, reason);
   }
+  const cases = caseMap(fail, spec.cases, states, events, blocked);
+  const validate = validators(fail, spec.validate, states, events);
 
   function assertState(state, label = "state") {
     if (!isPlainObject(state) || typeof state.name !== "string")
       fail(`${label} must be an object with a name`);
     if (!states.has(state.name)) fail(`${label} ${JSON.stringify(state.name)} is not a state`);
     assertJson(fail, state, label);
+    runValidator(fail, validate.states?.get(state.name), state, label);
   }
 
   function assertEvent(event, label = "event") {
@@ -70,6 +82,15 @@ export function defineAlphabet(spec) {
       fail(`${label} must be an object with a type`);
     if (!events.has(event.type)) fail(`${label} ${JSON.stringify(event.type)} is not an event`);
     assertJson(fail, event, label);
+    runValidator(fail, validate.events?.get(event.type), event, label);
+  }
+
+  function assertEffect(effect, label) {
+    if (!isPlainObject(effect) || typeof effect.type !== "string" || effect.type === "")
+      fail(`${label} must be an object with a type`);
+    if (validate.effects && !validate.effects.has(effect.type))
+      fail(`${label} ${JSON.stringify(effect.type)} is not a declared effect`);
+    runValidator(fail, validate.effects?.get(effect.type), effect, label);
   }
 
   /** Check a transition result. With `input`, also require that a rejection
@@ -80,11 +101,10 @@ export function defineAlphabet(spec) {
       if (!RESULT_KEYS.has(key)) fail(`unexpected result key ${key}`);
     assertState(result.state, "next state");
     if (!Array.isArray(result.effects)) fail("effects must be an array");
-    result.effects.forEach((effect, index) => {
-      if (!isPlainObject(effect) || typeof effect.type !== "string" || effect.type === "")
-        fail(`effects[${index}] must be an object with a type`);
-      assertJson(fail, effect, `effects[${index}]`);
-    });
+    // The JSON check rejects holes, which forEach and for...of would skip.
+    assertJson(fail, result.effects, "effects");
+    for (let index = 0; index < result.effects.length; index++)
+      assertEffect(result.effects[index], `effects[${index}]`);
     if ("response" in result) assertJson(fail, result.response, "response");
     if ("rejected" in result) {
       if (typeof result.rejected !== "string" || result.rejected === "")
@@ -100,10 +120,14 @@ export function defineAlphabet(spec) {
     states: Object.freeze([...states]),
     events: Object.freeze([...events]),
     unreachable: Object.freeze(unreachable.map((entry) => Object.freeze([...entry]))),
+    cases,
     /** The declared reason a pair can't happen, or undefined. */
     unreachableReason: (state, event) => blocked.get(pairKey(state, event)),
+    /** The declared case ids for a pair, or undefined. */
+    casesFor: (state, event) => cases[`${state}/${event}`],
     assertState,
     assertEvent,
+    assertEffect,
     assertResult,
   });
 }
@@ -146,15 +170,61 @@ export function defineMachine(spec) {
   return Object.freeze({ ...alphabet, initial: start, step });
 }
 
-function names(fail, kind, list) {
+// State and event names can't contain "/", which separates them in case keys.
+function names(fail, kind, list, { slash = false } = {}) {
   if (!Array.isArray(list) || list.length === 0) fail(`${kind} must be a non-empty array`);
   const seen = new Set();
-  for (const item of list) {
+  for (let index = 0; index < list.length; index++) {
+    const item = list[index];
     if (typeof item !== "string" || item === "") fail(`${kind} must be non-empty strings`);
+    if (!slash && item.includes("/")) fail(`${kind} can't contain "/": ${JSON.stringify(item)}`);
     if (seen.has(item)) fail(`${kind} lists ${JSON.stringify(item)} twice`);
     seen.add(item);
   }
   return seen;
+}
+
+function caseMap(fail, cases = {}, states, events, blocked) {
+  if (!isPlainObject(cases)) fail("cases must be an object");
+  const result = {};
+  for (const key of Object.keys(cases).sort()) {
+    const [state, event, ...rest] = key.split("/");
+    if (rest.length > 0 || !states.has(state) || !events.has(event))
+      fail(`cases key ${JSON.stringify(key)} must be "state/event" with known names`);
+    if (blocked.has(pairKey(state, event))) fail(`cases names unreachable pair ${key}`);
+    result[key] = Object.freeze([...names(fail, `cases ${key}`, cases[key], { slash: true })]);
+  }
+  return Object.freeze(result);
+}
+
+function validators(fail, validate = {}, states, events) {
+  if (!isPlainObject(validate)) fail("validate must be an object");
+  for (const key of Object.keys(validate))
+    if (!VALIDATE_KEYS.has(key)) fail(`unknown validate key ${key}`);
+  const table = (kind, known) => {
+    if (validate[kind] === undefined) return undefined;
+    if (!isPlainObject(validate[kind])) fail(`validate.${kind} must be an object`);
+    const map = new Map(Object.entries(validate[kind]));
+    for (const [key, check] of map) {
+      if (known && !known.has(key)) fail(`validate.${kind} names unknown ${JSON.stringify(key)}`);
+      if (typeof check !== "function") fail(`validate.${kind}.${key} must be a function`);
+    }
+    return map;
+  };
+  return {
+    states: table("states", states),
+    events: table("events", events),
+    effects: table("effects"),
+  };
+}
+
+function runValidator(fail, check, value, label) {
+  if (!check) return;
+  try {
+    check(value);
+  } catch (error) {
+    fail(`${label}: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function pairKey(state, event) {

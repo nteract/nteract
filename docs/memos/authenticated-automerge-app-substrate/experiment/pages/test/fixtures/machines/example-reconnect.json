@@ -10,6 +10,11 @@
     ["connecting", "timer", "leaving backoff cancels or consumes its timer"],
     ["open", "timer", "leaving backoff cancels or consumes its timer"]
   ],
+  "cases": {
+    "connecting/opened": ["current-generation", "stale-generation"],
+    "connecting/closed": ["current-generation", "stale-generation"],
+    "open/closed": ["current-generation", "stale-generation"]
+  },
   "rows": [
     {
       "state": { "name": "idle", "generation": 0, "attempt": 0 },
@@ -29,6 +34,7 @@
       }
     },
     {
+      "case": "current-generation",
       "state": { "name": "connecting", "generation": 1, "attempt": 2 },
       "event": { "type": "opened", "generation": 1 },
       "expect": {
@@ -38,6 +44,7 @@
     },
     {
       "label": "connecting × opened from an older socket",
+      "case": "stale-generation",
       "state": { "name": "connecting", "generation": 2, "attempt": 1 },
       "event": { "type": "opened", "generation": 1 },
       "expect": {
@@ -47,6 +54,7 @@
       }
     },
     {
+      "case": "current-generation",
       "state": { "name": "connecting", "generation": 1, "attempt": 0 },
       "event": { "type": "closed", "generation": 1 },
       "expect": {
@@ -56,11 +64,23 @@
     },
     {
       "label": "connecting × closed caps the delay",
+      "case": "current-generation",
       "state": { "name": "connecting", "generation": 5, "attempt": 5 },
       "event": { "type": "closed", "generation": 5 },
       "expect": {
         "state": { "name": "backoff", "generation": 5, "attempt": 6 },
         "effects": [{ "type": "schedule", "delayMs": 10000 }]
+      }
+    },
+    {
+      "label": "connecting × closed from an older socket",
+      "case": "stale-generation",
+      "state": { "name": "connecting", "generation": 3, "attempt": 2 },
+      "event": { "type": "closed", "generation": 2 },
+      "expect": {
+        "state": { "name": "connecting", "generation": 3, "attempt": 2 },
+        "effects": [],
+        "rejected": "stale generation"
       }
     },
     {
@@ -82,6 +102,7 @@
       }
     },
     {
+      "case": "current-generation",
       "state": { "name": "open", "generation": 1, "attempt": 0 },
       "event": { "type": "closed", "generation": 1 },
       "expect": {
@@ -91,6 +112,7 @@
     },
     {
       "label": "open × closed from an older socket",
+      "case": "stale-generation",
       "state": { "name": "open", "generation": 2, "attempt": 0 },
       "event": { "type": "closed", "generation": 1 },
       "expect": {

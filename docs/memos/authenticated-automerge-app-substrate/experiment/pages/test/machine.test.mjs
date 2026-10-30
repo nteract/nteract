@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { MachineError, defineMachine, reject } from "../shared/machine.mjs";
-import { loadTable, runTable } from "../shared/machine-test.mjs";
-import { backoffDelay, reconnect } from "./example-reconnect.mjs";
+import { IGNORE, loadTable, runTable } from "../shared/machine-test.mjs";
+import { backoffDelay, reconnect, reconnectSpec } from "./example-reconnect.mjs";
 
 const TABLE = new URL("./fixtures/machines/example-reconnect.json", import.meta.url);
 
@@ -47,6 +47,18 @@ test("defineMachine rejects malformed definitions", () => {
       /on × hold twice/,
     ],
     [{ ...lamp, unreachables: [] }, /unknown option unreachables/],
+    [{ ...lamp, states: ["off", "on/dim"] }, /states can't contain "\/"/],
+    [{ ...lamp, cases: { "off/kick": ["a"] } }, /cases key "off\/kick" must be "state\/event"/],
+    [{ ...lamp, cases: { off: ["a"] } }, /cases key "off" must be "state\/event"/],
+    [{ ...lamp, cases: { "off/flip": [] } }, /cases off\/flip must be a non-empty array/],
+    [{ ...lamp, cases: { "off/flip": ["a", "a"] } }, /cases off\/flip lists "a" twice/],
+    [
+      { ...lamp, unreachable: [["on", "hold", "never"]], cases: { "on/hold": ["a"] } },
+      /cases names unreachable pair on\/hold/,
+    ],
+    [{ ...lamp, validate: { state: {} } }, /unknown validate key state/],
+    [{ ...lamp, validate: { states: { dim() {} } } }, /validate.states names unknown "dim"/],
+    [{ ...lamp, validate: { events: { flip: true } } }, /validate.events.flip must be a function/],
   ];
   for (const [spec, message] of cases) {
     assert.throws(
@@ -87,6 +99,16 @@ test("step validates its input and the transition's result", () => {
       () => ({ state: { name: "on" }, effects: [{ type: "wait", ms: NaN }] }),
       /effects\[0\].ms is not a finite number/,
     ],
+    // Holes before an effect, and an array of nothing but holes.
+    [
+      () => ({ state: { name: "on" }, effects: Object.assign([], { 1: { type: "light" } }) }),
+      /effects is a sparse array/,
+    ],
+    [
+      () => ({ state: { name: "on" }, effects: Object.assign([], { length: 2 }) }),
+      /effects is a sparse array/,
+    ],
+    [() => ({ state: { name: "on" }, effects: [null] }), /effects\[0\] must be an object/],
     [() => ({ state: { name: "on" }, effects: [], effect: [] }), /unexpected result key effect/],
     [() => ({ state: { name: "on" }, effects: [], response: () => {} }), /response is function/],
     [
@@ -156,12 +178,61 @@ test("initial accepts a state name and is frozen", () => {
   }, TypeError);
 });
 
-test("the reconnect table covers every pair and passes against the machine", async () => {
+test("domain validators check the initial state, inputs, results and effect types", () => {
+  const off = { name: "off", watts: 0 };
+  const flip = { type: "flip", by: "switch" };
+  const spec = {
+    ...lamp,
+    validate: {
+      states: { off: (state) => assert.equal(typeof state.watts, "number", "watts") },
+      events: { flip: (event) => assert.ok(["switch", "timer"].includes(event.by), "by") },
+      effects: { light: (effect) => assert.ok(effect.watts > 0, "watts must be positive") },
+    },
+  };
+  // Turning off forgets `watts`, which the off validator catches.
+  const machine = defineMachine({
+    ...spec,
+    initial: off,
+    transition: (state) =>
+      state.name === "off"
+        ? { state: { name: "on" }, effects: [{ type: "light", watts: 60 }] }
+        : { state: { name: "off" }, effects: [] },
+  });
+  assert.deepEqual(machine.step(off, flip).effects, [{ type: "light", watts: 60 }]);
+  assert.throws(() => defineMachine({ ...spec, initial: "off" }), /initial state: watts/);
+  assert.throws(() => machine.step({ name: "off" }, flip), /lamp: state: watts/);
+  assert.throws(() => machine.step(off, { type: "flip" }), /lamp: event: by/);
+  assert.throws(
+    () => machine.step({ name: "on" }, { type: "flip", by: "timer" }),
+    /next state: watts/,
+  );
+  const results = [
+    [{ state: { name: "on" }, effects: [{ type: "light", watts: 0 }] }, /effects\[0\]: watts must/],
+    [{ state: { name: "on" }, effects: [{ type: "dark" }] }, /"dark" is not a declared effect/],
+  ];
+  for (const [result, message] of results)
+    assert.throws(
+      () => defineMachine({ ...spec, transition: () => result }).step(off, flip),
+      message,
+    );
+});
+
+test("the reconnect table covers every pair and case and passes against the machine", async () => {
   assert.deepEqual(await runTable(reconnect, loadTable(TABLE)), {
-    rows: 14,
+    rows: 15,
     pairs: 11,
     unreachable: 5,
+    cases: 6,
   });
+});
+
+test("the reconnect validators apply to table rows", async () => {
+  const table = loadTable(TABLE);
+  delete table.rows[0].state.attempt;
+  await assert.rejects(runTable(reconnect, table), /row 0 \(idle × connect\) state: attempt must/);
+  const effect = loadTable(TABLE);
+  effect.rows[0].expect.effects[0].type = "redial";
+  await assert.rejects(runTable(reconnect, effect), /"redial" is not a declared effect/);
 });
 
 // Shaped like code before extraction: booleans, a counter, and early throws.
@@ -238,22 +309,76 @@ async function driveFlags(state, event) {
 }
 
 test("the same table drives flag-style code through an adapter", async () => {
-  // Before a transition exists, the table needs only the machine's names.
-  const spec = {
-    name: "example-reconnect",
-    states: reconnect.states,
-    events: reconnect.events,
-    unreachable: reconnect.unreachable,
-  };
-  assert.deepEqual(await runTable(spec, loadTable(TABLE), { drive: driveFlags }), {
-    rows: 14,
+  // Before a transition exists, the table needs only the spec.
+  assert.deepEqual(await runTable(reconnectSpec, loadTable(TABLE), { drive: driveFlags }), {
+    rows: 15,
     pairs: 11,
     unreachable: 5,
+    cases: 6,
   });
   await assert.rejects(
-    runTable(spec, loadTable(TABLE)),
+    runTable(reconnectSpec, loadTable(TABLE)),
     /pass drive, or a machine from defineMachine/,
   );
+});
+
+test("runTable needs a row for every declared case, and rows on those pairs name one", async () => {
+  const rows = loadTable(TABLE).rows;
+  const withoutStale = rows.filter(
+    (row) => !(row.label === "connecting × closed from an older socket"),
+  );
+  await assert.rejects(runTable(reconnect, withoutStale), (error) => {
+    assert.match(
+      error.message,
+      /no row for 1 declared case:\n {2}connecting × closed: stale-generation$/,
+    );
+    return true;
+  });
+  const unnamed = structuredClone(rows);
+  delete unnamed[4].case;
+  await assert.rejects(
+    runTable(reconnect, unnamed),
+    /row 4 \(connecting × closed\) needs a case from connecting\/closed: current-generation, stale-generation/,
+  );
+  const unknown = structuredClone(rows);
+  unknown[4].case = "late";
+  await assert.rejects(
+    runTable(reconnect, unknown),
+    /row 4 .* needs a case from connecting\/closed/,
+  );
+  const stray = structuredClone(rows);
+  stray[0].case = "first";
+  await assert.rejects(
+    runTable(reconnect, stray),
+    /row 0 \(idle × connect \[first\]\) names a case, but idle\/connect has none/,
+  );
+  const table = loadTable(TABLE);
+  delete table.cases;
+  await assert.rejects(runTable(reconnect, table), /the table's cases differ from the machine's/);
+});
+
+test("runTable compares responses exactly unless a row ignores them", async () => {
+  const gate = {
+    name: "gate",
+    states: ["shut"],
+    events: ["knock"],
+    transition: (state) => reject(state, "closed", { response: { status: 409 } }),
+  };
+  const machine = defineMachine(gate);
+  const shut = { name: "shut" };
+  const row = (expect) => ({
+    state: shut,
+    event: { type: "knock" },
+    expect: { state: shut, effects: [], rejected: "closed", ...expect },
+  });
+  assert.equal((await runTable(machine, [row({ response: { status: 409 } })])).rows, 1);
+  assert.equal((await runTable(machine, [row({ response: IGNORE })])).rows, 1);
+  assert.equal((await runTable(machine, [row({ response: { $ignore: true } })])).rows, 1);
+  await assert.rejects(runTable(machine, [row({})]), /row 0 \(shut × knock\): response:/);
+  await assert.rejects(runTable(machine, [row({ response: { status: 403 } })]), /response:/);
+  const silent = defineMachine({ ...gate, transition: (state) => reject(state, "closed") });
+  await assert.rejects(runTable(silent, [row({ response: { status: 409 } })]), /response:/);
+  await assert.rejects(runTable(silent, [row({ response: null })]), /response:/);
 });
 
 test("runTable fails when a pair has neither a row nor an unreachable entry", async () => {
@@ -279,7 +404,7 @@ test("runTable fails when a row covers an unreachable pair", async () => {
   ];
   await assert.rejects(
     runTable(reconnect, rows),
-    /row 14 \(open × timer\) covers an unreachable pair/,
+    /row 15 \(open × timer\) covers an unreachable pair/,
   );
 });
 
@@ -288,14 +413,19 @@ test("runTable reports every failing row by label", async () => {
   rows[0].expect.effects = [];
   rows[5].expect.state.attempt = 9;
   await assert.rejects(runTable(reconnect, rows), (error) => {
-    assert.match(error.message, /2 of 14 rows failed/);
+    assert.match(error.message, /2 of 15 rows failed/);
     assert.match(error.message, /row 0 \(idle × connect\): effects: Expected values/);
     assert.match(
       error.message,
-      /row 5 \(connecting × closed caps the delay\): state: Expected values/,
+      /row 5 \(connecting × closed caps the delay \[current-generation\]\): state: Expected values/,
     );
     return true;
   });
+});
+
+test("runTable rejects a sparse row list", async () => {
+  const rows = Object.assign([], { 1: loadTable(TABLE).rows[0] });
+  await assert.rejects(runTable(reconnect, rows), /rows has a hole at 0/);
 });
 
 test("runTable checks a table against the machine", async () => {

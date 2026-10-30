@@ -4,8 +4,9 @@
 // the current value synchronously, then only when the projection changes.
 // Pass a named comparator as `equals` when `project` allocates.
 
-import { useCallback, useRef, useSyncExternalStore } from "react";
+import { useCallback } from "react";
 import { BehaviorSubject, distinctUntilChanged, map } from "rxjs";
+import { useSyncExternalStoreWithSelector } from "use-sync-external-store/with-selector";
 
 export class Store {
   #subject;
@@ -49,10 +50,11 @@ export class Store {
 
 const identity = (value) => value;
 
-/** Read `project(store.snapshot())` in a component. The component re-renders
- * only when `equals` says the projection changed; `project` may be inline. */
+/** Read `project(store.snapshot())` in a component. React's selector hook
+ * memoizes on the store, `project` and `equals`, and compares against the last
+ * committed value, so an inline `project` keeps its result's identity while
+ * `equals` holds and an abandoned render can't leak into the next one. */
 export function useStore(store, project = identity, equals = Object.is) {
-  const memo = useRef(null);
   const subscribe = useCallback(
     (onChange) => {
       const subscription = store.state$.subscribe(onChange);
@@ -60,16 +62,6 @@ export function useStore(store, project = identity, equals = Object.is) {
     },
     [store],
   );
-  const getSnapshot = () => {
-    const state = store.snapshot();
-    const last = memo.current;
-    if (last && last.store === store && last.state === state && last.project === project)
-      return last.value;
-    const projected = project(state);
-    const value =
-      last && last.store === store && equals(last.value, projected) ? last.value : projected;
-    memo.current = { store, state, project, value };
-    return value;
-  };
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const getSnapshot = useCallback(() => store.snapshot(), [store]);
+  return useSyncExternalStoreWithSelector(subscribe, getSnapshot, getSnapshot, project, equals);
 }

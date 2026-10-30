@@ -35,7 +35,8 @@ after(() => {
     else delete globalThis[key];
 });
 // react-dom checks for a DOM when it loads.
-const { act, createElement } = await import("react");
+const { Suspense, act, createElement, startTransition, use, useLayoutEffect } =
+  await import("react");
 const { createRoot } = await import("react-dom/client");
 const { renderToStaticMarkup } = await import("react-dom/server");
 
@@ -129,6 +130,107 @@ test("useStore renders the current projection and re-renders only when it change
   await act(() => store.update((state) => ({ ...state, writable: false })));
   assert.equal(container.textContent, "b open:false");
   assert.equal(renders.length, 3);
+});
+
+function shallowEqual(a, b) {
+  if (Object.is(a, b)) return true;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) => Object.is(a[key], b[key]));
+}
+
+// Renders the selection as JSON and records each committed value.
+function Show({ store, project, equals, commits = [] }) {
+  const value = useStore(store, project, equals);
+  useLayoutEffect(() => {
+    commits.push(value);
+  });
+  return createElement("output", null, JSON.stringify(value));
+}
+
+function mount(t) {
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  t.after(() => act(() => root.unmount()));
+  return { container, root, render: (props) => act(() => root.render(createElement(Show, props))) };
+}
+
+test("useStore re-selects when only the comparator changes", async (t) => {
+  const store = new Store({ phase: "open", writable: true });
+  const phaseOnly = (a, b) => a.phase === b.phase;
+  const { container, render } = mount(t);
+  await render({ store, project: access, equals: phaseOnly });
+  await act(() => store.update((state) => ({ ...state, writable: false })));
+  assert.equal(container.textContent, '{"phase":"open","writable":true}', "phaseOnly holds");
+  await render({ store, project: access, equals: accessEquals });
+  assert.equal(container.textContent, '{"phase":"open","writable":false}');
+});
+
+test("useStore re-selects when the projection changes", async (t) => {
+  const store = new Store({ phase: "open", title: "Notes" });
+  const { container, render } = mount(t);
+  await render({ store, project: (state) => state.phase });
+  assert.equal(container.textContent, '"open"');
+  await render({ store, project: (state) => state.title });
+  assert.equal(container.textContent, '"Notes"');
+});
+
+test("useStore follows a new store and drops the old subscription", async (t) => {
+  const first = new Store({ phase: "first" });
+  const second = new Store({ phase: "second" });
+  const commits = [];
+  const { container, render } = mount(t);
+  const project = (state) => state.phase;
+  await render({ store: first, project, commits });
+  await render({ store: second, project, commits });
+  assert.equal(container.textContent, '"second"');
+  assert.equal(commits.length, 2);
+  await act(() => first.update(() => ({ phase: "first again" })));
+  assert.equal(commits.length, 2, "the old store no longer renders");
+  await act(() => second.update(() => ({ phase: "second again" })));
+  assert.equal(container.textContent, '"second again"');
+  assert.equal(commits.length, 3);
+});
+
+test("an abandoned transition render does not disturb the committed selection", async (t) => {
+  const store = new Store({ phase: "open", writable: true });
+  const phase = (state) => ({ phase: state.phase });
+  const both = (state) => ({ phase: state.phase, writable: state.writable });
+  const commits = [];
+  let release;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  function Gate({ wait }) {
+    if (wait) use(pending);
+    return null;
+  }
+  const app = (project, wait) =>
+    createElement(
+      Suspense,
+      { fallback: "loading" },
+      createElement(Show, { store, project, equals: shallowEqual, commits }),
+      createElement(Gate, { wait }),
+    );
+  const { container, root } = mount(t);
+  await act(() => root.render(app(phase, false)));
+  assert.equal(commits.length, 1);
+
+  // The transition renders Show with a wider projection, then suspends on
+  // Gate. React keeps the committed UI and throws that render away.
+  await act(() => startTransition(() => root.render(app(both, true))));
+  assert.equal(container.textContent, '{"phase":"open"}');
+  assert.equal(commits.length, 1);
+
+  // The committed Show still projects `phase`, which hasn't changed.
+  await act(() => store.update((state) => ({ ...state, writable: false })));
+  assert.equal(commits.length, 1, "no re-render for an unchanged committed selection");
+
+  await act(async () => {
+    release();
+    await pending;
+  });
+  assert.equal(container.textContent, '{"phase":"open","writable":false}');
+  assert.equal(commits.length, 2);
 });
 
 // Virtual-time pattern for machine interpreters. The interpreter steps the
