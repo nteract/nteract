@@ -3,10 +3,14 @@ import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { GardState, GardSelection } from "wordgard/state";
 import { history, undo } from "wordgard/history";
-import { Command, insertText } from "wordgard/command";
+import { Command, insertLineBreak, insertText, toggleMark } from "wordgard/command";
 import { enableRich, textPath, blockMarkdown } from "../model/richtext.mjs";
-import { schema, decode } from "./wordgard-model.mjs";
-import { createWordgardBinding, wordgardCodeNewlines } from "./wordgard-binding.mjs";
+import { schema, decode, Strong } from "./wordgard-model.mjs";
+import {
+  createWordgardBinding,
+  insertPlainLineBreak,
+  wordgardCodeNewlines,
+} from "./wordgard-binding.mjs";
 import { clearHighlight, selectionHighlight, setHighlight, toggleHighlight } from "./highlight.mjs";
 
 function setup(markdown) {
@@ -113,6 +117,120 @@ test("a collapsed selection sets the highlight for the next typed text", () => {
     ["a", {}],
     ["X", { highlight: "pink" }],
     ["b", {}],
+  ]);
+  binding.destroy();
+});
+
+function native(spans) {
+  let doc = A.change(
+    A.from({ blocks: { one: { id: "one", kind: "markdown", markdown: "" } } }),
+    (d) => enableRich(d, "one"),
+  );
+  return A.change(doc, (d) => A.updateSpans(d, textPath("one"), spans));
+}
+function editorFor(doc) {
+  const replica = {
+    get doc() {
+      return doc;
+    },
+    change(fn) {
+      doc = A.change(doc, fn);
+    },
+    observeChange: () => () => {},
+  };
+  const binding = createWordgardBinding(replica, "one");
+  let state = GardState.create({
+    doc: binding.current.doc,
+    config: [GardState.schemaElement.of(schema.elements), wordgardCodeNewlines, history()],
+  });
+  const editor = {
+    get state() {
+      return state;
+    },
+    select(anchor, head = anchor) {
+      state = state.update({ selection: GardSelection.Text.create({ anchor, head }) }).state;
+    },
+    dispatch(spec) {
+      const tr = state.update(spec);
+      binding.applyEditorTransaction(tr);
+      state = tr.state;
+      assert.ok(decode(A.spans(replica.doc, textPath("one"))).doc.eq(state.doc));
+    },
+  };
+  const spans = () =>
+    A.spans(replica.doc, textPath("one"))
+      .filter((span) => span.type === "text")
+      .map((span) => [span.value, span.marks ?? {}]);
+  return { binding, editor, spans };
+}
+
+test("typing at either edge of a foreign-marked run leaves the new text unmarked", () => {
+  for (const [at, expected] of [
+    [
+      1,
+      [
+        ["X", {}],
+        ["mid", { underline: true }],
+      ],
+    ],
+    [
+      4,
+      [
+        ["mid", { underline: true }],
+        ["X", {}],
+      ],
+    ],
+  ]) {
+    const doc = native([{ type: "text", value: "mid", marks: { underline: true } }]);
+    const { binding, editor, spans } = editorFor(doc);
+    editor.select(at);
+    Command.dispatch(editor, insertText, { from: at, to: at, insert: "X" });
+    assert.deepEqual(spans(), expected, `typed at ${at}`);
+    binding.destroy();
+  }
+});
+
+test("code text stays unformatted through toolbar marks and structural edits", () => {
+  const code = {
+    type: "block",
+    value: { type: "code-block", parents: [], attrs: { params: "" }, isEmbed: false },
+  };
+  const { binding, editor, spans } = editorFor(native([code, { type: "text", value: "one\ntwo" }]));
+  const end = editor.state.doc.length - 1;
+  editor.select(1, end);
+  Command.dispatch(editor, setHighlight, "green");
+  Command.dispatch(editor, toggleMark, Strong);
+  assert.deepEqual(spans(), [["one\ntwo", {}]]);
+  editor.select(end);
+  Command.dispatch(editor, insertLineBreak);
+  Command.dispatch(editor, insertText, { from: end + 1, to: end + 1, insert: "three" });
+  assert.deepEqual(spans(), [["one\ntwo\nthree", {}]]);
+  binding.destroy();
+});
+
+test("marks a writer left on code text are not decoded", () => {
+  const code = {
+    type: "block",
+    value: { type: "code-block", parents: [], attrs: { params: "" }, isEmbed: false },
+  };
+  const { doc } = decode([
+    code,
+    { type: "text", value: "a\nb", marks: { highlight: "green", strong: true } },
+  ]);
+  assert.ok(doc.content[0].content.every((node) => !node.marks.length));
+});
+
+test("Shift+Enter inside bold prose inserts an unmarked break and keeps bold for typing", () => {
+  const { binding, editor, spans } = editorFor(
+    native([{ type: "text", value: "bold", marks: { strong: true } }]),
+  );
+  editor.select(3);
+  assert.equal(Command.dispatch(editor, insertPlainLineBreak), true);
+  const at = editor.state.selection.head;
+  Command.dispatch(editor, insertText, { from: at, to: at, insert: "X" });
+  assert.deepEqual(spans(), [
+    ["bo", { strong: true }],
+    ["Xld", { strong: true }],
   ]);
   binding.destroy();
 });

@@ -60,6 +60,7 @@ import {
   commitEditorTransactions,
   createWordgardBinding,
   wordgardCodeNewlines,
+  insertPlainLineBreak,
   wordgardHistory,
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
@@ -334,6 +335,7 @@ export function WordgardEditor(props) {
           },
         }),
         KeyBinding.of({ key: "Mod-Alt-m", run: () => comment() }),
+        KeyBinding.of({ key: "Shift-Enter", run: insertPlainLineBreak }),
         KeyBinding.of({
           key: "Mod-Shift-h",
           run: () => latest.current.editable && Command.dispatch(editor, toggleHighlight),

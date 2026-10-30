@@ -235,3 +235,19 @@ test("format_match links text and rejects unsafe or unknown marks", () => {
   fail({ match_text: "docs", add: { em: true }, remove: ["em"] }, /both added and removed/);
   fail({ match_text: "e", add: { em: true } }, /format_match found \d+ matches/);
 });
+
+test("format_match refuses code text, and stray code marks don't break reads", () => {
+  const { doc, id } = fixture("```\nalpha\nbeta\n```");
+  assert.throws(
+    () =>
+      apply(A.clone(doc), [
+        { op: "format_match", block_id: id, match_text: "alpha", add: { highlight: "green" } },
+      ]),
+    /code block/,
+  );
+  // A mark another writer left on code text: the Page still projects.
+  const marked = A.change(doc, (d) =>
+    A.mark(d, textPath(id), { start: 1, end: 6, expand: "none" }, "strong", true),
+  );
+  assert.equal(projectPage(marked).blocks[0].markdown, "```\nalpha\nbeta\n```");
+});
