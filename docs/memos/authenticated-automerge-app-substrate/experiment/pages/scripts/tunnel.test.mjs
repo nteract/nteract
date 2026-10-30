@@ -36,14 +36,21 @@ function cloudflare(tunnels = []) {
  * `install` changes the install call: "lost" runs it and then reports an SSH
  * failure; "between" fails it after the credentials move.
  */
-function host(root, { install } = {}) {
+function host(root, { install, dropAfterInstall = 0 } = {}) {
   const runs = [];
+  let installed = false;
+  let dropped = 0;
   const run = (target, command, input) => {
     let script = command.at(-1).replaceAll("/etc/", root + "/");
     runs.push(script);
+    if (installed && dropped < dropAfterInstall) {
+      dropped++;
+      throw new Error("ssh: connection lost");
+    }
     const installing = script.includes("mktemp");
     if (installing && install === "between") script = script.replace(/mv -n "\$r"[^;]*;/, "false;");
     execFileSync("sh", ["-ec", script], { input: input ?? "", stdio: ["pipe", "ignore", "pipe"] });
+    if (installing) installed = true;
     if (installing && install === "lost") throw new Error("ssh: connection lost");
   };
   return { run, runs };
@@ -165,6 +172,34 @@ test("a lost acknowledgement after both files land keeps the tunnel", async () =
     "tunnel-provisioning.json",
     "tunnel.json",
   ]);
+});
+
+test("an unanswered reconcile check leaves the tunnel and its files for an operator", async () => {
+  const root = etc();
+  const cf = cloudflare();
+  await assert.rejects(
+    provisionTunnel({
+      token: "t",
+      target: "page9",
+      apply: true,
+      fetchImpl: cf.fetchImpl,
+      run: host(root, { install: "lost", dropAfterInstall: 1 }).run,
+    }),
+    /didn't answer a check/,
+  );
+  assert.ok(cf.calls.every(({ method }) => method !== "DELETE"));
+  assert.deepEqual(readdirSync(path.join(root, "nteract-page9")).sort(), [
+    "tunnel-provisioning.json",
+    "tunnel.json",
+  ]);
+});
+
+test("cleanup removes this tunnel's files whatever their JSON spacing", () => {
+  const root = etc();
+  const d = path.join(root, "nteract-page9");
+  writeFileSync(path.join(d, "tunnel.json"), `{ "TunnelID" :  "${tunnelId}" }`);
+  removeOwnedFiles("page9", tunnelId, { run: host(root).run });
+  assert.deepEqual(readdirSync(d), []);
 });
 
 test("cleanup leaves files that name another tunnel", () => {

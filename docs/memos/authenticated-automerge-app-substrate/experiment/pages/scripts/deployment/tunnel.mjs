@@ -105,34 +105,43 @@ export function checkHostReady(target, { run = runRemote } = {}) {
   ]);
 }
 
-/** Fails unless the host's receipt and credentials name `tunnelId`. */
-export function checkHostInstalled(target, tunnelId, { run = runRemote } = {}) {
+const INSTALLED = 0;
+const ABSENT = 3;
+
+/**
+ * Whether the host's receipt and credentials both name `tunnelId`: "installed",
+ * "absent" (the host answered and they don't), or "unknown" (no answer, such
+ * as a dropped SSH connection).
+ */
+export function hostState(target, tunnelId, { run = runRemote } = {}) {
   if (!uuid.test(tunnelId ?? "")) throw new Error("Tunnel UUID required");
   const d = directoryOf(target);
-  run(hostOf(target), [
-    "sudo",
-    "sh",
-    "-ec",
-    `grep -Eq '"tunnel_id": ?"${tunnelId}"' ${d}/tunnel-provisioning.json; grep -Eq '"TunnelID": ?"${tunnelId}"' ${d}/tunnel.json`,
-  ]);
+  try {
+    run(hostOf(target), [
+      "sudo",
+      "sh",
+      "-c",
+      `if grep -qF '${tunnelId}' ${d}/tunnel-provisioning.json 2>/dev/null && grep -qF '${tunnelId}' ${d}/tunnel.json 2>/dev/null; then exit ${INSTALLED}; fi; exit ${ABSENT}`,
+    ]);
+    return "installed";
+  } catch (error) {
+    return error?.status === ABSENT ? "absent" : "unknown";
+  }
 }
 
 /** Remove each tunnel file only if it names `tunnelId`. Files that name
- * another tunnel, or that are absent, are left alone. */
+ * another tunnel, or that are absent, are left alone. Fails if a file that
+ * names it remains. */
 export function removeOwnedFiles(target, tunnelId, { run = runRemote } = {}) {
   if (!uuid.test(tunnelId ?? "")) throw new Error("Tunnel UUID required");
   const d = directoryOf(target);
-  run(hostOf(target), [
-    "sudo",
-    "sh",
-    "-ec",
-    [
-      `if grep -Eq '"TunnelID": ?"${tunnelId}"' ${d}/tunnel.json 2>/dev/null; then rm -f ${d}/tunnel.json; fi`,
-      `if grep -Eq '"tunnel_id": ?"${tunnelId}"' ${d}/tunnel-provisioning.json 2>/dev/null; then rm -f ${d}/tunnel-provisioning.json; fi`,
-      `test ! -e ${d}/tunnel.json || ! grep -q '${tunnelId}' ${d}/tunnel.json`,
-      `test ! -e ${d}/tunnel-provisioning.json || ! grep -q '${tunnelId}' ${d}/tunnel-provisioning.json`,
-    ].join("; "),
-  ]);
+  const script = ["tunnel.json", "tunnel-provisioning.json"]
+    .map((name) => {
+      const file = `${d}/${name}`;
+      return `if grep -qF '${tunnelId}' ${file} 2>/dev/null; then rm -f ${file}; fi; if [ -e ${file} ] && grep -qF '${tunnelId}' ${file}; then exit 1; fi`;
+    })
+    .join("; ");
+  run(hostOf(target), ["sudo", "sh", "-c", script + "; exit 0"]);
 }
 
 /**
@@ -180,9 +189,10 @@ export async function provisionTunnel({
   const api = tunnelApi({ token, target, fetchImpl });
   const existing = await api.find();
   if (existing) {
-    try {
-      checkHostInstalled(target, existing.id, { run });
-    } catch {
+    const state = hostState(target, existing.id, { run });
+    if (state === "unknown")
+      throw new Error("Could not read the host's tunnel files; check SSH, then rerun");
+    if (state !== "installed") {
       throw new Error(
         `Tunnel ${existing.id} exists but the host has no matching credentials. ` +
           "Its secret can't be recovered: delete the tunnel in Cloudflare, then rerun.",
@@ -197,12 +207,16 @@ export async function provisionTunnel({
     installTunnelFiles(target, created, { run });
   } catch (error) {
     // The SSH call may have failed after the files landed, or between them.
-    // Reconcile before undoing anything.
-    try {
-      checkHostInstalled(target, created.tunnelId, { run });
-      return { name: api.name, tunnelId: created.tunnelId, created: true, installed: true };
-    } catch {}
+    // Reconcile before undoing anything, and undo only on a confirmed answer.
     const stranded = `Installing credentials for tunnel ${created.tunnelId} failed`;
+    const state = hostState(target, created.tunnelId, { run });
+    if (state === "installed")
+      return { name: api.name, tunnelId: created.tunnelId, created: true, installed: true };
+    if (state === "unknown")
+      throw new Error(
+        `${stranded}, and the host didn't answer a check. If both tunnel files name it, it is installed; otherwise remove any tunnel file that names it, delete the tunnel in Cloudflare, then rerun.`,
+        { cause: error },
+      );
     try {
       removeOwnedFiles(target, created.tunnelId, { run });
     } catch {
