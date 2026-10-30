@@ -102,7 +102,7 @@ test("each key has its own setup", async () => {
 
 test("a single-flight caller starts its work only after the earlier call settles", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const flight = isolateSingleFlight();
+  const flight = isolateSingleFlight({ holdMs: 60_000 });
   const first = deferred();
   const started = [];
   const owner = flight("key", () => (started.push("owner"), first.promise));
@@ -269,7 +269,7 @@ test("an API key's lookups share one flight whatever the scheme's case", async (
 
 test("a single-flight caller whose work stalls gives up, and the key stays held until it settles", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
-  const flight = isolateSingleFlight();
+  const flight = isolateSingleFlight({ holdMs: 60_000 });
   const stalled = deferred();
   const outcome = flight("key", () => stalled.promise).then(
     () => "settled",
@@ -290,4 +290,25 @@ test("a single-flight caller whose work stalls gives up, and the key stays held 
   await turns();
   t.mock.timers.tick(isolateSetupTimeouts.poll);
   assert.equal(await next, "next");
+});
+
+test("a key whose work never settles frees itself after holdMs", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const flight = isolateSingleFlight({ holdMs: 60_000 });
+  flight("key", () => new Promise(() => {})).catch(() => {});
+  await turns();
+  t.mock.timers.tick(isolateSetupTimeouts.wait);
+  await turns();
+  const blocked = flight("key", async () => "blocked").then(
+    () => "ran",
+    (error) => error.status,
+  );
+  await turns();
+  for (let elapsed = 0; elapsed < isolateSetupTimeouts.wait; elapsed += isolateSetupTimeouts.poll) {
+    t.mock.timers.tick(isolateSetupTimeouts.poll);
+    await turns(2);
+  }
+  assert.equal(await blocked, 503, "inside holdMs the key is still held");
+  t.mock.timers.setTime(Date.now() + 60_000);
+  assert.equal(await flight("key", async () => "fresh"), "fresh");
 });

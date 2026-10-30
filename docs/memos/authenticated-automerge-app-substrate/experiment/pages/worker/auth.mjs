@@ -6,8 +6,9 @@ import { domainAccessForIdentity } from "./domain-access.mjs";
 import { withAdmissionReason } from "./admission-reasons.mjs";
 import { isolateSingleFlight } from "./isolate-setup.mjs";
 
-// The API-key verifier caches one pending provider lookup per key; see isolate-setup.mjs.
-const apiKeyLookup = isolateSingleFlight();
+// The API-key verifier caches one pending provider lookup per token for 60 s
+// (ANACONDA_API_KEY_CACHE_TTL_MS in @cloud/identity.ts); see isolate-setup.mjs.
+const apiKeyLookup = isolateSingleFlight({ holdMs: 65_000 });
 
 export class HttpError extends Error {
   constructor(status, message, code) {

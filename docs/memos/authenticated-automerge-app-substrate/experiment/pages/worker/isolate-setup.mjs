@@ -72,21 +72,27 @@ export function isolateSetup(run) {
  * settled entry or starts its own lookup.
  *
  * The caller running `work` also gives up after `isolateSetupTimeouts.wait`
- * with the same retryable 503. The key stays held until `work` settles, so no
- * later caller reaches a pending entry the abandoned call left in the cache,
- * and no later run can start before it ends.
+ * with the same retryable 503. The key stays held until `work` settles, or for
+ * `holdMs` after it started if it never does. `holdMs` must exceed the
+ * library cache's lifetime for a pending entry, so the next caller after
+ * release starts a new lookup instead of meeting the abandoned one.
  */
-export function isolateSingleFlight() {
-  const running = new Set();
+export function isolateSingleFlight({ holdMs }) {
+  const running = new Map();
   return async (key, work) => {
     const deadline = Date.now() + isolateSetupTimeouts.wait;
-    while (running.has(key)) await pause(deadline);
-    running.add(key);
+    for (;;) {
+      const held = running.get(key);
+      if (held === undefined || Date.now() >= held) break;
+      await pause(deadline);
+    }
+    const token = Date.now() + holdMs;
+    running.set(key, token);
+    const release = () => {
+      if (running.get(key) === token) running.delete(key);
+    };
     const settled = Promise.resolve().then(work);
-    settled.then(
-      () => running.delete(key),
-      () => running.delete(key),
-    );
+    settled.then(release, release);
     let timer;
     try {
       return await Promise.race([

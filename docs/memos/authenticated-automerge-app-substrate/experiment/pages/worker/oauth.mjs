@@ -1,5 +1,4 @@
 import { pagesPublicOrigin } from "../agent-guide.mjs";
-import { isolateSingleFlight } from "./isolate-setup.mjs";
 import { serverOidcSessionStatus } from "@cloud/server-oidc.ts";
 import { loadServerSession, readServerAppSession } from "@cloud/oidc-session-store.ts";
 import {
@@ -21,10 +20,7 @@ const OFFLINE = "offline_access";
 const MAX_INPUT_BYTES = 16_384;
 // This single fixed, public metadata document is shared by all requests in an
 // isolate. Never retain failed validation or use stale metadata after expiry.
-// `runs` counts finished verifications; `outcomes` holds the last 16 by run
-// number. See verifyClientMetadata.
-const clientMetadataCache = { validUntil: 0, runs: 0, outcomes: new Map() };
-const metadataFlight = isolateSingleFlight();
+const clientMetadataCache = { validUntil: 0, pending: null };
 const routes = new Set([
   "/.well-known/oauth-protected-resource",
   "/.well-known/oauth-protected-resource/mcp",
@@ -222,32 +218,20 @@ function metadataFreshUntil(headers) {
   );
   return Date.now() + Math.max(0, lifetime - age) * 1000;
 }
-/* One verification runs at a time per isolate; see isolate-setup.mjs. A
- * request that arrived while a verification ran takes that run's outcome,
- * even when the metadata may not be cached, rather than fetching again. That
- * is the first run to finish after the request arrived. */
 async function verifyClientMetadata(client) {
   if (client.id !== CHATGPT_CLIENT) return;
   if (clientMetadataCache.validUntil > Date.now()) return;
-  const awaited = clientMetadataCache.runs + 1;
-  const outcome = await metadataFlight("chatgpt", async () => {
-    const finished = clientMetadataCache.outcomes.get(awaited);
-    if (finished) return finished;
-    if (clientMetadataCache.validUntil > Date.now()) return { ok: true };
-    clientMetadataCache.validUntil = 0;
-    let result;
-    try {
-      clientMetadataCache.validUntil = await fetchAndVerifyClientMetadata();
-      result = { ok: true };
-    } catch (error) {
-      result = { ok: false, error };
-    }
-    const run = ++clientMetadataCache.runs;
-    clientMetadataCache.outcomes.set(run, result);
-    clientMetadataCache.outcomes.delete(run - 16);
-    return result;
+  if (clientMetadataCache.pending) return clientMetadataCache.pending;
+  clientMetadataCache.validUntil = 0;
+  const pending = fetchAndVerifyClientMetadata().then((validUntil) => {
+    clientMetadataCache.validUntil = validUntil;
   });
-  if (!outcome.ok) throw outcome.error;
+  clientMetadataCache.pending = pending;
+  try {
+    await pending;
+  } finally {
+    clientMetadataCache.pending = null;
+  }
 }
 async function fetchAndVerifyClientMetadata() {
   let metadata, freshUntil;
