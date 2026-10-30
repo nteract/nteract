@@ -191,8 +191,25 @@ export function formatMatch(doc, id, input) {
   if (remove.some((name) => Object.hasOwn(add, name)))
     throw Error("A mark cannot be both added and removed");
   const { path, start, end } = findUniqueVisibleRange(doc, id, { ...input, op: "format_match" });
+  if (inCodeBlock(doc, path, start))
+    throw Error("format_match can't format text inside a code block; code text is unformatted.");
   for (const name of remove) A.unmark(doc, path, { start, end, expand: "both" }, name);
   for (const [name, value] of Object.entries(add))
     A.mark(doc, path, { start, end, expand: markExpand(name) }, name, value);
   return { op: "format_match", block_id: id, matched: 1 };
+}
+
+// Whether native position `at` sits in a code block: the nearest block marker
+// before it is a code-block marker.
+function inCodeBlock(doc, path, at) {
+  let pos = 0,
+    code = false;
+  for (const span of A.spans(doc, path)) {
+    if (pos > at) break;
+    if (span.type === "block") {
+      code = String(span.value?.type) === "code-block";
+      pos += 1;
+    } else pos += span.value.length;
+  }
+  return code;
 }

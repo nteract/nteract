@@ -530,7 +530,20 @@ export function exportMarkdown(doc) {
 export const RICH_FORMAT = "automerge-rich-text-v1";
 export const textPath = (id) => ["blocks", id, "richText"];
 export const isRich = (block) => block?.format === RICH_FORMAT;
-export const richDoc = (block) => pmDocFromSpans(adapter, A.spans(block, ["richText"]));
+// Code text is unformatted: ProseMirror's code_block allows no marks and a
+// Markdown fence can't express them. Marks a writer left on code text are not
+// read, so one stray mark can't make the whole Page unreadable.
+export function codeTextUnmarked(spans) {
+  let code = false;
+  return spans.map((span) => {
+    if (span.type === "block") code = String(span.value?.type) === "code-block";
+    return code && span.type === "text" && Object.keys(span.marks ?? {}).length
+      ? { ...span, marks: {} }
+      : span;
+  });
+}
+export const richDoc = (block) =>
+  pmDocFromSpans(adapter, codeTextUnmarked(A.spans(block, ["richText"])));
 export function blockMarkdown(block) {
   if (!isRich(block)) return block.markdown;
   const current = exportMarkdown(richDoc(block));

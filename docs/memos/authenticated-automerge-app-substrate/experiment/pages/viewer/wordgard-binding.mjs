@@ -1,7 +1,8 @@
 // Adapted from rgbkrk/wordgard-automerge c9c6ea8 (BSD-3-Clause).
 import * as A from "@automerge/automerge/slim";
-import { Token } from "wordgard/doc";
-import { Correction, GardState, Transaction } from "wordgard/state";
+import { ChangeSet, Leaf, Token } from "wordgard/doc";
+import { Correction, GardSelection, GardState, Transaction } from "wordgard/state";
+import { insertLineBreak } from "wordgard/command";
 import { history } from "wordgard/history";
 import {
   decode,
@@ -20,17 +21,60 @@ import { MARK_NAMES, markExpand } from "../model/marks.mjs";
 // insert text containing newlines. Keep one editor representation before local
 // transactions reach the native binding. Correction skips remote transactions;
 // decode already normalizes those and the native source remains ordinary text.
-export const wordgardCodeNewlines = Correction.onContent(CodeBlock, (position) => {
+// Code text also carries no marks: Markdown fences and the shared codec can't
+// express formatting inside code.
+const stripCodeMarks = (position) => {
   const changes = [];
   let from = position.start;
   for (const child of position.node.content) {
-    if (child.isText)
-      for (let i = child.param.indexOf("\n"); i >= 0; i = child.param.indexOf("\n", i + 1))
-        changes.push({ from: from + i, to: from + i + 1, insert: [LineBreak] });
+    if (child.isText && (child.marks.length || child.param.includes("\n")))
+      changes.push({
+        from,
+        to: from + child.length,
+        insert: child.param
+          .split("\n")
+          .flatMap((part, i) => [...(i ? [LineBreak] : []), ...(part ? [Leaf.text(part)] : [])]),
+      });
     from += child.length;
   }
   return changes.length ? changes : null;
-});
+};
+export const wordgardCodeNewlines = [
+  Correction.onContent(CodeBlock, stripCodeMarks),
+  // onContent sees inserted text; onMarks sees marks added to existing text.
+  Correction.onMarks(Leaf.Text, (position) =>
+    position.node.marks.length && position.parent?.node.type === CodeBlock.type
+      ? {
+          from: position.before,
+          to: position.before + position.node.length,
+          insert: [Leaf.text(position.node.param)],
+        }
+      : null,
+  ),
+];
+
+// Shift+Enter. A hard break is a native block marker, which can't carry
+// marks, so insert an unmarked break and keep the active marks on the cursor
+// for the text typed after it. Wordgard's command copies them onto the break.
+export const insertPlainLineBreak = (target) => {
+  const { state } = target;
+  if (state.readOnly) return false;
+  const brk = state.doc.schema.lineBreak;
+  if (!brk || !state.doc.schema.canContain(state.sel.from.parent.node.type, brk.type))
+    return insertLineBreak(target);
+  const { from, to } = state.selection.replacementRange;
+  const changes = ChangeSet.create(state.doc, { from, to, insert: [brk], fit: true });
+  const pos = changes.findInserted((node) => node.type === brk.type);
+  return {
+    changes,
+    selection: GardSelection.Text.create({
+      anchor: pos == null ? from : pos + 1,
+      marks: state.sel.activeMarks,
+    }),
+    scrollIntoView: true,
+    userEvent: "insert.linebreak",
+  };
+};
 
 // Pages stores ordered items without a start-number attribute. Normalize the
 // editable list tag before encoding, including upstream input rules and paste.

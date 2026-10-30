@@ -106,6 +106,9 @@ export const PagesHighlight = Mark.Type.define("PagesHighlight", {
 // render as plain text and are written back unchanged, so this build can edit
 // a block that carries them without erasing them.
 export const PagesForeignMarks = Mark.Type.define("PagesForeignMarks", {
+  // Non-inclusive: typing next to a foreign run must not extend a mark this
+  // build can't show or remove.
+  inclusive: false,
   validate(value) {
     if (
       !value ||
@@ -401,10 +404,13 @@ export function decode(spans) {
     if (span.type === "text") {
       ensureText();
       const marks = fromMarks(span.marks);
-      // Wordgard uses a LineBreak leaf for newlines in code and prose.
+      // Wordgard uses a LineBreak leaf for newlines in code and prose. Code
+      // text is unformatted, so marks a code span carries are not decoded.
+      const code = stack.at(-1)?.tag.type === CodeBlock.type;
+      const textMarks = code ? Mark.none : marks;
       span.value.split("\n").forEach((part, i) => {
         if (i) leaf(LineBreak);
-        if (part) leaf(Leaf.text(part, marks), part.length);
+        if (part) leaf(Leaf.text(part, textMarks), part.length);
       });
       continue;
     }

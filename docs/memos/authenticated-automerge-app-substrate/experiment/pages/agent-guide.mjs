@@ -721,7 +721,8 @@ yellow, green, blue, pink or a #rrggbb color; link takes {"href": "...",
 Adding a mark the text already has replaces its value across the range, so
 add {"highlight": "blue"} recolors a highlight. remove lists mark names to
 clear. Text, comment anchors and CRDT identity are unchanged. Receipts include
-matched: 1 for each format_match.
+matched: 1 for each format_match. Code blocks are unformatted, so format_match
+refuses text inside one.
 
 Markdown is a projection of the rich text, not its storage. Highlights read as
 <mark data-color="green">text</mark>; insert_markdown, replace_block_markdown and

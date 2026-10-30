@@ -1,6 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import { pmNodeToSpans, pmDocFromSpans } from "@automerge/prosemirror";
 import {
+  codeTextUnmarked,
   adapter,
   RICH_FORMAT,
   isRich,
@@ -39,7 +40,7 @@ export function markdownCommentSpans(source) {
 }
 
 export function commentSpansMarkdown(spans) {
-  return exportMarkdown(pmDocFromSpans(adapter, spans));
+  return exportMarkdown(pmDocFromSpans(adapter, codeTextUnmarked(spans)));
 }
 
 export function validateCommentContent(message) {
