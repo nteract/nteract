@@ -128,6 +128,7 @@ const targets = Object.freeze({
       runtime: shared.runtime,
       requiredVersion: shared.requiredVersion,
     }),
+    sharing: true,
     firewallTable: "nteract_page5",
     firewallMark: "0x04000000",
     firewallComment: "nteract/preview-infra standalone-page5",
@@ -149,6 +150,7 @@ const targets = Object.freeze({
       runtime: shared.runtime,
       requiredVersion: shared.requiredVersion,
     }),
+    sharing: true,
     firewallTable: "nteract_page6",
     firewallMark: "0x02000000",
     firewallComment: "nteract/preview-infra standalone-page6",
@@ -170,6 +172,8 @@ const targets = Object.freeze({
       runtime: shared.runtime,
       requiredVersion: shared.requiredVersion,
     }),
+    sharing: true,
+    oauth: true,
     firewallTable: "nteract_page7",
     firewallMark: "0x01000000",
     firewallComment: "nteract/preview-infra standalone-page7",
@@ -193,6 +197,9 @@ const targets = Object.freeze({
       runtime: shared.runtime,
       requiredVersion: shared.requiredVersion,
     }),
+    sharing: true,
+    oauth: true,
+    theme: true,
     firewallTable: "nteract_page8",
     firewallMark: "0x00800000",
     firewallComment: "nteract/preview-infra standalone-page8",
@@ -207,17 +214,47 @@ const targets = Object.freeze({
     tunnelService: "cloudflared-page8.service",
     frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5", "page6", "page7"]),
   }),
+  page9: Object.freeze({
+    deployment: Object.freeze({
+      host: shared.host,
+      hostname: "page9.runtimed.run",
+      service: "nteract-page9",
+      bucket: shared.bucket,
+      prefix: "standalone/page9",
+      region: shared.region,
+      listen: "127.0.0.1:9479",
+      internalListen: "127.0.0.1:19479",
+      runtime: shared.runtime,
+      requiredVersion: shared.requiredVersion,
+    }),
+    sharing: true,
+    oauth: true,
+    theme: true,
+    firewallTable: "nteract_page9",
+    firewallMark: "0x00400000",
+    firewallComment: "nteract/preview-infra standalone-page9",
+    asyncPersistence: true,
+    compactRecords: true,
+    companyViewDomains: "anaconda.com",
+    catalogIndex: "1",
+    // The Cloudflare edge forwards an unsampled traceparent, and celld's
+    // default parent-based sampler then drops every request-scoped log line.
+    otelTracesSampler: "always_on",
+    editor: "wordgard",
+    tunnelService: "cloudflared-page9.service",
+    frozenTargets: Object.freeze(["page7", "page8"]),
+  }),
 });
 export function deploymentProfile(target = "pages-next") {
   if (!Object.hasOwn(targets, target)) throw new Error("Unknown Pages deployment target");
   return targets[target];
 }
-// This release is qualified only for the isolated Page8 prefix.
+// This release is qualified only for the isolated Page9 prefix.
 // Historical profiles remain readable for comparison and frozen-release checks.
 export function assertQualifiedDeploymentTarget(target) {
   deploymentProfile(target);
-  if (target !== "page8")
-    throw new Error("This build is qualified only for page8; earlier deployments are frozen");
+  if (target !== "page9")
+    throw new Error("This build is qualified only for page9; earlier deployments are frozen");
 }
 
 export function selectTarget(argv) {

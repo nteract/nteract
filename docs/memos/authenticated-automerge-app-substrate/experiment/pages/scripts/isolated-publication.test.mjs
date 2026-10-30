@@ -330,8 +330,17 @@ test("Page8 admits only the exact theme asset while every older route receipt st
     assert.equal(route.test(pathname), false, pathname);
 });
 
-test("OAuth and private images publish only exact Page7 and Page8 routes while previous targets remain closed", () => {
-  for (const target of ["pages-next", "page3", "page4", "page5", "page6", "page7", "page8"]) {
+test("OAuth and private images publish only exact Page7 through Page9 routes while previous targets remain closed", () => {
+  for (const target of [
+    "pages-next",
+    "page3",
+    "page4",
+    "page5",
+    "page6",
+    "page7",
+    "page8",
+    "page9",
+  ]) {
     const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
     for (const pathname of [
       "/oauth/authorize",
@@ -345,7 +354,7 @@ test("OAuth and private images publish only exact Page7 and Page8 routes while p
     ])
       assert.equal(
         route.test(pathname),
-        ["page7", "page8"].includes(target),
+        ["page7", "page8", "page9"].includes(target),
         `${target}: ${pathname}`,
       );
     for (const pathname of [
@@ -825,7 +834,12 @@ test("page6 cannot adopt other targets' historical or pending route receipts", (
   }
 });
 
-for (const target of ["page7", "page8"])
+const frozenBy = {
+  page7: ["pages-next", "page3", "page4", "page5", "page6"],
+  page8: ["pages-next", "page3", "page4", "page5", "page6", "page7"],
+  page9: ["page7", "page8"],
+};
+for (const target of ["page7", "page8", "page9"])
   test(`${target} publication retries preserve every earlier deployment`, (t) => {
     const f = fixture(t, { target, failStart: true });
     assert.throws(f.execute, /injected connector startup failure/);
@@ -833,14 +847,7 @@ for (const target of ["page7", "page8"])
     const receipt = fs.readFileSync(f.local(installation), "utf8");
     for (let i = 0; i < 2; i++) {
       const result = f.execute();
-      assert.deepEqual(result.frozenTargetsUnchanged, [
-        "pages-next",
-        "page3",
-        "page4",
-        "page5",
-        "page6",
-        ...(target === "page8" ? ["page7"] : []),
-      ]);
+      assert.deepEqual(result.frozenTargetsUnchanged, frozenBy[target]);
       assert.equal(result.sharedTunnelUnchanged, true);
       assert.equal(result.routesUpdated, false);
       assert.equal(fs.readFileSync(f.local(installation), "utf8"), receipt);
@@ -950,7 +957,7 @@ for (const mutation of ["config", "pid"])
   });
 
 const imageAssetPath = "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets";
-for (const target of ["page6", "page7", "page8"])
+for (const target of ["page6", "page7", "page8", "page9"])
   test(`${target} publisher verifies private image ingress before starting its connector`, (t) => {
     const f = fixture(t, { target });
     f.execute();

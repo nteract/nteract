@@ -6,13 +6,14 @@ export const imagePaths =
   "pages/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/assets(/[0-9a-f]{64})?|";
 
 export function routesFor(target = "pages-next", legacy = false) {
-  const { hostname, listen } = deploymentProfile(target).deployment;
-  const renderer = deploymentProfile(target).tunnelService ? "mermaid[.]js|" : "";
-  const theme = target === "page8" ? "theme[.]js|" : "";
+  const profile = deploymentProfile(target);
+  const { hostname, listen } = profile.deployment;
+  const renderer = profile.tunnelService ? "mermaid[.]js|" : "";
+  const theme = profile.theme ? "theme[.]js|" : "";
   // Frozen deployments retain their exact route receipts. Sharing targets expose
   // only the public setup page, its script, and the authenticated access API.
-  const sharing = ["page5", "page6", "page7", "page8"].includes(target);
-  const authenticatedAssets = target === "page7" || target === "page8";
+  const sharing = profile.sharing === true;
+  const authenticatedAssets = profile.oauth === true;
   const connect = sharing ? "connect|connect[.]js|" : "";
   const access = sharing ? "access|" : "";
   const paths = legacy
