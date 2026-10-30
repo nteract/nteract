@@ -569,11 +569,20 @@ test("foreign or tampered cursors fail with one generic error", async (t) => {
   await ownEntries(f.catalog(owner).ctx.storage, 3);
   const { next_cursor } = (await f.list(owner, { limit: 1 })).body;
   assert.ok(next_cursor);
+  // Flip one bit of the sealed bytes. Editing the text can leave the bytes
+  // unchanged: base64 decoding ignores the last character's unused bits.
+  const [prefix, sealed] = [
+    next_cursor.slice(0, 3),
+    Buffer.from(next_cursor.slice(3), "base64url"),
+  ];
+  sealed[sealed.length - 1] ^= 1;
+  const tampered = prefix + sealed.toString("base64url");
+  assert.notEqual(tampered, next_cursor);
   for (const [principal, args] of [
     [member, { limit: 1, cursor: next_cursor }],
     [owner, { limit: 1, query: "owned", cursor: next_cursor }],
     [owner, { limit: 1, in_trash: true, cursor: next_cursor }],
-    [owner, { limit: 1, cursor: `${next_cursor.slice(0, -2)}AA` }],
+    [owner, { limit: 1, cursor: tampered }],
   ]) {
     const result = await f.list(principal, args);
     assert.equal(result.status, 400);
