@@ -70,6 +70,11 @@ export function isolateSetup(run) {
  * library cache that hands every caller the same pending promise: a later
  * caller reaches the cache only after the earlier call settles, so it gets a
  * settled entry or starts its own lookup.
+ *
+ * The caller running `work` gives up after `isolateSetupTimeouts.wait` too,
+ * with the same retryable 503, and frees the key. A lookup that never settles
+ * then holds no later request; those requests may still meet its pending entry
+ * in the library cache until that entry expires.
  */
 export function isolateSingleFlight() {
   const running = new Set();
@@ -77,13 +82,29 @@ export function isolateSingleFlight() {
     const deadline = Date.now() + isolateSetupTimeouts.wait;
     while (running.has(key)) await pause(deadline);
     running.add(key);
+    let timer;
     try {
-      return await work();
+      return await Promise.race([
+        work(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(waitTimeout()), Math.max(0, deadline - Date.now()));
+        }),
+      ]);
     } finally {
+      clearTimeout(timer);
       running.delete(key);
     }
   };
 }
+
+/**
+ * OIDC provider work: sign-in, the callback, session status and refresh, and
+ * the loopback issuer. The OIDC libraries cache discovery, signing keys and
+ * UserInfo as shared pending promises, so this work runs one request at a
+ * time per isolate.
+ */
+const oidcFlight = isolateSingleFlight();
+export const oidcProvider = (work) => oidcFlight("oidc", work);
 
 const sessionSchema = isolateSetup((db, env) => oidcDatabase(env));
 

@@ -10,8 +10,8 @@
 //
 // It prints each case's outcomes ("missing" means the waiter ran in another
 // isolate and proves nothing). Exit status 2 means some waiter hung, so
-// worker/isolate-setup.mjs is still needed. Exit status 0 means every waiter
-// finished.
+// worker/isolate-setup.mjs is still needed. Exit status 3 means no waiter hung
+// but some run was inconclusive. Exit status 0 means every waiter finished.
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
@@ -114,6 +114,7 @@ const child = spawn(
   { env, stdio: "ignore", detached: true },
 );
 let hung = 0;
+let inconclusive = 0;
 try {
   for (let i = 0; ; i++) {
     if (i > 300) throw new Error("celld did not start");
@@ -144,6 +145,7 @@ try {
       outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
     }
     hung += outcomes.hung ?? 0;
+    inconclusive += runs - (outcomes.hung ?? 0) - (outcomes.done ?? 0);
     console.log(`${name}: ${JSON.stringify(outcomes)}`);
   }
 } finally {
@@ -156,4 +158,4 @@ try {
   } catch {}
   await rm(dir, { recursive: true, force: true });
 }
-process.exitCode = hung ? 2 : 0;
+process.exitCode = hung ? 2 : inconclusive ? 3 : 0;

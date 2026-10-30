@@ -25,7 +25,7 @@ import { handleMcp } from "../mcp.mjs";
 import { agentGuideResponse } from "../agent-guide.mjs";
 import { connectAgentResponse } from "../connect-agent.mjs";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
-import { sessionStoreReady } from "./isolate-setup.mjs";
+import { oidcProvider, sessionStoreReady } from "./isolate-setup.mjs";
 import { WebSocketByteTransport } from "../shared/byte-transport.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
@@ -536,7 +536,7 @@ const gateway = {
         env.NOTEBOOK_CLOUD_LOCAL_OIDC === "true" &&
         ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
       ) {
-        const local = await handleLocalOidcRequest(request, env);
+        const local = await oidcProvider(() => handleLocalOidcRequest(request, env));
         if (local) return local;
       }
       if (url.pathname === "/connect") return connectAgentResponse(request, env);
@@ -553,8 +553,9 @@ const gateway = {
       const oauth = await handleOAuth(request, env);
       if (oauth) return oauth;
       if (url.pathname === "/api/auth/login" && request.method === "GET")
-        return beginServerOidcLogin(request, env);
-      if (url.pathname === "/oidc") return completeServerOidcLogin(request, env, noop);
+        return await oidcProvider(() => beginServerOidcLogin(request, env));
+      if (url.pathname === "/oidc")
+        return await oidcProvider(() => completeServerOidcLogin(request, env, noop));
       if (url.pathname === "/api/auth/logout" && request.method === "POST") {
         requireSameOrigin(request, env);
         return deleteServerOidcSession(request, env);
@@ -562,7 +563,7 @@ const gateway = {
       if (url.pathname === "/api/auth/session" && request.method === "GET") {
         let refreshed;
         if (!request.headers.has("authorization")) {
-          refreshed = await serverOidcSessionStatus(request, env, noop);
+          refreshed = await oidcProvider(() => serverOidcSessionStatus(request, env, noop));
           if (!refreshed.ok) return refreshed;
         }
         let identity = null;

@@ -116,7 +116,8 @@ export async function authenticate(request, env) {
     }
     // Caller identity/scope/operator headers are never forwarded to the verifier.
     const verify = (scope) =>
-      apiKeyLookup(authorization, () =>
+      // The provider cache keys on the token, whatever the scheme's case.
+      apiKeyLookup(token, () =>
         authenticateAnacondaApiKeyRequest(
           new Request(request.url, {
             headers: {

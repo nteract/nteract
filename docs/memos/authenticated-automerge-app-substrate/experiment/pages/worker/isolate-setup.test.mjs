@@ -4,7 +4,12 @@ import { test } from "node:test";
 import { randomSecret, SERVER_SESSION_COOKIE } from "@cloud/oidc-session-store.ts";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { authenticate } from "./auth.mjs";
-import { isolateSetup, isolateSetupTimeouts, isolateSingleFlight } from "./isolate-setup.mjs";
+import {
+  isolateSetup,
+  isolateSetupTimeouts,
+  isolateSingleFlight,
+  oidcProvider,
+} from "./isolate-setup.mjs";
 import worker from "./index.mjs";
 
 // Real I/O turns. Tests mock only setTimeout, so these still advance.
@@ -236,4 +241,64 @@ test("an admission request waiting on a stalled session schema gets a retryable 
   const response = await connect;
   assert.equal(response.status, 503);
   assert.equal((await response.json()).code, "temporarily_unavailable");
+});
+
+test("an API key's lookups share one flight whatever the scheme's case", async (t) => {
+  const fixture = await createAuthFixture();
+  const lookup = deferred();
+  let lookups = 0;
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    lookups++;
+    await lookup.promise;
+    return fixture.fetch(url, options);
+  });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const token = fixture.apiKey();
+  const request = (scheme) =>
+    new Request("https://pages.invalid/api/connect?page=test", {
+      headers: { authorization: `${scheme} ${token}` },
+    });
+  const first = authenticate(request("Bearer"), fixture.env);
+  const second = authenticate(request("bearer"), fixture.env);
+  const waiting = track(second);
+  await turns();
+  assert.equal(lookups, 1);
+  lookup.resolve();
+  await first;
+  await turns();
+  assert.equal(waiting.settled, false, "the lower-case request waits on its own timer");
+  t.mock.timers.tick(isolateSetupTimeouts.poll);
+  assert.equal((await second).principal, (await first).principal);
+  assert.equal(lookups, 1);
+});
+
+test("a single-flight caller whose work never settles gives up and frees the key", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const flight = isolateSingleFlight();
+  const stuck = flight("key", () => new Promise(() => {}));
+  const outcome = stuck.then(
+    () => "settled",
+    (error) => error,
+  );
+  await turns();
+  t.mock.timers.tick(isolateSetupTimeouts.wait);
+  const error = await outcome;
+  assert.equal(error.status, 503);
+  assert.equal(error.code, "request_timeout");
+  assert.equal(await flight("key", async () => "next"), "next");
+});
+
+test("OIDC provider work runs one request at a time", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const first = deferred();
+  const started = [];
+  const owner = oidcProvider(() => (started.push("callback"), first.promise));
+  const waiter = oidcProvider(async () => (started.push("status"), "status"));
+  await turns();
+  assert.deepEqual(started, ["callback"]);
+  first.resolve("callback");
+  assert.equal(await owner, "callback");
+  t.mock.timers.tick(isolateSetupTimeouts.poll);
+  assert.equal(await waiter, "status");
+  assert.deepEqual(started, ["callback", "status"]);
 });

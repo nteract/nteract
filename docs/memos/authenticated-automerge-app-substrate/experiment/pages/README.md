@@ -598,10 +598,12 @@ HTTP queue, and the tab stays at "Saved locally". Nothing in that queue bounds a
 request, so it stays held until the object is discarded.
 
 [isolate-setup.mjs](worker/isolate-setup.mjs) applies the rule. The gateway
-sets up each D1 schema (server sessions, MCP OAuth) once per isolate, and runs
-API-key verification one lookup per key at a time. The request that starts the
-work awaits it; others wait on their own timers and give up with a retryable
-`503` after 10 seconds. Remove it when celld keeps request context across shared
+sets up each D1 schema (server sessions, MCP OAuth) once per isolate. Work in
+front of library caches that share pending promises runs one request at a time:
+API-key verification per token, ChatGPT client metadata verification, and OIDC
+provider work (sign-in, the callback, session status and refresh, and the
+loopback issuer). The request that starts the work awaits it; others wait on
+their own timers. Either side gives up with a retryable `503` after 10 seconds. Remove it when celld keeps request context across shared
 promises; [celld-context-probe.mjs](scripts/celld-context-probe.mjs) then exits 0.
 
 The storage backend keeps one representation per record key, but a fragment's
