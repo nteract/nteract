@@ -200,6 +200,9 @@ const targets = Object.freeze({
     compactRecords: true,
     companyViewDomains: "anaconda.com",
     catalogIndex: "1",
+    // The Cloudflare edge forwards an unsampled traceparent, and celld's
+    // default parent-based sampler then drops every request-scoped log line.
+    otelTracesSampler: "always_on",
     editor: "wordgard",
     tunnelService: "cloudflared-page8.service",
     frozenTargets: Object.freeze(["pages-next", "page3", "page4", "page5", "page6", "page7"]),

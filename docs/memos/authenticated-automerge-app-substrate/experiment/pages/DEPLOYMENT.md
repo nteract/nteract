@@ -229,7 +229,11 @@ then ends in a catch-all 404. Internal Durable Object routes stay private.
 ## Telemetry
 
 Service units enable `CELLD_OTEL=1` and `CELLD_OTEL_RETENTION=30d` with celld's
-five-minute/5 MiB batching defaults. Verify actual Parquet delivery under
+five-minute/5 MiB batching defaults. Page8 also sets
+`OTEL_TRACES_SAMPLER=always_on`. Requests reach it with a `traceparent` whose
+sampled flag is clear, and celld's default `parentbased_always_on` sampler then
+records nothing for the request, including the Worker's `console` lines. Only
+lines written outside a request, such as WASM connection warnings, would arrive. Verify actual Parquet delivery under
 `<fleet-prefix>/telemetry/{traces,logs}`; configuration alone is not evidence of
 delivery. Retention collects dated partitions, not an exact rolling-hour cutoff.
 See the [pinned runtime telemetry contract](https://github.com/denoland/celld/blob/8702f6d186c77698dbfb30cf29e3b1922a88f008/docs/telemetry.md).
