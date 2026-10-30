@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
 import { PageSession } from "./session.mjs";
+import { SessionHost } from "./session-host.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { applyComment } from "../model/comments.mjs";
 import {
@@ -340,6 +341,44 @@ test("a failed replacement open can retry without a closed backend or duplicate 
   assert.equal(opens, 2);
   assert.equal(flushes, 1, "retry must not drain the already-closed backend");
   assert.equal((await session.listRecoveries()).length, 1, "retry must not duplicate archival");
+});
+
+test("a failed replacement open keeps Reload current Page and retries without archiving again", async (t) => {
+  const { session, auth } = fixture();
+  await writeLocalPage(auth.identity, session.localPage);
+  await assert.rejects(session.acceptPageAccess(access("viewer", 2, 2)), {
+    code: "PAGE_ACCESS_CHANGED",
+  });
+  const host = new SessionHost();
+  assert.ok(host.install(session, host.generation, auth.identity.principal));
+  let opens = 0,
+    flushes = 0;
+  session.repo.flush = async () => flushes++;
+  const replacement = { identity: auth.identity, pageId: session.pageId };
+  t.mock.method(PageSession, "open", async () => {
+    if (++opens === 1) throw Error("Offline while opening");
+    return replacement;
+  });
+  const errors = [];
+  const options = {
+    install: async (next, generation) => host.install(next, generation, auth.identity.principal),
+    onError: (error) => errors.push(error.message),
+  };
+  await host.reloadAccess(session, options);
+  assert.deepEqual(errors, ["Offline while opening"]);
+  assert.equal(host.current, session, "the archived session stays installed");
+  assert.deepEqual(session.phase$.snapshot(), {
+    name: "closed",
+    checkpointWritten: true,
+    drained: false,
+    archived: true,
+  });
+  assert.equal(session.accessReloadRequired, true, "Reload current Page stays offered");
+  await host.reloadAccess(session, options);
+  assert.equal(host.current, replacement);
+  assert.equal(opens, 2);
+  assert.equal(flushes, 1, "the retry does not archive again");
+  assert.equal((await session.listRecoveries()).length, 1);
 });
 
 test("the latest archived draft is selected chronologically rather than by its random key", async (t) => {

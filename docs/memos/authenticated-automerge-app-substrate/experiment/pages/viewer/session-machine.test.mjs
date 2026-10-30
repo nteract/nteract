@@ -305,7 +305,11 @@ function assertFlags(session, phase) {
   assert.equal(session.alive, isLive(phase));
   assert.equal(session.deleted, phase.name === "deleted");
   assert.equal(session.authRequired, pause.auth);
-  assert.equal(session.accessReloadRequired, pause.access === "reload");
+  // An archived replica still needs its replacement: Reload stays offered.
+  assert.equal(
+    session.accessReloadRequired,
+    pause.access === "reload" || (phase.name === "closed" && !!phase.archived),
+  );
   if (phase.name !== "opening")
     assert.equal(session.accessDenied, pause.access === "access" || pause.access === "trash");
   assert.equal(session.checkpointWritten, phase.name === "closed" && phase.checkpointWritten);

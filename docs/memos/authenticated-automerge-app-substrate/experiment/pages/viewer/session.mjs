@@ -205,8 +205,11 @@ export class PageSession {
     const { access } = pauseOf(phase);
     return access === "access" || access === "trash";
   }
+  /** A reload-required pause, or an archived replica whose replacement has
+   * not installed yet: Reload current Page stays available to retry it. */
   get accessReloadRequired() {
-    return pauseOf(this.phase$.snapshot()).access === "reload";
+    const phase = this.phase$.snapshot();
+    return pauseOf(phase).access === "reload" || (phase.name === "closed" && !!phase.archived);
   }
   /** The receipt as the reload gate reads it: a failed local save blocks a
    * reload, a stalled save retries like the Retry button, anything else is

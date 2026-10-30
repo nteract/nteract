@@ -20,9 +20,11 @@
  *   `archive: true` it is instead archiving a reload-required replica before
  *   retiring its key; the session stays live, and `reason`/`auth` are the pause
  *   it returns to if archiving fails.
- * - closed: the backend is released. `checkpointWritten` says an IndexedDB
- *   record holds every edit this replica accepted; `archived` says an access
- *   reload archived it and a replacement may be opened.
+ * - closed: the final checkpoint settled; the backend release may still be
+ *   running. `checkpointWritten` says an IndexedDB record holds every edit
+ *   this replica accepted. `archived` says an access reload archived it and
+ *   its replacement still has to install: Reload current Page stays offered
+ *   and retries the open without archiving again.
  * - deleted: the Page is gone. The local copy is forgotten; `closing` says the
  *   backend release has started.
  *

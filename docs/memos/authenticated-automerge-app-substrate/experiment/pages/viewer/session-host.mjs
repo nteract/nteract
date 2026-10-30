@@ -117,12 +117,14 @@ export class SessionHost {
 
   /** Reload the installed session for its changed grant: archive and release
    * it, open the replacement, and install that. A failed archive returns the
-   * session to the held set so its unsent edits keep blocking Reload. */
+   * session to the held set so its unsent edits keep blocking Reload. A failed
+   * open leaves the archived session installed, so Reload current Page can
+   * retry the open without archiving again. */
   async reloadAccess(previous, { install, onError }) {
     if (!previous || this.current !== previous || this.#reloading === previous) return;
     this.#reloading = previous;
     const generation = this.navigate();
-    this.#own(previous, false);
+    if (previous.alive) this.#own(previous, false);
     try {
       const next = await previous.reloadForAccess();
       await install(next, generation);
