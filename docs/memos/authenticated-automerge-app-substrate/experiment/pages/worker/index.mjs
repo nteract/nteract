@@ -89,8 +89,7 @@ import {
 } from "./mutations.mjs";
 
 import { claimInvitation, proposeSharingMutation, sharingProjection } from "./sharing.mjs";
-import { pageAccess, pageState, restrictAccessDuringCommit } from "./access.mjs";
-import { heldRelation, pageObject } from "./authz.mjs";
+import { pageAccess, pageRelation, pageState, restrictAccessDuringCommit } from "./access.mjs";
 
 import {
   CATALOG_LIMIT,
@@ -2783,7 +2782,7 @@ export class Page {
    * who never had access, so it discloses nothing. Company view discloses
    * nothing either. */
   disclosesDeletion(principal) {
-    return heldRelation(pageObject(this.metadata), principal) !== "none";
+    return pageRelation(this.metadata, principal) !== "none";
   }
 
   /** A trashed Page is disclosed like a deleted one: only to its owner and
@@ -2829,7 +2828,7 @@ export class Page {
    */
   async lifecycle(request, identity, route) {
     requireWrite(identity);
-    const owner = heldRelation(pageObject(this.metadata), identity.principal) === "owner";
+    const owner = pageRelation(this.metadata, identity.principal) === "owner";
     const actor = owner
       ? "owner"
       : this.disclosesDeletion(identity.principal)

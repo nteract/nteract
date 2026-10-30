@@ -246,6 +246,7 @@
     },
     {
       "name": "an agent acting for a person gets the person's decision, narrowed by its credential",
+      "note": "Built-in callers always pass NO_ACTOR_CHAIN. This row checks only that a non-empty chain leaves the decision unchanged; the read credential narrows it.",
       "modes": ["built-in", "external"],
       "object": "page:agent",
       "lifecycle": "active",

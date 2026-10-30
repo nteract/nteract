@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { pageAccess, pageDecision, pageGrant } from "./access.mjs";
-import { heldRelation, pageObject } from "./authz.mjs";
+import { pageAccess, pageDecision, pageGrant, pageRelation } from "./access.mjs";
 import {
   legacyDisclosesDeletion,
   legacyLeaseExpiresAt,
@@ -9,7 +8,7 @@ import {
   legacyPageGrant,
   legacySpaceOwner,
 } from "./access-legacy-fixture.mjs";
-import { NO_ACTOR_CHAIN, decide, principalOf, projectObject } from "./authz.mjs";
+import { NO_ACTOR_CHAIN, decide, heldRelation, principalOf, projectObject } from "./authz.mjs";
 
 // decide() must reproduce the access rules it replaced, exactly, on every
 // combination of record and credential the old rules distinguished.
@@ -147,7 +146,7 @@ test("decide() reproduces pageAccess, pageGrant, the lease bound and disclosure 
       );
     }
     if (metadata) {
-      const relation = heldRelation(pageObject(metadata), identity.principal);
+      const relation = pageRelation(metadata, identity.principal);
       assert.equal(relation !== "none", legacyDisclosesDeletion(metadata, principal), message);
       assert.equal(relation === "owner", metadata.owner === principal, message);
     }
@@ -181,9 +180,12 @@ test("decide() reproduces the owner-only Space checks for authenticated callers"
     }
 });
 
-// The two places the seam is stricter than the rules it replaced. Neither is
-// reachable through authenticate(), which always returns a principal and an
-// unexpired credential; both fail closed rather than grant.
+// The two places the seam is stricter than the rules it replaced. Both fail
+// closed rather than grant. No producer of an identity without a principal is
+// known: authenticate() always sets one. An expired credential does reach the
+// Space check: authenticate() returns an unexpired credential, but the Space
+// reads the request body and its record before it checks, against a fresh
+// clock (spaces.test.mjs pins that route).
 test("decide() refuses an identity without a principal, which company view used to admit", () => {
   const metadata = record("active", "personal", "company", "stranger");
   const identity = {
@@ -208,4 +210,79 @@ test("Space checks now also require an unexpired credential, as Page checks alwa
     decide(principalOf(identity), NO_ACTOR_CHAIN, projectObject(space), now).capabilities,
     [],
   );
+});
+
+/** Counts every inspection of a members object: lookups, presence checks and
+ * enumeration. */
+function countedMembers(members) {
+  const counts = { inspections: 0, enumerations: 0 };
+  const proxy = new Proxy(members, {
+    get(target, key, receiver) {
+      counts.inspections++;
+      return Reflect.get(target, key, receiver);
+    },
+    has(target, key) {
+      counts.inspections++;
+      return Reflect.has(target, key);
+    },
+    getOwnPropertyDescriptor(target, key) {
+      counts.inspections++;
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+    ownKeys(target) {
+      counts.enumerations++;
+      return Reflect.ownKeys(target);
+    },
+  });
+  return { proxy, counts };
+}
+
+test("a decision inspects only the caller's member row, however many tombstones the ACL holds", (t) => {
+  const measure = (tombstones, row) => {
+    const members = Object.fromEntries(
+      Array.from({ length: tombstones }, (_, index) => [
+        `ns:removed-${index}`,
+        { role: "none", generation: 2 },
+      ]),
+    );
+    if (row) members[principal] = row;
+    const { proxy, counts } = countedMembers(members);
+    const metadata = {
+      pageId: "4d6c2c0e-5a43-4a3e-9e43-0d2f6f8c9b11",
+      owner,
+      acl: { revision: 1001, members: proxy, domainView: company },
+    };
+    const identity = {
+      principal,
+      canWrite: true,
+      expiresAt: now + 10_000,
+      namespace: "ns",
+      domainAccess: evidence.current,
+    };
+    const decision = pageDecision(metadata, identity, { now });
+    const afterDecide = { ...counts };
+    pageAccess(metadata, identity, { now });
+    const afterAccess = { ...counts };
+    pageRelation(metadata, principal);
+    return { decision, decide: afterDecide, access: afterAccess, relation: { ...counts } };
+  };
+  for (const row of [
+    undefined,
+    { role: "viewer", generation: 1 },
+    { role: "none", generation: 3 },
+  ]) {
+    const small = measure(10, row);
+    const large = measure(1000, row);
+    assert.deepEqual(large.decision, small.decision);
+    for (const step of ["decide", "access", "relation"]) {
+      assert.deepEqual(large[step], small[step], `${step} with row ${JSON.stringify(row)}`);
+      assert.equal(large[step].enumerations, 0);
+    }
+    // One presence check and, when the row exists, one read.
+    assert.ok(large.decide.inspections <= 2, JSON.stringify(large.decide));
+    t.diagnostic(
+      `1000 tombstones, row ${JSON.stringify(row ?? null)}: decide ${large.decide.inspections}, ` +
+        `decide+pageAccess ${large.access.inspections}, +pageRelation ${large.relation.inspections} inspections, 0 enumerations`,
+    );
+  }
 });

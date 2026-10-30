@@ -1,7 +1,16 @@
 /** Host-owned Page grants. Document content and driver labels grant no access.
- * Every access decision goes through decide() in authz.mjs; the functions here
- * keep the shapes their call sites read. */
-import { NO_ACTOR_CHAIN, decide, memberRow, pageObject, pageState, principalOf } from "./authz.mjs";
+ * Capability checks use decide() in authz.mjs. Grant identity (pageGrant) and
+ * deletion disclosure (pageRelation) use separate projections of the same
+ * relation model. */
+import {
+  NO_ACTOR_CHAIN,
+  decide,
+  heldRelation,
+  memberRow,
+  pageObject,
+  pageState,
+  principalOf,
+} from "./authz.mjs";
 
 export { pageState };
 
@@ -46,7 +55,14 @@ export function pageGrant(metadata, principal) {
 
 /** The decide() result for one identity on one Page record. */
 export function pageDecision(metadata, identity, { now = Date.now() } = {}) {
-  return decide(principalOf(identity), NO_ACTOR_CHAIN, pageObject(metadata), now);
+  const principal = principalOf(identity);
+  return decide(principal, NO_ACTOR_CHAIN, pageObject(metadata, principal.id), now);
+}
+
+/** The relation a principal holds on a Page record before the lifecycle
+ * overlay: what deletion disclosure and the lifecycle owner check read. */
+export function pageRelation(metadata, principal) {
+  return heldRelation(pageObject(metadata, principal), principal);
 }
 
 /** decide() projected onto the access flags the host and viewer read. The

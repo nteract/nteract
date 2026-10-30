@@ -5,9 +5,10 @@
  *     -> { capabilities, valid_until, revision, authority_token, basis }
  *
  * decide() is pure and synchronous. It reads only the relation snapshot the
- * item host already holds: the item's own ACL, the leased copy of its
- * project's ACL, and the item's lifecycle. Policy hooks call it per frame, so
- * it never awaits, fetches or reads a clock.
+ * item host already holds: the item's own ACL, a copy of its project's ACL,
+ * and the item's lifecycle. Policy hooks call it per frame, so it never
+ * awaits, fetches or reads a clock. In this build the project copy is
+ * synthesized from the Page owner and carries no lease.
  *
  * Three steps, in this order:
  *
@@ -22,7 +23,8 @@
  * `revision` is nteract's own increasing ACL revision, the fence that writes
  * compare. `authority_token` is an opaque consistency token from a host's
  * relationship service (a SpiceDB ZedToken, for example). The built-in
- * implementation has none and returns null. Nothing compares it for ordering.
+ * implementation has none and returns null; nothing stores or round-trips it
+ * yet, and nothing may compare it for ordering.
  *
  * `basis` explains the decision for nteract's own labels: the strongest
  * relation that survived the lifecycle overlay (owner, editor, viewer) and the
@@ -301,11 +303,7 @@ export function pageState(metadata) {
 
 const roles = new Set(["viewer", "editor", "none"]);
 
-/** A stored member row, or null when the row is absent or unreadable. Role
- * "none" is a removal tombstone: it keeps the generation so a regrant cannot
- * revive an earlier signing key. */
-export function memberRow(members, principal) {
-  const member = members && Object.hasOwn(members, principal) ? members[principal] : undefined;
+function readRow(member) {
   if (
     !member ||
     !roles.has(member.role) ||
@@ -314,6 +312,13 @@ export function memberRow(members, principal) {
   )
     return null;
   return { role: member.role, generation: member.generation };
+}
+
+/** A stored member row, or null when the row is absent or unreadable. Role
+ * "none" is a removal tombstone: it keeps the generation so a regrant cannot
+ * revive an earlier signing key. One lookup, whatever the ACL's size. */
+export function memberRow(members, principal) {
+  return members && Object.hasOwn(members, principal) ? readRow(members[principal]) : null;
 }
 
 /** Company view as an organization subject. Built-in mode has no tenants: a
@@ -326,28 +331,29 @@ const companyOrganization = (namespace, domain) =>
     : null;
 
 /**
- * decide()'s object for a Page record.
+ * decide()'s object for a Page record, scoped to one principal.
  *
- * Every member row becomes a relation: viewer and editor rows grant, and any
- * other row (a removal tombstone or an unreadable row) becomes `removed`, which
- * blocks company view. A Page placed in a Space has the `project` relation
- * instead of `owner`. Spaces are owner-only in this build and only a Space's
- * owner places Pages in it, so the Space's leased ACL copy is its owner, who
- * is also the Page record's owner.
+ * The relations hold the owner (or the project), company view, and only the
+ * principal's own member row, so building one costs a single member lookup
+ * however many grants and tombstones the ACL has collected. A viewer or editor
+ * row grants. Any other row (a removal tombstone or an unreadable row) becomes
+ * `removed`, which blocks company view. A Page placed in a Space has the
+ * `project` relation instead of `owner`. Spaces are owner-only in this build
+ * and only a Space's owner places Pages in it, so the project copy is
+ * synthesized from the Page record's owner.
  */
-export function pageObject(metadata) {
+export function pageObject(metadata, principal) {
   const lifecycle = pageState(metadata);
   const editor = [];
   const viewer = [];
   const removed = [];
   const members = metadata?.acl?.members;
-  if (members && typeof members === "object")
-    for (const principal of Object.keys(members)) {
-      const row = memberRow(members, principal);
-      if (row?.role === "editor") editor.push(user(principal));
-      else if (row?.role === "viewer") viewer.push(user(principal));
-      else removed.push(user(principal));
-    }
+  if (typeof principal === "string" && members && Object.hasOwn(members, principal)) {
+    const row = readRow(members[principal]);
+    if (row?.role === "editor") editor.push(user(principal));
+    else if (row?.role === "viewer") viewer.push(user(principal));
+    else removed.push(user(principal));
+  }
   const domainView = metadata?.acl?.domainView;
   const company = domainView && companyOrganization(domainView.namespace, domainView.domain);
   if (company) viewer.push({ type: "organization", id: company });
