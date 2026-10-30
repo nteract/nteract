@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setImmediate } from "node:timers/promises";
-import { browserWasmPlugin } from "./browser-wasm.mjs";
+import { BROWSER_WASM_URLS, browserWasmPlugin } from "./browser-wasm.mjs";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -100,4 +100,29 @@ test("the startup shell keeps agent guidance out of the JavaScript loading surfa
   assert.match(visible, /role="status">Connecting…/);
   assert.match(visible, /rel="describedby" type="text\/plain" href="\/llms.txt"/);
   assert.doesNotMatch(visible, /Connecting an agent|API-key clients|Opening the editor/);
+});
+
+test("the startup shell preloads each runtime as the request the bundle reuses", async () => {
+  const html = await readFile(path.join(app, "viewer/index.html"), "utf8");
+  const head = html.slice(0, html.indexOf("</head>"));
+  const preloads = [...head.matchAll(/<link rel="preload"([^>]*)>/g)].map(([, attributes]) => {
+    const crossorigin = attributes.match(/\scrossorigin(?:="([^"]*)")?/);
+    return {
+      href: attributes.match(/href="([^"]*)"/)?.[1],
+      as: attributes.match(/as="([^"]*)"/)?.[1],
+      // fetch(url) is a CORS request with same-origin credentials. A preload
+      // matches it only as crossorigin="anonymous" (or a bare crossorigin).
+      // Without the attribute the preload is a no-cors request, and the
+      // bundle's fetch downloads the file a second time.
+      crossorigin: crossorigin ? crossorigin[1] || "anonymous" : null,
+    };
+  });
+  assert.deepEqual(
+    preloads,
+    Object.values(BROWSER_WASM_URLS).map((href) => ({
+      href,
+      as: "fetch",
+      crossorigin: "anonymous",
+    })),
+  );
 });
