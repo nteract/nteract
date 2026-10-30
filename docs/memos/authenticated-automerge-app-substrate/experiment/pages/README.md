@@ -90,7 +90,12 @@ E2E state and credentials are temporary; existing `dist/.dev.vars` and
 
 Run targeted browser checks from `pages`. `npm run e2e` runs all of these by
 default except the latency check, which records timings rather than gating
-on them:
+on them, and the build-update check. That one is opt-in until a Page reopened
+after a celld restart reliably reaches Saved; under load it can stall at "The
+request timed out" (fix in progress on `fix/pages-restart-saved-stall`). Its
+text-order failure ([#4547](https://github.com/nteract/nteract/issues/4547))
+was a caret race in the smoke; the editor side is
+[#4552](https://github.com/nteract/nteract/issues/4552).
 
 | Check | Command | Server lifecycle |
 | --- | --- | --- |
