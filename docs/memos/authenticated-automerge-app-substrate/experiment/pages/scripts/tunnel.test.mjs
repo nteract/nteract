@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { accountId, installTunnelFiles, provisionTunnel } from "./deployment/tunnel.mjs";
 
@@ -15,57 +19,149 @@ function cloudflare(tunnels = []) {
       const name = searchParams.get("name");
       return Response.json({ success: true, result: tunnels.filter((t) => t.name === name) });
     }
+    if (init.method === "DELETE") return Response.json({ success: true, result: {} });
     const body = JSON.parse(init.body);
     return Response.json({ success: true, result: { id: tunnelId, name: body.name } });
   };
   return { calls, fetchImpl };
 }
 
-test("inspection reports an absent tunnel without creating one", async () => {
+/** Runs each remote script locally against `root` standing in for /etc. */
+function host(root, { failInstall = false } = {}) {
+  const runs = [];
+  const run = (target, command, input) => {
+    const script = command.at(-1).replaceAll("/etc/", root + "/");
+    runs.push(script);
+    if (failInstall && script.includes("mktemp")) throw new Error("ssh: connection lost");
+    execFileSync("sh", ["-ec", script], { input: input ?? "", stdio: ["pipe", "ignore", "pipe"] });
+  };
+  return { run, runs };
+}
+const etc = () => {
+  const root = mkdtempSync(path.join(tmpdir(), "tunnel-etc-"));
+  execFileSync("mkdir", [path.join(root, "nteract-page9")]);
+  return root;
+};
+
+test("inspection reports an absent tunnel without touching Cloudflare or the host", async () => {
   const cf = cloudflare();
-  const result = await provisionTunnel({ token: "t", target: "page9", fetchImpl: cf.fetchImpl });
-  assert.deepEqual(result, { name: "nteract-page9", tunnelId: null, created: false });
+  const h = host(etc());
+  const result = await provisionTunnel({
+    token: "t",
+    target: "page9",
+    fetchImpl: cf.fetchImpl,
+    run: h.run,
+  });
+  assert.deepEqual(result, {
+    name: "nteract-page9",
+    tunnelId: null,
+    created: false,
+    installed: false,
+  });
   assert.ok(cf.calls.every(({ method }) => method === "GET"));
+  assert.equal(h.runs.length, 0);
 });
 
-test("apply creates a locally managed tunnel and returns its credentials once", async () => {
+test("apply creates the tunnel and installs private credentials and a receipt", async () => {
+  const root = etc();
   const cf = cloudflare();
   const result = await provisionTunnel({
     token: "t",
     target: "page9",
     apply: true,
     fetchImpl: cf.fetchImpl,
-    secret: () => Buffer.alloc(32, 7),
+    run: host(root).run,
+    secret: Buffer.alloc(32, 7),
   });
-  const secret = Buffer.alloc(32, 7).toString("base64");
-  assert.deepEqual(cf.calls.at(-1).body, {
-    name: "nteract-page9",
-    tunnel_secret: secret,
-    config_src: "local",
-  });
-  assert.deepEqual(result.credentials, {
+  assert.equal(result.created, true);
+  assert.equal(JSON.stringify(result).includes(Buffer.alloc(32, 7).toString("base64")), false);
+  const d = path.join(root, "nteract-page9");
+  const credentials = JSON.parse(readFileSync(path.join(d, "tunnel.json"), "utf8"));
+  assert.deepEqual(credentials, {
     AccountTag: accountId,
     TunnelID: tunnelId,
-    TunnelSecret: secret,
+    TunnelSecret: Buffer.alloc(32, 7).toString("base64"),
   });
-  assert.deepEqual(result.receipt, {
+  assert.equal(statSync(path.join(d, "tunnel.json")).mode & 0o777, 0o600);
+  assert.equal(statSync(path.join(d, "tunnel-provisioning.json")).mode & 0o777, 0o644);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(d, "tunnel-provisioning.json"), "utf8")), {
     schema: 1,
     account_id: accountId,
     tunnel_id: tunnelId,
     name: "nteract-page9",
     config_src: "local",
   });
-});
-
-test("an existing tunnel is reported, never adopted or rotated", async () => {
-  const cf = cloudflare([{ id: tunnelId, name: "nteract-page9" }]);
-  const result = await provisionTunnel({
+  assert.deepEqual(readdirSync(d).sort(), ["tunnel-provisioning.json", "tunnel.json"]);
+  // A rerun finds the tunnel and the matching receipt and changes nothing.
+  const again = await provisionTunnel({
     token: "t",
     target: "page9",
     apply: true,
-    fetchImpl: cf.fetchImpl,
+    fetchImpl: cloudflare([{ id: tunnelId, name: "nteract-page9" }]).fetchImpl,
+    run: host(root).run,
   });
-  assert.deepEqual(result, { name: "nteract-page9", tunnelId, created: false });
+  assert.deepEqual(again, {
+    name: "nteract-page9",
+    tunnelId,
+    created: false,
+    installed: true,
+  });
+});
+
+test("a failed install deletes the tunnel it just created", async () => {
+  const root = etc();
+  const cf = cloudflare();
+  await assert.rejects(
+    provisionTunnel({
+      token: "t",
+      target: "page9",
+      apply: true,
+      fetchImpl: cf.fetchImpl,
+      run: host(root, { failInstall: true }).run,
+    }),
+    /new tunnel was deleted/,
+  );
+  assert.deepEqual(
+    cf.calls.map(({ method }) => method),
+    ["GET", "POST", "DELETE"],
+  );
+  assert.equal(cf.calls.at(-1).pathname.endsWith(`/cfd_tunnel/${tunnelId}`), true);
+  assert.deepEqual(readdirSync(path.join(root, "nteract-page9")), []);
+});
+
+test("a host that isn't ready stops before Cloudflare creates anything", async () => {
+  for (const prepare of [
+    (root) => execFileSync("rmdir", [path.join(root, "nteract-page9")]),
+    (root) => writeFileSync(path.join(root, "nteract-page9", "tunnel.json"), "{}"),
+  ]) {
+    const root = etc();
+    prepare(root);
+    const cf = cloudflare();
+    await assert.rejects(
+      provisionTunnel({
+        token: "t",
+        target: "page9",
+        apply: true,
+        fetchImpl: cf.fetchImpl,
+        run: host(root).run,
+      }),
+    );
+    assert.ok(cf.calls.every(({ method }) => method === "GET"));
+  }
+});
+
+test("an existing tunnel without matching host credentials refuses with a recovery step", async () => {
+  const cf = cloudflare([{ id: tunnelId, name: "nteract-page9" }]);
+  await assert.rejects(
+    provisionTunnel({
+      token: "t",
+      target: "page9",
+      apply: true,
+      fetchImpl: cf.fetchImpl,
+      run: host(etc()).run,
+    }),
+    /delete the tunnel in Cloudflare/,
+  );
   assert.ok(cf.calls.every(({ method }) => method === "GET"));
 });
 
@@ -80,26 +176,17 @@ test("an ambiguous listing refuses", async () => {
   );
 });
 
-test("credential files go to the existing target directory, private and never overwritten", () => {
-  const runs = [];
-  const written = installTunnelFiles(
-    "page9",
-    { credentials: { TunnelSecret: "s" }, receipt: { schema: 1 } },
-    { run: (host, command, input) => runs.push({ host, command, input }) },
+test("install never replaces a file that appeared after the check", () => {
+  const root = etc();
+  const d = path.join(root, "nteract-page9");
+  writeFileSync(path.join(d, "tunnel-provisioning.json"), "existing");
+  assert.throws(() =>
+    installTunnelFiles(
+      "page9",
+      { credentials: { TunnelSecret: "s" }, receipt: { schema: 1 } },
+      { run: host(root).run },
+    ),
   );
-  assert.deepEqual(written, [
-    "/etc/nteract-page9/tunnel.json",
-    "/etc/nteract-page9/tunnel-provisioning.json",
-  ]);
-  assert.equal(runs.length, 2);
-  for (const { host, command } of runs) {
-    assert.equal(host, "lab1");
-    const script = command.at(-1);
-    assert.match(script, /test -d \/etc\/nteract-page9;/);
-    assert.match(script, /test ! -e \/etc\/nteract-page9\/tunnel/);
-    assert.match(script, /umask 077/);
-    assert.match(script, /mv -n /);
-  }
-  assert.match(runs[0].command.at(-1), /chmod 0600/);
-  assert.equal(runs[0].input, '{"TunnelSecret":"s"}\n');
+  assert.equal(readFileSync(path.join(d, "tunnel-provisioning.json"), "utf8"), "existing");
+  assert.deepEqual(readdirSync(d), ["tunnel-provisioning.json"]);
 });
