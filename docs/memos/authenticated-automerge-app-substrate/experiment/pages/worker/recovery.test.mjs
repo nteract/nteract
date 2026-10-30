@@ -321,15 +321,16 @@ test("a new purge key completes failed deletion barriers before clearing its cat
   assert.equal((await purge("replacement-purge")).status, 500);
   assert.ok(await catalogStorage.get(`trash/${pageId}`));
   assert.equal((await catalogStorage.get("host/operation/replacement-purge")).pending, true);
-  assert.equal(deletions, 2);
+  // The purged record must be durable before document storage is deleted.
+  assert.equal(deletions, 0);
   failing = false;
   const response = await purge("replacement-purge");
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { page_id: pageId, deleted: true, purged: true });
   assert.equal(await catalogStorage.get(`trash/${pageId}`), undefined);
   assert.equal(await catalogStorage.get(`host/deleted/${pageId}`), true);
-  assert.equal(deletions, 3);
-  assert.equal(storage.syncs - syncs, 3);
+  assert.equal(deletions, 1);
+  assert.equal(storage.syncs - syncs, 4);
   assert.equal((await purge("original-purge", { extra: true })).status, 409);
   assert.equal(
     (

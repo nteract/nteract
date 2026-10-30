@@ -1,0 +1,2608 @@
+{
+  "machine": "page-lifecycle",
+  "description": "Page host lifecycle (worker/page-lifecycle.mjs). Each request row is one HTTP request to the Page as the owner's Catalog forwards it, with the barrier (sync) succeeding. commitOk and commitFailed are settle attempts through /internal/lifecycle-state: commitOk lists the sequence that finishes the pending commit; commitFailed is the step after that sequence fails at its sync, which emits nothing. boot is a cold start; its record is what the constructor reads from host/document and host/creation. A purgeConfirm on a deleted record carries that record's deletion receipt. Responses are summaries: status, error and code, beforeChange for x-pages-lifecycle-rejected, and for 200 replies which receipt was returned with its state.",
+  "states": [
+    "missing",
+    "creating",
+    "active",
+    "trashing",
+    "trashed",
+    "restoring",
+    "purging",
+    "deleting",
+    "deleted"
+  ],
+  "events": [
+    "trash",
+    "restore",
+    "purgePreview",
+    "purgeConfirm",
+    "commitOk",
+    "commitFailed",
+    "tombstone",
+    "boot"
+  ],
+  "unreachable": [
+    [
+      "missing",
+      "commitOk",
+      "only a pending commit settles; deleting finishes through a purge request"
+    ],
+    [
+      "missing",
+      "commitFailed",
+      "only a pending commit settles; deleting finishes through a purge request"
+    ],
+    [
+      "creating",
+      "commitOk",
+      "only a pending commit settles; deleting finishes through a purge request"
+    ],
+    [
+      "creating",
+      "commitFailed",
+      "only a pending commit settles; deleting finishes through a purge request"
+    ],
+    [
+      "active",
+      "commitOk",
+      "only a pending commit settles; deleting finishes through a purge request"
+    ],
+    [
+      "active",
+      "commitFailed",
+      "only a pending commit settles; deleting finishes through a purge request"
+    ],
+    [
+      "trashed",
+      "commitOk",
+      "only a pending commit settles; deleting finishes through a purge request"
+    ],
+    [
+      "trashed",
+      "commitFailed",
+      "only a pending commit settles; deleting finishes through a purge request"
+    ],
+    [
+      "deleting",
+      "commitOk",
+      "only a pending commit settles; deleting finishes through a purge request"
+    ],
+    [
+      "deleting",
+      "commitFailed",
+      "only a pending commit settles; deleting finishes through a purge request"
+    ],
+    [
+      "deleted",
+      "commitOk",
+      "only a pending commit settles; deleting finishes through a purge request"
+    ],
+    [
+      "deleted",
+      "commitFailed",
+      "only a pending commit settles; deleting finishes through a purge request"
+    ],
+    [
+      "trashing",
+      "trash",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "trashing",
+      "restore",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "trashing",
+      "purgePreview",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "trashing",
+      "purgeConfirm",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "trashing",
+      "tombstone",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "restoring",
+      "trash",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "restoring",
+      "restore",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "restoring",
+      "purgePreview",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "restoring",
+      "purgeConfirm",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "restoring",
+      "tombstone",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "purging",
+      "trash",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "purging",
+      "restore",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "purging",
+      "purgePreview",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "purging",
+      "purgeConfirm",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "purging",
+      "tombstone",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ]
+  ],
+  "cases": {
+    "active/trash": [
+      "owner",
+      "non-owner",
+      "heads-mismatch",
+      "stale-revision",
+      "has-children",
+      "home",
+      "recorded",
+      "key-conflict"
+    ],
+    "active/restore": [
+      "noop",
+      "non-owner",
+      "stale-revision",
+      "recorded"
+    ],
+    "active/purgePreview": [
+      "owner",
+      "non-owner"
+    ],
+    "active/boot": [
+      "record",
+      "leftover-intent"
+    ],
+    "trashed/trash": [
+      "owner",
+      "non-owner",
+      "stranger",
+      "recorded",
+      "stale-revision"
+    ],
+    "trashed/restore": [
+      "keep-place",
+      "top-level",
+      "non-owner",
+      "stale-revision",
+      "replay-only",
+      "recorded"
+    ],
+    "trashed/purgePreview": [
+      "owner",
+      "non-owner"
+    ],
+    "trashed/purgeConfirm": [
+      "preview-valid",
+      "preview-changed",
+      "preview-expired",
+      "non-owner",
+      "stale-revision"
+    ],
+    "trashing/boot": [
+      "unwritten",
+      "written"
+    ],
+    "restoring/boot": [
+      "unwritten",
+      "written"
+    ],
+    "purging/boot": [
+      "unwritten",
+      "written"
+    ],
+    "deleting/purgeConfirm": [
+      "fresh",
+      "recorded"
+    ]
+  },
+  "rows": [
+    {
+      "state": {
+        "name": "missing"
+      },
+      "event": {
+        "type": "trash",
+        "actor": "owner",
+        "key": "fresh",
+        "heads": "match",
+        "expected": 0
+      },
+      "expect": {
+        "state": {
+          "name": "missing"
+        },
+        "effects": [],
+        "response": {
+          "status": 404,
+          "error": "Page not found"
+        },
+        "rejected": "page_not_found"
+      }
+    },
+    {
+      "state": {
+        "name": "missing"
+      },
+      "event": {
+        "type": "restore",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 0
+      },
+      "expect": {
+        "state": {
+          "name": "missing"
+        },
+        "effects": [],
+        "response": {
+          "status": 404,
+          "error": "Page not found"
+        },
+        "rejected": "page_not_found"
+      }
+    },
+    {
+      "state": {
+        "name": "missing"
+      },
+      "event": {
+        "type": "purgePreview",
+        "actor": "owner"
+      },
+      "expect": {
+        "state": {
+          "name": "missing"
+        },
+        "effects": [],
+        "response": {
+          "status": 404,
+          "error": "Page not found"
+        },
+        "rejected": "page_not_found"
+      }
+    },
+    {
+      "state": {
+        "name": "missing"
+      },
+      "event": {
+        "type": "purgeConfirm",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 0,
+        "preview": "valid"
+      },
+      "expect": {
+        "state": {
+          "name": "missing"
+        },
+        "effects": [],
+        "response": {
+          "status": 404,
+          "error": "Page not found"
+        },
+        "rejected": "page_not_found"
+      }
+    },
+    {
+      "state": {
+        "name": "missing"
+      },
+      "event": {
+        "type": "tombstone"
+      },
+      "expect": {
+        "state": {
+          "name": "missing"
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "reply": "state",
+          "state": "missing"
+        },
+        "rejected": "not_trashed"
+      }
+    },
+    {
+      "state": {
+        "name": "missing"
+      },
+      "event": {
+        "type": "boot",
+        "record": null,
+        "creation": null
+      },
+      "expect": {
+        "state": {
+          "name": "missing"
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": {
+        "name": "creating"
+      },
+      "event": {
+        "type": "trash",
+        "actor": "owner",
+        "key": "fresh",
+        "heads": "match",
+        "expected": 0
+      },
+      "expect": {
+        "state": {
+          "name": "creating"
+        },
+        "effects": [],
+        "response": {
+          "status": 404,
+          "error": "Page not found"
+        },
+        "rejected": "page_not_found"
+      }
+    },
+    {
+      "state": {
+        "name": "creating"
+      },
+      "event": {
+        "type": "restore",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 0
+      },
+      "expect": {
+        "state": {
+          "name": "creating"
+        },
+        "effects": [],
+        "response": {
+          "status": 404,
+          "error": "Page not found"
+        },
+        "rejected": "page_not_found"
+      }
+    },
+    {
+      "state": {
+        "name": "creating"
+      },
+      "event": {
+        "type": "purgePreview",
+        "actor": "owner"
+      },
+      "expect": {
+        "state": {
+          "name": "creating"
+        },
+        "effects": [],
+        "response": {
+          "status": 404,
+          "error": "Page not found"
+        },
+        "rejected": "page_not_found"
+      }
+    },
+    {
+      "state": {
+        "name": "creating"
+      },
+      "event": {
+        "type": "purgeConfirm",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 0,
+        "preview": "valid"
+      },
+      "expect": {
+        "state": {
+          "name": "creating"
+        },
+        "effects": [],
+        "response": {
+          "status": 404,
+          "error": "Page not found"
+        },
+        "rejected": "page_not_found"
+      }
+    },
+    {
+      "state": {
+        "name": "creating"
+      },
+      "event": {
+        "type": "tombstone"
+      },
+      "expect": {
+        "state": {
+          "name": "creating"
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "reply": "state",
+          "state": "missing"
+        },
+        "rejected": "not_trashed"
+      }
+    },
+    {
+      "state": {
+        "name": "creating"
+      },
+      "event": {
+        "type": "boot",
+        "record": null,
+        "creation": {
+          "state": "active",
+          "revision": 0
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 0
+        },
+        "effects": [
+          {
+            "type": "importDocument"
+          },
+          {
+            "type": "install"
+          },
+          {
+            "type": "putRecord",
+            "receipt": false,
+            "record": true
+          },
+          {
+            "type": "flush"
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "deleteCreation"
+          },
+          {
+            "type": "sync"
+          }
+        ]
+      }
+    },
+    {
+      "case": "owner",
+      "state": {
+        "name": "active",
+        "revision": 0
+      },
+      "event": {
+        "type": "trash",
+        "actor": "owner",
+        "key": "fresh",
+        "heads": "match",
+        "expected": 0
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [
+          {
+            "type": "withdrawAccess",
+            "record": "trashed"
+          },
+          {
+            "type": "begin",
+            "phase": "trashing",
+            "revision": 1
+          },
+          {
+            "type": "restrictIndex"
+          },
+          {
+            "type": "putRecord",
+            "receipt": true,
+            "record": true
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "refreshAccess"
+          },
+          {
+            "type": "retireIndex"
+          },
+          {
+            "type": "end"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "reply": "receipt",
+          "receipt": {
+            "state": "trashed"
+          },
+          "current": {
+            "state": "trashed",
+            "revision": 1
+          }
+        }
+      }
+    },
+    {
+      "case": "non-owner",
+      "state": {
+        "name": "active",
+        "revision": 0
+      },
+      "event": {
+        "type": "trash",
+        "actor": "member",
+        "key": "fresh",
+        "heads": "match",
+        "expected": 0
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 0
+        },
+        "effects": [],
+        "response": {
+          "status": 403,
+          "error": "Document access denied",
+          "beforeChange": true
+        },
+        "rejected": "not_owner"
+      }
+    },
+    {
+      "case": "heads-mismatch",
+      "state": {
+        "name": "active",
+        "revision": 0
+      },
+      "event": {
+        "type": "trash",
+        "actor": "owner",
+        "key": "fresh",
+        "heads": "mismatch",
+        "expected": 0
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 0
+        },
+        "effects": [],
+        "response": {
+          "status": 409,
+          "error": "Page changed; read_page again before editing",
+          "beforeChange": true
+        },
+        "rejected": "heads_mismatch"
+      }
+    },
+    {
+      "case": "stale-revision",
+      "state": {
+        "name": "active",
+        "revision": 2
+      },
+      "event": {
+        "type": "trash",
+        "actor": "owner",
+        "key": "fresh",
+        "heads": "match",
+        "expected": 0
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 2
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "reply": "superseded",
+          "receipt": {
+            "superseded": true,
+            "state": "active"
+          },
+          "current": {
+            "state": "active",
+            "revision": 2
+          }
+        },
+        "rejected": "superseded"
+      }
+    },
+    {
+      "case": "has-children",
+      "state": {
+        "name": "active",
+        "revision": 0
+      },
+      "event": {
+        "type": "trash",
+        "actor": "owner",
+        "key": "fresh",
+        "heads": "match",
+        "expected": 0,
+        "children": true
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 0
+        },
+        "effects": [],
+        "response": {
+          "status": 409,
+          "error": "This Page has sub-pages. Trash its sub-pages first; subtree Trash is not available yet.",
+          "code": "page_has_children"
+        },
+        "rejected": "page_has_children"
+      }
+    },
+    {
+      "case": "home",
+      "state": {
+        "name": "active",
+        "revision": 0,
+        "placement": {
+          "nested": false,
+          "epoch": 0,
+          "home": true
+        }
+      },
+      "event": {
+        "type": "trash",
+        "actor": "owner",
+        "key": "fresh",
+        "heads": "match",
+        "expected": 0
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 0,
+          "placement": {
+            "nested": false,
+            "epoch": 0,
+            "home": true
+          }
+        },
+        "effects": [],
+        "response": {
+          "status": 409,
+          "error": "A Space's home Page stays with its Space; it can't move to Trash on its own",
+          "code": "home_page_protected",
+          "beforeChange": true
+        },
+        "rejected": "home_page_protected"
+      }
+    },
+    {
+      "case": "recorded",
+      "state": {
+        "name": "active",
+        "revision": 2
+      },
+      "event": {
+        "type": "trash",
+        "actor": "owner",
+        "key": "recorded",
+        "recorded": {
+          "state": "trashed"
+        },
+        "heads": "match",
+        "expected": 2
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 2
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "reply": "recorded",
+          "receipt": {
+            "state": "trashed"
+          },
+          "current": {
+            "state": "active",
+            "revision": 2
+          }
+        },
+        "rejected": "replayed"
+      }
+    },
+    {
+      "case": "key-conflict",
+      "state": {
+        "name": "active",
+        "revision": 2
+      },
+      "event": {
+        "type": "trash",
+        "actor": "owner",
+        "key": "conflict",
+        "heads": "match",
+        "expected": 2
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 2
+        },
+        "effects": [],
+        "response": {
+          "status": 409,
+          "error": "idempotency_key was used for a different request",
+          "beforeChange": true
+        },
+        "rejected": "idempotency_conflict"
+      }
+    },
+    {
+      "case": "noop",
+      "state": {
+        "name": "active",
+        "revision": 0
+      },
+      "event": {
+        "type": "restore",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 0
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 0
+        },
+        "effects": [
+          {
+            "type": "putRecord",
+            "receipt": true,
+            "record": false
+          },
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "reply": "receipt",
+          "receipt": {
+            "state": "active",
+            "restored": false
+          },
+          "current": {
+            "state": "active",
+            "revision": 0
+          }
+        }
+      }
+    },
+    {
+      "case": "non-owner",
+      "state": {
+        "name": "active",
+        "revision": 0
+      },
+      "event": {
+        "type": "restore",
+        "actor": "member",
+        "key": "fresh",
+        "expected": 0
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 0
+        },
+        "effects": [],
+        "response": {
+          "status": 403,
+          "error": "Document access denied",
+          "beforeChange": true
+        },
+        "rejected": "not_owner"
+      }
+    },
+    {
+      "case": "stale-revision",
+      "state": {
+        "name": "active",
+        "revision": 2
+      },
+      "event": {
+        "type": "restore",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 0
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 2
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "reply": "superseded",
+          "receipt": {
+            "superseded": true,
+            "state": "active"
+          },
+          "current": {
+            "state": "active",
+            "revision": 2
+          }
+        },
+        "rejected": "superseded"
+      }
+    },
+    {
+      "case": "recorded",
+      "state": {
+        "name": "active",
+        "revision": 2
+      },
+      "event": {
+        "type": "restore",
+        "actor": "owner",
+        "key": "recorded",
+        "recorded": {
+          "state": "active",
+          "restored": true
+        },
+        "expected": 2
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 2
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "reply": "recorded",
+          "receipt": {
+            "state": "active",
+            "restored": true
+          },
+          "current": {
+            "state": "active",
+            "revision": 2
+          }
+        },
+        "rejected": "replayed"
+      }
+    },
+    {
+      "case": "owner",
+      "state": {
+        "name": "active",
+        "revision": 0
+      },
+      "event": {
+        "type": "purgePreview",
+        "actor": "owner"
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 0
+        },
+        "effects": [],
+        "response": {
+          "status": 409,
+          "error": "Move this Page to Trash with delete_page before deleting it permanently",
+          "code": "page_not_in_trash",
+          "beforeChange": true
+        },
+        "rejected": "page_not_in_trash"
+      }
+    },
+    {
+      "case": "non-owner",
+      "state": {
+        "name": "active",
+        "revision": 0
+      },
+      "event": {
+        "type": "purgePreview",
+        "actor": "member"
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 0
+        },
+        "effects": [],
+        "response": {
+          "status": 403,
+          "error": "Document access denied",
+          "beforeChange": true
+        },
+        "rejected": "not_owner"
+      }
+    },
+    {
+      "state": {
+        "name": "active",
+        "revision": 0
+      },
+      "event": {
+        "type": "purgeConfirm",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 0,
+        "preview": "valid"
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 0
+        },
+        "effects": [],
+        "response": {
+          "status": 409,
+          "error": "Move this Page to Trash with delete_page before deleting it permanently",
+          "code": "page_not_in_trash",
+          "beforeChange": true
+        },
+        "rejected": "page_not_in_trash"
+      }
+    },
+    {
+      "state": {
+        "name": "active",
+        "revision": 2
+      },
+      "event": {
+        "type": "tombstone"
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 2
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "reply": "state",
+          "state": "active"
+        },
+        "rejected": "not_trashed"
+      }
+    },
+    {
+      "case": "record",
+      "state": {
+        "name": "active",
+        "revision": 0
+      },
+      "event": {
+        "type": "boot",
+        "record": {
+          "state": "active",
+          "revision": 0
+        },
+        "creation": null
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 0
+        },
+        "effects": [
+          {
+            "type": "loadDocument"
+          }
+        ]
+      }
+    },
+    {
+      "case": "leftover-intent",
+      "state": {
+        "name": "active",
+        "revision": 2,
+        "intent": true
+      },
+      "event": {
+        "type": "boot",
+        "record": {
+          "state": "active",
+          "revision": 2
+        },
+        "creation": {
+          "state": "active",
+          "revision": 0
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 2
+        },
+        "effects": [
+          {
+            "type": "importDocument"
+          },
+          {
+            "type": "putRecord",
+            "receipt": false,
+            "record": true
+          },
+          {
+            "type": "flush"
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "deleteCreation"
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "loadDocument"
+          }
+        ]
+      }
+    },
+    {
+      "case": "owner",
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "trash",
+        "actor": "owner",
+        "key": "fresh",
+        "heads": "match",
+        "expected": 1
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [
+          {
+            "type": "putRecord",
+            "receipt": true,
+            "record": false
+          },
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "reply": "receipt",
+          "receipt": {
+            "state": "trashed"
+          },
+          "current": {
+            "state": "trashed",
+            "revision": 1
+          }
+        }
+      }
+    },
+    {
+      "case": "non-owner",
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "trash",
+        "actor": "member",
+        "key": "fresh",
+        "heads": "match",
+        "expected": 1
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [],
+        "response": {
+          "status": 403,
+          "error": "Document access denied",
+          "beforeChange": true
+        },
+        "rejected": "not_owner"
+      }
+    },
+    {
+      "case": "stranger",
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "trash",
+        "actor": "stranger",
+        "key": "fresh",
+        "heads": "match",
+        "expected": 1
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [],
+        "response": {
+          "status": 404,
+          "error": "Page not found"
+        },
+        "rejected": "page_not_found"
+      }
+    },
+    {
+      "case": "recorded",
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "trash",
+        "actor": "owner",
+        "key": "recorded",
+        "recorded": {
+          "state": "trashed"
+        },
+        "heads": "match",
+        "expected": 1
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "reply": "recorded",
+          "receipt": {
+            "state": "trashed"
+          },
+          "current": {
+            "state": "trashed",
+            "revision": 1
+          }
+        },
+        "rejected": "replayed"
+      }
+    },
+    {
+      "case": "stale-revision",
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "trash",
+        "actor": "owner",
+        "key": "fresh",
+        "heads": "match",
+        "expected": 0
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "reply": "superseded",
+          "receipt": {
+            "superseded": true,
+            "state": "trashed"
+          },
+          "current": {
+            "state": "trashed",
+            "revision": 1
+          }
+        },
+        "rejected": "superseded"
+      }
+    },
+    {
+      "case": "keep-place",
+      "state": {
+        "name": "trashed",
+        "revision": 1,
+        "placement": {
+          "nested": true,
+          "epoch": 0
+        }
+      },
+      "event": {
+        "type": "restore",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 1
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 2,
+          "placement": {
+            "nested": true,
+            "epoch": 0
+          }
+        },
+        "effects": [
+          {
+            "type": "begin",
+            "phase": "restoring",
+            "revision": 2
+          },
+          {
+            "type": "putRecord",
+            "receipt": true,
+            "record": true
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "install"
+          },
+          {
+            "type": "refreshAccess"
+          },
+          {
+            "type": "projectTitle"
+          },
+          {
+            "type": "end"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "reply": "receipt",
+          "receipt": {
+            "state": "active",
+            "restored": true
+          },
+          "current": {
+            "state": "active",
+            "revision": 2
+          }
+        }
+      }
+    },
+    {
+      "case": "top-level",
+      "state": {
+        "name": "trashed",
+        "revision": 1,
+        "placement": {
+          "nested": true,
+          "epoch": 0
+        }
+      },
+      "event": {
+        "type": "restore",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 1,
+        "position": "top-level"
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 2,
+          "placement": {
+            "nested": false,
+            "epoch": 1
+          }
+        },
+        "effects": [
+          {
+            "type": "begin",
+            "phase": "restoring",
+            "revision": 2
+          },
+          {
+            "type": "putRecord",
+            "receipt": true,
+            "record": true
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "install"
+          },
+          {
+            "type": "refreshAccess"
+          },
+          {
+            "type": "projectTitle"
+          },
+          {
+            "type": "end"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "reply": "receipt",
+          "receipt": {
+            "state": "active",
+            "restored": true
+          },
+          "current": {
+            "state": "active",
+            "revision": 2
+          }
+        }
+      }
+    },
+    {
+      "case": "non-owner",
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "restore",
+        "actor": "member",
+        "key": "fresh",
+        "expected": 1
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [],
+        "response": {
+          "status": 403,
+          "error": "Document access denied",
+          "beforeChange": true
+        },
+        "rejected": "not_owner"
+      }
+    },
+    {
+      "case": "stale-revision",
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "restore",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 0
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "reply": "superseded",
+          "receipt": {
+            "superseded": true,
+            "state": "trashed"
+          },
+          "current": {
+            "state": "trashed",
+            "revision": 1
+          }
+        },
+        "rejected": "superseded"
+      }
+    },
+    {
+      "case": "replay-only",
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "restore",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 1,
+        "replayOnly": true
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "reply": "superseded",
+          "receipt": {
+            "superseded": true,
+            "state": "trashed"
+          },
+          "current": {
+            "state": "trashed",
+            "revision": 1
+          }
+        },
+        "rejected": "superseded"
+      }
+    },
+    {
+      "case": "recorded",
+      "state": {
+        "name": "trashed",
+        "revision": 3
+      },
+      "event": {
+        "type": "restore",
+        "actor": "owner",
+        "key": "recorded",
+        "recorded": {
+          "state": "active",
+          "restored": true
+        },
+        "expected": 3
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 3
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "reply": "recorded",
+          "receipt": {
+            "state": "active",
+            "restored": true
+          },
+          "current": {
+            "state": "trashed",
+            "revision": 3
+          }
+        },
+        "rejected": "replayed"
+      }
+    },
+    {
+      "case": "owner",
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "purgePreview",
+        "actor": "owner"
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "reply": "preview"
+        }
+      }
+    },
+    {
+      "case": "non-owner",
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "purgePreview",
+        "actor": "member"
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [],
+        "response": {
+          "status": 403,
+          "error": "Document access denied",
+          "beforeChange": true
+        },
+        "rejected": "not_owner"
+      }
+    },
+    {
+      "label": "trashed × purgeConfirm deletes the document",
+      "case": "preview-valid",
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "purgeConfirm",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 1,
+        "preview": "valid"
+      },
+      "expect": {
+        "state": {
+          "name": "deleted",
+          "revision": 2
+        },
+        "effects": [
+          {
+            "type": "withdrawAccess",
+            "record": "deleted"
+          },
+          {
+            "type": "begin",
+            "phase": "purging",
+            "revision": 2
+          },
+          {
+            "type": "restrictIndex"
+          },
+          {
+            "type": "putRecord",
+            "receipt": true,
+            "record": true
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "closePolicy"
+          },
+          {
+            "type": "deleteDocument"
+          },
+          {
+            "type": "flush"
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "retireIndex"
+          },
+          {
+            "type": "finishDeletion"
+          },
+          {
+            "type": "end"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "reply": "receipt",
+          "receipt": {
+            "deleted": true,
+            "purged": true
+          },
+          "current": {
+            "state": "deleted",
+            "revision": 2
+          }
+        }
+      }
+    },
+    {
+      "case": "preview-changed",
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "purgeConfirm",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 1,
+        "preview": "changed"
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [],
+        "response": {
+          "status": 409,
+          "error": "The Page changed after its preview; preview the permanent deletion again",
+          "code": "purge_preview_invalid",
+          "beforeChange": true
+        },
+        "rejected": "purge_preview_invalid"
+      }
+    },
+    {
+      "case": "preview-expired",
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "purgeConfirm",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 1,
+        "preview": "expired"
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [],
+        "response": {
+          "status": 409,
+          "error": "preview_token expired; preview the permanent deletion again",
+          "code": "purge_preview_invalid",
+          "beforeChange": true
+        },
+        "rejected": "purge_preview_invalid"
+      }
+    },
+    {
+      "case": "non-owner",
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "purgeConfirm",
+        "actor": "member",
+        "key": "fresh",
+        "expected": 1,
+        "preview": "valid"
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [],
+        "response": {
+          "status": 403,
+          "error": "Document access denied",
+          "beforeChange": true
+        },
+        "rejected": "not_owner"
+      }
+    },
+    {
+      "case": "stale-revision",
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "purgeConfirm",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 0,
+        "preview": "valid"
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "reply": "superseded",
+          "receipt": {
+            "superseded": true,
+            "state": "trashed"
+          },
+          "current": {
+            "state": "trashed",
+            "revision": 1
+          }
+        },
+        "rejected": "superseded"
+      }
+    },
+    {
+      "label": "trashed × tombstone records an earlier build's deletion",
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "tombstone"
+      },
+      "expect": {
+        "state": {
+          "name": "deleting",
+          "revision": 2
+        },
+        "effects": [
+          {
+            "type": "withdrawAccess",
+            "record": "deleted"
+          },
+          {
+            "type": "dropDocument"
+          },
+          {
+            "type": "putRecord",
+            "receipt": false,
+            "record": true
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "retireIndex"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "reply": "state",
+          "state": "deleted"
+        }
+      }
+    },
+    {
+      "state": {
+        "name": "trashed",
+        "revision": 1
+      },
+      "event": {
+        "type": "boot",
+        "record": {
+          "state": "trashed",
+          "revision": 1
+        },
+        "creation": null
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [
+          {
+            "type": "loadDocument"
+          }
+        ]
+      }
+    },
+    {
+      "case": "unwritten",
+      "state": {
+        "name": "trashing",
+        "revision": 1
+      },
+      "event": {
+        "type": "boot",
+        "record": {
+          "state": "active",
+          "revision": 0
+        },
+        "creation": null
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 0
+        },
+        "effects": [
+          {
+            "type": "loadDocument"
+          }
+        ]
+      }
+    },
+    {
+      "case": "written",
+      "state": {
+        "name": "trashing",
+        "revision": 1
+      },
+      "event": {
+        "type": "boot",
+        "record": {
+          "state": "trashed",
+          "revision": 1
+        },
+        "creation": null
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [
+          {
+            "type": "loadDocument"
+          }
+        ]
+      }
+    },
+    {
+      "state": {
+        "name": "trashing",
+        "revision": 1
+      },
+      "event": {
+        "type": "commitOk"
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [
+          {
+            "type": "restrictIndex"
+          },
+          {
+            "type": "putRecord",
+            "receipt": true,
+            "record": true
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "refreshAccess"
+          },
+          {
+            "type": "retireIndex"
+          },
+          {
+            "type": "end"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "reply": "current",
+          "current": {
+            "state": "trashed",
+            "revision": 1
+          }
+        }
+      }
+    },
+    {
+      "state": {
+        "name": "trashing",
+        "revision": 1
+      },
+      "event": {
+        "type": "commitFailed"
+      },
+      "expect": {
+        "state": {
+          "name": "trashing",
+          "revision": 1
+        },
+        "effects": [],
+        "response": {
+          "status": 503,
+          "error": "Page lifecycle is settling"
+        }
+      }
+    },
+    {
+      "case": "unwritten",
+      "state": {
+        "name": "restoring",
+        "revision": 2
+      },
+      "event": {
+        "type": "boot",
+        "record": {
+          "state": "trashed",
+          "revision": 1
+        },
+        "creation": null
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [
+          {
+            "type": "loadDocument"
+          }
+        ]
+      }
+    },
+    {
+      "case": "written",
+      "state": {
+        "name": "restoring",
+        "revision": 2
+      },
+      "event": {
+        "type": "boot",
+        "record": {
+          "state": "active",
+          "revision": 2
+        },
+        "creation": null
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 2
+        },
+        "effects": [
+          {
+            "type": "loadDocument"
+          }
+        ]
+      }
+    },
+    {
+      "state": {
+        "name": "restoring",
+        "revision": 2
+      },
+      "event": {
+        "type": "commitOk"
+      },
+      "expect": {
+        "state": {
+          "name": "active",
+          "revision": 2
+        },
+        "effects": [
+          {
+            "type": "putRecord",
+            "receipt": true,
+            "record": true
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "install"
+          },
+          {
+            "type": "refreshAccess"
+          },
+          {
+            "type": "projectTitle"
+          },
+          {
+            "type": "end"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "reply": "current",
+          "current": {
+            "state": "active",
+            "revision": 2
+          }
+        }
+      }
+    },
+    {
+      "state": {
+        "name": "restoring",
+        "revision": 2
+      },
+      "event": {
+        "type": "commitFailed"
+      },
+      "expect": {
+        "state": {
+          "name": "restoring",
+          "revision": 2
+        },
+        "effects": [],
+        "response": {
+          "status": 503,
+          "error": "Page lifecycle is settling"
+        }
+      }
+    },
+    {
+      "case": "unwritten",
+      "state": {
+        "name": "purging",
+        "revision": 2
+      },
+      "event": {
+        "type": "boot",
+        "record": {
+          "state": "trashed",
+          "revision": 1
+        },
+        "creation": null
+      },
+      "expect": {
+        "state": {
+          "name": "trashed",
+          "revision": 1
+        },
+        "effects": [
+          {
+            "type": "loadDocument"
+          }
+        ]
+      }
+    },
+    {
+      "case": "written",
+      "state": {
+        "name": "purging",
+        "revision": 2
+      },
+      "event": {
+        "type": "boot",
+        "record": {
+          "state": "deleted",
+          "revision": 2,
+          "deletion": true
+        },
+        "creation": null
+      },
+      "expect": {
+        "state": {
+          "name": "deleting",
+          "revision": 2
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": {
+        "name": "purging",
+        "revision": 2
+      },
+      "event": {
+        "type": "commitOk"
+      },
+      "expect": {
+        "state": {
+          "name": "deleted",
+          "revision": 2
+        },
+        "effects": [
+          {
+            "type": "restrictIndex"
+          },
+          {
+            "type": "putRecord",
+            "receipt": true,
+            "record": true
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "closePolicy"
+          },
+          {
+            "type": "deleteDocument"
+          },
+          {
+            "type": "flush"
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "retireIndex"
+          },
+          {
+            "type": "finishDeletion"
+          },
+          {
+            "type": "end"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "reply": "current",
+          "current": {
+            "state": "deleted",
+            "revision": 2
+          }
+        }
+      }
+    },
+    {
+      "state": {
+        "name": "purging",
+        "revision": 2
+      },
+      "event": {
+        "type": "commitFailed"
+      },
+      "expect": {
+        "state": {
+          "name": "purging",
+          "revision": 2
+        },
+        "effects": [],
+        "response": {
+          "status": 503,
+          "error": "Page lifecycle is settling"
+        }
+      }
+    },
+    {
+      "state": {
+        "name": "deleting",
+        "revision": 2
+      },
+      "event": {
+        "type": "trash",
+        "actor": "owner",
+        "key": "fresh",
+        "heads": "match",
+        "expected": 2
+      },
+      "expect": {
+        "state": {
+          "name": "deleting",
+          "revision": 2
+        },
+        "effects": [],
+        "response": {
+          "status": 404,
+          "error": "Page not found"
+        },
+        "rejected": "page_not_found"
+      }
+    },
+    {
+      "state": {
+        "name": "deleting",
+        "revision": 2
+      },
+      "event": {
+        "type": "restore",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 2
+      },
+      "expect": {
+        "state": {
+          "name": "deleting",
+          "revision": 2
+        },
+        "effects": [],
+        "response": {
+          "status": 404,
+          "error": "Page not found"
+        },
+        "rejected": "page_not_found"
+      }
+    },
+    {
+      "state": {
+        "name": "deleting",
+        "revision": 2
+      },
+      "event": {
+        "type": "purgePreview",
+        "actor": "owner"
+      },
+      "expect": {
+        "state": {
+          "name": "deleting",
+          "revision": 2
+        },
+        "effects": [],
+        "response": {
+          "status": 404,
+          "error": "Page not found"
+        },
+        "rejected": "page_not_found"
+      }
+    },
+    {
+      "label": "deleting × purgeConfirm repeats the deletion barriers",
+      "case": "fresh",
+      "state": {
+        "name": "deleting",
+        "revision": 2
+      },
+      "event": {
+        "type": "purgeConfirm",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 2,
+        "preview": "valid",
+        "deletion": {
+          "deleted": true,
+          "purged": true
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "deleted",
+          "revision": 2
+        },
+        "effects": [
+          {
+            "type": "restrictIndex"
+          },
+          {
+            "type": "putRecord",
+            "receipt": false,
+            "record": true
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "closePolicy"
+          },
+          {
+            "type": "deleteDocument"
+          },
+          {
+            "type": "flush"
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "retireIndex"
+          },
+          {
+            "type": "finishDeletion"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "reply": "deletion",
+          "receipt": {
+            "deleted": true,
+            "purged": true
+          },
+          "current": {
+            "state": "deleted",
+            "revision": 2
+          }
+        }
+      }
+    },
+    {
+      "case": "recorded",
+      "state": {
+        "name": "deleting",
+        "revision": 2
+      },
+      "event": {
+        "type": "purgeConfirm",
+        "actor": "owner",
+        "key": "recorded",
+        "recorded": {
+          "deleted": true,
+          "purged": true
+        },
+        "expected": 2,
+        "preview": "valid",
+        "deletion": {
+          "deleted": true,
+          "purged": true
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "deleted",
+          "revision": 2
+        },
+        "effects": [
+          {
+            "type": "restrictIndex"
+          },
+          {
+            "type": "putRecord",
+            "receipt": false,
+            "record": true
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "closePolicy"
+          },
+          {
+            "type": "deleteDocument"
+          },
+          {
+            "type": "flush"
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "retireIndex"
+          },
+          {
+            "type": "finishDeletion"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "reply": "recorded",
+          "receipt": {
+            "deleted": true,
+            "purged": true
+          },
+          "current": {
+            "state": "deleted",
+            "revision": 2
+          }
+        }
+      }
+    },
+    {
+      "state": {
+        "name": "deleting",
+        "revision": 2
+      },
+      "event": {
+        "type": "tombstone"
+      },
+      "expect": {
+        "state": {
+          "name": "deleting",
+          "revision": 2
+        },
+        "effects": [
+          {
+            "type": "putRecord",
+            "receipt": false,
+            "record": true
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "retireIndex"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "reply": "state",
+          "state": "deleted"
+        }
+      }
+    },
+    {
+      "state": {
+        "name": "deleting",
+        "revision": 2
+      },
+      "event": {
+        "type": "boot",
+        "record": {
+          "state": "deleted",
+          "revision": 2,
+          "deletion": true
+        },
+        "creation": null
+      },
+      "expect": {
+        "state": {
+          "name": "deleting",
+          "revision": 2
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": {
+        "name": "deleted",
+        "revision": 2
+      },
+      "event": {
+        "type": "trash",
+        "actor": "owner",
+        "key": "fresh",
+        "heads": "match",
+        "expected": 2
+      },
+      "expect": {
+        "state": {
+          "name": "deleted",
+          "revision": 2
+        },
+        "effects": [],
+        "response": {
+          "status": 404,
+          "error": "Page not found"
+        },
+        "rejected": "page_not_found"
+      }
+    },
+    {
+      "state": {
+        "name": "deleted",
+        "revision": 2
+      },
+      "event": {
+        "type": "restore",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 2
+      },
+      "expect": {
+        "state": {
+          "name": "deleted",
+          "revision": 2
+        },
+        "effects": [],
+        "response": {
+          "status": 404,
+          "error": "Page not found"
+        },
+        "rejected": "page_not_found"
+      }
+    },
+    {
+      "state": {
+        "name": "deleted",
+        "revision": 2
+      },
+      "event": {
+        "type": "purgePreview",
+        "actor": "owner"
+      },
+      "expect": {
+        "state": {
+          "name": "deleted",
+          "revision": 2
+        },
+        "effects": [],
+        "response": {
+          "status": 404,
+          "error": "Page not found"
+        },
+        "rejected": "page_not_found"
+      }
+    },
+    {
+      "label": "deleted × purgeConfirm replays the deletion receipt",
+      "state": {
+        "name": "deleted",
+        "revision": 2
+      },
+      "event": {
+        "type": "purgeConfirm",
+        "actor": "owner",
+        "key": "fresh",
+        "expected": 2,
+        "preview": "valid",
+        "deletion": {
+          "deleted": true,
+          "purged": true
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "deleted",
+          "revision": 2
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "reply": "deletion",
+          "receipt": {
+            "deleted": true,
+            "purged": true
+          },
+          "current": {
+            "state": "deleted",
+            "revision": 2
+          }
+        },
+        "rejected": "replayed"
+      }
+    },
+    {
+      "state": {
+        "name": "deleted",
+        "revision": 2
+      },
+      "event": {
+        "type": "tombstone"
+      },
+      "expect": {
+        "state": {
+          "name": "deleted",
+          "revision": 2
+        },
+        "effects": [],
+        "response": {
+          "status": 200,
+          "reply": "state",
+          "state": "deleted"
+        },
+        "rejected": "not_trashed"
+      }
+    },
+    {
+      "state": {
+        "name": "deleted",
+        "revision": 2
+      },
+      "event": {
+        "type": "boot",
+        "record": {
+          "state": "deleted",
+          "revision": 2,
+          "deletion": true
+        },
+        "creation": null
+      },
+      "expect": {
+        "state": {
+          "name": "deleting",
+          "revision": 2
+        },
+        "effects": []
+      }
+    }
+  ]
+}

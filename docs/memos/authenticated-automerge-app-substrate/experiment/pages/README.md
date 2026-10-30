@@ -739,6 +739,17 @@ child since the request was reserved. A refused or unsettled guard releases the
 request, which the Page never recorded. The Catalog always projects the Page's
 current state, not the replayed receipt.
 
+The Page's side is one transition in
+[page-lifecycle.mjs](worker/page-lifecycle.mjs), with its table in
+[page-lifecycle.json](test/fixtures/machines/page-lifecycle.json). Its states
+are missing, creating, active, trashing, trashed, restoring, purging, deleting
+and deleted. Trashing, restoring and purging are commits whose sequence has
+started and not finished; that phase lives only in memory, so a restart boots
+from whichever record is durable. Deleting is a durable deleted record whose
+deletion barriers have not run in this process. The lifecycle routes,
+`/internal/lifecycle-state`, `/internal/tombstone` and the constructor are its
+interpreter.
+
 Pending trash and restore requests hold a hidden destination slot in the
 owner's Catalog, written in the same storage call as the intent. The intent is
 marked `forwarded` before the Page sees it. A never-forwarded slot counts for
@@ -755,12 +766,17 @@ transition and through the Catalog, which interprets it.
 A trashed document that fails to load answers `503` and is retried on the next
 request. Only a deleted record, or the owner Catalog's tombstone delivered to
 the Page, makes the absence permanent; the Page then answers like a missing
-Page.
+Page. A tombstone answers only after its deleted record is durable. If that
+write or sync fails, the next tombstone repeats it.
 
 `restore_page` waits for the restored record to be durable, like an access
 increase, then returns the same ID, content, comments, and ACL. Grants and key
 generations are untouched by Trash, so collaborators reconnect with their
 previous role and keys. Restored titles are projected back into member catalogs.
+That projection runs after the restore commits. If the process dies in between,
+a restart forgets it and a retried restore replays its receipt without
+projecting, so members may not find the Page until its title projects again
+([#4553](https://github.com/nteract/nteract/issues/4553)).
 
 `purge_page` is a two-step owner operation on a trashed Page. `action:"preview"`
 returns the title, comment count, collaborators who lose access, pending
@@ -771,8 +787,8 @@ synchronous step that tombstones the Page. While trashed, the policy refuses
 native writes from every key, so only a change accepted before Trash and applied
 late could differ. `action:"confirm"` with the unchanged token then runs the
 permanent deletion path:
-it tombstones the record, closes admission, deletes the document, and writes the
-catalog deletion tombstone. Private image bytes stay in object storage but are
+it tombstones the record and waits for it to be durable, then closes admission,
+deletes the document, and writes the catalog deletion tombstone. Private image bytes stay in object storage but are
 no longer served.
 
 Trash has no automatic expiry. Pages stay there until the owner restores or

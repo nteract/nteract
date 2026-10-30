@@ -1,5 +1,4 @@
 import * as A from "@automerge/automerge";
-import { HttpError } from "./auth.mjs";
 
 /** Host-owned Trash records and permanent-deletion previews.
  *
@@ -118,7 +117,9 @@ export async function issuePurgePreview(storage, metadata, doc, principal, now =
   };
 }
 
-export async function verifyPurgePreview(
+/** Check a preview token against the current record and document:
+ * `valid`, `invalid` (malformed or forged), `expired`, or `changed`. */
+export async function checkPurgePreview(
   storage,
   metadata,
   doc,
@@ -126,10 +127,8 @@ export async function verifyPurgePreview(
   token,
   now = Date.now(),
 ) {
-  const invalid = (message) => new HttpError(409, message, "purge_preview_invalid");
   const [prefix, body, signature, extra] = typeof token === "string" ? token.split(".") : [];
-  if (prefix !== TOKEN_PREFIX || !body || !signature || extra !== undefined)
-    throw invalid("Invalid preview_token; preview the permanent deletion again");
+  if (prefix !== TOKEN_PREFIX || !body || !signature || extra !== undefined) return "invalid";
   let payload;
   try {
     const valid = await crypto.subtle.verify(
@@ -141,10 +140,9 @@ export async function verifyPurgePreview(
     if (!valid) throw Error("signature");
     payload = JSON.parse(new TextDecoder().decode(fromBase64url(body)));
   } catch {
-    throw invalid("Invalid preview_token; preview the permanent deletion again");
+    return "invalid";
   }
-  if (!Number.isFinite(payload?.expires_at) || payload.expires_at <= now)
-    throw invalid("preview_token expired; preview the permanent deletion again");
-  if (payload.binding !== (await previewBinding(metadata, doc, principal)))
-    throw invalid("The Page changed after its preview; preview the permanent deletion again");
+  if (!Number.isFinite(payload?.expires_at) || payload.expires_at <= now) return "expired";
+  if (payload.binding !== (await previewBinding(metadata, doc, principal))) return "changed";
+  return "valid";
 }
