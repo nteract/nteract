@@ -107,11 +107,17 @@ export function checkHostReady(target, { run = runRemote } = {}) {
 
 const INSTALLED = 0;
 const ABSENT = 3;
+const UNREADABLE = 4;
+
+// `names FILE`: 0 when FILE names the tunnel, 1 when FILE is absent or
+// doesn't, and exit UNREADABLE when FILE exists but grep can't read it.
+const namesFunction = (tunnelId) =>
+  `names() { [ -e "$1" ] || return 1; grep -qF '${tunnelId}' "$1"; s=$?; [ "$s" -le 1 ] || exit ${UNREADABLE}; return "$s"; }`;
 
 /**
  * Whether the host's receipt and credentials both name `tunnelId`: "installed",
- * "absent" (the host answered and they don't), or "unknown" (no answer, such
- * as a dropped SSH connection).
+ * "absent" (the host read both and they don't), or "unknown" (no answer, or a
+ * file it couldn't read).
  */
 export function hostState(target, tunnelId, { run = runRemote } = {}) {
   if (!uuid.test(tunnelId ?? "")) throw new Error("Tunnel UUID required");
@@ -121,7 +127,7 @@ export function hostState(target, tunnelId, { run = runRemote } = {}) {
       "sudo",
       "sh",
       "-c",
-      `if grep -qF '${tunnelId}' ${d}/tunnel-provisioning.json 2>/dev/null && grep -qF '${tunnelId}' ${d}/tunnel.json 2>/dev/null; then exit ${INSTALLED}; fi; exit ${ABSENT}`,
+      `${namesFunction(tunnelId)}; if names ${d}/tunnel-provisioning.json && names ${d}/tunnel.json; then exit ${INSTALLED}; fi; exit ${ABSENT}`,
     ]);
     return "installed";
   } catch (error) {
@@ -130,18 +136,18 @@ export function hostState(target, tunnelId, { run = runRemote } = {}) {
 }
 
 /** Remove each tunnel file only if it names `tunnelId`. Files that name
- * another tunnel, or that are absent, are left alone. Fails if a file that
- * names it remains. */
+ * another tunnel, or that are absent, are left alone. Fails if a file can't
+ * be read or a file that names it remains. */
 export function removeOwnedFiles(target, tunnelId, { run = runRemote } = {}) {
   if (!uuid.test(tunnelId ?? "")) throw new Error("Tunnel UUID required");
   const d = directoryOf(target);
   const script = ["tunnel.json", "tunnel-provisioning.json"]
-    .map((name) => {
-      const file = `${d}/${name}`;
-      return `if grep -qF '${tunnelId}' ${file} 2>/dev/null; then rm -f ${file}; fi; if [ -e ${file} ] && grep -qF '${tunnelId}' ${file}; then exit 1; fi`;
-    })
+    .map(
+      (name) =>
+        `if names ${d}/${name}; then rm -f ${d}/${name}; fi; if names ${d}/${name}; then exit 1; fi`,
+    )
     .join("; ");
-  run(hostOf(target), ["sudo", "sh", "-c", script + "; exit 0"]);
+  run(hostOf(target), ["sudo", "sh", "-c", `${namesFunction(tunnelId)}; ${script}; exit 0`]);
 }
 
 /**

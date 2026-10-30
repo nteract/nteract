@@ -202,6 +202,27 @@ test("cleanup removes this tunnel's files whatever their JSON spacing", () => {
   assert.deepEqual(readdirSync(d), []);
 });
 
+test("an unreadable tunnel file counts as unknown, never as absent", async () => {
+  const root = etc();
+  const d = path.join(root, "nteract-page9");
+  writeFileSync(path.join(d, "tunnel-provisioning.json"), `{"tunnel_id":"${tunnelId}"}`);
+  // A directory named like the credentials file makes grep fail to read it.
+  execFileSync("mkdir", [path.join(d, "tunnel.json")]);
+  const cf = cloudflare([{ id: tunnelId, name: "nteract-page9" }]);
+  await assert.rejects(
+    provisionTunnel({
+      token: "t",
+      target: "page9",
+      apply: true,
+      fetchImpl: cf.fetchImpl,
+      run: host(root).run,
+    }),
+    /Could not read the host's tunnel files/,
+  );
+  assert.throws(() => removeOwnedFiles("page9", tunnelId, { run: host(root).run }));
+  assert.ok(cf.calls.every(({ method }) => method === "GET"));
+});
+
 test("cleanup leaves files that name another tunnel", () => {
   const root = etc();
   const d = path.join(root, "nteract-page9");
