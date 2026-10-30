@@ -1720,7 +1720,9 @@ export class PageSession {
       this.#closing = this.#archiving.then(
         () => this.#released,
         () => {
-          if (this.alive) void this.leave({ drain });
+          // This leave replaces #closing, so closeSettled() callers see its
+          // failure. The returned promise is a second handle on it.
+          if (this.alive) this.leave({ drain }).catch(() => {});
         },
       );
     // The host leaves a session once; a draining session is already leaving.
