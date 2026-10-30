@@ -120,31 +120,16 @@ function judge(run, reference, row, tally) {
  *   deleted before the record's sync.
  * - tombstone during a pending commit (trashing, restoring, purging): the
  *   tombstone does not settle the commit first.
- * - restore (trashed × restore, restoring × commitOk): a restore whose access
- *   refresh failed after its install settles as a trash, so its title and
- *   index rows are never projected.
  * - trashed × tombstone: the next tombstone does not repeat a failed write. */
 const CUT_INCONSISTENCIES = [
   "active × boot [leftover-intent] uncut: the lifecycle revision fell back",
   "active × boot [leftover-intent]: the lifecycle revision fell back",
   "purging × commitOk: a trashed record without its document",
   "purging × tombstone uncut: reported success lost: told deleted, booted trashed",
-  "restoring × commitOk: replay differs at index access",
-  "restoring × commitOk: replay differs at index page",
-  "restoring × commitOk: replay differs at member shared/33333333-3333-4333-8333-333333333333",
-  "restoring × commitOk: replay differs at owner page/33333333-3333-4333-8333-333333333333",
   "restoring × tombstone: replay differs at index access",
   "restoring × tombstone: replay differs at index page",
   "restoring × tombstone: reported success lost: told deleted, booted trashed",
   "trashed × purgeConfirm [preview-valid]: a trashed record without its document",
-  "trashed × restore [keep-place]: replay differs at index access",
-  "trashed × restore [keep-place]: replay differs at index page",
-  "trashed × restore [keep-place]: replay differs at member shared/33333333-3333-4333-8333-333333333333",
-  "trashed × restore [keep-place]: replay differs at owner page/33333333-3333-4333-8333-333333333333",
-  "trashed × restore [top-level]: replay differs at index access",
-  "trashed × restore [top-level]: replay differs at index page",
-  "trashed × restore [top-level]: replay differs at member shared/33333333-3333-4333-8333-333333333333",
-  "trashed × restore [top-level]: replay differs at owner page/33333333-3333-4333-8333-333333333333",
   "trashed × tombstone: replay differs at index access",
   "trashed × tombstone: replay differs at index page",
   "trashed × tombstone: reported success lost: told deleted, booted trashed",

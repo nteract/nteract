@@ -2834,7 +2834,9 @@ export class Page {
       this.pendingLifecycle = undefined;
       return response;
     }
-    const restoring = this.metadata !== pending.metadata;
+    // The phase, not whether its record is installed yet: a restore whose
+    // access refresh failed after the install is still a restore when it settles.
+    const restoring = pending.operation === "restore_page";
     // Trash removes non-owner listing rows before its record is durable.
     if (!restoring && catalogIndexEpoch(this.env)) await this.restrictIndex(pending.metadata);
     await this.commitLifecycle(pending.key, pending.record, pending.metadata);
