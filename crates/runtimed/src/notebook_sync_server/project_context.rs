@@ -29,9 +29,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use notify_debouncer_mini::DebounceEventResult;
+use notify::Watcher;
 use tokio::sync::oneshot;
-use tracing::{debug, error, info, warn};
+use tracing::{error, warn};
 
 use runtime_doc::{
     ProjectContext, ProjectFile, ProjectFileExtras, ProjectFileKind, ProjectFileParsed,
@@ -42,190 +42,266 @@ use crate::project_file::{self as daemon_project_file, DetectedProjectFile};
 use super::room::NotebookRoom;
 use crate::task_supervisor::spawn_best_effort;
 
-/// Walk up from the notebook path, parse what the daemon can, write the
-/// result into `RuntimeStateDoc.project_context`, and arm (or rearm) a
-/// filesystem watcher over the directories that can change that result.
-/// External edits, deletions, and newly created manifests re-enter this
-/// routine via the watcher.
-///
-/// Untitled notebooks with no filesystem anchor leave the field at
-/// `Pending`; a sentinel write would be misleading because there's
-/// nothing to refresh against. Auto-launch may still call this with the
-/// room working directory as an anchor, so project-backed untitled
-/// notebooks can expose parsed package details to clients.
-///
-/// Re-runnable: the caller may invoke this whenever the room's on-disk
-/// path changes (untitled promotion, save-as rename). The setter clears
-/// variant-specific fields before writing, so a `Detected` → `NotFound`
-/// transition doesn't leave ghost data. Any previously-armed watcher is
-/// shut down before a new one is spawned.
+/// Serializes ownership changes with publication, without holding a lock across
+/// watcher setup or an await. Old callbacks may finish IO, but cannot publish.
+#[derive(Default)]
+pub(super) struct ProjectFileWatcher {
+    current: std::sync::Mutex<WatchState>,
+    #[cfg(test)]
+    pub(super) before_subscribe: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+#[derive(Default)]
+struct WatchState {
+    registration: Option<WatchRegistration>,
+    stopped: bool,
+}
+
+struct WatchRegistration {
+    generation: Arc<()>,
+    shutdown: oneshot::Sender<()>,
+}
+
+impl ProjectFileWatcher {
+    pub(super) fn start(&self) -> Option<(Arc<()>, oneshot::Receiver<()>)> {
+        let (shutdown, receiver) = oneshot::channel();
+        let generation = Arc::new(());
+        let mut current = self.current.lock().unwrap_or_else(|e| e.into_inner());
+        if current.stopped {
+            return None;
+        }
+        if let Some(previous) = current.registration.replace(WatchRegistration {
+            generation: generation.clone(),
+            shutdown,
+        }) {
+            let _ = previous.shutdown.send(());
+        }
+        Some((generation, receiver))
+    }
+
+    pub(super) fn shutdown(&self) -> bool {
+        let mut current = self.current.lock().unwrap_or_else(|e| e.into_inner());
+        // Only explicit room teardown calls shutdown; refresh uses start.
+        // Fence continuations that have not reached registration yet.
+        current.stopped = true;
+        if let Some(previous) = current.registration.take() {
+            let _ = previous.shutdown.send(());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn if_current<T>(&self, generation: &Arc<()>, f: impl FnOnce() -> T) -> Option<T> {
+        let current = self.current.lock().unwrap_or_else(|e| e.into_inner());
+        current
+            .registration
+            .as_ref()
+            .filter(|entry| Arc::ptr_eq(&entry.generation, generation))
+            .map(|_| f())
+    }
+
+    fn finish(&self, generation: &Arc<()>) {
+        let mut current = self.current.lock().unwrap_or_else(|e| e.into_inner());
+        if current
+            .registration
+            .as_ref()
+            .is_some_and(|entry| Arc::ptr_eq(&entry.generation, generation))
+        {
+            current.registration.take();
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_active(&self) -> bool {
+        self.current.lock().unwrap().registration.is_some()
+    }
+}
+
+/// Replace the watcher using the current bound notebook path, falling back to
+/// `path` only for an untitled room. A stale caller cannot restore an old path. Normal
+/// manifest events stay in that task and retain its subscription/debounce queue.
+/// Readiness includes a fresh scan after subscriptions are installed, so changes
+/// during setup cannot leave a stale snapshot waiting for another event.
 pub(super) async fn refresh_project_context_async(room: &Arc<NotebookRoom>, path: Option<&Path>) {
     let Some(anchor) = path else {
         return;
     };
-    let ctx = build_context(anchor);
-
-    if let Err(e) = room.state.with_doc(|sd| sd.set_project_context(&ctx)) {
-        warn!(
-            "[notebook-sync] Failed to write project_context for {:?}: {}",
-            path, e
-        );
+    let Some((anchor, generation, shutdown_rx)) =
+        room.file_binding.start_project_file_watcher(anchor).await
+    else {
         return;
-    }
-
-    debug!(
-        "[notebook-sync] Wrote project_context for {:?}: {}",
-        path,
-        ctx.variant_str()
-    );
-
-    let watch_dirs = daemon_project_file::project_watch_dirs(anchor);
-    rearm_project_file_watcher(room, anchor.to_path_buf(), watch_dirs).await;
-}
-
-/// Shut down any existing project-file watcher on the room and arm a new
-/// one over `watch_dirs`. An empty set (an anchor at the home directory)
-/// leaves the slot empty; the next refresh trigger will re-evaluate.
-async fn rearm_project_file_watcher(
-    room: &Arc<NotebookRoom>,
-    anchor: PathBuf,
-    watch_dirs: Vec<PathBuf>,
-) {
-    room.file_binding.shutdown_project_file_watcher().await;
-
-    if watch_dirs.is_empty() {
-        return;
-    }
-
-    let (shutdown_tx, ready_rx) = spawn_project_file_watcher(anchor, watch_dirs, room.clone());
-    room.file_binding
-        .install_project_file_watcher_shutdown_tx(shutdown_tx)
-        .await;
-    // Block until the watcher task has actually installed its
-    // subscription (or failed trying). Without this, events that land
-    // between "we returned from this function" and "notify attached
-    // itself" go unreported. On the failure path the sender is dropped
-    // and the receiver returns `Err(RecvError)` — we just continue,
-    // because the task has already logged the error and there's no
-    // watcher to wait on anyway.
+    };
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let room = room.clone();
+    spawn_best_effort("project-file-watcher", async move {
+        run_project_file_watcher(&room, &anchor, &generation, shutdown_rx, ready_tx).await;
+        room.file_binding.project_file_watcher.finish(&generation);
+    });
     let _ = ready_rx.await;
 }
 
-/// Watch `watch_dirs` non-recursively and call
-/// `refresh_project_context_async` whenever a project-manifest filename
-/// changes in any of them. The daemon is not a writer of project files
-/// today, so there's no self-write feedback loop to suppress.
-///
-/// Directories are watched rather than files: watching a file directly
-/// misses atomic "write to temp + rename" saves on macOS FSEvents, and a
-/// file that does not exist yet cannot be watched at all.
-///
-/// Returns two channels:
-///
-/// - `shutdown_tx`: the caller stores it; sending (or dropping) stops
-///   the watcher.
-/// - `ready_rx`: resolves when the task has actually installed the
-///   subscriptions (or hit an error and given up). Callers await this
-///   before returning to guarantee that events after the return point
-///   actually reach the watcher.
-fn spawn_project_file_watcher(
-    anchor: PathBuf,
-    watch_dirs: Vec<PathBuf>,
-    room: Arc<NotebookRoom>,
-) -> (oneshot::Sender<()>, oneshot::Receiver<()>) {
-    let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
-    let (ready_tx, ready_rx) = oneshot::channel::<()>();
-
-    spawn_best_effort("project-file-watcher", async move {
-        // Dropping `ready_tx` without sending (the error arms below)
-        // still unblocks the waiter via `RecvError`.
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<DebounceEventResult>(16);
-        let debouncer_result = notify_debouncer_mini::new_debouncer(
-            std::time::Duration::from_millis(500),
-            move |res: DebounceEventResult| {
-                let _ = tx.blocking_send(res);
-            },
-        );
-
-        let mut debouncer = match debouncer_result {
-            Ok(d) => d,
-            Err(e) => {
-                error!(
-                    "[project-watch] Failed to create watcher for {:?}: {}",
-                    watch_dirs, e
-                );
-                return;
-            }
-        };
-
-        let mut watched = 0usize;
-        for dir in &watch_dirs {
-            match debouncer
-                .watcher()
-                .watch(dir, notify::RecursiveMode::NonRecursive)
-            {
-                Ok(()) => watched += 1,
-                Err(e) => warn!("[project-watch] Failed to watch {:?}: {}", dir, e),
-            }
-        }
-        if watched == 0 {
-            error!("[project-watch] No project directories could be watched: {watch_dirs:?}");
-            return;
-        }
-
-        info!(
-            "[project-watch] Watching project directories {:?}",
-            watch_dirs
-        );
-
-        // Subscriptions are live; unblock the waiter.
-        let _ = ready_tx.send(());
-
-        loop {
-            tokio::select! {
-                Some(result) = rx.recv() => {
-                    match result {
-                        Ok(events) => {
-                            // Non-recursive watches only report direct
-                            // children, so a manifest filename is enough;
-                            // no path canonicalization is needed.
-                            let relevant = events.iter().any(|e| {
-                                e.path
-                                    .file_name()
-                                    .is_some_and(daemon_project_file::is_project_file_name)
-                            });
-                            if !relevant {
-                                continue;
-                            }
-                            // Re-run detection against the room's current
-                            // notebook path: the notebook may have moved, a
-                            // closer manifest may now win, or the detected
-                            // file may have been deleted.
-                            let refresh_anchor = room
-                                .file_binding
-                                .path()
-                                .await
-                                .unwrap_or_else(|| anchor.clone());
-                            refresh_project_context_async(&room, Some(refresh_anchor.as_path()))
-                                .await;
-                        }
-                        Err(e) => {
-                            warn!(
-                                "[project-watch] Debouncer error for {:?}: {:?}",
-                                watch_dirs, e
-                            );
-                        }
+async fn publish_context(
+    room: &NotebookRoom,
+    anchor: &Path,
+    generation: &Arc<()>,
+    ctx: &ProjectContext,
+) -> bool {
+    room.file_binding
+        .with_project_file_anchor(anchor, || {
+            room.file_binding
+                .project_file_watcher
+                .if_current(generation, || {
+                    if let Err(error) = room.state.with_doc(|sd| sd.set_project_context(ctx)) {
+                        warn!("[project-watch] Failed to write project_context: {error}");
                     }
+                })
+                .is_some()
+        })
+        .await
+        .unwrap_or(false)
+}
+
+/// Directory watches cover new manifests and atomic temp-file/rename saves.
+/// Updating notify subscriptions can restart its macOS event stream. Always
+/// scan *after* changing coverage; ordinary events need no subscription churn.
+fn update_watch_dirs(
+    watcher: &mut dyn notify::Watcher,
+    watched: &mut Vec<PathBuf>,
+    desired: &[PathBuf],
+) {
+    for dir in desired {
+        if !watched.contains(dir) {
+            match watcher.watch(dir, notify::RecursiveMode::NonRecursive) {
+                Ok(()) => watched.push(dir.clone()),
+                Err(error) => {
+                    warn!("[project-watch] Failed to add project directory watch: {error}")
                 }
-                _ = &mut shutdown_rx => {
-                    debug!("[project-watch] Shutting down watcher for {:?}", watch_dirs);
-                    return;
-                }
+            }
+        }
+    }
+    watched.retain(|dir| {
+        if desired.contains(dir) {
+            return true;
+        }
+        match watcher.unwatch(dir) {
+            Ok(()) => false,
+            Err(error) => {
+                warn!("[project-watch] Failed to remove project directory watch: {error}");
+                true
             }
         }
     });
+}
 
-    (shutdown_tx, ready_rx)
+async fn run_project_file_watcher(
+    room: &NotebookRoom,
+    anchor: &Path,
+    generation: &Arc<()>,
+    mut shutdown_rx: oneshot::Receiver<()>,
+    ready_tx: oneshot::Sender<()>,
+) {
+    // A single queued trigger is enough: each pass reads current filesystem
+    // state. Never block notify's OS thread while dropping/reconfiguring it.
+    let (changed_tx, mut changed_rx) = tokio::sync::mpsc::channel(1);
+    let mut watcher = match notify::RecommendedWatcher::new(
+        move |result: notify::Result<notify::Event>| {
+            let relevant = match result {
+                Ok(event) => relevant_project_event(&event),
+                Err(error) => {
+                    warn!("[project-watch] Watcher error: {error}");
+                    true
+                }
+            };
+            if relevant {
+                let _ = changed_tx.try_send(());
+            }
+        },
+        notify::Config::default(),
+    ) {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            error!("[project-watch] Failed to create watcher: {error}");
+            publish_context(room, anchor, generation, &build_context(anchor)).await;
+            return;
+        }
+    };
+
+    let mut watched = Vec::new();
+    let mut ready = Some(ready_tx);
+    loop {
+        if room
+            .file_binding
+            .project_file_watcher
+            .if_current(generation, || ())
+            .is_none()
+        {
+            return;
+        }
+        let desired = daemon_project_file::project_watch_dirs(anchor);
+        #[cfg(test)]
+        {
+            let hook = room
+                .file_binding
+                .project_file_watcher
+                .before_subscribe
+                .lock()
+                .unwrap()
+                .take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+        update_watch_dirs(&mut watcher, &mut watched, &desired);
+        let ctx = build_context(anchor);
+        // The manifest boundary can itself change during subscription setup.
+        // Expand/shrink coverage and rescan before advertising readiness.
+        if daemon_project_file::project_watch_dirs(anchor) != desired {
+            tokio::task::yield_now().await;
+            continue;
+        }
+        if !publish_context(room, anchor, generation, &ctx).await {
+            return;
+        }
+        if let Some(ready_tx) = ready.take() {
+            let _ = ready_tx.send(());
+        }
+        if watched.is_empty() {
+            return;
+        }
+        tokio::select! {
+            biased;
+            _ = &mut shutdown_rx => return,
+            event = changed_rx.recv() => if event.is_none() { return; },
+        }
+        // Bound refresh rate during write bursts, while keeping shutdown prompt.
+        tokio::select! {
+            biased;
+            _ = &mut shutdown_rx => return,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {},
+        }
+        // Mutations up to this point are covered by the next scan. A mutation
+        // during/after that scan queues a fresh trigger for another pass.
+        while changed_rx.try_recv().is_ok() {}
+    }
+}
+
+/// Access notifications from our own reads must not feed another refresh.
+/// Keep close-after-write and backend overflow/rescan signals.
+fn relevant_project_event(event: &notify::Event) -> bool {
+    use notify::event::{AccessKind, AccessMode};
+    if event.need_rescan() {
+        return true;
+    }
+    if matches!(event.kind, notify::EventKind::Access(kind)
+        if kind != AccessKind::Close(AccessMode::Write))
+    {
+        return false;
+    }
+    event.paths.iter().any(|path| {
+        path.file_name()
+            .is_some_and(daemon_project_file::is_project_file_name)
+    })
 }
 
 /// Detect + parse, translating the daemon's internal `DetectedProjectFile`
@@ -591,6 +667,42 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    #[test]
+    fn project_events_ignore_reads_but_keep_writes_and_rescans() {
+        use notify::event::{
+            AccessKind, AccessMode, CreateKind, DataChange, Flag, ModifyKind, RemoveKind,
+            RenameMode,
+        };
+        use notify::{Event, EventKind};
+        for kind in [
+            AccessKind::Read,
+            AccessKind::Open(AccessMode::Read),
+            AccessKind::Open(AccessMode::Write),
+            AccessKind::Close(AccessMode::Read),
+        ] {
+            assert!(!relevant_project_event(
+                &Event::new(EventKind::Access(kind)).add_path("environment.yml".into())
+            ));
+        }
+        for kind in [
+            EventKind::Create(CreateKind::File),
+            EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+            EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+            EventKind::Remove(RemoveKind::File),
+            EventKind::Access(AccessKind::Close(AccessMode::Write)),
+        ] {
+            assert!(relevant_project_event(
+                &Event::new(kind).add_path("environment.yml".into())
+            ));
+        }
+        assert!(!relevant_project_event(
+            &Event::new(EventKind::Any).add_path("unrelated.txt".into())
+        ));
+        assert!(relevant_project_event(
+            &Event::new(EventKind::Other).set_flag(Flag::Rescan)
+        ));
+    }
 
     fn write(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);

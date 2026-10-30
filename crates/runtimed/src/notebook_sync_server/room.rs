@@ -44,11 +44,11 @@ pub struct NotebookFileBinding {
     is_ephemeral: AtomicBool,
     /// Shutdown signal for the `.ipynb` file watcher task.
     watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
-    /// Shutdown signal for the project-file watcher task.
+    /// Generation ownership and terminal shutdown for the project-file watcher.
     ///
     /// This watcher is derived from the bound notebook path and is rearmed when
     /// the binding moves to a new path.
-    project_file_watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    pub(super) project_file_watcher: super::project_context::ProjectFileWatcher,
     /// Shutdown/flush request channel for the `.ipynb` autosave task.
     autosave_shutdown_tx: Mutex<Option<mpsc::UnboundedSender<AutosaveShutdownRequest>>>,
 }
@@ -65,7 +65,7 @@ impl NotebookFileBinding {
             path: RwLock::new(path),
             is_ephemeral: AtomicBool::new(ephemeral),
             watcher_shutdown_tx: Mutex::new(None),
-            project_file_watcher_shutdown_tx: Mutex::new(None),
+            project_file_watcher: Default::default(),
             autosave_shutdown_tx: Mutex::new(None),
         }
     }
@@ -118,7 +118,7 @@ impl NotebookFileBinding {
 
     #[cfg(test)]
     pub async fn has_project_file_watcher_for_test(&self) -> bool {
-        self.project_file_watcher_shutdown_tx.lock().await.is_some()
+        self.project_file_watcher.is_active()
     }
 
     #[cfg(test)]
@@ -318,24 +318,32 @@ impl NotebookFileBinding {
         true
     }
 
-    pub async fn install_project_file_watcher_shutdown_tx(&self, shutdown_tx: oneshot::Sender<()>) {
-        let previous_tx = self
-            .project_file_watcher_shutdown_tx
-            .lock()
-            .await
-            .replace(shutdown_tx);
-        if let Some(previous_tx) = previous_tx {
-            let _ = previous_tx.send(());
+    /// Reserve ownership under the binding read lock: a delayed refresh for an
+    /// older save-as path must start against the current binding instead.
+    pub(super) async fn start_project_file_watcher(
+        &self,
+        fallback: &Path,
+    ) -> Option<(PathBuf, Arc<()>, oneshot::Receiver<()>)> {
+        let bound = self.path.read().await;
+        let anchor = bound.as_deref().unwrap_or(fallback).to_path_buf();
+        let (generation, shutdown) = self.project_file_watcher.start()?;
+        Some((anchor, generation, shutdown))
+    }
+
+    pub(super) async fn with_project_file_anchor<T>(
+        &self,
+        anchor: &Path,
+        f: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let bound = self.path.read().await;
+        if bound.as_ref().is_some_and(|path| path != anchor) {
+            return None;
         }
+        Some(f())
     }
 
     pub async fn shutdown_project_file_watcher(&self) -> bool {
-        let shutdown_tx = self.project_file_watcher_shutdown_tx.lock().await.take();
-        let Some(shutdown_tx) = shutdown_tx else {
-            return false;
-        };
-        let _ = shutdown_tx.send(());
-        true
+        self.project_file_watcher.shutdown()
     }
 
     pub async fn install_autosave_shutdown_tx(
