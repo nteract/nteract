@@ -739,7 +739,11 @@ one retry lifetime while its intent is pending. A forwarded slot does not
 expire: once its lifetime lapses, counting asks the Page for its current
 lifecycle state and either converts the slot to the real entry or releases it.
 A resumed request whose slot lapsed takes a new one if capacity allows;
-otherwise the Page only reports its current state.
+otherwise the Page only reports its current state. These rules, with the
+retarget and the revision fence, are the
+[operation-intent machine](worker/operation-intent.mjs). Its
+[table](test/fixtures/machines/operation-intent.json) runs against the
+transition and through the Catalog, which interprets it.
 
 A trashed document that fails to load answers `503` and is retried on the next
 request. Only a deleted record, or the owner Catalog's tombstone delivered to

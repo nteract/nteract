@@ -1,7 +1,8 @@
-// The operation-intent table drives the owner's Catalog through its HTTP and
-// capacity entry points. Each row seeds Catalog storage in the row's state,
-// delivers the row's event against a scripted Page, and reads back the
-// storage keys, Page requests and HTTP reply as machine effects.
+// One operation-intent table runs twice: against the pure transition, and
+// through the owner's Catalog at its HTTP and capacity entry points. For the
+// Catalog, each row seeds storage in the row's state, delivers the row's event
+// against a scripted Page, and reads back the storage writes, Page requests
+// and HTTP reply as machine effects.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
@@ -10,7 +11,7 @@ import { Catalog } from "./index.mjs";
 import { lifecycleSlot, lifecycleSlotKey } from "./catalog.mjs";
 import { fingerprint } from "./mutations.mjs";
 import { RETRY_LIFETIME_MS } from "./operation-journal.mjs";
-import { operationIntentAlphabet, operationIntentSpec } from "./operation-intent.mjs";
+import { operationIntent, operationIntentAlphabet } from "./operation-intent.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/operation-intent.json", import.meta.url);
 const auth = await createAuthFixture();
@@ -521,19 +522,16 @@ async function drive(state, event) {
   return result;
 }
 
-test("the operation-intent table covers every state, event and guard case", async (t) => {
-  t.mock.method(globalThis, "fetch", auth.fetch);
-  t.mock.method(console, "error", () => {});
-  const summary = await runTable(operationIntentSpec, loadTable(TABLE), { drive });
-  assert.deepEqual(summary, { rows: 65, pairs: 21, unreachable: 15, cases: 42 });
+const SUMMARY = { rows: 65, pairs: 21, unreachable: 15, cases: 42 };
+
+test("the operation-intent machine gives every row's result", async () => {
+  assert.deepEqual(await runTable(operationIntent, loadTable(TABLE)), SUMMARY);
 });
 
-test("table rows satisfy the alphabet's validators", () => {
-  for (const row of loadTable(TABLE).rows) {
-    operationIntentAlphabet.assertState(row.state);
-    operationIntentAlphabet.assertEvent(row.event);
-    operationIntentAlphabet.assertResult(row.expect);
-  }
+test("the Catalog interprets every row as the machine does", async (t) => {
+  t.mock.method(globalThis, "fetch", auth.fetch);
+  t.mock.method(console, "error", () => {});
+  assert.deepEqual(await runTable(operationIntent, loadTable(TABLE), { drive }), SUMMARY);
 });
 
 /** A Page that applies whatever reaches it, for resuming after a crash. */

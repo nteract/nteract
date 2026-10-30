@@ -37,8 +37,22 @@
  * answer may be retried once at the Page's current revision. `replayOnly`
  * says a resumed request lost its slot with no room to take another, so the
  * Page may only replay what it already did.
+ *
+ * Effects, which the Catalog runs in order: `persist` writes the intent row,
+ * together with a new slot when `slot` is true, in one put; `reserve_slot`
+ * writes the slot alone; `release_slot` removes this intent's slot;
+ * `delete_intent` removes the row; `sync` is the durability barrier before a
+ * reply; `forward` sends the request to the Page, whose answer is the next
+ * `page_reply`; `read_lifecycle` asks the Page for its lifecycle state, the
+ * next `lifecycle`; `project` copies a Page state into the Catalog's entries;
+ * `forget_trash` and `notify_tombstone` clean up after a permanent deletion
+ * recorded by an earlier build.
+ *
+ * Events carry what the Catalog read: `request` holds the facts gathered
+ * before the step (capacity counts run this machine for every slot they
+ * visit), `known` is the newest lifecycle revision among this Page's entries.
  */
-import { defineAlphabet } from "../shared/machine.mjs";
+import { defineAlphabet, defineMachine, reject } from "../shared/machine.mjs";
 
 export const OPERATIONS = Object.freeze(["delete_page", "restore_page", "purge_page"]);
 const SLOTS = new Set(["none", "live", "lapsed", "entry", "reconciling"]);
@@ -261,3 +275,257 @@ export const operationIntentSpec = Object.freeze({
 });
 
 export const operationIntentAlphabet = defineAlphabet(operationIntentSpec);
+
+/** Replies the Catalog gives without asking the Page. */
+export const replies = Object.freeze({
+  notFound: { status: 404, body: { error: "Page not found" } },
+  trashFull: {
+    status: 409,
+    body: {
+      error: "Trash is full. Permanently delete Pages from Trash before moving more Pages there.",
+      code: "trash_capacity",
+    },
+  },
+  pageQuota: { status: 409, body: { error: "This prototype permits 100 pages per account" } },
+  unsettled: {
+    status: 409,
+    body: {
+      error: "A Page's Trash or restore is still settling. Retry shortly.",
+      code: "lifecycle_unsettled",
+    },
+  },
+  unreachable: { status: 500, body: { error: "Pages request failed" } },
+});
+const fullReply = { delete_page: replies.trashFull, restore_page: replies.pageQuota };
+/** The lifecycle state a request moves its Page to, which its slot stands for. */
+const destinationState = { delete_page: "trashed", restore_page: "active" };
+const DELETED = Object.freeze({ state: "deleted" });
+const effect = (type) => ({ type });
+
+/** Whether this intent holds capacity at its destination. A forwarded
+ * reservation never expires on its own: its request may already have
+ * applied, so only the Page's state settles it. */
+export function holdsSlot(state, expired) {
+  if (state.slot === "none" || state.slot === "entry") return true;
+  return state.slot === "live" && (state.name === "forwarded" || expired === false);
+}
+
+/** Where projecting `current` leaves this intent's slot. A projection writes
+ * the Page's entry under its state's prefix and removes the other, unless an
+ * entry was already observed at a newer lifecycle revision. */
+function projectedSlot(state, current, known) {
+  const stored = state.slot === "reconciling" ? "live" : state.slot;
+  if (stored === "none") return "none";
+  if (current.state === "deleted") return "lapsed";
+  if (known !== undefined && known > (current.revision ?? 0)) return stored;
+  return current.state === destinationState[state.operation] ? "entry" : "lapsed";
+}
+
+function forward(state) {
+  return {
+    type: "forward",
+    ...(state.expectedRevision !== undefined && { expectedRevision: state.expectedRevision }),
+    ...(state.replayOnly && { replayOnly: true }),
+  };
+}
+
+function pendingFields(state) {
+  return {
+    operation: state.operation,
+    pageId: state.pageId,
+    ...(state.expectedRevision !== undefined && { expectedRevision: state.expectedRevision }),
+  };
+}
+
+/** A new request: refuse it when its destination is full, or reserve it. */
+function reserve(state, event) {
+  const { operation, pageId, destination, revision } = event;
+  if (destination === "full") return reject(state, "full", { response: fullReply[operation] });
+  const slot = { room: "live", entry: "entry", taken: "lapsed", none: "none" }[destination];
+  return {
+    state: {
+      name: "reserved",
+      operation,
+      pageId,
+      expectedRevision: revision,
+      slot,
+      retarget: true,
+    },
+    effects: [
+      {
+        type: "persist",
+        state: "reserved",
+        expectedRevision: revision,
+        ...(destination === "room" && { slot: true }),
+      },
+    ],
+  };
+}
+
+/** A pending request continues: hold a slot or replay only, mark it
+ * forwarded, then forward it with its revision fence. */
+function proceed(state, event) {
+  if (state.slot === "reconciling") return reject(state, "reconciling");
+  const effects = [];
+  let slot = state.slot;
+  let replayOnly = false;
+  if (!holdsSlot(state, event.expired)) {
+    if (typeof event.capacity !== "boolean")
+      throw new Error("a request without its slot needs the capacity fact");
+    if (event.capacity && event.leaf === "refused")
+      return {
+        state: { name: "released", operation: state.operation },
+        effects: [effect("delete_intent"), effect("sync")],
+        response: event.refusal,
+      };
+    if (event.capacity) {
+      effects.push(effect("reserve_slot"));
+      slot = "live";
+    } else replayOnly = true;
+  }
+  if (state.name === "reserved") effects.push({ type: "persist", state: "forwarded" });
+  const next = {
+    name: "forwarded",
+    ...pendingFields(state),
+    slot,
+    retarget: state.retarget && !replayOnly,
+    replayOnly,
+  };
+  effects.push(forward(next));
+  return { state: next, effects };
+}
+
+/** The Page answered a forwarded request. */
+function answer(state, event) {
+  if (state.slot === "reconciling") return reject(state, "reconciling");
+  if (event.unavailable) return { state, effects: [], response: replies.unreachable };
+  const passthrough = { source: "page", status: event.status };
+  // Every 4xx with this mark was raised before the Page changed anything.
+  if (event.rejected === "before-change")
+    return {
+      state: { name: "released", operation: state.operation },
+      effects: [
+        ...(state.slot === "live" ? [effect("release_slot")] : []),
+        effect("delete_intent"),
+        effect("sync"),
+      ],
+      response: passthrough,
+    };
+  const ok = event.status >= 200 && event.status < 300;
+  if (!ok && event.status !== 404) return { state, effects: [], response: passthrough };
+  // A missing Page is already permanently absent: that is the outcome.
+  const { receipt, current } = ok
+    ? event
+    : { receipt: { page_id: state.pageId, deleted: true }, current: DELETED };
+  const effects = [{ type: "project", current }];
+  const slot = projectedSlot(state, current, event.known);
+  if (receipt.superseded && state.retarget && !state.replayOnly) {
+    // The Page has never seen this key, so retry it once at the Page's
+    // current revision.
+    const next = { ...state, expectedRevision: current.revision, slot, retarget: false };
+    effects.push({ type: "persist", state: "forwarded", expectedRevision: current.revision });
+    effects.push(forward(next));
+    return { state: next, effects };
+  }
+  const name = receipt.superseded ? "superseded" : "completed";
+  effects.push({ type: "persist", state: name, receipt }, effect("sync"));
+  return {
+    state: { name, operation: state.operation, receipt },
+    effects,
+    response: { status: 200, body: receipt },
+  };
+}
+
+/** Capacity counting visits this intent's slot. */
+function count(state, event) {
+  if (state.slot !== "live") return reject(state, "no reservation");
+  if (!event.expired) return { state, effects: [], response: { counted: true } };
+  if (state.name === "reserved")
+    return {
+      state: { ...state, slot: "lapsed" },
+      effects: [effect("release_slot")],
+      response: { counted: false },
+    };
+  return {
+    state: { ...state, slot: "reconciling", check: "count" },
+    effects: [effect("read_lifecycle")],
+  };
+}
+
+/** The Page's lifecycle state settles a reservation being read. Capacity
+ * counting releases a slot the Page never moved past; a placement check keeps
+ * it, since the request may still apply. */
+function reconcile(state, event) {
+  if (state.slot !== "reconciling") return reject(state, "not reading");
+  const { check: reader, ...rest } = state;
+  const counting = reader === "count";
+  const live = { ...rest, slot: "live" };
+  if (event.unavailable)
+    return { state: live, effects: [], response: counting ? { counted: true } : replies.unsettled };
+  const missing = event.current.state === "missing";
+  if (!missing && (event.current.revision ?? 0) === state.expectedRevision)
+    return counting
+      ? {
+          state: { ...rest, slot: "lapsed" },
+          effects: [effect("release_slot")],
+          response: { counted: false },
+        }
+      : { state: live, effects: [] };
+  const current = missing ? DELETED : event.current;
+  const slot = projectedSlot(state, current, event.known);
+  return {
+    state: { ...rest, slot },
+    effects: [{ type: "project", current }],
+    ...(counting && { response: { counted: slot === "entry" } }),
+  };
+}
+
+function transition(state, event) {
+  const terminal = state.name === "completed" || state.name === "superseded";
+  // A slot whose intent row is gone or finished is stale.
+  if ((terminal || state.name === "absent") && ["count", "settle"].includes(event.type))
+    return {
+      state,
+      effects: [effect("release_slot")],
+      ...(event.type === "count" && { response: { counted: false } }),
+    };
+  if (terminal)
+    // Only terminal deletion is projected again: another outcome may have
+    // been superseded since.
+    return {
+      state,
+      effects: [
+        ...(state.receipt.deleted ? [{ type: "project", current: DELETED }] : []),
+        effect("sync"),
+      ],
+      response: { status: 200, body: state.receipt },
+    };
+  if (event.type === "tombstone") {
+    // The Catalog drops the Page's Trash entry, which is where a Trash
+    // request keeps its slot.
+    const loses = state.operation === "delete_page" && ["live", "entry"].includes(state.slot);
+    const effects = [effect("forget_trash"), effect("notify_tombstone")];
+    if (state.name === "absent") return { state, effects, response: replies.notFound };
+    return { state: loses ? { ...state, slot: "lapsed" } : state, effects };
+  }
+  if (state.name === "absent") return reserve(state, event);
+  switch (event.type) {
+    case "request":
+      return proceed(state, event);
+    case "page_reply":
+      return answer(state, event);
+    case "count":
+      return count(state, event);
+    case "settle":
+      return state.slot === "live"
+        ? {
+            state: { ...state, slot: "reconciling", check: "settle" },
+            effects: [effect("read_lifecycle")],
+          }
+        : reject(state, "no reservation");
+    default:
+      return reconcile(state, event);
+  }
+}
+
+export const operationIntent = defineMachine({ ...operationIntentSpec, transition });
