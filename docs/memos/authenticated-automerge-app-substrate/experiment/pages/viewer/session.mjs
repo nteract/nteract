@@ -70,6 +70,13 @@ const STALLED_STATES = new Set(["Unsaved", "Offline", "Saved locally"]);
 /** A receipt status as the reload gate reads it. */
 export const saveStateOf = (status) =>
   status === "Local save failed" ? "failed" : STALLED_STATES.has(status) ? "stalled" : "saving";
+/** Settles once every promise has settled, then rejects with the first
+ * failure. Later work never starts before earlier work finishes. */
+const allSettledThen = (...promises) =>
+  Promise.allSettled(promises).then((results) => {
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed) throw failed.reason;
+  });
 /** Whether a Page being left may still save in this receipt state. */
 export const drainingStatus = (status) => DRAINING_STATES.has(status);
 const SIGNING_KEY_REFUSED =
@@ -263,7 +270,8 @@ export class PageSession {
       case "reopen":
         // Opening can fail while offline. A retry reuses the prepared reset
         // marker without touching the released backend or archiving again.
-        return this.#released.then(() =>
+        // A failed release doesn't block the replacement or its retry.
+        return Promise.allSettled([this.#released]).then(() =>
           PageSession.open(this.pageId, {
             authentication: { identity: this.identity, canWrite: this.credentialCanWrite },
             refreshSession: this.refreshSession,
@@ -272,13 +280,11 @@ export class PageSession {
         );
       case "forget": {
         const forgetting = this.forgetLocal();
-        // Deleted after its release started: the close also covers the
-        // forget, so nothing treats the Page as gone before its copy is.
-        if (this.phase$.snapshot().closing) {
-          const released = this.closing;
-          this.closing = forgetting.then(() => released);
-        }
-        return forgetting;
+        // Deleted after its release started: the close settles only once both
+        // the forget and the release have, whichever fails.
+        if (!this.phase$.snapshot().closing) return forgetting;
+        this.closing = allSettledThen(forgetting, this.closing);
+        return this.closing;
       }
       case "rekey":
         return this.#rekey(context);

@@ -14,6 +14,7 @@ import {
   strongerBuildState,
 } from "../shared/build-identity.mjs";
 import { reloadGateMachine } from "./reload-gate-machine.mjs";
+import { closeSettled } from "./session-host.mjs";
 import { pauseReason } from "./session-machine.mjs";
 import { Store } from "./store.mjs";
 export {
@@ -253,8 +254,7 @@ export class ReloadGate {
       tracked.releasing = true;
       // Read the close after the transition's effects have started it.
       void Promise.resolve()
-        .then(() => session.closing)
-        .catch(() => {})
+        .then(() => closeSettled(session))
         .then(() => this.#release(session));
     }
   }

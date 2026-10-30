@@ -741,3 +741,33 @@ test("a failed checkpoint's record waits for the backend release too", async () 
   assert.equal(outcome.pages[0].pageId, session.pageId);
   assert.match(outcome.pages[0].markdown, /Garden notes/);
 });
+
+test("a late deletion whose forget fails still holds Reload until the release settles", async () => {
+  const g = gate();
+  const { session, flush, persist, holdRelease } = closingSession();
+  const finishRelease = holdRelease();
+  // Another path answers 404 as the close lands, before any watcher reads
+  // the close.
+  let deleting;
+  session.phase$.state$.subscribe((phase) => {
+    if (phase.name === "closed" && !deleting) deleting = session.markDeleted();
+  });
+  session.forgetLocal = async () => {
+    throw new Error("IndexedDB unavailable");
+  };
+  g.hold(session);
+  const closed = g.host.close(session);
+  flush.resolve();
+  persist.resolve();
+  await firstValueFrom(session.phase$.state$.pipe(filter((phase) => phase.name === "deleted")));
+  const result = g.reload();
+  await settle();
+  assert.deepEqual(session.phase$.snapshot(), { name: "deleted", closing: true });
+  assert.equal(g.reloaded(), 0, "a failed forget doesn't end the wait for the release");
+  assert.equal(g.host.store.snapshot().owned.length, 1, "the host still owns the session");
+  finishRelease();
+  await assert.rejects(deleting, /IndexedDB unavailable/);
+  await closed;
+  assert.deepEqual(await result, { ok: true });
+  assert.equal(g.reloaded(), 1);
+});

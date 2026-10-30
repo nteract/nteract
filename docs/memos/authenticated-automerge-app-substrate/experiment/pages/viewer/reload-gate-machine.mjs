@@ -230,6 +230,7 @@ export const reloadGateSpec = Object.freeze({
       "direct-close",
       "direct-close-failed",
       "deleted-released",
+      "deleted-still-releasing",
     ],
     "waiting/timeout": ["live-waiting", "closing-still", "none-waiting"],
   },

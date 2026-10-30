@@ -12,6 +12,17 @@ import { filter, take } from "rxjs";
 import { Store } from "./store.mjs";
 
 const keyOf = (session) => `${session.identity?.principal}:${session.pageId}`;
+
+/** Settles once a session's close has settled, success or failure. A close
+ * can be extended while it runs (a late deletion adds its forget), so wait
+ * again until the close stops changing. */
+export async function closeSettled(session) {
+  for (;;) {
+    const closing = session.closing;
+    await Promise.allSettled([closing]);
+    if (session.closing === closing) return;
+  }
+}
 // The release has started: the checkpoint settled, or a deleted Page's local
 // copy is forgotten and its close is under way.
 const releasing = (phase) =>
@@ -173,8 +184,7 @@ export class SessionHost {
     session.phase$.state$.pipe(filter(releasing), take(1)).subscribe(() => {
       // Read the close after the transition's effects have started it.
       void Promise.resolve()
-        .then(() => session.closing)
-        .catch(() => {})
+        .then(() => closeSettled(session))
         .then(() => this.#drop(session));
     });
   }
