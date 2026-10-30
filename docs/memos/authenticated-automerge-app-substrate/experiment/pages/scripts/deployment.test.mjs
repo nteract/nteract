@@ -473,6 +473,7 @@ for (const installed of ["celld 0.6.1", "celld 0.6.2", "celld 0.6.3"])
     assert.match(unit, /Environment=CELLD_OTEL=1\n/);
     assert.match(unit, /Environment=CELLD_OTEL_RETENTION=30d\n/);
     assert.doesNotMatch(unit, /CELLD_OTEL_(?:FLUSH_MS|FLUSH_BYTES|SINK)=/);
+    assert.doesNotMatch(unit, /OTEL_TRACES_SAMPLER=/);
   });
 
 for (const installed of [
@@ -1234,6 +1235,7 @@ test("fresh Page8 installation owns its origin, storage, runtime and service", (
   assert.equal(config.vars.PAGES_COMPANY_VIEW_DOMAINS, "anaconda.com");
   assert.equal(config.vars.PAGES_CATALOG_INDEX, "1");
   const unit = f.read("/etc/systemd/system/nteract-page8.service");
+  assert.match(unit, /Environment=OTEL_TRACES_SAMPLER=always_on\n/);
   assert.match(unit, /User=nteract-page8\n/);
   assert.match(unit, /WorkingDirectory=\/var\/lib\/nteract-page8\n/);
   assert.match(
