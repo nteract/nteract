@@ -1045,10 +1045,12 @@ test("reconcile checks its deadline before each step and stops at an exact posit
   shortBounds(t, { reconcile: 50, verify: 500 });
   const memberStorage = f.catalog(member).ctx.storage;
   const viewer = { revision: 1, members: { [member]: { role: "viewer", generation: 1 } } };
+  let checksStarted = 0;
   for (let n = 1; n <= 16; n++) {
     const page = f.addPage(id(n), `Slow ${n}`, viewer);
     const run = page.fetch;
     page.fetch = async (request) => {
+      checksStarted++;
       await new Promise((resolve) => setTimeout(resolve, 150));
       return run(request);
     };
@@ -1071,7 +1073,11 @@ test("reconcile checks its deadline before each step and stops at an exact posit
     incomplete: false,
     dirty: null,
   });
-  assert.ok(elapsed < 1000, `listing took ${elapsed} ms`);
+  // The bound is one step: no Page check starts after the deadline. The
+  // listing's own verification adds at most one page and one look-ahead.
+  assert.ok(checksStarted <= 4 + 2, `Page checks started: ${checksStarted}`);
+  // Wall time is one step of slow checks; the slack absorbs slow runners.
+  assert.ok(elapsed < 3000, `listing took ${elapsed} ms`);
 });
 
 test("shared title repair uses the Page host's observation time", async (t) => {
