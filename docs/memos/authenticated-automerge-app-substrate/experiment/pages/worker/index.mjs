@@ -595,20 +595,68 @@ export class Catalog {
   /** Read a Page's current lifecycle state. The Catalog may call its Pages;
    * a Page never calls its owner's Catalog.
    */
+  /**
+   * Read a Page's lifecycle, waiting at most `ms`. Every Catalog request
+   * shares one queue, so reads are shared and capped: a pass reuses the read
+   * already in flight for the same Page, and no more than
+   * `lifecycleBounds.concurrency` underlying reads run at once across passes.
+   * A read counts against that cap until it settles, not when a caller stops
+   * waiting. At the cap the call fails at once and the caller treats the Page
+   * as unsettled.
+   */
   async pageLifecycle(pageId, ms = lifecycleBounds.readMs) {
-    // Every Catalog request shares one queue, so a read that stalls, in the
-    // fetch or its body, gives up instead of holding it.
-    return withTimeout(
-      (async () => {
-        const response = await this.env.PAGES.getByName(pageId).fetch(
-          new Request("https://pages.internal/internal/lifecycle-state"),
-        );
-        if (!response.ok) throw Error(`Page lifecycle state unavailable: ${response.status}`);
-        return response.json();
-      })(),
-      Math.max(1, ms),
-      "Page lifecycle read timed out",
+    this.lifecycleReads ??= new Map();
+    let read = this.lifecycleReads.get(pageId);
+    if (!read) {
+      if (this.lifecycleReads.size >= lifecycleBounds.concurrency)
+        throw Error("Page lifecycle reads are at capacity");
+      read = this.readLifecycle(pageId);
+      this.lifecycleReads.set(pageId, read);
+      const clear = () => {
+        if (this.lifecycleReads.get(pageId) === read) this.lifecycleReads.delete(pageId);
+      };
+      read.then(clear, clear);
+    }
+    return withTimeout(read, Math.max(1, ms), "Page lifecycle read timed out");
+  }
+
+  /**
+   * One underlying lifecycle read, aborted after `lifecycleBounds.readMs`.
+   * celld 0.6.3 honors an AbortSignal on a Durable Object stub fetch: the
+   * call rejects and the Page sees its request signal abort. An abort after
+   * the headers does not interrupt a body read, so the body is read through
+   * a reader that the abort cancels.
+   */
+  async readLifecycle(pageId) {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new Error("Page lifecycle read timed out")),
+      lifecycleBounds.readMs,
     );
+    try {
+      const response = await this.env.PAGES.getByName(pageId).fetch(
+        new Request("https://pages.internal/internal/lifecycle-state"),
+        { signal: controller.signal },
+      );
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => {});
+        throw Error(`Page lifecycle state unavailable: ${response.status}`);
+      }
+      const reader = response.body.getReader();
+      const cancel = () => reader.cancel(controller.signal.reason).catch(() => {});
+      if (controller.signal.aborted) cancel();
+      controller.signal.addEventListener("abort", cancel, { once: true });
+      const chunks = [];
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      if (controller.signal.aborted) throw controller.signal.reason;
+      return JSON.parse(new TextDecoder().decode(await new Blob(chunks).arrayBuffer()));
+    } finally {
+      clearTimeout(timer);
+    }
   }
   /** Tell a trashed Page that this account recorded its permanent deletion. */
   async notifyTombstone(pageId) {

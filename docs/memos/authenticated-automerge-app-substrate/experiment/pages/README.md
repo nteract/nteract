@@ -727,9 +727,14 @@ so a restored child goes to the top level even if that trash has not applied
 yet. When the Page can't answer, the request is refused with
 `lifecycle_unsettled` (retryable) rather than decided on a guess. Every Catalog
 request shares one queue, so these reads are bounded: each read (fetch and body)
-gets 2 s, one pass gets 5 s with no read starting after its deadline, and at
-most four reads run at a time; an exhausted budget also returns
-`lifecycle_unsettled`. A resumed trash that lost its reservation never applied,
+gets 2 s, one pass gets 5 s with no read starting after its deadline, and an
+exhausted budget also returns `lifecycle_unsettled`. Reads are shared across
+passes: a pass reuses the read in flight for the same Page, and at most four
+underlying reads run at once, counted until they settle rather than until a
+caller stops waiting. Each read is aborted at 2 s; celld 0.6.3 honors an
+AbortSignal on a Durable Object stub fetch, and the body is read through a
+reader the abort cancels, since an abort after the headers does not interrupt
+a body read. A resumed trash that lost its reservation never applied,
 so before it re-acquires one it asks the Page: if the Page's lifecycle has not
 moved, the leaf guard runs again and a child created meanwhile refuses it; if it
 has, forwarding only replays the recorded receipt.

@@ -59,10 +59,13 @@ async function world(t, { index = "1" } = {}) {
   const faults = new Map();
   // Runs before every lifecycle-state read; a test can delay or stall it.
   const hooks = { lifecycle: null };
+  // A hook may return a Response to answer in the Page's place.
   const faulty = (id, target) => ({
-    fetch: async (request) => {
-      if (hooks.lifecycle && new URL(request.url).pathname === "/internal/lifecycle-state")
-        await hooks.lifecycle(id);
+    fetch: async (request, init) => {
+      if (hooks.lifecycle && new URL(request.url).pathname === "/internal/lifecycle-state") {
+        const replaced = await hooks.lifecycle(id, init?.signal);
+        if (replaced instanceof Response) return replaced;
+      }
       const fault = faults.get(id);
       if (fault === "before") {
         faults.delete(id);
@@ -184,6 +187,7 @@ async function world(t, { index = "1" } = {}) {
     heads,
     catalogStorage,
     page: (id) => pages.get(id),
+    catalog: (principal = owner) => env.CATALOGS.getByName(principal),
   };
 }
 
@@ -744,8 +748,12 @@ test("a stalled lifecycle read is bounded and refuses the request as retryable",
   const saved = { ...lifecycleBounds };
   t.after(() => Object.assign(lifecycleBounds, saved));
   Object.assign(lifecycleBounds, { readMs: 50, passMs: 500 });
-  w.hooks.lifecycle = async (id) => {
-    if (id === children[0]) await new Promise(() => {});
+  // The stall ends only when the Catalog aborts the read.
+  w.hooks.lifecycle = async (id, signal) => {
+    if (id === children[0])
+      await new Promise((_, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+      );
   };
   const started = Date.now();
   const stalled = await trash(parent);
@@ -753,8 +761,11 @@ test("a stalled lifecycle read is bounded and refuses the request as retryable",
   assert.equal(stalled.body.code, "lifecycle_unsettled");
   assert.ok(Date.now() - started < 400, "the read gave up after its own bound");
   assert.equal(pageState(w.page(parent).metadata), "active");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(w.catalog().lifecycleReads.size, 0, "the aborted read freed its slot");
   w.hooks.lifecycle = null;
   assert.equal((await trash(parent)).status, 200, "the retry settles and proceeds");
+  assert.equal(w.catalog().lifecycleReads.size, 0, "a settled read frees its slot");
 });
 
 test("many slow children share one pass budget and at most four reads at a time", async (t) => {
@@ -788,6 +799,58 @@ test("many slow children share one pass budget and at most four reads at a time"
   const settled = await trash(parent);
   assert.equal(settled.status, 200, JSON.stringify(settled.body));
   assert.equal(peak, 4);
+});
+
+test("back-to-back passes against stalled reads never run more than four reads", async (t) => {
+  const w = await world(t);
+  const { parent, trash } = await unsettledChildren(w, 6);
+  const saved = { ...lifecycleBounds };
+  t.after(() => Object.assign(lifecycleBounds, saved));
+  Object.assign(lifecycleBounds, { readMs: 30, passMs: 80 });
+  // These stalls ignore the abort, like a runtime that can't cancel a fetch.
+  let started = 0;
+  w.hooks.lifecycle = async () => {
+    started++;
+    await new Promise(() => {});
+  };
+  for (let pass = 0; pass < 3; pass++) {
+    const result = await trash(parent);
+    assert.equal(result.status, 409);
+    assert.equal(result.body.code, "lifecycle_unsettled");
+    assert.ok(w.catalog().lifecycleReads.size <= 4);
+  }
+  assert.equal(started, 4, "later passes reuse the stalled reads instead of adding more");
+  assert.equal(pageState(w.page(parent).metadata), "active");
+});
+
+test("a stalled lifecycle body is cancelled and its read frees its slot", async (t) => {
+  const w = await world(t);
+  const { parent, trash, children } = await unsettledChildren(w, 1);
+  const saved = { ...lifecycleBounds };
+  t.after(() => Object.assign(lifecycleBounds, saved));
+  Object.assign(lifecycleBounds, { readMs: 40, passMs: 500 });
+  let cancelled = false;
+  w.hooks.lifecycle = async (id) => {
+    if (id !== children[0]) return;
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"state":'));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }),
+    );
+  };
+  const stalled = await trash(parent);
+  assert.equal(stalled.status, 409);
+  assert.equal(stalled.body.code, "lifecycle_unsettled");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(cancelled, true, "the abort cancelled the body");
+  assert.equal(w.catalog().lifecycleReads.size, 0);
+  w.hooks.lifecycle = null;
+  assert.equal((await trash(parent)).status, 200);
 });
 
 test("a resumed parent trash that lost its slot runs the leaf guard again", async (t) => {
