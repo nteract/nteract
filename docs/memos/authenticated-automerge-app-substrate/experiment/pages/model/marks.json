@@ -1,0 +1,46 @@
+{
+  "$comment": "Inline marks a Pages rich-text block may store. JavaScript (model/marks.mjs) and Rust (crates/nteract-rich-text) both read this file. Order is the ProseMirror schema order; code stays last so it is the innermost Markdown mark. Add marks; never reuse a name for a different meaning.",
+  "version": 1,
+  "marks": [
+    {
+      "name": "link",
+      "value": {
+        "type": "json-object",
+        "fields": {
+          "href": { "type": "url", "required": true },
+          "title": { "type": "string", "nullable": true }
+        }
+      },
+      "expand": "none",
+      "markdown": "native"
+    },
+    {
+      "name": "em",
+      "value": { "type": "flag" },
+      "expand": "both",
+      "markdown": "native"
+    },
+    {
+      "name": "strong",
+      "value": { "type": "flag" },
+      "expand": "both",
+      "markdown": "native"
+    },
+    {
+      "name": "highlight",
+      "value": {
+        "type": "string",
+        "enum": ["yellow", "green", "blue", "pink"],
+        "pattern": "^#[0-9a-f]{6}$"
+      },
+      "expand": "both",
+      "markdown": "html"
+    },
+    {
+      "name": "code",
+      "value": { "type": "flag" },
+      "expand": "none",
+      "markdown": "native"
+    }
+  ]
+}

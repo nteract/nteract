@@ -6,6 +6,7 @@
 
 mod export;
 mod import;
+pub mod marks;
 #[cfg(feature = "automerge")]
 pub mod native;
 mod validate;

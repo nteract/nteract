@@ -57,6 +57,21 @@ const cases = [
   { id: "sibling-tables-in-quote", markdown: "> | A |\n> | --- |\n> | a |\n>\n> | B |\n> | --- |\n> | b |\n" },
   { id: "table-in-list", markdown: "- Introduction\n\n  | A | B |\n  | --- | --- |\n  | x | y |" },
   { id: "inline-html-literal", markdown: "Literal <b>text</b> stays visible." },
+  { id: "highlight-strong", markdown: 'Set the **<mark data-color="green">launch date</mark>** today.' },
+  { id: "highlight-custom", markdown: "A <mark data-color=\"#1a2b3c\">custom</mark> and <MARK DATA-COLOR=' #ABCDEF '>uppercase</MARK> color." },
+  { id: "highlight-bare-line-start", markdown: "<mark>Bare</mark> highlight starts the line." },
+  { id: "highlight-heading-quote", markdown: "# <mark data-color='pink'>Heading</mark>\n\n> - <mark>quoted\n> item</mark>" },
+  { id: "highlight-code-link", markdown: '<mark data-color="blue">see `code`</mark> and [<mark>linked</mark>](https://example.org)' },
+  { id: "highlight-across-strong", markdown: "<mark>a **b</mark> c**" },
+  { id: "highlight-table", markdown: '| A | B |\n| --- | --- |\n| <mark data-color="blue">x</mark> | y<br><mark>z</mark> |' },
+  { id: "highlight-nested-literal", markdown: '<mark>a <mark data-color="pink">b</mark> c</mark>' },
+  { id: "highlight-unbalanced-literal", markdown: "Close </mark> first, then <mark>never closed." },
+  { id: "highlight-invalid-color-literal", markdown: 'An <mark data-color="red">invalid</mark>, <mark data-color="">empty</mark> and <mark data-color=green>unquoted</mark> color.' },
+  { id: "highlight-escaped-literal", markdown: "Write \\<mark> tags as text." },
+  { id: "highlight-image-alt", markdown: "![<mark>x</mark> y](cat.png)" },
+  { id: "opaque-marker-html", markdown: "<marker>not a highlight</marker>", import_id: "marker-import" },
+  { id: "opaque-mark-autolink", markdown: "<mark:x>", import_id: "mark-autolink-import" },
+  { id: "opaque-mark-nbsp", markdown: "<mark\u00a0>x</mark>", import_id: "mark-nbsp-import" },
   { id: "opaque-html", markdown: "<section>Preserve this</section>", import_id: "html-import" },
   { id: "opaque-math", markdown: "The value is $x + 1$.", import_id: "math-import" },
   { id: "opaque-reference", markdown: "[Guide][ref]\n\n[ref]: https://example.org", import_id: "reference-import" },
@@ -120,6 +135,7 @@ const divergences = [
     ["marked-table-image-preserved", "| A |\n| --- |\n| **![caption](image.png)** |"],
     ["linked-heading-image-preserved", "# [![caption](image.png)](https://example.org)"],
     ["marked-nested-list-image-preserved", "> - *![caption](image.png)*"],
+    ["highlighted-image-preserved", "<mark>![caption](image.png)</mark>"],
   ].map(([id, markdown]) => ({
     id,
     markdown,
@@ -155,14 +171,29 @@ const ragged = structuredClone(fixtures.find((item) => item.id === "table-empty"
 // Drop the last empty cell: exported Markdown has to pad that row, rather than
 // discarding the longer rows when imported again.
 ragged.pop();
-const export_cases = [
-  {
-    id: "ragged-native-table",
-    spans: ragged,
-    expected_spans: importLegacy(exportLegacy(ragged)),
-    canonical_markdown: exportLegacy(ragged),
-  },
+// Highlight states a native editor can produce: literal tag text, padded and
+// overlapping ranges, and adjacent colors.
+const text = (value, marks = {}) => ({ type: "text", value, marks });
+const nativeCases = [
+  ["ragged-native-table", ragged],
+  ["highlight-literal-tag-text", [text("use <mark> tags and </MARK> too")]],
+  ["highlight-padded", [text("Note:"), text(" padded ", { highlight: "pink" }), text("end")]],
+  [
+    "highlight-overlaps-strong",
+    [
+      text("bold ", { strong: true }),
+      text("both", { strong: true, highlight: "green" }),
+      text(" high", { highlight: "green" }),
+    ],
+  ],
+  ["highlight-adjacent-colors", [text("a", { highlight: "blue" }), text("b", { highlight: "#ff00aa" })]],
 ];
+const export_cases = nativeCases.map(([id, spans]) => ({
+  id,
+  spans,
+  expected_spans: importLegacy(exportLegacy(spans)),
+  canonical_markdown: exportLegacy(spans),
+}));
 
 const document = {
   profile: "pages-markdown-v1",

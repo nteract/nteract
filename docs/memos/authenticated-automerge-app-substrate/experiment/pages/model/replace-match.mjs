@@ -1,6 +1,13 @@
 import * as A from "@automerge/automerge/slim";
 import { amSpliceIdxToPmIdx, pmRangeToAmRange } from "@automerge/prosemirror/dist/traversal.js";
 import { adapter, isRich, richDoc, textPath } from "./richtext.mjs";
+import {
+  encodeMarkValue,
+  isKnownMark,
+  markExpand,
+  markSpec,
+  normalizeHighlight,
+} from "./marks.mjs";
 
 const MAX_TEXT_LENGTH = 262144;
 const MAX_MATCHES = 10000;
@@ -116,7 +123,7 @@ export function findUniqueVisibleRange(doc, id, input) {
   }
   if (matches.length !== 1)
     throw Error(
-      `replace_match found ${matches.length} matches; exactly one is required. Use context_before/context_after or a longer match_text.`,
+      `${input.op ?? "replace_match"} found ${matches.length} matches; exactly one is required. Use context_before/context_after or a longer match_text.`,
     );
   const path = textPath(id);
   const start = matches[0];
@@ -149,13 +156,43 @@ export function replaceMatch(doc, id, input) {
             current.end >= range.end,
         )
       )
-        A.mark(
-          doc,
-          path,
-          { ...range, expand: adapter.expandConfig(mark.name) },
-          mark.name,
-          mark.value,
-        );
+        A.mark(doc, path, { ...range, expand: markExpand(mark.name) }, mark.name, mark.value);
   }
   return { op: "replace_match", block_id: id, matched: 1 };
+}
+
+/** Normalize format_match `add` input into stored Automerge mark values. */
+export function formatMarks(add) {
+  if (add === undefined) return {};
+  if (!add || typeof add !== "object" || Array.isArray(add))
+    throw Error("add must map mark names to values");
+  return Object.fromEntries(
+    Object.entries(add).map(([name, value]) => {
+      if (!isKnownMark(name)) throw Error(`Unsupported rich mark: ${name}`);
+      const rule = markSpec(name).value;
+      if (rule.type === "flag" && value !== true) throw Error(`${name} takes the value true`);
+      if (name === "highlight") return [name, normalizeHighlight(value)];
+      return [name, encodeMarkValue(name, value)];
+    }),
+  );
+}
+
+/** Add or remove marks over one visible text range. Text and CRDT identity
+ * are unchanged; a mark added over an existing one with a different value
+ * replaces that value in the range. */
+export function formatMatch(doc, id, input) {
+  const add = formatMarks(input.add);
+  const remove = input.remove ?? [];
+  if (!Array.isArray(remove) || remove.some((name) => typeof name !== "string"))
+    throw Error("remove must be a list of mark names");
+  for (const name of remove) if (!isKnownMark(name)) throw Error(`Unsupported rich mark: ${name}`);
+  if (!Object.keys(add).length && !remove.length)
+    throw Error("format_match requires add or remove");
+  if (remove.some((name) => Object.hasOwn(add, name)))
+    throw Error("A mark cannot be both added and removed");
+  const { path, start, end } = findUniqueVisibleRange(doc, id, { ...input, op: "format_match" });
+  for (const name of remove) A.unmark(doc, path, { start, end, expand: "both" }, name);
+  for (const [name, value] of Object.entries(add))
+    A.mark(doc, path, { start, end, expand: markExpand(name) }, name, value);
+  return { op: "format_match", block_id: id, matched: 1 };
 }

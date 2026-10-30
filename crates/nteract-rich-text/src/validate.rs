@@ -1,4 +1,4 @@
-use crate::{CodecError, Result, Span, MAX_DEPTH, MAX_INPUT_BYTES};
+use crate::{marks::validate_mark, CodecError, Result, Span, MAX_DEPTH, MAX_INPUT_BYTES};
 use serde_json::Value;
 
 const BLOCKS: &[&str] = &[
@@ -59,33 +59,7 @@ pub fn validate_spans(spans: &[Span]) -> Result<()> {
         match span {
             Span::Text { marks, .. } => {
                 for (name, value) in marks {
-                    match name.as_str() {
-                        "strong" | "em" | "code" if value == &Value::Bool(true) => {}
-                        "link" => {
-                            let link: Value =
-                                serde_json::from_str(value.as_str().ok_or_else(|| {
-                                    CodecError("Link mark must be a JSON string".into())
-                                })?)
-                                .map_err(|e| CodecError(format!("Invalid link mark: {e}")))?;
-                            let object = link.as_object().ok_or_else(|| {
-                                CodecError("Link mark must encode an object".into())
-                            })?;
-                            if object
-                                .keys()
-                                .any(|k| !matches!(k.as_str(), "href" | "title"))
-                                || !object
-                                    .get("href")
-                                    .and_then(Value::as_str)
-                                    .is_some_and(safe_url)
-                                || object
-                                    .get("title")
-                                    .is_some_and(|v| !v.is_null() && !v.is_string())
-                            {
-                                return Err(CodecError("Invalid rich link".into()));
-                            }
-                        }
-                        _ => return Err(CodecError(format!("Unsupported rich mark: {name}"))),
-                    }
+                    validate_mark(name, value)?;
                 }
             }
             Span::Block { value: block } => {
@@ -195,5 +169,24 @@ mod tests {
             marks
         }])
         .is_err());
+    }
+
+    #[test]
+    fn marks_validate_against_the_registry() {
+        let text = |name: &str, value: serde_json::Value| Span::Text {
+            value: "x".into(),
+            marks: Marks::from([(name.into(), value)]),
+        };
+        assert!(validate_spans(&[text("highlight", json!("pink"))]).is_ok());
+        assert!(validate_spans(&[text("highlight", json!("#0a0b0c"))]).is_ok());
+        assert!(validate_spans(&[text("highlight", json!("red"))]).is_err());
+        assert_eq!(
+            validate_spans(&[text("color", json!("red"))]).map_err(|e| e.0),
+            Err("Unsupported rich mark: color".into())
+        );
+        assert_eq!(
+            validate_spans(&[text("link", json!(r#"{"href":"javascript:x"}"#))]).map_err(|e| e.0),
+            Err("Invalid rich link".into())
+        );
     }
 }

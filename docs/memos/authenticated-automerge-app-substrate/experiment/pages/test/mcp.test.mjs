@@ -381,8 +381,17 @@ test("MCP advertises visible-text replacement separately from Markdown replaceme
   const variants = patch.inputSchema.properties.operations.items.oneOf;
   assert.deepEqual(
     variants.map((operation) => operation.properties.op.const),
-    ["replace_match", "patch_block_markdown"],
+    ["replace_match", "format_match", "patch_block_markdown"],
   );
+  assert.deepEqual(variants[1].required, ["op", "block_id", "match_text"]);
+  assert.deepEqual(variants[1].properties.remove.items.enum, [
+    "link",
+    "em",
+    "strong",
+    "highlight",
+    "code",
+  ]);
+  assert.equal(variants[1].properties.add.properties.strong.const, true);
   assert.deepEqual(variants[0].required, ["op", "block_id", "match_text", "replacement"]);
   assert.equal(variants[0].properties.context_before.type, "string");
   assert.equal(variants[0].properties.context_after.type, "string");

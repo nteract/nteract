@@ -14,6 +14,13 @@ reference links, strikethrough, and non-Markdown input retain opaque source and
 import provenance. General GFM support is not the Pages compatibility profile:
 bare URLs remain prose, for example.
 
+Highlights project as `<mark data-color="…">` tags. Fixtures cover marks around
+and inside the tag, palette and hex colors, bare `<mark>` at a line start, table
+cells, tags that cross emphasis boundaries, and nested, unbalanced, escaped, or
+invalid-color tags that stay literal text. `<marker>` at a line start remains
+opaque. Both codecs read mark names and value rules from the Pages
+`model/marks.json` registry.
+
 Structural-only sibling list items retain explicit parent markers even when
 their first content is another list. Bullet, ordered, mixed, task, and quoted
 variants ensure that adjacent items cannot collapse into one container.
@@ -25,7 +32,7 @@ and accepts a data image that later Pages validation rejects. Each includes obse
 legacy spans and the exact required Rust result. There is no blanket exception
 for parser differences.
 
-Linked or emphasized images also retain the whole original source as opaque
+Linked, emphasized, or highlighted images also retain the whole original source as opaque
 content: native image markers cannot carry those enclosing marks. Fixtures
 cover nested wrappers, surrounding prose, headings, lists, and table cells.
 Ordinary images, formatting inside alt text, adjacent marked prose, and text

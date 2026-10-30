@@ -1,6 +1,6 @@
 // Native transaction/selection approach adapted from rgbkrk/wordgard-automerge
 // c9c6ea8 (BSD-3-Clause). See WORDGARD-NOTICE for attribution.
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as A from "@automerge/automerge/slim";
 import { Wordgard, Decoration, KeyBinding } from "wordgard/editor";
@@ -17,6 +17,8 @@ import { history, undo, redo, undoDepth, redoDepth } from "wordgard/history";
 import { tables } from "wordgard/table";
 import { tablePresentation, tableKeys, selectedTable } from "./wordgard-tables.mjs";
 import { TableMenu } from "./TableMenu.jsx";
+import { HighlightMenu } from "./HighlightMenu.jsx";
+import { selectionHighlight, toggleHighlight } from "./highlight.mjs";
 import {
   blockDoc,
   paragraph,
@@ -332,6 +334,10 @@ export function WordgardEditor(props) {
           },
         }),
         KeyBinding.of({ key: "Mod-Alt-m", run: () => comment() }),
+        KeyBinding.of({
+          key: "Mod-Shift-h",
+          run: () => latest.current.editable && Command.dispatch(editor, toggleHighlight),
+        }),
         Wordgard.contentAttributes.of({ "aria-label": "Document text", spellcheck: "true" }),
         Wordgard.exceptionSink.of(report),
         Wordgard.transactionListener.of((transactions) => {
@@ -536,6 +542,9 @@ export function WordgardEditor(props) {
         ordered: listIsActive(OrderedList.of(1))(state),
         task: listIsActive(TaskList)(state),
       };
+      const highlight = selectionHighlight(state);
+      snapshot.highlight = highlight.color;
+      snapshot.highlightPresent = highlight.colors.length > 0;
       for (const [name, mark] of Object.entries(marks))
         snapshot[name] = selection.empty
           ? !!mark.isInSet(state.sel.activeMarks)
@@ -873,22 +882,32 @@ export function WordgardEditor(props) {
                   .slice(2)
                   .filter(([name]) => toolbarOpen || !["bullet", "ordered", "task"].includes(name))
                   .map(([name, label, Icon]) => (
-                    <button
-                      key={name}
-                      className={`toolbar-button${format?.[name] && !["link", "comment"].includes(name) ? " is-active" : ""}`}
-                      aria-label={label}
-                      title={label}
-                      aria-pressed={
-                        !["link", "comment"].includes(name) ? !!format?.[name] : undefined
-                      }
-                      disabled={
-                        !editable || (["link", "comment"].includes(name) && !format?.[name])
-                      }
-                      onPointerDown={(event) => event.preventDefault()}
-                      onClick={() => run(name)}
-                    >
-                      <Icon size={18} aria-hidden="true" />
-                    </button>
+                    <Fragment key={name}>
+                      <button
+                        className={`toolbar-button${format?.[name] && !["link", "comment"].includes(name) ? " is-active" : ""}`}
+                        aria-label={label}
+                        title={label}
+                        aria-pressed={
+                          !["link", "comment"].includes(name) ? !!format?.[name] : undefined
+                        }
+                        disabled={
+                          !editable || (["link", "comment"].includes(name) && !format?.[name])
+                        }
+                        onPointerDown={(event) => event.preventDefault()}
+                        onClick={() => run(name)}
+                      >
+                        <Icon size={18} aria-hidden="true" />
+                      </button>
+                      {name === "code" && (
+                        <HighlightMenu
+                          editor={view.current}
+                          current={format?.highlight ?? null}
+                          present={!!format?.highlightPresent}
+                          editable={editable}
+                          onError={report}
+                        />
+                      )}
+                    </Fragment>
                   ))}
               </>
             )}
