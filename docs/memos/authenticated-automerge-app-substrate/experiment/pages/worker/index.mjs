@@ -83,7 +83,7 @@ import {
 } from "./mutations.mjs";
 
 import { claimInvitation, proposeSharingMutation, sharingProjection } from "./sharing.mjs";
-import { pageAccess, pageGrant, pageState, restrictAccessDuringCommit } from "./access.mjs";
+import { pageAccess, pageState, restrictAccessDuringCommit } from "./access.mjs";
 
 import {
   CATALOG_LIMIT,
@@ -201,6 +201,57 @@ function forwarded(request, path, body) {
   return new Request(url, { method: "POST", headers, body: JSON.stringify(body) });
 }
 
+const ANONYMOUS_MCP_METHODS = new Set(["tools/list", "ping"]);
+const ANONYMOUS_MCP_BYTES = 4096;
+
+/** True for a credential-free POST carrying one tools/list or ping message.
+ * Any presented credential, bearer or cookie, takes the authenticated path so
+ * a failing one still gets its challenge. `initialize` stays behind the 401:
+ * MCP clients start OAuth from it. Only a declared small body is read. */
+async function anonymousToolList(request) {
+  if (
+    request.method !== "POST" ||
+    request.headers.has("authorization") ||
+    request.headers.has("cookie")
+  )
+    return false;
+  const declared = Number(request.headers.get("content-length"));
+  if (!Number.isSafeInteger(declared) || declared <= 0 || declared > ANONYMOUS_MCP_BYTES)
+    return false;
+  const reader = request.clone().body?.getReader();
+  if (!reader) return false;
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > ANONYMOUS_MCP_BYTES) {
+      // A cloned body is a tee branch: its cancel settles only when the other
+      // branch is also cancelled, so don't wait on it.
+      reader.cancel().catch(() => {});
+      return false;
+    }
+    chunks.push(value);
+  }
+  try {
+    const message = JSON.parse(new TextDecoder().decode(concatBytes(chunks, size)));
+    return message?.jsonrpc === "2.0" && ANONYMOUS_MCP_METHODS.has(message.method);
+  } catch {
+    return false;
+  }
+}
+
+function concatBytes(chunks, size) {
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 function authorizeImage(request, env, pageId, write) {
   const internal = forwarded(request, "/internal/assets/authorize", { page_id: pageId, write });
   // Only the host creates this request. Reauthenticate on every call so a grant
@@ -304,6 +355,18 @@ const gateway = {
         return response;
       }
       if (url.pathname === "/mcp") {
+        requireSameOrigin(request, env);
+        if (await anonymousToolList(request)) {
+          // Tool definitions are static and carry no account data. Every other
+          // method needs a credential.
+          return await handleMcp(
+            request,
+            async () => {
+              throw new HttpError(401, "Sign in to call Pages tools");
+            },
+            env,
+          );
+        }
         await authenticate(request, env);
         return await handleMcp(
           request,
