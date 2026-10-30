@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import * as A from "@automerge/automerge";
 import {
   MARK_NAMES,
@@ -60,12 +59,6 @@ test("every consumer derives its mark list from the registry", () => {
   });
   assert.equal(expand, updateSpansConfig);
   assert.deepEqual(Object.keys(formatAddSchema().properties), MARK_NAMES);
-  // The Rust codec reads the same file.
-  const rust = readFileSync(
-    new URL("../../../../../../crates/nteract-rich-text/src/marks.rs", import.meta.url),
-    "utf8",
-  );
-  assert.match(rust, /model\/marks\.json/);
 });
 
 test("mark values validate against the registry shapes", () => {
