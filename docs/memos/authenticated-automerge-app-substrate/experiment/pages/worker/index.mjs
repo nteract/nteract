@@ -607,8 +607,20 @@ const gateway = {
         const identity = await authenticate(request, env);
         requireWrite(identity);
         const args = await readJson(request);
-        return env.CATALOGS.getByName(identity.principal).fetch(
-          forwarded(request, "/internal/catalog", { operation: "register_page", arguments: args }),
+        return await withinToolDeadline(async (signal) =>
+          bufferedResponse(
+            await untilAborted(
+              env.CATALOGS.getByName(identity.principal).fetch(
+                forwarded(request, "/internal/catalog", {
+                  operation: "register_page",
+                  arguments: args,
+                }),
+                { signal },
+              ),
+              signal,
+            ),
+            signal,
+          ),
         );
       }
       if (url.pathname === "/api/tools" && request.method === "POST") {

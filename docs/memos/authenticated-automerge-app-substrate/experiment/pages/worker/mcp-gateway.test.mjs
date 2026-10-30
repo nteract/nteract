@@ -128,6 +128,45 @@ test("a tool request whose host never answers returns a retryable timeout", asyn
   assert.match(body.error, /same idempotency_key/);
 });
 
+test("a registration whose Catalog never answers returns a retryable timeout", async (t) => {
+  const auth = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", auth.fetch);
+  let reached;
+  const called = new Promise((resolve) => {
+    reached = resolve;
+  });
+  let signal;
+  const env = {
+    ...auth.env,
+    CATALOGS: {
+      getByName: () => ({
+        fetch(request, init) {
+          signal = init?.signal;
+          reached();
+          return new Promise(() => {});
+        },
+      }),
+    },
+  };
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending = worker.fetch(
+    new Request("http://127.0.0.1:9477/api/pages/register", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${auth.apiKey()}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ page_id: pageId }),
+    }),
+    env,
+  );
+  await called;
+  t.mock.timers.tick(TOOL_REQUEST_TIMEOUT_MS);
+  const response = await pending;
+  assert.equal(response.status, 504);
+  const body = await response.json();
+  assert.equal(body.code, "request_timeout");
+  assert.equal(body.retryable, true);
+  assert.equal(signal?.aborted, true, "the Catalog fetch is cancelled");
+});
+
 const parentId = "44444444-4444-4444-8444-444444444444";
 const spaceId = "55555555-5555-4555-8555-555555555555";
 
