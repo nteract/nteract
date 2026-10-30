@@ -22,6 +22,7 @@ import {
 } from "../model/page.mjs";
 import { BACKEND_LIMITS, assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { handleMcp } from "../mcp.mjs";
+import { invokeProjectApi } from "./project-api.mjs";
 import { agentGuideResponse } from "../agent-guide.mjs";
 import { connectAgentResponse } from "../connect-agent.mjs";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
@@ -155,6 +156,7 @@ import {
   validatePlacement,
   validateSpaceInput,
 } from "./spaces.mjs";
+// The class name is the storage identity for Projects; see spaces.mjs.
 export { Space } from "./spaces.mjs";
 import { spaceCreationEffect, spaceCreationTransition } from "./space-lifecycle.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
@@ -201,8 +203,10 @@ const operations = new Set([
   "get_space",
   "update_space",
 ]);
-/** Space operations. Each goes through the caller's own Catalog, which calls
- * the Space with the caller's credentials. */
+/** Project operations under their stored Space names. Each goes through the
+ * caller's own Catalog, which calls the Project with the caller's credentials.
+ * Storage keeps the Space name so a rollback build reads the same records;
+ * project-api.mjs maps callers' Project names onto these. */
 const spaceOperations = ["create_space", "list_spaces", "get_space", "update_space"];
 /** Catalog-owned Page lifecycle operations and the Page route each one uses. */
 const lifecycleRoutes = {
@@ -517,7 +521,7 @@ async function placementView(request, env, body, signal) {
   if (placement.parent_id && chain.at(-1)?.page_id === placement.parent_id)
     body.parent_id = placement.parent_id;
   const space = placement.space_id
-    ? await readable(env.SPACES.getByName(placement.space_id), "/internal/space/read", {
+    ? await readable(env.PROJECTS.getByName(placement.space_id), "/internal/space/read", {
         space_id: placement.space_id,
       })
     : null;
@@ -614,7 +618,11 @@ const gateway = {
           request,
           async (operation, args) => {
             try {
-              return await invoke(request, env, operation, args);
+              return await invokeProjectApi(
+                (internal, internalArgs) => invoke(request, env, internal, internalArgs),
+                operation,
+                args,
+              );
             } catch (error) {
               return errorResponse(error, "mcp-operation");
             }
@@ -644,7 +652,11 @@ const gateway = {
       }
       if (url.pathname === "/api/tools" && request.method === "POST") {
         const body = await readJson(request);
-        return await invoke(request, env, body.operation, body.arguments);
+        return await invokeProjectApi(
+          (internal, internalArgs) => invoke(request, env, internal, internalArgs),
+          body.operation,
+          body.arguments,
+        );
       }
       const imageRoute = url.pathname.match(/^\/api\/pages\/([^/]+)\/assets(?:\/([^/]+))?$/);
       if (imageRoute) {
@@ -1264,7 +1276,7 @@ export class Catalog {
       if (spaceArg && placement.space_id !== spaceArg)
         throw new HttpError(
           400,
-          "parent_id is not in that Space. Omit space_id: a parent implies its Space.",
+          "parent_id is not in that Project. Omit project_id: a parent implies its Project.",
           "placement_mismatch",
         );
       spaceId = placement.space_id;
@@ -1286,11 +1298,11 @@ export class Catalog {
     if (spaceId) {
       const entry = await storage.get(`space/${spaceId}`);
       if (!entry || entry.pending) throw spaceNotFound();
-      const response = await this.env.SPACES.getByName(spaceId).fetch(
+      const response = await this.env.PROJECTS.getByName(spaceId).fetch(
         forwarded(request, "/internal/space/read", { space_id: spaceId }),
       );
       if (response.status === 404) throw spaceNotFound();
-      if (!response.ok) throw new HttpError(503, "Space is temporarily unavailable");
+      if (!response.ok) throw new HttpError(503, "Project is temporarily unavailable");
     }
     return {
       space_id: spaceId,
@@ -1358,7 +1370,7 @@ export class Catalog {
     if (entryPlacement(entry).home)
       throw new HttpError(
         409,
-        "A Space's home Page stays with its Space; it can't move to Trash on its own",
+        "A Project's home Page stays with its Project; it can't move to Trash on its own",
         "home_page_protected",
       );
     const unsettled = [];
@@ -1486,8 +1498,8 @@ export class Catalog {
       if (spaces.size >= SPACE_LIMIT)
         throw new HttpError(
           409,
-          `This prototype permits ${SPACE_LIMIT} Spaces per account`,
-          "space_capacity",
+          `This prototype permits ${SPACE_LIMIT} Projects per account`,
+          "project_capacity",
         );
       if ((await this.countEntries("page/")) >= CATALOG_LIMIT)
         throw new HttpError(409, "This prototype permits 100 pages per account");
@@ -1541,7 +1553,7 @@ export class Catalog {
     for (let effect = spaceCreationEffect(intent.phase); effect; ) {
       let event;
       if (effect === "create_space_record") {
-        const response = await this.env.SPACES.getByName(intent.spaceId).fetch(
+        const response = await this.env.PROJECTS.getByName(intent.spaceId).fetch(
           forwarded(request, "/internal/space/create", {
             space_id: intent.spaceId,
             title: intent.title,
@@ -1630,7 +1642,7 @@ export class Catalog {
       });
       await storage.put(key, intent);
     }
-    const response = await this.env.SPACES.getByName(intent.spaceId).fetch(
+    const response = await this.env.PROJECTS.getByName(intent.spaceId).fetch(
       forwarded(request, "/internal/space/update", {
         space_id: intent.spaceId,
         idempotency_key: args.idempotency_key,
@@ -1644,8 +1656,8 @@ export class Catalog {
       // A retry past its fence may already have applied before its receipt
       // was evicted, or lost to a newer change. Either way it must not apply
       // now; the outcome is the Space as it is.
-      if (inspected.entry && failure.code === "space_revision_conflict") {
-        const current = await this.env.SPACES.getByName(intent.spaceId).fetch(
+      if (inspected.entry && failure.code === "project_revision_conflict") {
+        const current = await this.env.PROJECTS.getByName(intent.spaceId).fetch(
           forwarded(request, "/internal/space/read", { space_id: intent.spaceId }),
         );
         if (!current.ok) return current;
@@ -1684,15 +1696,15 @@ export class Catalog {
   async getSpace(request, args) {
     const spaceId = requireSpaceIdArgument(args.space_id);
     if (Object.keys(args).some((name) => name !== "space_id"))
-      throw new HttpError(400, "get_space takes only space_id");
+      throw new HttpError(400, "get_project takes only project_id");
     const entry = await this.ctx.storage.get(`space/${spaceId}`);
     if (entry?.pending)
       throw new HttpError(
         409,
-        "This Space is still being created. Retry create_space with the same idempotency_key and payload.",
-        "space_pending",
+        "This Project is still being created. Retry create_project with the same idempotency_key and payload.",
+        "project_pending",
       );
-    const response = await this.env.SPACES.getByName(spaceId).fetch(
+    const response = await this.env.PROJECTS.getByName(spaceId).fetch(
       forwarded(request, "/internal/space/read", { space_id: spaceId }),
     );
     if (!response.ok) return response;
@@ -1839,7 +1851,7 @@ export class Catalog {
       const parent = await storage.get(`page/${options.parentId}`);
       if (parent && !parent.pending && !parent.reservation) {
         if (options.spaceId && entryPlacement(parent).space_id !== options.spaceId)
-          throw new HttpError(400, "parent_id is not in that Space", "placement_mismatch");
+          throw new HttpError(400, "parent_id is not in that Project", "placement_mismatch");
       } else {
         // Children of a Page shared with this account: the caller must be
         // able to read the parent before learning what sits under it.

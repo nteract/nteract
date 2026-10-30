@@ -31,8 +31,8 @@ import { openPageWithRetry } from "./page-open.mjs";
 import { WordgardEditor } from "./WordgardEditor.jsx";
 import { PagePicker } from "./PagePicker.jsx";
 import { TrashView } from "./TrashView.jsx";
-import { Breadcrumbs, SpaceView } from "./SpaceView.jsx";
-import { listSpaces, pageBreadcrumbs } from "./spaces.mjs";
+import { Breadcrumbs, ProjectView } from "./ProjectView.jsx";
+import { listProjects, pageBreadcrumbs } from "./projects.mjs";
 import { closeTrashedSessions, restorePage } from "./trash.mjs";
 import { listAllPages, matchingPages } from "./page-list.mjs";
 import { SharingControls } from "./SharingControls.jsx";
@@ -69,8 +69,8 @@ function App() {
     [notice, setNotice] = useState(""),
     [libraryQuery, setLibraryQuery] = useState(""),
     [trashOpen, setTrashOpen] = useState(false),
-    [spaces, setSpaces] = useState([]),
-    [spaceOpen, setSpaceOpen] = useState(null),
+    [projects, setProjects] = useState([]),
+    [projectOpen, setProjectOpen] = useState(null),
     [crumbs, setCrumbs] = useState([]);
   const [toolbar, setToolbar] = useState(null),
     [toolbarOpen, setToolbarOpen] = useState(false),
@@ -116,10 +116,10 @@ function App() {
       local,
     );
     setPages(listing.pages);
-    // Spaces load beside the Page list; a failure leaves the list usable.
-    void listSpaces(tool).then(
+    // Projects load beside the Page list; a failure leaves the list usable.
+    void listProjects(tool).then(
       (value) => {
-        if (stillCurrent()) setSpaces(value);
+        if (stillCurrent()) setProjects(value);
       },
       () => {},
     );
@@ -189,9 +189,9 @@ function App() {
       await next.close();
       return false;
     }
-    setSpaceOpen(null);
+    setProjectOpen(null);
     setCrumbs([]);
-    // Breadcrumbs show only the Space and parents this account can open.
+    // Breadcrumbs show only the Project and parents this account can open.
     void pageBreadcrumbs(tool, next.pageId).then(
       (value) => {
         if (host.current === next) setCrumbs(value);
@@ -277,14 +277,14 @@ function App() {
     setOpening(false);
     setPickerOpen(false);
     setTrashOpen(false);
-    setSpaceOpen(null);
+    setProjectOpen(null);
     if (historyMode !== "none") writePageRoute(null, { replace: historyMode === "replace" });
     if (refreshCatalog) void refresh().catch((error) => setError(error.message));
   }
-  function openSpace(spaceId, { historyMode = "push" } = {}) {
+  function openProject(projectId, { historyMode = "push" } = {}) {
     home(null, { historyMode: "none", refreshCatalog: false });
-    if (historyMode !== "none") writePageRoute(spaceId, { replace: historyMode === "replace" });
-    setSpaceOpen(spaceId);
+    if (historyMode !== "none") writePageRoute(projectId, { replace: historyMode === "replace" });
+    setProjectOpen(projectId);
   }
   function showTrash() {
     home(null, { refreshCatalog: false });
@@ -311,7 +311,8 @@ function App() {
   function followRoute() {
     const route = readPageRoute(location.href);
     if (route.kind === "page") void open(route.pageId, { historyMode: "replace" });
-    else if (route.kind === "space") openSpace(route.spaceId, { historyMode: "none" });
+    // Replace keeps the address canonical when an older /s/ link opened it.
+    else if (route.kind === "project") openProject(route.projectId, { historyMode: "replace" });
     else if (route.kind === "home") home(null, { historyMode: "none", refreshCatalog: false });
     else {
       host.navigate();
@@ -768,9 +769,9 @@ function App() {
             onOpen={open}
             onCreate={create}
             onTrash={showTrash}
-            spaces={spaces}
-            currentSpaceId={spaceOpen}
-            onOpenSpace={(id) => openSpace(id)}
+            projects={projects}
+            currentProjectId={projectOpen}
+            onOpenProject={(id) => openProject(id)}
             creating={creating || !!session?.authRequired}
             error={pickerError}
           />
@@ -782,7 +783,7 @@ function App() {
                 <h1 className="document-print-title sr-only">{page.title || "Untitled"}</h1>
                 <Breadcrumbs
                   crumbs={crumbs}
-                  onOpenSpace={(id) => openSpace(id)}
+                  onOpenProject={(id) => openProject(id)}
                   onOpenPage={open}
                 />
                 {session.authRequired && (
@@ -891,11 +892,11 @@ function App() {
             <main className="welcome">
               <p role="status">Opening…</p>
             </main>
-          ) : spaceOpen ? (
-            <SpaceView
-              key={spaceOpen}
+          ) : projectOpen ? (
+            <ProjectView
+              key={projectOpen}
               tool={tool}
-              spaceId={spaceOpen}
+              projectId={projectOpen}
               onOpen={(id) => open(id)}
               onBack={() => home(null)}
               onCreated={() => void refresh().catch(() => {})}

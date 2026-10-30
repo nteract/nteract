@@ -13,6 +13,10 @@
  *
  * Migrations are append-only and additive. Older builds ignore these tables,
  * and a build must keep working against a schema version newer than it knows.
+ *
+ * Callers see Projects. Storage keeps the Space name so a rollback build reads
+ * the same records: `pages_catalog_spaces`, the `space_id` column and the
+ * `host/index/spaces-*` markers. project-api.mjs maps `space_id` in results.
  */
 import { pageGrant, pageState } from "./access.mjs";
 import { HttpError } from "./auth.mjs";
@@ -709,13 +713,14 @@ export function parseListArguments(args = {}) {
   if (args.space_id !== undefined && args.space_id !== null)
     options.spaceId = requireSpaceIdArgument(args.space_id);
   if (args.parent_id === null) {
-    if (!options.spaceId) throw fail("parent_id null lists a Space's top level; pass space_id too");
+    if (!options.spaceId)
+      throw fail("parent_id null lists a Project's top level; pass project_id too");
     options.parentId = null;
   } else if (args.parent_id !== undefined)
     options.parentId = requirePageIdArgument(args.parent_id, "parent_id");
   if (args.kind !== undefined) {
-    if (!["page", "notebook", "result"].includes(args.kind))
-      throw fail("kind must be page, notebook or result");
+    if (!["page", "notebook", "dashboard", "result"].includes(args.kind))
+      throw fail("kind must be page, notebook, dashboard or result");
     options.kind = args.kind;
   }
   if (args.query !== undefined) {
@@ -738,7 +743,7 @@ export function parseListArguments(args = {}) {
     options.cursor = args.cursor;
   }
   if (options.inTrash && (options.spaceId || options.parentId !== undefined))
-    throw fail("in_trash lists your whole Trash; it does not combine with space_id or parent_id");
+    throw fail("in_trash lists your whole Trash; it does not combine with project_id or parent_id");
   return options;
 }
 

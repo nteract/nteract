@@ -245,7 +245,7 @@ test("stalled breadcrumb and Space bodies end their reads and keep the placement
     PAGES: answer((name) =>
       name === pageId ? new Response(placedPage()) : new Response(stalledBody('{"title":', parent)),
     ),
-    SPACES: answer(() => new Response(stalledBody('{"space_id":', space))),
+    PROJECTS: answer(() => new Response(stalledBody('{"space_id":', space))),
   };
   const response = await readPage(auth, env);
   assert.equal(response.status, 200);
