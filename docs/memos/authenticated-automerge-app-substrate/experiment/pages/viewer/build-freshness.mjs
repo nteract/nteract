@@ -14,7 +14,6 @@ import {
   strongerBuildState,
 } from "../shared/build-identity.mjs";
 import { reloadGateMachine } from "./reload-gate-machine.mjs";
-import { closeSettled } from "./session-host.mjs";
 import { pauseReason } from "./session-machine.mjs";
 import { Store } from "./store.mjs";
 export {
@@ -252,9 +251,10 @@ export class ReloadGate {
     }
     if (!tracked.releasing && releasing(session.phase$.snapshot())) {
       tracked.releasing = true;
-      // Read the close after the transition's effects have started it.
+      // Wait for the whole close after the transition's effects start it.
       void Promise.resolve()
-        .then(() => closeSettled(session))
+        .then(() => session.closeSettled())
+        .catch(() => {})
         .then(() => this.#release(session));
     }
   }

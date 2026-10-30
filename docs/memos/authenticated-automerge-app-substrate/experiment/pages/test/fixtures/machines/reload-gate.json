@@ -63,7 +63,8 @@
       "direct-close",
       "direct-close-failed",
       "deleted-released",
-      "deleted-still-releasing"
+      "deleted-still-releasing",
+      "late-deletion"
     ],
     "waiting/timeout": ["live-waiting", "closing-still", "none-waiting"]
   },
@@ -2312,6 +2313,63 @@
             "acceptCheckpoints": false,
             "navigated": false,
             "live": [{ "id": "b", "key": "dev:page-b", "result": "ok", "savedHeads": ["h1"] }],
+            "closing": ["a"]
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "waiting × sessionPhase keeps waiting when a closing Page is deleted late",
+      "note": "its forget extends the close; only the final event, after the whole close settles, ends the wait",
+      "case": "late-deletion",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "closing",
+            "alive": false,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": { "acceptCheckpoints": false, "navigated": false, "live": [], "closing": ["a"] }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "closing",
+        "alive": false,
+        "pending": false,
+        "save": "saving",
+        "savedHeads": []
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "closing",
+              "alive": false,
+              "pending": false,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": false,
+            "navigated": false,
+            "live": [],
             "closing": ["a"]
           }
         },

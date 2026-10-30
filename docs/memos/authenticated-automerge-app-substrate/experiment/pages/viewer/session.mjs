@@ -151,6 +151,9 @@ export class PageSession {
   /** The session's phase (see session-machine.mjs). Every lifecycle flag
    * below derives from it, and effects run from its transitions. */
   phase$ = new Store(viewerSessionMachine.initial);
+  // The close's work: checkpoint, release, and a late deletion's forget. It
+  // can grow while it runs, so only closeSettled() waits on it.
+  #closing;
   #released;
   #archiving;
   static async open(pageId, options) {
@@ -265,12 +268,14 @@ export class PageSession {
         return (this.#archiving = this.#archive());
       case "release":
         this.#released = this.#release();
-        this.closing ??= this.#released;
+        this.#closing ??= this.#released;
         return this.#released;
       case "reopen":
         // Opening can fail while offline. A retry reuses the prepared reset
         // marker without touching the released backend or archiving again.
-        // A failed release doesn't block the replacement or its retry.
+        // It waits for the release step, assigned once per session, not the
+        // whole close: leaving during an access reload makes the close wait
+        // for this open. A failed release doesn't block the open or its retry.
         return Promise.allSettled([this.#released]).then(() =>
           PageSession.open(this.pageId, {
             authentication: { identity: this.identity, canWrite: this.credentialCanWrite },
@@ -283,8 +288,8 @@ export class PageSession {
         // Deleted after its release started: the close settles only once both
         // the forget and the release have, whichever fails.
         if (!this.phase$.snapshot().closing) return forgetting;
-        this.closing = allSettledThen(forgetting, this.closing);
-        return this.closing;
+        this.#closing = allSettledThen(forgetting, this.#closing);
+        return this.#closing;
       }
       case "rekey":
         return this.#rekey(context);
@@ -1689,26 +1694,44 @@ export class PageSession {
       }
     }
   }
+  /** Settles once the close and everything later added to it have settled,
+   * then rejects with the close's failure, if any. This is the only way to
+   * wait for a close: a late deletion can extend it after it starts, so it
+   * reads the close again after each settle until the close stops changing.
+   * Settles at once when nothing is closing. */
+  async closeSettled() {
+    for (;;) {
+      const closing = this.#closing;
+      const [result] = await Promise.allSettled([closing]);
+      if (this.#closing !== closing) continue;
+      if (result.status === "rejected") throw result.reason;
+      return;
+    }
+  }
   /** Leave the session. Through the drain it keeps syncing until its
    * receipt or CLOSE_DRAIN_MS; otherwise it writes its final checkpoint at
-   * once. Either way it then releases the backend. Settles with the release;
-   * later calls return the same close. */
+   * once. Either way it then releases the backend. Returns closeSettled(). */
   leave({ drain = true } = {}) {
     const phase = this.phase$.snapshot();
-    // The host leaves a session once; a draining session is already leaving.
-    if (phase.name === "draining") return this.closing;
-    // An access reload owns this close. If archiving fails, leave then.
+    // An access reload owns this close: it ends after archiving and the
+    // replacement open. If archiving fails, the replica is live again, so
+    // leave it then.
     if (phase.name === "checkpointing" && phase.archive)
-      return this.#archiving.then(
-        () => this.closing,
-        () => this.leave({ drain }),
+      this.#closing = this.#archiving.then(
+        () => this.#released,
+        () => {
+          if (this.alive) void this.leave({ drain });
+        },
       );
-    const { rejected, done } = this.dispatch(
-      { type: "leave", drain },
-      drain ? undefined : () => this.#recordLeave(),
-    );
-    if (!rejected) this.closing = done;
-    return this.closing ?? Promise.resolve();
+    // The host leaves a session once; a draining session is already leaving.
+    else if (phase.name !== "draining") {
+      const { rejected, done } = this.dispatch(
+        { type: "leave", drain },
+        drain ? undefined : () => this.#recordLeave(),
+      );
+      if (!rejected) this.#closing = done;
+    }
+    return this.closeSettled();
   }
   close() {
     return this.leave({ drain: false });
@@ -1721,8 +1744,8 @@ export class PageSession {
     if (phase !== "open" && phase !== "paused") return undefined;
     const { rejected, done } = this.dispatch({ type: "restore" });
     if (rejected) return undefined;
-    this.closing = done;
-    return done;
+    this.#closing = done;
+    return this.closeSettled();
   }
   async releaseLocal() {
     await this.disconnectSockets();

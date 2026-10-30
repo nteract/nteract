@@ -56,6 +56,7 @@ export class FakeSession {
   listeners = new Set();
   pauses = new Set();
   calls = [];
+  #closing;
   constructor(pageId = crypto.randomUUID(), { principal = "dev", timers } = {}) {
     this.pageId = pageId;
     this.identity = { principal };
@@ -115,12 +116,22 @@ export class FakeSession {
   exportRecovery() {
     return { markdown: `# ${this.doc.title}\n\nUnsent edit\n`, heads: [...this.heads] };
   }
+  /** As PageSession: re-read the close after each settle until stable. */
+  async closeSettled() {
+    for (;;) {
+      const closing = this.#closing;
+      const [result] = await Promise.allSettled([closing]);
+      if (this.#closing !== closing) continue;
+      if (result.status === "rejected") throw result.reason;
+      return;
+    }
+  }
   leave({ drain = true } = {}) {
-    if (this.phase$.snapshot().name === "draining") return this.closing;
-    if (this.step({ type: "leave", drain }).rejected) return this.closing ?? Promise.resolve();
+    if (this.phase$.snapshot().name === "draining") return this.closeSettled();
+    if (this.step({ type: "leave", drain }).rejected) return this.closeSettled();
     if (!drain) this.#recordLeave();
-    this.closing = drain ? this.#drain() : this.#checkpoint();
-    return this.closing;
+    this.#closing = drain ? this.#drain() : this.#checkpoint();
+    return this.closeSettled();
   }
   #recordLeave() {
     const saved = this.deleted || !this.pending;
@@ -137,8 +148,8 @@ export class FakeSession {
     const phase = this.phase$.snapshot().name;
     if (phase !== "open" && phase !== "paused") return undefined;
     if (this.step({ type: "restore" }).rejected) return undefined;
-    this.closing = this.#drain();
-    return this.closing;
+    this.#closing = this.#drain();
+    return this.closeSettled();
   }
   markDeleted() {
     if (this.step({ type: "accessChanged", grant: "deleted" }).rejected) return undefined;
@@ -154,7 +165,7 @@ export class FakeSession {
       (replacement) => {
         this.step({ type: "checkpointOk" });
         // The backend release settles when the test opens closeGate.
-        this.closing = Promise.resolve(this.closeGate?.promise);
+        this.#closing = Promise.resolve(this.closeGate?.promise);
         return replacement;
       },
       (error) => {

@@ -671,7 +671,9 @@ Each Page session moves through the
 [viewer-session machine](viewer/session-machine.mjs): opening, open, paused
 (sign-in, access, Trash or access reload), draining while it is left, then
 checkpointing, closed or deleted. `PageSession.phase$` is that state in a
-[Store](viewer/store.mjs), and every lifecycle flag derives from it. The
+[Store](viewer/store.mjs), and every lifecycle flag derives from it. A close
+can grow while it runs (a late deletion adds its forget), so the close itself
+is private and `closeSettled()` is the only way to wait for it. The
 [SessionHost](viewer/session-host.mjs) owns the installed session and every
 session still closing. The [reload gate](viewer/reload-gate-machine.mjs) follows
 the host and each owned session's phase, so no caller registers a session with

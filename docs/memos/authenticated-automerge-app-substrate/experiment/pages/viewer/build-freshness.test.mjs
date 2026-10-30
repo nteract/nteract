@@ -771,3 +771,78 @@ test("a late deletion whose forget fails still holds Reload until the release se
   assert.deepEqual(await result, { ok: true });
   assert.equal(g.reloaded(), 1);
 });
+
+test("leave() bookkeeping holds until a late deletion's forget settles after the release", async () => {
+  const g = gate();
+  const { session, flush, persist, holdRelease } = closingSession();
+  const finishRelease = holdRelease();
+  const forget = deferred();
+  session.forgetLocal = () => forget.promise;
+  g.hold(session);
+  const closed = g.host.close(session);
+  flush.resolve();
+  persist.resolve();
+  await firstValueFrom(session.phase$.state$.pipe(filter((phase) => phase.name === "closed")));
+  // A late 404 lands while the release runs; the release then finishes first.
+  void session.markDeleted().catch(() => {});
+  finishRelease();
+  for (let i = 0; i < 3; i++) await settle();
+  assert.equal(g.host.store.snapshot().owned.length, 1, "the host still owns the session");
+  assert.ok(g.host.closingFor("dev", session.pageId), "a reopen still waits for this close");
+  assert.equal(g.owned().length, 1, "the gate still waits for it");
+  forget.resolve();
+  await closed;
+  await settle();
+  assert.equal(g.host.store.snapshot().owned.length, 0);
+  assert.equal(g.host.closingFor("dev", session.pageId), undefined);
+  assert.equal(g.owned().length, 0);
+});
+
+function* permutations(items) {
+  if (items.length <= 1) return yield items;
+  for (const [index, item] of items.entries())
+    for (const rest of permutations(items.filter((_, i) => i !== index))) yield [item, ...rest];
+}
+
+test("a close's ownership ends only after its last step, in every settling order", async () => {
+  let runs = 0;
+  for (const forgetFails of [false, true])
+    for (const order of permutations(["flush", "persist", "release", "forget"])) {
+      const g = gate();
+      const { session, flush, persist, holdRelease } = closingSession();
+      const finishRelease = holdRelease();
+      const forget = deferred();
+      session.forgetLocal = () => forget.promise;
+      // A late deletion lands as the checkpoint settles.
+      let deleting;
+      session.phase$.state$.subscribe((phase) => {
+        if (phase.name !== "closed" || deleting) return;
+        deleting = session.markDeleted();
+        deleting.catch(() => {});
+      });
+      g.hold(session);
+      const closed = g.host.close(session);
+      const steps = {
+        flush: () => flush.resolve(),
+        persist: () => persist.resolve(),
+        release: finishRelease,
+        forget: () =>
+          forgetFails ? forget.reject(new Error("IndexedDB unavailable")) : forget.resolve(),
+      };
+      const held = () => [
+        g.host.store.snapshot().owned.length,
+        !!g.host.closingFor("dev", session.pageId),
+        g.owned().length,
+      ];
+      for (const step of order) {
+        assert.deepEqual(held(), [1, true, 1], `${order.join(" > ")}: held before ${step}`);
+        steps[step]();
+        for (let i = 0; i < 3; i++) await settle();
+      }
+      await closed;
+      await settle();
+      assert.deepEqual(held(), [0, false, 0], `${order.join(" > ")}: released after the last step`);
+      runs++;
+    }
+  assert.equal(runs, 48);
+});
