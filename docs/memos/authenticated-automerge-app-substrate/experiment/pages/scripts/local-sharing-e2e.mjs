@@ -107,6 +107,11 @@ try {
   if (!process.argv.includes("--skip-build")) await run(process.execPath, ["scripts/build.mjs"]);
   const port = await freePort(),
     origin = `http://localhost:${port}`;
+  // The MCP image smoke serves synthetic downloads from this loopback port. The
+  // fixture Worker forwards them there with this run's fixture identity.
+  const imageSource = mcpImages
+    ? { port: await freePort(), identity: randomBytes(16).toString("hex") }
+    : null;
   const runtime = path.join(scratch, "runtime");
   await mkdir(runtime);
   // Whitelist build outputs. Never copy .dev.vars, .celld, or a deployable receipt.
@@ -147,6 +152,10 @@ try {
     define: {
       PAGES_E2E_ORIGIN: JSON.stringify(origin),
       PAGES_E2E_RESPONSES: JSON.stringify(responses),
+      ...(imageSource && {
+        PAGES_E2E_IMAGE_SOURCE: JSON.stringify(`http://127.0.0.1:${imageSource.port}`),
+        PAGES_E2E_FIXTURE_ID: JSON.stringify(imageSource.identity),
+      }),
       ...(buildId ? { __PAGES_BUILD__: JSON.stringify(buildId) } : {}),
     },
     plugins: [
@@ -301,6 +310,10 @@ try {
         PAGES_SCREENSHOTS: output,
         PAGES_E2E_KEY_FILE: keyFile,
         PAGES_CELLD_LOG: path.join(output, "celld.log"),
+        ...(imageSource && {
+          PAGES_E2E_IMAGE_SOURCE_PORT: String(imageSource.port),
+          PAGES_E2E_FIXTURE_ID: imageSource.identity,
+        }),
       },
       ...((admission || buildUpdate) && { stdio: ["inherit", "inherit", "inherit", "ipc"] }),
     },

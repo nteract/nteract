@@ -1,5 +1,6 @@
 // Real local OIDC + OAuth + MCP + celld/R2 + browser image qualification.
-// Only the external file download is synthetic, intercepted by the test worker.
+// Only the external file download is synthetic: the test Worker forwards it to
+// a loopback image source this smoke owns, which counts every download.
 // This does not establish that ChatGPT forwards generated-image artifacts.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -8,6 +9,7 @@ import { chromium, expect } from "@playwright/test";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { startImageSource } from "./fixtures/local-mcp-image-source.mjs";
 import { imageDownloadUrl, imageFileId, imagePng } from "./fixtures/local-mcp-images.mjs";
 import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
@@ -77,15 +79,31 @@ async function call(client, name, args = {}, allowed = true) {
   if (allowed) assert.deepEqual(result.structuredContent, value);
   return value;
 }
-const sourceState = async () => (await localFetch(origin + "/__e2e/image-source")).json();
-const file = {
-  download_url: imageDownloadUrl,
-  file_id: imageFileId,
-  mime_type: "image/png",
-  file_name: "tiny.png",
+// Each step gets its own download URL whose token names the source behavior,
+// so no step depends on state another request left behind.
+assert.match(process.env.PAGES_E2E_FIXTURE_ID ?? "", /^[0-9a-f]{32}$/, "run through the harness");
+const source = await startImageSource({
+  identity: process.env.PAGES_E2E_FIXTURE_ID,
+  port: Number(process.env.PAGES_E2E_IMAGE_SOURCE_PORT),
+});
+const imageFile = (behavior = "ok") => {
+  const download_url = imageDownloadUrl(behavior);
+  return {
+    token: new URL(download_url).searchParams.get("token"),
+    file: { download_url, file_id: imageFileId, mime_type: "image/png", file_name: "tiny.png" },
+  };
 };
-const importImage = (client, allowed = true) =>
-  call(client, "import_page_image", { page_id: pageId, file }, allowed);
+const importImage = (client, image, allowed = true) =>
+  call(client, "import_page_image", { page_id: pageId, file: image.file }, allowed);
+// A refused import must not reach the image source at all.
+async function refusedImport(client) {
+  const image = imageFile(),
+    before = source.total();
+  const refusal = await importImage(client, image, false);
+  assert.equal(source.downloads(image.token), 0, "refused import does not download");
+  assert.equal(source.total(), before, "refused import does not download");
+  return refusal;
+}
 
 async function signIn(email) {
   const context = await browser.newContext({
@@ -218,6 +236,10 @@ try {
   } finally {
     await networkProbe.close();
   }
+  // The Worker under test must be this run's fixture build. Downloads from any
+  // other build are refused by the image source and reported below.
+  const fixture = await (await localFetch(origin + "/__e2e/image-source")).json();
+  assert.equal(fixture.fixture, process.env.PAGES_E2E_FIXTURE_ID, "fixture identity");
   owner = await signIn("dev@localhost");
   const ownerGrant = await grant(owner, fullScope);
   const catalog = await call(ownerGrant.client, "list_pages");
@@ -234,7 +256,8 @@ try {
   assert.deepEqual(descriptor._meta["openai/fileParams"], ["file"]);
   complete("Local OIDC, PKCE consent and MCP expose the file-input tool");
 
-  asset = await importImage(ownerGrant.client);
+  const first = imageFile();
+  asset = await importImage(ownerGrant.client, first);
   assert.equal(asset.page_id, pageId);
   assert.equal(asset.asset_id, createHash("sha256").update(imagePng()).digest("hex"));
   assert.equal(asset.asset_url, `/api/pages/${pageId}/assets/${asset.asset_id}`);
@@ -243,10 +266,10 @@ try {
   assert.equal(asset.size, imagePng().length);
   assert.equal(asset.width, 3);
   assert.equal(asset.height, 2);
-  assert.equal(JSON.stringify(asset).includes(imageDownloadUrl), false);
+  assert.equal(JSON.stringify(asset).includes("oaiusercontent"), false);
   assert.equal(JSON.stringify(asset).includes(imageFileId), false);
-  assert.deepEqual(await importImage(ownerGrant.client), asset);
-  assert.equal((await sourceState()).downloads, 2);
+  assert.deepEqual(await importImage(ownerGrant.client, first), asset);
+  assert.equal(source.downloads(first.token), 2, "each import downloads its file once");
 
   const uploaded = await localFetch(origin + `/api/pages/${pageId}/assets`, {
     method: "POST",
@@ -292,7 +315,7 @@ try {
   assert.equal(after.blocks[1].id, insertedImage.block_id);
   assert.equal(after.blocks[1].markdown, `![Imported private image](${asset.asset_url})`);
   assert.deepEqual(after.heads, inserted.heads);
-  assert.equal(JSON.stringify(after).includes(imageDownloadUrl), false);
+  assert.equal(JSON.stringify(after).includes("oaiusercontent"), false);
   assert.equal(JSON.stringify(after).includes(imageFileId), false);
   assert.equal(JSON.stringify(after).includes("base64"), false);
   complete(
@@ -372,10 +395,8 @@ try {
   );
 
   const readGrant = await grant(owner, "pages:read");
-  const beforeScope = (await sourceState()).downloads;
-  const deniedScope = await importImage(readGrant.client, false);
+  const deniedScope = await refusedImport(readGrant.client);
   assert.equal(deniedScope.code, "oauth_insufficient_scope");
-  assert.equal((await sourceState()).downloads, beforeScope);
   const scopeRead = await call(readGrant.client, "read_page", { page_id: pageId });
   const deniedInsert = await call(
     readGrant.client,
@@ -393,7 +414,9 @@ try {
   const identity = (await sessionApi(editor, "/api/auth/session")).body.identity;
   const editorGrant = await grant(editor, fullScope);
   await access({ action: "invite", email: "alice@localhost", role: "editor" });
-  assert.deepEqual(await importImage(editorGrant.client), asset);
+  const editorImage = imageFile();
+  assert.deepEqual(await importImage(editorGrant.client, editorImage), asset);
+  assert.equal(source.downloads(editorImage.token), 1);
   const editorRead = await call(editorGrant.client, "read_page", { page_id: pageId });
   const pendingEditorInsert = {
     page_id: pageId,
@@ -403,16 +426,13 @@ try {
   };
   assert.equal((await editor.context().request.get(origin + asset.asset_url)).status(), 200);
   await access({ action: "set_role", principal: identity.principal, role: "viewer" });
-  const beforeAcl = (await sourceState()).downloads;
-  const deniedAcl = await importImage(editorGrant.client, false);
+  const deniedAcl = await refusedImport(editorGrant.client);
   assert.notEqual(deniedAcl.code, "oauth_insufficient_scope");
   await call(editorGrant.client, "edit_page", pendingEditorInsert, false);
-  assert.equal((await sourceState()).downloads, beforeAcl);
   assert.equal((await editor.context().request.get(origin + asset.asset_url)).status(), 200);
   await access({ action: "set_role", principal: identity.principal, role: null });
-  await importImage(editorGrant.client, false);
+  await refusedImport(editorGrant.client);
   await call(editorGrant.client, "edit_page", pendingEditorInsert, false);
-  assert.equal((await sourceState()).downloads, beforeAcl);
   assert.equal((await editor.context().request.get(origin + asset.asset_url)).status(), 403);
   complete(
     "Read-only OAuth, Page downgrade and revocation deny import and insertion; image reads follow current access",
@@ -427,6 +447,8 @@ try {
     }),
   });
   assert.equal(revoked.status, 200);
+  const revokedImage = imageFile(),
+    beforeRevoked = source.total();
   const revokedRequest = await localFetch(endpoint, {
     method: "POST",
     headers: {
@@ -438,20 +460,23 @@ try {
       jsonrpc: "2.0",
       id: 1,
       method: "tools/call",
-      params: { name: "import_page_image", arguments: { page_id: pageId, file } },
+      params: {
+        name: "import_page_image",
+        arguments: { page_id: pageId, file: revokedImage.file },
+      },
     }),
   });
   assert.equal(revokedRequest.status, 401);
   await revokedRequest.body?.cancel();
-  assert.equal((await sourceState()).downloads, beforeAcl);
+  assert.equal(source.downloads(revokedImage.token), 0);
+  assert.equal(source.total(), beforeRevoked);
   complete("Revoked OAuth grant cannot import or trigger a file download");
 
-  const expired = await localFetch(origin + "/__e2e/image-source", { method: "POST" });
-  assert.equal((await expired.json()).expired, true);
   const freshOwnerGrant = await grant(owner, fullScope);
-  await importImage(freshOwnerGrant.client, false);
-  const expiredCount = (await sourceState()).downloads;
-  assert.equal(expiredCount, beforeAcl + 1);
+  const expiredImage = imageFile("expired");
+  await importImage(freshOwnerGrant.client, expiredImage, false);
+  assert.equal(source.downloads(expiredImage.token), 1, "expired link is tried once");
+  const expiredCount = source.total();
   await owner.goto(origin + `/p/${pageId}`, { waitUntil: "domcontentloaded" });
   await expect
     .poll(() =>
@@ -463,11 +488,12 @@ try {
   const stored = await owner.context().request.get(origin + asset.asset_url);
   assert.equal(stored.status(), 200);
   assert.deepEqual(await stored.body(), Buffer.from(imagePng()));
-  assert.equal((await sourceState()).downloads, expiredCount);
+  assert.equal(source.total(), expiredCount, "reload and retry do not download");
   assert.deepEqual(await call(freshOwnerGrant.client, "edit_page", insertion), inserted);
   complete(
     "Stored image and exact insertion retry survive source-link expiry and reload without redownloading",
   );
+  assert.deepEqual(source.errors, [], "image source saw only this fixture's downloads");
   assert.deepEqual(report.errors, []);
 } catch (error) {
   report.failure = error.stack || error.message;
@@ -499,6 +525,12 @@ try {
     }
   }
   await Promise.all([...clients].map((client) => client.close().catch(() => {})));
+  report.imageSource = {
+    downloads: source.total(),
+    isolates: source.isolates(),
+    errors: source.errors,
+  };
+  await source.close();
   await browser.close();
   await writeFile(`${output}/report.json`, JSON.stringify(report, null, 2));
 }

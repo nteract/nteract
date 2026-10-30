@@ -204,19 +204,30 @@ async function assertStableSelectionToolbar(page) {
       false,
       "hidden formatting controls cannot take focus",
     );
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
+      // Start from settled fonts and layout after the viewport change.
+      await document.fonts.ready;
+      for (let frame = 0; frame < 2; frame++) await new Promise(requestAnimationFrame);
       const editor = document.querySelector("wg-content");
-      const node = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT).nextNode();
-      const first = document.createRange();
-      first.setStart(node, 0);
-      first.setEnd(node, 1);
       const toolbar = document.querySelector("[role='toolbar'][aria-label='Text formatting']");
       const records = [];
       let running = true;
+      // Resolve the first character on every sample. Wordgard re-parents text
+      // nodes when a range decoration ends, such as an expiring remote-edit
+      // illumination, without changing layout. A Range held across that move
+      // collapses and reports a zero rect, which reads as a shift.
+      const firstCharacterTop = () => {
+        const node = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT).nextNode();
+        const range = document.createRange();
+        range.setStart(node, 0);
+        range.setEnd(node, 1);
+        const rect = range.getBoundingClientRect();
+        return rect.height ? rect.top + scrollY : null;
+      };
       const sample = () => {
         const style = getComputedStyle(toolbar);
         records.push({
-          y: first.getBoundingClientRect().top + scrollY,
+          y: firstCharacterTop(),
           inFlow: !toolbar.hidden && style.visibility !== "hidden" && style.position !== "fixed",
         });
       };
@@ -293,9 +304,12 @@ async function assertStableSelectionToolbar(page) {
     report.selectionToolbarFrames ??= [];
     report.selectionToolbarFrames.push({ width, records });
     assert.ok(
-      records.every((record) => Math.abs(record.y - records[0].y) <= 1),
-      "selection does not shift document text",
+      records.every((record) => record.y !== null),
+      "every sample measures the first character",
     );
+    // Sub-pixel noise passes; a shift of one pixel or more fails.
+    const drift = Math.max(...records.map((record) => Math.abs(record.y - records[0].y)));
+    assert.ok(drift < 1, `selection does not shift document text (${drift}px at ${width}px)`);
     assert.ok(
       records.every((record) => !record.inFlow),
       "automatic formatting never flashes in document flow",
