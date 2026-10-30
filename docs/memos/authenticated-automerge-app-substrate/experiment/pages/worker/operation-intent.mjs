@@ -418,10 +418,16 @@ function answer(state, event) {
     ? event
     : { receipt: { page_id: state.pageId, deleted: true }, current: DELETED };
   const effects = [{ type: "project", current }];
-  const slot = projectedSlot(state, current, event.known);
+  let slot = projectedSlot(state, current, event.known);
   if (receipt.superseded && state.retarget && !state.replayOnly) {
     // The Page has never seen this key, so retry it once at the Page's
-    // current revision.
+    // current revision. Projecting a Page away from the destination removes
+    // the slot this request held; the retry may apply, so it takes the slot
+    // back. Nothing else ran in between, so the capacity it frees is its own.
+    if (["live", "entry"].includes(state.slot) && slot === "lapsed") {
+      effects.push(effect("reserve_slot"));
+      slot = "live";
+    }
     const next = { ...state, expectedRevision: current.revision, slot, retarget: false };
     effects.push({ type: "persist", state: "forwarded", expectedRevision: current.revision });
     effects.push(forward(next));

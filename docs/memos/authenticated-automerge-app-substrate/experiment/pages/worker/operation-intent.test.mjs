@@ -604,5 +604,69 @@ test("a crash after any effect leaves the state before it, and a retry resumes f
         );
     }
   }
-  assert.equal(points, 70, "crash points");
+  assert.equal(points, 71, "crash points");
+});
+
+test("a retargeted Trash keeps its slot, so its lost reply can't overfill Trash", async (t) => {
+  t.mock.method(globalThis, "fetch", auth.fetch);
+  t.mock.method(console, "error", () => {});
+  const otherId = "55555555-5555-4555-8555-555555555555";
+  const storage = new Storage(() => {});
+  // Trash holds 99 Pages. The Catalog last saw this Page active at revision
+  // 0; the Page has since been trashed and restored without it.
+  for (let index = 0; index < LIMIT - 1; index++) {
+    const id = `fill-${String(index).padStart(3, "0")}`;
+    storage.values.set(`trash/${id}`, { page_id: id, title: id });
+  }
+  storage.values.set(`page/${pageId}`, catalogEntry("page/", 0));
+  storage.values.set(`page/${otherId}`, { ...catalogEntry("page/", 0), page_id: otherId });
+  const trashed = (id, revision) => ({
+    receipt: { page_id: id, state: "trashed", trashed: true },
+    current: { page_id: id, state: "trashed", revision, title: "Launch plan" },
+  });
+  let applied = false;
+  const replies = [
+    () =>
+      Response.json({
+        receipt: { page_id: pageId, superseded: true, applied: false, state: "active" },
+        current: { page_id: pageId, state: "active", revision: 2, title: "Launch plan" },
+      }),
+    // The retarget applies at revision 2; its reply is lost.
+    () => {
+      applied = true;
+      throw new Error("connection reset");
+    },
+  ];
+  const catalog = new Catalog(
+    { id: { name: owner }, storage },
+    {
+      ...auth.env,
+      PAGES: {
+        getByName: (id) => ({
+          fetch: async (request) => {
+            assert.equal(new URL(request.url).pathname, "/internal/trash");
+            return id === pageId ? replies.shift()() : Response.json(trashed(id, 1));
+          },
+        }),
+      },
+    },
+  );
+  const trash = (id, idempotency) =>
+    catalog.fetch(
+      new Request("https://pages.invalid/internal/catalog", {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "x-pages-driver": "ChatGPT" },
+        body: JSON.stringify({
+          operation: "delete_page",
+          arguments: { page_id: id, base_heads: ["a".repeat(64)], idempotency_key: idempotency },
+        }),
+      }),
+    );
+  assert.equal((await trash(pageId, idempotencyKey)).status, 500);
+  assert.ok(applied);
+  assert.equal(storage.values.get(`trash/${pageId}`)?.intent, key, "the retry holds its slot");
+  // Trash is full while that request may have applied.
+  const other = await trash(otherId, "other-trash-0001");
+  assert.equal(other.status, 409);
+  assert.equal((await other.json()).code, "trash_capacity");
 });

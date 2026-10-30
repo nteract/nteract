@@ -1792,9 +1792,9 @@
       }
     },
     {
-      "label": "a retarget whose projection moved the Page away forwards without its slot",
+      "label": "a retarget whose projection moved the Page away re-reserves its slot before forwarding",
       "case": "retarget",
-      "note": "Current behavior, fixed in a later commit: projecting an active Page deletes this intent's Trash slot, and the retargeted request is forwarded without one. If its reply is lost, another request can take the freed slot and the replay overfills Trash.",
+      "note": "Projecting an active Page deletes this request's Trash slot. The retry may apply, so it takes the slot back before it is forwarded.",
       "state": {
         "name": "forwarded",
         "operation": "delete_page",
@@ -1827,7 +1827,7 @@
           "operation": "delete_page",
           "pageId": "33333333-3333-4333-8333-333333333333",
           "expectedRevision": 2,
-          "slot": "lapsed",
+          "slot": "live",
           "retarget": false,
           "replayOnly": false
         },
@@ -1840,6 +1840,9 @@
               "revision": 2,
               "title": "Launch plan"
             }
+          },
+          {
+            "type": "reserve_slot"
           },
           {
             "type": "persist",
