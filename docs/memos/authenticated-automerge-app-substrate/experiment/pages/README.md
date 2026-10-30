@@ -527,6 +527,68 @@ Raise `MIN_VIEWER_PROTOCOL` and `VIEWER_PROTOCOL` together in one release. MCP
 and HTTP tool compatibility is versioned separately and does not follow this
 floor.
 
+## State machines
+
+Each async lifecycle (an operation, a Page's trash state, a viewer session)
+gets named states, named events, and one pure transition function.
+[machine.mjs](shared/machine.mjs) defines them:
+
+```js
+const lamp = defineMachine({
+  name: "lamp",
+  states: ["off", "on"],
+  events: ["flip", "hold"],
+  initial: "off",
+  unreachable: [["on", "hold", "only an off lamp can be held"]],
+  transition(state, event) {
+    if (event.type === "hold") return reject(state, "held");
+    const name = state.name === "off" ? "on" : "off";
+    return { state: { name }, effects: [{ type: name === "on" ? "light" : "dark" }] };
+  },
+});
+lamp.step({ name: "off" }, { type: "flip" }); // { state: { name: "on" }, effects: [{ type: "light" }] }
+```
+
+- A state is a JSON object whose `name` is one of `states`. Events and effects
+  are JSON objects with a `type`. `step` validates both sides and returns
+  `{ state, effects, response?, rejected? }`.
+- A guard that refuses an event returns `reject(state, reason)`: the same state,
+  no effects, a reason, and optionally a `response` for the caller.
+- `unreachable` lists `[state, event, reason]` pairs that can't happen by
+  construction. `step` throws on them. Late or duplicate events are reachable;
+  answer them with `reject`.
+- The transition never reads storage, the network, clocks or randomness. An
+  interpreter at the edge runs the effects and turns replies and timers back
+  into events. Worker interpreters keep the Durable Object's promise tails;
+  viewer interpreters use RxJS.
+
+To add a machine:
+
+1. Write the table as JSON in `test/fixtures/machines/<name>.json`: `machine`,
+   `states`, `events`, `unreachable`, and `rows` of
+   `{ state, event, expect: { state, effects, response?, rejected? } }`.
+2. Drive the current code through an adapter:
+   `await runTable({ name, states, events, unreachable }, loadTable(file), { drive })`.
+   `drive(state, event)` sets the old code up in `state`, delivers `event`, and
+   reads the result back.
+3. Extract the transition with `defineMachine`, make the old code its
+   interpreter, and run the same table with `runTable(machine, loadTable(file))`.
+
+[machine-test.mjs](shared/machine-test.mjs) fails when a state × event pair has
+neither a row nor an unreachable entry, when a row covers an unreachable pair,
+or when the file's names disagree with the machine. Without `drive` it also
+checks that the transition leaves its input untouched and returns the same
+result twice. The JSON file is the contract a port to Rust would replay.
+[machine.test.mjs](test/machine.test.mjs) runs one table against both a machine
+and flag-style code.
+
+Viewer state lives in a [Store](viewer/store.mjs): one private
+`BehaviorSubject`, `snapshot()`, `update(fn)`, and `select(project, equals)`,
+which emits synchronously and then only on change. Components read
+`useStore(store, project, equals)`. Pass a named comparator when `project`
+allocates. Test timers with `TestScheduler` from `rxjs/testing`, as
+[store.test.mjs](viewer/store.test.mjs) does for a backoff interpreter.
+
 ## HTTP and MCP tools
 
 `POST /api/tools` accepts `{operation, arguments}`; `POST /mcp` exposes the same
