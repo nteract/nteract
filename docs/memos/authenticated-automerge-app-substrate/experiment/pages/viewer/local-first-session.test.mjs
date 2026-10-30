@@ -940,3 +940,114 @@ test("duplicated tabs open a shared checkpoint larger than an ordinary native ed
   assert.equal(second.handle.documentId, documentId);
   assert.equal(second.status, "Saved locally", "local import is not a server receipt");
 });
+
+/** A Page whose two concurrent edits merge in a fragment-headed change, in
+ * the two orders peers can apply them. */
+function concurrentMergeFixture(pageId) {
+  const data = createPageData({ pageId, title: "Shared history" });
+  const block = Object.values(data.blocks)[0];
+  block.id = "7a3c0e52-9a59-4b6e-8f0a-2d6c5f4b1e90";
+  data.blocks = { [block.id]: block };
+  let base = A.change(A.init({ actor: "ab".repeat(16) }), { time: 0 }, (draft) =>
+    Object.assign(draft, data),
+  );
+  base = A.change(base, { time: 0 }, initializePage);
+  const concurrent = (actor, time, field) =>
+    A.getChanges(
+      base,
+      A.change(A.clone(base, { actor }), { time }, (draft) => {
+        draft[field] = actor;
+      }),
+    )[0];
+  const x = concurrent("1c".repeat(16), 1, "left");
+  const y = concurrent("1d".repeat(16), 2, "right");
+  const both = () => A.applyChanges(A.clone(base), [x, y])[0];
+  let m;
+  for (let time = 3; time < 4096 && !m; time++) {
+    const merged = A.change(A.clone(both(), { actor: "1e".repeat(16) }), { time }, (draft) => {
+      draft.title = "Merged";
+    });
+    const [head] = A.getHeads(merged);
+    if (extractRecords(merged).some((record) => record.kind === "fragment" && record.head === head))
+      [m] = A.getChanges(both(), merged);
+  }
+  assert.ok(m, "a fragment-headed merge within the timestamp bound");
+  return {
+    base,
+    head: A.decodeChange(m).hash,
+    leftFirst: A.applyChanges(A.clone(base), [x, y, m])[0],
+    rightFirst: A.applyChanges(A.applyChanges(A.clone(base), [y])[0], [x, m])[0],
+  };
+}
+
+const checkpointPage = (auth, pageId, documentId, doc) => ({
+  principal: auth.identity.principal,
+  page_id: pageId,
+  document_id: documentId,
+  title: doc.title,
+  snapshot: encodeSnapshot(A.save(doc)),
+  canWrite: true,
+  registered: true,
+  pending: true,
+});
+
+async function replaceCheckpoint(auth, pageId, doc) {
+  await writeLocalPage(auth.identity, {
+    ...(await readLocalPage(auth.identity, pageId)),
+    snapshot: encodeSnapshot(A.save(doc)),
+  });
+}
+
+test("reopening imports only checkpoint history the replica does not already hold", async (t) => {
+  browser(t);
+  t.mock.method(PageSession.prototype, "retryConnection", async () => {});
+  const auth = authentication(),
+    pageId = "5d0f3a5e-2f4e-4a8e-9a43-3c1f0f6f2b71";
+  const documentId = interpretAsDocumentId(generateAutomergeUrl());
+  const { leftFirst, rightFirst } = concurrentMergeFixture(pageId);
+  // The same history, applied in two orders, encodes the fragment differently.
+  const fragment = (doc) => extractRecords(doc).find((record) => record.kind === "fragment");
+  assert.notDeepEqual(fragment(leftFirst).blob, fragment(rightFirst).blob);
+  await writeLocalPage(auth.identity, checkpointPage(auth, pageId, documentId, rightFirst));
+  const first = await PageSession.open(pageId, { authentication: auth });
+  const seed = first.local.seed;
+  await first.close();
+  // A later checkpoint of this replica's own document orders the history
+  // differently from the fragment the replica already stores.
+  await replaceCheckpoint(auth, pageId, leftFirst);
+  const reopened = await PageSession.open(pageId, { authentication: auth });
+  t.after(() => reopened.close());
+  assert.equal(reopened.local.seed, seed, "the same replica reopens");
+  assert.deepEqual(A.getHeads(reopened.doc).sort(), A.getHeads(leftFirst).sort());
+  assert.equal(reopened.snapshot().title, "Merged");
+});
+
+test("reopening restores checkpoint changes a same-head stored fragment lacks", async (t) => {
+  browser(t);
+  t.mock.method(PageSession.prototype, "retryConnection", async () => {});
+  const auth = authentication(),
+    pageId = "9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f";
+  const documentId = interpretAsDocumentId(generateAutomergeUrl());
+  const { base, head, leftFirst } = concurrentMergeFixture(pageId);
+  const full = extractRecords(leftFirst).find((record) => record.head === head);
+  assert.ok(A.readBundle(full.blob).changes.length > 1, "the checkpoint bundles history");
+  // A valid partial bundle: the same head, holding only the merge itself.
+  const partial = {
+    kind: "fragment",
+    head,
+    boundary: [],
+    checkpoints: [],
+    blob: A.saveBundle(leftFirst, [head]),
+  };
+  await writeLocalPage(auth.identity, checkpointPage(auth, pageId, documentId, base));
+  const first = await PageSession.open(pageId, { authentication: auth });
+  await first.backend.storeSnapshot(documentIdToBinary(documentId), [partial]);
+  await first.close();
+  await replaceCheckpoint(auth, pageId, leftFirst);
+  const reopened = await PageSession.open(pageId, { authentication: auth });
+  t.after(() => reopened.close());
+  assert.deepEqual(A.getHeads(reopened.doc).sort(), A.getHeads(leftFirst).sort());
+  assert.equal(reopened.doc.left, "1c".repeat(16));
+  assert.equal(reopened.doc.right, "1d".repeat(16));
+  assert.equal(reopened.snapshot().title, "Merged");
+});

@@ -112,13 +112,17 @@ function host(
   maxSnapshotBytes,
   storage = new Storage(),
   records = new Storage(),
-  { maxBatchKeys } = {},
+  { maxBatchKeys, recordFetch, recordTimeoutMs } = {},
 ) {
   const owner = new PageRecords({ storage: records });
+  const send = (request) => owner.fetch(request);
   const recordStore =
     mode === "buffered"
       ? new BufferedRecordStore(
-          new RemoteRecordSink({ fetch: (request) => owner.fetch(request) }),
+          new RemoteRecordSink(
+            { fetch: recordFetch ? (request) => recordFetch(request, send) : send },
+            { timeoutMs: recordTimeoutMs },
+          ),
           { maxBatchKeys },
         )
       : new DurableByteStore(storage);
@@ -284,7 +288,7 @@ for (const mode of ["local", "buffered"]) {
       });
       let persisted = 0;
       await assert.rejects(
-        admission.reserve("bundled", intent(bundled), bundled, async () => {
+        admission.reserve("bundled", intent(bundled), bundled, handle.doc(), async () => {
           persisted++;
         }),
         (error) =>
@@ -293,7 +297,7 @@ for (const mode of ["local", "buffered"]) {
       assert.equal(persisted, 0);
       assert.equal(admission.pending("bundled"), undefined);
       // The same edit as a loose commit only adds its own change to the stored base.
-      await admission.reserve("loose", intent(loose), loose, async () => {
+      await admission.reserve("loose", intent(loose), loose, handle.doc(), async () => {
         persisted++;
       });
       assert.equal(persisted, 1);
@@ -331,7 +335,7 @@ for (const mode of ["local", "buffered"]) {
             changes: A.getChanges(base, candidate),
             receipt: { heads: A.getHeads(candidate) },
           };
-          await admission.reserve("intent", entry, candidate, async () => {
+          await admission.reserve("intent", entry, candidate, handle.doc(), async () => {
             await peer.storage.put("host/operation/intent", entry);
             await peer.storage.sync();
           });
@@ -370,6 +374,249 @@ for (const mode of ["local", "buffered"]) {
   }
 }
 
+/** Interrupt one attempt of an API edit after it is applied to the handle. */
+const POST_APPLY_FAILURES = {
+  "after apply": (ctx) => {
+    const apply = ctx.admission.apply.bind(ctx.admission);
+    let fail = true;
+    ctx.admission.apply = async (...args) => {
+      await apply(...args);
+      if (fail) {
+        fail = false;
+        throw Error("interrupted after apply");
+      }
+    };
+  },
+  "during the final flush": (ctx) => {
+    const flush = ctx.flush;
+    let fail = true;
+    ctx.flush = async () => {
+      if (fail && ctx.handle.doc().api !== undefined) {
+        fail = false;
+        throw Error("interrupted final flush");
+      }
+      await flush();
+    };
+  },
+  "before the terminal receipt persists": (ctx) => {
+    const put = ctx.storage.put.bind(ctx.storage);
+    let fail = true;
+    ctx.storage.put = async (key, value) => {
+      if (fail && key === "host/operation/api-intent" && value.pending === false) {
+        fail = false;
+        throw Error("interrupted receipt");
+      }
+      return put(key, value);
+    };
+  },
+};
+
+async function laterEditProceeds(peer, handle, admission) {
+  const later = context(peer, handle, "later-edit");
+  later.admission = admission;
+  later.apply = (doc) => {
+    doc.later = "after the retried edit";
+  };
+  const receipt = await documentMutation(later);
+  assert.ok(A.hasHeads(handle.doc(), receipt.heads));
+  assert.equal(handle.doc().later, "after the retried edit");
+  assert.equal(admission.hasPending, false);
+}
+
+for (const mode of ["local", "buffered"])
+  for (const [point, interrupt] of Object.entries(POST_APPLY_FAILURES)) {
+    test(`${mode}: a retry after a failure ${point} completes and later edits proceed`, async () => {
+      const base = baseDoc();
+      const peer = host(mode, bytes(base) + 65536);
+      try {
+        const handle = await peer.repo.import(A.save(base));
+        await peer.flush();
+        const ctx = context(peer, handle);
+        interrupt(ctx);
+        await assert.rejects(documentMutation(ctx), /interrupted/);
+        assert.deepEqual(handle.doc().api, noise(2048, 11), "the edit applied");
+        assert.equal(ctx.admission.hasPending, true);
+        ctx.apply = () => assert.fail("retry must not reauthor");
+        const receipt = await documentMutation(ctx);
+        assert.ok(A.hasHeads(handle.doc(), receipt.heads));
+        assert.equal((await peer.storage.get("host/operation/api-intent")).pending, false);
+        assert.equal(ctx.admission.hasPending, false);
+        assert.equal(A.getChanges(base, handle.doc()).length, 1, "one semantic edit");
+        await laterEditProceeds(peer, handle, ctx.admission);
+      } finally {
+        assert.deepEqual(await closePeers([peer], []), []);
+      }
+    });
+
+    test(`${mode}: a restart after a failure ${point} recovers and later edits proceed`, async () => {
+      const base = baseDoc();
+      const cap = bytes(base) + 65536;
+      const peer = host(mode, cap);
+      const peers = [peer];
+      try {
+        const handle = await peer.repo.import(A.save(base));
+        await peer.flush();
+        const ctx = context(peer, handle);
+        interrupt(ctx);
+        await assert.rejects(documentMutation(ctx), /interrupted/);
+        const stored = await peer.storage.get("host/operation/api-intent");
+        const restored = host(mode, cap, peer.storage.clone(), peer.records.clone());
+        peers.push(restored);
+        const recovered = await restored.repo.find(handle.documentId);
+        const admission = new DocumentAdmission(restored.backend, treeId(handle.documentId));
+        await recoverDocumentMutations(
+          restored.storage,
+          recovered,
+          () => restored.flush(),
+          admission,
+        );
+        assert.ok(A.hasHeads(recovered.doc(), stored.receipt.heads));
+        assert.equal((await restored.storage.get("host/operation/api-intent")).pending, false);
+        assert.equal(A.getChanges(base, recovered.doc()).length, 1, "one semantic edit");
+        await laterEditProceeds(restored, recovered, admission);
+      } finally {
+        assert.deepEqual(await closePeers(peers, []), []);
+      }
+    });
+  }
+
+test(
+  "buffered: a PageRecords timeout after the write committed retries without a second edit",
+  { timeout: 10_000 },
+  async () => {
+    const base = baseDoc();
+    const cap = bytes(base) + 65536;
+    let handle;
+    let dropped = 0;
+    const peer = host("buffered", cap, undefined, undefined, {
+      recordTimeoutMs: 50,
+      // The owner commits the batch that holds the applied edit, but its reply
+      // never reaches the Page.
+      async recordFetch(request, send) {
+        const response = await send(request);
+        if (request.method === "POST" && handle?.doc().api !== undefined && !dropped++)
+          return new Promise(() => {});
+        return response;
+      },
+    });
+    const peers = [peer];
+    try {
+      handle = await peer.repo.import(A.save(base));
+      await peer.flush();
+      const ctx = context(peer, handle);
+      await assert.rejects(documentMutation(ctx), { code: "record_persistence_timeout" });
+      assert.equal(dropped, 1);
+      assert.equal(ctx.admission.hasPending, true);
+      ctx.apply = () => assert.fail("retry must not reauthor");
+      const receipt = await documentMutation(ctx);
+      assert.ok(A.hasHeads(handle.doc(), receipt.heads));
+      assert.equal(A.getChanges(base, handle.doc()).length, 1, "one semantic edit");
+      await laterEditProceeds(peer, handle, ctx.admission);
+      // The persisted records restart with each edit exactly once.
+      const restored = host("buffered", cap, peer.storage.clone(), peer.records.clone());
+      peers.push(restored);
+      const reopened = await restored.repo.find(handle.documentId);
+      assert.deepEqual(A.getHeads(reopened.doc()).sort(), A.getHeads(handle.doc()).sort());
+      assert.equal(A.getChanges(base, reopened.doc()).length, 2);
+    } finally {
+      assert.deepEqual(await closePeers(peers, []), []);
+    }
+  },
+);
+
+const equalBytes = (a, b) => a.length === b.length && a.every((value, i) => value === b[i]);
+
+/** Two peers make concurrent edits `x` and `y`; a merge `m` heads a fragment
+ * that bundles both. The host applies x before y. The peer that uploads the
+ * fragment applied y before x, so its bundle orders them differently: the same
+ * fragment key, a different blob. */
+function concurrentFragment(base) {
+  const [x] = A.getChanges(
+    base,
+    A.change(A.clone(base, { actor: "1c".repeat(16) }), { time: TIME + 1 }, (doc) => {
+      doc.x = "left peer";
+    }),
+  );
+  const [y] = A.getChanges(
+    base,
+    A.change(A.clone(base, { actor: "1d".repeat(16) }), { time: TIME + 2 }, (doc) => {
+      doc.y = "right peer";
+    }),
+  );
+  const merged = edit(
+    A.applyChanges(A.clone(base), [x, y])[0],
+    "1e".repeat(16),
+    (doc) => {
+      doc.merged = true;
+    },
+    "fragment",
+  );
+  const [m] = A.getChanges(A.applyChanges(A.clone(base), [x, y])[0], merged);
+  const hostOrder = A.applyChanges(A.clone(base), [x, y, m])[0];
+  const peerOrder = A.applyChanges(A.applyChanges(A.clone(base), [y])[0], [x, m])[0];
+  const head = A.decodeChange(m).hash;
+  const fragment = (doc) =>
+    extractRecords(doc).find((record) => record.kind === "fragment" && record.head === head);
+  const uploaded = fragment(peerOrder);
+  assert.ok(uploaded, "the merge heads a fragment");
+  assert.notDeepEqual(fragment(hostOrder).blob, uploaded.blob, "bundles differ by peer");
+  return { x, y, m, head, uploaded };
+}
+
+/** Wait for backend observation to deliver stored history to the handle. */
+function headsArrive(handle, heads, ms = 5000) {
+  if (A.hasHeads(handle.doc(), heads)) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const changed = () => {
+      if (!A.hasHeads(handle.doc(), heads)) return;
+      clearTimeout(timer);
+      handle.off("heads-changed", changed);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      handle.off("heads-changed", changed);
+      reject(Error(`heads did not arrive within ${ms} ms`));
+    }, ms);
+    handle.on("heads-changed", changed);
+  });
+}
+
+for (const mode of ["local", "buffered"]) {
+  test(`${mode}: an API edit leaves a peer-encoded fragment of existing history untouched`, async () => {
+    const base = baseDoc();
+    const { x, y, m, head, uploaded } = concurrentFragment(base);
+    const peer = host(mode, bytes(base) + 65536);
+    try {
+      const handle = await peer.repo.import(A.save(base));
+      await peer.flush();
+      // The host receives the concurrent edits in its own order, then the
+      // uploading peer's fragment stores the merge under that peer's encoding.
+      await handle.update((doc) => A.applyChanges(doc, [x, y])[0]);
+      await peer.flush();
+      await peer.backend.storeSnapshot(treeId(handle.documentId), [uploaded]);
+      await headsArrive(handle, [head]);
+      await peer.flush();
+      assert.ok(
+        extractRecords(handle.doc()).some(
+          (record) => record.head === head && !equalBytes(record.blob, uploaded.blob),
+        ),
+        "the host's own encoding of the stored fragment differs",
+      );
+
+      const ctx = context(peer, handle);
+      const receipt = await documentMutation(ctx);
+      assert.ok(A.hasHeads(handle.doc(), receipt.heads));
+      assert.deepEqual(handle.doc().api, noise(2048, 11));
+      assert.equal((await peer.storage.get("host/operation/api-intent")).pending, false);
+      assert.equal(ctx.admission.hasPending, false);
+      assert.equal(A.getChanges(base, handle.doc()).length, 4);
+      assert.ok(A.hasHeads(handle.doc(), [A.decodeChange(m).hash]));
+    } finally {
+      assert.deepEqual(await closePeers([peer], []), []);
+    }
+  });
+}
+
 test("buffered: remote prefix persistence failure recovers remaining exact history", async () => {
   const base = baseDoc();
   const peer = host("buffered", bytes(base) + 32768);
@@ -393,7 +640,7 @@ test("buffered: remote prefix persistence failure recovers remaining exact histo
       receipt: { heads: A.getHeads(candidate) },
     };
     const admission = new DocumentAdmission(peer.backend, treeId(handle.documentId));
-    await admission.reserve("host/operation/prefix", entry, candidate, async () => {
+    await admission.reserve("host/operation/prefix", entry, candidate, handle.doc(), async () => {
       await peer.storage.put("host/operation/prefix", entry);
       await peer.storage.sync();
     });
@@ -468,7 +715,7 @@ async function stageIntent(peer, handle, base, candidate, key) {
     receipt: { heads: A.getHeads(candidate) },
   };
   const admission = new DocumentAdmission(peer.backend, treeId(handle.documentId));
-  await admission.reserve(key, entry, candidate, async () => {
+  await admission.reserve(key, entry, candidate, handle.doc(), async () => {
     await peer.storage.put(key, entry);
     await peer.storage.sync();
   });

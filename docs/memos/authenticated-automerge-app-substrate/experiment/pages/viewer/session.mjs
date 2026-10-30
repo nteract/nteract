@@ -2,7 +2,6 @@ import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
 import { Repo, documentIdToBinary } from "@automerge/automerge-repo";
 import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
-import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
 import { applyComment } from "../model/comments.mjs";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { unsentCommentsMarkdown } from "../model/markdown-export.mjs";
@@ -22,6 +21,7 @@ import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { ADMISSION_CAPABILITY, admissionCloseOutcome } from "../shared/admission.mjs";
 import { request } from "./request.mjs";
 import { activitySnapshot } from "./activity.mjs";
+import { checkpointRecords } from "./checkpoint-records.mjs";
 export { request } from "./request.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const ownerAccess = () => ({
@@ -498,10 +498,8 @@ export class PageSession {
       // also retries any prefix left by an interrupted local import.
       const checkpoint = A.load(decodeSnapshot(this.localPage.snapshot));
       try {
-        await this.backend.storeSnapshot(
-          documentIdToBinary(this.localPage.document_id),
-          extractRecords(checkpoint),
-        );
+        const id = documentIdToBinary(this.localPage.document_id);
+        await this.backend.storeSnapshot(id, await checkpointRecords(this.backend, id, checkpoint));
       } finally {
         A.free(checkpoint);
       }

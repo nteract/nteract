@@ -438,6 +438,21 @@ recovery. Readers that pass admission see `history_incomplete` in read results
 and `historyIncomplete` from `/api/connect` until a peer or a pending intent
 supplies the missing parents.
 
+Every `PageRecords` request settles within 20 seconds. An unanswered batch stays
+pending for the next flush, and a request waiting on it fails with a retryable
+`503 record_persistence_timeout`. Tool requests to a Catalog or Page answer
+within 60 seconds; a slower one returns a retryable `504 request_timeout` while
+the host finishes the work it accepted. Both responses tell the caller to retry
+with the same `idempotency_key` and `retry_token`.
+
+The storage backend keeps one representation per record key, but a fragment's
+bundle orders concurrent changes in each peer's application order. Stored
+history is never re-encoded. An API edit reserves and stores only the records
+it adds to the serving document, and a retry reuses that exact reservation
+until release. A browser checkpoint import decides coverage from the change
+hashes its stored records hold, keeps every stored record as is, and adds any
+uncovered change under a new key or as a loose commit.
+
 Versioned binary records preserve signed native envelopes and Automerge changes;
 legacy hex records remain readable. `PAGES_COMPACT_RECORDS=true` enables
 conservative cleanup only after a retained fragment is durably proven to contain

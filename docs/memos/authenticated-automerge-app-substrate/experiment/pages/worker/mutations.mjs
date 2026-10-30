@@ -144,7 +144,7 @@ export async function documentMutation({
         await storage.put(key, entry);
         await storage.sync();
       };
-      if (admission) await admission.reserve(key, entry, after, persist);
+      if (admission) await admission.reserve(key, entry, after, before, persist);
       else await persist();
       recorded = true;
     } finally {
@@ -183,7 +183,8 @@ export async function recoverDocumentMutations(storage, handle, flush, admission
   // Journal order is not causal order. Validate the entire dependency closure
   // on a disposable clone before exposing any pending edit in the live handle.
   const changes = pending.flatMap(([, entry]) => entry.changes);
-  const candidate = A.applyChanges(A.clone(handle.doc()), changes)[0];
+  const base = handle.doc();
+  const candidate = A.applyChanges(A.clone(base), changes)[0];
   try {
     if (pending.some(([, entry]) => !A.hasHeads(candidate, entry.receipt.heads)))
       throw new Error("Recorded edit dependencies are unavailable");
@@ -191,8 +192,12 @@ export async function recoverDocumentMutations(storage, handle, flush, admission
       // Every reservation is restored before native connections can open. The
       // union is checked at the same boundary as incoming browser records.
       for (const [key, entry] of pending)
-        await admission.reserve(key, entry, candidate, async () => {});
-      await admission.apply(candidate, changes, handle);
+        await admission.reserve(key, entry, candidate, base, async () => {});
+      await admission.apply(
+        pending.map(([key]) => key),
+        changes,
+        handle,
+      );
     } else await handle.update((doc) => A.applyChanges(doc, changes)[0]);
   } finally {
     A.free(candidate);

@@ -272,3 +272,49 @@ test("new owner snapshots include a previous write that reached the record owner
   await saving;
   assert.deepEqual(await restored.load("tree/prior"), bytes("accepted before handoff"));
 });
+
+test(
+  "an unanswered PageRecords request rejects the flush and keeps its records for retry",
+  { timeout: 5000 },
+  async () => {
+    const storage = new Storage();
+    const owner = new PageRecords({ storage });
+    let hold = false;
+    const unanswered = [];
+    const sink = new RemoteRecordSink(
+      {
+        fetch(request) {
+          // The batch waits behind a stalled owner and is not answered in time.
+          if (hold && request.method === "POST" && new URL(request.url).pathname === "/records")
+            return new Promise((resolve) => unanswered.push({ request, resolve }));
+          return owner.fetch(request);
+        },
+      },
+      { timeoutMs: 50 },
+    );
+    const live = new BufferedRecordStore(sink);
+    await live.save("tree/first", bytes("one"));
+    hold = true;
+    const started = Date.now();
+    await assert.rejects(live.flush(), { status: 503, code: "record_persistence_timeout" });
+    assert.ok(Date.now() - started < 2000, "the flush settles at the request deadline");
+    assert.equal(unanswered.length, 1);
+    assert.equal(unanswered[0].request.signal.aborted, true, "the abandoned request is aborted");
+    assert.equal(live.dirty, true, "the unconfirmed batch stays pending");
+    // When the owner reaches the abandoned request, it skips the write.
+    const late = await owner.fetch(unanswered[0].request);
+    assert.equal(late.status, 503);
+    unanswered[0].resolve(late);
+    assert.equal(storage.puts, 0);
+    // A later flush queues behind nothing and persists the retained records.
+    hold = false;
+    await live.save("tree/second", bytes("two"));
+    await live.flush();
+    assert.equal(live.dirty, false);
+    const reopened = new BufferedRecordStore(
+      new RemoteRecordSink({ fetch: (request) => owner.fetch(request) }),
+    );
+    assert.deepEqual(await reopened.load("tree/first"), bytes("one"));
+    assert.deepEqual(await reopened.load("tree/second"), bytes("two"));
+  },
+);

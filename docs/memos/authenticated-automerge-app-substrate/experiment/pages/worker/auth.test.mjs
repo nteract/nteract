@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { authenticate, requireSameOrigin, readJson, errorResponse, logFailure } from "./auth.mjs";
 import worker from "./index.mjs";
+import { recordPersistenceTimeout } from "./record-persistence.mjs";
 
 test("authenticated sessions advertise Wordgard regardless of legacy editor configuration", async (t) => {
   const fixture = await createAuthFixture();
@@ -227,6 +228,59 @@ test("server diagnostics identify the boundary without exposing provider errors 
   );
   assert.equal(logs[3][1].reason, undefined);
   assert.equal(JSON.stringify(logs).includes("private"), false);
+});
+
+test("an unexpected 500 logs where it was thrown, without its message", async (t) => {
+  const logs = [];
+  t.mock.method(console, "error", (...args) => logs.push(args));
+  class BackendError extends Error {
+    constructor(operation, code, message) {
+      super(message);
+      Object.assign(this, { name: "BackendError", operation, code });
+    }
+  }
+  function reservedUnion() {
+    // A multi-line message must not be read as stack frames.
+    throw new BackendError("store", "conflict", "secret page text\n    at leakedName (x:1:1)");
+  }
+  function reserveRecords() {
+    reservedUnion();
+  }
+  let thrown;
+  try {
+    reserveRecords();
+  } catch (error) {
+    thrown = new AggregateError([error], "Accepted bridge mutations failed");
+  }
+  const response = errorResponse(thrown, "page");
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), { error: "Pages request failed" });
+  const [, record] = logs[0];
+  assert.equal(record.errorType, "AggregateError");
+  assert.deepEqual(record.cause.origin.slice(0, 2), ["reservedUnion", "reserveRecords"]);
+  assert.equal(record.cause.errorType, "BackendError");
+  assert.equal(record.cause.backend, "store/conflict");
+  assert.ok(record.origin.length <= 3);
+  const text = JSON.stringify(logs);
+  assert.equal(text.includes("secret"), false);
+  assert.equal(text.includes("leakedName"), false);
+  assert.equal(text.includes("Accepted bridge"), false);
+  // Thrown non-objects still produce a bounded record instead of a second failure.
+  assert.equal(errorResponse(undefined, "page").status, 500);
+  assert.equal(logs[1][1].errorType, "Error");
+});
+
+test("retryable server failures tell the caller to repeat the same request", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const response = errorResponse(recordPersistenceTimeout(), "page");
+  assert.equal(response.status, 503);
+  const body = await response.json();
+  assert.equal(body.code, "record_persistence_timeout");
+  assert.equal(body.retryable, true);
+  assert.match(body.error, /same idempotency_key and retry_token/);
+  // Other server failures keep the generic message.
+  const hidden = errorResponse(Object.assign(Error("private"), { status: 503, code: "x" }));
+  assert.deepEqual(await hidden.json(), { error: "Pages request failed" });
 });
 
 test("passage-conflict transport exposes only bounded recovery addresses", async () => {
