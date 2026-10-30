@@ -2489,7 +2489,7 @@
     {
       "label": "counting never projects over a newer observation",
       "case": "count-fenced",
-      "note": "Current behavior, fixed in a later commit: the fence keeps the reservation, which then goes uncounted. A lifecycle read that completes late, or a projection that failed partway, can leave a reservation beside a newer entry.",
+      "note": "A lifecycle read that completes late, or a projection that failed partway, can leave a reservation beside a newer entry. The fence keeps the reservation, and it keeps counting.",
       "state": {
         "name": "forwarded",
         "operation": "restore_page",
@@ -2532,7 +2532,7 @@
           }
         ],
         "response": {
-          "counted": false
+          "counted": true
         }
       }
     },

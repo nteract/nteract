@@ -30,9 +30,8 @@ const UNREPAIRED = { count: [], settle: [] };
 const RETARGET_LOST = [1, 2, 3, 4, 5, 6];
 let swept = 0;
 const SWEPT = 63;
-// Current behavior, fixed in a later commit: counting keeps a fenced
-// reservation without counting it.
-const RETAINED_COUNTED = false;
+// Counting keeps a fenced reservation and counts it.
+const RETAINED_COUNTED = true;
 // The projection's transaction rolls back: nothing it wrote stays.
 function afterPartialProjection(storage, before) {
   assert.deepEqual(normalize(storage.values), before);

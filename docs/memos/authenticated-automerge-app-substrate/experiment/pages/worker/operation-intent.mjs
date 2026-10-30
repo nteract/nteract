@@ -479,10 +479,13 @@ function reconcile(state, event) {
       : { state: live, effects: [] };
   const current = missing ? DELETED : event.current;
   const slot = projectedSlot(state, current, event.known);
+  // The fence keeps a reservation when the answer is older than an entry
+  // already observed: a late read, or a projection that failed partway. A
+  // kept reservation still holds its place, so it keeps counting.
   return {
     state: { ...rest, slot },
     effects: [{ type: "project", current }],
-    ...(counting && { response: { counted: slot === "entry" } }),
+    ...(counting && { response: { counted: slot === "entry" || slot === "live" } }),
   };
 }
 
