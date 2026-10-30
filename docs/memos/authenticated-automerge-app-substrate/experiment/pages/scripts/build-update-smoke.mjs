@@ -80,34 +80,48 @@ async function reloadFromBanner(page) {
 const content = (page) => page.locator(".page-block wg-content");
 const saved = (page) => page.locator(".save-status--saved");
 const banner = (page) => page.locator(".build-update");
-/** Focus the Page text with the caret after its last character.
+const paragraph = (page, text, options = {}) =>
+  expect(content(page)).toHaveText(text, { useInnerText: true, ...options });
+/** Where Wordgard's own selection and the DOM caret sit in the Page text. */
+const carets = (page) =>
+  content(page).evaluate((root) => {
+    const editor = root.closest(".wordgard-document").wg;
+    const { anchor, head } = editor.state.selection;
+    const dom = getSelection();
+    if (!dom?.isCollapsed || !root.contains(dom.focusNode)) return { anchor, head, dom: null };
+    const after = document.createRange();
+    after.selectNodeContents(root);
+    after.setStart(dom.focusNode, dom.focusOffset);
+    const domPos = editor.posAtDOM(dom.focusNode, dom.focusOffset);
+    return {
+      anchor,
+      head,
+      dom: domPos,
+      atEnd: after.toString() === "",
+      agree: anchor === head && head === domPos,
+    };
+  });
+/** Focus the Page text with both carets after its last character.
  *
  * focus() puts the DOM caret at the start, and Wordgard reads that caret on its
  * next animation frame. A key pressed before then acts on Wordgard's own
  * selection, which sits at the end when the text arrived after the editor
- * mounted, so Mod-End does nothing and typed text lands at the DOM caret. Wait
- * a frame before the key, then wait for the DOM caret to reach the end. */
+ * mounted, so Mod-End does nothing and typed text lands at the DOM caret
+ * (#4552). Give Wordgard up to a frame before the key, then wait until its
+ * selection and the DOM caret agree at the end of the text. */
 async function caretToEnd(page) {
-  await content(page).focus();
+  await content(page).focus({ timeout: 5000 });
   await expect(async () => {
-    await page.evaluate(
-      () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    await page.evaluate(() =>
+      Promise.race([
+        new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+        new Promise((resolve) => setTimeout(resolve, 1000)),
+      ]),
     );
     await page.keyboard.press("ControlOrMeta+End");
     await expect
-      .poll(
-        () =>
-          content(page).evaluate((root) => {
-            const selection = getSelection();
-            if (!selection?.isCollapsed || !root.contains(selection.focusNode)) return false;
-            const after = document.createRange();
-            after.selectNodeContents(root);
-            after.setStart(selection.focusNode, selection.focusOffset);
-            return after.toString() === "";
-          }),
-        { timeout: 2000 },
-      )
-      .toBe(true);
+      .poll(() => carets(page), { timeout: 2000 })
+      .toMatchObject({ atEnd: true, agree: true });
   }).toPass({ timeout: 15000 });
 }
 
@@ -137,6 +151,7 @@ try {
   await expect(content(owner)).toContainText("Deploy garden.");
   await caretToEnd(owner);
   await owner.keyboard.insertText(" Before deploy.");
+  await paragraph(owner, "Deploy garden. Before deploy.");
   await expect(saved(owner)).toBeVisible({ timeout: 30000 });
   await expect(banner(owner)).toHaveCount(0);
   report.completed.push(`Same build ${buildA}: /health, headers and viewer agree; no banner`);
@@ -147,6 +162,7 @@ try {
   const deployed = deploy(buildB);
   await expect(saved(owner)).toHaveCount(0, { timeout: 30000 });
   await owner.keyboard.insertText(" During deploy.");
+  await paragraph(owner, "Deploy garden. Before deploy. During deploy.");
   await deployed;
   await expect(banner(owner)).toContainText(
     "Pages changed on the server. Reload to use the current version.",
@@ -162,6 +178,7 @@ try {
   // asks first; Open brings the checkpoint back and it syncs.
   await owner.route("**/api/saved?*", (route) => route.abort());
   await owner.keyboard.insertText(" Checkpointed.");
+  await paragraph(owner, "Deploy garden. Before deploy. During deploy. Checkpointed.");
   await owner.getByRole("link", { name: "Pages", exact: true }).click();
   await expect(owner.getByRole("heading", { name: "Your pages" })).toBeVisible();
   await owner.evaluate(() => {
@@ -179,7 +196,9 @@ try {
   await banner(owner)
     .getByRole("button", { name: `Open ${title}` })
     .click();
-  await expect(content(owner)).toContainText("During deploy. Checkpointed.", { timeout: 30000 });
+  await paragraph(owner, "Deploy garden. Before deploy. During deploy. Checkpointed.", {
+    timeout: 30000,
+  });
   await expect(saved(owner)).toBeVisible({ timeout: 30000 });
   await expect(banner(owner).getByRole("button", { name: "Reload", exact: true })).toBeVisible();
   report.completed.push(
@@ -202,6 +221,10 @@ try {
     }
   });
   await owner.keyboard.insertText(" After banner.");
+  await paragraph(
+    owner,
+    "Deploy garden. Before deploy. During deploy. Checkpointed. After banner.",
+  );
   await owner.getByRole("link", { name: "Pages", exact: true }).click();
   await expect(owner.getByRole("heading", { name: "Your pages" })).toBeVisible();
   await expect.poll(() => receipts.inFlight, { timeout: 15000 }).toBeGreaterThan(0);
@@ -219,11 +242,10 @@ try {
   await owner.unrouteAll({ behavior: "wait" });
   await expect(banner(owner)).toHaveCount(0);
   await owner.goto(`${origin}/p/${pageId}`);
-  await expect(content(owner)).toContainText(
-    "Before deploy. During deploy. Checkpointed. After banner.",
-    {
-      timeout: 30000,
-    },
+  await paragraph(
+    owner,
+    "Deploy garden. Before deploy. During deploy. Checkpointed. After banner.",
+    { timeout: 30000 },
   );
   assert.equal((await api(owner, "/health")).body.build, buildB);
   const afterUpdate = await tool(owner, "read_page", { page_id: pageId });
@@ -269,6 +291,10 @@ try {
     },
   );
   await owner.keyboard.insertText(" Floor raised.");
+  await paragraph(
+    owner,
+    "Deploy garden. Before deploy. During deploy. Checkpointed. After banner. Floor raised.",
+  );
   await expect(banner(owner)).toContainText(
     "Pages changed on the server. This tab can't edit until you reload.",
     { timeout: 30000 },
