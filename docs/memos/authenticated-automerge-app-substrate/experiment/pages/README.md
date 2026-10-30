@@ -739,6 +739,17 @@ child since the request was reserved. A refused or unsettled guard releases the
 request, which the Page never recorded. The Catalog always projects the Page's
 current state, not the replayed receipt.
 
+The Page's side is one transition in
+[page-lifecycle.mjs](worker/page-lifecycle.mjs), with its table in
+[page-lifecycle.json](test/fixtures/machines/page-lifecycle.json). Its states
+are missing, creating, active, trashing, trashed, restoring, purging, deleting
+and deleted. Trashing, restoring and purging are commits whose sequence has
+started and not finished; that phase lives only in memory, so a restart boots
+from whichever record is durable. Deleting is a durable deleted record whose
+deletion barriers have not run in this process. The lifecycle routes,
+`/internal/lifecycle-state`, `/internal/tombstone` and the constructor are its
+interpreter.
+
 Pending trash and restore requests hold a hidden destination slot in the
 owner's Catalog, written in the same storage call as the intent. The intent is
 marked `forwarded` before the Page sees it. A never-forwarded slot counts for

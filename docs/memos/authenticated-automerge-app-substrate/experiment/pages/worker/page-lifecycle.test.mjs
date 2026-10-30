@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { runTable } from "../shared/machine-test.mjs";
-import { pageLifecycleSpec } from "./page-lifecycle.mjs";
+import { pageLifecycle, pageLifecycleSpec } from "./page-lifecycle.mjs";
 import {
   drive,
   rowLabel,
@@ -11,6 +11,12 @@ import {
   scenario,
   suite,
 } from "./page-lifecycle-drive.mjs";
+
+test("the page-lifecycle machine passes its table", async (t) => {
+  const { table } = await suite(t);
+  const summary = await runTable(pageLifecycle, table);
+  assert.equal(summary.rows, table.rows.length);
+});
 
 test("the page-lifecycle table covers every pair and case and drives the Page host", async (t) => {
   const s = await suite(t);

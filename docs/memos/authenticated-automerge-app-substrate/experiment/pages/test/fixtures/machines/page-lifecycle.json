@@ -1,6 +1,6 @@
 {
   "machine": "page-lifecycle",
-  "description": "Page host lifecycle (worker/page-lifecycle.mjs). Each request row is one HTTP request to the Page as the owner's Catalog forwards it, with the barrier (sync) succeeding. commitOk and commitFailed are settle attempts through /internal/lifecycle-state: commitOk lists the sequence that finishes the pending commit; commitFailed is the step after that sequence fails at its sync, which emits nothing. boot is a cold start; its record is what the constructor reads from host/document and host/creation. Responses are summaries: status, error and code, beforeChange for x-pages-lifecycle-rejected, and for 200 replies which receipt was returned with its state.",
+  "description": "Page host lifecycle (worker/page-lifecycle.mjs). Each request row is one HTTP request to the Page as the owner's Catalog forwards it, with the barrier (sync) succeeding. commitOk and commitFailed are settle attempts through /internal/lifecycle-state: commitOk lists the sequence that finishes the pending commit; commitFailed is the step after that sequence fails at its sync, which emits nothing. boot is a cold start; its record is what the constructor reads from host/document and host/creation. A purgeConfirm on a deleted record carries that record's deletion receipt. Responses are summaries: status, error and code, beforeChange for x-pages-lifecycle-rejected, and for 200 replies which receipt was returned with its state.",
   "states": [
     "missing",
     "creating",
@@ -2372,7 +2372,11 @@
         "actor": "owner",
         "key": "fresh",
         "expected": 2,
-        "preview": "valid"
+        "preview": "valid",
+        "deletion": {
+          "deleted": true,
+          "purged": true
+        }
       },
       "expect": {
         "state": {
@@ -2436,7 +2440,11 @@
           "purged": true
         },
         "expected": 2,
-        "preview": "valid"
+        "preview": "valid",
+        "deletion": {
+          "deleted": true,
+          "purged": true
+        }
       },
       "expect": {
         "state": {
@@ -2612,7 +2620,11 @@
         "actor": "owner",
         "key": "fresh",
         "expected": 2,
-        "preview": "valid"
+        "preview": "valid",
+        "deletion": {
+          "deleted": true,
+          "purged": true
+        }
       },
       "expect": {
         "state": {
