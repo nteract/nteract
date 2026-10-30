@@ -1,0 +1,160 @@
+{
+  "machine": "example-reconnect",
+  "description": "Test fixture for shared/machine-test.mjs. Runs against test/example-reconnect.mjs and a flag-based adapter in test/machine.test.mjs.",
+  "states": ["idle", "connecting", "open", "backoff"],
+  "events": ["connect", "opened", "closed", "timer"],
+  "unreachable": [
+    ["idle", "opened", "no socket exists before the first connect"],
+    ["idle", "closed", "no socket exists before the first connect"],
+    ["idle", "timer", "no timer exists before the first connect"],
+    ["connecting", "timer", "leaving backoff cancels or consumes its timer"],
+    ["open", "timer", "leaving backoff cancels or consumes its timer"]
+  ],
+  "cases": {
+    "connecting/opened": ["current-generation", "stale-generation"],
+    "connecting/closed": ["current-generation", "stale-generation"],
+    "open/closed": ["current-generation", "stale-generation"]
+  },
+  "rows": [
+    {
+      "state": { "name": "idle", "generation": 0, "attempt": 0 },
+      "event": { "type": "connect" },
+      "expect": {
+        "state": { "name": "connecting", "generation": 1, "attempt": 0 },
+        "effects": [{ "type": "dial", "generation": 1 }]
+      }
+    },
+    {
+      "state": { "name": "connecting", "generation": 1, "attempt": 0 },
+      "event": { "type": "connect" },
+      "expect": {
+        "state": { "name": "connecting", "generation": 1, "attempt": 0 },
+        "effects": [],
+        "rejected": "already connecting"
+      }
+    },
+    {
+      "case": "current-generation",
+      "state": { "name": "connecting", "generation": 1, "attempt": 2 },
+      "event": { "type": "opened", "generation": 1 },
+      "expect": {
+        "state": { "name": "open", "generation": 1, "attempt": 0 },
+        "effects": []
+      }
+    },
+    {
+      "label": "connecting × opened from an older socket",
+      "case": "stale-generation",
+      "state": { "name": "connecting", "generation": 2, "attempt": 1 },
+      "event": { "type": "opened", "generation": 1 },
+      "expect": {
+        "state": { "name": "connecting", "generation": 2, "attempt": 1 },
+        "effects": [],
+        "rejected": "stale generation"
+      }
+    },
+    {
+      "case": "current-generation",
+      "state": { "name": "connecting", "generation": 1, "attempt": 0 },
+      "event": { "type": "closed", "generation": 1 },
+      "expect": {
+        "state": { "name": "backoff", "generation": 1, "attempt": 1 },
+        "effects": [{ "type": "schedule", "delayMs": 500 }]
+      }
+    },
+    {
+      "label": "connecting × closed caps the delay",
+      "case": "current-generation",
+      "state": { "name": "connecting", "generation": 5, "attempt": 5 },
+      "event": { "type": "closed", "generation": 5 },
+      "expect": {
+        "state": { "name": "backoff", "generation": 5, "attempt": 6 },
+        "effects": [{ "type": "schedule", "delayMs": 10000 }]
+      }
+    },
+    {
+      "label": "connecting × closed from an older socket",
+      "case": "stale-generation",
+      "state": { "name": "connecting", "generation": 3, "attempt": 2 },
+      "event": { "type": "closed", "generation": 2 },
+      "expect": {
+        "state": { "name": "connecting", "generation": 3, "attempt": 2 },
+        "effects": [],
+        "rejected": "stale generation"
+      }
+    },
+    {
+      "state": { "name": "open", "generation": 1, "attempt": 0 },
+      "event": { "type": "connect" },
+      "expect": {
+        "state": { "name": "open", "generation": 1, "attempt": 0 },
+        "effects": [],
+        "rejected": "already open"
+      }
+    },
+    {
+      "state": { "name": "open", "generation": 1, "attempt": 0 },
+      "event": { "type": "opened", "generation": 1 },
+      "expect": {
+        "state": { "name": "open", "generation": 1, "attempt": 0 },
+        "effects": [],
+        "rejected": "already open"
+      }
+    },
+    {
+      "case": "current-generation",
+      "state": { "name": "open", "generation": 1, "attempt": 0 },
+      "event": { "type": "closed", "generation": 1 },
+      "expect": {
+        "state": { "name": "backoff", "generation": 1, "attempt": 1 },
+        "effects": [{ "type": "schedule", "delayMs": 500 }]
+      }
+    },
+    {
+      "label": "open × closed from an older socket",
+      "case": "stale-generation",
+      "state": { "name": "open", "generation": 2, "attempt": 0 },
+      "event": { "type": "closed", "generation": 1 },
+      "expect": {
+        "state": { "name": "open", "generation": 2, "attempt": 0 },
+        "effects": [],
+        "rejected": "stale generation"
+      }
+    },
+    {
+      "state": { "name": "backoff", "generation": 1, "attempt": 1 },
+      "event": { "type": "connect" },
+      "expect": {
+        "state": { "name": "connecting", "generation": 2, "attempt": 1 },
+        "effects": [{ "type": "cancelTimer" }, { "type": "dial", "generation": 2 }]
+      }
+    },
+    {
+      "state": { "name": "backoff", "generation": 1, "attempt": 1 },
+      "event": { "type": "opened", "generation": 0 },
+      "expect": {
+        "state": { "name": "backoff", "generation": 1, "attempt": 1 },
+        "effects": [],
+        "rejected": "stale generation"
+      }
+    },
+    {
+      "label": "backoff × closed repeated by the same socket",
+      "state": { "name": "backoff", "generation": 1, "attempt": 1 },
+      "event": { "type": "closed", "generation": 1 },
+      "expect": {
+        "state": { "name": "backoff", "generation": 1, "attempt": 1 },
+        "effects": [],
+        "rejected": "socket already closed"
+      }
+    },
+    {
+      "state": { "name": "backoff", "generation": 1, "attempt": 2 },
+      "event": { "type": "timer" },
+      "expect": {
+        "state": { "name": "connecting", "generation": 2, "attempt": 2 },
+        "effects": [{ "type": "dial", "generation": 2 }]
+      }
+    }
+  ]
+}
