@@ -1,13 +1,17 @@
 /** A host-owned, last-observed title projection. Owned listings avoid opening documents; shared references are checked by the host.
  *
  * Keys: `page/<id>` holds active (or pending) owned Pages, `trash/<id>` holds
- * owned Pages in Trash, `shared/<id>` caches Pages shared with this account and
- * `host/deleted/<id>` tombstones permanent deletions. Trashed entries use a
+ * owned Pages in Trash, `shared/<id>` caches Pages shared with this account,
+ * `space/<id>` holds Spaces this account owns and `host/deleted/<id>`
+ * tombstones permanent deletions. Owned entries copy their Page's placement
+ * (space_id, parent_id, position, placement_epoch, home); entries written
+ * before Spaces have none and are Your items. Trashed entries use a
  * separate prefix so they never consume active listing or quota slots, and so
  * builds that predate Trash do not list them.
  */
 import { markCatalogIndexDirty } from "./catalog-index.mjs";
 import { RETRY_LIFETIME_MS } from "./operation-journal.mjs";
+import { placementEntry } from "./spaces.mjs";
 
 export const CATALOG_LIMIT = 100;
 export const TRASH_LIMIT = 100;
@@ -47,7 +51,9 @@ export function lifecycleSlotKey(operation, pageId) {
   if (operation === "delete_page") return `trash/${pageId}`;
   if (operation === "restore_page") return `page/${pageId}`;
 }
-export function lifecycleSlot(operation, pageId, intentKey, now = Date.now()) {
+/** `placement` records where a restore returns the Page (its Space and
+ * recorded parent), so placement checks see a pending restore. */
+export function lifecycleSlot(operation, pageId, intentKey, now = Date.now(), placement) {
   const key = lifecycleSlotKey(operation, pageId);
   return key
     ? {
@@ -57,6 +63,7 @@ export function lifecycleSlot(operation, pageId, intentKey, now = Date.now()) {
           reservation: operation,
           intent: intentKey,
           expires_at: now + RETRY_LIFETIME_MS,
+          ...(placement && { space_id: placement.space_id, parent_id: placement.parent_id }),
         },
       }
     : {};
@@ -173,6 +180,8 @@ export async function projectLifecycle(storage, pageId, current) {
     created_at: entry.created_at ?? current.trashed_at ?? now,
     updated_at: entry.updated_at && entry.updated_at > now ? entry.updated_at : now,
     lifecycle_revision: current.revision ?? 0,
+    // A restore can return a Page whose parent is gone to the top level.
+    ...(Number.isSafeInteger(current.placement_epoch) && placementEntry(current)),
   };
   if (current.state === "trashed") {
     await storage.put(`trash/${pageId}`, {
@@ -184,4 +193,14 @@ export async function projectLifecycle(storage, pageId, current) {
     await storage.put(`page/${pageId}`, base);
     await storage.delete(`trash/${pageId}`);
   } else throw new TypeError("Unknown Page lifecycle state");
+}
+
+/** Owned entries under `prefix` by Page ID, without reservations or pending
+ * creations. An account holds at most CATALOG_LIMIT active and TRASH_LIMIT
+ * trashed Pages, plus their reservation slots. */
+export async function catalogEntries(storage, prefix) {
+  const entries = new Map();
+  for (const entry of (await storage.list({ prefix, limit: 1000 })).values())
+    if (entry?.page_id && !entry.pending && !entry.reservation) entries.set(entry.page_id, entry);
+  return entries;
 }

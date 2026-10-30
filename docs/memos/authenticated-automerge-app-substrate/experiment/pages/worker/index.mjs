@@ -89,6 +89,7 @@ import {
   CATALOG_LIMIT,
   TRASH_LIMIT,
   catalogTitle,
+  catalogEntries,
   countCapacity,
   holdsLifecycleSlot,
   lifecycleSlot,
@@ -108,10 +109,16 @@ import {
   catalogSource,
   indexSource,
   indexedState,
+  listScope,
   listingRestricted,
   markCatalogIndexDirty,
+  markSpaceIndexDirty,
   openCursor,
   parseListArguments,
+  placementMatches,
+  reconcileSpaceIndex,
+  spaceCatalogSource,
+  spaceIndexSource,
   pruneIndexRows,
   reconcileAccountIndex,
   reportPageIndex,
@@ -122,7 +129,24 @@ import {
   withTimeout,
 } from "./catalog-index.mjs";
 import { readRegistration, requireRegistrationAccount, validPageId } from "./registration.mjs";
+import { generateKeyBetween } from "fractional-indexing";
 import { handleImageAssets, requireStoredImageAsset } from "./image-assets.mjs";
+import {
+  MAX_DEPTH,
+  SPACE_LIMIT,
+  entryPlacement,
+  homePageMarkdown,
+  newSpaceId,
+  pagePlacement,
+  placementEntry,
+  requirePageIdArgument,
+  requireSpaceIdArgument,
+  spaceNotFound,
+  validatePlacement,
+  validateSpaceInput,
+} from "./spaces.mjs";
+export { Space } from "./spaces.mjs";
+import { spaceCreationEffect, spaceCreationTransition } from "./space-lifecycle.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
 import { readTool } from "./tool-reads.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
@@ -151,7 +175,14 @@ const operations = new Set([
   "delete_page",
   "restore_page",
   "purge_page",
+  "create_space",
+  "list_spaces",
+  "get_space",
+  "update_space",
 ]);
+/** Space operations. Each goes through the caller's own Catalog, which calls
+ * the Space with the caller's credentials. */
+const spaceOperations = ["create_space", "list_spaces", "get_space", "update_space"];
 /** Catalog-owned Page lifecycle operations and the Page route each one uses. */
 const lifecycleRoutes = {
   delete_page: "/internal/trash",
@@ -168,6 +199,28 @@ const lifecycleFingerprint = {
   purge_page: "purge_page",
 };
 const noop = async () => {};
+/** Budgets for reading Page lifecycles while the Catalog queue waits. */
+export const lifecycleBounds = { readMs: 2000, passMs: 5000, concurrency: 4 };
+const lifecycleUnsettled = () =>
+  new HttpError(
+    409,
+    "A Page's Trash or restore is still settling. Retry shortly.",
+    "lifecycle_unsettled",
+  );
+const hasChildren = () =>
+  new HttpError(
+    409,
+    "This Page has sub-pages. Trash its sub-pages first; subtree Trash is not available yet.",
+    "page_has_children",
+  );
+/** A home Page sits first at its Space's top level. */
+const homePlacement = (spaceId) => ({
+  space_id: spaceId,
+  parent_id: null,
+  position: "a0",
+  placement_epoch: 0,
+  home: true,
+});
 const INDEX_REPORT_PENDING = "host/index/report-pending";
 /** Lifecycle receipts kept per Page for retries; older ones are pruned. */
 const LIFECYCLE_RECEIPT_LIMIT = 256;
@@ -176,6 +229,15 @@ const lifecycleReceiptKey = (operationKey) =>
 const sameHeads = (left, right) =>
   left.length === right.length && [...left].sort().join() === [...right].sort().join();
 const publicIdentity = ({ principal, displayName, driver }) => ({ principal, displayName, driver });
+/** Lifecycle arguments as the caller sent them. The Catalog alone sets the
+ * compare-and-set and placement controls it forwards to a Page. */
+const callerLifecycleArguments = ({
+  expected_revision: _expected,
+  replay_only: _replay,
+  restore_position: _position,
+  placement: _placement,
+  ...requested
+}) => requested;
 
 function validateCreateInput(args) {
   if (!args || typeof args !== "object" || Array.isArray(args))
@@ -272,15 +334,22 @@ async function invoke(request, env, operation, args = {}) {
       "read_page_changes",
       "list_page_comments",
       "read_page_presence",
+      "list_spaces",
+      "get_space",
     ].includes(operation)
   )
     requireWrite(identity);
-  if (["list_pages", "create_page", ...Object.keys(lifecycleRoutes)].includes(operation)) {
+  if (["get_space", "update_space"].includes(operation)) requireSpaceIdArgument(args.space_id);
+  if (
+    ["list_pages", "create_page", ...Object.keys(lifecycleRoutes), ...spaceOperations].includes(
+      operation,
+    )
+  ) {
     return env.CATALOGS.getByName(identity.principal).fetch(
       forwarded(request, "/internal/catalog", { operation, arguments: args }),
     );
   }
-  if (!validPageId(args.page_id)) throw new HttpError(400, "Invalid page_id");
+  requirePageIdArgument(args.page_id);
   if (operation === "import_page_image") {
     if (Object.keys(args).some((key) => !["page_id", "file"].includes(key)))
       throw new HttpError(400, "Invalid image import arguments");
@@ -291,9 +360,71 @@ async function invoke(request, env, operation, args = {}) {
       authorize: (write) => authorizeImage(request, env, args.page_id, write),
     });
   }
-  return env.PAGES.getByName(args.page_id).fetch(
+  const response = await env.PAGES.getByName(args.page_id).fetch(
     forwarded(request, "/internal/tool", { operation, arguments: args }),
   );
+  if (operation !== "read_page" || !response.ok) return response;
+  const body = await response.json();
+  await placementView(request, env, body);
+  return json(body, response.status);
+}
+
+/**
+ * Replace a read_page result's private placement with what the caller can
+ * see. Each ancestor and the Space answer with the caller's own credentials,
+ * so a breadcrumb or ID appears only when the caller could open it: the walk
+ * stops at the first Page the caller cannot read, and space_id appears only
+ * when the Space is readable. Direct access to a Page never reveals its Space.
+ * This runs in the stateless gateway, so a Page never calls another object.
+ */
+async function placementView(request, env, body) {
+  const placement = body._placement;
+  delete body._placement;
+  body.kind = "page";
+  body.breadcrumbs = [];
+  // Top-level Pages in Your items.
+  if (!placement?.space_id && !placement?.parent_id) {
+    body.space_id = null;
+    body.parent_id = null;
+    return;
+  }
+  const readable = async (stub, path, payload) => {
+    try {
+      const response = await withTimeout(
+        stub.fetch(forwarded(request, path, payload)),
+        catalogIndexTimeouts.verify,
+      );
+      return response.ok ? await response.json() : null;
+    } catch (error) {
+      logFailure(error, "breadcrumbs");
+      return null;
+    }
+  };
+  const chain = [];
+  const seen = new Set([body.page_id]);
+  let next = placement.parent_id;
+  while (next && chain.length < MAX_DEPTH && !seen.has(next)) {
+    seen.add(next);
+    const parent = await readable(env.PAGES.getByName(next), "/internal/catalog", {});
+    if (!parent || (parent.state && parent.state !== "active")) break;
+    chain.unshift({ kind: "page", page_id: next, title: catalogTitle(parent.title) });
+    next = parent.parent_id ?? null;
+  }
+  if (placement.parent_id && chain.at(-1)?.page_id === placement.parent_id)
+    body.parent_id = placement.parent_id;
+  const space = placement.space_id
+    ? await readable(env.SPACES.getByName(placement.space_id), "/internal/space/read", {
+        space_id: placement.space_id,
+      })
+    : null;
+  if (space) {
+    body.space_id = placement.space_id;
+    if (!placement.parent_id) body.parent_id = null;
+    if (placement.home) body.home = true;
+    // The whole chain is visible to whoever can read the Space in this build.
+    if (!next) chain.unshift({ kind: "space", space_id: space.space_id, title: space.title });
+  }
+  body.breadcrumbs = chain;
 }
 
 export default {
@@ -464,12 +595,68 @@ export class Catalog {
   /** Read a Page's current lifecycle state. The Catalog may call its Pages;
    * a Page never calls its owner's Catalog.
    */
-  async pageLifecycle(pageId) {
-    const response = await this.env.PAGES.getByName(pageId).fetch(
-      new Request("https://pages.internal/internal/lifecycle-state"),
+  /**
+   * Read a Page's lifecycle, waiting at most `ms`. Every Catalog request
+   * shares one queue, so reads are shared and capped: a pass reuses the read
+   * already in flight for the same Page, and no more than
+   * `lifecycleBounds.concurrency` underlying reads run at once across passes.
+   * A read counts against that cap until it settles, not when a caller stops
+   * waiting. At the cap the call fails at once and the caller treats the Page
+   * as unsettled.
+   */
+  async pageLifecycle(pageId, ms = lifecycleBounds.readMs) {
+    this.lifecycleReads ??= new Map();
+    let read = this.lifecycleReads.get(pageId);
+    if (!read) {
+      if (this.lifecycleReads.size >= lifecycleBounds.concurrency)
+        throw Error("Page lifecycle reads are at capacity");
+      read = this.readLifecycle(pageId);
+      this.lifecycleReads.set(pageId, read);
+      const clear = () => {
+        if (this.lifecycleReads.get(pageId) === read) this.lifecycleReads.delete(pageId);
+      };
+      read.then(clear, clear);
+    }
+    return withTimeout(read, Math.max(1, ms), "Page lifecycle read timed out");
+  }
+
+  /**
+   * One underlying lifecycle read, aborted after `lifecycleBounds.readMs`.
+   * celld 0.6.3 honors an AbortSignal on a Durable Object stub fetch: the
+   * call rejects and the Page sees its request signal abort. An abort after
+   * the headers does not interrupt a body read, so the body is read through
+   * a reader that the abort cancels.
+   */
+  async readLifecycle(pageId) {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new Error("Page lifecycle read timed out")),
+      lifecycleBounds.readMs,
     );
-    if (!response.ok) throw Error(`Page lifecycle state unavailable: ${response.status}`);
-    return response.json();
+    try {
+      const response = await this.env.PAGES.getByName(pageId).fetch(
+        new Request("https://pages.internal/internal/lifecycle-state"),
+        { signal: controller.signal },
+      );
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => {});
+        throw Error(`Page lifecycle state unavailable: ${response.status}`);
+      }
+      const reader = response.body.getReader();
+      const cancel = () => reader.cancel(controller.signal.reason).catch(() => {});
+      if (controller.signal.aborted) cancel();
+      controller.signal.addEventListener("abort", cancel, { once: true });
+      const chunks = [];
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      if (controller.signal.aborted) throw controller.signal.reason;
+      return JSON.parse(new TextDecoder().decode(await new Blob(chunks).arrayBuffer()));
+    } finally {
+      clearTimeout(timer);
+    }
   }
   /** Tell a trashed Page that this account recorded its permanent deletion. */
   async notifyTombstone(pageId) {
@@ -528,7 +715,11 @@ export class Catalog {
       }
       const args = body.arguments ?? {};
       if (body.operation === "list_pages") return await this.listPages(request, identity, args);
+      if (body.operation === "list_spaces") return await this.listSpaces(request, identity, args);
+      if (body.operation === "get_space") return await this.getSpace(request, args);
       requireWrite(identity);
+      if (body.operation === "create_space") return await this.createSpace(request, identity, args);
+      if (body.operation === "update_space") return await this.updateSpace(request, identity, args);
       const lifecycle = lifecycleRoutes[body.operation];
       if (!["create_page", "register_page"].includes(body.operation) && !lifecycle)
         throw new HttpError(400, "Unknown catalog operation");
@@ -541,7 +732,7 @@ export class Catalog {
         args.expected_principal !== identity.principal
       )
         throw new HttpError(403, "Sign in with this Page's original account to change it");
-      if (lifecycle && !validPageId(args.page_id)) throw new HttpError(400, "Invalid page_id");
+      if (lifecycle) requirePageIdArgument(args.page_id);
       const tombstoned = async () => {
         if (!(await this.ctx.storage.get(`host/deleted/${args.page_id}`))) return false;
         await this.ctx.storage.delete(`trash/${args.page_id}`);
@@ -602,6 +793,7 @@ export class Catalog {
         if (lifecycle && (await tombstoned())) throw new HttpError(404, "Page not found");
         if (creating && (await this.countEntries("page/")) >= CATALOG_LIMIT)
           throw new HttpError(409, "This prototype permits 100 pages per account");
+        if (body.operation === "delete_page") await this.requireLeafPage(args.page_id);
         if (
           body.operation === "delete_page" &&
           // Counting first removes stale reservations, including this Page's.
@@ -625,6 +817,8 @@ export class Catalog {
             (await this.ctx.storage.get(`trash/${args.page_id}`)))
         )
           throw new HttpError(409, "Page already has another creation request");
+        const placement =
+          body.operation === "create_page" ? await this.resolvePlacement(request, args) : undefined;
         intent = {
           fingerprint: digest,
           pending: true,
@@ -634,6 +828,7 @@ export class Catalog {
           ...(lifecycle && {
             expectedRevision: await observedLifecycleRevision(this.ctx.storage, args.page_id),
           }),
+          ...(placement && { placement }),
         };
         intent = await reserveOperation(this.ctx.storage, {
           key,
@@ -646,23 +841,38 @@ export class Catalog {
         if (slotKey && !(await this.ctx.storage.get(slotKey)))
           await this.ctx.storage.put({
             [key]: intent,
-            ...lifecycleSlot(body.operation, intent.pageId, key),
+            ...lifecycleSlot(
+              body.operation,
+              intent.pageId,
+              key,
+              undefined,
+              await this.slotPlacement(body.operation, intent.pageId),
+            ),
           });
         else await this.ctx.storage.put(key, intent);
       }
       const pageId = intent.pageId;
       if (creating) {
+        // A resumed creation checks its parent again: the parent may have
+        // moved to Trash since the intent was reserved. The intent stays
+        // pending; restoring the parent and retrying finishes it.
+        if (inspected.entry && intent.placement?.parent_id)
+          await this.activeParent(intent.placement.parent_id);
         await this.ctx.storage.put(`page/${pageId}`, {
           page_id: pageId,
           title: catalogTitle(args.title),
           created_at: intent.createdAt,
           updated_at: intent.createdAt,
           pending: true,
+          ...placementEntry(intent.placement),
         });
+        // Placement comes only from the resolved intent, never the caller.
+        const { placement: _placement, ...requested } = args;
         const response = await this.env.PAGES.getByName(pageId).fetch(
           forwarded(request, registering ? "/internal/register" : "/internal/create", {
-            ...args,
+            ...requested,
             page_id: pageId,
+            ...(intent.placement && { placement: intent.placement }),
           }),
         );
         if (!response.ok && response.headers.get("x-pages-create-rejected") === "before-intent") {
@@ -679,6 +889,7 @@ export class Catalog {
           title: catalogTitle(intent.receipt.title),
           created_at: intent.createdAt,
           updated_at: intent.createdAt,
+          ...placementEntry(intent.placement),
         });
         await markCatalogIndexDirty(this.ctx.storage);
       } else {
@@ -691,8 +902,22 @@ export class Catalog {
         if (!(await holdsLifecycleSlot(this.ctx.storage, body.operation, pageId, key))) {
           const limit = body.operation === "delete_page" ? TRASH_LIMIT : CATALOG_LIMIT;
           const prefix = body.operation === "delete_page" ? "trash/" : "page/";
-          if ((await this.countEntries(prefix)) < limit)
-            await this.ctx.storage.put(lifecycleSlot(body.operation, pageId, key));
+          const capacity = (await this.countEntries(prefix)) < limit;
+          // A trash that lost its slot never applied (an applied one leaves
+          // a real Trash entry), so it runs the leaf guard again before it
+          // may apply: a child can have arrived since.
+          if (capacity && body.operation === "delete_page")
+            await this.recheckLeafOnResume(pageId, key, intent);
+          if (capacity)
+            await this.ctx.storage.put(
+              lifecycleSlot(
+                body.operation,
+                pageId,
+                key,
+                undefined,
+                await this.slotPlacement(body.operation, pageId),
+              ),
+            );
           else replayOnly = true;
         }
         const fresh = !inspected.entry;
@@ -704,7 +929,9 @@ export class Catalog {
           await this.ctx.storage.put(key, intent);
         }
         for (let attempt = 0; ; attempt++) {
-          const { expected_revision: _expected, replay_only: _replay, ...requested } = args;
+          const requested = callerLifecycleArguments(args);
+          const restorePosition =
+            body.operation === "restore_page" ? await this.restorePosition(pageId) : undefined;
           const response = await this.env.PAGES.getByName(pageId).fetch(
             forwarded(request, lifecycle, {
               ...requested,
@@ -713,6 +940,7 @@ export class Catalog {
                 expected_revision: intent.expectedRevision,
               }),
               ...(replayOnly && { replay_only: true }),
+              ...(restorePosition && { restore_position: restorePosition }),
             }),
           );
           if (response.headers.get("x-pages-lifecycle-rejected") === "before-change") {
@@ -749,6 +977,586 @@ export class Catalog {
     }
   }
 
+  /** Placement for a new Page from create_page's space_id and parent_id.
+   * A parent implies its Space; naming a different Space is an error. Only
+   * Pages and Spaces this account owns can hold new Pages in this build, so
+   * this account's own entries settle parent, depth and sibling order, and
+   * the Space record confirms the Space.
+   */
+  async resolvePlacement(request, args) {
+    const storage = this.ctx.storage;
+    const spaceArg =
+      args.space_id === undefined || args.space_id === null
+        ? null
+        : requireSpaceIdArgument(args.space_id);
+    const parentId =
+      args.parent_id === undefined || args.parent_id === null
+        ? null
+        : requirePageIdArgument(args.parent_id, "parent_id");
+    if (!spaceArg && !parentId) return undefined;
+    let spaceId = spaceArg;
+    if (parentId) {
+      const parent = await this.activeParent(parentId);
+      const placement = entryPlacement(parent);
+      if (spaceArg && placement.space_id !== spaceArg)
+        throw new HttpError(
+          400,
+          "parent_id is not in that Space. Omit space_id: a parent implies its Space.",
+          "placement_mismatch",
+        );
+      spaceId = placement.space_id;
+      // A top-level Page is at depth 1; the new Page sits one below its parent.
+      let depth = 2;
+      for (let cursor = placement.parent_id; cursor; depth++) {
+        if (depth > MAX_DEPTH) break;
+        const ancestor =
+          (await storage.get(`page/${cursor}`)) ?? (await storage.get(`trash/${cursor}`));
+        cursor = ancestor ? entryPlacement(ancestor).parent_id : null;
+      }
+      if (depth > MAX_DEPTH)
+        throw new HttpError(
+          400,
+          `Pages nest at most ${MAX_DEPTH} levels deep`,
+          "nesting_depth_exceeded",
+        );
+    }
+    if (spaceId) {
+      const entry = await storage.get(`space/${spaceId}`);
+      if (!entry || entry.pending) throw spaceNotFound();
+      const response = await this.env.SPACES.getByName(spaceId).fetch(
+        forwarded(request, "/internal/space/read", { space_id: spaceId }),
+      );
+      if (response.status === 404) throw spaceNotFound();
+      if (!response.ok) throw new HttpError(503, "Space is temporarily unavailable");
+    }
+    return {
+      space_id: spaceId,
+      parent_id: parentId,
+      position: await this.nextPosition(spaceId, parentId),
+      placement_epoch: 0,
+    };
+  }
+
+  /** The parent's Catalog entry when it can take a new child: owned, created
+   * and not in Trash. A trash slot (even one still being reserved) counts as
+   * Trash, so a child is never created under a Page that is leaving. */
+  async activeParent(parentId) {
+    const storage = this.ctx.storage;
+    if (await storage.get(`trash/${parentId}`))
+      throw new HttpError(
+        409,
+        "The parent Page is in Trash; restore it before adding Pages under it",
+        "parent_unavailable",
+      );
+    const parent = await storage.get(`page/${parentId}`);
+    if (!parent || parent.pending || parent.reservation)
+      throw new HttpError(
+        404,
+        "Parent Page not found. In this build, only Pages you own can have sub-pages.",
+        "parent_unavailable",
+      );
+    return parent;
+  }
+
+  /** A position after every current sibling. */
+  async nextPosition(spaceId, parentId) {
+    let last = null;
+    for (const entry of (await catalogEntries(this.ctx.storage, "page/")).values()) {
+      const placement = entryPlacement(entry);
+      if (
+        placement.space_id === spaceId &&
+        placement.parent_id === parentId &&
+        typeof placement.position === "string" &&
+        (last === null || placement.position > last)
+      )
+        last = placement.position;
+    }
+    try {
+      return generateKeyBetween(last, null);
+    } catch {
+      return generateKeyBetween(null, null);
+    }
+  }
+
+  /** Trash moves one Page at a time in this build. A Page with active
+   * children, or children still being created, stays put until they move,
+   * so no Page is ever active under a trashed parent. A Space's home Page
+   * stays with its Space. Both checks run before anything is reserved.
+   *
+   * A child with an unsettled Trash or restore reservation is settled against
+   * its Page first: a lost response can hide a transition that already
+   * applied. A restore reservation counts through the parent it records. One
+   * still unapplied afterwards is not a child: once this Page is in Trash,
+   * that restore returns to the top level. */
+  async requireLeafPage(pageId) {
+    const storage = this.ctx.storage;
+    const entry = await storage.get(`page/${pageId}`);
+    if (!entry) return;
+    if (entryPlacement(entry).home)
+      throw new HttpError(
+        409,
+        "A Space's home Page stays with its Space; it can't move to Trash on its own",
+        "home_page_protected",
+      );
+    const unsettled = [];
+    for (const child of (await storage.list({ prefix: "page/", limit: 1000 })).values()) {
+      if (!child?.page_id || child.page_id === pageId) continue;
+      const trashed = await storage.get(`trash/${child.page_id}`);
+      const parent =
+        entryPlacement(child).parent_id ??
+        (child.reservation && trashed ? entryPlacement(trashed).parent_id : null);
+      if (parent !== pageId) continue;
+      if (child.reservation || trashed?.reservation) unsettled.push(child.page_id);
+      else throw hasChildren();
+    }
+    await this.settleReservations(unsettled);
+    for (const childId of unsettled) {
+      const child = await storage.get(`page/${childId}`);
+      if (child && !child.reservation) throw hasChildren();
+    }
+  }
+
+  /** Rerun the leaf guard for a resumed trash before it re-acquires its
+   * slot. The Page decides whether the request already applied: if its
+   * lifecycle moved past the intent's revision, forwarding only replays the
+   * recorded receipt and the guard does not apply. Otherwise a new child
+   * refuses the request, and the intent is released like any other
+   * rejection before change. */
+  async recheckLeafOnResume(pageId, key, intent) {
+    const state = await this.boundedLifecycle(pageId, Date.now() + lifecycleBounds.passMs);
+    if (state.state !== "active" || (state.revision ?? 0) !== intent.expectedRevision) return;
+    try {
+      await this.requireLeafPage(pageId);
+    } catch (error) {
+      if (["page_has_children", "home_page_protected"].includes(error.code)) {
+        await this.ctx.storage.delete(key);
+        await this.ctx.storage.sync();
+      }
+      throw error;
+    }
+  }
+
+  /** Settle several Pages' reservations within one budget: at most
+   * `lifecycleBounds.concurrency` reads at a time, each bounded, and no read
+   * starts after the pass deadline. An exhausted budget refuses the request
+   * as retryable instead of holding the Catalog queue. */
+  async settleReservations(pageIds, deadline = Date.now() + lifecycleBounds.passMs) {
+    const queue = [...pageIds];
+    const failures = [];
+    const worker = async () => {
+      while (queue.length && !failures.length) {
+        try {
+          await this.settleReservation(queue.shift(), deadline);
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(lifecycleBounds.concurrency, queue.length) }, worker),
+    );
+    if (failures.length) throw failures[0];
+  }
+
+  /** Reconcile a Page's pending Trash or restore reservation with the Page,
+   * the authority for its lifecycle. A transition the Page already applied is
+   * projected into this account's entries; an unapplied one keeps its
+   * reservation, since its intent may still apply on retry. A reservation
+   * whose intent is no longer pending is stale and removed. When the Page
+   * can't answer, the caller is refused rather than left to guess. */
+  async settleReservation(pageId, deadline = Date.now() + lifecycleBounds.passMs) {
+    const storage = this.ctx.storage;
+    for (const key of [`page/${pageId}`, `trash/${pageId}`]) {
+      const entry = await storage.get(key);
+      if (!entry?.reservation) continue;
+      const intent = await storage.get(entry.intent);
+      if (intent?.pending !== true) {
+        await storage.delete(key);
+        continue;
+      }
+      const state = await this.boundedLifecycle(pageId, deadline);
+      if (state.state === "missing") await projectLifecycle(storage, pageId, { state: "deleted" });
+      else if ((state.revision ?? 0) !== intent.expectedRevision)
+        await projectLifecycle(storage, pageId, state);
+    }
+  }
+
+  /** A Page's lifecycle read within `deadline`, or a retryable refusal. */
+  async boundedLifecycle(pageId, deadline) {
+    const left = deadline - Date.now();
+    if (left <= 0) throw lifecycleUnsettled();
+    try {
+      return await this.pageLifecycle(pageId, Math.min(lifecycleBounds.readMs, left));
+    } catch (error) {
+      logFailure(error, "lifecycle-state");
+      throw lifecycleUnsettled();
+    }
+  }
+
+  /** Where a pending restore returns its Page: the Space and parent its
+   * Trash entry records. */
+  async slotPlacement(operation, pageId) {
+    if (operation !== "restore_page") return undefined;
+    const entry = await this.ctx.storage.get(`trash/${pageId}`);
+    return entry && !entry.reservation ? entryPlacement(entry) : undefined;
+  }
+
+  /** Whether a parent is active and staying so. Any Trash entry, or a live
+   * Trash reservation, makes it unavailable: a pending trash may still apply
+   * on retry even when the Page has not applied it yet. A reservation is
+   * settled first so an applied trash is projected. */
+  async parentAvailable(parentId) {
+    const storage = this.ctx.storage;
+    if ((await storage.get(`trash/${parentId}`))?.reservation)
+      await this.settleReservation(parentId);
+    if (await storage.get(`trash/${parentId}`)) return false;
+    const parent = await storage.get(`page/${parentId}`);
+    return !!parent && !parent.pending && !parent.reservation;
+  }
+
+  /** Where a restored Page goes when its parent is in Trash, leaving it, or
+   * gone: the top level of its Space, or of Your items. Undefined keeps its
+   * place. */
+  async restorePosition(pageId) {
+    const entry = await this.ctx.storage.get(`trash/${pageId}`);
+    const placement = entry && !entry.reservation && entryPlacement(entry);
+    if (!placement?.parent_id) return undefined;
+    if (await this.parentAvailable(placement.parent_id)) return undefined;
+    return this.nextPosition(placement.space_id, null);
+  }
+
+  async createSpace(request, identity, args) {
+    const storage = this.ctx.storage;
+    const { title, description } = validateSpaceInput(args, { creating: true });
+    const key = mutationKey(args);
+    const digest = await fingerprint("create_space", args, identity);
+    const inspected = await inspectOperation(storage, {
+      key,
+      digest,
+      retryToken: args.retry_token,
+      scope: `catalog:${identity.principal}`,
+      principal: identity.principal,
+    });
+    let intent = inspected.entry;
+    if (intent && !intent.pending) {
+      await storage.sync();
+      return json(intent.receipt);
+    }
+    if (!intent) {
+      const spaces = await storage.list({ prefix: "space/", limit: SPACE_LIMIT + 1 });
+      if (spaces.size >= SPACE_LIMIT)
+        throw new HttpError(
+          409,
+          `This prototype permits ${SPACE_LIMIT} Spaces per account`,
+          "space_capacity",
+        );
+      if ((await this.countEntries("page/")) >= CATALOG_LIMIT)
+        throw new HttpError(409, "This prototype permits 100 pages per account");
+      const createdAt = new Date().toISOString();
+      intent = await reserveOperation(storage, {
+        key,
+        retry: inspected.retry,
+        entry: {
+          fingerprint: digest,
+          pending: true,
+          spaceId: newSpaceId(),
+          pageId: crypto.randomUUID(),
+          phase: "reserved",
+          createdAt,
+          title,
+          description: description ?? "",
+        },
+      });
+      // The intent, the Space entry and the home Page's quota slot commit
+      // together. A crash after this resumes from the same IDs on retry.
+      await storage.put({
+        [key]: intent,
+        [`space/${intent.spaceId}`]: {
+          space_id: intent.spaceId,
+          title,
+          description: intent.description,
+          home_page_id: intent.pageId,
+          created_at: createdAt,
+          updated_at: createdAt,
+          pending: true,
+        },
+        [`page/${intent.pageId}`]: {
+          page_id: intent.pageId,
+          title: catalogTitle(title),
+          created_at: createdAt,
+          updated_at: createdAt,
+          pending: true,
+          ...placementEntry(homePlacement(intent.spaceId)),
+        },
+      });
+    }
+    return this.completeSpaceCreation(request, key, intent);
+  }
+
+  /** Run the creation lifecycle from its persisted state. Each effect is
+   * idempotent; its outcome is persisted with the next state before the
+   * following effect starts, so a retry resumes where the last one stopped. */
+  async completeSpaceCreation(request, key, intent) {
+    const storage = this.ctx.storage;
+    intent.phase ??= "reserved";
+    for (let effect = spaceCreationEffect(intent.phase); effect; ) {
+      let event;
+      if (effect === "create_space_record") {
+        const response = await this.env.SPACES.getByName(intent.spaceId).fetch(
+          forwarded(request, "/internal/space/create", {
+            space_id: intent.spaceId,
+            title: intent.title,
+            description: intent.description,
+            home_page_id: intent.pageId,
+          }),
+        );
+        if (!response.ok) return response;
+        intent.space = await response.json();
+        event = "space_recorded";
+      } else if (effect === "create_home_page") {
+        const response = await this.env.PAGES.getByName(intent.pageId).fetch(
+          forwarded(request, "/internal/create", {
+            page_id: intent.pageId,
+            title: intent.title,
+            markdown: homePageMarkdown(intent.description),
+            placement: homePlacement(intent.spaceId),
+          }),
+        );
+        if (!response.ok) return response;
+        intent.homeTitle = (await response.json()).title;
+        event = "home_created";
+      } else {
+        const space = intent.space;
+        intent.receipt = { ...space, home_page_title: intent.homeTitle };
+        await storage.put({
+          [`space/${intent.spaceId}`]: {
+            space_id: intent.spaceId,
+            title: space.title,
+            description: space.description,
+            home_page_id: intent.pageId,
+            created_at: space.created_at,
+            updated_at: space.updated_at,
+          },
+          [`page/${intent.pageId}`]: {
+            page_id: intent.pageId,
+            title: catalogTitle(intent.homeTitle),
+            created_at: intent.createdAt,
+            updated_at: intent.createdAt,
+            ...placementEntry(homePlacement(intent.spaceId)),
+          },
+        });
+        await markCatalogIndexDirty(storage);
+        await markSpaceIndexDirty(storage);
+        intent.pending = false;
+        event = "committed";
+      }
+      ({ state: intent.phase, effect } = spaceCreationTransition(intent.phase, event));
+      await storage.put(key, intent);
+    }
+    await storage.sync();
+    return json(intent.receipt);
+  }
+
+  async updateSpace(request, identity, args) {
+    const storage = this.ctx.storage;
+    validateSpaceInput(args, { creating: false });
+    const key = mutationKey(args);
+    const digest = await fingerprint("update_space", args, identity);
+    const inspected = await inspectOperation(storage, {
+      key,
+      digest,
+      retryToken: args.retry_token,
+      scope: `catalog:${identity.principal}`,
+      principal: identity.principal,
+    });
+    let intent = inspected.entry;
+    if (intent && !intent.pending) {
+      await storage.sync();
+      return json(intent.receipt);
+    }
+    // The intent records its revision fence before the Space sees the
+    // request. Every attempt carries that fence, so once the Space moves past
+    // it the request can never apply again, even after the Space has evicted
+    // this key's receipt.
+    if (!intent) {
+      intent = await reserveOperation(storage, {
+        key,
+        retry: inspected.retry,
+        entry: {
+          fingerprint: digest,
+          pending: true,
+          spaceId: args.space_id,
+          expectedRevision: args.expected_revision,
+        },
+      });
+      await storage.put(key, intent);
+    }
+    const response = await this.env.SPACES.getByName(intent.spaceId).fetch(
+      forwarded(request, "/internal/space/update", {
+        space_id: intent.spaceId,
+        idempotency_key: args.idempotency_key,
+        expected_revision: intent.expectedRevision,
+        ...(args.title !== undefined && { title: args.title }),
+        ...(args.description !== undefined && { description: args.description }),
+      }),
+    );
+    if (response.status >= 400 && response.status < 500) {
+      const failure = await response.json();
+      // A retry past its fence may already have applied before its receipt
+      // was evicted, or lost to a newer change. Either way it must not apply
+      // now; the outcome is the Space as it is.
+      if (inspected.entry && failure.code === "space_revision_conflict") {
+        const current = await this.env.SPACES.getByName(intent.spaceId).fetch(
+          forwarded(request, "/internal/space/read", { space_id: intent.spaceId }),
+        );
+        if (!current.ok) return current;
+        intent.receipt = { superseded: true, applied: false, space: await current.json() };
+        intent.pending = false;
+        await storage.put(key, intent);
+        await storage.sync();
+        return json(intent.receipt);
+      }
+      // Otherwise the Space rejected input, access or a stale fence before
+      // changing anything; the key is free for a corrected request.
+      await storage.delete(key);
+      await storage.sync();
+      return json(failure, response.status);
+    }
+    if (!response.ok) return response;
+    intent.receipt = await response.json();
+    const entry = await storage.get(`space/${intent.spaceId}`);
+    if (entry && !entry.pending && entry.updated_at <= intent.receipt.updated_at) {
+      await storage.put(`space/${intent.spaceId}`, {
+        ...entry,
+        title: intent.receipt.title,
+        description: intent.receipt.description,
+        updated_at: intent.receipt.updated_at,
+      });
+      await markSpaceIndexDirty(storage);
+    }
+    intent.pending = false;
+    await storage.put(key, intent);
+    await storage.sync();
+    return json(intent.receipt);
+  }
+
+  /** The Space record answers with the caller's credentials. This account's
+   * own entry only says whether its creation finished. */
+  async getSpace(request, args) {
+    const spaceId = requireSpaceIdArgument(args.space_id);
+    if (Object.keys(args).some((name) => name !== "space_id"))
+      throw new HttpError(400, "get_space takes only space_id");
+    const entry = await this.ctx.storage.get(`space/${spaceId}`);
+    if (entry?.pending)
+      throw new HttpError(
+        409,
+        "This Space is still being created. Retry create_space with the same idempotency_key and payload.",
+        "space_pending",
+      );
+    const response = await this.env.SPACES.getByName(spaceId).fetch(
+      forwarded(request, "/internal/space/read", { space_id: spaceId }),
+    );
+    if (!response.ok) return response;
+    const space = await response.json();
+    if (entry && entry.updated_at < space.updated_at) {
+      await this.ctx.storage.put(`space/${spaceId}`, {
+        ...entry,
+        title: space.title,
+        description: space.description,
+        updated_at: space.updated_at,
+      });
+      await markSpaceIndexDirty(this.ctx.storage);
+    }
+    return json(space);
+  }
+
+  /** Spaces this account owns, newest change first. D1 rows choose
+   * candidates; each must match this account's own `space/` entry, which
+   * supplies what is returned. */
+  async listSpaces(request, identity, args) {
+    const storage = this.ctx.storage;
+    if (!args || typeof args !== "object" || Array.isArray(args))
+      throw new HttpError(400, "Invalid list arguments", "invalid_list_arguments");
+    let limit = 50;
+    if (args.limit !== undefined) {
+      if (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 100)
+        throw new HttpError(
+          400,
+          "limit must be an integer from 1 to 100",
+          "invalid_list_arguments",
+        );
+      limit = args.limit;
+    }
+    if (args.cursor !== undefined && args.cursor !== null && typeof args.cursor !== "string")
+      throw new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
+    const context = {
+      principal: identity.principal,
+      needle: null,
+      inTrash: false,
+      scope: "spaces",
+    };
+    const after = args.cursor ? await openCursor(this.env, context, args.cursor) : null;
+    let source;
+    const epoch = catalogIndexEpoch(this.env);
+    if (epoch) {
+      try {
+        const db = await withTimeout(catalogIndexDatabase(this.env), catalogIndexTimeouts.read);
+        await reconcileSpaceIndex({ db, storage, principal: identity.principal, epoch });
+        source = spaceIndexSource(db, { principal: identity.principal });
+      } catch (error) {
+        logFailure(error, "catalog-index");
+      }
+    }
+    const scan = async (candidates) => {
+      const spaces = [];
+      let position = after;
+      // Stale candidates are skipped; an account has at most SPACE_LIMIT.
+      for (let scanned = 0; scanned < SPACE_LIMIT * 4; ) {
+        const want = limit + 1 - spaces.length;
+        const rows = await candidates.next(position, want);
+        scanned += rows.length;
+        for (const row of rows) {
+          const entry = await storage.get(`space/${row.page_id}`);
+          if (!entry || entry.pending) continue;
+          spaces.push({
+            row,
+            space: {
+              space_id: entry.space_id,
+              title: entry.title,
+              description: entry.description ?? "",
+              home_page_id: entry.home_page_id,
+              created_at: entry.created_at,
+              updated_at: entry.updated_at,
+            },
+          });
+        }
+        if (rows.length) position = rows.at(-1);
+        if (spaces.length > limit || rows.length < want) return spaces;
+      }
+      return spaces;
+    };
+    let found;
+    if (source) {
+      try {
+        found = await scan(source);
+      } catch (error) {
+        if (!(error instanceof CatalogIndexUnavailable)) throw error;
+        logFailure(error, "catalog-index");
+      }
+    }
+    found ??= await scan(await spaceCatalogSource(storage));
+    const more = found.length > limit;
+    return json({
+      spaces: found.slice(0, limit).map(({ space }) => space),
+      limit,
+      next_cursor: more ? await sealCursor(this.env, context, found[limit - 1].row) : null,
+      ...(await issueRetryToken(storage, {
+        scope: `catalog:${identity.principal}`,
+        principal: identity.principal,
+      })),
+    });
+  }
+
   /** Ask the Page host, with the caller's own credentials, for one shared
    * title. A host that does not answer within the deadline counts as
    * unavailable, never as denied. */
@@ -782,11 +1590,44 @@ export class Catalog {
     const options = parseListArguments(args);
     const storage = this.ctx.storage;
     if (options.inTrash) await pruneTombstonedTrash(storage);
+    if (options.spaceId) {
+      // Only the owner can see a Space in this build, and the owner's own
+      // entry records it. A Space the caller can't see looks missing.
+      const space = await storage.get(`space/${options.spaceId}`);
+      if (!space || space.pending) throw spaceNotFound();
+    }
+    if (typeof options.parentId === "string") {
+      const parent = await storage.get(`page/${options.parentId}`);
+      if (parent && !parent.pending && !parent.reservation) {
+        if (options.spaceId && entryPlacement(parent).space_id !== options.spaceId)
+          throw new HttpError(400, "parent_id is not in that Space", "placement_mismatch");
+      } else {
+        // Children of a Page shared with this account: the caller must be
+        // able to read the parent before learning what sits under it.
+        const shared = await this.verifyShared(request, options.parentId);
+        if (shared.status === "unavailable")
+          throw new HttpError(503, "Shared Pages are temporarily unavailable");
+        if (shared.status !== "ok" || (shared.page.state && shared.page.state !== "active"))
+          throw new HttpError(404, "Parent Page not found", "parent_unavailable");
+      }
+    }
     const context = {
       principal: identity.principal,
       needle: options.needle,
       inTrash: options.inTrash,
+      scope: listScope(options),
     };
+    // Every item is a Page today; other kinds list nothing until they exist.
+    if (options.kind && options.kind !== "page")
+      return json({
+        pages: [],
+        limit: options.limit,
+        next_cursor: null,
+        ...(await issueRetryToken(storage, {
+          scope: `catalog:${identity.principal}`,
+          principal: identity.principal,
+        })),
+      });
     const after = options.cursor ? await openCursor(this.env, context, options.cursor) : null;
     const epoch = catalogIndexEpoch(this.env);
     let db;
@@ -810,6 +1651,8 @@ export class Catalog {
             domain: evidence?.expiresAt > Date.now() ? evidence.domain : null,
             inTrash: options.inTrash,
             needle: options.needle,
+            spaceId: options.spaceId,
+            parentId: options.parentId,
           });
       } catch (error) {
         // Listing degrades to the Catalog entries; editing never waits on D1.
@@ -870,6 +1713,9 @@ export class Catalog {
         if (!entry || entry.pending) return null;
         const title = catalogTitle(entry.title);
         if (!titleMatches(title, options.needle)) return null;
+        // This entry copied the Page's placement; D1's copy only chose it.
+        const placement = entryPlacement(entry);
+        if (!placementMatches(placement, options)) return null;
         return {
           page_id: row.page_id,
           title,
@@ -877,9 +1723,17 @@ export class Catalog {
           updated_at: row.updated_at,
           ...(entry.trashed_at ? { trashed_at: entry.trashed_at } : {}),
           ...(options.inTrash && trashFields({ ...entry, page_id: row.page_id })),
+          // Top-level Pages in Your items keep the original row shape.
+          ...((placement.space_id || placement.parent_id) && {
+            space_id: placement.space_id,
+            parent_id: placement.parent_id,
+            position: placement.position,
+            ...(placement.home && { home: true }),
+          }),
         };
       }
-      if (options.inTrash) return null;
+      // Pages in a Space belong to its owner in this build.
+      if (options.inTrash || options.spaceId) return null;
       const result = await this.verifyShared(request, row.page_id);
       if (result.status === "unavailable")
         throw new HttpError(503, "Shared Pages are temporarily unavailable");
@@ -895,12 +1749,17 @@ export class Catalog {
       }
       const title = catalogTitle(result.page.title);
       if (!titleMatches(title, options.needle)) return null;
+      // A shared Page's placement shows only under a parent the caller can
+      // already read; its Space never shows.
+      const placement = pagePlacement({ placement: result.page });
+      if (options.parentId !== undefined && placement.parent_id !== options.parentId) return null;
       return {
         page_id: row.page_id,
         title,
         created_at: row.created_at,
         updated_at: row.updated_at,
         shared: true,
+        ...(options.parentId !== undefined && { parent_id: placement.parent_id }),
       };
     };
     const limit = options.limit;
@@ -1412,6 +2271,8 @@ export class Page {
         if (!validPageId(args?.page_id) || (this.ctx.id.name && args.page_id !== this.ctx.id.name))
           throw new HttpError(400, "Invalid page_id");
         validateCreateInput(args);
+        const placement =
+          args.placement === undefined ? undefined : validatePlacement(args.placement);
         let intent = await this.ctx.storage.get("host/creation");
         if (intent) {
           // Catalog handles argument replay; this DO independently pins ownership.
@@ -1434,11 +2295,18 @@ export class Page {
               documentId,
               tree: logicalId(documentIdToBinary(documentId)),
               deleted: false,
+              // Set by the owner's Catalog from a resolved placement.
+              ...(placement && { placement }),
               createdReceipt: {
                 page_id: args.page_id,
                 title: doc.title,
                 heads: A.getHeads(doc),
                 ...(warning ? { warnings: [warning] } : {}),
+                ...(placement && {
+                  space_id: placement.space_id,
+                  parent_id: placement.parent_id,
+                  ...(placement.home && { home: true }),
+                }),
               },
             };
             intent = { metadata, bytes: A.save(doc) };
@@ -1531,6 +2399,9 @@ export class Page {
           lifecycle_revision: this.metadata.lifecycleRevision ?? 0,
           state: indexedState(this.metadata),
           title_observed_at: this.titleObservedAt,
+          // For the caller's Catalog and the gateway, which decide what of the
+          // placement the caller may see.
+          ...pagePlacement(this.metadata),
         });
       }
       if (url.pathname === "/internal/access") {
@@ -1621,6 +2492,9 @@ export class Page {
               : await readTool(this.handle.doc(), body.operation, body.arguments ?? {}, options);
           if (state === "trashed" && result.body && typeof result.body === "object")
             result.body.trash = publicTrash(this.metadata);
+          // The gateway turns this into what the caller may see of it.
+          if (body.operation === "read_page" && result.status === 200 && result.body)
+            result.body._placement = pagePlacement(this.metadata);
           return json(result.body, result.status);
         }
         this.policy.account(identity, true);
@@ -1724,7 +2598,13 @@ export class Page {
     if (operation === "purge_page" && args.action === "preview") return { args };
     const key = mutationKey(args);
     // The Catalog adds compare-and-set controls; they never change identity.
-    const { expected_revision: _expected, replay_only: _replay, ...requested } = args;
+    // restore_position depends on where the parent is at each attempt.
+    const {
+      expected_revision: _expected,
+      replay_only: _replay,
+      restore_position: _position,
+      ...requested
+    } = args;
     const digest = await fingerprint(operation, requested, identity);
     const recorded = await this.ctx.storage.get(lifecycleReceiptKey(key));
     if (recorded && recorded.fingerprint !== digest)
@@ -1743,6 +2623,7 @@ export class Page {
       revision: this.metadata.lifecycleRevision ?? 0,
       ...(state !== "deleted" && this.handle && { title: catalogTitle(this.handle.doc().title) }),
       ...(state === "trashed" && publicTrash(this.metadata)),
+      ...(this.metadata.placement && pagePlacement(this.metadata)),
     };
   }
 
@@ -1860,6 +2741,12 @@ export class Page {
     if (this.superseded(args)) return this.supersededResponse();
     let receipt = this.metadata.trash?.receipt;
     if (state === "active") {
+      if (pagePlacement(this.metadata).home)
+        throw new HttpError(
+          409,
+          "A Space's home Page stays with its Space; it can't move to Trash on its own",
+          "home_page_protected",
+        );
       requireHeads(this.handle.doc(), args.base_heads);
       const now = new Date().toISOString();
       const pageId = this.metadata.pageId;
@@ -1917,15 +2804,31 @@ export class Page {
       await this.ctx.storage.sync();
       return this.lifecycleResponse(record.receipt);
     }
+    const { trash: _trash, deletion: _deletion, ...rest } = this.metadata;
+    const next = { ...rest, deleted: false, lifecycleRevision: revision + 1 };
+    // The Catalog supplies a position when this Page's parent is gone; the
+    // Page then returns to the top level of its Space (or Your items).
+    if (args.restore_position !== undefined && this.metadata.placement) {
+      const current = pagePlacement(this.metadata);
+      next.placement = validatePlacement({
+        space_id: current.space_id,
+        parent_id: null,
+        position: args.restore_position,
+        placement_epoch: current.placement_epoch + 1,
+        ...(current.home && { home: true }),
+      });
+    }
     const receipt = {
       page_id: this.metadata.pageId,
       state: "active",
       restored: true,
       title: catalogTitle(this.handle.doc().title),
       restored_at: new Date().toISOString(),
+      ...(next.placement && {
+        space_id: next.placement.space_id,
+        parent_id: next.placement.parent_id,
+      }),
     };
-    const { trash: _trash, deletion: _deletion, ...rest } = this.metadata;
-    const next = { ...rest, deleted: false, lifecycleRevision: revision + 1 };
     // Owner sessions reconnect writable and members may reconnect once the
     // restored record is durable and installed.
     return this.completeLifecycle({

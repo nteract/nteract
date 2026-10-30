@@ -84,6 +84,8 @@ Run targeted browser checks from `pages`:
 | Admission codes, celld restart, and reconnect to Saved | `node scripts/local-sharing-e2e.mjs --admission` | Starts and restarts an isolated fixture |
 | Reload prompt after a deploy under an open tab | `node scripts/local-sharing-e2e.mjs --build-update` | Starts an isolated fixture and swaps its build |
 | Trash, restore, and permanent deletion | `node scripts/local-sharing-e2e.mjs --trash` | Starts an isolated fixture |
+| Spaces over MCP and in the browser, breadcrumbs, Trash and restore in a Space | `node scripts/local-sharing-e2e.mjs --spaces` | Starts an isolated fixture |
+| Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
@@ -654,6 +656,94 @@ no longer served.
 Trash has no automatic expiry. Pages stay there until the owner restores or
 purges them, up to 100 per account. Each trash record identifies its root Page.
 This implementation trashes and restores individual Pages.
+
+### Spaces
+
+A Space is a container for Pages: its own ID (`sp_<uuid>`), title, description,
+owner, a members ACL with a revision, and a home Page created with it. The
+`Space` Durable Object ([spaces.mjs](worker/spaces.mjs)) is the authority for that
+record. In this build membership is owner-only: only the owner can open a Space,
+list its Pages or add to it, and nothing inherits access from a Space. A Page in
+a Space is readable by the owner and by anyone with a direct grant on that Page;
+sharing works as before and never reveals the Space. Inherited access, moves and
+a Space change feed come later.
+
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `create_space` | `title`, `description?`, `idempotency_key`, `retry_token?` | `space_id`, `home_page_id`, `revision` |
+| `list_spaces` | `cursor?`, `limit?` | owned Spaces, `next_cursor`, `retry_token` |
+| `get_space` | `space_id` | title, description, revision, `home_page_id` |
+| `update_space` | `space_id`, `title?`, `description?`, `expected_revision`, `idempotency_key` | the updated Space, or `superseded` |
+| `create_page` | adds `space_id?`, `parent_id?` | adds `space_id`, `parent_id` |
+| `list_pages` | adds `space_id?`, `parent_id?` (`null` = top level), `kind?` | owned rows add `space_id`, `parent_id`, `position`, `home` |
+| `read_page` | unchanged | adds `kind`, `space_id`, `parent_id`, `home`, `breadcrumbs` |
+
+Every Space and item operation goes through the caller's own Catalog, which
+calls the Space and Pages with the caller's credentials. A Space never calls a
+Catalog or a Page. `create_space` reserves a journal intent with the Space ID and
+home Page ID first, then creates the Space record and the home Page; both steps
+are idempotent, so retrying the same key and payload after a crash or lost
+response finishes the same Space. Until then `get_space` answers `space_pending`
+and `list_spaces` omits it. The home Page holds orientation and guidance for
+people and agents. It is ordinary, untrusted Page content and cannot move to
+Trash on its own (`home_page_protected`).
+
+Placement lives in the Page record (`placement`: `space_id`, `parent_id`,
+`position`, `placement_epoch`, `home`) and is copied into the owner's Catalog
+entry at creation. A parent implies its Space; a different `space_id` is
+`placement_mismatch`. Pages nest at most 8 levels (`nesting_depth_exceeded`), and
+only Pages the caller owns can hold sub-pages in this build. Space and Page IDs
+have different shapes, so a swapped ID is a structural error
+(`space_id_as_page_id`, `page_id_as_space_id`) that names the right tool and
+argument and reveals nothing about either resource.
+
+Listing by Space or parent reuses the catalog index: D1's placement columns
+choose candidates, owner rows must match the owner's Catalog entry, and shared
+rows are verified by their Page host, which also supplies their placement.
+`list_spaces` takes candidates from `pages_catalog_spaces` and confirms each
+against the owner's `space/<id>` Catalog entry; cursors are sealed to the
+listing's filters. `read_page` breadcrumbs are computed in the gateway: each
+ancestor and the Space answer with the caller's credentials, so the trail stops at
+the first Page the caller cannot open and `space_id` appears only when the Space
+is readable.
+
+Trash stays single-Page. `delete_page` on a Page with active sub-pages, or
+sub-pages still being created, returns `page_has_children`; trash the sub-pages
+first. Subtree Trash is not available yet: it will return on an explicit
+operation intent with per-item fences and capacity reservations. A restored Page
+whose parent is in Trash or gone returns to the top level of its Space (or Your
+items) and its `placement_epoch` advances. Creating a Page under a parent in
+Trash returns `parent_unavailable`, including a resumed creation, which checks
+its parent again before it reaches the Page.
+
+Placement decisions never trust a Catalog entry with an unsettled Trash or
+restore reservation: a lost response or failed barrier can hide a transition the
+Page already applied. Restore reservations record the Space and parent the Page
+returns to. Before the leaf check or a restore placement reads such an entry,
+the Catalog asks the Page for its lifecycle (`/internal/lifecycle-state`) and
+projects an applied transition. A child whose restore applied counts as a child.
+A parent with any Trash entry, or a pending Trash reservation, is unavailable,
+so a restored child goes to the top level even if that trash has not applied
+yet. When the Page can't answer, the request is refused with
+`lifecycle_unsettled` (retryable) rather than decided on a guess. Every Catalog
+request shares one queue, so these reads are bounded: each read (fetch and body)
+gets 2 s, one pass gets 5 s with no read starting after its deadline, and an
+exhausted budget also returns `lifecycle_unsettled`. Reads are shared across
+passes: a pass reuses the read in flight for the same Page, and at most four
+underlying reads run at once, counted until they settle rather than until a
+caller stops waiting. Each read is aborted at 2 s; celld 0.6.3 honors an
+AbortSignal on a Durable Object stub fetch, and the body is read through a
+reader the abort cancels, since an abort after the headers does not interrupt
+a body read. A resumed trash that lost its reservation never applied,
+so before it re-acquires one it asks the Page: if the Page's lifecycle has not
+moved, the leaf guard runs again and a child created meanwhile refuses it; if it
+has, forwarding only replays the recorded receipt.
+
+`update_space` requires `expected_revision`. The Catalog records it in the
+journal intent before the Space sees the request, and every attempt carries it,
+so a retry can never apply once the Space has moved past that revision, even
+after the Space evicted the key's receipt (it keeps the latest 64). Such a retry
+returns `superseded: true, applied: false` with the current Space.
 
 ### Retry contract
 

@@ -31,6 +31,8 @@ import { openPageWithRetry } from "./page-open.mjs";
 import { WordgardEditor } from "./WordgardEditor.jsx";
 import { PagePicker } from "./PagePicker.jsx";
 import { TrashView } from "./TrashView.jsx";
+import { Breadcrumbs, SpaceView } from "./SpaceView.jsx";
+import { listSpaces, pageBreadcrumbs } from "./spaces.mjs";
 import { closeTrashedSessions, restorePage } from "./trash.mjs";
 import { listAllPages, matchingPages } from "./page-list.mjs";
 import { SharingControls } from "./SharingControls.jsx";
@@ -60,7 +62,10 @@ function App() {
     [authError, setAuthError] = useState(""),
     [notice, setNotice] = useState(""),
     [libraryQuery, setLibraryQuery] = useState(""),
-    [trashOpen, setTrashOpen] = useState(false);
+    [trashOpen, setTrashOpen] = useState(false),
+    [spaces, setSpaces] = useState([]),
+    [spaceOpen, setSpaceOpen] = useState(null),
+    [crumbs, setCrumbs] = useState([]);
   const [toolbar, setToolbar] = useState(null),
     [toolbarOpen, setToolbarOpen] = useState(false),
     [active, setActive] = useState(null),
@@ -101,6 +106,13 @@ function App() {
       revision === catalogRevision.current;
     if (!stillCurrent()) return [];
     setPages((previous) => mergePageListings(previous, local));
+    // Spaces load beside the Page list; a failure leaves the list usable.
+    void listSpaces(tool).then(
+      (value) => {
+        if (stillCurrent()) setSpaces(value);
+      },
+      () => {},
+    );
     const remote = await remoteRequest;
     if (!stillCurrent()) return [];
     const result = mergePageListings(remote.value?.pages ?? null, local);
@@ -180,6 +192,15 @@ function App() {
     current.current = next;
     reloadGate.hold(next);
     setSession(next);
+    setSpaceOpen(null);
+    setCrumbs([]);
+    // Breadcrumbs show only the Space and parents this account can open.
+    void pageBreadcrumbs(tool, next.pageId).then(
+      (value) => {
+        if (current.current === next) setCrumbs(value);
+      },
+      () => {},
+    );
     next.subscribe(() => {
       if (current.current === next) {
         paint((n) => n + 1);
@@ -270,8 +291,14 @@ function App() {
     setOpening(false);
     setPickerOpen(false);
     setTrashOpen(false);
+    setSpaceOpen(null);
     if (historyMode !== "none") writePageRoute(null, { replace: historyMode === "replace" });
     if (refreshCatalog) void refresh().catch((error) => setError(error.message));
+  }
+  function openSpace(spaceId, { historyMode = "push" } = {}) {
+    home(null, { historyMode: "none", refreshCatalog: false });
+    if (historyMode !== "none") writePageRoute(spaceId, { replace: historyMode === "replace" });
+    setSpaceOpen(spaceId);
   }
   function showTrash() {
     home(null, { refreshCatalog: false });
@@ -298,6 +325,7 @@ function App() {
   function followRoute() {
     const route = readPageRoute(location.href);
     if (route.kind === "page") void open(route.pageId, { historyMode: "replace" });
+    else if (route.kind === "space") openSpace(route.spaceId, { historyMode: "none" });
     else if (route.kind === "home") home(null, { historyMode: "none", refreshCatalog: false });
     else {
       nextGeneration();
@@ -746,6 +774,9 @@ function App() {
             onOpen={open}
             onCreate={create}
             onTrash={showTrash}
+            spaces={spaces}
+            currentSpaceId={spaceOpen}
+            onOpenSpace={(id) => openSpace(id)}
             creating={creating || !!session?.authRequired}
             error={pickerError}
           />
@@ -755,6 +786,11 @@ function App() {
             >
               <article ref={article}>
                 <h1 className="document-print-title sr-only">{page.title || "Untitled"}</h1>
+                <Breadcrumbs
+                  crumbs={crumbs}
+                  onOpenSpace={(id) => openSpace(id)}
+                  onOpenPage={open}
+                />
                 {session.authRequired && (
                   <p className="error" role="alert">
                     {session.authProblem}{" "}
@@ -861,6 +897,15 @@ function App() {
             <main className="welcome">
               <p role="status">Opening…</p>
             </main>
+          ) : spaceOpen ? (
+            <SpaceView
+              key={spaceOpen}
+              tool={tool}
+              spaceId={spaceOpen}
+              onOpen={(id) => open(id)}
+              onBack={() => home(null)}
+              onCreated={() => void refresh().catch(() => {})}
+            />
           ) : trashOpen ? (
             <TrashView
               tool={tool}

@@ -19,6 +19,13 @@ import { HttpError } from "./auth.mjs";
 import { catalogTitle } from "./catalog.mjs";
 import { configuredDomainView } from "./domain-access.mjs";
 import { validPageId } from "./registration.mjs";
+import {
+  pagePlacement,
+  entryPlacement,
+  requirePageIdArgument,
+  requireSpaceIdArgument,
+  validSpaceId,
+} from "./spaces.mjs";
 
 export const CATALOG_MIGRATIONS = Object.freeze([
   Object.freeze({
@@ -77,6 +84,33 @@ export const CATALOG_MIGRATIONS = Object.freeze([
       "ALTER TABLE pages_catalog_pages ADD COLUMN lifecycle_revision INTEGER NOT NULL DEFAULT 0",
     ]),
   }),
+  // Placement in a Space and under a parent Page. NULL placement_epoch means
+  // a build without Spaces wrote the row; placement then reads as Your items
+  // until a report or reconcile supplies it. Spaces get their own rows, keyed
+  // by owner: only the owner lists a Space in this build.
+  Object.freeze({
+    version: 4,
+    name: "spaces",
+    statements: Object.freeze([
+      "ALTER TABLE pages_catalog_pages ADD COLUMN space_id TEXT",
+      "ALTER TABLE pages_catalog_pages ADD COLUMN parent_id TEXT",
+      "ALTER TABLE pages_catalog_pages ADD COLUMN position TEXT",
+      "ALTER TABLE pages_catalog_pages ADD COLUMN placement_epoch INTEGER",
+      `CREATE INDEX IF NOT EXISTS pages_catalog_pages_placement
+        ON pages_catalog_pages (space_id, parent_id)`,
+      `CREATE TABLE IF NOT EXISTS pages_catalog_spaces (
+        space_id TEXT PRIMARY KEY,
+        owner TEXT NOT NULL,
+        title TEXT NOT NULL,
+        title_search TEXT NOT NULL,
+        home_page_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS pages_catalog_spaces_listing
+        ON pages_catalog_spaces (owner, updated_at DESC, space_id DESC)`,
+    ]),
+  }),
 ]);
 
 const SCHEMA_TABLE = `CREATE TABLE IF NOT EXISTS pages_catalog_schema (
@@ -86,6 +120,7 @@ const SCHEMA_TABLE = `CREATE TABLE IF NOT EXISTS pages_catalog_schema (
 )`;
 const DIRTY = "host/index/dirty";
 const SYNC = "host/index/sync";
+const SPACES_DIRTY = "host/index/spaces-dirty";
 const schemas = new WeakMap();
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -250,21 +285,34 @@ const lifecycleGuard = (pageId) =>
   `? >= coalesce((SELECT lifecycle_revision FROM pages_catalog_pages WHERE page_id = ${pageId}), 0)`;
 
 /** Title follows the latest observation time. Lifecycle state follows the
- * newest lifecycle revision, then observation time within one revision. The
- * ACL and lifecycle revisions only move forward. A deleted tombstone never
- * changes again. */
+ * newest lifecycle revision, then observation time within one revision.
+ * Placement follows the newest placement epoch; a write without one (from a
+ * caller that does not know the placement) leaves it unchanged. The ACL and
+ * lifecycle revisions only move forward. A deleted tombstone never changes
+ * again. */
 function pageUpsert(db, page) {
   const title = catalogTitle(page.title);
   const newerState = `excluded.lifecycle_revision > pages_catalog_pages.lifecycle_revision
     OR (excluded.lifecycle_revision = pages_catalog_pages.lifecycle_revision
       AND excluded.updated_at >= pages_catalog_pages.updated_at)`;
+  const newerPlacement = `excluded.placement_epoch IS NOT NULL
+    AND excluded.placement_epoch >= coalesce(pages_catalog_pages.placement_epoch, -1)`;
+  const placement = page.placement;
   return db
     .prepare(
       `INSERT INTO pages_catalog_pages
         (page_id, owner, title, title_search, state, created_at, updated_at, trashed_at,
-          acl_revision, lifecycle_revision)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          acl_revision, lifecycle_revision, space_id, parent_id, position, placement_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (page_id) DO UPDATE SET
+        space_id = CASE WHEN ${newerPlacement}
+          THEN excluded.space_id ELSE pages_catalog_pages.space_id END,
+        parent_id = CASE WHEN ${newerPlacement}
+          THEN excluded.parent_id ELSE pages_catalog_pages.parent_id END,
+        position = CASE WHEN ${newerPlacement}
+          THEN excluded.position ELSE pages_catalog_pages.position END,
+        placement_epoch = CASE WHEN ${newerPlacement}
+          THEN excluded.placement_epoch ELSE pages_catalog_pages.placement_epoch END,
         title = CASE WHEN excluded.updated_at >= pages_catalog_pages.updated_at
           THEN excluded.title ELSE pages_catalog_pages.title END,
         title_search = CASE WHEN excluded.updated_at >= pages_catalog_pages.updated_at
@@ -289,6 +337,10 @@ function pageUpsert(db, page) {
       page.trashed_at ?? null,
       page.revision ?? 0,
       page.lifecycle ?? 0,
+      placement?.space_id ?? null,
+      placement?.parent_id ?? null,
+      placement?.position ?? null,
+      placement ? (placement.placement_epoch ?? 0) : null,
     );
 }
 
@@ -422,6 +474,7 @@ export async function reportPageIndex(env, { metadata, title, observedAt, reader
       trashed_at: state === "trashed" ? trashedAt(metadata) : null,
       revision,
       lifecycle,
+      placement: pagePlacement(metadata),
     }),
     deleteUnlisted(db, pageId, listed, revision, lifecycle),
     deleteDomainReaders(
@@ -567,9 +620,17 @@ function cursorKey(env) {
   }
   return key;
 }
-const cursorContext = ({ principal, needle, inTrash }) =>
+/** `scope` binds a cursor to its listing's filters (a Space, a parent, or
+ * the Space listing itself). Cursors without one keep their original bytes. */
+const cursorContext = ({ principal, needle, inTrash, scope }) =>
   encoder.encode(
-    JSON.stringify(["pages-list-cursor-v1", principal, needle ?? "", inTrash === true]),
+    JSON.stringify([
+      "pages-list-cursor-v1",
+      principal,
+      needle ?? "",
+      inTrash === true,
+      ...(scope ? [scope] : []),
+    ]),
   );
 
 /** Seal a keyset position. The position stays private, the cursor only
@@ -613,7 +674,7 @@ export async function openCursor(env, context, cursor, now = Date.now()) {
     value.length !== 3 ||
     typeof value[0] !== "string" ||
     !(value[0] === "" || isoTime.test(value[0])) ||
-    !validPageId(value[1]) ||
+    !(validPageId(value[1]) || validSpaceId(value[1])) ||
     !Number.isSafeInteger(value[2]) ||
     value[2] > now + 5 * 60 * 1000 ||
     now - value[2] > catalogIndexBounds.cursorMaxAgeMs
@@ -632,13 +693,31 @@ export function parseListArguments(args = {}) {
   const fail = (message) => new HttpError(400, message, "invalid_list_arguments");
   if (!args || typeof args !== "object" || Array.isArray(args))
     throw fail("Invalid list arguments");
-  const legacy = ["query", "cursor", "limit", "in_trash"].every((key) => args[key] === undefined);
+  const legacy = ["query", "cursor", "limit", "in_trash", "space_id", "parent_id", "kind"].every(
+    (key) => args[key] === undefined,
+  );
   const options = {
     limit: legacy ? LIST_LEGACY_LIMIT : LIST_DEFAULT_LIMIT,
     inTrash: false,
     needle: null,
     cursor: null,
+    spaceId: null,
+    // undefined: any parent; null: top level; otherwise that parent's children.
+    parentId: undefined,
+    kind: null,
   };
+  if (args.space_id !== undefined && args.space_id !== null)
+    options.spaceId = requireSpaceIdArgument(args.space_id);
+  if (args.parent_id === null) {
+    if (!options.spaceId) throw fail("parent_id null lists a Space's top level; pass space_id too");
+    options.parentId = null;
+  } else if (args.parent_id !== undefined)
+    options.parentId = requirePageIdArgument(args.parent_id, "parent_id");
+  if (args.kind !== undefined) {
+    if (!["page", "notebook", "result"].includes(args.kind))
+      throw fail("kind must be page, notebook or result");
+    options.kind = args.kind;
+  }
   if (args.query !== undefined) {
     if (typeof args.query !== "string" || args.query.length > 200)
       throw fail("query must be a string of at most 200 characters");
@@ -658,7 +737,28 @@ export function parseListArguments(args = {}) {
       throw new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
     options.cursor = args.cursor;
   }
+  if (options.inTrash && (options.spaceId || options.parentId !== undefined))
+    throw fail("in_trash lists your whole Trash; it does not combine with space_id or parent_id");
   return options;
+}
+
+/** Cursor scope for a filtered listing; undefined keeps the original bytes. */
+export function listScope(options) {
+  if (!options.spaceId && options.parentId === undefined && !options.kind) return undefined;
+  return JSON.stringify([
+    options.spaceId,
+    options.parentId ?? null,
+    options.parentId === undefined,
+    options.kind,
+  ]);
+}
+
+/** Whether a Page's placement matches a listing's Space and parent filters. */
+export function placementMatches(placement, { spaceId, parentId }) {
+  if (spaceId && placement.space_id !== spaceId) return false;
+  if (parentId === null && placement.parent_id !== null) return false;
+  if (parentId && placement.parent_id !== parentId) return false;
+  return true;
 }
 
 export const escapeLike = (value) => value.replace(/[\\%_]/g, "\\$&");
@@ -672,8 +772,13 @@ const newestFirst = (a, b) =>
   sortKey(a) === sortKey(b) ? (a.page_id < b.page_id ? 1 : -1) : sortKey(a) < sortKey(b) ? 1 : -1;
 
 /** Up to `count` candidate rows from D1 after `after`, newest first. */
-export async function queryCatalogIndex(db, { principal, domain, inTrash, needle, after, count }) {
+export async function queryCatalogIndex(
+  db,
+  { principal, domain, inTrash, needle, after, count, spaceId = null, parentId },
+) {
   const pattern = needle ? `%${escapeLike(needle)}%` : null;
+  // 0: any parent, 1: top level, 2: children of parentId.
+  const parentMode = parentId === undefined ? 0 : parentId === null ? 1 : 2;
   const result = await db
     .prepare(
       `SELECT a.page_id, a.source, a.updated_at, a.updated_revision, a.title,
@@ -685,6 +790,8 @@ export async function queryCatalogIndex(db, { principal, domain, inTrash, needle
           ELSE a.source != 'owner' OR p.state = 'active' END
         AND (a.source != 'domain_opened' OR a.domain = ?)
         AND (? IS NULL OR a.title_search LIKE ? ESCAPE '\\')
+        AND (? IS NULL OR p.space_id = ?)
+        AND (? = 0 OR (? = 1 AND p.parent_id IS NULL) OR (? = 2 AND p.parent_id = ?))
         AND (? IS NULL OR a.updated_at < ? OR (a.updated_at = ? AND a.page_id < ?))
       ORDER BY a.updated_at DESC, a.page_id DESC
       LIMIT ?`,
@@ -695,6 +802,12 @@ export async function queryCatalogIndex(db, { principal, domain, inTrash, needle
       domain ?? null,
       pattern,
       pattern,
+      spaceId,
+      spaceId,
+      parentMode,
+      parentMode,
+      parentMode,
+      parentMode === 2 ? parentId : null,
       after?.updated_at ?? null,
       after?.updated_at ?? null,
       after?.updated_at ?? null,
@@ -715,17 +828,23 @@ export async function queryCatalogIndex(db, { principal, domain, inTrash, needle
 
 /** Candidate source over the Catalog entries, for when the index is off or
  * unavailable. Each prefix read is bounded. */
-export async function catalogSource(storage, { inTrash, needle }) {
+export async function catalogSource(storage, { inTrash, needle, spaceId = null, parentId }) {
   const list = async (prefix) => [
     ...(await storage.list({ prefix, limit: catalogIndexBounds.fallbackScan })).values(),
   ];
+  const filtered = spaceId !== null || parentId !== undefined;
   const entries = inTrash
     ? (await list("trash/")).map((entry) => ({ entry, owned: true }))
     : [
         ...(await list("page/"))
           .filter((entry) => !entry.pending)
+          .filter(
+            (entry) => !filtered || placementMatches(entryPlacement(entry), { spaceId, parentId }),
+          )
           .map((entry) => ({ entry, owned: true })),
-        ...(await list("shared/")).map((entry) => ({ entry, owned: false })),
+        // Shared entries hold no placement; their Page host decides. Only the
+        // owner sees a Space in this build, so Space listings skip them.
+        ...(spaceId ? [] : await list("shared/")).map((entry) => ({ entry, owned: false })),
       ];
   const rows = entries
     .filter(({ entry }) => validPageId(entry?.page_id))
@@ -776,6 +895,9 @@ function sharedStatements(db, principal, pageId, page, fallbackAt, createdAt) {
       updated_at: observed,
       revision: page.revision ?? 0,
       lifecycle: page.lifecycle_revision ?? 0,
+      ...(Number.isSafeInteger(page.placement_epoch) && {
+        placement: pagePlacement({ placement: page }),
+      }),
     }),
     upsertAccess(
       db,
@@ -926,6 +1048,9 @@ export async function reconcileAccountIndex({
             updated_at: updatedAt,
             trashed_at: state === "trashed" ? (entry.trashed_at ?? null) : null,
             lifecycle: entry.lifecycle_revision ?? 0,
+            // The owner's Catalog copied this Page's placement when it was
+            // created or restored; entries from before Spaces are Your items.
+            placement: entryPlacement(entry),
           }),
           upsertAccess(
             db,
@@ -1048,4 +1173,119 @@ export async function reconcileAccountIndex({
     }
   }
   return current;
+}
+
+const SPACES_SYNCED = "host/index/spaces-synced";
+/** Most `space/` entries one account reconcile reads. */
+const SPACE_RECONCILE_LIMIT = 200;
+
+/** The owner's Space entries changed; the next Space listing rewrites them. */
+export async function markSpaceIndexDirty(storage) {
+  await storage.put(SPACES_DIRTY, crypto.randomUUID());
+}
+
+function spaceUpsert(db, owner, entry) {
+  const title = catalogTitle(entry.title);
+  return db
+    .prepare(
+      `INSERT INTO pages_catalog_spaces
+        (space_id, owner, title, title_search, home_page_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (space_id) DO UPDATE SET
+        title = CASE WHEN excluded.updated_at >= pages_catalog_spaces.updated_at
+          THEN excluded.title ELSE pages_catalog_spaces.title END,
+        title_search = CASE WHEN excluded.updated_at >= pages_catalog_spaces.updated_at
+          THEN excluded.title_search ELSE pages_catalog_spaces.title_search END,
+        updated_at = max(pages_catalog_spaces.updated_at, excluded.updated_at)
+      WHERE pages_catalog_spaces.owner = excluded.owner`,
+    )
+    .bind(
+      entry.space_id,
+      owner,
+      title,
+      searchText(title),
+      entry.home_page_id,
+      entry.created_at,
+      entry.updated_at ?? entry.created_at,
+    );
+}
+
+/**
+ * Space rows for one owner, rewritten from the owner's Catalog `space/`
+ * entries when a Space changed or the epoch moved. An account holds at most
+ * `SPACE_LIMIT` Spaces, so one bounded read and one D1 batch cover it. The
+ * Catalog entries stay the authority: a listing confirms every D1 candidate
+ * against them, so a stale row can hide a Space for one listing but never
+ * show one.
+ */
+export async function reconcileSpaceIndex({ db, storage, principal, epoch }) {
+  const dirty = await storage.get(SPACES_DIRTY);
+  if (dirty === undefined && (await storage.get(SPACES_SYNCED)) === epoch) return;
+  const entries = [
+    ...(await storage.list({ prefix: "space/", limit: SPACE_RECONCILE_LIMIT })).values(),
+  ].filter((entry) => validSpaceId(entry?.space_id) && !entry.pending);
+  await withTimeout(
+    db.batch([
+      ...entries.map((entry) => spaceUpsert(db, principal, entry)),
+      db
+        .prepare(
+          `DELETE FROM pages_catalog_spaces
+          WHERE owner = ? AND space_id NOT IN (SELECT value FROM json_each(?))`,
+        )
+        .bind(principal, JSON.stringify(entries.map((entry) => entry.space_id))),
+    ]),
+    catalogIndexTimeouts.write,
+  );
+  await storage.put(SPACES_SYNCED, epoch);
+  if ((await storage.get(SPACES_DIRTY)) === dirty) await storage.delete(SPACES_DIRTY);
+}
+
+/** Space candidates from D1, newest first. Rows reuse the listing cursor's
+ * `page_id` slot for the Space ID. */
+export function spaceIndexSource(db, { principal }) {
+  return {
+    next: async (after, count) => {
+      try {
+        const result = await read(
+          db
+            .prepare(
+              `SELECT space_id, updated_at FROM pages_catalog_spaces
+              WHERE owner = ?
+                AND (? IS NULL OR updated_at < ? OR (updated_at = ? AND space_id < ?))
+              ORDER BY updated_at DESC, space_id DESC
+              LIMIT ?`,
+            )
+            .bind(
+              principal,
+              after?.updated_at ?? null,
+              after?.updated_at ?? null,
+              after?.updated_at ?? null,
+              after?.page_id ?? null,
+              count,
+            )
+            .all(),
+        );
+        return (result.results ?? []).map((row) => ({
+          page_id: row.space_id,
+          updated_at: row.updated_at,
+        }));
+      } catch (error) {
+        throw new CatalogIndexUnavailable("Space index query failed", { cause: error });
+      }
+    },
+  };
+}
+
+/** Space candidates from the owner's Catalog entries. */
+export async function spaceCatalogSource(storage) {
+  const rows = [
+    ...(await storage.list({ prefix: "space/", limit: SPACE_RECONCILE_LIMIT })).values(),
+  ]
+    .filter((entry) => validSpaceId(entry?.space_id) && !entry.pending)
+    .map((entry) => ({
+      page_id: entry.space_id,
+      updated_at: entry.updated_at ?? entry.created_at,
+    }))
+    .sort(newestFirst);
+  return { next: async (after, count) => rows.filter((row) => before(row, after)).slice(0, count) };
 }
