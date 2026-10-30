@@ -11,6 +11,7 @@
  */
 import { markCatalogIndexDirty } from "./catalog-index.mjs";
 import { RETRY_LIFETIME_MS } from "./operation-journal.mjs";
+import { operationIntent } from "./operation-intent.mjs";
 import { placementEntry } from "./spaces.mjs";
 
 export const CATALOG_LIMIT = 100;
@@ -46,6 +47,7 @@ export async function refreshCatalogTitle(storage, { page_id, title, observed_at
  * `trash/<id>` or `page/<id>` placeholder that counts toward capacity. A
  * placeholder lasts for one retry lifetime and only while its intent is still
  * pending; anything else is stale and is removed when capacity is counted.
+ * The operation-intent machine (operation-intent.mjs) owns these rules.
  */
 export function lifecycleSlotKey(operation, pageId) {
   if (operation === "delete_page") return `trash/${pageId}`;
@@ -68,20 +70,88 @@ export function lifecycleSlot(operation, pageId, intentKey, now = Date.now(), pl
       }
     : {};
 }
-/** A slot is live while its intent is pending and either within its retry
- * lifetime or already forwarded to the Page. A forwarded request may have been
- * applied, so its slot never simply expires.
- */
-async function liveReservation(storage, entry, now) {
-  if (!entry?.reservation) return false;
-  const intent = await storage.get(entry.intent);
-  return intent?.pending === true && (entry.expires_at > now || intent.forwarded === true);
+/** The operation-intent state stored under `intentKey` for a request that
+ * moves `pageId` by `operation`, with the slot it holds. A forwarded intent's
+ * fields that live in memory for one request start false. */
+export async function intentState(storage, intentKey, operation, pageId) {
+  const row = await storage.get(intentKey);
+  if (!row) return { name: "absent" };
+  if (!row.pending)
+    return {
+      name: row.receipt?.superseded ? "superseded" : "completed",
+      operation,
+      receipt: row.receipt ?? {},
+    };
+  const slotKey = lifecycleSlotKey(operation, pageId);
+  const entry = slotKey && (await storage.get(slotKey));
+  const slot = !slotKey
+    ? "none"
+    : !entry
+      ? "lapsed"
+      : !entry.reservation
+        ? "entry"
+        : entry.intent === intentKey
+          ? "live"
+          : "lapsed";
+  return {
+    name: row.forwarded ? "forwarded" : "reserved",
+    operation,
+    pageId,
+    ...(row.expectedRevision !== undefined && { expectedRevision: row.expectedRevision }),
+    slot,
+    ...(row.forwarded && { retarget: false, replayOnly: false }),
+  };
 }
-/** Entries that count toward a prefix's capacity. Stale slots are removed. A
- * forwarded slot past its lifetime is reconciled against the Page's current
- * lifecycle state: it becomes the real entry if a transition happened since
- * the request was reserved, and is released otherwise. `current(pageId)`
- * reads that state; without an answer the slot keeps counting.
+/** The newest lifecycle revision among this Page's own entries. A
+ * projection never replaces it with an older observation. */
+export async function knownRevision(storage, pageId) {
+  let known;
+  for (const key of [`page/${pageId}`, `trash/${pageId}`]) {
+    const entry = await storage.get(key);
+    if (entry && !entry.reservation) known = Math.max(known ?? 0, entry.lifecycle_revision ?? 0);
+  }
+  return known;
+}
+/** The Page's lifecycle state read through `read`, as a machine event. A
+ * failed read, or no reader, is unavailable. */
+async function lifecycleEvent(storage, pageId, read) {
+  let current;
+  try {
+    current = await read?.(pageId);
+  } catch {
+    current = undefined;
+  }
+  if (!current) return { type: "lifecycle", unavailable: true };
+  const known = current.state === "missing" ? undefined : await knownRevision(storage, pageId);
+  return { type: "lifecycle", current, ...(known !== undefined && { known }) };
+}
+/** Run one capacity count or placement check (`event`) over the slot `entry`
+ * stored at `slotKey`. The operation-intent machine decides; this runs its
+ * effects and reads the Page through `read(pageId)` when it asks. Returns the
+ * machine's last result. */
+export async function runSlot(storage, slotKey, entry, event, read) {
+  const { reservation: operation, page_id: pageId, intent: intentKey } = entry;
+  let state = await intentState(storage, intentKey, operation, pageId);
+  for (;;) {
+    const result = operationIntent.step(state, event);
+    if (result.rejected) throw new Error(`Slot ${slotKey} can't take ${event.type}`);
+    let next;
+    for (const effect of result.effects) {
+      if (effect.type === "release_slot") await storage.delete(slotKey);
+      else if (effect.type === "project") await projectLifecycle(storage, pageId, effect.current);
+      else if (effect.type === "read_lifecycle") next = await lifecycleEvent(storage, pageId, read);
+      else throw new Error(`A slot check can't run ${effect.type}`);
+    }
+    if (!next) return result;
+    state = result.state;
+    event = next;
+  }
+}
+/** Entries that count toward a prefix's capacity. Each reservation is a
+ * `count` for its intent: a stale or never-forwarded expired slot is removed,
+ * and a forwarded one past its lifetime is read against the Page, which
+ * settles it into the real entry or releases it. `current(pageId)` reads that
+ * state; without an answer the slot keeps counting.
  */
 export async function countCapacity(storage, prefix, { now = Date.now(), current } = {}) {
   const entries = await storage.list({ prefix, limit: CATALOG_LIMIT });
@@ -91,42 +161,11 @@ export async function countCapacity(storage, prefix, { now = Date.now(), current
       count++;
       continue;
     }
-    const intent = await storage.get(entry.intent);
-    if (intent?.pending !== true || (entry.expires_at <= now && !intent.forwarded)) {
-      await storage.delete(key);
-      continue;
-    }
-    if (entry.expires_at > now) {
-      count++;
-      continue;
-    }
-    const state = await current?.(entry.page_id).catch(() => undefined);
-    if (!state) {
-      count++;
-      continue;
-    }
-    if (state.state === "missing")
-      await projectLifecycle(storage, entry.page_id, { state: "deleted" });
-    else if ((state.revision ?? 0) !== intent.expectedRevision)
-      await projectLifecycle(storage, entry.page_id, state);
-    else {
-      await storage.delete(key);
-      continue;
-    }
-    const settled = await storage.get(key);
-    if (settled && !settled.reservation) count++;
+    const event = { type: "count", expired: !(entry.expires_at > now) };
+    const { response } = await runSlot(storage, key, entry, event, current);
+    if (response.counted) count++;
   }
   return count;
-}
-/** Whether a resumed intent still holds its destination slot. A real entry
- * already at the destination needs no slot.
- */
-export async function holdsLifecycleSlot(storage, operation, pageId, intentKey, now = Date.now()) {
-  const key = lifecycleSlotKey(operation, pageId);
-  if (!key) return true;
-  const entry = await storage.get(key);
-  if (entry && !entry.reservation) return true;
-  return entry?.intent === intentKey && (await liveReservation(storage, entry, now));
 }
 export async function releaseLifecycleSlot(storage, operation, pageId, intentKey) {
   const key = lifecycleSlotKey(operation, pageId);
@@ -146,6 +185,14 @@ export async function observedLifecycleRevision(storage, pageId) {
  * this always uses the Page's current state and ignores older revisions.
  */
 export async function projectLifecycle(storage, pageId, current) {
+  // One transaction: a crash leaves the Page in the listing it was in or the
+  // one it moves to, never both and never neither. Storage without
+  // transactions writes in order.
+  if (typeof storage.transaction !== "function") return projectEntries(storage, pageId, current);
+  return storage.transaction((transaction) => projectEntries(transaction, pageId, current));
+}
+
+async function projectEntries(storage, pageId, current) {
   // Every projection changes which listing holds the Page; the D1 index
   // reconciles from these entries.
   await markCatalogIndexDirty(storage);

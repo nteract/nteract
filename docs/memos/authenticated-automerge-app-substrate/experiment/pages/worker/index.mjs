@@ -97,7 +97,8 @@ import {
   catalogTitle,
   catalogEntries,
   countCapacity,
-  holdsLifecycleSlot,
+  intentState,
+  knownRevision,
   lifecycleSlot,
   lifecycleSlotKey,
   observedLifecycleRevision,
@@ -105,8 +106,10 @@ import {
   pruneTombstonedTrash,
   refreshCatalogTitle,
   releaseLifecycleSlot,
+  runSlot,
   trashFields,
 } from "./catalog.mjs";
+import { holdsSlot, operationIntent, replies } from "./operation-intent.mjs";
 import {
   CatalogIndexUnavailable,
   catalogIndexDatabase,
@@ -195,6 +198,8 @@ const lifecycleRoutes = {
   restore_page: "/internal/restore",
   purge_page: "/internal/purge",
 };
+/** Where a pending Trash or restore keeps its destination slot. */
+const slotPrefix = { delete_page: "trash/", restore_page: "page/" };
 /** delete_page moves a Page to Trash. Its journal fingerprint uses a distinct
  * name so a build that predates Trash cannot replay the receipt as a
  * permanent deletion: it reports an idempotency conflict instead.
@@ -209,9 +214,9 @@ const noop = async () => {};
 export const lifecycleBounds = { readMs: 2000, passMs: 5000, concurrency: 4 };
 const lifecycleUnsettled = () =>
   new HttpError(
-    409,
-    "A Page's Trash or restore is still settling. Retry shortly.",
-    "lifecycle_unsettled",
+    replies.unsettled.status,
+    replies.unsettled.body.error,
+    replies.unsettled.body.code,
   );
 const hasChildren = () =>
   new HttpError(
@@ -219,6 +224,12 @@ const hasChildren = () =>
     "This Page has sub-pages. Trash its sub-pages first; subtree Trash is not available yet.",
     "page_has_children",
   );
+/** The reply for a leaf guard that refused a Trash, or undefined for any
+ * other failure. */
+const leafRefusalOf = (error) =>
+  ["page_has_children", "home_page_protected"].includes(error.code)
+    ? { status: error.status, body: { error: error.message, code: error.code } }
+    : undefined;
 /** A home Page sits first at its Space's top level. */
 const homePlacement = (spaceId) => ({
   space_id: spaceId,
@@ -765,7 +776,6 @@ export class Catalog {
       if (!["create_page", "register_page"].includes(body.operation) && !lifecycle)
         throw new HttpError(400, "Unknown catalog operation");
       // Reject deterministic input errors before reserving an intent or page.
-      const creating = ["create_page", "register_page"].includes(body.operation);
       const registering = body.operation === "register_page";
       if (
         lifecycle &&
@@ -774,20 +784,18 @@ export class Catalog {
       )
         throw new HttpError(403, "Sign in with this Page's original account to change it");
       if (lifecycle) requirePageIdArgument(args.page_id);
-      const tombstoned = async () => {
-        if (!(await this.ctx.storage.get(`host/deleted/${args.page_id}`))) return false;
-        await this.ctx.storage.delete(`trash/${args.page_id}`);
-        await this.notifyTombstone(args.page_id);
-        return true;
-      };
       if (body.operation === "purge_page") {
         if (!["preview", "confirm"].includes(args.action))
           throw new HttpError(400, "action must be preview or confirm");
-        if (args.action === "preview" && (await tombstoned()))
-          throw new HttpError(404, "Page not found");
         // A preview is an owner read of the trashed Page; it reserves nothing.
-        if (args.action === "preview")
+        if (args.action === "preview") {
+          if (await this.ctx.storage.get(`host/deleted/${args.page_id}`)) {
+            await this.ctx.storage.delete(`trash/${args.page_id}`);
+            await this.notifyTombstone(args.page_id);
+            throw new HttpError(404, "Page not found");
+          }
           return this.env.PAGES.getByName(args.page_id).fetch(forwarded(request, lifecycle, args));
+        }
         if (typeof args.preview_token !== "string")
           throw new HttpError(
             400,
@@ -817,40 +825,16 @@ export class Catalog {
         scope: `catalog:${identity.principal}`,
         principal: identity.principal,
       });
+      if (lifecycle)
+        return await this.runLifecycle(request, body.operation, args, { key, digest, inspected });
       let intent = inspected.entry;
       if (intent && !intent.pending) {
         // A previous attempt may have stored its receipt before sync failed.
-        // Only terminal deletion is reapplied: replaying an old trash or
-        // restore receipt must not undo a later transition.
-        if (intent.receipt?.deleted)
-          await projectLifecycle(this.ctx.storage, intent.pageId, { state: "deleted" });
         await this.ctx.storage.sync();
         return json(intent.receipt);
       }
       if (!intent) {
-        // A permanent deletion this account observed is terminal, even when a
-        // build without Trash wrote the tombstone. The Catalog refuses here,
-        // so a Page never has to ask its owner's Catalog.
-        if (lifecycle && (await tombstoned())) throw new HttpError(404, "Page not found");
-        if (creating && (await this.countEntries("page/")) >= CATALOG_LIMIT)
-          throw new HttpError(409, "This prototype permits 100 pages per account");
-        if (body.operation === "delete_page") await this.requireLeafPage(args.page_id);
-        if (
-          body.operation === "delete_page" &&
-          // Counting first removes stale reservations, including this Page's.
-          (await this.countEntries("trash/")) >= TRASH_LIMIT &&
-          !(await this.ctx.storage.get(`trash/${args.page_id}`))
-        )
-          throw new HttpError(
-            409,
-            "Trash is full. Permanently delete Pages from Trash before moving more Pages there.",
-            "trash_capacity",
-          );
-        if (
-          body.operation === "restore_page" &&
-          (await this.countEntries("page/")) >= CATALOG_LIMIT &&
-          !(await this.ctx.storage.get(`page/${args.page_id}`))
-        )
+        if ((await this.countEntries("page/")) >= CATALOG_LIMIT)
           throw new HttpError(409, "This prototype permits 100 pages per account");
         if (
           registering &&
@@ -865,10 +849,6 @@ export class Catalog {
           pending: true,
           pageId: body.operation === "create_page" ? crypto.randomUUID() : args.page_id,
           createdAt: new Date().toISOString(),
-          // The Page applies a lifecycle request only at this revision.
-          ...(lifecycle && {
-            expectedRevision: await observedLifecycleRevision(this.ctx.storage, args.page_id),
-          }),
           ...(placement && { placement }),
         };
         intent = await reserveOperation(this.ctx.storage, {
@@ -876,145 +856,318 @@ export class Catalog {
           entry: intent,
           retry: inspected.retry,
         });
-        // The capacity check above holds while the slot stays reserved. The
-        // intent and its slot commit in one write.
-        const slotKey = lifecycleSlotKey(body.operation, intent.pageId);
-        if (slotKey && !(await this.ctx.storage.get(slotKey)))
-          await this.ctx.storage.put({
-            [key]: intent,
-            ...lifecycleSlot(
-              body.operation,
-              intent.pageId,
-              key,
-              undefined,
-              await this.slotPlacement(body.operation, intent.pageId),
-            ),
-          });
-        else await this.ctx.storage.put(key, intent);
+        await this.ctx.storage.put(key, intent);
       }
       const pageId = intent.pageId;
-      if (creating) {
-        // A resumed creation checks its parent again: the parent may have
-        // moved to Trash since the intent was reserved. The intent stays
-        // pending; restoring the parent and retrying finishes it.
-        if (inspected.entry && intent.placement?.parent_id)
-          await this.activeParent(intent.placement.parent_id);
-        await this.ctx.storage.put(`page/${pageId}`, {
+      // A resumed creation checks its parent again: the parent may have
+      // moved to Trash since the intent was reserved. The intent stays
+      // pending; restoring the parent and retrying finishes it.
+      if (inspected.entry && intent.placement?.parent_id)
+        await this.activeParent(intent.placement.parent_id);
+      await this.ctx.storage.put(`page/${pageId}`, {
+        page_id: pageId,
+        title: catalogTitle(args.title),
+        created_at: intent.createdAt,
+        updated_at: intent.createdAt,
+        pending: true,
+        ...placementEntry(intent.placement),
+      });
+      // Placement comes only from the resolved intent, never the caller.
+      const { placement: _placement, ...requested } = args;
+      const response = await this.env.PAGES.getByName(pageId).fetch(
+        forwarded(request, registering ? "/internal/register" : "/internal/create", {
+          ...requested,
           page_id: pageId,
-          title: catalogTitle(args.title),
-          created_at: intent.createdAt,
-          updated_at: intent.createdAt,
-          pending: true,
-          ...placementEntry(intent.placement),
-        });
-        // Placement comes only from the resolved intent, never the caller.
-        const { placement: _placement, ...requested } = args;
-        const response = await this.env.PAGES.getByName(pageId).fetch(
-          forwarded(request, registering ? "/internal/register" : "/internal/create", {
-            ...requested,
-            page_id: pageId,
-            ...(intent.placement && { placement: intent.placement }),
-          }),
-        );
-        if (!response.ok && response.headers.get("x-pages-create-rejected") === "before-intent") {
-          // Only this explicit pre-intent rejection proves there is no Page
-          // creation to recover. Ambiguous failures retain their reservation.
-          await this.ctx.storage.delete(`page/${pageId}`);
-          await this.ctx.storage.delete(key);
-          await this.ctx.storage.sync();
-        }
-        if (!response.ok) return response;
-        intent.receipt = await response.json();
-        await this.ctx.storage.put(`page/${pageId}`, {
-          page_id: pageId,
-          title: catalogTitle(intent.receipt.title),
-          created_at: intent.createdAt,
-          updated_at: intent.createdAt,
-          ...placementEntry(intent.placement),
-        });
-        await markCatalogIndexDirty(this.ctx.storage);
-      } else {
-        // A resumed request checks the tombstone too; the Page then answers
-        // as permanently deleted and this intent completes as deleted.
-        if (inspected.entry) await tombstoned();
-        // A resumed request that lost its slot may not apply: it only replays
-        // what the Page already did, unless capacity is still available.
-        let replayOnly = false;
-        if (!(await holdsLifecycleSlot(this.ctx.storage, body.operation, pageId, key))) {
-          const limit = body.operation === "delete_page" ? TRASH_LIMIT : CATALOG_LIMIT;
-          const prefix = body.operation === "delete_page" ? "trash/" : "page/";
-          const capacity = (await this.countEntries(prefix)) < limit;
-          // A trash that lost its slot never applied (an applied one leaves
-          // a real Trash entry), so it runs the leaf guard again before it
-          // may apply: a child can have arrived since.
-          if (capacity && body.operation === "delete_page")
-            await this.recheckLeafOnResume(pageId, key, intent);
-          if (capacity)
-            await this.ctx.storage.put(
-              lifecycleSlot(
-                body.operation,
-                pageId,
-                key,
-                undefined,
-                await this.slotPlacement(body.operation, pageId),
-              ),
-            );
-          else replayOnly = true;
-        }
-        const fresh = !inspected.entry;
-        // Once forwarded, the Page may apply the request, so its slot can no
-        // longer simply expire. The output gate holds the Page request until
-        // this write is durable.
-        if (!intent.forwarded) {
-          intent.forwarded = true;
-          await this.ctx.storage.put(key, intent);
-        }
-        for (let attempt = 0; ; attempt++) {
-          const requested = callerLifecycleArguments(args);
-          const restorePosition =
-            body.operation === "restore_page" ? await this.restorePosition(pageId) : undefined;
-          const response = await this.env.PAGES.getByName(pageId).fetch(
-            forwarded(request, lifecycle, {
-              ...requested,
-              page_id: pageId,
-              ...(intent.expectedRevision !== undefined && {
-                expected_revision: intent.expectedRevision,
-              }),
-              ...(replayOnly && { replay_only: true }),
-              ...(restorePosition && { restore_position: restorePosition }),
-            }),
-          );
-          if (response.headers.get("x-pages-lifecycle-rejected") === "before-change") {
-            await releaseLifecycleSlot(this.ctx.storage, body.operation, pageId, key);
-            await this.ctx.storage.delete(key);
-            await this.ctx.storage.sync();
-            return response;
-          }
-          // A missing Page is already permanently absent; clean up this
-          // account's stale index and report that terminal outcome.
-          if (!response.ok && response.status !== 404) return response;
-          const outcome = response.ok
-            ? await response.json()
-            : { receipt: { page_id: pageId, deleted: true }, current: { state: "deleted" } };
-          // A replayed receipt may be older than the Page's current state.
-          await projectLifecycle(this.ctx.storage, pageId, outcome.current);
-          // This index was stale when a new request was reserved. The Page has
-          // never seen this key, so retarget it once at the current revision.
-          if (outcome.receipt.superseded && fresh && !replayOnly && attempt === 0) {
-            intent.expectedRevision = outcome.current.revision;
-            await this.ctx.storage.put(key, intent);
-            continue;
-          }
-          intent.receipt = outcome.receipt;
-          break;
-        }
+          ...(intent.placement && { placement: intent.placement }),
+        }),
+      );
+      if (!response.ok && response.headers.get("x-pages-create-rejected") === "before-intent") {
+        // Only this explicit pre-intent rejection proves there is no Page
+        // creation to recover. Ambiguous failures retain their reservation.
+        await this.ctx.storage.delete(`page/${pageId}`);
+        await this.ctx.storage.delete(key);
+        await this.ctx.storage.sync();
       }
+      if (!response.ok) return response;
+      intent.receipt = await response.json();
+      await this.ctx.storage.put(`page/${pageId}`, {
+        page_id: pageId,
+        title: catalogTitle(intent.receipt.title),
+        created_at: intent.createdAt,
+        updated_at: intent.createdAt,
+        ...placementEntry(intent.placement),
+      });
+      await markCatalogIndexDirty(this.ctx.storage);
       intent.pending = false;
       await this.ctx.storage.put(key, intent);
       await this.ctx.storage.sync();
       return json(intent.receipt);
     } catch (error) {
       return errorResponse(error, "catalog");
+    }
+  }
+
+  /**
+   * Run one delete_page, restore_page or purge_page confirmation through the
+   * operation-intent machine. The machine decides each transition. This
+   * method reads the facts it needs, runs its effects against storage and the
+   * Page in order, and feeds the Page's answers back in until it replies.
+   * Requests reach it one at a time through this Catalog's queue.
+   */
+  async runLifecycle(request, operation, args, { key, digest, inspected }) {
+    const storage = this.ctx.storage;
+    const pageId = args.page_id;
+    const run = { request, operation, args, pageId, key, digest, retry: inspected.retry };
+    run.row = inspected.entry;
+    let state = await intentState(storage, key, operation, pageId);
+    let outcome;
+    // A permanent deletion this account observed is terminal, even when a
+    // build without Trash wrote the tombstone. A completed request replays
+    // first; any other checks here, so a Page never has to ask its owner's
+    // Catalog.
+    if (
+      !["completed", "superseded"].includes(state.name) &&
+      (await storage.get(`host/deleted/${pageId}`))
+    ) {
+      outcome = await this.stepIntent(run, state, { type: "tombstone" });
+      if (outcome.reply) return outcome.reply;
+      state = outcome.state;
+    }
+    if (state.name === "absent") {
+      outcome = await this.stepIntent(run, state, await this.newIntentFacts(operation, pageId));
+      if (outcome.reply) return outcome.reply;
+      state = outcome.state;
+    }
+    let event = { type: "request" };
+    if (["reserved", "forwarded"].includes(state.name))
+      ({ event, state } = await this.pendingIntentFacts(run, state));
+    for (;;) {
+      outcome = await this.stepIntent(run, state, event);
+      if (outcome.reply) return outcome.reply;
+      if (!outcome.next) throw new Error("An operation intent stopped without a reply");
+      ({ state, next: event } = outcome);
+    }
+  }
+
+  /** Step the machine and run its effects. `next` is the event the last
+   * effect produced (the Page's reply to a forward); `reply` is the HTTP
+   * response when the machine answered. */
+  async stepIntent(run, state, event) {
+    const result = operationIntent.step(state, event);
+    if (result.rejected !== undefined && result.response === undefined)
+      throw new Error(`An operation intent refused ${event.type}: ${result.rejected}`);
+    let next;
+    for (const effect of result.effects) next = await this.runIntentEffect(run, effect);
+    const { response } = result;
+    return {
+      state: result.state,
+      next,
+      reply:
+        response === undefined
+          ? undefined
+          : response.source === "page"
+            ? run.reply
+            : json(response.body, response.status),
+    };
+  }
+
+  async runIntentEffect(run, effect) {
+    const storage = this.ctx.storage;
+    const { operation, pageId, key } = run;
+    switch (effect.type) {
+      case "persist":
+        if (effect.state === "reserved") {
+          run.row = await reserveOperation(storage, {
+            key,
+            retry: run.retry,
+            entry: {
+              fingerprint: run.digest,
+              pending: true,
+              pageId,
+              createdAt: new Date().toISOString(),
+              // The Page applies a lifecycle request only at this revision.
+              expectedRevision: effect.expectedRevision,
+            },
+          });
+          // The capacity check holds while the slot stays reserved. The
+          // intent and its slot commit in one write.
+          if (effect.slot)
+            await storage.put({
+              [key]: run.row,
+              ...lifecycleSlot(
+                operation,
+                pageId,
+                key,
+                undefined,
+                await this.slotPlacement(operation, pageId),
+              ),
+            });
+          else await storage.put(key, run.row);
+          return;
+        }
+        // Once forwarded, the Page may apply the request, so its slot can no
+        // longer simply expire. The output gate holds the Page request until
+        // this write is durable.
+        if (effect.state === "forwarded") run.row.forwarded = true;
+        if (effect.expectedRevision !== undefined)
+          run.row.expectedRevision = effect.expectedRevision;
+        if (effect.receipt) {
+          run.row.receipt = effect.receipt;
+          run.row.pending = false;
+        }
+        await storage.put(key, run.row);
+        return;
+      case "reserve_slot":
+        await storage.put(
+          lifecycleSlot(
+            operation,
+            pageId,
+            key,
+            undefined,
+            await this.slotPlacement(operation, pageId),
+          ),
+        );
+        return;
+      case "release_slot":
+        await releaseLifecycleSlot(storage, operation, pageId, key);
+        return;
+      case "delete_intent":
+        await storage.delete(key);
+        return;
+      case "sync":
+        await storage.sync();
+        return;
+      case "project":
+        // A replayed receipt may be older than the Page's current state.
+        await projectLifecycle(storage, pageId, effect.current);
+        return;
+      case "forget_trash":
+        await storage.delete(`trash/${pageId}`);
+        return;
+      case "notify_tombstone":
+        await this.notifyTombstone(pageId);
+        return;
+      case "forward":
+        return this.forwardIntent(run, effect);
+      case "check_leaf":
+        return this.checkLeaf(pageId);
+    }
+    throw new Error(`An operation intent can't run ${effect.type}`);
+  }
+
+  /** The leaf guard as a `leaf` event. It runs requireLeafPage whatever the
+   * Page's revision, settling children's unsettled reservations first. */
+  async checkLeaf(pageId) {
+    try {
+      await this.requireLeafPage(pageId);
+      return { type: "leaf" };
+    } catch (error) {
+      if (error.code === replies.unsettled.body.code) return { type: "leaf", unavailable: true };
+      const refusal = leafRefusalOf(error);
+      if (!refusal) throw error;
+      return { type: "leaf", refusal };
+    }
+  }
+
+  /** Forward the request to its Page and return the Page's answer as a
+   * `page_reply`. An unread failure is kept to pass through unchanged. */
+  async forwardIntent(run, effect) {
+    const { request, operation, args, pageId } = run;
+    const restorePosition =
+      operation === "restore_page" ? await this.restorePosition(pageId) : undefined;
+    let response;
+    try {
+      response = await this.env.PAGES.getByName(pageId).fetch(
+        forwarded(request, lifecycleRoutes[operation], {
+          ...callerLifecycleArguments(args),
+          page_id: pageId,
+          ...(effect.expectedRevision !== undefined && {
+            expected_revision: effect.expectedRevision,
+          }),
+          ...(effect.replayOnly && { replay_only: true }),
+          ...(restorePosition && { restore_position: restorePosition }),
+        }),
+      );
+    } catch (error) {
+      logFailure(error, "catalog");
+      return { type: "page_reply", unavailable: true };
+    }
+    run.reply = response;
+    if (!response.ok) {
+      const rejected = response.headers.get("x-pages-lifecycle-rejected");
+      return {
+        type: "page_reply",
+        status: response.status,
+        ...(rejected === "before-change" && { rejected }),
+      };
+    }
+    const { receipt, current } = await response.json();
+    const known = await knownRevision(this.ctx.storage, pageId);
+    return {
+      type: "page_reply",
+      status: response.status,
+      receipt,
+      current,
+      ...(known !== undefined && { known }),
+    };
+  }
+
+  /** What a new lifecycle request needs before it is reserved: the leaf
+   * guard for Trash, room at its destination, and the lifecycle revision
+   * this account last observed for the Page. */
+  async newIntentFacts(operation, pageId) {
+    const storage = this.ctx.storage;
+    if (operation === "delete_page") await this.requireLeafPage(pageId);
+    const slotKey = lifecycleSlotKey(operation, pageId);
+    let destination = "none";
+    if (slotKey) {
+      const limit = operation === "delete_page" ? TRASH_LIMIT : CATALOG_LIMIT;
+      // Counting first removes stale reservations, including this Page's.
+      const full = (await this.countEntries(slotPrefix[operation])) >= limit;
+      const entry = await storage.get(slotKey);
+      destination = !entry ? (full ? "full" : "room") : entry.reservation ? "taken" : "entry";
+    }
+    const revision = await observedLifecycleRevision(storage, pageId);
+    return { type: "request", operation, pageId, destination, revision };
+  }
+
+  /** What a pending request needs before it continues. Capacity, and for
+   * Trash the leaf guard, are read only when it no longer holds its slot. */
+  async pendingIntentFacts(run, state) {
+    const storage = this.ctx.storage;
+    const { operation, pageId, key } = run;
+    const entry = state.slot === "live" ? await storage.get(slotPrefix[operation] + pageId) : null;
+    const event = { type: "request", expired: entry ? !(entry.expires_at > Date.now()) : false };
+    if (holdsSlot(state, event.expired)) return { event, state };
+    const limit = operation === "delete_page" ? TRASH_LIMIT : CATALOG_LIMIT;
+    event.capacity = (await this.countEntries(slotPrefix[operation])) < limit;
+    // Counting may have removed this intent's own expired slot.
+    state = { ...state, slot: (await intentState(storage, key, operation, pageId)).slot };
+    // A trash that lost its slot never applied (an applied one leaves a real
+    // Trash entry), so it runs the leaf guard again before it may apply: a
+    // child can have arrived since.
+    if (event.capacity && operation === "delete_page") {
+      const refusal = await this.leafRefusal(pageId, state);
+      event.leaf = refusal ? "refused" : "ok";
+      if (refusal) event.refusal = refusal;
+    }
+    return { event, state };
+  }
+
+  /** The leaf guard for a resumed trash that lost its slot. If the Page's
+   * lifecycle is still at the intent's revision, forwarding would apply the
+   * request, so a new child refuses it here. If the lifecycle moved,
+   * forwarding replays a recorded receipt or comes back superseded, and the
+   * machine runs the guard again before any retarget. */
+  async leafRefusal(pageId, state) {
+    const current = await this.boundedLifecycle(pageId, Date.now() + lifecycleBounds.passMs);
+    if (current.state !== "active" || (current.revision ?? 0) !== state.expectedRevision) return;
+    try {
+      await this.requireLeafPage(pageId);
+    } catch (error) {
+      const refusal = leafRefusalOf(error);
+      if (!refusal) throw error;
+      return refusal;
     }
   }
 
@@ -1157,26 +1310,6 @@ export class Catalog {
     }
   }
 
-  /** Rerun the leaf guard for a resumed trash before it re-acquires its
-   * slot. The Page decides whether the request already applied: if its
-   * lifecycle moved past the intent's revision, forwarding only replays the
-   * recorded receipt and the guard does not apply. Otherwise a new child
-   * refuses the request, and the intent is released like any other
-   * rejection before change. */
-  async recheckLeafOnResume(pageId, key, intent) {
-    const state = await this.boundedLifecycle(pageId, Date.now() + lifecycleBounds.passMs);
-    if (state.state !== "active" || (state.revision ?? 0) !== intent.expectedRevision) return;
-    try {
-      await this.requireLeafPage(pageId);
-    } catch (error) {
-      if (["page_has_children", "home_page_protected"].includes(error.code)) {
-        await this.ctx.storage.delete(key);
-        await this.ctx.storage.sync();
-      }
-      throw error;
-    }
-  }
-
   /** Settle several Pages' reservations within one budget: at most
    * `lifecycleBounds.concurrency` reads at a time, each bounded, and no read
    * starts after the pass deadline. An exhausted budget refuses the request
@@ -1204,21 +1337,17 @@ export class Catalog {
    * projected into this account's entries; an unapplied one keeps its
    * reservation, since its intent may still apply on retry. A reservation
    * whose intent is no longer pending is stale and removed. When the Page
-   * can't answer, the caller is refused rather than left to guess. */
+   * can't answer, the caller is refused rather than left to guess. Each
+   * reservation is a `settle` event for its operation intent. */
   async settleReservation(pageId, deadline = Date.now() + lifecycleBounds.passMs) {
     const storage = this.ctx.storage;
     for (const key of [`page/${pageId}`, `trash/${pageId}`]) {
       const entry = await storage.get(key);
       if (!entry?.reservation) continue;
-      const intent = await storage.get(entry.intent);
-      if (intent?.pending !== true) {
-        await storage.delete(key);
-        continue;
-      }
-      const state = await this.boundedLifecycle(pageId, deadline);
-      if (state.state === "missing") await projectLifecycle(storage, pageId, { state: "deleted" });
-      else if ((state.revision ?? 0) !== intent.expectedRevision)
-        await projectLifecycle(storage, pageId, state);
+      const { response } = await runSlot(storage, key, entry, { type: "settle" }, (id) =>
+        this.boundedLifecycle(id, deadline),
+      );
+      if (response) throw new HttpError(response.status, response.body.error, response.body.code);
     }
   }
 
