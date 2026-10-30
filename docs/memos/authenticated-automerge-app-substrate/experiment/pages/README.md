@@ -535,6 +535,11 @@ token or Anaconda API key in `Authorization: Bearer ...`; `X-Pages-Driver` is an
 optional client label. OAuth scopes and current Page permissions apply on every
 call. The public `/llms.txt` is the tool usage and authentication reference.
 
+A single `tools/list` or `ping` message needs no credential: tool definitions are
+static and carry no account data. `initialize`, `tools/call` and every other method
+return the OAuth challenge without one, so MCP clients still start sign-in from
+`initialize`. A presented credential that fails still gets the challenge.
+
 Other endpoints include `/api/access` for sharing, `/api/connect` for native
 admission details, `/api/sync` for binary WebSockets, and `/api/saved` for durable
 receipts. OAuth metadata is public at

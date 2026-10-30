@@ -83,7 +83,7 @@ import {
 } from "./mutations.mjs";
 
 import { claimInvitation, proposeSharingMutation, sharingProjection } from "./sharing.mjs";
-import { pageAccess, pageGrant, pageState, restrictAccessDuringCommit } from "./access.mjs";
+import { pageAccess, pageState, restrictAccessDuringCommit } from "./access.mjs";
 
 import {
   CATALOG_LIMIT,
@@ -201,6 +201,22 @@ function forwarded(request, path, body) {
   return new Request(url, { method: "POST", headers, body: JSON.stringify(body) });
 }
 
+const ANONYMOUS_MCP_METHODS = new Set(["tools/list", "ping"]);
+
+/** True for a credential-free POST carrying one tools/list or ping message.
+ * `initialize` stays behind the 401 challenge: MCP clients start OAuth from it. */
+async function anonymousToolList(request) {
+  if (request.method !== "POST" || request.headers.has("authorization")) return false;
+  const text = await request.clone().text();
+  if (text.length > 4096) return false;
+  try {
+    const message = JSON.parse(text);
+    return message?.jsonrpc === "2.0" && ANONYMOUS_MCP_METHODS.has(message.method);
+  } catch {
+    return false;
+  }
+}
+
 function authorizeImage(request, env, pageId, write) {
   const internal = forwarded(request, "/internal/assets/authorize", { page_id: pageId, write });
   // Only the host creates this request. Reauthenticate on every call so a grant
@@ -304,6 +320,18 @@ const gateway = {
         return response;
       }
       if (url.pathname === "/mcp") {
+        if (await anonymousToolList(request)) {
+          // Tool definitions are static and carry no account data. Origin
+          // checks still apply, and every other method needs a credential.
+          requireSameOrigin(request, env);
+          return await handleMcp(
+            request,
+            async () => {
+              throw new HttpError(401, "Sign in to call Pages tools");
+            },
+            env,
+          );
+        }
         await authenticate(request, env);
         return await handleMcp(
           request,

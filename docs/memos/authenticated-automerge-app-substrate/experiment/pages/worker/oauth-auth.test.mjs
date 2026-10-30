@@ -123,24 +123,65 @@ async function call(f, name, args = {}, headers = {}) {
   return (await response.json()).result;
 }
 
+const initialize = {
+  jsonrpc: "2.0",
+  id: 1,
+  method: "initialize",
+  params: {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "test", version: "1" },
+  },
+};
+
 test("unauthenticated MCP discovers OAuth without Origin, DB, or provider traffic", async (t) => {
   t.mock.method(globalThis, "fetch", () => assert.fail("discovery must remain local"));
   const env = environment();
-  const response = await worker.fetch(request(), env);
+  const response = await worker.fetch(request("/mcp", undefined, {}, "POST", initialize), env);
   assert.equal(response.status, 401);
   assert.equal(
     response.headers.get("www-authenticate"),
     `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`,
   );
   assert.equal(response.headers.get("cache-control"), "no-store");
-  for (const headers of [
-    { Origin: "https://attacker.example" },
-    { "Sec-Fetch-Site": "cross-site" },
+  for (const body of [initialize, { jsonrpc: "2.0", id: 1, method: "tools/list" }])
+    for (const headers of [
+      { Origin: "https://attacker.example" },
+      { "Sec-Fetch-Site": "cross-site" },
+    ]) {
+      const rejected = await worker.fetch(request("/mcp", undefined, headers, "POST", body), env);
+      assert.equal(rejected.status, 403);
+      assert.equal(rejected.headers.get("www-authenticate"), null);
+    }
+});
+
+test("tools/list and ping answer without a credential; other methods still challenge", async (t) => {
+  t.mock.method(globalThis, "fetch", () => assert.fail("tool discovery must remain local"));
+  const env = environment();
+  const listed = await worker.fetch(request(), env);
+  assert.equal(listed.status, 200, await listed.clone().text());
+  const names = (await listed.json()).result.tools.map((tool) => tool.name);
+  for (const name of ["list_pages", "read_page", "patch_page", "delete_page", "restore_page"])
+    assert.ok(names.includes(name), name);
+  const pinged = await worker.fetch(
+    request("/mcp", undefined, {}, "POST", { jsonrpc: "2.0", id: 2, method: "ping" }),
+    env,
+  );
+  assert.equal(pinged.status, 200);
+  for (const body of [
+    initialize,
+    { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_pages", arguments: {} } },
+    [{ jsonrpc: "2.0", id: 4, method: "tools/list" }],
+    { jsonrpc: "2.0", id: 5, method: "resources/list" },
   ]) {
-    const rejected = await worker.fetch(request("/mcp", undefined, headers), env);
-    assert.equal(rejected.status, 403);
-    assert.equal(rejected.headers.get("www-authenticate"), null);
+    const challenged = await worker.fetch(request("/mcp", undefined, {}, "POST", body), env);
+    assert.equal(challenged.status, 401, JSON.stringify(body));
+    assert.ok(challenged.headers.get("www-authenticate"));
   }
+  // A presented but unusable credential still gets the reconnect challenge.
+  const stale = await worker.fetch(request("/mcp", "pages_not-a-real-token"), env);
+  assert.equal(stale.status, 401);
+  assert.ok(stale.headers.get("www-authenticate"));
 });
 
 test("Pages-issued tokens authenticate MCP and each host-only forwarding hop locally", async (t) => {
