@@ -19,7 +19,7 @@ import { pageState } from "./access.mjs";
  *   deletion receipts.
  *
  * `placement` summarizes a placed record: `nested` when it has a parent, its
- * `placement_epoch`, and `home` for a Space's home Page. `intent` marks a
+ * `placement_epoch`, and `home` for a Project's home Page. `intent` marks a
  * creation intent left beside an installed record.
  *
  * Events are requests (trash, restore, purgePreview, purgeConfirm), the
@@ -284,7 +284,7 @@ const NOT_OWNER = refused(403, "Document access denied");
 const KEY_CONFLICT = refused(409, "idempotency_key was used for a different request");
 const HOME_PAGE = refused(
   409,
-  "A Space's home Page stays with its Space; it can't move to Trash on its own",
+  "A Project's home Page stays with its Project; it can't move to Trash on its own",
   "home_page_protected",
 );
 const HEADS_INVALID = refused(400, "base_heads from read_page are required");
@@ -483,7 +483,7 @@ function restore(state, event) {
       response: receiptReply("receipt", { state: "active", restored: false }, state),
     };
   // The Catalog supplies a position when the parent is gone: the Page returns
-  // to the top level of its Space under a new placement epoch.
+  // to the top level of its Project under a new placement epoch.
   const placement =
     state.placement && event.position === "top-level"
       ? { ...state.placement, nested: false, epoch: state.placement.epoch + 1 }

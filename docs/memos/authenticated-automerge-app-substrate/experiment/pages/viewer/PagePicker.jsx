@@ -1,5 +1,5 @@
 import { matchingPages } from "./page-list.mjs";
-import { pagePath, spacePath, isPlainNavigation } from "../shared/routes.mjs";
+import { pagePath, projectPath, isPlainNavigation } from "../shared/routes.mjs";
 import { useEffect, useRef, useState } from "react";
 import { Boxes, Check, FileText, Plus, Search, Trash2, X } from "lucide-react";
 
@@ -11,9 +11,9 @@ export function PagePicker({
   onOpen,
   onCreate,
   onTrash,
-  spaces = [],
-  currentSpaceId,
-  onOpenSpace,
+  projects = [],
+  currentProjectId,
+  onOpenProject,
   creating,
   error,
 }) {
@@ -88,24 +88,24 @@ export function PagePicker({
             <p className="muted">{query ? "No matching pages." : "No pages yet."}</p>
           )}
         </nav>
-        {onOpenSpace && spaces.length > 0 && (
-          <nav className="picker-list picker-spaces" aria-label="Spaces">
-            <h3 className="picker-section">Spaces</h3>
-            {matchingPages(spaces, query).map((space) => (
+        {onOpenProject && projects.length > 0 && (
+          <nav className="picker-list picker-projects" aria-label="Projects">
+            <h3 className="picker-section">Projects</h3>
+            {matchingPages(projects, query).map((project) => (
               <a
                 className="picker-page"
-                href={spacePath(space.space_id)}
-                key={space.space_id}
-                aria-current={space.space_id === currentSpaceId ? "page" : undefined}
+                href={projectPath(project.project_id)}
+                key={project.project_id}
+                aria-current={project.project_id === currentProjectId ? "page" : undefined}
                 onClick={(event) => {
                   if (!isPlainNavigation(event)) return;
                   event.preventDefault();
                   onClose();
-                  onOpenSpace(space.space_id);
+                  onOpenProject(project.project_id);
                 }}
               >
                 <Boxes size={18} aria-hidden="true" />
-                <span>{space.title || "Untitled"}</span>
+                <span>{project.title || "Untitled"}</span>
               </a>
             ))}
           </nav>

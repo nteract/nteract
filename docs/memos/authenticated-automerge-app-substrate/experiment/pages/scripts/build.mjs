@@ -115,7 +115,9 @@ await writeFile(
           { name: "PAGES", class_name: "Page" },
           { name: "CATALOGS", class_name: "Catalog" },
           { name: "PAGE_RECORDS", class_name: "PageRecords" },
-          { name: "SPACES", class_name: "Space" },
+          // Projects keep the Space class: the class name is the storage identity for
+          // Projects, and celld 0.6.3 refuses renamed_classes migrations.
+          { name: "PROJECTS", class_name: "Space" },
         ],
       },
       migrations: [

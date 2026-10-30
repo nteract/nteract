@@ -1,5 +1,5 @@
-// Spaces through MCP and the browser on one local OIDC deployment: create a
-// Space and nested Pages over MCP, list them, open them in the browser, follow
+// Projects through MCP and the browser on one local OIDC deployment: create a
+// Project and nested Pages over MCP, list them, open them in the browser, follow
 // breadcrumbs, and trash and restore Pages one at a time.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -8,15 +8,15 @@ const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
 assert.equal(new URL(origin).protocol, "http:");
 const keyFile = process.env.PAGES_E2E_KEY_FILE;
-assert.ok(keyFile, "Run through local-sharing-e2e.mjs --spaces for fixture API keys");
+assert.ok(keyFile, "Run through local-sharing-e2e.mjs --projects for fixture API keys");
 const keys = JSON.parse(await readFile(keyFile, "utf8"));
-const output = process.env.PAGES_SCREENSHOTS || "/tmp/pages-spaces-browser";
+const output = process.env.PAGES_SCREENSHOTS || "/tmp/pages-projects-browser";
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({ headless: true });
 const report = { completed: [], errors: [] };
 const complete = (name) => {
   report.completed.push(name);
-  console.log(`[Spaces E2E] ${name}`);
+  console.log(`[Projects E2E] ${name}`);
 };
 async function mcp(name, operation, args = {}) {
   const response = await fetch(`${origin}/mcp`, {
@@ -25,7 +25,7 @@ async function mcp(name, operation, args = {}) {
       Authorization: `Bearer ${keys[name]}`,
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
-      "X-Pages-Driver": "Spaces E2E agent",
+      "X-Pages-Driver": "Projects E2E agent",
     },
     body: JSON.stringify({
       jsonrpc: "2.0",
@@ -46,19 +46,19 @@ const ok = async (name, operation, args) => {
 };
 let owner;
 try {
-  const title = "Spaces fixture " + Date.now();
-  const space = await ok("owner", "create_space", {
+  const title = "Projects fixture " + Date.now();
+  const project = await ok("owner", "create_project", {
     title,
     description: "Where the launch lives.",
     idempotency_key: crypto.randomUUID(),
   });
-  assert.match(space.space_id, /^sp_/);
-  assert.equal(space.url, `${origin}/s/${space.space_id}`);
-  assert.equal(space.home_page_url, `${origin}/p/${space.home_page_id}`);
+  assert.match(project.project_id, /^prj_/);
+  assert.equal(project.url, `${origin}/project/${project.project_id}`);
+  assert.equal(project.home_page_url, `${origin}/p/${project.home_page_id}`);
   const roadmap = await ok("owner", "create_page", {
     title: "Roadmap",
     markdown: "What ships when.",
-    space_id: space.space_id,
+    project_id: project.project_id,
     idempotency_key: crypto.randomUUID(),
   });
   const plan = await ok("owner", "create_page", {
@@ -67,16 +67,16 @@ try {
     parent_id: roadmap.page_id,
     idempotency_key: crypto.randomUUID(),
   });
-  assert.equal(plan.space_id, space.space_id);
+  assert.equal(plan.project_id, project.project_id);
   assert.equal(plan.parent_id, roadmap.page_id);
-  complete("MCP created a Space with its home Page and a nested Page");
+  complete("MCP created a Project with its home Page and a nested Page");
 
-  const spaces = await ok("owner", "list_spaces");
-  assert.ok(spaces.spaces.some((entry) => entry.space_id === space.space_id));
-  const listed = await ok("owner", "list_pages", { space_id: space.space_id });
+  const projects = await ok("owner", "list_projects");
+  assert.ok(projects.projects.some((entry) => entry.project_id === project.project_id));
+  const listed = await ok("owner", "list_pages", { project_id: project.project_id });
   assert.deepEqual(
     listed.pages.map((page) => page.page_id).sort(),
-    [space.home_page_id, roadmap.page_id, plan.page_id].sort(),
+    [project.home_page_id, roadmap.page_id, plan.page_id].sort(),
   );
   const children = await ok("owner", "list_pages", { parent_id: roadmap.page_id });
   assert.deepEqual(
@@ -88,17 +88,17 @@ try {
     read.breadcrumbs.map((crumb) => crumb.title),
     [title, "Roadmap"],
   );
-  const home = await ok("owner", "get_space", { space_id: space.space_id });
-  assert.equal(home.home_page_id, space.home_page_id);
-  complete("list_spaces, list_pages by Space and parent, get_space and breadcrumbs agree");
+  const home = await ok("owner", "get_project", { project_id: project.project_id });
+  assert.equal(home.home_page_id, project.home_page_id);
+  complete("list_projects, list_pages by Project and parent, get_project and breadcrumbs agree");
 
-  const mixup = await mcp("owner", "read_page", { page_id: space.space_id });
+  const mixup = await mcp("owner", "read_page", { page_id: project.project_id });
   assert.equal(mixup.isError, true);
-  assert.equal(mixup.body.code, "space_id_as_page_id");
-  const other = await mcp("editor", "get_space", { space_id: space.space_id });
+  assert.equal(mixup.body.code, "project_id_as_page_id");
+  const other = await mcp("editor", "get_project", { project_id: project.project_id });
   assert.equal(other.isError, true);
-  assert.equal(other.body.code, "space_not_found");
-  complete("A Space ID passed as page_id names get_space; another account sees no Space");
+  assert.equal(other.body.code, "project_not_found");
+  complete("A Project ID passed as page_id names get_project; another account sees no Project");
 
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   owner = await context.newPage();
@@ -111,14 +111,16 @@ try {
   await expect(owner.getByRole("button", { name: /, switch page$/ })).toBeVisible({
     timeout: 60000,
   });
-  await owner.goto(`${origin}/s/${space.space_id}`);
+  // A link from before the Project name opens the Project at its own path.
+  await owner.goto(`${origin}/s/${project.project_id}`);
   await expect(owner.getByRole("heading", { name: title })).toBeVisible({ timeout: 60000 });
+  await expect(owner).toHaveURL(`${origin}/project/${project.project_id}`);
   const list = owner.getByRole("list", { name: `Pages in ${title}` });
-  await expect(list.locator(".space-home")).toContainText("Home");
+  await expect(list.locator(".project-home")).toContainText("Home");
   await expect(list.getByRole("link", { name: "Roadmap" })).toBeVisible();
   await expect(list.getByRole("link", { name: "Q4 plan" })).toBeVisible();
-  await owner.screenshot({ path: `${output}/spaces-view.png` });
-  complete("The browser opened the Space with its home Page and Page tree");
+  await owner.screenshot({ path: `${output}/projects-view.png` });
+  complete("The browser opened the Project from an /s/ link with its home Page and Page tree");
 
   await list.getByRole("link", { name: "Q4 plan" }).click();
   await expect(owner.locator("wg-content").first()).toContainText("The fourth quarter.", {
@@ -127,21 +129,21 @@ try {
   const crumbs = owner.getByRole("navigation", { name: "Breadcrumbs" });
   await expect(crumbs).toContainText(title);
   await expect(crumbs).toContainText("Roadmap");
-  await owner.screenshot({ path: `${output}/spaces-breadcrumbs.png` });
+  await owner.screenshot({ path: `${output}/projects-breadcrumbs.png` });
   await crumbs.getByRole("link", { name: title }).click();
   await expect(owner.getByRole("heading", { name: title })).toBeVisible();
   await owner.getByRole("button", { name: /, switch page$/ }).click();
   const switcher = owner.getByRole("dialog", { name: "Pages" });
-  await expect(switcher.getByRole("navigation", { name: "Spaces" })).toContainText(title);
+  await expect(switcher.getByRole("navigation", { name: "Projects" })).toContainText(title);
   await switcher.getByRole("button", { name: "Close Pages" }).click();
-  complete("Breadcrumbs led back to the Space, and the switcher lists it");
+  complete("Breadcrumbs led back to the Project, and the switcher lists it");
 
-  await owner.getByRole("button", { name: "New Page in this Space" }).click();
+  await owner.getByRole("button", { name: "New Page in this Project" }).click();
   await expect(owner.getByLabel("Page title")).toBeVisible({ timeout: 30000 });
   await expect(owner.getByRole("navigation", { name: "Breadcrumbs" })).toContainText(title);
-  const after = await ok("owner", "list_pages", { space_id: space.space_id });
+  const after = await ok("owner", "list_pages", { project_id: project.project_id });
   assert.equal(after.pages.length, 4);
-  complete("New Page in this Space created a Page at the Space's top level");
+  complete("New Page in this Project created a Page at the Project's top level");
 
   const authority = await ok("owner", "list_pages");
   const trashPage = (pageId) =>
@@ -161,7 +163,7 @@ try {
     assert.equal(trashed.isError, false, JSON.stringify(trashed.body));
     assert.equal(trashed.body.state, "trashed");
   }
-  const protectedHome = await trashPage(space.home_page_id);
+  const protectedHome = await trashPage(project.home_page_id);
   assert.equal(protectedHome.body.code, "home_page_protected");
   const restoreKey = () => authority.retry_key_prefix + crypto.randomUUID();
   const planBack = await ok("owner", "restore_page", {
@@ -176,7 +178,7 @@ try {
     idempotency_key: restoreKey(),
   });
   assert.equal(roadmapBack.restored, true);
-  const top = await ok("owner", "list_pages", { space_id: space.space_id, parent_id: null });
+  const top = await ok("owner", "list_pages", { project_id: project.project_id, parent_id: null });
   for (const pageId of [roadmap.page_id, plan.page_id])
     assert.ok(top.pages.some((page) => page.page_id === pageId));
   report.cleaned = true;

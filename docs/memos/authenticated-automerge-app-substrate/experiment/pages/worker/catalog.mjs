@@ -8,6 +8,10 @@
  * before Spaces have none and are Your items. Trashed entries use a
  * separate prefix so they never consume active listing or quota slots, and so
  * builds that predate Trash do not list them.
+ *
+ * Callers see Projects. Storage keeps the Space name so a rollback build reads
+ * the same records: `space/<id>` entries, `space_id` placement fields and the
+ * journal intents that name them.
  */
 import { markCatalogIndexDirty } from "./catalog-index.mjs";
 import { RETRY_LIFETIME_MS } from "./operation-journal.mjs";

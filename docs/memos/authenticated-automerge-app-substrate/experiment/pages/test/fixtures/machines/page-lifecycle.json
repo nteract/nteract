@@ -713,7 +713,7 @@
         "effects": [],
         "response": {
           "status": 409,
-          "error": "A Space's home Page stays with its Space; it can't move to Trash on its own",
+          "error": "A Project's home Page stays with its Project; it can't move to Trash on its own",
           "code": "home_page_protected",
           "beforeChange": true
         },

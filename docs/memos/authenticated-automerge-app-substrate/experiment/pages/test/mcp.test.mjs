@@ -465,8 +465,8 @@ test("MCP tool metadata declares the OAuth scopes needed by each operation", asy
             "read_page_changes",
             "list_page_comments",
             "read_page_presence",
-            "list_spaces",
-            "get_space",
+            "list_projects",
+            "get_project",
           ].includes(tool.name)
             ? ["pages:read"]
             : ["pages:read", "pages:write"],

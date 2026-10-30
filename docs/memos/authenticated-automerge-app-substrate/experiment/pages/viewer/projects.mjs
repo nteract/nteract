@@ -1,19 +1,19 @@
 import { retryKey } from "../model/retry-key.mjs";
 
-/** Spaces this account can open. A failed listing shows none instead of
+/** Projects this account can open. A failed listing shows none instead of
  * blocking the Page list. */
-export async function listSpaces(call) {
-  const result = await call("list_spaces", { limit: 100 });
-  return result.spaces ?? [];
+export async function listProjects(call) {
+  const result = await call("list_projects", { limit: 100 });
+  return result.projects ?? [];
 }
 
-/** Every Page of one Space, following list_pages cursors. */
-export async function listSpacePages(call, spaceId, { maxRequests = 10 } = {}) {
+/** Every Page of one Project, following list_pages cursors. */
+export async function listProjectPages(call, projectId, { maxRequests = 10 } = {}) {
   const pages = new Map();
   let cursor;
   for (let request = 0; request < maxRequests; request++) {
     const result = await call("list_pages", {
-      space_id: spaceId,
+      project_id: projectId,
       limit: 100,
       ...(cursor ? { cursor } : {}),
     });
@@ -25,11 +25,11 @@ export async function listSpacePages(call, spaceId, { maxRequests = 10 } = {}) {
   return [...pages.values()];
 }
 
-/** Rows for a Space view: the home Page first with the Pages nested under
+/** Rows for a Project view: the home Page first with the Pages nested under
  * it, then the other top-level Pages, each followed by its descendants in
  * position order. A Page whose parent is missing (in Trash, or not listed)
  * shows at the top level. */
-export function spaceTree(pages) {
+export function projectTree(pages) {
   const ids = new Set(pages.map((page) => page.page_id));
   const children = new Map();
   for (const page of pages) {
@@ -58,12 +58,12 @@ export function spaceTree(pages) {
   return rows;
 }
 
-/** Create an empty Page at a Space's top level and return its receipt. */
-export async function createPageInSpace(call, spaceId) {
-  const prepared = await call("list_spaces", { limit: 1 });
+/** Create an empty Page at a Project's top level and return its receipt. */
+export async function createPageInProject(call, projectId) {
+  const prepared = await call("list_projects", { limit: 1 });
   return call("create_page", {
     title: "Untitled",
-    space_id: spaceId,
+    project_id: projectId,
     retry_token: prepared.retry_token,
     idempotency_key: await retryKey(prepared.retry_token),
   });

@@ -5,19 +5,23 @@ export function pagePath(id) {
   return `/p/${id}`;
 }
 
-const spaceIdPattern = /^sp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+// New Projects get prj_ IDs; sp_ IDs predate the Project name and stay valid.
+const projectIdPattern =
+  /^(prj|sp)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export const isProjectId = (id) => projectIdPattern.test(id ?? "");
 
-export function spacePath(id) {
-  if (!spaceIdPattern.test(id ?? "")) throw Error("Invalid Space ID");
-  return `/s/${id}`;
+export function projectPath(id) {
+  if (!isProjectId(id)) throw Error("Invalid Project ID");
+  return `/project/${id}`;
 }
 
 export function readPageRoute(input) {
   const url = new URL(input, "https://pages.invalid");
-  const space = /^\/s\/([^/]+)\/?$/.exec(url.pathname);
-  if (space)
-    return spaceIdPattern.test(space[1])
-      ? { kind: "space", spaceId: space[1], path: spacePath(space[1]) }
+  // /s/<id> links predate the Project name; they open the Project's own path.
+  const project = /^\/(?:project|s)\/([^/]+)\/?$/.exec(url.pathname);
+  if (project)
+    return isProjectId(project[1])
+      ? { kind: "project", projectId: project[1], path: projectPath(project[1]) }
       : { kind: "missing" };
   const match = /^\/p\/([^/]+)\/?$/.exec(url.pathname);
   const legacy = url.pathname === "/" && url.searchParams.has("page");
@@ -45,7 +49,7 @@ export function writePageRoute(
   id,
   { replace = false, history = globalThis.history, location = globalThis.location } = {},
 ) {
-  const path = id ? (id.startsWith("sp_") ? spacePath(id) : pagePath(id)) : "/";
+  const path = id ? (isProjectId(id) ? projectPath(id) : pagePath(id)) : "/";
   if (`${location.pathname}${location.search}${location.hash}` === path) return;
   history[replace ? "replaceState" : "pushState"]({ pageId: id ?? null }, "", path);
 }

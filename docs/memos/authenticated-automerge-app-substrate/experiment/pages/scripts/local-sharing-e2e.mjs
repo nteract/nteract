@@ -24,13 +24,14 @@ const taskLists = process.argv.includes("--task-lists");
 const admission = process.argv.includes("--admission");
 const buildUpdate = process.argv.includes("--build-update");
 const trash = process.argv.includes("--trash");
-const spaces = process.argv.includes("--spaces");
+const projects = process.argv.includes("--projects");
 if (
-  [domainView, images, mcpImages, taskLists, admission, buildUpdate, trash, spaces].filter(Boolean)
-    .length > 1
+  [domainView, images, mcpImages, taskLists, admission, buildUpdate, trash, projects].filter(
+    Boolean,
+  ).length > 1
 )
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --mcp-images, --task-lists, --admission, --build-update, --trash or --spaces",
+    "Choose one qualification: --domain-view, --images, --mcp-images, --task-lists, --admission, --build-update, --trash or --projects",
   );
 const children = new Set();
 let canceled = false;
@@ -285,8 +286,8 @@ try {
   await run(
     process.execPath,
     [
-      spaces
-        ? "scripts/spaces-smoke.mjs"
+      projects
+        ? "scripts/projects-smoke.mjs"
         : trash
           ? "scripts/trash-smoke.mjs"
           : admission

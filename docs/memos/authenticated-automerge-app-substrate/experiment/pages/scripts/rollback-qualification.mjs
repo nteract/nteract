@@ -1,6 +1,10 @@
-// Rollback qualification on local celld with one persistent data directory:
-// this build writes Spaces, a previous build serves the same data, then this
-// build serves it again. The previous build must already be built:
+// Rollback qualification on local celld with one persistent data directory.
+// The previous build (one that still calls Projects Spaces, such as 3548b9750)
+// writes a Space first, as a deployment upgrading from it holds. This build
+// serves it as a Project, updates it and writes a Project; the previous build
+// serves the same data, updates the Space again and writes another Space; then
+// this build serves all three with both updates. Storage keeps the Space names,
+// so no step moves a record. The previous build must already be built:
 //   node scripts/rollback-qualification.mjs --previous <previous pages dir>
 // No pre-existing server, provider account or credentials; MCP calls use the
 // synthetic fixture API keys.
@@ -190,19 +194,56 @@ try {
     { mode: 0o600 },
   );
 
-  // 1. This build writes a Space, its home Page and nested Pages.
+  // 0. The previous build writes a Space and lists it, so the D1 index holds
+  // Space rows at schema 4 before this build first runs.
+  const seeder = await install(previous);
+  await boot();
+  const seeded = await mcp("create_space", { title: "Existing Space", idempotency_key: key() });
+  const seededPage = await mcp("create_page", {
+    title: "Existing Page",
+    space_id: seeded.space_id,
+    idempotency_key: key(),
+  });
+  assert.equal((await mcp("list_spaces")).spaces.length, 1);
+  assert.equal(ids(await mcp("list_pages", { space_id: seeded.space_id })).length, 2);
+  report.phases.push({ build: "previous", ...seeder, wrote: { seeded, seededPage } });
+  await stop();
+
+  // 1. This build serves the Space as a Project and updates it, then writes a
+  // Project, its home Page and nested Pages.
   const writer = await install(current);
   await boot();
-  const space = await mcp("create_space", { title: "Rollback Space", idempotency_key: key() });
+  const takenOver = await mcp("list_projects");
+  assert.deepEqual(
+    takenOver.projects.map((entry) => entry.project_id),
+    [seeded.space_id],
+  );
+  assert.deepEqual(
+    ids(await mcp("list_pages", { project_id: seeded.space_id })).sort(),
+    [seeded.home_page_id, seededPage.page_id].sort(),
+  );
+  const newUpdate = await mcp("update_project", {
+    project_id: seeded.space_id,
+    title: "Updated by this build",
+    expected_revision: 0,
+    idempotency_key: key(),
+  });
+  assert.equal(newUpdate.revision, 1);
+  assert.equal(newUpdate.org, null);
+  const project = await mcp("create_project", {
+    title: "Rollback Project",
+    idempotency_key: key(),
+  });
+  assert.match(project.project_id, /^prj_/);
   const roadmap = await mcp("create_page", {
     title: "Roadmap",
-    markdown: "Written by the Spaces build.",
-    space_id: space.space_id,
+    markdown: "Written by the Projects build.",
+    project_id: project.project_id,
     idempotency_key: key(),
   });
   const plan = await mcp("create_page", {
     title: "Plan",
-    markdown: "Child written by the Spaces build.",
+    markdown: "Child written by the Projects build.",
     parent_id: roadmap.page_id,
     idempotency_key: key(),
   });
@@ -212,19 +253,21 @@ try {
     parent_id: roadmap.page_id,
     idempotency_key: key(),
   });
-  const inSpace = await mcp("list_pages", { space_id: space.space_id });
+  const inProject = await mcp("list_pages", { project_id: project.project_id });
   assert.deepEqual(
-    ids(inSpace).sort(),
-    [space.home_page_id, roadmap.page_id, plan.page_id, notes.page_id].sort(),
+    ids(inProject).sort(),
+    [project.home_page_id, roadmap.page_id, plan.page_id, notes.page_id].sort(),
   );
-  report.phases.push({ build: "current", ...writer, wrote: { space, roadmap, plan, notes } });
+  report.phases.push({ build: "current", ...writer, wrote: { project, roadmap, plan, notes } });
   await stop();
 
-  // 2. The previous build serves the same data.
+  // 2. The previous build serves the same data. It reads and edits Pages in
+  // the Project, cannot address the Project itself (prj_ IDs and project/
+  // entries are new to it), and writes a Space of its own.
   const reader = await install(previous);
   await boot();
   const listed = await mcp("list_pages");
-  for (const pageId of [space.home_page_id, roadmap.page_id, plan.page_id])
+  for (const pageId of [project.home_page_id, roadmap.page_id, plan.page_id])
     assert.ok(ids(listed).includes(pageId), `previous build lists ${pageId}`);
   const read = await mcp("read_page", { page_id: plan.page_id, comments: "none" });
   assert.match(read.blocks.map((block) => block.markdown).join("\n"), /Child written/);
@@ -234,12 +277,32 @@ try {
     idempotency_key: key(),
     operations: [{ op: "insert_markdown", markdown: "Edited by the previous build." }],
   });
-  const extra = await mcp("create_page", {
-    title: "Made by the previous build",
+  const unseen = await call("get_space", { space_id: project.project_id });
+  assert.equal(unseen.isError, true, "the previous build cannot address a prj_ Project");
+  // The Space this build updated reads with that update, and takes another.
+  const seenUpdate = await mcp("get_space", { space_id: seeded.space_id });
+  assert.equal(seenUpdate.title, "Updated by this build");
+  assert.equal(seenUpdate.revision, 1);
+  const oldUpdate = await mcp("update_space", {
+    space_id: seeded.space_id,
+    title: "Updated by the previous build",
+    expected_revision: 1,
     idempotency_key: key(),
   });
-  // The previous build trashes a nested child, then a parent that still has
-  // an active child: it has no parent protection.
+  assert.equal(oldUpdate.revision, 2);
+  const oldSpaces = await mcp("list_spaces");
+  assert.ok(
+    oldSpaces.spaces.some((entry) => entry.space_id === seeded.space_id),
+    "the previous build lists the Space this build served",
+  );
+  // A child under a Page in a prj_ Project is refused: the previous build
+  // cannot read a prj_ Project record, so it never files the child elsewhere.
+  const strayChild = await call("create_page", {
+    title: "Stray",
+    parent_id: roadmap.page_id,
+    idempotency_key: key(),
+  });
+  assert.equal(strayChild.isError, true);
   const trashWith = async (pageId) =>
     mcp("delete_page", {
       page_id: pageId,
@@ -247,78 +310,122 @@ try {
       idempotency_key: key(),
     });
   const trashedChild = await trashWith(notes.page_id);
-  const trashedParent = await trashWith(roadmap.page_id);
+  const space = await mcp("create_space", { title: "Rollback Space", idempotency_key: key() });
+  assert.match(space.space_id, /^sp_/);
+  const brief = await mcp("create_page", {
+    title: "Brief",
+    markdown: "Written by the previous build in its Space.",
+    space_id: space.space_id,
+    idempotency_key: key(),
+  });
+  const detail = await mcp("create_page", {
+    title: "Detail",
+    markdown: "Nested by the previous build.",
+    parent_id: brief.page_id,
+    idempotency_key: key(),
+  });
   report.phases.push({
     build: "previous",
     ...reader,
     listed: listed.pages.length,
     edited_heads: edited.heads,
-    created: extra.page_id,
+    project_lookup_error: unseen.body.code ?? unseen.body.error,
+    listed_spaces: oldSpaces.spaces.map((entry) => entry.space_id),
+    space_update: { read: seenUpdate.title, wrote: oldUpdate.title, revision: oldUpdate.revision },
+    stray_child: strayChild.body.code ?? strayChild.body.error,
     trashed_child: trashedChild.state,
-    trashed_parent_with_active_child: trashedParent.state,
+    wrote: { space, brief, detail },
   });
   await stop();
 
-  // 3. This build again: the Space and placement are intact.
+  // 3. This build again: its Project is intact, and the previous build's
+  // Spaces are Projects with their sp_ IDs.
   const again = await install(current);
   await boot();
-  const restoredSpace = await mcp("get_space", { space_id: space.space_id });
-  assert.equal(restoredSpace.home_page_id, space.home_page_id);
-  const spaces = await mcp("list_spaces");
-  assert.ok(spaces.spaces.some((entry) => entry.space_id === space.space_id));
-  // The active child of the parent the previous build trashed still lists
-  // in the Space with its recorded parent; the Space view shows it at the top
-  // level because that parent is not listed.
-  const after = await mcp("list_pages", { space_id: space.space_id });
-  assert.deepEqual(ids(after).sort(), [space.home_page_id, plan.page_id].sort());
-  const orphan = after.pages.find((page) => page.page_id === plan.page_id);
-  assert.equal(orphan.parent_id, roadmap.page_id);
-  const trash = await mcp("list_pages", { in_trash: true });
-  assert.deepEqual(ids(trash).sort(), [roadmap.page_id, notes.page_id].sort());
-  const planWhileOrphaned = await mcp("read_page", { page_id: plan.page_id, comments: "none" });
+  const projects = await mcp("list_projects");
+  assert.deepEqual(
+    projects.projects.map((entry) => entry.project_id).sort(),
+    [seeded.space_id, project.project_id, space.space_id].sort(),
+  );
+  // Updates from both builds are there, and the next one applies.
+  const bothUpdates = await mcp("get_project", { project_id: seeded.space_id });
+  assert.equal(bothUpdates.home_page_id, seeded.home_page_id);
+  assert.equal(bothUpdates.title, "Updated by the previous build");
+  assert.equal(bothUpdates.revision, 2);
+  const nextUpdate = await mcp("update_project", {
+    project_id: seeded.space_id,
+    description: "Updated again by this build",
+    expected_revision: 2,
+    idempotency_key: key(),
+  });
+  assert.equal(nextUpdate.revision, 3);
+  assert.ok(
+    !(await mcp("list_pages")).pages.some((page) => page.title === "Stray"),
+    "the refused child exists nowhere",
+  );
+  const restoredProject = await mcp("get_project", { project_id: project.project_id });
+  assert.equal(restoredProject.home_page_id, project.home_page_id);
+  const migrated = await mcp("get_project", { project_id: space.space_id });
+  assert.equal(migrated.home_page_id, space.home_page_id);
+  assert.equal(migrated.title, "Rollback Space");
+  assert.equal(migrated.org, null);
+  const fromSpace = await mcp("list_pages", { project_id: space.space_id });
+  assert.deepEqual(
+    ids(fromSpace).sort(),
+    [space.home_page_id, brief.page_id, detail.page_id].sort(),
+  );
+  const detailRead = await mcp("read_page", { page_id: detail.page_id, comments: "none" });
+  assert.equal(detailRead.project_id, space.space_id);
+  assert.deepEqual(
+    detailRead.breadcrumbs.map((crumb) => crumb.title),
+    ["Rollback Space", "Brief"],
+  );
+  const addedToSpace = await mcp("create_page", {
+    title: "Added after roll forward",
+    project_id: space.space_id,
+    idempotency_key: key(),
+  });
+  assert.equal(addedToSpace.project_id, space.space_id);
+  const after = await mcp("list_pages", { project_id: project.project_id });
+  assert.deepEqual(ids(after).sort(), [project.home_page_id, roadmap.page_id, plan.page_id].sort());
+  const planAgain = await mcp("read_page", { page_id: plan.page_id, comments: "none" });
   assert.match(
-    planWhileOrphaned.blocks.map((block) => block.markdown).join("\n"),
+    planAgain.blocks.map((block) => block.markdown).join("\n"),
     /Edited by the previous build/,
   );
-  // Restoring the parent and the trashed child puts the tree back together.
+  assert.deepEqual(
+    planAgain.breadcrumbs.map((crumb) => crumb.title),
+    ["Rollback Project", "Roadmap"],
+  );
+  // The child the previous build trashed restores under its parent.
   const authority = await mcp("list_pages");
-  assert.ok(ids(authority).includes(extra.page_id));
-  const restoredParent = await mcp("restore_page", {
-    page_id: roadmap.page_id,
-    retry_token: authority.retry_token,
-    idempotency_key: authority.retry_key_prefix + key(),
-  });
   const restoredChild = await mcp("restore_page", {
     page_id: notes.page_id,
     retry_token: authority.retry_token,
     idempotency_key: authority.retry_key_prefix + key(),
   });
   assert.equal(restoredChild.parent_id, roadmap.page_id);
-  const planAgain = await mcp("read_page", { page_id: plan.page_id, comments: "none" });
-  assert.deepEqual(
-    planAgain.breadcrumbs.map((crumb) => crumb.title),
-    ["Rollback Space", "Roadmap"],
-  );
-  // This build protects the parent again.
-  const leaf = await call("delete_page", {
-    page_id: roadmap.page_id,
-    base_heads: (await mcp("read_page", { page_id: roadmap.page_id, include_content: false }))
-      .heads,
-    idempotency_key: key(),
-  });
-  assert.equal(leaf.isError, true);
-  assert.equal(leaf.body.code, "page_has_children");
+  assert.equal(restoredChild.project_id, project.project_id);
+  // Parent protection holds for both Projects.
+  for (const parent of [roadmap.page_id, brief.page_id]) {
+    const leaf = await call("delete_page", {
+      page_id: parent,
+      base_heads: (await mcp("read_page", { page_id: parent, include_content: false })).heads,
+      idempotency_key: key(),
+    });
+    assert.equal(leaf.isError, true);
+    assert.equal(leaf.body.code, "page_has_children");
+  }
   report.phases.push({
     build: "current",
     ...again,
-    space: restoredSpace.space_id,
-    pages_in_space_while_parent_trashed: after.pages.length,
-    orphan_parent_id: orphan.parent_id,
-    orphan_breadcrumbs: planWhileOrphaned.breadcrumbs.map((crumb) => crumb.title),
-    restored_parent: restoredParent.restored,
-    restored_child_parent: restoredChild.parent_id,
+    projects: projects.projects.map((entry) => entry.project_id),
+    migrated_space: migrated.project_id,
+    pages_in_migrated_space: fromSpace.pages.length,
+    migrated_breadcrumbs: detailRead.breadcrumbs.map((crumb) => crumb.title),
     breadcrumbs: planAgain.breadcrumbs.map((crumb) => crumb.title),
-    trash_parent_with_children: leaf.body.code,
+    restored_child_parent: restoredChild.parent_id,
+    seeded_after_both_updates: { title: bothUpdates.title, revision: bothUpdates.revision },
   });
   await stop();
   report.passed = true;

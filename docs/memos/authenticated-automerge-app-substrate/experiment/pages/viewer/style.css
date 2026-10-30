@@ -1593,7 +1593,7 @@ details.account-actions > div a:hover {
   }
 }
 
-/* Spaces: a section in the switcher, a Space view and Page breadcrumbs.
+/* Projects: a section in the switcher, a Project view and Page breadcrumbs.
    Minimal on purpose; they reuse library rows and switcher entries. */
 .picker-section {
   margin: 0.5rem 0.8rem 0.25rem;
@@ -1603,18 +1603,18 @@ details.account-actions > div a:hover {
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
-.picker-spaces {
+.picker-projects {
   max-height: 24dvh;
   border-top: 1px solid var(--border);
 }
-.space-back {
+.project-back {
   margin: 0 0 0.5rem -0.5rem;
   color: var(--muted-foreground);
 }
-.space-description {
+.project-description {
   margin: 0.5rem 0 0;
 }
-.space-empty {
+.project-empty {
   padding: 0.85rem 0.5rem;
 }
 .breadcrumbs ol {

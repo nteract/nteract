@@ -102,53 +102,125 @@ calls its owner's Catalog. Copying
 a document or its assets between targets is separate from deployment; publishing
 does not migrate another environment's data.
 
-Spaces add a `Space` Durable Object class (binding `SPACES`, migration tag
-`v3`), `space/<id>` Catalog entries, a `placement` field on Page records and
-matching fields on owned Catalog entries, and catalog-index migration 4 (placement
-columns on `pages_catalog_pages` and a `pages_catalog_spaces` table). Storage
-additions are additive; rollback deployment compatibility is qualified separately
-(see below). A rollback build ignores the new fields, keys and tables: the owner
-lists and opens every Page in a Space as an ordinary Page, collaborators keep
-their direct grants, and Space records wait for a roll forward. An older build
-does not refuse to trash a Page with sub-pages and does not protect home Pages.
-After rolling forward, a Page whose parent is in Trash shows at the top level of
-the Space view, a resumed creation under such a parent answers
-`parent_unavailable`, and a trashed home Page can be restored normally. Index rows
-an older build inserts have no placement until the Page reports again or its
-owner's account reconciles; changing `PAGES_CATALOG_INDEX` after rolling forward
-repairs them at once.
+Projects add a Durable Object class (`Space`, binding `PROJECTS`, migration
+tag `v3`), `space/<id>` Catalog entries, a `placement` field on Page records and
+matching fields on owned Catalog entries, and catalog-index migration 4
+(placement columns on `pages_catalog_pages` and a `pages_catalog_spaces`
+table). Storage additions are additive. A build from before Spaces ignores the
+new fields, keys and tables: the owner lists and opens every Page in a Project
+as an ordinary Page, collaborators keep their direct grants, and Project
+records wait for a roll forward. Such a build does not refuse to trash a Page
+with sub-pages and does not protect home Pages. After rolling forward, a Page
+whose parent is in Trash shows at the top level of the Project view, a resumed
+creation under such a parent answers `parent_unavailable`, and a trashed home
+Page can be restored normally. Index rows an older build inserts have no
+placement until the Page reports again or its owner's account reconciles;
+changing `PAGES_CATALOG_INDEX` after rolling forward repairs them at once. At
+startup a build without the `Space` class logs `celld runtime start failed for
+Space:<id>: no Worker exports Durable Object class Space` once per Project cell
+celld resumes, then serves normally. On Cloudflare, removing a Durable Object
+class takes a `deleted_classes` migration that erases its storage, so a
+Cloudflare rollback must keep exporting `Space` and its binding instead.
 
-### Rollback qualification for Spaces
+### Projects and their storage identity
 
-`scripts/rollback-qualification.mjs` runs this build, the previous build and this
-build again on local celld with one persistent data directory. Build the previous
-commit in a separate worktree first, then:
+Projects were called Spaces through 3548b9750, which Page8 runs. Callers now see
+Projects: tool names, `project_id`, error codes, routes and viewer labels.
+Storage keeps every Space name exactly as 3548b9750 writes it:
+
+- the `Space` Durable Object class, now behind the `PROJECTS` binding;
+- `space/record` with `space_id` inside each Project's object;
+- `space/<id>` Catalog entries with `space_id`;
+- `space_id` in Page placement and owned Catalog entries;
+- journal intents (`spaceId`, `space_recorded`), receipts and fingerprints
+  (`create_space`, `update_space`);
+- the D1 `pages_catalog_spaces` table, the `space_id` column and the
+  `host/index/spaces-*` markers. There is no migration 5.
+
+`worker/project-api.mjs` is the only place the names meet. The gateway maps each
+call's tool name and `project_id` to the stored names, and each result's
+`space_id`, `space`, `spaces` and `kind: "space"` back. Messages and error
+codes aren't stored, so they say Project at the source.
+
+Two reasons. A rollback build must read the same records, and every key or
+table move is a window where one build writes where the other doesn't look.
+And celld already ties storage identity to the class name, so the class can't
+be renamed anyway. A probe on celld 0.6.3 with one persistent data directory
+and a Durable Object that stores one value showed:
+
+- A Wrangler `renamed_classes` migration (`Space` to `Project`) does not deploy:
+  ``celld deploy` does not support these migration keys: renamed_classes. Class
+  rename, delete, transfer, and non-SQLite migration semantics need an explicit
+  persisted-state contract before deployment.`` The old build then started again
+  with its value intact.
+- A new `Project` class beside `Space` (`new_sqlite_classes` in `v4`) starts
+  empty. celld keys Durable Object storage by `Class:ID`.
+- Renaming only the binding (`SPACES` to `PROJECTS`, `class_name: "Space"`)
+  reads the existing value back.
+
+New Projects get `prj_` IDs; `sp_` IDs stay valid. IDs aren't key names, so a
+`prj_` Project is stored under `space/prj_<uuid>` like any other.
+
+Because stored intents are unchanged, work 3548b9750 left pending resumes here.
+A `create_space` interrupted before its home Page finishes when retried as
+`create_project` with the same key and payload: the fingerprint still uses the
+stored operation name. A `create_page` whose intent holds placement
+`{space_id}` finishes when retried with `project_id`, the same key and the
+arguments in the same order. Fingerprints have always covered argument order.
+Both cases are tested by writing the intent through the Catalog exactly as the
+3548b9750 gateway does, then retrying through the Project API. So Page8 needs no
+cleanup of pending intents before this build deploys.
+
+Clients with a cached tool list or bundle are refused before anything runs, so
+no idempotency key is consumed. The old tool names answer
+`` `create_space` was renamed `create_project` `` (code `tool_renamed`, and the
+same for the other three). A `space_id` argument answers
+`` `space_id` is now `project_id` `` (`argument_renamed`).
+
+Rolling back to 3548b9750 serves every Space and every Page, including updates
+this build made. That build can't address `prj_` IDs: `get_space` on one answers
+`Invalid space_id`, and its `list_spaces` skips them. It refuses a child under a
+Page in a `prj_` Project rather than file it elsewhere. Its
+restore-to-top-level path rejects a `prj_` placement, because its
+`validatePlacement` accepts only `sp_` IDs, so a Page never drops out of its
+Project. Rolling forward serves everything again.
+
+### Rollback qualification for Projects
+
+`scripts/rollback-qualification.mjs` runs four phases on local celld 0.6.3 with
+one persistent data directory: the previous build, this build, the previous
+build, this build. Build the previous commit in a separate checkout first. A
+`git archive` of the experiment and the sources it imports (`src`,
+`apps/notebook-cloud/src`, `packages/local-oidc`, `packages/runtimed/src`, the
+root `package.json` and `pnpm-lock.yaml`), committed into a scratch repository
+so the build receipt can read it, works. Then:
 
 ```sh
 CELLD_BIN=<celld 0.6.3> node scripts/rollback-qualification.mjs --previous <previous pages dir>
 ```
 
-Against the previous main build (9b8f36dbd) on celld 0.6.3, the Spaces build
-created a Space, its home Page, a top-level Page and two Pages nested under it.
-The previous build, whose config has no `SPACES` binding or `v3` migration,
-started on the same data, listed all four Pages, read and edited a nested Page
-and created another Page. It then trashed one nested Page, and trashed the
-parent while its other child was still active: it has no parent protection. At
-startup celld tried to resume the existing Space cell and logged `celld runtime
-start failed for Space:<id>: no Worker exports Durable Object class Space` once;
-readiness opened and every request succeeded.
+Against 3548b9750 (build `9ae4ed83e44e`), with the catalog index on:
 
-The Spaces build then started again with the Space and `list_spaces` intact. The
-active child of the trashed parent still listed in the Space with its recorded
-`parent_id`; the Space view shows such a Page at the top level, and its
-`read_page` breadcrumbs are empty while the parent is in Trash. Both trashed
-Pages were in Trash. Restoring the parent and then the trashed child put the tree
-back (the child returned under its parent, breadcrumbs Space › parent), and
-trashing the parent again was refused with `page_has_children`. Nothing crashed.
-So a celld rollback needs no special artifact; expect that one log line per Space
-cell celld resumes. On Cloudflare, removing a Durable Object class takes a
-`deleted_classes` migration that erases its storage, so a Cloudflare rollback
-must keep exporting `Space` and its binding instead.
+1. The previous build created a Space with a Page and listed both, so D1 held
+   Space rows.
+2. This build listed that Space as a Project with its `sp_` ID and both Pages,
+   and updated its title (revision 1). It created a `prj_` Project, a top-level
+   Page and two Pages nested under it.
+3. The previous build read the Space with this build's title at revision 1,
+   updated it again (revision 2) and listed it. It listed, read and edited the
+   nested Page and trashed the other one. `get_space` on the `prj_` ID answered
+   `Invalid space_id`, and a child under the `prj_` Project's top-level Page was
+   refused. It created a second Space with two nested Pages.
+4. This build listed all three Projects. The first showed the previous build's
+   title at revision 2 and took another update (revision 3). The second Space
+   answered `get_project` with `org: null`, listed its three Pages, and showed
+   breadcrumbs Project › parent. A new Page landed in it by `project_id`. The
+   `prj_` Project kept its Pages, the edit and its breadcrumbs, and the refused
+   child existed nowhere. The trashed child restored under its parent, and
+   trashing either parent was refused with `page_has_children`.
+
+celld logged no errors (only its usual allocator and `fleet_sample_failed`
+lines), and nothing crashed.
 
 ### Creation intent conflicts
 

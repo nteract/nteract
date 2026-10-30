@@ -36,7 +36,7 @@ class Storage {
   }
 }
 
-/** Real Catalog, Space and Page hosts over in-memory storage. Page hosts stub
+/** Real Catalog, Project and Page hosts over in-memory storage. Page hosts stub
  * only native sync: documents load from the bytes the Page records. */
 async function world(t, { index = "1" } = {}) {
   const auth = await createAuthFixture();
@@ -51,7 +51,7 @@ async function world(t, { index = "1" } = {}) {
   };
   const db = sqliteD1(t).open();
   const pages = new Map();
-  const spaces = new Map();
+  const projects = new Map();
   const catalogs = new Map();
   const jobs = [];
   // Inject a failure into the next request to one object: "before" fails
@@ -84,12 +84,12 @@ async function world(t, { index = "1" } = {}) {
     DB: db,
     ...(index && { PAGES_CATALOG_INDEX: index }),
     PAGES: { getByName: (id) => faulty(id, () => pageHost(id)) },
-    SPACES: {
+    PROJECTS: {
       getByName: (id) =>
         faulty(id, () => {
-          if (!spaces.has(id))
-            spaces.set(id, new Space({ id: { name: id }, storage: new Storage() }, env));
-          return spaces.get(id);
+          if (!projects.has(id))
+            projects.set(id, new Space({ id: { name: id }, storage: new Storage() }, env));
+          return projects.get(id);
         }),
     },
     CATALOGS: {
@@ -137,7 +137,7 @@ async function world(t, { index = "1" } = {}) {
   const request = (who, path, body) =>
     new Request(`https://pages.invalid${path}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${tokens[who]}`, "x-pages-driver": "Spaces test" },
+      headers: { authorization: `Bearer ${tokens[who]}`, "x-pages-driver": "Projects test" },
       body: JSON.stringify(body),
     });
   /** The public HTTP tool route, through the gateway. */
@@ -148,10 +148,41 @@ async function world(t, { index = "1" } = {}) {
     );
     return { status: response.status, body: await response.json() };
   };
+  /** A call as the 3548b9750 gateway sent it: Space names, straight to the
+   * caller's Catalog, without the Project API. */
+  const oldGateway = async (who, operation, args = {}) => {
+    const response = await env.CATALOGS.getByName(who === "owner" ? owner : member).fetch(
+      request(who, "/internal/catalog", { operation, arguments: args }),
+    );
+    return { status: response.status, body: await response.json() };
+  };
+  /** One MCP tools/call through the gateway. */
+  const mcp = async (who, name, args = {}) => {
+    const response = await worker.fetch(
+      new Request("https://pages.invalid/mcp", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${tokens[who]}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name, arguments: args },
+        }),
+      }),
+      // MCP results carry links, so the gateway needs its public origin.
+      { ...env, NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.invalid" },
+    );
+    const { result } = await response.json();
+    return { isError: result.isError === true, body: JSON.parse(result.content[0].text) };
+  };
   let keys = 0;
-  const key = () => `spaces-test-${++keys}-${crypto.randomUUID()}`;
-  const createSpace = async (title = "Launch", description) => {
-    const created = await call("owner", "create_space", {
+  const key = () => `projects-test-${++keys}-${crypto.randomUUID()}`;
+  const createProject = async (title = "Launch", description) => {
+    const created = await call("owner", "create_project", {
       title,
       ...(description !== undefined && { description }),
       idempotency_key: key(),
@@ -176,13 +207,15 @@ async function world(t, { index = "1" } = {}) {
     env,
     db,
     pages,
-    spaces,
+    projects,
     faults,
     hooks,
     jobs,
     call,
+    oldGateway,
+    mcp,
     key,
-    createSpace,
+    createProject,
     createPage,
     heads,
     catalogStorage,
@@ -193,18 +226,21 @@ async function world(t, { index = "1" } = {}) {
 
 const ids = (listing) => listing.body.pages.map((page) => page.page_id).sort();
 
-test("a Space is created with its home Page, then read, listed and updated", async (t) => {
+test("a Project is created with its home Page, then read, listed and updated", async (t) => {
   const w = await world(t);
-  const space = await w.createSpace("Launch", "Ship the beta on Friday.");
-  assert.ok(validSpaceId(space.space_id));
-  assert.equal(space.title, "Launch");
-  assert.equal(space.description, "Ship the beta on Friday.");
-  assert.equal(space.role, "owner");
-  assert.equal(space.revision, 0);
+  const project = await w.createProject("Launch", "Ship the beta on Friday.");
+  assert.ok(validSpaceId(project.project_id));
+  assert.equal(project.title, "Launch");
+  assert.equal(project.description, "Ship the beta on Friday.");
+  assert.equal(project.role, "owner");
+  assert.equal(project.revision, 0);
+  assert.equal(project.org, null);
+  assert.match(project.project_id, /^prj_/);
 
-  const home = w.page(space.home_page_id);
+  const home = w.page(project.home_page_id);
+  // Storage keeps the Space name: the Page record says space_id.
   assert.deepEqual(home.metadata.placement, {
-    space_id: space.space_id,
+    space_id: project.project_id,
     parent_id: null,
     position: "a0",
     placement_epoch: 0,
@@ -212,106 +248,109 @@ test("a Space is created with its home Page, then read, listed and updated", asy
   });
   assert.equal(home.metadata.owner, w.owner);
 
-  const read = await w.call("owner", "get_space", { space_id: space.space_id });
+  const read = await w.call("owner", "get_project", { project_id: project.project_id });
   assert.equal(read.status, 200);
-  assert.equal(read.body.home_page_id, space.home_page_id);
+  assert.equal(read.body.home_page_id, project.home_page_id);
 
-  const listed = await w.call("owner", "list_spaces");
+  const listed = await w.call("owner", "list_projects");
   assert.equal(listed.status, 200);
   assert.deepEqual(
-    listed.body.spaces.map((entry) => entry.space_id),
-    [space.space_id],
+    listed.body.projects.map((entry) => entry.project_id),
+    [project.project_id],
   );
   assert.ok(listed.body.retry_token);
 
   const homeRead = await w.call("owner", "read_page", {
-    page_id: space.home_page_id,
+    page_id: project.home_page_id,
     include_content: false,
   });
   assert.equal(homeRead.status, 200);
-  assert.equal(homeRead.body.space_id, space.space_id);
+  assert.equal(homeRead.body.project_id, project.project_id);
   assert.equal(homeRead.body.parent_id, null);
   assert.equal(homeRead.body.home, true);
   assert.equal(homeRead.body._placement, undefined);
   assert.deepEqual(homeRead.body.breadcrumbs, [
-    { kind: "space", space_id: space.space_id, title: "Launch" },
+    { kind: "project", project_id: project.project_id, title: "Launch" },
   ]);
 
   const updateKey = w.key();
-  const update = { space_id: space.space_id, title: "Launch v2", expected_revision: 0 };
-  const updated = await w.call("owner", "update_space", { ...update, idempotency_key: updateKey });
+  const update = { project_id: project.project_id, title: "Launch v2", expected_revision: 0 };
+  const updated = await w.call("owner", "update_project", {
+    ...update,
+    idempotency_key: updateKey,
+  });
   assert.equal(updated.status, 200);
   assert.equal(updated.body.title, "Launch v2");
   assert.equal(updated.body.revision, 1);
-  const replay = await w.call("owner", "update_space", { ...update, idempotency_key: updateKey });
+  const replay = await w.call("owner", "update_project", { ...update, idempotency_key: updateKey });
   assert.deepEqual(replay.body, updated.body);
-  const conflict = await w.call("owner", "update_space", {
+  const conflict = await w.call("owner", "update_project", {
     ...update,
     title: "Other",
     idempotency_key: updateKey,
   });
   assert.equal(conflict.status, 409);
-  const stale = await w.call("owner", "update_space", { ...update, idempotency_key: w.key() });
+  const stale = await w.call("owner", "update_project", { ...update, idempotency_key: w.key() });
   assert.equal(stale.status, 409);
-  assert.equal(stale.body.code, "space_revision_conflict");
+  assert.equal(stale.body.code, "project_revision_conflict");
   assert.equal(
-    (await w.call("owner", "list_spaces")).body.spaces[0].title,
+    (await w.call("owner", "list_projects")).body.projects[0].title,
     "Launch v2",
-    "the owner's listing follows the Space record",
+    "the owner's listing follows the Project record",
   );
 
-  // Another account cannot tell this Space from a missing one.
-  const missing = `sp_${crypto.randomUUID()}`;
-  for (const target of [space.space_id, missing]) {
-    const denied = await w.call("member", "get_space", { space_id: target });
+  // Another account cannot tell this Project from a missing one.
+  const missing = `prj_${crypto.randomUUID()}`;
+  for (const target of [project.project_id, missing]) {
+    const denied = await w.call("member", "get_project", { project_id: target });
     assert.equal(denied.status, 404);
-    assert.deepEqual(denied.body, { error: "Space not found", code: "space_not_found" });
+    assert.deepEqual(denied.body, { error: "Project not found", code: "project_not_found" });
   }
   assert.equal(
-    (await w.call("member", "update_space", { ...update, idempotency_key: w.key() })).status,
+    (await w.call("member", "update_project", { ...update, idempotency_key: w.key() })).status,
     404,
   );
-  assert.deepEqual((await w.call("member", "list_spaces")).body.spaces, []);
-  // A read-only credential reads but cannot create or change a Space.
-  assert.equal((await w.call("reader", "list_spaces")).status, 200);
+  assert.deepEqual((await w.call("member", "list_projects")).body.projects, []);
+  // A read-only credential reads but cannot create or change a Project.
+  assert.equal((await w.call("reader", "list_projects")).status, 200);
   assert.equal(
-    (await w.call("reader", "create_space", { title: "No", idempotency_key: w.key() })).status,
+    (await w.call("reader", "create_project", { title: "No", idempotency_key: w.key() })).status,
     403,
   );
 });
 
-test("tools name the right argument when a Space ID and a Page ID are swapped", async (t) => {
+test("tools name the right argument when a Project ID and a Page ID are swapped", async (t) => {
   const w = await world(t);
-  const space = await w.createSpace();
-  const pageId = space.home_page_id;
+  const project = await w.createProject();
+  const pageId = project.home_page_id;
   const cases = [
-    ["read_page", { page_id: space.space_id }, "space_id_as_page_id", /get_space/],
-    ["patch_page", { page_id: space.space_id }, "space_id_as_page_id", /get_space/],
+    ["read_page", { page_id: project.project_id }, "project_id_as_page_id", /get_project/],
+    ["patch_page", { page_id: project.project_id }, "project_id_as_page_id", /get_project/],
     [
       "delete_page",
-      { page_id: space.space_id, base_heads: [], idempotency_key: w.key() },
-      "space_id_as_page_id",
-      /get_space/,
+      { page_id: project.project_id, base_heads: [], idempotency_key: w.key() },
+      "project_id_as_page_id",
+      /get_project/,
     ],
-    ["get_space", { space_id: pageId }, "page_id_as_space_id", /read_page/],
+    ["get_project", { project_id: pageId }, "page_id_as_project_id", /read_page/],
     [
-      "update_space",
-      { space_id: pageId, title: "x", idempotency_key: w.key() },
-      "page_id_as_space_id",
+      "update_project",
+      { project_id: pageId, title: "x", idempotency_key: w.key() },
+      "page_id_as_project_id",
       /read_page/,
     ],
-    ["list_pages", { space_id: pageId }, "page_id_as_space_id", /parent_id/],
-    ["list_pages", { parent_id: space.space_id }, "space_id_as_page_id", /space_id/],
+    ["list_pages", { project_id: pageId }, "page_id_as_project_id", /parent_id/],
+    ["list_pages", { parent_id: project.project_id }, "project_id_as_page_id", /project_id/],
     [
       "create_page",
-      { title: "x", parent_id: space.space_id, idempotency_key: w.key() },
-      "space_id_as_page_id",
-      /space_id/,
+      { title: "x", parent_id: project.project_id, idempotency_key: w.key() },
+      "project_id_as_page_id",
+      /project_id/,
     ],
     [
       "create_page",
-      { title: "x", space_id: pageId, idempotency_key: w.key() },
-      "page_id_as_space_id",
+      { title: "x", project_id: pageId, idempotency_key: w.key() },
+      "page_id_as_project_id",
       /parent_id/,
     ],
   ];
@@ -329,10 +368,10 @@ test("tools name the right argument when a Space ID and a Page ID are swapped", 
   );
 });
 
-test("an interrupted create_space resumes the same Space and home Page on retry", async (t) => {
+test("an interrupted create_project resumes the same Project and home Page on retry", async (t) => {
   const w = await world(t);
-  const args = { title: "Recovery", idempotency_key: "space-recovery-key" };
-  // The Space record commits, then the home Page creation fails.
+  const args = { title: "Recovery", idempotency_key: "project-recovery-key" };
+  // The Project record commits, then the home Page creation fails.
   const originalPages = w.env.PAGES.getByName;
   let failHome = true;
   w.env.PAGES.getByName = (id) => {
@@ -347,59 +386,59 @@ test("an interrupted create_space resumes the same Space and home Page on retry"
       },
     };
   };
-  const first = await w.call("owner", "create_space", args);
+  const first = await w.call("owner", "create_project", args);
   assert.equal(first.status, 500);
   const storage = w.catalogStorage();
-  const intent = await storage.get("host/operation/space-recovery-key");
+  const intent = await storage.get("host/operation/project-recovery-key");
   assert.equal(intent.pending, true);
-  assert.equal(intent.phase, "space_recorded", "the retry resumes after the Space record");
-  assert.equal(w.spaces.get(intent.spaceId) !== undefined, true, "the Space record exists");
+  assert.equal(intent.phase, "space_recorded", "the retry resumes after the Project record");
+  assert.equal(w.projects.get(intent.spaceId) !== undefined, true, "the Project record exists");
   assert.equal(w.page(intent.pageId)?.metadata, undefined, "the home Page does not");
   assert.equal((await storage.get(`space/${intent.spaceId}`)).pending, true);
-  assert.deepEqual((await w.call("owner", "list_spaces")).body.spaces, []);
-  const pending = await w.call("owner", "get_space", { space_id: intent.spaceId });
+  assert.deepEqual((await w.call("owner", "list_projects")).body.projects, []);
+  const pending = await w.call("owner", "get_project", { project_id: intent.spaceId });
   assert.equal(pending.status, 409);
-  assert.equal(pending.body.code, "space_pending");
+  assert.equal(pending.body.code, "project_pending");
 
   // The retry resumes at the home Page. A lost response after the Page
   // committed is safe to retry too.
   w.faults.set(intent.pageId, "lost");
-  assert.equal((await w.call("owner", "create_space", args)).status, 500);
+  assert.equal((await w.call("owner", "create_project", args)).status, 500);
   assert.ok(w.page(intent.pageId).metadata, "the home Page committed");
-  assert.equal((await storage.get("host/operation/space-recovery-key")).phase, "space_recorded");
+  assert.equal((await storage.get("host/operation/project-recovery-key")).phase, "space_recorded");
 
-  const retry = await w.call("owner", "create_space", args);
+  const retry = await w.call("owner", "create_project", args);
   assert.equal(retry.status, 200);
-  assert.equal(retry.body.space_id, intent.spaceId);
+  assert.equal(retry.body.project_id, intent.spaceId);
   assert.equal(retry.body.home_page_id, intent.pageId);
   assert.equal(w.page(intent.pageId).metadata.placement.home, true);
-  const again = await w.call("owner", "create_space", args);
+  const again = await w.call("owner", "create_project", args);
   assert.deepEqual(again.body, retry.body);
   assert.equal(
     [...(await storage.list({ prefix: "space/" })).keys()].length,
     1,
-    "retries never create a second Space",
+    "retries never create a second Project",
   );
-  const listed = await w.call("owner", "list_spaces");
+  const listed = await w.call("owner", "list_projects");
   assert.deepEqual(
-    listed.body.spaces.map((space) => space.space_id),
+    listed.body.projects.map((project) => project.project_id),
     [intent.spaceId],
   );
-  const changed = await w.call("owner", "create_space", { ...args, title: "Other" });
+  const changed = await w.call("owner", "create_project", { ...args, title: "Other" });
   assert.equal(changed.status, 409);
 });
 
-test("create_page places Pages in a Space, under a parent, and enforces depth and mismatch", async (t) => {
+test("create_page places Pages in a Project, under a parent, and enforces depth and mismatch", async (t) => {
   const w = await world(t);
-  const space = await w.createSpace("Docs");
-  const other = await w.createSpace("Other");
-  const top = await w.createPage({ title: "Guide", space_id: space.space_id });
+  const project = await w.createProject("Docs");
+  const other = await w.createProject("Other");
+  const top = await w.createPage({ title: "Guide", project_id: project.project_id });
   assert.equal(top.status, 200);
-  assert.equal(top.body.space_id, space.space_id);
+  assert.equal(top.body.project_id, project.project_id);
   assert.equal(top.body.parent_id, null);
   const child = await w.createPage({ title: "Install", parent_id: top.body.page_id });
   assert.equal(child.status, 200);
-  assert.equal(child.body.space_id, space.space_id, "a parent implies its Space");
+  assert.equal(child.body.project_id, project.project_id, "a parent implies its Project");
   assert.equal(child.body.parent_id, top.body.page_id);
   const sibling = await w.createPage({ title: "Configure", parent_id: top.body.page_id });
   const positions = [child, sibling].map(
@@ -409,14 +448,14 @@ test("create_page places Pages in a Space, under a parent, and enforces depth an
 
   const mismatch = await w.createPage({
     title: "Wrong",
-    space_id: other.space_id,
+    project_id: other.project_id,
     parent_id: top.body.page_id,
   });
   assert.equal(mismatch.status, 400);
   assert.equal(mismatch.body.code, "placement_mismatch");
   const matching = await w.createPage({
     title: "Both",
-    space_id: space.space_id,
+    project_id: project.project_id,
     parent_id: top.body.page_id,
   });
   assert.equal(matching.status, 200);
@@ -432,29 +471,35 @@ test("create_page places Pages in a Space, under a parent, and enforces depth an
   assert.equal(tooDeep.status, 400);
   assert.equal(tooDeep.body.code, "nesting_depth_exceeded");
 
-  // Your items can nest too; they have no Space.
+  // Your items can nest too; they have no Project.
   const loose = await w.createPage({ title: "Loose" });
-  assert.equal(loose.body.space_id, undefined);
+  assert.equal(loose.body.project_id, undefined);
   assert.equal(w.page(loose.body.page_id).metadata.placement, undefined);
   const looseChild = await w.createPage({ title: "Loose child", parent_id: loose.body.page_id });
-  assert.equal(looseChild.body.space_id, null);
+  assert.equal(looseChild.body.project_id, null);
   assert.equal(looseChild.body.parent_id, loose.body.page_id);
 
-  // Only Spaces and parents the caller owns hold new Pages in this build.
-  const foreignSpace = await w.createPage({ title: "No", space_id: space.space_id }, "member");
-  assert.equal(foreignSpace.status, 404);
-  assert.equal(foreignSpace.body.code, "space_not_found");
+  // Only Projects and parents the caller owns hold new Pages in this build.
+  const foreignProject = await w.createPage(
+    { title: "No", project_id: project.project_id },
+    "member",
+  );
+  assert.equal(foreignProject.status, 404);
+  assert.equal(foreignProject.body.code, "project_not_found");
   const foreignParent = await w.createPage({ title: "No", parent_id: top.body.page_id }, "member");
   assert.equal(foreignParent.status, 404);
   assert.equal(foreignParent.body.code, "parent_unavailable");
-  const unknownSpace = await w.createPage({ title: "No", space_id: `sp_${crypto.randomUUID()}` });
-  assert.deepEqual(unknownSpace.body, foreignSpace.body);
+  const unknownProject = await w.createPage({
+    title: "No",
+    project_id: `prj_${crypto.randomUUID()}`,
+  });
+  assert.deepEqual(unknownProject.body, foreignProject.body);
 
   // A caller-supplied placement is ignored; only the resolved one is stored.
   const forged = await w.createPage({
     title: "Forged",
     placement: {
-      space_id: other.space_id,
+      project_id: other.project_id,
       parent_id: null,
       position: "a0",
       placement_epoch: 0,
@@ -465,52 +510,63 @@ test("create_page places Pages in a Space, under a parent, and enforces depth an
   assert.equal(w.page(forged.body.page_id).metadata.placement, undefined);
 });
 
-test("list_pages filters by Space and parent, verifies every row and hides the Space from grantees", async (t) => {
+test("list_pages filters by Project and parent, verifies every row and hides the Project from grantees", async (t) => {
   const w = await world(t);
-  const space = await w.createSpace("Team");
-  const top = (await w.createPage({ title: "Roadmap", space_id: space.space_id })).body;
+  const project = await w.createProject("Team");
+  const top = (await w.createPage({ title: "Roadmap", project_id: project.project_id })).body;
   const child = (await w.createPage({ title: "Q4 plan", parent_id: top.page_id })).body;
   const loose = (await w.createPage({ title: "Loose note" })).body;
 
-  const inSpace = await w.call("owner", "list_pages", { space_id: space.space_id });
-  assert.equal(inSpace.status, 200);
-  assert.deepEqual(ids(inSpace), [space.home_page_id, top.page_id, child.page_id].sort());
-  const row = inSpace.body.pages.find((page) => page.page_id === child.page_id);
-  assert.equal(row.space_id, space.space_id);
+  const inProject = await w.call("owner", "list_pages", { project_id: project.project_id });
+  assert.equal(inProject.status, 200);
+  assert.deepEqual(ids(inProject), [project.home_page_id, top.page_id, child.page_id].sort());
+  const row = inProject.body.pages.find((page) => page.page_id === child.page_id);
+  assert.equal(row.project_id, project.project_id);
   assert.equal(row.parent_id, top.page_id);
   assert.ok(row.position);
-  assert.equal(inSpace.body.pages.find((page) => page.page_id === space.home_page_id).home, true);
+  assert.equal(
+    inProject.body.pages.find((page) => page.page_id === project.home_page_id).home,
+    true,
+  );
 
   const topLevel = await w.call("owner", "list_pages", {
-    space_id: space.space_id,
+    project_id: project.project_id,
     parent_id: null,
   });
-  assert.deepEqual(ids(topLevel), [space.home_page_id, top.page_id].sort());
+  assert.deepEqual(ids(topLevel), [project.home_page_id, top.page_id].sort());
   const children = await w.call("owner", "list_pages", { parent_id: top.page_id });
   assert.deepEqual(ids(children), [child.page_id]);
   const all = await w.call("owner", "list_pages");
   assert.ok(ids(all).includes(loose.page_id));
   assert.equal(
-    all.body.pages.find((page) => page.page_id === loose.page_id).space_id,
+    all.body.pages.find((page) => page.page_id === loose.page_id).project_id,
     undefined,
     "Your items keep the original row shape",
   );
-  assert.deepEqual(
-    (await w.call("owner", "list_pages", { space_id: space.space_id, kind: "notebook" })).body
-      .pages,
-    [],
+  // Reserved kinds list nothing yet; an unknown kind is an input error.
+  for (const kind of ["notebook", "dashboard", "result"])
+    assert.deepEqual(
+      (await w.call("owner", "list_pages", { project_id: project.project_id, kind })).body.pages,
+      [],
+      kind,
+    );
+  assert.equal(
+    (await w.call("owner", "list_pages", { project_id: project.project_id, kind: "sheet" })).status,
+    400,
   );
 
   // A stale D1 row cannot list a Page: the owner's entry must agree.
   await w.db
     .prepare("UPDATE pages_catalog_pages SET space_id = ? WHERE page_id = ?")
-    .bind(space.space_id, loose.page_id)
+    .bind(project.project_id, loose.page_id)
     .run();
   assert.ok(
-    !ids(await w.call("owner", "list_pages", { space_id: space.space_id })).includes(loose.page_id),
+    !ids(await w.call("owner", "list_pages", { project_id: project.project_id })).includes(
+      loose.page_id,
+    ),
   );
 
-  // A direct grant on the child keeps working without revealing the Space.
+  // A direct grant on the child keeps working without revealing the Project.
   const childHost = w.page(child.page_id);
   const ownerIdentity = { principal: w.owner, canWrite: true, expiresAt: Date.now() + 60_000 };
   const acl = proposeAccessUpdate(childHost.metadata, ownerIdentity, {
@@ -529,11 +585,11 @@ test("list_pages filters by Space and parent, verifies every row and hides the S
   });
   const shared = await w.call("member", "list_pages");
   assert.deepEqual(ids(shared), [child.page_id]);
-  assert.equal(shared.body.pages[0].space_id, undefined);
+  assert.equal(shared.body.pages[0].project_id, undefined);
   assert.equal(shared.body.pages[0].parent_id, undefined);
-  const hidden = await w.call("member", "list_pages", { space_id: space.space_id });
+  const hidden = await w.call("member", "list_pages", { project_id: project.project_id });
   assert.equal(hidden.status, 404);
-  assert.equal(hidden.body.code, "space_not_found");
+  assert.equal(hidden.body.code, "project_not_found");
   const parentHidden = await w.call("member", "list_pages", { parent_id: top.page_id });
   assert.equal(parentHidden.status, 404);
   const memberRead = await w.call("member", "read_page", {
@@ -541,7 +597,7 @@ test("list_pages filters by Space and parent, verifies every row and hides the S
     include_content: false,
   });
   assert.equal(memberRead.status, 200);
-  assert.equal(memberRead.body.space_id, undefined);
+  assert.equal(memberRead.body.project_id, undefined);
   assert.equal(memberRead.body.parent_id, undefined);
   assert.deepEqual(memberRead.body.breadcrumbs, []);
 
@@ -550,39 +606,42 @@ test("list_pages filters by Space and parent, verifies every row and hides the S
     include_content: false,
   });
   assert.deepEqual(ownerRead.body.breadcrumbs, [
-    { kind: "space", space_id: space.space_id, title: "Team" },
+    { kind: "project", project_id: project.project_id, title: "Team" },
     { kind: "page", page_id: top.page_id, title: "Roadmap" },
   ]);
   assert.equal(ownerRead.body.parent_id, top.page_id);
 
   // The same filters work from Catalog entries while the index is off.
   delete w.env.PAGES_CATALOG_INDEX;
-  const fallback = await w.call("owner", "list_pages", { space_id: space.space_id });
-  assert.deepEqual(ids(fallback), ids(inSpace));
+  const fallback = await w.call("owner", "list_pages", { project_id: project.project_id });
+  assert.deepEqual(ids(fallback), ids(inProject));
   assert.deepEqual(
-    (await w.call("owner", "list_spaces")).body.spaces.map((entry) => entry.space_id),
-    [space.space_id],
+    (await w.call("owner", "list_projects")).body.projects.map((entry) => entry.project_id),
+    [project.project_id],
   );
 });
 
-test("list_spaces pages with a cursor and confirms D1 candidates against the Catalog", async (t) => {
+test("list_projects pages with a cursor and confirms D1 candidates against the Catalog", async (t) => {
   const w = await world(t);
   const created = [];
-  for (let index = 0; index < 3; index++) created.push(await w.createSpace(`Space ${index}`));
-  const first = await w.call("owner", "list_spaces", { limit: 2 });
-  assert.equal(first.body.spaces.length, 2);
+  for (let index = 0; index < 3; index++) created.push(await w.createProject(`Project ${index}`));
+  const first = await w.call("owner", "list_projects", { limit: 2 });
+  assert.equal(first.body.projects.length, 2);
   assert.ok(first.body.next_cursor);
-  const second = await w.call("owner", "list_spaces", { limit: 2, cursor: first.body.next_cursor });
-  assert.equal(second.body.spaces.length, 1);
+  const second = await w.call("owner", "list_projects", {
+    limit: 2,
+    cursor: first.body.next_cursor,
+  });
+  assert.equal(second.body.projects.length, 1);
   assert.equal(second.body.next_cursor, null);
   assert.deepEqual(
-    [...first.body.spaces, ...second.body.spaces].map((space) => space.space_id).sort(),
-    created.map((space) => space.space_id).sort(),
+    [...first.body.projects, ...second.body.projects].map((project) => project.project_id).sort(),
+    created.map((project) => project.project_id).sort(),
   );
-  // A list_pages cursor does not open a Space listing.
+  // A list_pages cursor does not open a Project listing.
   assert.equal(
     (
-      await w.call("owner", "list_spaces", {
+      await w.call("owner", "list_projects", {
         cursor: (await w.call("owner", "list_pages", { limit: 1 })).body.next_cursor,
       })
     ).status,
@@ -596,22 +655,22 @@ test("list_spaces pages with a cursor and confirms D1 candidates against the Cat
       VALUES (?, ?, 'Ghost', 'ghost', ?, ?, ?)`,
     )
     .bind(
-      `sp_${crypto.randomUUID()}`,
+      `prj_${crypto.randomUUID()}`,
       w.owner,
       crypto.randomUUID(),
       "2030-01-01T00:00:00.000Z",
       "2030-01-01T00:00:00.000Z",
     )
     .run();
-  const listed = await w.call("owner", "list_spaces");
-  assert.equal(listed.body.spaces.length, 3);
-  assert.ok(listed.body.spaces.every((space) => space.title !== "Ghost"));
+  const listed = await w.call("owner", "list_projects");
+  assert.equal(listed.body.projects.length, 3);
+  assert.ok(listed.body.projects.every((project) => project.title !== "Ghost"));
 });
 
-test("Trash moves one Page at a time; restore returns a Page to its parent or the Space top level", async (t) => {
+test("Trash moves one Page at a time; restore returns a Page to its parent or the Project top level", async (t) => {
   const w = await world(t);
-  const space = await w.createSpace("Wiki");
-  const a = (await w.createPage({ title: "A", space_id: space.space_id })).body.page_id;
+  const project = await w.createProject("Wiki");
+  const a = (await w.createPage({ title: "A", project_id: project.project_id })).body.page_id;
   const b = (await w.createPage({ title: "B", parent_id: a })).body.page_id;
   const c = (await w.createPage({ title: "C", parent_id: b })).body.page_id;
   const storage = w.catalogStorage();
@@ -642,11 +701,11 @@ test("Trash moves one Page at a time; restore returns a Page to its parent or th
   assert.equal(orphan.status, 409);
   assert.equal(orphan.body.code, "parent_unavailable");
 
-  // B's parent is in Trash, so B returns to the Space's top level.
+  // B's parent is in Trash, so B returns to the Project's top level.
   const back = await restore(b);
   assert.equal(back.status, 200);
   assert.equal(back.body.parent_id, null);
-  assert.equal(back.body.space_id, space.space_id);
+  assert.equal(back.body.project_id, project.project_id);
   assert.equal(pageState(w.page(a).metadata), "trashed", "restoring B leaves A in Trash");
   assert.equal(w.page(b).metadata.placement.parent_id, null);
   assert.equal(w.page(b).metadata.placement.placement_epoch, 1);
@@ -660,14 +719,14 @@ test("Trash moves one Page at a time; restore returns a Page to its parent or th
   assert.equal(w.page(c).metadata.placement.parent_id, b);
   assert.equal(w.page(c).metadata.placement.placement_epoch, 0);
   assert.deepEqual(
-    ids(await w.call("owner", "list_pages", { space_id: space.space_id, parent_id: null })),
-    [space.home_page_id, b].sort(),
+    ids(await w.call("owner", "list_pages", { project_id: project.project_id, parent_id: null })),
+    [project.home_page_id, b].sort(),
   );
 
-  const home = await trash(space.home_page_id);
+  const home = await trash(project.home_page_id);
   assert.equal(home.status, 409);
   assert.equal(home.body.code, "home_page_protected");
-  assert.equal(pageState(w.page(space.home_page_id).metadata), "active");
+  assert.equal(pageState(w.page(project.home_page_id).metadata), "active");
 });
 
 /** Make the next lifecycle request to a Page apply but fail to answer:
@@ -684,8 +743,8 @@ function interrupt(w, pageId, variant) {
   };
 }
 async function nested(w) {
-  const space = await w.createSpace("Settle");
-  const parent = (await w.createPage({ title: "P", space_id: space.space_id })).body.page_id;
+  const project = await w.createProject("Settle");
+  const parent = (await w.createPage({ title: "P", project_id: project.project_id })).body.page_id;
   const child = (await w.createPage({ title: "C", parent_id: parent })).body.page_id;
   const trash = (pageId) =>
     w.call("owner", "delete_page", {
@@ -693,7 +752,7 @@ async function nested(w) {
       base_heads: w.heads(pageId),
       idempotency_key: w.key(),
     });
-  return { space, parent, child, trash };
+  return { project, parent, child, trash };
 }
 
 for (const variant of ["lost", "barrier"])
@@ -727,7 +786,7 @@ for (const variant of ["lost", "barrier"])
 /** Children of one parent, each trashed with a restore reserved but never
  * applied, so a leaf check has to read every child's lifecycle. */
 async function unsettledChildren(w, count) {
-  const { parent, trash, space } = await nested(w);
+  const { parent, trash, project } = await nested(w);
   const children = [];
   for (let index = 0; index < count; index++) {
     const child = (await w.createPage({ title: `Child ${index}`, parent_id: parent })).body.page_id;
@@ -739,7 +798,7 @@ async function unsettledChildren(w, count) {
   // nested() made one more child; settle it into Trash too.
   const first = (await w.call("owner", "list_pages", { parent_id: parent })).body.pages;
   for (const page of first) assert.equal((await trash(page.page_id)).status, 200);
-  return { parent, trash, space, children };
+  return { parent, trash, project, children };
 }
 
 test("a stalled lifecycle read is bounded and refuses the request as retryable", async (t) => {
@@ -855,7 +914,7 @@ test("a stalled lifecycle body is cancelled and its read frees its slot", async 
 
 test("a resumed parent trash that lost its slot runs the leaf guard again", async (t) => {
   const w = await world(t);
-  const { space, parent, child, trash } = await nested(w);
+  const { project, parent, child, trash } = await nested(w);
   assert.equal((await trash(child)).status, 200);
   const storage = w.catalogStorage();
   const args = { page_id: parent, base_heads: w.heads(parent), idempotency_key: "resumed-trash" };
@@ -868,7 +927,8 @@ test("a resumed parent trash that lost its slot runs the leaf guard again", asyn
   // releases it.
   const slot = await storage.get(`trash/${parent}`);
   await storage.put(`trash/${parent}`, { ...slot, expires_at: Date.now() - 1 });
-  const other = (await w.createPage({ title: "Other", space_id: space.space_id })).body.page_id;
+  const other = (await w.createPage({ title: "Other", project_id: project.project_id })).body
+    .page_id;
   assert.equal((await trash(other)).status, 200);
   assert.equal(await storage.get(`trash/${parent}`), undefined, "the slot was released");
   const late = await w.createPage({ title: "Late child", parent_id: parent });
@@ -900,7 +960,7 @@ test("a resumed trash that already applied still replays its receipt", async (t)
 
 test("an unapplied restore does not hold its parent, and returns to the top level later", async (t) => {
   const w = await world(t);
-  const { space, parent, child, trash } = await nested(w);
+  const { project, parent, child, trash } = await nested(w);
   assert.equal((await trash(child)).status, 200);
   w.faults.set(child, "before");
   const restore = { page_id: child, idempotency_key: "restore-never-arrived" };
@@ -910,14 +970,14 @@ test("an unapplied restore does not hold its parent, and returns to the top leve
   const retried = await w.call("owner", "restore_page", restore);
   assert.equal(retried.status, 200);
   assert.equal(retried.body.parent_id, null);
-  assert.equal(retried.body.space_id, space.space_id);
+  assert.equal(retried.body.project_id, project.project_id);
   assert.equal(w.page(child).metadata.placement.placement_epoch, 1);
 });
 
 for (const variant of ["lost", "barrier"])
   test(`a restore after its parent's trash lost its receipt (${variant}) goes to the top level`, async (t) => {
     const w = await world(t);
-    const { space, parent, child, trash } = await nested(w);
+    const { project, parent, child, trash } = await nested(w);
     assert.equal((await trash(child)).status, 200);
     interrupt(w, parent, variant);
     assert.ok((await trash(parent)).status >= 500);
@@ -930,7 +990,7 @@ for (const variant of ["lost", "barrier"])
     });
     assert.equal(restored.status, 200, JSON.stringify(restored.body));
     assert.equal(restored.body.parent_id, null);
-    assert.equal(restored.body.space_id, space.space_id);
+    assert.equal(restored.body.project_id, project.project_id);
     assert.equal(pageState(w.page(parent).metadata), "trashed");
     assert.equal((await storage.get(`trash/${parent}`)).reservation, undefined, "settled");
     assert.equal(await storage.get(`page/${parent}`), undefined);
@@ -938,8 +998,8 @@ for (const variant of ["lost", "barrier"])
 
 test("a pending child creation blocks its parent's Trash, and a resumed one rechecks its parent", async (t) => {
   const w = await world(t);
-  const space = await w.createSpace("Pending");
-  const a = (await w.createPage({ title: "A", space_id: space.space_id })).body.page_id;
+  const project = await w.createProject("Pending");
+  const a = (await w.createPage({ title: "A", project_id: project.project_id })).body.page_id;
   const originalPages = w.env.PAGES.getByName;
   let failCreate = true;
   let creates = 0;
@@ -987,11 +1047,11 @@ test("a pending child creation blocks its parent's Trash, and a resumed one rech
   assert.equal(finished.body.parent_id, a);
 });
 
-test("an update_space retry whose receipt was evicted is superseded and never applies", async (t) => {
+test("an update_project retry whose receipt was evicted is superseded and never applies", async (t) => {
   const w = await world(t);
-  const space = await w.createSpace("Fenced");
-  const missing = await w.call("owner", "update_space", {
-    space_id: space.space_id,
+  const project = await w.createProject("Fenced");
+  const missing = await w.call("owner", "update_project", {
+    project_id: project.project_id,
     title: "No fence",
     idempotency_key: w.key(),
   });
@@ -999,44 +1059,46 @@ test("an update_space retry whose receipt was evicted is superseded and never ap
   assert.match(missing.body.error, /expected_revision/);
 
   const lost = {
-    space_id: space.space_id,
+    project_id: project.project_id,
     title: "Lost",
     expected_revision: 0,
     idempotency_key: "lost-update",
   };
-  w.faults.set(space.space_id, "lost");
-  assert.equal((await w.call("owner", "update_space", lost)).status, 500);
+  w.faults.set(project.project_id, "lost");
+  assert.equal((await w.call("owner", "update_project", lost)).status, 500);
   assert.equal((await w.catalogStorage().get("host/operation/lost-update")).expectedRevision, 0);
   for (let revision = 1; revision <= 64; revision++) {
-    const newer = await w.call("owner", "update_space", {
-      space_id: space.space_id,
+    const newer = await w.call("owner", "update_project", {
+      project_id: project.project_id,
       title: `Title ${revision}`,
       expected_revision: revision,
       idempotency_key: w.key(),
     });
     assert.equal(newer.status, 200, JSON.stringify(newer.body));
   }
-  const receipts = await w.spaces.get(space.space_id).ctx.storage.list({ prefix: "host/receipt/" });
+  const receipts = await w.projects
+    .get(project.project_id)
+    .ctx.storage.list({ prefix: "host/receipt/" });
   assert.equal(receipts.size, 64);
   assert.ok(![...receipts.keys()].some((name) => name.endsWith("lost-update")), "evicted");
 
-  const retry = await w.call("owner", "update_space", lost);
+  const retry = await w.call("owner", "update_project", lost);
   assert.equal(retry.status, 200);
   assert.equal(retry.body.superseded, true);
   assert.equal(retry.body.applied, false);
-  assert.equal(retry.body.space.title, "Title 64");
-  assert.equal(retry.body.space.revision, 65);
-  const current = await w.call("owner", "get_space", { space_id: space.space_id });
+  assert.equal(retry.body.project.title, "Title 64");
+  assert.equal(retry.body.project.revision, 65);
+  const current = await w.call("owner", "get_project", { project_id: project.project_id });
   assert.equal(current.body.title, "Title 64");
-  assert.deepEqual((await w.call("owner", "update_space", lost)).body, retry.body);
+  assert.deepEqual((await w.call("owner", "update_project", lost)).body, retry.body);
 });
 
-test("rollback: storage written here stays readable by a build without Spaces", async (t) => {
+test("rollback: storage written here stays readable by older builds", async (t) => {
   const w = await world(t);
-  const space = await w.createSpace("Rollback");
-  const child = (await w.createPage({ title: "Child", space_id: space.space_id })).body;
-  // Page records and Catalog entries keep every field older builds read;
-  // placement and space entries are additions under new names.
+  const project = await w.createProject("Rollback");
+  const child = (await w.createPage({ title: "Child", project_id: project.project_id })).body;
+  // Page records and Catalog entries keep every field older builds read, and
+  // storage keeps the Space names a build from before the Project name reads.
   const metadata = w.page(child.page_id).metadata;
   for (const field of ["pageId", "owner", "documentId", "tree", "deleted", "createdReceipt"])
     assert.ok(Object.hasOwn(metadata, field), field);
@@ -1044,9 +1106,20 @@ test("rollback: storage written here stays readable by a build without Spaces", 
   for (const field of ["page_id", "title", "created_at", "updated_at"])
     assert.ok(Object.hasOwn(entry, field), field);
   assert.equal(entry.pending, undefined);
+  assert.equal(entry.space_id, project.project_id);
+  assert.equal(Object.hasOwn(entry, "project_id"), false);
+  assert.equal(Object.hasOwn(metadata.placement, "project_id"), false);
+  const catalog = w.catalogStorage();
+  assert.ok(await catalog.get(`space/${project.project_id}`), "Catalog keeps space/<id>");
+  assert.equal((await catalog.list({ prefix: "project/" })).size, 0);
+  const record = await w.projects.get(project.project_id).ctx.storage.get("space/record");
+  assert.equal(record.space_id, project.project_id);
+  assert.equal(Object.hasOwn(record, "project_id"), false);
 
-  // A build that knows migrations 1-3 runs against schema 4 unchanged.
+  // The schema is the Spaces build's: a build that knows migrations 1-3 runs
+  // against it unchanged.
   const latest = CATALOG_MIGRATIONS.at(-1).version;
+  assert.equal(latest, 4);
   assert.equal(await migrateCatalogIndex(w.db), latest);
   assert.equal(await migrateCatalogIndex(w.db, CATALOG_MIGRATIONS.slice(0, 3)), latest);
   // Its page upsert (no placement columns) neither fails nor clears placement.
@@ -1068,7 +1141,7 @@ test("rollback: storage written here stays readable by a build without Spaces", 
     "SELECT space_id, parent_id, placement_epoch FROM pages_catalog_pages WHERE page_id = ?",
     child.page_id,
   );
-  assert.equal(row.space_id, space.space_id);
+  assert.equal(row.space_id, project.project_id);
   assert.equal(row.placement_epoch, 0);
   // A row an older build inserted has no placement until a report supplies it.
   const legacyPage = crypto.randomUUID();
@@ -1092,47 +1165,178 @@ test("rollback: storage written here stays readable by a build without Spaces", 
   assert.equal(legacy.space_id, null);
   assert.equal(legacy.placement_epoch, 0);
 
-  // A Page record from a build without Spaces reads as Your items.
+  // A Page record from a build without Projects reads as Your items.
   const plain = (await w.createPage({ title: "Plain" })).body.page_id;
   const read = await w.call("owner", "read_page", { page_id: plain, include_content: false });
-  assert.equal(read.body.space_id, null);
+  assert.equal(read.body.project_id, null);
   assert.equal(read.body.parent_id, null);
   assert.deepEqual(read.body.breadcrumbs, []);
 });
 
-test("Space tools are concise and keep the untrusted-content rule", () => {
+/** Fail the next Page creation, as a crash between the intent and the Page. */
+function failNextPageCreate(w) {
+  const originalPages = w.env.PAGES.getByName;
+  let fail = true;
+  w.env.PAGES.getByName = (id) => {
+    const stub = originalPages(id);
+    return {
+      fetch: async (request) => {
+        if (fail && new URL(request.url).pathname === "/internal/create") {
+          fail = false;
+          return Response.json({ error: "Injected crash" }, { status: 500 });
+        }
+        return stub.fetch(request);
+      },
+    };
+  };
+}
+
+test("intents a build from before the Project name left pending resume through the Project API", async (t) => {
+  const w = await world(t);
+  const storage = w.catalogStorage();
+
+  // create_space as the old gateway sent it, interrupted before its home Page.
+  failNextPageCreate(w);
+  const spaceArgs = { title: "Old build", idempotency_key: "old-create-space" };
+  assert.equal((await w.oldGateway("owner", "create_space", spaceArgs)).status, 500);
+  const spaceIntent = await storage.get("host/operation/old-create-space");
+  assert.equal(spaceIntent.pending, true);
+  assert.equal(spaceIntent.phase, "space_recorded");
+  const resumed = await w.call("owner", "create_project", spaceArgs);
+  assert.equal(resumed.status, 200, JSON.stringify(resumed.body));
+  assert.equal(resumed.body.project_id, spaceIntent.spaceId);
+  assert.equal(resumed.body.home_page_id, spaceIntent.pageId);
+  assert.equal(resumed.body.org, null);
+  assert.equal(Object.hasOwn(resumed.body, "space_id"), false);
+  const projectId = resumed.body.project_id;
+
+  // create_page with placement {space_id}, interrupted before the Page.
+  failNextPageCreate(w);
+  const pageArgs = { title: "Queued", space_id: projectId, idempotency_key: "old-create-page" };
+  assert.equal((await w.oldGateway("owner", "create_page", pageArgs)).status, 500);
+  const pageIntent = await storage.get("host/operation/old-create-page");
+  assert.equal(pageIntent.pending, true);
+  assert.deepEqual(Object.keys(pageIntent.placement).sort(), [
+    "parent_id",
+    "placement_epoch",
+    "position",
+    "space_id",
+  ]);
+  // The same call with the new argument name. Fingerprints cover the
+  // arguments in order, as they always have.
+  const apiArgs = { title: "Queued", project_id: projectId, idempotency_key: "old-create-page" };
+  const page = await w.call("owner", "create_page", apiArgs);
+  assert.equal(page.status, 200, JSON.stringify(page.body));
+  assert.equal(page.body.page_id, pageIntent.pageId);
+  assert.equal(page.body.project_id, projectId);
+  assert.equal(w.page(page.body.page_id).metadata.placement.space_id, projectId);
+  // The completed receipt replays in the API's names, and once.
+  const replay = await w.call("owner", "create_page", apiArgs);
+  assert.deepEqual(replay.body, page.body);
+  assert.deepEqual(
+    ids(await w.call("owner", "list_pages", { project_id: projectId })),
+    [resumed.body.home_page_id, page.body.page_id].sort(),
+  );
+});
+
+test("cached clients: old tool names and space_id are refused before anything runs", async (t) => {
+  const w = await world(t);
+  const project = await w.createProject("Cached");
+  const renamed = {
+    create_space: ["create_project", { title: "Old", idempotency_key: w.key() }],
+    list_spaces: ["list_projects", {}],
+    get_space: ["get_project", { space_id: project.project_id }],
+    update_space: [
+      "update_project",
+      {
+        space_id: project.project_id,
+        title: "Old",
+        expected_revision: 0,
+        idempotency_key: w.key(),
+      },
+    ],
+  };
+  for (const [old, [replacement, args]] of Object.entries(renamed)) {
+    const viaApi = await w.call("owner", old, args);
+    assert.equal(viaApi.status, 400, old);
+    assert.deepEqual(viaApi.body, {
+      error: `\`${old}\` was renamed \`${replacement}\``,
+      code: "tool_renamed",
+    });
+    const viaMcp = await w.mcp("owner", old, args);
+    assert.equal(viaMcp.isError, true, old);
+    assert.deepEqual(viaMcp.body, viaApi.body);
+  }
+  assert.equal((await w.call("owner", "list_projects")).body.projects.length, 1);
+  assert.equal(
+    (await w.call("owner", "get_project", { project_id: project.project_id })).body.revision,
+    0,
+  );
+
+  // space_id on create_page or list_pages is refused, not ignored, and the
+  // refusal consumes nothing: the same key then applies once with project_id.
+  const pageKey = w.key();
+  const refusals = [
+    ["create_page", { title: "Cached", space_id: project.project_id, idempotency_key: pageKey }],
+    ["list_pages", { space_id: project.project_id }],
+  ];
+  for (const [operation, args] of refusals) {
+    const expected = { error: "`space_id` is now `project_id`", code: "argument_renamed" };
+    const viaApi = await w.call("owner", operation, args);
+    assert.equal(viaApi.status, 400, operation);
+    assert.deepEqual(viaApi.body, expected);
+    const viaMcp = await w.mcp("owner", operation, args);
+    assert.equal(viaMcp.isError, true, operation);
+    assert.deepEqual(viaMcp.body, expected);
+  }
+  assert.equal(await w.catalogStorage().get(`host/operation/${pageKey}`), undefined);
+  const created = await w.call("owner", "create_page", {
+    title: "Cached",
+    project_id: project.project_id,
+    idempotency_key: pageKey,
+  });
+  assert.equal(created.status, 200);
+  assert.equal(created.body.project_id, project.project_id);
+  assert.deepEqual(
+    ids(await w.call("owner", "list_pages", { project_id: project.project_id })),
+    [project.home_page_id, created.body.page_id].sort(),
+  );
+});
+
+test("Project tools are concise and keep the untrusted-content rule", () => {
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
-  for (const name of ["create_space", "list_spaces", "get_space", "update_space"]) {
+  for (const name of ["create_project", "list_projects", "get_project", "update_project"]) {
     const tool = byName.get(name);
     assert.ok(tool, name);
     assert.ok(tool.description.length < 900, `${name} description stays short`);
   }
-  assert.match(byName.get("get_space").description, /home Page/);
-  assert.match(byName.get("get_space").description, /untrusted/);
-  assert.deepEqual(byName.get("get_space").inputSchema.required, ["space_id"]);
-  assert.equal(byName.get("list_spaces").annotations.readOnlyHint, true);
-  for (const name of ["space_id", "parent_id"])
+  assert.match(byName.get("get_project").description, /home Page/);
+  assert.match(byName.get("get_project").description, /untrusted/);
+  assert.deepEqual(byName.get("get_project").inputSchema.required, ["project_id"]);
+  assert.equal(byName.get("list_projects").annotations.readOnlyHint, true);
+  for (const name of ["project_id", "parent_id"])
     assert.ok(byName.get("create_page").inputSchema.properties[name], name);
-  for (const name of ["space_id", "parent_id", "kind"])
+  for (const name of ["project_id", "parent_id", "kind"])
     assert.ok(byName.get("list_pages").inputSchema.properties[name], name);
   assert.match(byName.get("read_page").description, /breadcrumbs/);
 });
 
-test("a credential that expires while the Space reads its record is refused", async (t) => {
+test("a credential that expires while the Project reads its record is refused", async (t) => {
   const w = await world(t);
-  const space = await w.createSpace("Expiring");
-  const host = w.spaces.get(space.space_id);
+  const project = await w.createProject("Expiring");
+  // The internal route and stored record keep the Space name.
+  const host = w.projects.get(project.project_id);
   const read = () =>
     host.fetch(
       new Request("https://pages.invalid/internal/space/read", {
         method: "POST",
         headers: { authorization: `Bearer ${w.auth.apiKey()}` },
-        body: JSON.stringify({ space_id: space.space_id }),
+        body: JSON.stringify({ space_id: project.project_id }),
       }),
     );
   assert.equal((await read()).status, 200);
   // API-key credentials last 60 s from authentication. Advance the clock past
-  // that while the Space awaits its record, after authenticate() returned.
+  // that while the Project awaits its record, after authenticate() returned.
   const start = Date.now();
   let elapsed = 0;
   t.mock.method(Date, "now", () => start + elapsed);
@@ -1145,5 +1349,5 @@ test("a credential that expires while the Space reads its record is refused", as
   });
   const refused = await read();
   assert.equal(refused.status, 404);
-  assert.equal((await refused.json()).code, "space_not_found");
+  assert.equal((await refused.json()).code, "project_not_found");
 });
