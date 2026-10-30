@@ -528,6 +528,18 @@ export class PageSession {
             name: "TimeoutError",
             code: "REQUEST_TIMEOUT",
           });
+        // /api/connect already admitted this reader, so the host has the
+        // document. Repo reports it unavailable when the only peer's socket
+        // closes first, e.g. a native refusal while an ACL change commits
+        // (access_changed, retry "recheck"). Reopening is safe; let the open
+        // loop retry instead of showing a permanent error.
+        if (/^Document \S+ is unavailable$/.test(cause?.message ?? ""))
+          throw Object.assign(
+            Error("The Page connection closed before the document arrived. Please try again.", {
+              cause,
+            }),
+            { code: "NETWORK_ERROR" },
+          );
         throw cause;
       } finally {
         this.rejectLookup = undefined;

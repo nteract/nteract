@@ -25,7 +25,8 @@ const diagram = `graph TD
 const table =
   // Unsupported inline syntax intentionally keeps this a preserved-preview fixture.
   "| Name | Status |\n| --- | --- |\n| Pages | **Ready** |\n| Notes | [Guide](/llms.txt) |\n\n~~Preserved extension~~";
-const content = (page) => page.locator("wg-content");
+// Document blocks only; comment drafts are Wordgard editors too.
+const content = (page) => page.locator(".page-block wg-content");
 const saved = (page) =>
   expect(page.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible({ timeout: 20000 });
 function checkpoint(name) {
@@ -238,9 +239,12 @@ async function assertStableSelectionToolbar(page) {
         return records;
       };
     });
+    // The second drag reselects while the first selection and its toolbar are
+    // showing. It starts outside that selection: pressing inside a selection
+    // starts a text drag-and-drop on Linux Chromium, not a new selection.
     for (const [from, to] of [
-      [0, text.length],
       [4, text.length],
+      [0, text.length],
     ]) {
       const { start, end } = await geometry(from, to);
       assert.equal(
@@ -612,7 +616,7 @@ try {
   await draft.fill("Keep this unsent passage draft.");
   await commentsToggle.click();
   await commentsToggle.click();
-  await expect(draft).toHaveValue("Keep this unsent passage draft.");
+  await expect(draft).toHaveText("Keep this unsent passage draft.");
   await expect(a.locator(".composer-context")).toHaveText("fox");
   await commentsToggle.click();
   // Let the panel's scheduled focus restoration finish before selecting elsewhere.
@@ -621,7 +625,7 @@ try {
   await selectText(a, "Second writer");
   await expect(content(a)).toBeFocused();
   await a.getByRole("button", { name: "Comment on selection", exact: true }).click();
-  await expect(draft).toHaveValue("Keep this unsent passage draft.");
+  await expect(draft).toHaveText("Keep this unsent passage draft.");
   await expect(a.locator(".composer-context")).toHaveText("Second writer");
   await a.locator(".comment-composer").getByRole("button", { name: "Cancel", exact: true }).click();
   await a.getByRole("button", { name: "Close comments", exact: true }).click();

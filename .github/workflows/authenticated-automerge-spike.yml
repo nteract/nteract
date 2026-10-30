@@ -67,3 +67,78 @@ jobs:
         run: npm test --workspace @nteract/pages-native-experiment
       - name: Build native Pages Worker and browser
         run: npm run build --workspace @nteract/pages-native-experiment
+
+  browser-e2e:
+    name: Pages browser E2E (local celld)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: docs/memos/authenticated-automerge-app-substrate/experiment
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            docs/memos/authenticated-automerge-app-substrate/experiment
+            apps/notebook-cloud/src
+            packages/runtimed/src
+            packages/local-oidc/src
+            src/components/markdown
+            src/components/sharing
+            src/styles
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Prepare pinned upstream packages and locked fixture dependencies
+        run: npm run setup
+      # The release asset is gzip; CELLD_RELEASE.sha256 pins the decompressed
+      # executable that Page8 runs, so both hashes are checked.
+      - name: Install official celld 0.6.3 (Linux x86_64)
+        env:
+          CELLD_URL: https://github.com/denoland/celld/releases/download/v0.6.3/celld-x86_64-unknown-linux-gnu.gz
+          CELLD_GZ_SHA256: 5084a083472cf036551a7eac63fa24d22bb9a56323c517f63205724c12783047
+        run: |
+          curl --fail --silent --show-error --location --retry 3 -o "$RUNNER_TEMP/celld.gz" "$CELLD_URL"
+          echo "$CELLD_GZ_SHA256  $RUNNER_TEMP/celld.gz" | sha256sum --check --strict
+          gunzip --stdout "$RUNNER_TEMP/celld.gz" > "$RUNNER_TEMP/celld"
+          expected=$(node --input-type=module -e 'import { CELLD_RELEASE } from "./pages/scripts/deployment/profiles.mjs"; console.log(CELLD_RELEASE.sha256)')
+          echo "$expected  $RUNNER_TEMP/celld" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/celld"
+          "$RUNNER_TEMP/celld" --version
+          echo "CELLD_BIN=$RUNNER_TEMP/celld" >> "$GITHUB_ENV"
+      - name: Read Playwright version
+        id: playwright
+        run: echo "version=$(node -p 'require("@playwright/test/package.json").version')" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-shell-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - name: Install Playwright Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx --no-install playwright install --with-deps --only-shell chromium
+      - name: Install Playwright system dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx --no-install playwright install-deps chromium
+      # One retry per failed suite in a fresh fixture. A suite that passes only
+      # on retry is flaky; more than PAGES_E2E_MAX_FLAKY of them fail the job.
+      # Setup takes about 2 minutes; the 10-minute step cap leaves the upload
+      # room inside the 15-minute job. Results are written per suite, so a
+      # timed-out step still uploads what finished.
+      - name: Run Pages browser E2E
+        timeout-minutes: 10
+        env:
+          PAGES_E2E_RETRIES: "1"
+          PAGES_E2E_MAX_FLAKY: "1"
+        run: npm run e2e --workspace @nteract/pages-native-experiment
+      - name: Upload E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pages-browser-e2e
+          path: docs/memos/authenticated-automerge-app-substrate/experiment/pages/test-results/
+          retention-days: 7
+          if-no-files-found: ignore

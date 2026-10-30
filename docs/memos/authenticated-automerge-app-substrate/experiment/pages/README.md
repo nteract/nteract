@@ -53,15 +53,30 @@ npm test
 npm test --workspace @nteract/pages-native-experiment
 npm run build --workspace @nteract/pages-native-experiment
 npx playwright install chromium
-npm run test:e2e:sharing --workspace @nteract/pages-native-experiment
+npm run e2e --workspace @nteract/pages-native-experiment
 ```
 
-The focused CI workflow runs setup, both unit-test suites, and the Pages build.
-Browser E2E is a separate check. On a fresh Linux runner, install browser system
-dependencies with `npx playwright install --with-deps chromium`.
+`npm run e2e` builds once, then runs each curated browser suite in turn against
+its own loopback celld 0.6.3 with temporary state and a per-suite timeout. Name
+suites to run a subset (`npm run e2e --workspace @nteract/pages-native-experiment -- wordgard sharing`);
+`node scripts/e2e.mjs --list` shows them, including opt-in suites that run only
+when named. Each suite's log, celld log, report, and screenshots (failure
+screenshots and HTML included) land in `pages/test-results/e2e-<timestamp>/<suite>/`.
+Any failure exits non-zero. `PAGES_E2E_RETRIES=1` reruns a failed suite once in
+a fresh fixture and reports a pass on retry as flaky; more flaky suites than
+`PAGES_E2E_MAX_FLAKY` (default 1) also fail the run. Each suite's result is
+appended to `results.jsonl` and `summary.json` as it finishes.
 
-The sharing E2E command builds Pages and starts an isolated celld process on an
-available loopback port. Three browser profiles use the real local OIDC
+The Pages experiment workflow runs setup, both unit-test suites, and the Pages
+build in one job. A second job downloads the official celld 0.6.3 Linux x86_64
+release, checks the archive hash and the executable hash in `CELLD_RELEASE`,
+installs Playwright's Chromium with system dependencies, runs `npm run e2e` with
+one retry and a flaky budget of one, and always uploads `test-results/`. On a
+fresh Linux runner, install browser system dependencies with
+`npx playwright install --with-deps chromium`.
+
+The sharing suite (also `npm run test:e2e:sharing`) builds Pages and starts an
+isolated celld process on an available loopback port. Three browser profiles use the real local OIDC
 code/PKCE flow to test invitations, viewer/editor roles, edits, promotion,
 downgrade, revocation, reload, and reconnect. Generated API keys exercise the
 normal validator, MCP, ACL, and sync paths through a test-only provider response.
@@ -73,7 +88,10 @@ E2E state and credentials are temporary; existing `dist/.dev.vars` and
 `pages/test-results/sharing-<timestamp>`. `CELLD_BIN` selects the runtime,
 `PAGES_E2E_OUTPUT` selects the output directory, and `--skip-build` reuses a build.
 
-Run targeted browser checks from `pages`:
+Run targeted browser checks from `pages`. `npm run e2e` runs all of these by
+default except the latency check, which records timings rather than gating
+on them, and the build-update check, which is opt-in until restored text keeps
+paragraph order on Linux ([#4547](https://github.com/nteract/nteract/issues/4547)):
 
 | Check | Command | Server lifecycle |
 | --- | --- | --- |

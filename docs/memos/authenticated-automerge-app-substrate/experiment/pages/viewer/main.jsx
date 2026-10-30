@@ -24,7 +24,7 @@ import {
   readPageRoute,
   writePageRoute,
   isPlainNavigation,
-  mergePageListings,
+  pageListing,
 } from "../shared/routes.mjs";
 import { maintainBrowserSession } from "./browser-session.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
@@ -84,6 +84,7 @@ function App() {
     closingPages = useRef(new Map()),
     authentication = useRef(null),
     catalogRevision = useRef(0),
+    lastRemote = useRef(null),
     creationPending = useRef(false),
     generation = useRef(0),
     openingRequest = useRef(null),
@@ -100,12 +101,19 @@ function App() {
       (value) => ({ value }),
       (error) => ({ error }),
     );
+    const closing = [...closingPages.current.values()];
     const local = await listLocalPages(identity).catch(() => []);
     const stillCurrent = () =>
       identity.principal === authentication.current?.identity?.principal &&
       revision === catalogRevision.current;
     if (!stillCurrent()) return [];
-    setPages((previous) => mergePageListings(previous, local));
+    // Until this refresh's remote result arrives, the last one for this
+    // account stands in for it.
+    const listing = pageListing(
+      lastRemote.current?.principal === identity.principal ? lastRemote.current.pages : [],
+      local,
+    );
+    setPages(listing.pages);
     // Spaces load beside the Page list; a failure leaves the list usable.
     void listSpaces(tool).then(
       (value) => {
@@ -113,9 +121,20 @@ function App() {
       },
       () => {},
     );
+    // A Page left by this navigation drains and writes its final local
+    // checkpoint (title included) in the background. Relist once it lands.
+    if (closing.length)
+      void Promise.all(closing)
+        .then(() => listLocalPages(identity))
+        .then((latest) => {
+          if (stillCurrent()) setPages(listing.local(latest));
+        })
+        .catch(() => {});
     const remote = await remoteRequest;
     if (!stillCurrent()) return [];
-    const result = mergePageListings(remote.value?.pages ?? null, local);
+    if (remote.value)
+      lastRemote.current = { principal: identity.principal, pages: remote.value.pages ?? [] };
+    const result = listing.remote(remote.value?.pages ?? null);
     setPages(result);
     if (remote.error && !result.length) throw remote.error;
     return result;
@@ -503,9 +522,16 @@ function App() {
       }
       // Close through the reload gate so Reload waits for the checkpoint and
       // a failed one keeps its recovery export.
-      for (const leaving of new Set([deleting, activeDeletion].filter(Boolean)))
-        drainSession(leaving, (session) => closeTrashedSessions(reloadGate, [session]));
-      // Keep the local replica: the Page can be restored from Trash.
+      const closing = [...new Set([deleting, activeDeletion].filter(Boolean))].map((leaving) =>
+        drainSession(leaving, (session) => closeTrashedSessions(reloadGate, [session])),
+      );
+      // Keep the local replica: the Page can be restored from Trash. A draft
+      // the host never registered has no Trash entry, so discard it instead of
+      // leaving it listed as saved locally.
+      if (!deleting.localPage?.registered) {
+        await Promise.all(closing);
+        await forgetLocalPage(deleting.identity, deleting.pageId);
+      }
       setNotice("Moved to Trash");
       await refresh();
     } catch (error) {

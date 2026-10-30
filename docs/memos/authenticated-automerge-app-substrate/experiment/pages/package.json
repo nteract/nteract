@@ -5,6 +5,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "dev": "node scripts/dev.mjs",
+    "e2e": "node scripts/e2e.mjs",
     "test": "tsx --tsconfig tsconfig.json --test worker/*.test.mjs model/*.test.mjs viewer/*.test.mjs test/*.test.mjs scripts/*.test.mjs",
     "smoke": "node scripts/smoke.mjs",
     "smoke:editor": "node scripts/wordgard-smoke.mjs",

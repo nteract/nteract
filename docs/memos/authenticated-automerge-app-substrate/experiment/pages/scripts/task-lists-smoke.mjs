@@ -19,6 +19,14 @@ const tasks = (page) => content(page).locator(".wordgard-task-item");
 const checkbox = (page, text) => tasks(page).filter({ hasText: text }).getByRole("checkbox");
 const saved = (page) =>
   expect(page.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible({ timeout: 20000 });
+// A collapsed caret hides contextual formatting. Alt+F10 pins the full dock
+// (Undo, lists, table options) and moves focus into it on the next frame; the
+// editor selection stays. Wait for that focus so it cannot land mid-interaction.
+async function showFormatting(page) {
+  await page.keyboard.press("Alt+F10");
+  await expect(page.locator("#page-formatting .rich-toolbar.is-pinned")).toBeVisible();
+  await expect(page.locator("#page-formatting .rich-toolbar :focus")).toHaveCount(1);
+}
 const checkpoint = (name) => {
   report.completed.push(name);
   console.log("PASS " + name);
@@ -179,6 +187,7 @@ try {
     await expect(checkbox(page, "Write the plan together")).toBeChecked();
     await expect(content(page)).toContainText("Write the plan together");
   }
+  await showFormatting(a);
   await a.getByRole("button", { name: "Undo", exact: true }).click();
   for (const page of [a, b]) {
     await expect(checkbox(page, "Write the plan together")).not.toBeChecked();
@@ -189,6 +198,7 @@ try {
 
   stage = "toolbar converts prose to tasks and back with accurate pressed state";
   await selectText(a, "Keep this note as prose.");
+  await showFormatting(a);
   const taskButton = a.getByRole("button", { name: "Task list", exact: true });
   await expect(taskButton).toHaveAttribute("aria-pressed", "false");
   await taskButton.click();
@@ -268,7 +278,8 @@ try {
   });
   await reader.goto(origin + "/p/" + imported.page_id);
   await expect(content(reader)).toHaveAttribute("contenteditable", "false");
-  await expect(reader.getByRole("button", { name: "Task list", exact: true })).toBeDisabled();
+  // Readers get no formatting dock, so no list controls at all.
+  await expect(reader.getByRole("button", { name: "Task list", exact: true })).toHaveCount(0);
   for (const input of await reader.getByRole("checkbox").all()) await expect(input).toBeDisabled();
   const before = await call(a, "read_page", { page_id: imported.page_id });
   await content(reader).click();

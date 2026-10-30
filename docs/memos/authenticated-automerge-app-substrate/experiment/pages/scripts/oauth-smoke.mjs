@@ -341,10 +341,11 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
     complete(
       "Public DNS denied before OAuth; browser interception cannot fall through to external hosts",
     );
+    // tools/list and ping are anonymous; initialize starts the OAuth challenge.
     const unauthenticated = await localFetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
     });
     assert.equal(unauthenticated.status, 401);
     assert.match(
