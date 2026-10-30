@@ -210,24 +210,54 @@ export class PageRecords {
   }
 }
 
+/** Bound for one PageRecords request, including its response body. */
+export const RECORD_REQUEST_TIMEOUT_MS = 20_000;
+
+export function recordPersistenceTimeout() {
+  return Object.assign(
+    Error(
+      "This Page's storage did not confirm its records in time. Retry with the same idempotency_key and retry_token.",
+    ),
+    { status: 503, code: "record_persistence_timeout" },
+  );
+}
+
 export class RemoteRecordSink {
-  constructor(stub) {
+  constructor(stub, { timeoutMs = RECORD_REQUEST_TIMEOUT_MS } = {}) {
     this.stub = stub;
+    this.timeoutMs = timeoutMs;
+  }
+  /** Every PageRecords request settles: an unanswered one rejects after
+   * `timeoutMs`, and the caller keeps its pending records for the next flush.
+   * An abandoned batch may still run later. Batches are immutable and a Page
+   * sends them in order, so a late one only rewrites the same record bytes or
+   * retains a record a later compaction removed.
+   */
+  async request(request, read) {
+    let timer;
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(recordPersistenceTimeout()), this.timeoutMs);
+    });
+    try {
+      return await Promise.race([(async () => read(await this.stub.fetch(request)))(), deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
   generation() {
     // One lease per sink incarnation. A superseded writer must never silently
     // reacquire ownership while retrying its stale queued batches.
-    return (this.lease ??= (async () => {
-      const response = await this.stub.fetch(
-        new Request("https://records.internal/lease", {
-          method: "POST",
-        }),
-      );
-      if (!response.ok) throw Error("Could not establish record owner");
-      const generation = await response.text();
-      if (!/^[a-f0-9-]{36}$/.test(generation)) throw Error("Invalid record owner generation");
-      return generation;
-    })());
+    return (this.lease ??= this.request(
+      new Request("https://records.internal/lease", {
+        method: "POST",
+      }),
+      async (response) => {
+        if (!response.ok) throw Error("Could not establish record owner");
+        const generation = await response.text();
+        if (!/^[a-f0-9-]{36}$/.test(generation)) throw Error("Invalid record owner generation");
+        return generation;
+      },
+    ));
   }
   async *snapshot() {
     const generation = await this.generation();
@@ -235,15 +265,19 @@ export class RemoteRecordSink {
     do {
       const url = new URL("https://records.internal/records");
       if (after !== undefined) url.searchParams.set("after", after);
-      const response = await this.stub.fetch(
+      const { entries, cursor } = await this.request(
         new Request(url, {
           headers: { "x-pages-record-generation": generation },
         }),
+        async (response) => {
+          if (!response.ok) throw Error("Could not load persisted records");
+          return {
+            entries: decodeRecordBatch(new Uint8Array(await response.arrayBuffer())),
+            cursor: response.headers.get("x-pages-records-after"),
+          };
+        },
       );
-      if (!response.ok) throw Error("Could not load persisted records");
-      const entries = decodeRecordBatch(new Uint8Array(await response.arrayBuffer()));
       for (const entry of entries) yield entry;
-      const cursor = response.headers.get("x-pages-records-after");
       const next = cursor === null ? undefined : decodeURIComponent(cursor);
       if (next !== undefined && (next === after || !entries.length))
         throw Error("Invalid persistence cursor");
@@ -252,7 +286,7 @@ export class RemoteRecordSink {
   }
   async commit(entries) {
     const generation = await this.generation();
-    const response = await this.stub.fetch(
+    await this.request(
       new Request("https://records.internal/records", {
         method: "POST",
         body: encodeRecordBatch(entries),
@@ -261,8 +295,10 @@ export class RemoteRecordSink {
           "x-pages-record-generation": generation,
         },
       }),
+      (response) => {
+        if (!response.ok) throw Error("Could not persist records");
+      },
     );
-    if (!response.ok) throw Error("Could not persist records");
   }
 }
 

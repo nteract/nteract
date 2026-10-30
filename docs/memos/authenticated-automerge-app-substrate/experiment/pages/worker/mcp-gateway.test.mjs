@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import worker from "./index.mjs";
+import { TOOL_REQUEST_TIMEOUT_MS } from "./tool-deadline.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
 const publicOrigin = "https://page7.runtimed.run";
@@ -87,4 +88,41 @@ test("MCP gateway passes the configured public origin through a private HTTP tun
     calls.map(({ operation }) => operation),
     ["list_pages", "create_page", "read_page", "list_pages", "read_page"],
   );
+});
+
+test("a tool request whose host never answers returns a retryable timeout", async (t) => {
+  const auth = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", auth.fetch);
+  let reached;
+  const called = new Promise((resolve) => {
+    reached = resolve;
+  });
+  const silent = {
+    getByName: () => ({
+      fetch() {
+        reached();
+        return new Promise(() => {});
+      },
+    }),
+  };
+  const env = { ...auth.env, CATALOGS: silent, PAGES: silent };
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const call = (operation, args) =>
+    worker.fetch(
+      new Request("http://127.0.0.1:9477/api/tools", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${auth.apiKey()}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ operation, arguments: args }),
+      }),
+      env,
+    );
+  const pending = call("patch_page", { page_id: pageId, idempotency_key: "timeout-fixture" });
+  await called;
+  t.mock.timers.tick(TOOL_REQUEST_TIMEOUT_MS);
+  const response = await pending;
+  assert.equal(response.status, 504);
+  const body = await response.json();
+  assert.equal(body.code, "request_timeout");
+  assert.equal(body.retryable, true);
+  assert.match(body.error, /same idempotency_key/);
 });

@@ -71,6 +71,7 @@ import {
 import { ADMISSION_CAPABILITY } from "../shared/admission.mjs";
 import { buildAdvertisement } from "../shared/build-identity.mjs";
 import { advertiseBuild } from "./build-advertisement.mjs";
+import { withinToolDeadline } from "./tool-deadline.mjs";
 
 const unifiedMissing = (request) =>
   request.headers.get(ADMISSION_CAPABILITY.header) === ADMISSION_CAPABILITY.value;
@@ -345,8 +346,10 @@ async function invoke(request, env, operation, args = {}) {
       operation,
     )
   ) {
-    return env.CATALOGS.getByName(identity.principal).fetch(
-      forwarded(request, "/internal/catalog", { operation, arguments: args }),
+    return withinToolDeadline(
+      env.CATALOGS.getByName(identity.principal).fetch(
+        forwarded(request, "/internal/catalog", { operation, arguments: args }),
+      ),
     );
   }
   requirePageIdArgument(args.page_id);
@@ -360,8 +363,10 @@ async function invoke(request, env, operation, args = {}) {
       authorize: (write) => authorizeImage(request, env, args.page_id, write),
     });
   }
-  const response = await env.PAGES.getByName(args.page_id).fetch(
-    forwarded(request, "/internal/tool", { operation, arguments: args }),
+  const response = await withinToolDeadline(
+    env.PAGES.getByName(args.page_id).fetch(
+      forwarded(request, "/internal/tool", { operation, arguments: args }),
+    ),
   );
   if (operation !== "read_page" || !response.ok) return response;
   const body = await response.json();

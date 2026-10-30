@@ -45,6 +45,24 @@ const accessFailure = () =>
     status: 409,
   });
 const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 16));
+/** The checkpoint records this replica's byte store does not hold. A held
+ * record may be another peer's encoding of the same history: a fragment's
+ * bundle orders concurrent changes in each peer's application order, and the
+ * backend accepts one representation per record key. Each tab's store holds
+ * one Page, under the backend's `.../commits/<hash>` and `.../fragments/<head>`
+ * keys.
+ */
+async function unheldRecords(storage, records) {
+  const held = new Set();
+  for (const key of await storage.list("")) {
+    const match = /\/(commits|fragments)\/([0-9a-f]{64})$/.exec(key);
+    if (match) held.add(`${match[1]}/${match[2]}`);
+  }
+  return records.filter(
+    (record) =>
+      !held.has(record.kind === "commit" ? `commits/${record.id}` : `fragments/${record.head}`),
+  );
+}
 // Longer than the host's 10-second native admission deadline. A socket that
 // closes sooner never proved admission, so it must not reset reconnect backoff.
 export const STABLE_CONNECTION_MS = 15_000;
@@ -500,7 +518,7 @@ export class PageSession {
       try {
         await this.backend.storeSnapshot(
           documentIdToBinary(this.localPage.document_id),
-          extractRecords(checkpoint),
+          await unheldRecords(this.storage, extractRecords(checkpoint)),
         );
       } finally {
         A.free(checkpoint);

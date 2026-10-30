@@ -190,25 +190,65 @@ export function requireWrite(identity) {
     );
 }
 
+/** Server failures whose fixed message tells the caller to retry the same
+ * request. Every other 5xx keeps the generic message. */
+const RETRYABLE_SERVER_CODES = ["record_persistence_timeout", "request_timeout"];
+
+const LOGGED_ERROR_TYPES = [
+  "Error",
+  "HttpError",
+  "AuthError",
+  "PermissionDenied",
+  "AggregateError",
+  "RuntimeError",
+  "TypeError",
+  "RangeError",
+  "BackendError",
+];
+const errorType = (error) => (LOGGED_ERROR_TYPES.includes(error?.name) ? error.name : "Error");
+
+/** Where an error was thrown, as function names from its top stack frames.
+ * Names are code identifiers: no message, argument, path or line is kept. */
+export function failureOrigin(error) {
+  const frames = [];
+  // The stack starts with the message, which may span lines.
+  const header = String(error?.message ?? "").split("\n").length;
+  for (const line of String(error?.stack ?? "")
+    .split("\n")
+    .slice(header, header + 15)) {
+    const match = /^\s*at (?:async |new )?([A-Za-z_$][\w$.]{0,63})(?:\s|$)/.exec(line);
+    if (match && match[1] !== "async") frames.push(match[1]);
+    if (frames.length === 3) break;
+  }
+  return frames;
+}
+
+/** Bounded, content-free description of one error: its type, origin, and the
+ * storage backend's operation/code enums when it is a BackendError. */
+function failureShape(error) {
+  return {
+    errorType: errorType(error),
+    origin: failureOrigin(error),
+    ...(error?.name === "BackendError" &&
+      /^[a-z-]{1,32}$/.test(error.operation) &&
+      /^[a-z-]{1,32}$/.test(error.code) && { backend: `${error.operation}/${error.code}` }),
+  };
+}
+
 // Structured categories only: provider exceptions can contain credentials or bodies.
 export function logFailure(error, stage) {
-  const status = error.status ?? (error.name === "AuthError" ? 401 : 500);
-  const name = [
-    "Error",
-    "HttpError",
-    "AuthError",
-    "PermissionDenied",
-    "AggregateError",
-    "RuntimeError",
-  ].includes(error.name)
-    ? error.name
-    : "Error";
+  const status = error?.status ?? (error?.name === "AuthError" ? 401 : 500);
+  const { errorType: name, ...shape } = failureShape(error);
+  const inner = error?.cause ?? (error?.name === "AggregateError" ? error.errors?.[0] : undefined);
   console.error("[pages-native]", {
     service: "nteract-pages-native",
     event: "request.failed",
     stage,
     status,
     errorType: name,
+    ...shape,
+    ...(inner && typeof inner === "object" && { cause: failureShape(inner) }),
+    ...(RETRYABLE_SERVER_CODES.includes(error?.code) ? { reason: error.code } : {}),
     ...([
       "native_admission_cancelled",
       "native_admission_timeout",
@@ -218,7 +258,7 @@ export function logFailure(error, stage) {
       "native_already_connected",
       "native_access_changed",
       "native_acl_committing",
-    ].includes(error.code)
+    ].includes(error?.code)
       ? { reason: error.code }
       : {}),
     timestamp: new Date().toISOString(),
@@ -226,11 +266,13 @@ export function logFailure(error, stage) {
 }
 
 export function errorResponse(error, stage = "request") {
-  const status = error.status ?? (error.name === "AuthError" ? 401 : 500);
+  const status = error?.status ?? (error?.name === "AuthError" ? 401 : 500);
   if (status >= 500) logFailure(error, stage);
+  const retryable = status >= 500 && RETRYABLE_SERVER_CODES.includes(error?.code);
   return Response.json(
     {
-      error: status < 500 ? error.message : "Pages request failed",
+      error: status < 500 || retryable ? error.message : "Pages request failed",
+      ...(retryable && { code: error.code, retryable: true }),
       ...([
         "oauth_invalid_token",
         "oauth_insufficient_scope",
@@ -269,8 +311,8 @@ export function errorResponse(error, stage = "request") {
         "home_page_protected",
         "page_has_children",
         "lifecycle_unsettled",
-      ].includes(error.code) && { code: error.code }),
-      ...(["edit_conflict", "resync_required"].includes(error.code) && {
+      ].includes(error?.code) && { code: error.code }),
+      ...(["edit_conflict", "resync_required"].includes(error?.code) && {
         ...(Array.isArray(error.details?.conflicts) && {
           conflicts: error.details.conflicts.slice(0, 10).map((conflict) => ({
             block_id: String(conflict.block_id ?? "").slice(0, 128),

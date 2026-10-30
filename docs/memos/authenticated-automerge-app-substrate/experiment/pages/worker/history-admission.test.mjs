@@ -284,7 +284,7 @@ for (const mode of ["local", "buffered"]) {
       });
       let persisted = 0;
       await assert.rejects(
-        admission.reserve("bundled", intent(bundled), bundled, async () => {
+        admission.reserve("bundled", intent(bundled), bundled, handle.doc(), async () => {
           persisted++;
         }),
         (error) =>
@@ -293,7 +293,7 @@ for (const mode of ["local", "buffered"]) {
       assert.equal(persisted, 0);
       assert.equal(admission.pending("bundled"), undefined);
       // The same edit as a loose commit only adds its own change to the stored base.
-      await admission.reserve("loose", intent(loose), loose, async () => {
+      await admission.reserve("loose", intent(loose), loose, handle.doc(), async () => {
         persisted++;
       });
       assert.equal(persisted, 1);
@@ -331,7 +331,7 @@ for (const mode of ["local", "buffered"]) {
             changes: A.getChanges(base, candidate),
             receipt: { heads: A.getHeads(candidate) },
           };
-          await admission.reserve("intent", entry, candidate, async () => {
+          await admission.reserve("intent", entry, candidate, handle.doc(), async () => {
             await peer.storage.put("host/operation/intent", entry);
             await peer.storage.sync();
           });
@@ -370,6 +370,99 @@ for (const mode of ["local", "buffered"]) {
   }
 }
 
+const equalBytes = (a, b) => a.length === b.length && a.every((value, i) => value === b[i]);
+
+/** Two peers make concurrent edits `x` and `y`; a merge `m` heads a fragment
+ * that bundles both. The host applies x before y. The peer that uploads the
+ * fragment applied y before x, so its bundle orders them differently: the same
+ * fragment key, a different blob. */
+function concurrentFragment(base) {
+  const [x] = A.getChanges(
+    base,
+    A.change(A.clone(base, { actor: "1c".repeat(16) }), { time: TIME + 1 }, (doc) => {
+      doc.x = "left peer";
+    }),
+  );
+  const [y] = A.getChanges(
+    base,
+    A.change(A.clone(base, { actor: "1d".repeat(16) }), { time: TIME + 2 }, (doc) => {
+      doc.y = "right peer";
+    }),
+  );
+  const merged = edit(
+    A.applyChanges(A.clone(base), [x, y])[0],
+    "1e".repeat(16),
+    (doc) => {
+      doc.merged = true;
+    },
+    "fragment",
+  );
+  const [m] = A.getChanges(A.applyChanges(A.clone(base), [x, y])[0], merged);
+  const hostOrder = A.applyChanges(A.clone(base), [x, y, m])[0];
+  const peerOrder = A.applyChanges(A.applyChanges(A.clone(base), [y])[0], [x, m])[0];
+  const head = A.decodeChange(m).hash;
+  const fragment = (doc) =>
+    extractRecords(doc).find((record) => record.kind === "fragment" && record.head === head);
+  const uploaded = fragment(peerOrder);
+  assert.ok(uploaded, "the merge heads a fragment");
+  assert.notDeepEqual(fragment(hostOrder).blob, uploaded.blob, "bundles differ by peer");
+  return { x, y, m, head, uploaded };
+}
+
+/** Wait for backend observation to deliver stored history to the handle. */
+function headsArrive(handle, heads, ms = 5000) {
+  if (A.hasHeads(handle.doc(), heads)) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const changed = () => {
+      if (!A.hasHeads(handle.doc(), heads)) return;
+      clearTimeout(timer);
+      handle.off("heads-changed", changed);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      handle.off("heads-changed", changed);
+      reject(Error(`heads did not arrive within ${ms} ms`));
+    }, ms);
+    handle.on("heads-changed", changed);
+  });
+}
+
+for (const mode of ["local", "buffered"]) {
+  test(`${mode}: an API edit leaves a peer-encoded fragment of existing history untouched`, async () => {
+    const base = baseDoc();
+    const { x, y, m, head, uploaded } = concurrentFragment(base);
+    const peer = host(mode, bytes(base) + 65536);
+    try {
+      const handle = await peer.repo.import(A.save(base));
+      await peer.flush();
+      // The host receives the concurrent edits in its own order, then the
+      // uploading peer's fragment stores the merge under that peer's encoding.
+      await handle.update((doc) => A.applyChanges(doc, [x, y])[0]);
+      await peer.flush();
+      await peer.backend.storeSnapshot(treeId(handle.documentId), [uploaded]);
+      await headsArrive(handle, [head]);
+      await peer.flush();
+      assert.ok(
+        extractRecords(handle.doc()).some(
+          (record) => record.head === head && !equalBytes(record.blob, uploaded.blob),
+        ),
+        "the host's own encoding of the stored fragment differs",
+      );
+
+      const ctx = context(peer, handle);
+      const receipt = await documentMutation(ctx);
+      assert.ok(A.hasHeads(handle.doc(), receipt.heads));
+      assert.deepEqual(handle.doc().api, noise(2048, 11));
+      assert.equal((await peer.storage.get("host/operation/api-intent")).pending, false);
+      assert.equal(ctx.admission.hasPending, false);
+      assert.equal(A.getChanges(base, handle.doc()).length, 4);
+      assert.ok(A.hasHeads(handle.doc(), [A.decodeChange(m).hash]));
+    } finally {
+      assert.deepEqual(await closePeers([peer], []), []);
+    }
+  });
+}
+
 test("buffered: remote prefix persistence failure recovers remaining exact history", async () => {
   const base = baseDoc();
   const peer = host("buffered", bytes(base) + 32768);
@@ -393,7 +486,7 @@ test("buffered: remote prefix persistence failure recovers remaining exact histo
       receipt: { heads: A.getHeads(candidate) },
     };
     const admission = new DocumentAdmission(peer.backend, treeId(handle.documentId));
-    await admission.reserve("host/operation/prefix", entry, candidate, async () => {
+    await admission.reserve("host/operation/prefix", entry, candidate, handle.doc(), async () => {
       await peer.storage.put("host/operation/prefix", entry);
       await peer.storage.sync();
     });
@@ -468,7 +561,7 @@ async function stageIntent(peer, handle, base, candidate, key) {
     receipt: { heads: A.getHeads(candidate) },
   };
   const admission = new DocumentAdmission(peer.backend, treeId(handle.documentId));
-  await admission.reserve(key, entry, candidate, async () => {
+  await admission.reserve(key, entry, candidate, handle.doc(), async () => {
     await peer.storage.put(key, entry);
     await peer.storage.sync();
   });
