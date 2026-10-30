@@ -377,6 +377,16 @@ instead of a lookup timeout, and the open retry loop does not reopen. A socket
 counts as admitted only after it stays open 15 seconds, so quick refusals keep
 growing the backoff instead of resetting it.
 
+Backoff steps double from 0.5 s to a 60 s cap, with equal jitter: each retry
+waits between half the step and the full step, so tabs dropped by one host
+restart spread out. Transient failures (no status, 5xx, a close without an
+admission code) retry indefinitely. Six admission closes in a row on sockets
+that never proved stable pause automatic reconnects with "Sync paused" and the
+Retry control, since discovery keeps answering while native admission keeps
+refusing. Retry, the `online` event and signing in again clear both counters and
+reconnect at once; a stable connection clears them too.
+[reconnect-machine.mjs](viewer/reconnect-machine.mjs) holds these transitions.
+
 A binding write that never settles still blocks its own signing key until the
 host restarts; other keys are unaffected. A rejected write may have taken effect,
 so the host neither issues a competing write nor releases the reservation. If an
