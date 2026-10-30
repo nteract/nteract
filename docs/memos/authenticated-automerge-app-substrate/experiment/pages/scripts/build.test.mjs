@@ -213,8 +213,10 @@ test("the blocking theme asset applies preferences without loading the editor", 
     style: {},
   };
   const fetches = [];
+  const listen = () => {};
   const window = {
-    document: { documentElement: root },
+    document: { documentElement: root, addEventListener: listen },
+    addEventListener: listen,
     localStorage: { getItem: (key) => (key === "nteract.pages.theme" ? "dark" : null) },
     location: { href: "https://pages.example/" },
     fetch: (url, init) => {
@@ -222,7 +224,7 @@ test("the blocking theme asset applies preferences without loading the editor", 
       return new Promise(() => {});
     },
   };
-  vm.runInNewContext(output, { window, URL, AbortController });
+  vm.runInNewContext(output, { window, URL, AbortController, performance });
   // The viewer's first session refresh takes this request (early-session.mjs).
   assert.deepEqual(fetches, [["/api/auth/session", ["signal"]]]);
   assert.ok(window.__pagesEarlySession);

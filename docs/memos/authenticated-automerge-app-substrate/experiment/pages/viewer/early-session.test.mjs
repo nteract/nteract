@@ -3,6 +3,7 @@ import test from "node:test";
 import { maintainBrowserSession } from "./browser-session.mjs";
 import {
   EARLY_SESSION,
+  EARLY_SESSION_MAX_AGE_MS,
   SESSION_URL,
   requestSession,
   startEarlySession,
@@ -17,25 +18,44 @@ const sessionResponse = (body, { status = 200, build = "early" } = {}) =>
     headers: { "content-type": "application/json", "x-probe-build": build },
   });
 
+/** A page with event targets for the head script's invalidation listeners. */
 function browser(pathname, response) {
   const calls = [];
+  const target = () => {
+    const listeners = new Map();
+    return {
+      listeners,
+      addEventListener: (type, fn) =>
+        listeners.set(type, (listeners.get(type) ?? new Set()).add(fn)),
+      removeEventListener: (type, fn) => listeners.get(type)?.delete(fn),
+      dispatch: (type, event = {}) => {
+        for (const fn of listeners.get(type) ?? []) fn(event);
+      },
+    };
+  };
+  const document = { visibilityState: "hidden", ...target() };
   const win = {
     location: { href: `https://pages.example${pathname}` },
+    document,
+    ...target(),
     fetch: (...args) => {
       calls.push(args);
       return response();
     },
   };
-  return { win, calls };
+  const listening = () =>
+    (document.listeners.get("visibilitychange")?.size ?? 0) +
+    (win.listeners.get("pageshow")?.size ?? 0);
+  return { win, calls, listening };
 }
 
 /** Session maintenance as main.jsx wires it, with fake timers. */
-function maintain(win) {
+function maintain(win, now) {
   const timers = [],
     sessions = [],
     errors = [];
   const maintenance = maintainBrowserSession({
-    request: () => requestSession(request, { win }),
+    request: () => requestSession(request, now ? { win, now } : { win }),
     onSession: (value) => sessions.push(value),
     onError: (error) => errors.push(error),
     document: null,
@@ -187,4 +207,98 @@ test("without a head-script request the first refresh fetches", async () => {
   assert.deepEqual(result, { identity: null });
   assert.deepEqual(calls, [[SESSION_URL]]);
   assert.equal(takeEarlySession(win), undefined);
+});
+
+test("taking the slot removes the head script's listeners", async () => {
+  const { win, listening } = browser("/", () =>
+    Promise.resolve(sessionResponse({ identity: null, canWrite: false })),
+  );
+  startEarlySession(win);
+  assert.equal(listening(), 2);
+  assert.ok(takeEarlySession(win));
+  assert.equal(listening(), 0);
+  assert.equal(takeEarlySession(win), undefined);
+});
+
+test("becoming visible before the viewer mounts makes the first refresh fetch", async (t) => {
+  // The early check answered signed out; another tab then signed in.
+  const { win, listening } = browser("/", () =>
+    Promise.resolve(sessionResponse({ identity: null, canWrite: false })),
+  );
+  startEarlySession(win);
+  const { controller } = win[EARLY_SESSION];
+  await new Promise((resolve) => setImmediate(resolve));
+  // A hidden transition says nothing about the cookie.
+  win.document.dispatch("visibilitychange");
+  assert.ok(win[EARLY_SESSION]);
+  win.document.visibilityState = "visible";
+  win.document.dispatch("visibilitychange");
+  assert.equal(EARLY_SESSION in win, false);
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(listening(), 0);
+
+  // WASM finishes later and the viewer mounts.
+  const fetched = stubFetch(t, () => sessionResponse({ identity, canWrite: true }));
+  const f = maintain(win);
+  assert.deepEqual(await f.maintenance.refresh(), { identity, canWrite: true });
+  assert.equal(fetched.length, 1);
+  assert.deepEqual(f.sessions, [{ identity, canWrite: true }]);
+  // Signed in, so renewal stays scheduled.
+  assert.equal(f.timers.length, 1);
+  f.maintenance.stop();
+});
+
+test("a back/forward cache restore drops the slot; the first load's pageshow does not", () => {
+  const { win } = browser("/", () => new Promise(() => {}));
+  startEarlySession(win);
+  win.dispatch("pageshow", { persisted: false });
+  assert.ok(win[EARLY_SESSION]);
+  win.dispatch("pageshow", { persisted: true });
+  assert.equal(EARLY_SESSION in win, false);
+});
+
+test("an early request older than the bound is dropped for a normal fetch", async (t) => {
+  for (const [age, adopted] of [
+    [EARLY_SESSION_MAX_AGE_MS, true],
+    [EARLY_SESSION_MAX_AGE_MS + 1, false],
+  ]) {
+    let clock = 1_000;
+    const now = () => clock;
+    const { win } = browser("/", () =>
+      Promise.resolve(sessionResponse({ identity: null, canWrite: false })),
+    );
+    startEarlySession(win, now);
+    const { controller } = win[EARLY_SESSION];
+    clock += age;
+    const fetched = stubFetch(t, () => sessionResponse({ identity, canWrite: true }));
+    const f = maintain(win, now);
+    const result = await f.maintenance.refresh();
+    assert.equal(EARLY_SESSION in win, false);
+    if (adopted) {
+      assert.deepEqual(result, { identity: null, canWrite: false });
+      assert.equal(fetched.length, 0);
+      assert.equal(controller.signal.aborted, false);
+    } else {
+      assert.deepEqual(result, { identity, canWrite: true });
+      assert.equal(fetched.length, 1);
+      assert.equal(controller.signal.aborted, true);
+    }
+    f.maintenance.stop();
+    t.mock.restoreAll();
+  }
+});
+
+test("an early 401 is the first refresh's answer, through normal error handling", async (t) => {
+  const { win } = browser("/", () =>
+    Promise.resolve(sessionResponse({ error: "Sign in again" }, { status: 401 })),
+  );
+  startEarlySession(win);
+  const fetched = stubFetch(t, () => sessionResponse({ identity, canWrite: true }));
+  const f = maintain(win);
+  await assert.rejects(f.maintenance.refresh(), { status: 401, message: "Sign in again" });
+  assert.equal(fetched.length, 0);
+  assert.deepEqual(f.sessions, [{ identity: null, canWrite: false }]);
+  assert.deepEqual(f.errors, []);
+  // browser-session.mjs stops renewing after an authentication refusal.
+  assert.equal(f.timers.length, 0);
 });
