@@ -1133,11 +1133,16 @@ test("a slow D1 cannot stretch reconcile past its deadline plus one call", async
     });
   const ownerRows = () =>
     db.rows("SELECT count(*) AS n FROM pages_catalog_access WHERE principal = ?", owner)[0].n;
+  db.callStarts.length = 0;
   const started = Date.now();
   assert.equal(await reconcile(), false);
   const elapsed = Date.now() - started;
-  // Deadline plus one in-flight D1 call, with scheduling slack.
-  assert.ok(elapsed < 300 + 150 + 40, `reconcile took ${elapsed} ms`);
+  // The bound is "no D1 call starts after the deadline": at most one call is
+  // in flight when it passes. Small slack covers the deadline check itself.
+  const late = db.callStarts.filter((at) => at > started + 300 + 25);
+  assert.deepEqual(late, [], `D1 calls started after the deadline: ${late.length}`);
+  // Wall time is deadline plus that one call; the slack absorbs slow runners.
+  assert.ok(elapsed < 300 + 150 + 400, `reconcile took ${elapsed} ms`);
   // Progress stops at the last committed unit: every committed entry is in D1
   // and nothing after the saved position is.
   const pass = await storage.get("host/index/sync");
