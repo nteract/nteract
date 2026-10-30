@@ -1,0 +1,77 @@
+import { retryKey } from "../model/retry-key.mjs";
+
+/** Spaces this account can open. A failed listing shows none instead of
+ * blocking the Page list. */
+export async function listSpaces(call) {
+  const result = await call("list_spaces", { limit: 100 });
+  return result.spaces ?? [];
+}
+
+/** Every Page of one Space, following list_pages cursors. */
+export async function listSpacePages(call, spaceId, { maxRequests = 10 } = {}) {
+  const pages = new Map();
+  let cursor;
+  for (let request = 0; request < maxRequests; request++) {
+    const result = await call("list_pages", {
+      space_id: spaceId,
+      limit: 100,
+      ...(cursor ? { cursor } : {}),
+    });
+    for (const page of result.pages ?? [])
+      if (!pages.has(page.page_id)) pages.set(page.page_id, page);
+    cursor = result.next_cursor;
+    if (typeof cursor !== "string") break;
+  }
+  return [...pages.values()];
+}
+
+/** Rows for a Space view: the home Page first, then each Page under its
+ * parent in position order, with its depth. A Page whose parent is missing
+ * (in Trash, or not listed) shows at the top level. */
+export function spaceTree(pages) {
+  const ids = new Set(pages.map((page) => page.page_id));
+  const children = new Map();
+  for (const page of pages) {
+    if (page.home) continue;
+    const parent = page.parent_id && ids.has(page.parent_id) ? page.parent_id : null;
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(page);
+  }
+  const order = (a, b) =>
+    (a.position ?? "") === (b.position ?? "")
+      ? a.page_id.localeCompare(b.page_id)
+      : (a.position ?? "") < (b.position ?? "")
+        ? -1
+        : 1;
+  const rows = [];
+  const visit = (parent, depth) => {
+    for (const page of (children.get(parent) ?? []).sort(order)) {
+      rows.push({ page, depth });
+      if (depth < 8) visit(page.page_id, depth + 1);
+    }
+  };
+  visit(null, 0);
+  return { home: pages.find((page) => page.home) ?? null, rows };
+}
+
+/** Create an empty Page at a Space's top level and return its receipt. */
+export async function createPageInSpace(call, spaceId) {
+  const prepared = await call("list_spaces", { limit: 1 });
+  return call("create_page", {
+    title: "Untitled",
+    space_id: spaceId,
+    retry_token: prepared.retry_token,
+    idempotency_key: await retryKey(prepared.retry_token),
+  });
+}
+
+/** Breadcrumbs for an open Page, limited to what this account can open. */
+export async function pageBreadcrumbs(call, pageId) {
+  const result = await call("read_page", {
+    page_id: pageId,
+    include_content: false,
+    comments: "none",
+    outline_limit: 1,
+  });
+  return Array.isArray(result.breadcrumbs) ? result.breadcrumbs : [];
+}

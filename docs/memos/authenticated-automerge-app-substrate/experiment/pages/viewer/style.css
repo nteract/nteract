@@ -1554,3 +1554,50 @@ details.account-actions > div a:hover {
     padding: 2rem 1.25rem 3rem;
   }
 }
+
+/* Spaces: a section in the switcher, a Space view and Page breadcrumbs.
+   Minimal on purpose; they reuse library rows and switcher entries. */
+.picker-section {
+  margin: 0.5rem 0.8rem 0.25rem;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.picker-spaces {
+  max-height: 24dvh;
+  border-top: 1px solid var(--border);
+}
+.space-back {
+  margin: 0 0 0.5rem -0.5rem;
+  color: var(--muted-foreground);
+}
+.space-description {
+  margin: 0.5rem 0 0;
+}
+.space-empty {
+  padding: 0.85rem 0.5rem;
+}
+.breadcrumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin: 0 0 0.25rem;
+  padding: 0;
+  list-style: none;
+  color: var(--muted-foreground);
+  font-size: 0.85rem;
+}
+.breadcrumbs li + li::before {
+  content: "›";
+  margin-right: 0.25rem;
+}
+.breadcrumbs a {
+  color: inherit;
+  text-decoration: none;
+}
+.breadcrumbs a:hover {
+  color: var(--foreground);
+  text-decoration: underline;
+}

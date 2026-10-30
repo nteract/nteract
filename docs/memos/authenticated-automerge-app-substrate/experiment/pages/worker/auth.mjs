@@ -73,6 +73,9 @@ export async function authenticate(request, env) {
           "/internal/restore",
           "/internal/purge",
           "/internal/assets/authorize",
+          "/internal/space/create",
+          "/internal/space/read",
+          "/internal/space/update",
         ].includes(new URL(request.url).pathname)
       )
         throw withAdmissionReason(
@@ -254,6 +257,17 @@ export function errorResponse(error, stage = "request") {
         "invalid_cursor",
         "invalid_list_arguments",
         "company_email_proof_required",
+        "space_id_as_page_id",
+        "page_id_as_space_id",
+        "space_not_found",
+        "space_pending",
+        "space_capacity",
+        "space_revision_conflict",
+        "placement_mismatch",
+        "parent_unavailable",
+        "nesting_depth_exceeded",
+        "home_page_protected",
+        "subtree_too_large",
       ].includes(error.code) && { code: error.code }),
       ...(["edit_conflict", "resync_required"].includes(error.code) && {
         ...(Array.isArray(error.details?.conflicts) && {

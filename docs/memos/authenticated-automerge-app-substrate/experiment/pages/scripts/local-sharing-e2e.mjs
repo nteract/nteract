@@ -24,12 +24,13 @@ const taskLists = process.argv.includes("--task-lists");
 const admission = process.argv.includes("--admission");
 const buildUpdate = process.argv.includes("--build-update");
 const trash = process.argv.includes("--trash");
+const spaces = process.argv.includes("--spaces");
 if (
-  [domainView, images, mcpImages, taskLists, admission, buildUpdate, trash].filter(Boolean).length >
-  1
+  [domainView, images, mcpImages, taskLists, admission, buildUpdate, trash, spaces].filter(Boolean)
+    .length > 1
 )
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --mcp-images, --task-lists, --admission, --build-update or --trash",
+    "Choose one qualification: --domain-view, --images, --mcp-images, --task-lists, --admission, --build-update, --trash or --spaces",
   );
 const children = new Set();
 let canceled = false;
@@ -275,21 +276,23 @@ try {
   await run(
     process.execPath,
     [
-      trash
-        ? "scripts/trash-smoke.mjs"
-        : admission
-          ? "scripts/admission-smoke.mjs"
-          : taskLists
-            ? "scripts/task-lists-smoke.mjs"
-            : mcpImages
-              ? "scripts/mcp-image-import-smoke.mjs"
-              : images
-                ? "scripts/images-smoke.mjs"
-                : domainView
-                  ? "scripts/domain-sharing-smoke.mjs"
-                  : buildUpdate
-                    ? "scripts/build-update-smoke.mjs"
-                    : "scripts/sharing-smoke.mjs",
+      spaces
+        ? "scripts/spaces-smoke.mjs"
+        : trash
+          ? "scripts/trash-smoke.mjs"
+          : admission
+            ? "scripts/admission-smoke.mjs"
+            : taskLists
+              ? "scripts/task-lists-smoke.mjs"
+              : mcpImages
+                ? "scripts/mcp-image-import-smoke.mjs"
+                : images
+                  ? "scripts/images-smoke.mjs"
+                  : domainView
+                    ? "scripts/domain-sharing-smoke.mjs"
+                    : buildUpdate
+                      ? "scripts/build-update-smoke.mjs"
+                      : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {

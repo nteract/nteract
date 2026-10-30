@@ -98,6 +98,24 @@ calls its owner's Catalog. Copying
 a document or its assets between targets is separate from deployment; publishing
 does not migrate another environment's data.
 
+Spaces add a `Space` Durable Object class (binding `SPACES`, migration tag
+`v3`), `space/<id>` Catalog entries, a `placement` field on Page records and
+matching fields on owned Catalog entries, and catalog-index migration 4 (placement
+columns on `pages_catalog_pages` and a `pages_catalog_spaces` table). All of it is
+additive. A rollback build ignores the new fields, keys, tables and Durable Object
+storage: the owner still lists and opens every Page in a Space as an ordinary
+Page, collaborators keep their direct grants, and Space records sit unused until
+a roll forward. An older build trashes one Page at a time and does not protect
+home Pages; after rolling forward, a Page whose parent is in Trash lists with
+that `parent_id` and the Space view shows it at the top level, and a trashed home
+Page can be restored normally. Index rows an older build inserts have no
+placement until the Page reports again or its owner's account reconciles;
+changing `PAGES_CATALOG_INDEX` after rolling forward repairs them at once. The
+Cloudflare packaging fixture declares the `v3` migration too. On Cloudflare,
+removing a Durable Object class takes a `deleted_classes` migration that erases
+its storage, so a rollback there should keep exporting `Space` and its binding
+rather than drop the class.
+
 ## Tunnel and DNS provisioning
 
 This is first-publication setup, not a step to repeat for each release. Page8's

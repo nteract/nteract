@@ -3,7 +3,7 @@
 import worker from "../../worker/index.mjs";
 import { fixtureFetch } from "./local-api-keys.mjs";
 import { fixtureImageFetch } from "./local-mcp-images.mjs";
-export { Page, Catalog, PageRecords } from "../../worker/index.mjs";
+export { Page, Catalog, PageRecords, Space } from "../../worker/index.mjs";
 
 const origin = PAGES_E2E_ORIGIN;
 const images = fixtureImageFetch(

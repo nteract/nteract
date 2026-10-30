@@ -5,7 +5,8 @@ import { HttpError } from "./auth.mjs";
  *
  * A trashed Page record keeps `deleted: true` (see pageState in access.mjs).
  * `trash` records who trashed it and when. Each trash record identifies its
- * root Page. This implementation trashes and restores individual Pages.
+ * root Page: itself, or the ancestor whose trash moved its whole subtree.
+ * Restoring a root restores the Pages trashed with it.
  * `lifecycleRevision` counts trash, restore and purge transitions.
  *
  * Retention: Trash has no automatic expiry. A Page stays in Trash until its
@@ -14,12 +15,13 @@ import { HttpError } from "./auth.mjs";
 export const PURGE_PREVIEW_TTL_MS = 10 * 60 * 1000;
 const TOKEN_PREFIX = "pp1";
 
-export function trashRecord({ pageId, principal, now, receipt }) {
+/** `rootId` names the ancestor whose trash moved this Page with its subtree. */
+export function trashRecord({ pageId, rootId, principal, now, receipt }) {
   return {
     trashed_at: now,
     trashed_by: principal,
-    reason: "page",
-    root_page_id: pageId,
+    reason: rootId ? "subtree" : "page",
+    root_page_id: rootId ?? pageId,
     receipt,
   };
 }
