@@ -4,12 +4,7 @@ import { test } from "node:test";
 import { randomSecret, SERVER_SESSION_COOKIE } from "@cloud/oidc-session-store.ts";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import { authenticate } from "./auth.mjs";
-import {
-  isolateSetup,
-  isolateSetupTimeouts,
-  isolateSingleFlight,
-  oidcProvider,
-} from "./isolate-setup.mjs";
+import { isolateSetup, isolateSetupTimeouts, isolateSingleFlight } from "./isolate-setup.mjs";
 import worker from "./index.mjs";
 
 // Real I/O turns. Tests mock only setTimeout, so these still advance.
@@ -272,11 +267,11 @@ test("an API key's lookups share one flight whatever the scheme's case", async (
   assert.equal(lookups, 1);
 });
 
-test("a single-flight caller whose work never settles gives up and frees the key", async (t) => {
+test("a single-flight caller whose work stalls gives up, and the key stays held until it settles", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const flight = isolateSingleFlight();
-  const stuck = flight("key", () => new Promise(() => {}));
-  const outcome = stuck.then(
+  const stalled = deferred();
+  const outcome = flight("key", () => stalled.promise).then(
     () => "settled",
     (error) => error,
   );
@@ -285,20 +280,14 @@ test("a single-flight caller whose work never settles gives up and frees the key
   const error = await outcome;
   assert.equal(error.status, 503);
   assert.equal(error.code, "request_timeout");
-  assert.equal(await flight("key", async () => "next"), "next");
-});
-
-test("OIDC provider work runs one request at a time", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  const first = deferred();
   const started = [];
-  const owner = oidcProvider(() => (started.push("callback"), first.promise));
-  const waiter = oidcProvider(async () => (started.push("status"), "status"));
+  const next = flight("key", async () => (started.push("next"), "next"));
   await turns();
-  assert.deepEqual(started, ["callback"]);
-  first.resolve("callback");
-  assert.equal(await owner, "callback");
   t.mock.timers.tick(isolateSetupTimeouts.poll);
-  assert.equal(await waiter, "status");
-  assert.deepEqual(started, ["callback", "status"]);
+  await turns();
+  assert.deepEqual(started, [], "no run starts while the abandoned one is pending");
+  stalled.resolve();
+  await turns();
+  t.mock.timers.tick(isolateSetupTimeouts.poll);
+  assert.equal(await next, "next");
 });

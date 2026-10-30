@@ -600,10 +600,12 @@ request, so it stays held until the object is discarded.
 [isolate-setup.mjs](worker/isolate-setup.mjs) applies the rule. The gateway
 sets up each D1 schema (server sessions, MCP OAuth) once per isolate. Work in
 front of library caches that share pending promises runs one request at a time:
-API-key verification per token, ChatGPT client metadata verification, and OIDC
-provider work (sign-in, the callback, session status and refresh, and the
-loopback issuer). The request that starts the work awaits it; others wait on
-their own timers. Either side gives up with a retryable `503` after 10 seconds. Remove it when celld keeps request context across shared
+API-key verification per token and ChatGPT client metadata verification. The
+request that starts the work awaits it; others wait on their own timers. Either
+side gives up with a retryable `503` after 10 seconds, and a key stays held until
+its work settles. The OIDC libraries' discovery, signing-key and UserInfo caches
+and the loopback issuer's key still share pending promises across requests
+(#4567). Remove it when celld keeps request context across shared
 promises; [celld-context-probe.mjs](scripts/celld-context-probe.mjs) then exits 0.
 
 The storage backend keeps one representation per record key, but a fragment's

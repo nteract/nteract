@@ -1,5 +1,5 @@
 import { pagesPublicOrigin } from "../agent-guide.mjs";
-import { isolateSingleFlight, oidcProvider } from "./isolate-setup.mjs";
+import { isolateSingleFlight } from "./isolate-setup.mjs";
 import { serverOidcSessionStatus } from "@cloud/server-oidc.ts";
 import { loadServerSession, readServerAppSession } from "@cloud/oidc-session-store.ts";
 import {
@@ -21,9 +21,9 @@ const OFFLINE = "offline_access";
 const MAX_INPUT_BYTES = 16_384;
 // This single fixed, public metadata document is shared by all requests in an
 // isolate. Never retain failed validation or use stale metadata after expiry.
-// `runs` counts finished verifications, and `outcome` is the last one's result.
-// See verifyClientMetadata.
-const clientMetadataCache = { validUntil: 0, runs: 0, outcome: undefined };
+// `runs` counts finished verifications; `outcomes` holds the last 16 by run
+// number. See verifyClientMetadata.
+const clientMetadataCache = { validUntil: 0, runs: 0, outcomes: new Map() };
 const metadataFlight = isolateSingleFlight();
 const routes = new Set([
   "/.well-known/oauth-protected-resource",
@@ -223,14 +223,16 @@ function metadataFreshUntil(headers) {
   return Date.now() + Math.max(0, lifetime - age) * 1000;
 }
 /* One verification runs at a time per isolate; see isolate-setup.mjs. A
- * request that waited for another request's verification takes its outcome,
- * even when the metadata may not be cached, rather than fetching again. */
+ * request that arrived while a verification ran takes that run's outcome,
+ * even when the metadata may not be cached, rather than fetching again. That
+ * is the first run to finish after the request arrived. */
 async function verifyClientMetadata(client) {
   if (client.id !== CHATGPT_CLIENT) return;
   if (clientMetadataCache.validUntil > Date.now()) return;
-  const seen = clientMetadataCache.runs;
+  const awaited = clientMetadataCache.runs + 1;
   const outcome = await metadataFlight("chatgpt", async () => {
-    if (clientMetadataCache.runs !== seen) return clientMetadataCache.outcome;
+    const finished = clientMetadataCache.outcomes.get(awaited);
+    if (finished) return finished;
     if (clientMetadataCache.validUntil > Date.now()) return { ok: true };
     clientMetadataCache.validUntil = 0;
     let result;
@@ -240,8 +242,9 @@ async function verifyClientMetadata(client) {
     } catch (error) {
       result = { ok: false, error };
     }
-    clientMetadataCache.runs++;
-    clientMetadataCache.outcome = result;
+    const run = ++clientMetadataCache.runs;
+    clientMetadataCache.outcomes.set(run, result);
+    clientMetadataCache.outcomes.delete(run - 16);
     return result;
   });
   if (!outcome.ok) throw outcome.error;
@@ -374,7 +377,7 @@ function publicClient(params, request, env) {
   return knownClient(single(params, "client_id"), env);
 }
 async function currentSession(request, env) {
-  const refreshed = await oidcProvider(() => serverOidcSessionStatus(request, env, async () => {}));
+  const refreshed = await serverOidcSessionStatus(request, env, async () => {});
   if (!refreshed.ok) return { response: refreshed };
   const now = Math.floor(Date.now() / 1000);
   const row = await loadServerSession(env, request, now);
