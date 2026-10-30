@@ -193,7 +193,11 @@ export async function recoverDocumentMutations(storage, handle, flush, admission
       // union is checked at the same boundary as incoming browser records.
       for (const [key, entry] of pending)
         await admission.reserve(key, entry, candidate, base, async () => {});
-      await admission.apply(candidate, changes, handle);
+      await admission.apply(
+        pending.map(([key]) => key),
+        changes,
+        handle,
+      );
     } else await handle.update((doc) => A.applyChanges(doc, changes)[0]);
   } finally {
     A.free(candidate);

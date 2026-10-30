@@ -2,7 +2,6 @@ import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
 import { Repo, documentIdToBinary } from "@automerge/automerge-repo";
 import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
-import { extractRecords } from "@automerge/automerge-repo/sedimentree/automerge";
 import { applyComment } from "../model/comments.mjs";
 import { createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { unsentCommentsMarkdown } from "../model/markdown-export.mjs";
@@ -22,6 +21,7 @@ import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { ADMISSION_CAPABILITY, admissionCloseOutcome } from "../shared/admission.mjs";
 import { request } from "./request.mjs";
 import { activitySnapshot } from "./activity.mjs";
+import { checkpointRecords } from "./checkpoint-records.mjs";
 export { request } from "./request.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const ownerAccess = () => ({
@@ -45,24 +45,6 @@ const accessFailure = () =>
     status: 409,
   });
 const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 16));
-/** The checkpoint records this replica's byte store does not hold. A held
- * record may be another peer's encoding of the same history: a fragment's
- * bundle orders concurrent changes in each peer's application order, and the
- * backend accepts one representation per record key. Each tab's store holds
- * one Page, under the backend's `.../commits/<hash>` and `.../fragments/<head>`
- * keys.
- */
-async function unheldRecords(storage, records) {
-  const held = new Set();
-  for (const key of await storage.list("")) {
-    const match = /\/(commits|fragments)\/([0-9a-f]{64})$/.exec(key);
-    if (match) held.add(`${match[1]}/${match[2]}`);
-  }
-  return records.filter(
-    (record) =>
-      !held.has(record.kind === "commit" ? `commits/${record.id}` : `fragments/${record.head}`),
-  );
-}
 // Longer than the host's 10-second native admission deadline. A socket that
 // closes sooner never proved admission, so it must not reset reconnect backoff.
 export const STABLE_CONNECTION_MS = 15_000;
@@ -516,10 +498,8 @@ export class PageSession {
       // also retries any prefix left by an interrupted local import.
       const checkpoint = A.load(decodeSnapshot(this.localPage.snapshot));
       try {
-        await this.backend.storeSnapshot(
-          documentIdToBinary(this.localPage.document_id),
-          await unheldRecords(this.storage, extractRecords(checkpoint)),
-        );
+        const id = documentIdToBinary(this.localPage.document_id);
+        await this.backend.storeSnapshot(id, await checkpointRecords(this.backend, id, checkpoint));
       } finally {
         A.free(checkpoint);
       }

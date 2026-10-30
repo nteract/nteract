@@ -112,13 +112,17 @@ function host(
   maxSnapshotBytes,
   storage = new Storage(),
   records = new Storage(),
-  { maxBatchKeys } = {},
+  { maxBatchKeys, recordFetch, recordTimeoutMs } = {},
 ) {
   const owner = new PageRecords({ storage: records });
+  const send = (request) => owner.fetch(request);
   const recordStore =
     mode === "buffered"
       ? new BufferedRecordStore(
-          new RemoteRecordSink({ fetch: (request) => owner.fetch(request) }),
+          new RemoteRecordSink(
+            { fetch: recordFetch ? (request) => recordFetch(request, send) : send },
+            { timeoutMs: recordTimeoutMs },
+          ),
           { maxBatchKeys },
         )
       : new DurableByteStore(storage);
@@ -369,6 +373,156 @@ for (const mode of ["local", "buffered"]) {
     );
   }
 }
+
+/** Interrupt one attempt of an API edit after it is applied to the handle. */
+const POST_APPLY_FAILURES = {
+  "after apply": (ctx) => {
+    const apply = ctx.admission.apply.bind(ctx.admission);
+    let fail = true;
+    ctx.admission.apply = async (...args) => {
+      await apply(...args);
+      if (fail) {
+        fail = false;
+        throw Error("interrupted after apply");
+      }
+    };
+  },
+  "during the final flush": (ctx) => {
+    const flush = ctx.flush;
+    let fail = true;
+    ctx.flush = async () => {
+      if (fail && ctx.handle.doc().api !== undefined) {
+        fail = false;
+        throw Error("interrupted final flush");
+      }
+      await flush();
+    };
+  },
+  "before the terminal receipt persists": (ctx) => {
+    const put = ctx.storage.put.bind(ctx.storage);
+    let fail = true;
+    ctx.storage.put = async (key, value) => {
+      if (fail && key === "host/operation/api-intent" && value.pending === false) {
+        fail = false;
+        throw Error("interrupted receipt");
+      }
+      return put(key, value);
+    };
+  },
+};
+
+async function laterEditProceeds(peer, handle, admission) {
+  const later = context(peer, handle, "later-edit");
+  later.admission = admission;
+  later.apply = (doc) => {
+    doc.later = "after the retried edit";
+  };
+  const receipt = await documentMutation(later);
+  assert.ok(A.hasHeads(handle.doc(), receipt.heads));
+  assert.equal(handle.doc().later, "after the retried edit");
+  assert.equal(admission.hasPending, false);
+}
+
+for (const mode of ["local", "buffered"])
+  for (const [point, interrupt] of Object.entries(POST_APPLY_FAILURES)) {
+    test(`${mode}: a retry after a failure ${point} completes and later edits proceed`, async () => {
+      const base = baseDoc();
+      const peer = host(mode, bytes(base) + 65536);
+      try {
+        const handle = await peer.repo.import(A.save(base));
+        await peer.flush();
+        const ctx = context(peer, handle);
+        interrupt(ctx);
+        await assert.rejects(documentMutation(ctx), /interrupted/);
+        assert.deepEqual(handle.doc().api, noise(2048, 11), "the edit applied");
+        assert.equal(ctx.admission.hasPending, true);
+        ctx.apply = () => assert.fail("retry must not reauthor");
+        const receipt = await documentMutation(ctx);
+        assert.ok(A.hasHeads(handle.doc(), receipt.heads));
+        assert.equal((await peer.storage.get("host/operation/api-intent")).pending, false);
+        assert.equal(ctx.admission.hasPending, false);
+        assert.equal(A.getChanges(base, handle.doc()).length, 1, "one semantic edit");
+        await laterEditProceeds(peer, handle, ctx.admission);
+      } finally {
+        assert.deepEqual(await closePeers([peer], []), []);
+      }
+    });
+
+    test(`${mode}: a restart after a failure ${point} recovers and later edits proceed`, async () => {
+      const base = baseDoc();
+      const cap = bytes(base) + 65536;
+      const peer = host(mode, cap);
+      const peers = [peer];
+      try {
+        const handle = await peer.repo.import(A.save(base));
+        await peer.flush();
+        const ctx = context(peer, handle);
+        interrupt(ctx);
+        await assert.rejects(documentMutation(ctx), /interrupted/);
+        const stored = await peer.storage.get("host/operation/api-intent");
+        const restored = host(mode, cap, peer.storage.clone(), peer.records.clone());
+        peers.push(restored);
+        const recovered = await restored.repo.find(handle.documentId);
+        const admission = new DocumentAdmission(restored.backend, treeId(handle.documentId));
+        await recoverDocumentMutations(
+          restored.storage,
+          recovered,
+          () => restored.flush(),
+          admission,
+        );
+        assert.ok(A.hasHeads(recovered.doc(), stored.receipt.heads));
+        assert.equal((await restored.storage.get("host/operation/api-intent")).pending, false);
+        assert.equal(A.getChanges(base, recovered.doc()).length, 1, "one semantic edit");
+        await laterEditProceeds(restored, recovered, admission);
+      } finally {
+        assert.deepEqual(await closePeers(peers, []), []);
+      }
+    });
+  }
+
+test(
+  "buffered: a PageRecords timeout after the write committed retries without a second edit",
+  { timeout: 10_000 },
+  async () => {
+    const base = baseDoc();
+    const cap = bytes(base) + 65536;
+    let handle;
+    let dropped = 0;
+    const peer = host("buffered", cap, undefined, undefined, {
+      recordTimeoutMs: 50,
+      // The owner commits the batch that holds the applied edit, but its reply
+      // never reaches the Page.
+      async recordFetch(request, send) {
+        const response = await send(request);
+        if (request.method === "POST" && handle?.doc().api !== undefined && !dropped++)
+          return new Promise(() => {});
+        return response;
+      },
+    });
+    const peers = [peer];
+    try {
+      handle = await peer.repo.import(A.save(base));
+      await peer.flush();
+      const ctx = context(peer, handle);
+      await assert.rejects(documentMutation(ctx), { code: "record_persistence_timeout" });
+      assert.equal(dropped, 1);
+      assert.equal(ctx.admission.hasPending, true);
+      ctx.apply = () => assert.fail("retry must not reauthor");
+      const receipt = await documentMutation(ctx);
+      assert.ok(A.hasHeads(handle.doc(), receipt.heads));
+      assert.equal(A.getChanges(base, handle.doc()).length, 1, "one semantic edit");
+      await laterEditProceeds(peer, handle, ctx.admission);
+      // The persisted records restart with each edit exactly once.
+      const restored = host("buffered", cap, peer.storage.clone(), peer.records.clone());
+      peers.push(restored);
+      const reopened = await restored.repo.find(handle.documentId);
+      assert.deepEqual(A.getHeads(reopened.doc()).sort(), A.getHeads(handle.doc()).sort());
+      assert.equal(A.getChanges(base, reopened.doc()).length, 2);
+    } finally {
+      assert.deepEqual(await closePeers(peers, []), []);
+    }
+  },
+);
 
 const equalBytes = (a, b) => a.length === b.length && a.every((value, i) => value === b[i]);
 

@@ -5,6 +5,7 @@ import {
   recordMetadataKey,
 } from "@automerge/automerge-repo/sedimentree/automerge";
 import { HistoryCapacityError } from "@automerge/automerge-repo-subduction";
+import { recordIdentity, reservationMachine } from "./reservation-machine.mjs";
 
 /** The records `candidate` adds to the serving document `base`, selected the
  * way the Repo's document delegate selects new records. Records that `base`
@@ -76,6 +77,8 @@ export class DocumentAdmission {
     this.backend = backend;
     this.tree = tree;
     this.intents = new Map();
+    // Per intent key: reservationMachine state and the held record bytes.
+    this.reservations = new Map();
   }
   get hasPending() {
     return this.intents.size > 0;
@@ -85,10 +88,23 @@ export class DocumentAdmission {
     return entry === undefined ? undefined : structuredClone(entry);
   }
   /** Reserve the records `candidate` adds to `base`, the serving document it
-   * was built from. The union with stored history still bounds capacity. */
-  reserve(key, entry, candidate, base, persist) {
-    const records = addedRecords(candidate, base);
-    return this.backend.reserveRecords(this.tree, key, records, async () => {
+   * was built from. The union with stored history still bounds capacity. A
+   * key the bridge already holds reserves its held records again. */
+  async reserve(key, entry, candidate, base, persist) {
+    const held = this.reservations.get(key);
+    const computed = held ? [] : addedRecords(candidate, base);
+    const { state, effects } = reservationMachine.step(held?.state ?? reservationMachine.initial, {
+      type: "reserve",
+      records: computed.map(recordIdentity),
+    });
+    const records = held?.records ?? computed;
+    const [effect] = effects;
+    if (effect.records.join() !== records.map(recordIdentity).join())
+      throw Error("Reservation records differ from the reservation state");
+    await this.backend.reserveRecords(this.tree, key, records, async () => {
+      // The bridge installed these identities. Keep them, even if the intent
+      // put below fails: a live retry must reserve exactly this set again.
+      this.reservations.set(key, { state, records });
       // A failed put may have taken effect. A live retry must reuse these exact
       // bytes even when storage.get still returns nothing, never reauthor them.
       this.intents.set(key, structuredClone(entry));
@@ -106,15 +122,22 @@ export class DocumentAdmission {
       // Also covers pending intents restored after a crash. Reserved identities
       // are exact even if unrelated native changes advanced the current handle.
       await this.reserve(key, entry, candidate, base, async () => {});
-      await this.apply(candidate, entry.changes, handle);
+      await this.apply([key], entry.changes, handle);
     } finally {
       A.free(candidate);
     }
   }
-  async apply(candidate, changes, handle) {
-    // Native ingress may have stored more history since the reservation; that
-    // history is not written again in this host's encoding.
-    await this.backend.storeSnapshot(this.tree, addedRecords(candidate, handle.doc()));
+  /** Store exactly the records `keys` reserved, then apply their changes. */
+  async apply(keys, changes, handle) {
+    const records = new Map();
+    for (const key of keys)
+      for (const record of this.reservations.get(key)?.records ?? [])
+        records.set(recordIdentity(record), record);
+    await this.backend.storeSnapshot(this.tree, [...records.values()]);
+    for (const key of keys) {
+      const held = this.reservations.get(key);
+      if (held) held.state = reservationMachine.step(held.state, { type: "stored" }).state;
+    }
     // Backend observation may already have delivered the admitted records.
     // Applying the same encoded changes preserves identities and is idempotent.
     await handle.update((doc) => A.applyChanges(doc, changes)[0]);
@@ -124,6 +147,12 @@ export class DocumentAdmission {
     // never turn it back into a trusted pending intent, even after receipt GC.
     // A leftover bridge reservation only retains already-stored identities.
     this.intents.delete(key);
-    await this.backend.releaseReservation(this.tree, key);
+    const held = this.reservations.get(key);
+    this.reservations.delete(key);
+    const { effects } = reservationMachine.step(held?.state ?? reservationMachine.initial, {
+      type: "release",
+    });
+    if (effects.some((effect) => effect.type === "release"))
+      await this.backend.releaseReservation(this.tree, key);
   }
 }

@@ -446,9 +446,12 @@ the host finishes the work it accepted. Both responses tell the caller to retry
 with the same `idempotency_key` and `retry_token`.
 
 The storage backend keeps one representation per record key, but a fragment's
-bundle orders concurrent changes in each peer's application order. API edits
-and browser checkpoint imports therefore store only the records their replica
-does not hold yet, never a re-encoding of stored history.
+bundle orders concurrent changes in each peer's application order. Stored
+history is never re-encoded. An API edit reserves and stores only the records
+it adds to the serving document, and a retry reuses that exact reservation
+until release. A browser checkpoint import decides coverage from the change
+hashes its stored records hold, keeps every stored record as is, and adds any
+uncovered change under a new key or as a loose commit.
 
 Versioned binary records preserve signed native envelopes and Automerge changes;
 legacy hex records remain readable. `PAGES_COMPACT_RECORDS=true` enables
