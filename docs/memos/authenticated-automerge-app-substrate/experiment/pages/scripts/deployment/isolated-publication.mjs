@@ -260,8 +260,8 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
     } else filesystem.writeFileSync(file, contents, { mode, flag: "wx" });
   }
   function validateRoutes(file) {
-    const sharing = ["page5", "page6", "page7", "page8"].includes(target);
-    const oauth = target === "page7" || target === "page8";
+    const sharing = profile.sharing === true;
+    const oauth = profile.oauth === true;
     const assets = "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets";
     run("/usr/bin/cloudflared", ["--config", file, "tunnel", "ingress", "validate"]);
     for (const [pathname, expected] of [
@@ -275,7 +275,7 @@ export function publishIsolated(stage, { filesystem = fs, run = runCommand } = {
       ["/mermaid.js", plan.listen],
       ["/mermaid.js/private", "http_status:404"],
       ["/mermaidXjs", "http_status:404"],
-      ["/theme.js", target === "page8" ? plan.listen : "http_status:404"],
+      ["/theme.js", profile.theme ? plan.listen : "http_status:404"],
       ["/theme.js/private", "http_status:404"],
       ["/themeXjs", "http_status:404"],
       ["/theme.js/", "http_status:404"],

@@ -1,26 +1,30 @@
 # Pages deployment
 
-The current release is qualified for the isolated **Page8** celld target only.
-Page7 and earlier services are frozen. Deployment helpers reject mutations to
-those targets and check their fingerprints when publishing Page8. Historical
+The current release is qualified for the isolated **Page9** celld target only.
+Page8 and earlier services are frozen. Deployment helpers reject mutations to
+those targets and check their fingerprints when publishing Page9. Historical
 profiles remain in [profiles.mjs](scripts/deployment/profiles.mjs) for inspection
 and isolation checks; their presence is not permission to deploy to them.
 
-## Page8 release
+Page targets are short-lived prototypes. A release that would break existing
+clients goes to a new target instead of carrying compatibility code; data is
+not copied between targets.
 
-The allowlisted profile owns `page8.runtimed.run`, service `nteract-page8`,
-listeners `127.0.0.1:9478` / `127.0.0.1:19478`, and the `standalone/page8` prefix
+## Page9 release
+
+The allowlisted profile owns `page9.runtimed.run`, service `nteract-page9`,
+listeners `127.0.0.1:9479` / `127.0.0.1:19479`, and the `standalone/page9` prefix
 in the lab1 fleet bucket. Its Wordgard editor, buffered persistence, and lossless
 cleanup retain `CELLD_DURABILITY=bucket`. It uses production Anaconda verification.
 
 From `pages`, after review, commit, and a fresh build:
 
 ```sh
-node scripts/deploy.mjs --target page8 plan
-node scripts/deploy.mjs --target page8 prepare
-node scripts/deploy.mjs --target page8 upload LOCAL_STAGE
-node scripts/deploy.mjs --target page8 install REMOTE_STAGE --apply
-node scripts/deploy.mjs --target page8 publish REMOTE_STAGE --apply
+node scripts/deploy.mjs --target page9 plan
+node scripts/deploy.mjs --target page9 prepare
+node scripts/deploy.mjs --target page9 upload LOCAL_STAGE
+node scripts/deploy.mjs --target page9 install REMOTE_STAGE --apply
+node scripts/deploy.mjs --target page9 publish REMOTE_STAGE --apply
 ```
 
 `plan` is read-only. Use the stage paths returned by the helpers. Preparation
@@ -30,8 +34,8 @@ state are excluded. Target-bound manifests and a deployment lock prevent stages
 or simultaneous operator commands from crossing service boundaries.
 
 Each target owns its `/opt`, `/etc`, and `/var/lib` directories, session secret,
-service account, firewall table/mark, and release stage. Page8's firewall mark is
-`0x00800000`. The installer checks ownership and resource conflicts, preserves
+service account, firewall table/mark, and release stage. Page9's firewall mark is
+`0x00400000`. The installer checks ownership and resource conflicts, preserves
 Durable Object bindings/migrations and persistent data, and restarts only the
 selected QA service. Installation and publication require lab1 SSH and sudo.
 
@@ -62,7 +66,7 @@ frames are unchanged, so earlier builds read the result. A rollback build still 
 forever on stored history whose parent never became durable; startup recovery
 from that shape needs this build or later.
 
-The Page8 profile sets `PAGES_CATALOG_INDEX=1`. Changing this epoch label starts
+The Page8 and Page9 profiles set `PAGES_CATALOG_INDEX=1`. Changing this epoch label starts
 account reconciliation on the next listing. Reconciliation may take several
 listings. Unsetting the variable turns the index off, and listings read Catalog
 entries directly.
@@ -166,7 +170,7 @@ logs one line:
 `purged`, `deletion` and `placement` differ, never their values. Such a Page was
 at risk, not damaged: this build keeps its installed record. An active Page then
 finishes the creation and drops the intent; a trashed or deleted Page keeps the
-intent and logs again on each cold start. After a deploy, search the Page8 logs
+intent and logs again on each cold start. After a deploy, search the target's logs
 for `page.creation_intent_conflict` to see whether any Page is affected.
 
 A Page that an earlier build already reinstalled has no intent left, because the
@@ -189,47 +193,55 @@ There is no repair tool. To repair a Page:
 
 ## Tunnel and DNS provisioning
 
-This is first-publication setup, not a step to repeat for each release. Page8's
-existing tunnel and DNS should be inspected and reused.
+This is first-publication setup for a new target, not a step to repeat for each
+release. Both helpers inspect by default; `--apply` creates only what is absent
+and never adopts, updates or deletes. They need `CLOUDFLARE_API_TOKEN`: an
+account token for `1cfb529b94b3d6cde3aaf49d1d6ed5e6` with Cloudflare Tunnel edit
+and DNS edit on `runtimed.run`. Read it from the operator's password manager into
+the environment for the one command; never write it to a file.
 
-The profile expects a separate locally managed Cloudflare Tunnel named
-`nteract-page8` in account `1cfb529b94b3d6cde3aaf49d1d6ed5e6`. Tunnel creation
-requires Tunnel Edit permission and is not performed by `prepare` or `publish`.
-After installation creates the owned directory, tunnel credentials belong in
-root-owned mode 0600 `/etc/nteract-page8/tunnel.json`. The nonsecret provisioning
-receipt at `/etc/nteract-page8/tunnel-provisioning.json` has this form:
+For a new target, run these between `install` and `publish`:
+
+```sh
+node scripts/deployment/tunnel.mjs --target page9 --apply
+node scripts/deployment/dns.mjs --target page9 TUNNEL_UUID --apply
+```
+
+`tunnel.mjs` creates a locally managed tunnel named after the service
+(`nteract-page9`). Cloudflare returns a tunnel secret only when it is set, so the
+same run writes it over SSH to root-owned mode 0600 `/etc/nteract-page9/tunnel.json`
+and writes the nonsecret receipt `/etc/nteract-page9/tunnel-provisioning.json`.
+Both writes require the directory that installation created and refuse to
+replace an existing file. The command prints the tunnel UUID, never the secret.
+A tunnel that exists without credentials on the host must be deleted in
+Cloudflare before retrying. The receipt has this form:
 
 ```json
 {
   "schema": 1,
   "account_id": "1cfb529b94b3d6cde3aaf49d1d6ed5e6",
-  "tunnel_id": "VERIFIED_TUNNEL_UUID",
-  "name": "nteract-page8",
+  "tunnel_id": "TUNNEL_UUID",
+  "name": "nteract-page9",
   "config_src": "local"
 }
 ```
 
-Keep provisioning files outside release artifacts; do not precreate the service
-installation directory. Publication rejects reused tunnel IDs, absent credentials,
-and conflicting configuration. It installs only Page8's connector and verifies
-frozen service/connector configuration and PIDs. Do not use
-`cloudflared service install`, which targets the shared connector.
+Publication rejects reused tunnel IDs, absent credentials, and conflicting
+configuration. It installs only the target's connector and verifies frozen
+service/connector configuration and PIDs. Do not use `cloudflared service
+install`, which targets the shared connector.
 
-Inspect DNS with:
-
-```sh
-node scripts/deployment/dns.mjs --target page8 VERIFIED_TUNNEL_UUID
-```
-
-Appending `--apply` creates only an absent owned CNAME; conflicts are rejected.
-The operation uses `CLOUDFLARE_API_TOKEN` with DNS read/edit access to `runtimed.run`.
+`dns.mjs --apply` creates only an absent owned CNAME; conflicts are rejected.
 Public ingress allows application, auth, sharing, MCP, asset, and sync routes,
 then ends in a catch-all 404. Internal Durable Object routes stay private.
+
+The OIDC client must allow `https://<hostname>/oidc` as a redirect URI before
+sign-in works on a new target.
 
 ## Telemetry
 
 Service units enable `CELLD_OTEL=1` and `CELLD_OTEL_RETENTION=30d` with celld's
-five-minute/5 MiB batching defaults. Page8 also sets
+five-minute/5 MiB batching defaults. Page8 and Page9 also set
 `OTEL_TRACES_SAMPLER=always_on`. Requests reach it with a `traceparent` whose
 sampled flag is clear. For a request with an unsampled parent, celld's default
 `parentbased_always_on` sampler records nothing, including the Worker's
@@ -265,5 +277,5 @@ Use a new destination directory and the intended D1 database UUID. The helper
 neither provisions resources nor attaches a domain. Live use needs explicit
 resource, auth, persistence, memory, and recovery qualification, plus configuration
 of the current editor/persistence profile; this staging configuration does not
-select Page8's flags. Do not repoint the existing preview domain as part of a
-Page8 release.
+select Page9's flags. Do not repoint the existing preview domain as part of a
+Page9 release.
