@@ -716,6 +716,17 @@ items) and its `placement_epoch` advances. Creating a Page under a parent in
 Trash returns `parent_unavailable`, including a resumed creation, which checks
 its parent again before it reaches the Page.
 
+Placement decisions never trust a Catalog entry with an unsettled Trash or
+restore reservation: a lost response or failed barrier can hide a transition the
+Page already applied. Restore reservations record the Space and parent the Page
+returns to. Before the leaf check or a restore placement reads such an entry,
+the Catalog asks the Page for its lifecycle (`/internal/lifecycle-state`) and
+projects an applied transition. A child whose restore applied counts as a child.
+A parent with any Trash entry, or a pending Trash reservation, is unavailable,
+so a restored child goes to the top level even if that trash has not applied
+yet. When the Page can't answer, the request is refused with
+`lifecycle_unsettled` (retryable) rather than decided on a guess.
+
 `update_space` requires `expected_revision`. The Catalog records it in the
 journal intent before the Space sees the request, and every attempt carries it,
 so a retry can never apply once the Space has moved past that revision, even

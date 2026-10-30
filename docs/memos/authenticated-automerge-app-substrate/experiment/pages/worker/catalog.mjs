@@ -51,7 +51,9 @@ export function lifecycleSlotKey(operation, pageId) {
   if (operation === "delete_page") return `trash/${pageId}`;
   if (operation === "restore_page") return `page/${pageId}`;
 }
-export function lifecycleSlot(operation, pageId, intentKey, now = Date.now()) {
+/** `placement` records where a restore returns the Page (its Space and
+ * recorded parent), so placement checks see a pending restore. */
+export function lifecycleSlot(operation, pageId, intentKey, now = Date.now(), placement) {
   const key = lifecycleSlotKey(operation, pageId);
   return key
     ? {
@@ -61,6 +63,7 @@ export function lifecycleSlot(operation, pageId, intentKey, now = Date.now()) {
           reservation: operation,
           intent: intentKey,
           expires_at: now + RETRY_LIFETIME_MS,
+          ...(placement && { space_id: placement.space_id, parent_id: placement.parent_id }),
         },
       }
     : {};

@@ -661,6 +661,98 @@ test("Trash moves one Page at a time; restore returns a Page to its parent or th
   assert.equal(pageState(w.page(space.home_page_id).metadata), "active");
 });
 
+/** Make the next lifecycle request to a Page apply but fail to answer:
+ * "lost" drops the response; "barrier" fails the Page's durability barrier,
+ * leaving the transition for the Page to finish on its next request. */
+function interrupt(w, pageId, variant) {
+  if (variant === "lost") return w.faults.set(pageId, "lost");
+  const storage = w.page(pageId).ctx.storage;
+  const sync = storage.sync.bind(storage);
+  let failures = 1;
+  storage.sync = async () => {
+    if (failures-- > 0) throw Error("injected barrier failure");
+    return sync();
+  };
+}
+async function nested(w) {
+  const space = await w.createSpace("Settle");
+  const parent = (await w.createPage({ title: "P", space_id: space.space_id })).body.page_id;
+  const child = (await w.createPage({ title: "C", parent_id: parent })).body.page_id;
+  const trash = (pageId) =>
+    w.call("owner", "delete_page", {
+      page_id: pageId,
+      base_heads: w.heads(pageId),
+      idempotency_key: w.key(),
+    });
+  return { space, parent, child, trash };
+}
+
+for (const variant of ["lost", "barrier"])
+  test(`a restore that applied without a receipt (${variant}) still counts as a child`, async (t) => {
+    const w = await world(t);
+    const { parent, child, trash } = await nested(w);
+    assert.equal((await trash(child)).status, 200);
+    interrupt(w, child, variant);
+    const restore = { page_id: child, idempotency_key: `restore-${variant}` };
+    assert.ok((await w.call("owner", "restore_page", restore)).status >= 500);
+    const storage = w.catalogStorage();
+    const slot = await storage.get(`page/${child}`);
+    assert.equal(slot.reservation, "restore_page");
+    assert.equal(slot.parent_id, parent, "the reservation records where the Page returns");
+
+    // The Page can't answer yet: refuse instead of guessing.
+    w.faults.set(child, "before");
+    const unsettled = await trash(parent);
+    assert.equal(unsettled.status, 409);
+    assert.equal(unsettled.body.code, "lifecycle_unsettled");
+
+    const refused = await trash(parent);
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.code, "page_has_children");
+    assert.equal(pageState(w.page(parent).metadata), "active");
+    assert.equal(pageState(w.page(child).metadata), "active");
+    assert.equal((await storage.get(`page/${child}`)).reservation, undefined, "settled");
+    assert.equal((await w.call("owner", "restore_page", restore)).body.restored, true);
+  });
+
+test("an unapplied restore does not hold its parent, and returns to the top level later", async (t) => {
+  const w = await world(t);
+  const { space, parent, child, trash } = await nested(w);
+  assert.equal((await trash(child)).status, 200);
+  w.faults.set(child, "before");
+  const restore = { page_id: child, idempotency_key: "restore-never-arrived" };
+  assert.ok((await w.call("owner", "restore_page", restore)).status >= 500);
+  assert.equal(pageState(w.page(child).metadata), "trashed");
+  assert.equal((await trash(parent)).status, 200, "the settled child is still in Trash");
+  const retried = await w.call("owner", "restore_page", restore);
+  assert.equal(retried.status, 200);
+  assert.equal(retried.body.parent_id, null);
+  assert.equal(retried.body.space_id, space.space_id);
+  assert.equal(w.page(child).metadata.placement.placement_epoch, 1);
+});
+
+for (const variant of ["lost", "barrier"])
+  test(`a restore after its parent's trash lost its receipt (${variant}) goes to the top level`, async (t) => {
+    const w = await world(t);
+    const { space, parent, child, trash } = await nested(w);
+    assert.equal((await trash(child)).status, 200);
+    interrupt(w, parent, variant);
+    assert.ok((await trash(parent)).status >= 500);
+    const storage = w.catalogStorage();
+    assert.equal((await storage.get(`trash/${parent}`)).reservation, "delete_page");
+    assert.ok(await storage.get(`page/${parent}`), "the Catalog still lists the parent");
+    const restored = await w.call("owner", "restore_page", {
+      page_id: child,
+      idempotency_key: w.key(),
+    });
+    assert.equal(restored.status, 200, JSON.stringify(restored.body));
+    assert.equal(restored.body.parent_id, null);
+    assert.equal(restored.body.space_id, space.space_id);
+    assert.equal(pageState(w.page(parent).metadata), "trashed");
+    assert.equal((await storage.get(`trash/${parent}`)).reservation, undefined, "settled");
+    assert.equal(await storage.get(`page/${parent}`), undefined);
+  });
+
 test("a pending child creation blocks its parent's Trash, and a resumed one rechecks its parent", async (t) => {
   const w = await world(t);
   const space = await w.createSpace("Pending");

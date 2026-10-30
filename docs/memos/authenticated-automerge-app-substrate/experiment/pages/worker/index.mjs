@@ -771,7 +771,13 @@ export class Catalog {
         if (slotKey && !(await this.ctx.storage.get(slotKey)))
           await this.ctx.storage.put({
             [key]: intent,
-            ...lifecycleSlot(body.operation, intent.pageId, key),
+            ...lifecycleSlot(
+              body.operation,
+              intent.pageId,
+              key,
+              undefined,
+              await this.slotPlacement(body.operation, intent.pageId),
+            ),
           });
         else await this.ctx.storage.put(key, intent);
       }
@@ -827,7 +833,15 @@ export class Catalog {
           const limit = body.operation === "delete_page" ? TRASH_LIMIT : CATALOG_LIMIT;
           const prefix = body.operation === "delete_page" ? "trash/" : "page/";
           if ((await this.countEntries(prefix)) < limit)
-            await this.ctx.storage.put(lifecycleSlot(body.operation, pageId, key));
+            await this.ctx.storage.put(
+              lifecycleSlot(
+                body.operation,
+                pageId,
+                key,
+                undefined,
+                await this.slotPlacement(body.operation, pageId),
+              ),
+            );
           else replayOnly = true;
         }
         const fresh = !inspected.entry;
@@ -991,7 +1005,13 @@ export class Catalog {
   /** Trash moves one Page at a time in this build. A Page with active
    * children, or children still being created, stays put until they move,
    * so no Page is ever active under a trashed parent. A Space's home Page
-   * stays with its Space. Both checks run before anything is reserved. */
+   * stays with its Space. Both checks run before anything is reserved.
+   *
+   * A child with an unsettled Trash or restore reservation is settled against
+   * its Page first: a lost response can hide a transition that already
+   * applied. A restore reservation counts through the parent it records. One
+   * still unapplied afterwards is not a child: once this Page is in Trash,
+   * that restore returns to the top level. */
   async requireLeafPage(pageId) {
     const storage = this.ctx.storage;
     const entry = await storage.get(`page/${pageId}`);
@@ -1002,23 +1022,88 @@ export class Catalog {
         "A Space's home Page stays with its Space; it can't move to Trash on its own",
         "home_page_protected",
       );
-    for (const child of (await storage.list({ prefix: "page/", limit: 1000 })).values())
-      if (child?.page_id && !child.reservation && entryPlacement(child).parent_id === pageId)
+    for (let child of (await storage.list({ prefix: "page/", limit: 1000 })).values()) {
+      if (!child?.page_id || child.page_id === pageId) continue;
+      const trashed = await storage.get(`trash/${child.page_id}`);
+      const parent =
+        entryPlacement(child).parent_id ??
+        (child.reservation && trashed ? entryPlacement(trashed).parent_id : null);
+      if (parent !== pageId) continue;
+      if (child.reservation || trashed?.reservation) {
+        await this.settleReservation(child.page_id);
+        child = await storage.get(`page/${child.page_id}`);
+      }
+      if (child && !child.reservation)
         throw new HttpError(
           409,
           "This Page has sub-pages. Trash its sub-pages first; subtree Trash is not available yet.",
           "page_has_children",
         );
+    }
   }
 
-  /** Where a restored Page goes when its parent is no longer active: the
-   * top level of its Space, or of Your items. Undefined keeps its place. */
+  /** Reconcile a Page's pending Trash or restore reservation with the Page,
+   * the authority for its lifecycle. A transition the Page already applied is
+   * projected into this account's entries; an unapplied one keeps its
+   * reservation, since its intent may still apply on retry. A reservation
+   * whose intent is no longer pending is stale and removed. When the Page
+   * can't answer, the caller is refused rather than left to guess. */
+  async settleReservation(pageId) {
+    const storage = this.ctx.storage;
+    for (const key of [`page/${pageId}`, `trash/${pageId}`]) {
+      const entry = await storage.get(key);
+      if (!entry?.reservation) continue;
+      const intent = await storage.get(entry.intent);
+      if (intent?.pending !== true) {
+        await storage.delete(key);
+        continue;
+      }
+      let state;
+      try {
+        state = await this.pageLifecycle(pageId);
+      } catch (error) {
+        logFailure(error, "lifecycle-state");
+        throw new HttpError(
+          409,
+          "A Page's Trash or restore is still settling. Retry shortly.",
+          "lifecycle_unsettled",
+        );
+      }
+      if (state.state === "missing") await projectLifecycle(storage, pageId, { state: "deleted" });
+      else if ((state.revision ?? 0) !== intent.expectedRevision)
+        await projectLifecycle(storage, pageId, state);
+    }
+  }
+
+  /** Where a pending restore returns its Page: the Space and parent its
+   * Trash entry records. */
+  async slotPlacement(operation, pageId) {
+    if (operation !== "restore_page") return undefined;
+    const entry = await this.ctx.storage.get(`trash/${pageId}`);
+    return entry && !entry.reservation ? entryPlacement(entry) : undefined;
+  }
+
+  /** Whether a parent is active and staying so. Any Trash entry, or a live
+   * Trash reservation, makes it unavailable: a pending trash may still apply
+   * on retry even when the Page has not applied it yet. A reservation is
+   * settled first so an applied trash is projected. */
+  async parentAvailable(parentId) {
+    const storage = this.ctx.storage;
+    if ((await storage.get(`trash/${parentId}`))?.reservation)
+      await this.settleReservation(parentId);
+    if (await storage.get(`trash/${parentId}`)) return false;
+    const parent = await storage.get(`page/${parentId}`);
+    return !!parent && !parent.pending && !parent.reservation;
+  }
+
+  /** Where a restored Page goes when its parent is in Trash, leaving it, or
+   * gone: the top level of its Space, or of Your items. Undefined keeps its
+   * place. */
   async restorePosition(pageId) {
     const entry = await this.ctx.storage.get(`trash/${pageId}`);
-    const placement = entry && entryPlacement(entry);
+    const placement = entry && !entry.reservation && entryPlacement(entry);
     if (!placement?.parent_id) return undefined;
-    const parent = await this.ctx.storage.get(`page/${placement.parent_id}`);
-    if (parent && !parent.pending && !parent.reservation) return undefined;
+    if (await this.parentAvailable(placement.parent_id)) return undefined;
     return this.nextPosition(placement.space_id, null);
   }
 

@@ -136,7 +136,7 @@ async function stop() {
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
 }
-async function mcp(operation, args = {}) {
+async function call(operation, args = {}) {
   const response = await fetch(`${origin}/mcp`, {
     method: "POST",
     headers: {
@@ -155,8 +155,11 @@ async function mcp(operation, args = {}) {
   });
   assert.equal(response.status, 200, operation);
   const result = (await response.json()).result;
-  const body = JSON.parse(result.content[0].text);
-  assert.notEqual(result.isError, true, `${operation}: ${JSON.stringify(body)}`);
+  return { isError: result.isError === true, body: JSON.parse(result.content[0].text) };
+}
+async function mcp(operation, args = {}) {
+  const { isError, body } = await call(operation, args);
+  assert.equal(isError, false, `${operation}: ${JSON.stringify(body)}`);
   return body;
 }
 const key = () => crypto.randomUUID();
@@ -203,9 +206,18 @@ try {
     parent_id: roadmap.page_id,
     idempotency_key: key(),
   });
+  const notes = await mcp("create_page", {
+    title: "Notes",
+    markdown: "Second child.",
+    parent_id: roadmap.page_id,
+    idempotency_key: key(),
+  });
   const inSpace = await mcp("list_pages", { space_id: space.space_id });
-  assert.deepEqual(ids(inSpace).sort(), [space.home_page_id, roadmap.page_id, plan.page_id].sort());
-  report.phases.push({ build: "current", ...writer, wrote: { space, roadmap, plan } });
+  assert.deepEqual(
+    ids(inSpace).sort(),
+    [space.home_page_id, roadmap.page_id, plan.page_id, notes.page_id].sort(),
+  );
+  report.phases.push({ build: "current", ...writer, wrote: { space, roadmap, plan, notes } });
   await stop();
 
   // 2. The previous build serves the same data.
@@ -226,12 +238,24 @@ try {
     title: "Made by the previous build",
     idempotency_key: key(),
   });
+  // The previous build trashes a nested child, then a parent that still has
+  // an active child: it has no parent protection.
+  const trashWith = async (pageId) =>
+    mcp("delete_page", {
+      page_id: pageId,
+      base_heads: (await mcp("read_page", { page_id: pageId, include_content: false })).heads,
+      idempotency_key: key(),
+    });
+  const trashedChild = await trashWith(notes.page_id);
+  const trashedParent = await trashWith(roadmap.page_id);
   report.phases.push({
     build: "previous",
     ...reader,
     listed: listed.pages.length,
     edited_heads: edited.heads,
     created: extra.page_id,
+    trashed_child: trashedChild.state,
+    trashed_parent_with_active_child: trashedParent.state,
   });
   await stop();
 
@@ -242,25 +266,59 @@ try {
   assert.equal(restoredSpace.home_page_id, space.home_page_id);
   const spaces = await mcp("list_spaces");
   assert.ok(spaces.spaces.some((entry) => entry.space_id === space.space_id));
+  // The active child of the parent the previous build trashed still lists
+  // in the Space with its recorded parent; the Space view shows it at the top
+  // level because that parent is not listed.
   const after = await mcp("list_pages", { space_id: space.space_id });
-  assert.deepEqual(ids(after).sort(), ids(inSpace).sort());
-  const planAgain = await mcp("read_page", { page_id: plan.page_id, comments: "none" });
+  assert.deepEqual(ids(after).sort(), [space.home_page_id, plan.page_id].sort());
+  const orphan = after.pages.find((page) => page.page_id === plan.page_id);
+  assert.equal(orphan.parent_id, roadmap.page_id);
+  const trash = await mcp("list_pages", { in_trash: true });
+  assert.deepEqual(ids(trash).sort(), [roadmap.page_id, notes.page_id].sort());
+  const planWhileOrphaned = await mcp("read_page", { page_id: plan.page_id, comments: "none" });
   assert.match(
-    planAgain.blocks.map((block) => block.markdown).join("\n"),
+    planWhileOrphaned.blocks.map((block) => block.markdown).join("\n"),
     /Edited by the previous build/,
   );
+  // Restoring the parent and the trashed child puts the tree back together.
+  const authority = await mcp("list_pages");
+  assert.ok(ids(authority).includes(extra.page_id));
+  const restoredParent = await mcp("restore_page", {
+    page_id: roadmap.page_id,
+    retry_token: authority.retry_token,
+    idempotency_key: authority.retry_key_prefix + key(),
+  });
+  const restoredChild = await mcp("restore_page", {
+    page_id: notes.page_id,
+    retry_token: authority.retry_token,
+    idempotency_key: authority.retry_key_prefix + key(),
+  });
+  assert.equal(restoredChild.parent_id, roadmap.page_id);
+  const planAgain = await mcp("read_page", { page_id: plan.page_id, comments: "none" });
   assert.deepEqual(
     planAgain.breadcrumbs.map((crumb) => crumb.title),
     ["Rollback Space", "Roadmap"],
   );
-  const all = await mcp("list_pages");
-  assert.ok(ids(all).includes(extra.page_id));
+  // This build protects the parent again.
+  const leaf = await call("delete_page", {
+    page_id: roadmap.page_id,
+    base_heads: (await mcp("read_page", { page_id: roadmap.page_id, include_content: false }))
+      .heads,
+    idempotency_key: key(),
+  });
+  assert.equal(leaf.isError, true);
+  assert.equal(leaf.body.code, "page_has_children");
   report.phases.push({
     build: "current",
     ...again,
     space: restoredSpace.space_id,
-    pages_in_space: after.pages.length,
+    pages_in_space_while_parent_trashed: after.pages.length,
+    orphan_parent_id: orphan.parent_id,
+    orphan_breadcrumbs: planWhileOrphaned.breadcrumbs.map((crumb) => crumb.title),
+    restored_parent: restoredParent.restored,
+    restored_child_parent: restoredChild.parent_id,
     breadcrumbs: planAgain.breadcrumbs.map((crumb) => crumb.title),
+    trash_parent_with_children: leaf.body.code,
   });
   await stop();
   report.passed = true;

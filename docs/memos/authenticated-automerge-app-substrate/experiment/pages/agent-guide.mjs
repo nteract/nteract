@@ -465,6 +465,8 @@ Trash a Page's children first; subtree Trash is not available yet. delete_page
 on a Page that has sub-pages returns page_has_children. A restored Page whose
 parent is in Trash or gone returns to the top level of its Space or Your items.
 Adding a Page under a parent in Trash returns parent_unavailable.
+lifecycle_unsettled means a Page's earlier Trash or restore is still settling;
+retry the same request shortly.
 
 ### Trash
 

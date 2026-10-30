@@ -268,6 +268,7 @@ export function errorResponse(error, stage = "request") {
         "nesting_depth_exceeded",
         "home_page_protected",
         "page_has_children",
+        "lifecycle_unsettled",
       ].includes(error.code) && { code: error.code }),
       ...(["edit_conflict", "resync_required"].includes(error.code) && {
         ...(Array.isArray(error.details?.conflicts) && {

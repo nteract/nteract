@@ -125,17 +125,26 @@ CELLD_BIN=<celld 0.6.3> node scripts/rollback-qualification.mjs --previous <prev
 ```
 
 Against the previous main build (9b8f36dbd) on celld 0.6.3, the Spaces build
-created a Space, its home Page and a nested Page. The previous build, whose
-config has no `SPACES` binding or `v3` migration, started on the same data,
-listed all three Pages, read and edited the nested Page and created another.
-At startup celld tried to resume the existing Space cell and logged
-`celld runtime start failed for Space:<id>: no Worker exports Durable Object
-class Space` once; readiness opened and every request succeeded. The Spaces
-build then started again with the Space, its listing, the previous build's edit
-and the breadcrumbs intact. So a celld rollback needs no special artifact; expect
-that one log line per Space cell celld resumes. On Cloudflare, removing a Durable
-Object class takes a `deleted_classes` migration that erases its storage, so a
-Cloudflare rollback must keep exporting `Space` and its binding instead.
+created a Space, its home Page, a top-level Page and two Pages nested under it.
+The previous build, whose config has no `SPACES` binding or `v3` migration,
+started on the same data, listed all four Pages, read and edited a nested Page
+and created another Page. It then trashed one nested Page, and trashed the
+parent while its other child was still active: it has no parent protection. At
+startup celld tried to resume the existing Space cell and logged `celld runtime
+start failed for Space:<id>: no Worker exports Durable Object class Space` once;
+readiness opened and every request succeeded.
+
+The Spaces build then started again with the Space and `list_spaces` intact. The
+active child of the trashed parent still listed in the Space with its recorded
+`parent_id`; the Space view shows such a Page at the top level, and its
+`read_page` breadcrumbs are empty while the parent is in Trash. Both trashed
+Pages were in Trash. Restoring the parent and then the trashed child put the tree
+back (the child returned under its parent, breadcrumbs Space › parent), and
+trashing the parent again was refused with `page_has_children`. Nothing crashed.
+So a celld rollback needs no special artifact; expect that one log line per Space
+cell celld resumes. On Cloudflare, removing a Durable Object class takes a
+`deleted_classes` migration that erases its storage, so a Cloudflare rollback
+must keep exporting `Space` and its binding instead.
 
 ## Tunnel and DNS provisioning
 
