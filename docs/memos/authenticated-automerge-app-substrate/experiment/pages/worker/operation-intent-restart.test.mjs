@@ -24,21 +24,18 @@ const serverKey = "f".repeat(64);
 const CREATED = "2026-10-01T00:00:00.000Z";
 const KEY = "sweep-key-0001";
 const LIMIT = 100;
-// Current behavior, fixed in later commits: a cut between a projection's
-// destination write and its source delete leaves the Page in both listings,
-// and a cut before a new request's forwarded mark loses its retarget.
-const UNREPAIRED = { count: [2], settle: [2] };
+// Current behavior, fixed in a later commit: a cut before a new request's
+// forwarded mark loses its retarget.
+const UNREPAIRED = { count: [], settle: [] };
 const RETARGET_LOST = [1, 2, 3, 4, 5, 6];
 let swept = 0;
 const SWEPT = 63;
 // Current behavior, fixed in a later commit: counting keeps a fenced
 // reservation without counting it.
 const RETAINED_COUNTED = false;
-// Current behavior, fixed in a later commit: the Trash entry is written and
-// the slot it replaces stays.
-function afterPartialProjection(storage) {
-  assert.equal(storage.values.get(`trash/${pageId}`).lifecycle_revision, 3);
-  assert.equal(storage.values.get(`page/${pageId}`).intent, restoreKey);
+// The projection's transaction rolls back: nothing it wrote stays.
+function afterPartialProjection(storage, before) {
+  assert.deepEqual(normalize(storage.values), before);
 }
 // One document for every run, so request fingerprints over its heads match.
 const DOCUMENT = A.save(
@@ -565,7 +562,7 @@ const trashEntry = (revision) => ({
   trash_root_id: pageId,
 });
 
-test("a projection that fails partway", async () => {
+test("a projection that fails partway rolls back whole", async () => {
   const storage = new CrashStorage((mutation) => {
     if (describe(mutation, pageId) === "delete page/<id>")
       throw new Error("injected storage failure");

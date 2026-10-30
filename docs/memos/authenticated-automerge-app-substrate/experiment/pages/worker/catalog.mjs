@@ -186,6 +186,14 @@ export async function observedLifecycleRevision(storage, pageId) {
  * this always uses the Page's current state and ignores older revisions.
  */
 export async function projectLifecycle(storage, pageId, current) {
+  // One transaction: a crash leaves the Page in the listing it was in or the
+  // one it moves to, never both and never neither. Storage without
+  // transactions writes in order.
+  if (typeof storage.transaction !== "function") return projectEntries(storage, pageId, current);
+  return storage.transaction((transaction) => projectEntries(transaction, pageId, current));
+}
+
+async function projectEntries(storage, pageId, current) {
   // Every projection changes which listing holds the Page; the D1 index
   // reconciles from these entries.
   await markCatalogIndexDirty(storage);
