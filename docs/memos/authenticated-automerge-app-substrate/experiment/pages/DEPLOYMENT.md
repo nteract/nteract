@@ -101,20 +101,41 @@ does not migrate another environment's data.
 Spaces add a `Space` Durable Object class (binding `SPACES`, migration tag
 `v3`), `space/<id>` Catalog entries, a `placement` field on Page records and
 matching fields on owned Catalog entries, and catalog-index migration 4 (placement
-columns on `pages_catalog_pages` and a `pages_catalog_spaces` table). All of it is
-additive. A rollback build ignores the new fields, keys, tables and Durable Object
-storage: the owner still lists and opens every Page in a Space as an ordinary
-Page, collaborators keep their direct grants, and Space records sit unused until
-a roll forward. An older build trashes one Page at a time and does not protect
-home Pages; after rolling forward, a Page whose parent is in Trash lists with
-that `parent_id` and the Space view shows it at the top level, and a trashed home
-Page can be restored normally. Index rows an older build inserts have no
-placement until the Page reports again or its owner's account reconciles;
-changing `PAGES_CATALOG_INDEX` after rolling forward repairs them at once. The
-Cloudflare packaging fixture declares the `v3` migration too. On Cloudflare,
-removing a Durable Object class takes a `deleted_classes` migration that erases
-its storage, so a rollback there should keep exporting `Space` and its binding
-rather than drop the class.
+columns on `pages_catalog_pages` and a `pages_catalog_spaces` table). Storage
+additions are additive; rollback deployment compatibility is qualified separately
+(see below). A rollback build ignores the new fields, keys and tables: the owner
+lists and opens every Page in a Space as an ordinary Page, collaborators keep
+their direct grants, and Space records wait for a roll forward. An older build
+does not refuse to trash a Page with sub-pages and does not protect home Pages.
+After rolling forward, a Page whose parent is in Trash shows at the top level of
+the Space view, a resumed creation under such a parent answers
+`parent_unavailable`, and a trashed home Page can be restored normally. Index rows
+an older build inserts have no placement until the Page reports again or its
+owner's account reconciles; changing `PAGES_CATALOG_INDEX` after rolling forward
+repairs them at once.
+
+### Rollback qualification for Spaces
+
+`scripts/rollback-qualification.mjs` runs this build, the previous build and this
+build again on local celld with one persistent data directory. Build the previous
+commit in a separate worktree first, then:
+
+```sh
+CELLD_BIN=<celld 0.6.3> node scripts/rollback-qualification.mjs --previous <previous pages dir>
+```
+
+Against the previous main build (9b8f36dbd) on celld 0.6.3, the Spaces build
+created a Space, its home Page and a nested Page. The previous build, whose
+config has no `SPACES` binding or `v3` migration, started on the same data,
+listed all three Pages, read and edited the nested Page and created another.
+At startup celld tried to resume the existing Space cell and logged
+`celld runtime start failed for Space:<id>: no Worker exports Durable Object
+class Space` once; readiness opened and every request succeeded. The Spaces
+build then started again with the Space, its listing, the previous build's edit
+and the breadcrumbs intact. So a celld rollback needs no special artifact; expect
+that one log line per Space cell celld resumes. On Cloudflare, removing a Durable
+Object class takes a `deleted_classes` migration that erases its storage, so a
+Cloudflare rollback must keep exporting `Space` and its binding instead.
 
 ## Tunnel and DNS provisioning
 

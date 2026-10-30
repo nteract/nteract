@@ -5,7 +5,6 @@ import {
   SPACE_CREATION_STATES,
   spaceCreationEffect,
   spaceCreationTransition,
-  subtreeTransition,
 } from "./space-lifecycle.mjs";
 
 test("Space creation: every state and event has exactly one outcome", () => {
@@ -55,18 +54,4 @@ test("Space creation resumes from any persisted state to ready", () => {
       ),
     );
   }
-});
-
-test("a subtree move advances one child at a time and refuses to overrun", () => {
-  assert.deepEqual(subtreeTransition({ next: 0 }, "child_moved", 2), {
-    state: { next: 1 },
-    done: false,
-  });
-  assert.deepEqual(subtreeTransition({ next: 1 }, "child_moved", 2), {
-    state: { next: 2 },
-    done: true,
-  });
-  assert.throws(() => subtreeTransition({ next: 2 }, "child_moved", 2), /cannot take/);
-  assert.throws(() => subtreeTransition({ next: 0 }, "restored", 2), /cannot take/);
-  assert.throws(() => subtreeTransition({}, "child_moved", 2), /cannot take/);
 });

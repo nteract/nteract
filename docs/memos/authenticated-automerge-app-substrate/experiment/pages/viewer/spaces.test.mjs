@@ -23,18 +23,22 @@ test("Space links resolve and stay distinct from Page links", () => {
   assert.deepEqual(calls, [`/s/${spaceId}`]);
 });
 
-test("a Space tree puts the home Page first, nests by parent and orders by position", () => {
-  const { home, rows } = spaceTree([
+test("a Space tree puts the home Page first with its descendants, then nests by position", () => {
+  const rows = spaceTree([
     { page_id: page(5), title: "Orphan", parent_id: page(9), position: "a0" },
     { page_id: page(3), title: "Child", parent_id: page(2), position: "a0" },
     { page_id: page(2), title: "Second", parent_id: null, position: "a2" },
     { page_id: page(1), title: "Home", parent_id: null, position: "a0", home: true },
     { page_id: page(4), title: "First", parent_id: null, position: "a1" },
+    { page_id: page(6), title: "Under home", parent_id: page(1), position: "a0" },
+    { page_id: page(7), title: "Grandchild", parent_id: page(6), position: "a0" },
   ]);
-  assert.equal(home.title, "Home");
   assert.deepEqual(
     rows.map(({ page, depth }) => [page.title, depth]),
     [
+      ["Home", 0],
+      ["Under home", 1],
+      ["Grandchild", 2],
       ["Orphan", 0],
       ["First", 0],
       ["Second", 0],

@@ -1,0 +1,276 @@
+// Rollback qualification on local celld with one persistent data directory:
+// this build writes Spaces, a previous build serves the same data, then this
+// build serves it again. The previous build must already be built:
+//   node scripts/rollback-qualification.mjs --previous <previous pages dir>
+// No pre-existing server, provider account or credentials; MCP calls use the
+// synthetic fixture API keys.
+import { execFileSync, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { createWriteStream } from "node:fs";
+import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import assert from "node:assert/strict";
+import { build } from "esbuild";
+import { CELLD_RELEASE, parseRuntimeVersion } from "./deployment/profiles.mjs";
+import { fixtureWhoamiUrl, generateFixtureKeys } from "./fixtures/local-api-keys.mjs";
+
+const current = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const flag = process.argv.indexOf("--previous");
+if (flag < 0 || !process.argv[flag + 1]) throw new Error("Pass --previous <pages dir>");
+const previous = path.resolve(process.argv[flag + 1]);
+const output = path.resolve(
+  process.env.PAGES_E2E_OUTPUT || path.join(current, "test-results", `rollback-${Date.now()}`),
+);
+await mkdir(output, { recursive: true });
+const celld = process.env.CELLD_BIN || "celld";
+const hostEnv = Object.fromEntries(
+  ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT"]
+    .filter((key) => process.env[key] !== undefined)
+    .map((key) => [key, process.env[key]]),
+);
+const version = parseRuntimeVersion(
+  execFileSync(celld, ["--version"], { encoding: "utf8", timeout: 5000, env: hostEnv }),
+);
+if (version !== CELLD_RELEASE.version)
+  throw new Error(`Rollback qualification requires ${CELLD_RELEASE.version}; found ${version}`);
+
+const scratch = await mkdtemp(path.join(tmpdir(), "pages-rollback-"));
+const runtime = path.join(scratch, "runtime");
+await mkdir(runtime);
+const server = createServer();
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+const port = server.address().port;
+await new Promise((resolve) => server.close(resolve));
+const origin = `http://localhost:${port}`;
+const { keys, responses } = generateFixtureKeys();
+const log = createWriteStream(path.join(output, "celld.log"));
+const report = { origin, celld: version, previous, phases: [] };
+let host;
+
+/** Replace the deployed build in `runtime`, keeping celld state and vars. */
+async function install(app) {
+  for (const name of ["public", "automerge.wasm", "subduction.wasm", "wrangler.json", "index.js"])
+    await rm(path.join(runtime, name), { recursive: true, force: true });
+  for (const name of ["public", "automerge.wasm", "subduction.wasm", "wrangler.json"])
+    await cp(path.join(app, "dist", name), path.join(runtime, name), { recursive: true });
+  const receipt = JSON.parse(await readFile(path.join(app, "dist/build-receipt.json"), "utf8"));
+  const { celldCborPlugin } = await import(pathToFileURL(path.join(app, "scripts/celld-cbor.mjs")));
+  await build({
+    entryPoints: [path.join(app, "scripts/fixtures/local-sharing-worker.mjs")],
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    target: "es2022",
+    conditions: ["workerd"],
+    tsconfig: path.join(app, "tsconfig.json"),
+    external: ["node:*"],
+    outfile: path.join(runtime, "index.js"),
+    define: {
+      PAGES_E2E_ORIGIN: JSON.stringify(origin),
+      PAGES_E2E_RESPONSES: JSON.stringify(responses),
+      __PAGES_BUILD__: JSON.stringify(receipt.build_id),
+    },
+    logLevel: "warning",
+    plugins: [
+      celldCborPlugin(),
+      {
+        name: "compiled-wasm",
+        setup(b) {
+          b.onResolve({ filter: /\.wasm$/ }, async (args) => {
+            const absolute = path.resolve(args.resolveDir, args.path);
+            const name = absolute.includes("subduction") ? "subduction.wasm" : "automerge.wasm";
+            await copyFile(absolute, path.join(runtime, name));
+            return { path: `./${name}`, external: true };
+          });
+        },
+      },
+    ],
+  });
+  const config = JSON.parse(await readFile(path.join(runtime, "wrangler.json"), "utf8"));
+  return {
+    build_id: receipt.build_id,
+    durable_objects: config.durable_objects.bindings.map((binding) => binding.class_name),
+    migrations: config.migrations.map((migration) => migration.tag),
+  };
+}
+
+async function boot() {
+  host = spawn(
+    celld,
+    ["dev", runtime, "--host", "127.0.0.1", "--port", String(port), "--no-watch", "--logs"],
+    { cwd: scratch, env: hostEnv, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  host.stdout.pipe(log, { end: false });
+  host.stderr.pipe(log, { end: false });
+  const deadline = Date.now() + 60000;
+  for (;;) {
+    if (host.exitCode !== null || host.signalCode)
+      throw new Error(`celld exited (${host.exitCode ?? host.signalCode}); see celld.log`);
+    try {
+      const response = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(1000) });
+      if (response.ok) return;
+    } catch {
+      /* starting */
+    }
+    if (Date.now() >= deadline) throw new Error("celld did not become ready; see celld.log");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+async function stop() {
+  if (!host || host.exitCode !== null || host.signalCode) return;
+  host.kill("SIGTERM");
+  const timeout = setTimeout(() => host.kill("SIGKILL"), 5000);
+  await new Promise((resolve) => host.once("exit", resolve));
+  clearTimeout(timeout);
+  for (const deadline = Date.now() + 30000; ; ) {
+    const probe = createServer();
+    const free = await new Promise((resolve) => {
+      probe.once("error", () => resolve(false));
+      probe.listen(port, "127.0.0.1", () => probe.close(() => resolve(true)));
+    });
+    if (free) return;
+    if (Date.now() >= deadline) throw new Error("port stayed busy after stopping celld");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
+async function mcp(operation, args = {}) {
+  const response = await fetch(`${origin}/mcp`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${keys.owner}`,
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      "X-Pages-Driver": "Rollback qualification",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: crypto.randomUUID(),
+      method: "tools/call",
+      params: { name: operation, arguments: args },
+    }),
+    signal: AbortSignal.timeout(30000),
+  });
+  assert.equal(response.status, 200, operation);
+  const result = (await response.json()).result;
+  const body = JSON.parse(result.content[0].text);
+  assert.notEqual(result.isError, true, `${operation}: ${JSON.stringify(body)}`);
+  return body;
+}
+const key = () => crypto.randomUUID();
+const ids = (listing) => listing.pages.map((page) => page.page_id);
+
+try {
+  await writeFile(
+    path.join(runtime, ".dev.vars"),
+    Object.entries({
+      PAGES_E2E_ONLY: "true",
+      PAGES_EDITOR: "wordgard",
+      PAGES_ASYNC_PERSISTENCE: "true",
+      PAGES_COMPACT_RECORDS: "true",
+      PAGES_CATALOG_INDEX: "1",
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: randomBytes(32).toString("hex"),
+      NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
+      NOTEBOOK_CLOUD_OIDC_FLOW: "server",
+      NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
+      NOTEBOOK_CLOUD_OIDC_ISSUER: `${origin}/dev/oidc`,
+      NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "pages-e2e",
+      NOTEBOOK_CLOUD_OIDC_AUDIENCE: "pages-e2e",
+      NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE: "pages-e2e",
+      NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE: "pages-e2e",
+      NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL: fixtureWhoamiUrl,
+    })
+      .map(([name, value]) => `${name}=${value}`)
+      .join("\n") + "\n",
+    { mode: 0o600 },
+  );
+
+  // 1. This build writes a Space, its home Page and nested Pages.
+  const writer = await install(current);
+  await boot();
+  const space = await mcp("create_space", { title: "Rollback Space", idempotency_key: key() });
+  const roadmap = await mcp("create_page", {
+    title: "Roadmap",
+    markdown: "Written by the Spaces build.",
+    space_id: space.space_id,
+    idempotency_key: key(),
+  });
+  const plan = await mcp("create_page", {
+    title: "Plan",
+    markdown: "Child written by the Spaces build.",
+    parent_id: roadmap.page_id,
+    idempotency_key: key(),
+  });
+  const inSpace = await mcp("list_pages", { space_id: space.space_id });
+  assert.deepEqual(ids(inSpace).sort(), [space.home_page_id, roadmap.page_id, plan.page_id].sort());
+  report.phases.push({ build: "current", ...writer, wrote: { space, roadmap, plan } });
+  await stop();
+
+  // 2. The previous build serves the same data.
+  const reader = await install(previous);
+  await boot();
+  const listed = await mcp("list_pages");
+  for (const pageId of [space.home_page_id, roadmap.page_id, plan.page_id])
+    assert.ok(ids(listed).includes(pageId), `previous build lists ${pageId}`);
+  const read = await mcp("read_page", { page_id: plan.page_id, comments: "none" });
+  assert.match(read.blocks.map((block) => block.markdown).join("\n"), /Child written/);
+  const edited = await mcp("edit_page", {
+    page_id: plan.page_id,
+    base_heads: read.heads,
+    idempotency_key: key(),
+    operations: [{ op: "insert_markdown", markdown: "Edited by the previous build." }],
+  });
+  const extra = await mcp("create_page", {
+    title: "Made by the previous build",
+    idempotency_key: key(),
+  });
+  report.phases.push({
+    build: "previous",
+    ...reader,
+    listed: listed.pages.length,
+    edited_heads: edited.heads,
+    created: extra.page_id,
+  });
+  await stop();
+
+  // 3. This build again: the Space and placement are intact.
+  const again = await install(current);
+  await boot();
+  const restoredSpace = await mcp("get_space", { space_id: space.space_id });
+  assert.equal(restoredSpace.home_page_id, space.home_page_id);
+  const spaces = await mcp("list_spaces");
+  assert.ok(spaces.spaces.some((entry) => entry.space_id === space.space_id));
+  const after = await mcp("list_pages", { space_id: space.space_id });
+  assert.deepEqual(ids(after).sort(), ids(inSpace).sort());
+  const planAgain = await mcp("read_page", { page_id: plan.page_id, comments: "none" });
+  assert.match(
+    planAgain.blocks.map((block) => block.markdown).join("\n"),
+    /Edited by the previous build/,
+  );
+  assert.deepEqual(
+    planAgain.breadcrumbs.map((crumb) => crumb.title),
+    ["Rollback Space", "Roadmap"],
+  );
+  const all = await mcp("list_pages");
+  assert.ok(ids(all).includes(extra.page_id));
+  report.phases.push({
+    build: "current",
+    ...again,
+    space: restoredSpace.space_id,
+    pages_in_space: after.pages.length,
+    breadcrumbs: planAgain.breadcrumbs.map((crumb) => crumb.title),
+  });
+  await stop();
+  report.passed = true;
+  console.log(`Rollback qualification passed. Artifacts: ${output}`);
+} catch (error) {
+  report.failure = error.stack || error.message;
+  throw error;
+} finally {
+  await stop().catch(() => {});
+  await writeFile(path.join(output, "report.json"), JSON.stringify(report, null, 2) + "\n");
+  await new Promise((resolve) => log.end(resolve));
+  await rm(scratch, { recursive: true, force: true });
+}

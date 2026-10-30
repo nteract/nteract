@@ -3,7 +3,9 @@ import { FileText, Home, Plus } from "lucide-react";
 import { pagePath, isPlainNavigation } from "../shared/routes.mjs";
 import { createPageInSpace, listSpacePages, spaceTree } from "./spaces.mjs";
 
-/** One Space: its home Page, then its Pages as a tree. Owner-only for now. */
+/** One Space: its home Page, then its Pages as a tree. Owner-only for now.
+ * Loading and errors stay local and simple here; the Space view moves to the
+ * shared RxJS store pattern when the Pages state-machine tooling lands. */
 export function SpaceView({ tool, spaceId, onOpen, onBack, onCreated }) {
   const [space, setSpace] = useState(null);
   const [pages, setPages] = useState(null);
@@ -80,34 +82,27 @@ export function SpaceView({ tool, spaceId, onOpen, onBack, onCreated }) {
       {!tree && !error && <p role="status">Loading…</p>}
       {tree && (
         <ul className="page-list page-cards" aria-label={`Pages in ${space?.title ?? "Space"}`}>
-          {tree.home && (
-            <li className="page-row space-home" key={tree.home.page_id}>
-              {link(
-                tree.home,
-                <>
-                  <Home size={19} aria-hidden="true" />
-                  <span className="page-card-title">{tree.home.title || "Untitled"}</span>
-                  <span className="page-card-meta">Home</span>
-                </>,
-              )}
-            </li>
-          )}
-          {tree.rows.map(({ page, depth }) => (
+          {tree.map(({ page, depth }) => (
             <li
-              className="page-row"
+              className={page.home ? "page-row space-home" : "page-row"}
               key={page.page_id}
               style={{ paddingInlineStart: `${0.5 + depth * 1.25}rem` }}
             >
               {link(
                 page,
                 <>
-                  <FileText size={19} aria-hidden="true" />
+                  {page.home ? (
+                    <Home size={19} aria-hidden="true" />
+                  ) : (
+                    <FileText size={19} aria-hidden="true" />
+                  )}
                   <span className="page-card-title">{page.title || "Untitled"}</span>
+                  {page.home && <span className="page-card-meta">Home</span>}
                 </>,
               )}
             </li>
           ))}
-          {!tree.rows.length && <li className="muted space-empty">No other Pages yet.</li>}
+          {tree.length < 2 && <li className="muted space-empty">No other Pages yet.</li>}
         </ul>
       )}
     </main>

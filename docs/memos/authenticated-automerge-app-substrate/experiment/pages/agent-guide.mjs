@@ -440,8 +440,10 @@ space_id_as_page_id or page_id_as_space_id, naming the right tool and argument.
 - get_space: space_id. Returns title, description, revision and home_page_id.
 - list_spaces: optional cursor and limit. Also returns a retry_token for
   create_space and update_space.
-- update_space: space_id, title and/or description, optional expected_revision
-  (space_revision_conflict when stale) and idempotency_key.
+- update_space: space_id, title and/or description, expected_revision (the
+  revision from get_space; space_revision_conflict when stale) and
+  idempotency_key. A retry whose revision has passed returns superseded:true and
+  applied:false with the current Space; read it before deciding what to do.
 - create_page with space_id puts the Page at the Space's top level. parent_id
   makes it a sub-page; the parent's Space is implied, and a different space_id
   returns placement_mismatch. Pages nest at most 8 levels (nesting_depth_exceeded).
@@ -459,10 +461,10 @@ In this build only a Space's owner can open it or add Pages to it. Sharing a
 Page in a Space works as before and does not reveal the Space. Moving Pages
 between parents or Spaces is not available yet.
 
-delete_page moves a Page and every Page under it to Trash (up to 500;
-subtree_too_large beyond). restore_page on that Page brings them all back. A
-restored Page whose parent is no longer active returns to the top level of its
-Space or Your items.
+Trash a Page's children first; subtree Trash is not available yet. delete_page
+on a Page that has sub-pages returns page_has_children. A restored Page whose
+parent is in Trash or gone returns to the top level of its Space or Your items.
+Adding a Page under a parent in Trash returns parent_unavailable.
 
 ### Trash
 

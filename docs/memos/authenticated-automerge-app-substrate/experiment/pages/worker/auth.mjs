@@ -267,7 +267,7 @@ export function errorResponse(error, stage = "request") {
         "parent_unavailable",
         "nesting_depth_exceeded",
         "home_page_protected",
-        "subtree_too_large",
+        "page_has_children",
       ].includes(error.code) && { code: error.code }),
       ...(["edit_conflict", "resync_required"].includes(error.code) && {
         ...(Array.isArray(error.details?.conflicts) && {

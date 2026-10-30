@@ -84,7 +84,8 @@ Run targeted browser checks from `pages`:
 | Admission codes, celld restart, and reconnect to Saved | `node scripts/local-sharing-e2e.mjs --admission` | Starts and restarts an isolated fixture |
 | Reload prompt after a deploy under an open tab | `node scripts/local-sharing-e2e.mjs --build-update` | Starts an isolated fixture and swaps its build |
 | Trash, restore, and permanent deletion | `node scripts/local-sharing-e2e.mjs --trash` | Starts an isolated fixture |
-| Spaces over MCP and in the browser, breadcrumbs, subtree Trash | `node scripts/local-sharing-e2e.mjs --spaces` | Starts an isolated fixture |
+| Spaces over MCP and in the browser, breadcrumbs, Trash and restore in a Space | `node scripts/local-sharing-e2e.mjs --spaces` | Starts an isolated fixture |
+| Rollback to a previous build and forward again on one data directory | `node scripts/rollback-qualification.mjs --previous <previous pages dir>` | Starts an isolated fixture; build the previous commit first |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
@@ -653,8 +654,8 @@ catalog deletion tombstone. Private image bytes stay in object storage but are
 no longer served.
 
 Trash has no automatic expiry. Pages stay there until the owner restores or
-purges them, up to 100 per account. Each trash record identifies its root Page:
-itself, or the ancestor whose trash moved its subtree (see Spaces below).
+purges them, up to 100 per account. Each trash record identifies its root Page.
+This implementation trashes and restores individual Pages.
 
 ### Spaces
 
@@ -672,7 +673,7 @@ a Space change feed come later.
 | `create_space` | `title`, `description?`, `idempotency_key`, `retry_token?` | `space_id`, `home_page_id`, `revision` |
 | `list_spaces` | `cursor?`, `limit?` | owned Spaces, `next_cursor`, `retry_token` |
 | `get_space` | `space_id` | title, description, revision, `home_page_id` |
-| `update_space` | `space_id`, `title?`, `description?`, `expected_revision?`, `idempotency_key` | the updated Space |
+| `update_space` | `space_id`, `title?`, `description?`, `expected_revision`, `idempotency_key` | the updated Space, or `superseded` |
 | `create_page` | adds `space_id?`, `parent_id?` | adds `space_id`, `parent_id` |
 | `list_pages` | adds `space_id?`, `parent_id?` (`null` = top level), `kind?` | owned rows add `space_id`, `parent_id`, `position`, `home` |
 | `read_page` | unchanged | adds `kind`, `space_id`, `parent_id`, `home`, `breadcrumbs` |
@@ -706,13 +707,20 @@ ancestor and the Space answer with the caller's credentials, so the trail stops 
 the first Page the caller cannot open and `space_id` appears only when the Space
 is readable.
 
-`delete_page` moves a Page and its active descendants to Trash (at most 500;
-`subtree_too_large`), each recording the root as `trash_root_id`. Descendants
-use journal keys derived from the root request, so a retry after a partial
-failure replays each receipt and finishes the rest. `restore_page` on a root
-brings back the Pages trashed with it. A restored Page whose parent is no longer
-active returns to the top level of its Space (or Your items) and its
-`placement_epoch` advances.
+Trash stays single-Page. `delete_page` on a Page with active sub-pages, or
+sub-pages still being created, returns `page_has_children`; trash the sub-pages
+first. Subtree Trash is not available yet: it will return on an explicit
+operation intent with per-item fences and capacity reservations. A restored Page
+whose parent is in Trash or gone returns to the top level of its Space (or Your
+items) and its `placement_epoch` advances. Creating a Page under a parent in
+Trash returns `parent_unavailable`, including a resumed creation, which checks
+its parent again before it reaches the Page.
+
+`update_space` requires `expected_revision`. The Catalog records it in the
+journal intent before the Space sees the request, and every attempt carries it,
+so a retry can never apply once the Space has moved past that revision, even
+after the Space evicted the key's receipt (it keeps the latest 64). Such a retry
+returns `superseded: true, applied: false` with the current Space.
 
 ### Retry contract
 

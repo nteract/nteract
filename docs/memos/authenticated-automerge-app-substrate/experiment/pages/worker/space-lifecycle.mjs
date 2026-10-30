@@ -1,6 +1,6 @@
 /**
- * Lifecycles the owner's Catalog drives across other objects, as pure
- * transition functions. Each state is persisted in the Catalog's journal
+ * Space creation, which the owner's Catalog drives across the Space and the
+ * home Page, as a pure transition function. Each state is persisted in the Catalog's journal
  * intent before the next effect runs, so a retry or restart resumes from the
  * last committed state. Effects are named here and run by the Catalog.
  *
@@ -11,10 +11,6 @@
  *
  * Every effect is idempotent on the intent's Space ID and home Page ID, so a
  * lost response repeats the same effect from the same state.
- *
- * Subtree move (trash or restore): `{ next }` indexes the intent's ordered
- * `cascade`. `child_moved` advances past one child; the move is done when
- * `next` reaches the end.
  */
 
 export const SPACE_CREATION_STATES = Object.freeze([
@@ -50,12 +46,4 @@ export function spaceCreationTransition(state, event) {
   const next = creation[state]?.[event];
   if (!next) throw new Error(`Space creation cannot take ${event} in ${state}`);
   return { state: next, effect: creationEffect[next] };
-}
-
-/** `({ next }, event, length) -> { state, done }` for a subtree move. */
-export function subtreeTransition(state, event, length) {
-  if (event !== "child_moved" || !Number.isSafeInteger(state?.next) || state.next >= length)
-    throw new Error(`Subtree move cannot take ${event} at ${state?.next} of ${length}`);
-  const next = state.next + 1;
-  return { state: { next }, done: next === length };
 }

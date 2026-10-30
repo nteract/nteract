@@ -25,33 +25,37 @@ export async function listSpacePages(call, spaceId, { maxRequests = 10 } = {}) {
   return [...pages.values()];
 }
 
-/** Rows for a Space view: the home Page first, then each Page under its
- * parent in position order, with its depth. A Page whose parent is missing
- * (in Trash, or not listed) shows at the top level. */
+/** Rows for a Space view: the home Page first with the Pages nested under
+ * it, then the other top-level Pages, each followed by its descendants in
+ * position order. A Page whose parent is missing (in Trash, or not listed)
+ * shows at the top level. */
 export function spaceTree(pages) {
   const ids = new Set(pages.map((page) => page.page_id));
   const children = new Map();
   for (const page of pages) {
-    if (page.home) continue;
     const parent = page.parent_id && ids.has(page.parent_id) ? page.parent_id : null;
     if (!children.has(parent)) children.set(parent, []);
     children.get(parent).push(page);
   }
   const order = (a, b) =>
-    (a.position ?? "") === (b.position ?? "")
+    Number(!!b.home) - Number(!!a.home) ||
+    ((a.position ?? "") === (b.position ?? "")
       ? a.page_id.localeCompare(b.page_id)
       : (a.position ?? "") < (b.position ?? "")
         ? -1
-        : 1;
+        : 1);
   const rows = [];
+  const seen = new Set();
   const visit = (parent, depth) => {
     for (const page of (children.get(parent) ?? []).sort(order)) {
+      if (seen.has(page.page_id)) continue;
+      seen.add(page.page_id);
       rows.push({ page, depth });
       if (depth < 8) visit(page.page_id, depth + 1);
     }
   };
   visit(null, 0);
-  return { home: pages.find((page) => page.home) ?? null, rows };
+  return rows;
 }
 
 /** Create an empty Page at a Space's top level and return its receipt. */

@@ -7,7 +7,7 @@ import worker, { Catalog, Page, Space } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";
 import { pageState, proposeAccessUpdate } from "./access.mjs";
 import { CATALOG_MIGRATIONS, migrateCatalogIndex, reportPageIndex } from "./catalog-index.mjs";
-import { MAX_DEPTH, descendants, validSpaceId } from "./spaces.mjs";
+import { MAX_DEPTH, validSpaceId } from "./spaces.mjs";
 import { tools } from "../mcp.mjs";
 
 class Storage {
@@ -599,137 +599,161 @@ test("list_spaces pages with a cursor and confirms D1 candidates against the Cat
   assert.ok(listed.body.spaces.every((space) => space.title !== "Ghost"));
 });
 
-test("trashing a Page trashes its subtree; restore returns Pages to their parent or the top level", async (t) => {
+test("Trash moves one Page at a time; restore returns a Page to its parent or the Space top level", async (t) => {
   const w = await world(t);
   const space = await w.createSpace("Wiki");
   const a = (await w.createPage({ title: "A", space_id: space.space_id })).body.page_id;
   const b = (await w.createPage({ title: "B", parent_id: a })).body.page_id;
   const c = (await w.createPage({ title: "C", parent_id: b })).body.page_id;
   const storage = w.catalogStorage();
-  const trash = (pageId) =>
+  const trash = (pageId, idempotency_key = w.key()) =>
     w.call("owner", "delete_page", {
       page_id: pageId,
       base_heads: w.heads(pageId),
-      idempotency_key: w.key(),
+      idempotency_key,
     });
   const restore = (pageId) =>
     w.call("owner", "restore_page", { page_id: pageId, idempotency_key: w.key() });
 
-  const trashed = await trash(a);
-  assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
-  for (const pageId of [a, b, c]) {
-    assert.equal(pageState(w.page(pageId).metadata), "trashed", pageId);
-    assert.equal(w.page(pageId).metadata.trash.root_page_id, a);
-    assert.equal((await storage.get(`trash/${pageId}`)).trash_root_id, a);
-    assert.equal(await storage.get(`page/${pageId}`), undefined);
+  const refused = await trash(a, "parent-with-children");
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.code, "page_has_children");
+  assert.match(refused.body.error, /sub-pages first/);
+  assert.equal(pageState(w.page(a).metadata), "active");
+  assert.equal(await storage.get(`trash/${a}`), undefined, "no trash slot was reserved");
+  assert.equal(await storage.get("host/operation/parent-with-children"), undefined);
+
+  for (const pageId of [c, b, a]) {
+    const trashed = await trash(pageId);
+    assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
+    assert.equal(w.page(pageId).metadata.trash.root_page_id, pageId);
+    assert.equal(w.page(pageId).metadata.trash.reason, "page");
   }
-  assert.equal(w.page(b).metadata.trash.reason, "subtree");
-  assert.deepEqual(ids(await w.call("owner", "list_pages", { space_id: space.space_id })), [
-    space.home_page_id,
-  ]);
-  const listedTrash = await w.call("owner", "list_pages", { in_trash: true });
-  assert.deepEqual(ids(listedTrash), [a, b, c].sort());
-  assert.ok(listedTrash.body.pages.every((page) => page.trash_root_id === a));
+  const orphan = await w.createPage({ title: "Under trash", parent_id: a });
+  assert.equal(orphan.status, 409);
+  assert.equal(orphan.body.code, "parent_unavailable");
 
-  const restored = await restore(a);
-  assert.equal(restored.status, 200);
-  for (const pageId of [a, b, c]) assert.equal(pageState(w.page(pageId).metadata), "active");
-  assert.equal(w.page(b).metadata.placement.parent_id, a, "children keep their parent");
-  assert.equal(w.page(c).metadata.placement.parent_id, b);
-
-  // Trash B (with C), then A on its own; restoring B finds its parent gone.
-  assert.equal((await trash(b)).status, 200);
-  assert.equal((await trash(a)).status, 200);
-  assert.equal((await storage.get(`trash/${a}`)).trash_root_id, a);
-  assert.equal((await storage.get(`trash/${c}`)).trash_root_id, b);
+  // B's parent is in Trash, so B returns to the Space's top level.
   const back = await restore(b);
   assert.equal(back.status, 200);
   assert.equal(back.body.parent_id, null);
   assert.equal(back.body.space_id, space.space_id);
   assert.equal(pageState(w.page(a).metadata), "trashed", "restoring B leaves A in Trash");
-  assert.deepEqual(w.page(b).metadata.placement.parent_id, null);
+  assert.equal(w.page(b).metadata.placement.parent_id, null);
   assert.equal(w.page(b).metadata.placement.placement_epoch, 1);
-  assert.equal(w.page(c).metadata.placement.parent_id, b);
-  assert.equal(pageState(w.page(c).metadata), "active");
   const entry = await storage.get(`page/${b}`);
   assert.equal(entry.parent_id, null);
   assert.equal(entry.placement_epoch, 1);
+  // C's parent is active again, so C keeps its place.
+  const child = await restore(c);
+  assert.equal(child.status, 200);
+  assert.equal(child.body.parent_id, b);
+  assert.equal(w.page(c).metadata.placement.parent_id, b);
+  assert.equal(w.page(c).metadata.placement.placement_epoch, 0);
   assert.deepEqual(
     ids(await w.call("owner", "list_pages", { space_id: space.space_id, parent_id: null })),
     [space.home_page_id, b].sort(),
   );
 
-  // The home Page stays with its Space.
   const home = await trash(space.home_page_id);
   assert.equal(home.status, 409);
   assert.equal(home.body.code, "home_page_protected");
   assert.equal(pageState(w.page(space.home_page_id).metadata), "active");
 });
 
-test("a subtree trash interrupted midway finishes on retry without repeating work", async (t) => {
+test("a pending child creation blocks its parent's Trash, and a resumed one rechecks its parent", async (t) => {
   const w = await world(t);
-  const space = await w.createSpace("Retry");
+  const space = await w.createSpace("Pending");
   const a = (await w.createPage({ title: "A", space_id: space.space_id })).body.page_id;
-  const b = (await w.createPage({ title: "B", parent_id: a })).body.page_id;
-  const c = (await w.createPage({ title: "C", parent_id: a })).body.page_id;
-  const args = { page_id: a, base_heads: w.heads(a), idempotency_key: "subtree-retry" };
-  w.faults.set(c, "lost");
-  const first = await w.call("owner", "delete_page", args);
-  assert.equal(first.status, 503);
-  const interrupted = await w.catalogStorage().get("host/operation/subtree-retry");
-  assert.equal(interrupted.pending, true);
-  assert.equal(
-    interrupted.cascade[interrupted.moved?.next ?? 0],
-    c,
-    "it resumes at the lost child",
-  );
-  assert.equal(w.page(a).metadata.lifecycleRevision, 1);
-  assert.equal(w.page(c).metadata.lifecycleRevision, 1, "the lost child still applied once");
-  assert.equal(await w.catalogStorage().get(`trash/${c}`), undefined, "its outcome was lost");
-  const retry = await w.call("owner", "delete_page", args);
-  assert.equal(retry.status, 200);
-  assert.deepEqual(
-    [a, b, c].map((pageId) => w.page(pageId).metadata.lifecycleRevision),
-    [1, 1, 1],
-    "the retry replays each receipt",
-  );
-  assert.ok(await w.catalogStorage().get(`trash/${c}`));
-});
-
-test("a subtree larger than the cap is refused before anything moves", async (t) => {
-  const w = await world(t);
-  const space = await w.createSpace("Big");
-  const root = (await w.createPage({ title: "Root", space_id: space.space_id })).body.page_id;
+  const originalPages = w.env.PAGES.getByName;
+  let failCreate = true;
+  let creates = 0;
+  w.env.PAGES.getByName = (id) => {
+    const stub = originalPages(id);
+    return {
+      fetch: async (request) => {
+        if (new URL(request.url).pathname === "/internal/create") {
+          creates++;
+          if (failCreate) {
+            failCreate = false;
+            return Response.json({ error: "Injected outage" }, { status: 500 });
+          }
+        }
+        return stub.fetch(request);
+      },
+    };
+  };
+  const args = { title: "Child", parent_id: a, idempotency_key: "pending-child" };
+  assert.equal((await w.call("owner", "create_page", args)).status, 500);
   const storage = w.catalogStorage();
-  // Entries alone describe the subtree; the cap applies before any Page call.
-  for (let index = 0; index < 500; index++)
-    await storage.put(`page/fake-${index}`, {
-      page_id: `fake-${index}`,
-      title: "Child",
-      space_id: space.space_id,
-      parent_id: index ? `fake-${index - 1}` : root,
-      position: "a0",
-      placement_epoch: 0,
-    });
-  const refused = await w.call("owner", "delete_page", {
-    page_id: root,
-    base_heads: w.heads(root),
+  assert.equal((await storage.get("host/operation/pending-child")).pending, true);
+  const blocked = await w.call("owner", "delete_page", {
+    page_id: a,
+    base_heads: w.heads(a),
     idempotency_key: w.key(),
   });
-  assert.equal(refused.status, 409);
-  assert.equal(refused.body.code, "subtree_too_large");
-  assert.equal(pageState(w.page(root).metadata), "active");
-  assert.deepEqual(
-    descendants(
-      new Map([
-        ["x", { parent_id: "y" }],
-        ["y", { parent_id: "x" }],
-      ]),
-      "x",
-    ),
-    ["y"],
-    "a stored loop visits each Page once",
-  );
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.code, "page_has_children");
+
+  // A build without this check trashes the parent anyway.
+  const parent = await storage.get(`page/${a}`);
+  await storage.delete(`page/${a}`);
+  await storage.put(`trash/${a}`, { ...parent, trash_root_id: a });
+  const resumed = await w.call("owner", "create_page", args);
+  assert.equal(resumed.status, 409);
+  assert.equal(resumed.body.code, "parent_unavailable");
+  assert.equal(creates, 1, "the resumed creation did not reach a Page");
+  assert.equal((await storage.get("host/operation/pending-child")).pending, true);
+
+  await storage.delete(`trash/${a}`);
+  await storage.put(`page/${a}`, parent);
+  const finished = await w.call("owner", "create_page", args);
+  assert.equal(finished.status, 200);
+  assert.equal(finished.body.parent_id, a);
+});
+
+test("an update_space retry whose receipt was evicted is superseded and never applies", async (t) => {
+  const w = await world(t);
+  const space = await w.createSpace("Fenced");
+  const missing = await w.call("owner", "update_space", {
+    space_id: space.space_id,
+    title: "No fence",
+    idempotency_key: w.key(),
+  });
+  assert.equal(missing.status, 400);
+  assert.match(missing.body.error, /expected_revision/);
+
+  const lost = {
+    space_id: space.space_id,
+    title: "Lost",
+    expected_revision: 0,
+    idempotency_key: "lost-update",
+  };
+  w.faults.set(space.space_id, "lost");
+  assert.equal((await w.call("owner", "update_space", lost)).status, 500);
+  assert.equal((await w.catalogStorage().get("host/operation/lost-update")).expectedRevision, 0);
+  for (let revision = 1; revision <= 64; revision++) {
+    const newer = await w.call("owner", "update_space", {
+      space_id: space.space_id,
+      title: `Title ${revision}`,
+      expected_revision: revision,
+      idempotency_key: w.key(),
+    });
+    assert.equal(newer.status, 200, JSON.stringify(newer.body));
+  }
+  const receipts = await w.spaces.get(space.space_id).ctx.storage.list({ prefix: "host/receipt/" });
+  assert.equal(receipts.size, 64);
+  assert.ok(![...receipts.keys()].some((name) => name.endsWith("lost-update")), "evicted");
+
+  const retry = await w.call("owner", "update_space", lost);
+  assert.equal(retry.status, 200);
+  assert.equal(retry.body.superseded, true);
+  assert.equal(retry.body.applied, false);
+  assert.equal(retry.body.space.title, "Title 64");
+  assert.equal(retry.body.space.revision, 65);
+  const current = await w.call("owner", "get_space", { space_id: space.space_id });
+  assert.equal(current.body.title, "Title 64");
+  assert.deepEqual((await w.call("owner", "update_space", lost)).body, retry.body);
 });
 
 test("rollback: storage written here stays readable by a build without Spaces", async (t) => {

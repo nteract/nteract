@@ -1,6 +1,6 @@
 // Spaces through MCP and the browser on one local OIDC deployment: create a
 // Space and nested Pages over MCP, list them, open them in the browser, follow
-// breadcrumbs, and trash and restore the subtree.
+// breadcrumbs, and trash and restore Pages one at a time.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
@@ -143,40 +143,46 @@ try {
   assert.equal(after.pages.length, 4);
   complete("New Page in this Space created a Page at the Space's top level");
 
-  const roadmapRead = await ok("owner", "read_page", { page_id: roadmap.page_id });
   const authority = await ok("owner", "list_pages");
-  const trashed = await ok("owner", "delete_page", {
-    page_id: roadmap.page_id,
-    base_heads: roadmapRead.heads,
-    retry_token: authority.retry_token,
-    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
-  });
-  assert.equal(trashed.state, "trashed");
-  const trash = await ok("owner", "list_pages", { in_trash: true });
-  for (const pageId of [roadmap.page_id, plan.page_id])
-    assert.equal(
-      trash.pages.find((page) => page.page_id === pageId)?.trash_root_id,
-      roadmap.page_id,
+  const trashPage = (pageId) =>
+    ok("owner", "read_page", { page_id: pageId, include_content: false }).then((read) =>
+      mcp("owner", "delete_page", {
+        page_id: pageId,
+        base_heads: read.heads,
+        retry_token: authority.retry_token,
+        idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+      }),
     );
-  const protectedHome = await mcp("owner", "delete_page", {
-    page_id: space.home_page_id,
-    base_heads: (await ok("owner", "read_page", { page_id: space.home_page_id })).heads,
-    idempotency_key: crypto.randomUUID(),
-  });
+  const blocked = await trashPage(roadmap.page_id);
+  assert.equal(blocked.isError, true);
+  assert.equal(blocked.body.code, "page_has_children");
+  for (const pageId of [plan.page_id, roadmap.page_id]) {
+    const trashed = await trashPage(pageId);
+    assert.equal(trashed.isError, false, JSON.stringify(trashed.body));
+    assert.equal(trashed.body.state, "trashed");
+  }
+  const protectedHome = await trashPage(space.home_page_id);
   assert.equal(protectedHome.body.code, "home_page_protected");
-  const restored = await ok("owner", "restore_page", {
+  const restoreKey = () => authority.retry_key_prefix + crypto.randomUUID();
+  const planBack = await ok("owner", "restore_page", {
+    page_id: plan.page_id,
+    retry_token: authority.retry_token,
+    idempotency_key: restoreKey(),
+  });
+  assert.equal(planBack.parent_id, null, "its parent is in Trash, so it returns to the top level");
+  const roadmapBack = await ok("owner", "restore_page", {
     page_id: roadmap.page_id,
     retry_token: authority.retry_token,
-    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
+    idempotency_key: restoreKey(),
   });
-  assert.equal(restored.restored, true);
-  const back = await ok("owner", "list_pages", { parent_id: roadmap.page_id });
-  assert.deepEqual(
-    back.pages.map((page) => page.page_id),
-    [plan.page_id],
-  );
+  assert.equal(roadmapBack.restored, true);
+  const top = await ok("owner", "list_pages", { space_id: space.space_id, parent_id: null });
+  for (const pageId of [roadmap.page_id, plan.page_id])
+    assert.ok(top.pages.some((page) => page.page_id === pageId));
   report.cleaned = true;
-  complete("Trash moved the subtree, kept the home Page, and restore brought it back");
+  complete(
+    "Trash refused a parent with sub-pages, kept the home Page, and restore re-homed a child",
+  );
   assert.deepEqual(report.errors, []);
 } catch (error) {
   report.failure = error.stack || error.message;

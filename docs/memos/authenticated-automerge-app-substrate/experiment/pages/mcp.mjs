@@ -565,7 +565,7 @@ export const tools = [
   ),
   tool(
     "update_space",
-    "Change a Space's title or description. Pass expected_revision from get_space to avoid overwriting a concurrent change; a stale revision returns space_revision_conflict. This does not rename the home Page.",
+    "Change a Space's title or description. Read the Space with get_space first and pass its revision as expected_revision; a stale revision returns space_revision_conflict, and a retry whose revision has passed returns superseded:true, applied:false with the current Space. This does not rename the home Page.",
     {
       space_id: space,
       title: { ...string, maxLength: 200 },
@@ -578,18 +578,18 @@ export const tools = [
           "Server-issued retry token from list_spaces or list_pages. Keep the same token, key and payload on retries.",
       },
     },
-    ["space_id", "idempotency_key"],
+    ["space_id", "expected_revision", "idempotency_key"],
   ),
   tool(
     "delete_page",
-    "Move a Page you own to Trash, with every sub-page under it (up to 500). Content, comments and sharing are kept, and restore_page brings the Page back with the same ID. A Space's home Page cannot be trashed on its own. While in Trash, collaborators lose access and the Page leaves default listings; you can still read it, but not edit, comment or share. Use list_pages with in_trash:true to find trashed Pages. Deleting permanently is a separate purge_page call. A result with superseded:true and applied:false means this request was not applied; read the Page's current state (list_pages with in_trash, or read_page) before deciding what to do.",
+    "Move a Page you own to Trash. Content, comments and sharing are kept, and restore_page brings the Page back with the same ID. Trash a Page's sub-pages first (page_has_children otherwise); subtree Trash is not available yet. A Space's home Page cannot be trashed. While in Trash, collaborators lose access and the Page leaves default listings; you can still read it, but not edit, comment or share. Use list_pages with in_trash:true to find trashed Pages. Deleting permanently is a separate purge_page call. A result with superseded:true and applied:false means this request was not applied; read the Page's current state (list_pages with in_trash, or read_page) before deciding what to do.",
     guard,
     ["page_id", "base_heads", "idempotency_key"],
     { destructiveHint: false },
   ),
   tool(
     "restore_page",
-    "Restore a Page you own from Trash with its original ID, content, comments and sharing. Sub-pages trashed with it come back too. It returns under its original parent if that Page is active, otherwise to the top level of its Space or Your items. Collaborators regain their previous access. Use a retry_token from list_pages. A result with superseded:true and applied:false means this request was not applied; read the Page's current state (list_pages with in_trash, or read_page) before deciding what to do.",
+    "Restore a Page you own from Trash with its original ID, content, comments and sharing. It returns under its original parent if that Page is active, otherwise to the top level of its Space or Your items. Collaborators regain their previous access. Use a retry_token from list_pages. A result with superseded:true and applied:false means this request was not applied; read the Page's current state (list_pages with in_trash, or read_page) before deciding what to do.",
     {
       page_id: page,
       retry_token: guard.retry_token,

@@ -134,8 +134,6 @@ import { handleImageAssets, requireStoredImageAsset } from "./image-assets.mjs";
 import {
   MAX_DEPTH,
   SPACE_LIMIT,
-  SUBTREE_LIMIT,
-  descendants,
   entryPlacement,
   homePageMarkdown,
   newSpaceId,
@@ -148,11 +146,7 @@ import {
   validateSpaceInput,
 } from "./spaces.mjs";
 export { Space } from "./spaces.mjs";
-import {
-  spaceCreationEffect,
-  spaceCreationTransition,
-  subtreeTransition,
-} from "./space-lifecycle.mjs";
+import { spaceCreationEffect, spaceCreationTransition } from "./space-lifecycle.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
 import { readTool } from "./tool-reads.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
@@ -222,29 +216,14 @@ const sameHeads = (left, right) =>
   left.length === right.length && [...left].sort().join() === [...right].sort().join();
 const publicIdentity = ({ principal, displayName, driver }) => ({ principal, displayName, driver });
 /** Lifecycle arguments as the caller sent them. The Catalog alone sets the
- * compare-and-set, subtree and placement controls it forwards to a Page. */
+ * compare-and-set and placement controls it forwards to a Page. */
 const callerLifecycleArguments = ({
   expected_revision: _expected,
   replay_only: _replay,
-  cascade_root: _root,
   restore_position: _position,
   placement: _placement,
   ...requested
 }) => requested;
-/** A child's journal key within its subtree operation: stable across retries
- * and valid as an idempotency_key. */
-async function cascadeKey(operationKey, pageId) {
-  const digest = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${operationKey}\n${pageId}`)),
-  );
-  return (
-    "cascade_" +
-    digest
-      .slice(0, 20)
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("")
-  );
-}
 
 function validateCreateInput(args) {
   if (!args || typeof args !== "object" || Array.isArray(args))
@@ -744,13 +723,11 @@ export class Catalog {
         if (lifecycle && (await tombstoned())) throw new HttpError(404, "Page not found");
         if (creating && (await this.countEntries("page/")) >= CATALOG_LIMIT)
           throw new HttpError(409, "This prototype permits 100 pages per account");
-        const moving =
-          ["delete_page", "restore_page"].includes(body.operation) &&
-          (await this.subtree(body.operation, args.page_id)).length;
+        if (body.operation === "delete_page") await this.requireLeafPage(args.page_id);
         if (
           body.operation === "delete_page" &&
           // Counting first removes stale reservations, including this Page's.
-          (await this.countEntries("trash/")) + moving >= TRASH_LIMIT &&
+          (await this.countEntries("trash/")) >= TRASH_LIMIT &&
           !(await this.ctx.storage.get(`trash/${args.page_id}`))
         )
           throw new HttpError(
@@ -760,7 +737,7 @@ export class Catalog {
           );
         if (
           body.operation === "restore_page" &&
-          (await this.countEntries("page/")) + moving >= CATALOG_LIMIT &&
+          (await this.countEntries("page/")) >= CATALOG_LIMIT &&
           !(await this.ctx.storage.get(`page/${args.page_id}`))
         )
           throw new HttpError(409, "This prototype permits 100 pages per account");
@@ -772,9 +749,6 @@ export class Catalog {
           throw new HttpError(409, "Page already has another creation request");
         const placement =
           body.operation === "create_page" ? await this.resolvePlacement(request, args) : undefined;
-        const cascade = ["delete_page", "restore_page"].includes(body.operation)
-          ? await this.subtree(body.operation, args.page_id)
-          : undefined;
         intent = {
           fingerprint: digest,
           pending: true,
@@ -785,8 +759,6 @@ export class Catalog {
             expectedRevision: await observedLifecycleRevision(this.ctx.storage, args.page_id),
           }),
           ...(placement && { placement }),
-          // Descendants that move with this Page, parents first.
-          ...(cascade?.length && { cascade }),
         };
         intent = await reserveOperation(this.ctx.storage, {
           key,
@@ -805,6 +777,11 @@ export class Catalog {
       }
       const pageId = intent.pageId;
       if (creating) {
+        // A resumed creation checks its parent again: the parent may have
+        // moved to Trash since the intent was reserved. The intent stays
+        // pending; restoring the parent and retrying finishes it.
+        if (inspected.entry && intent.placement?.parent_id)
+          await this.activeParent(intent.placement.parent_id);
         await this.ctx.storage.put(`page/${pageId}`, {
           page_id: pageId,
           title: catalogTitle(args.title),
@@ -900,21 +877,6 @@ export class Catalog {
           intent.receipt = outcome.receipt;
           break;
         }
-        // The subtree follows its root. A failure leaves the intent pending;
-        // a retry replays the root's receipt and finishes the rest.
-        if (intent.cascade?.length && !intent.receipt.superseded && !intent.receipt.deleted) {
-          intent.moved ??= { next: 0 };
-          for (let done = intent.moved.next >= intent.cascade.length; !done; ) {
-            const childId = intent.cascade[intent.moved.next];
-            await this.cascadeLifecycle(request, body.operation, key, pageId, childId);
-            ({ state: intent.moved, done } = subtreeTransition(
-              intent.moved,
-              "child_moved",
-              intent.cascade.length,
-            ));
-            await this.ctx.storage.put(key, intent);
-          }
-        }
       }
       intent.pending = false;
       await this.ctx.storage.put(key, intent);
@@ -944,20 +906,7 @@ export class Catalog {
     if (!spaceArg && !parentId) return undefined;
     let spaceId = spaceArg;
     if (parentId) {
-      const parent = await storage.get(`page/${parentId}`);
-      if (!parent || parent.pending || parent.reservation) {
-        if (await storage.get(`trash/${parentId}`))
-          throw new HttpError(
-            409,
-            "The parent Page is in Trash; restore it before adding Pages under it",
-            "parent_unavailable",
-          );
-        throw new HttpError(
-          404,
-          "Parent Page not found. In this build, only Pages you own can have sub-pages.",
-          "parent_unavailable",
-        );
-      }
+      const parent = await this.activeParent(parentId);
       const placement = entryPlacement(parent);
       if (spaceArg && placement.space_id !== spaceArg)
         throw new HttpError(
@@ -998,6 +947,27 @@ export class Catalog {
     };
   }
 
+  /** The parent's Catalog entry when it can take a new child: owned, created
+   * and not in Trash. A trash slot (even one still being reserved) counts as
+   * Trash, so a child is never created under a Page that is leaving. */
+  async activeParent(parentId) {
+    const storage = this.ctx.storage;
+    if (await storage.get(`trash/${parentId}`))
+      throw new HttpError(
+        409,
+        "The parent Page is in Trash; restore it before adding Pages under it",
+        "parent_unavailable",
+      );
+    const parent = await storage.get(`page/${parentId}`);
+    if (!parent || parent.pending || parent.reservation)
+      throw new HttpError(
+        404,
+        "Parent Page not found. In this build, only Pages you own can have sub-pages.",
+        "parent_unavailable",
+      );
+    return parent;
+  }
+
   /** A position after every current sibling. */
   async nextPosition(spaceId, parentId) {
     let last = null;
@@ -1018,42 +988,27 @@ export class Catalog {
     }
   }
 
-  /** Pages that move with a trash or restore of `pageId`, parents first.
-   * Trash takes every active descendant. Restore takes the Pages trashed with
-   * this one as their root; one whose parent is gone follows the others and
-   * returns to the top level. A home Page never moves to Trash on its own.
-   */
-  async subtree(operation, pageId) {
+  /** Trash moves one Page at a time in this build. A Page with active
+   * children, or children still being created, stays put until they move,
+   * so no Page is ever active under a trashed parent. A Space's home Page
+   * stays with its Space. Both checks run before anything is reserved. */
+  async requireLeafPage(pageId) {
     const storage = this.ctx.storage;
-    let moving = [];
-    if (operation === "delete_page") {
-      const entry = await storage.get(`page/${pageId}`);
-      if (entry && entryPlacement(entry).home)
-        throw new HttpError(
-          409,
-          "A Space's home Page stays with its Space; it can't move to Trash on its own",
-          "home_page_protected",
-        );
-      if (entry) moving = descendants(await catalogEntries(storage, "page/"), pageId);
-    } else {
-      const entry = await storage.get(`trash/${pageId}`);
-      if (entry && !entry.reservation && (entry.trash_root_id ?? pageId) === pageId) {
-        const group = new Map(
-          [...(await catalogEntries(storage, "trash/"))].filter(
-            ([id, item]) => id !== pageId && item.trash_root_id === pageId,
-          ),
-        );
-        const ordered = descendants(group, pageId);
-        moving = [...ordered, ...[...group.keys()].filter((id) => !ordered.includes(id)).sort()];
-      }
-    }
-    if (moving.length + 1 > SUBTREE_LIMIT)
+    const entry = await storage.get(`page/${pageId}`);
+    if (!entry) return;
+    if (entryPlacement(entry).home)
       throw new HttpError(
         409,
-        `A subtree of more than ${SUBTREE_LIMIT} Pages can't move at once`,
-        "subtree_too_large",
+        "A Space's home Page stays with its Space; it can't move to Trash on its own",
+        "home_page_protected",
       );
-    return moving;
+    for (const child of (await storage.list({ prefix: "page/", limit: 1000 })).values())
+      if (child?.page_id && !child.reservation && entryPlacement(child).parent_id === pageId)
+        throw new HttpError(
+          409,
+          "This Page has sub-pages. Trash its sub-pages first; subtree Trash is not available yet.",
+          "page_has_children",
+        );
   }
 
   /** Where a restored Page goes when its parent is no longer active: the
@@ -1065,33 +1020,6 @@ export class Catalog {
     const parent = await this.ctx.storage.get(`page/${placement.parent_id}`);
     if (parent && !parent.pending && !parent.reservation) return undefined;
     return this.nextPosition(placement.space_id, null);
-  }
-
-  /** Apply the root's trash or restore to one descendant. Each child has its
-   * own journal key derived from the root's, so a retry replays it. */
-  async cascadeLifecycle(request, operation, operationKey, rootId, pageId) {
-    const storage = this.ctx.storage;
-    const restorePosition =
-      operation === "restore_page" ? await this.restorePosition(pageId) : undefined;
-    const response = await this.env.PAGES.getByName(pageId).fetch(
-      forwarded(request, lifecycleRoutes[operation], {
-        page_id: pageId,
-        idempotency_key: await cascadeKey(operationKey, pageId),
-        expected_revision: await observedLifecycleRevision(storage, pageId),
-        ...(operation === "delete_page" && { cascade_root: rootId }),
-        ...(restorePosition && { restore_position: restorePosition }),
-      }),
-    );
-    // A child that already changed on its own is left as it is.
-    if (response.headers.get("x-pages-lifecycle-rejected") === "before-change") return;
-    if (!response.ok && response.status !== 404)
-      throw new HttpError(
-        503,
-        "Some Pages under this one did not move yet; retry the same request",
-      );
-    const outcome = response.ok ? await response.json() : { current: { state: "deleted" } };
-    if (outcome.receipt?.superseded) return;
-    await projectLifecycle(storage, pageId, outcome.current);
   }
 
   async createSpace(request, identity, args) {
@@ -1243,11 +1171,20 @@ export class Catalog {
       await storage.sync();
       return json(intent.receipt);
     }
+    // The intent records its revision fence before the Space sees the
+    // request. Every attempt carries that fence, so once the Space moves past
+    // it the request can never apply again, even after the Space has evicted
+    // this key's receipt.
     if (!intent) {
       intent = await reserveOperation(storage, {
         key,
         retry: inspected.retry,
-        entry: { fingerprint: digest, pending: true, spaceId: args.space_id },
+        entry: {
+          fingerprint: digest,
+          pending: true,
+          spaceId: args.space_id,
+          expectedRevision: args.expected_revision,
+        },
       });
       await storage.put(key, intent);
     }
@@ -1255,17 +1192,32 @@ export class Catalog {
       forwarded(request, "/internal/space/update", {
         space_id: intent.spaceId,
         idempotency_key: args.idempotency_key,
+        expected_revision: intent.expectedRevision,
         ...(args.title !== undefined && { title: args.title }),
         ...(args.description !== undefined && { description: args.description }),
-        ...(args.expected_revision !== undefined && { expected_revision: args.expected_revision }),
       }),
     );
-    // The Space rejects input, access and revision conflicts before changing
-    // anything; only an ambiguous failure keeps the intent for a retry.
     if (response.status >= 400 && response.status < 500) {
+      const failure = await response.json();
+      // A retry past its fence may already have applied before its receipt
+      // was evicted, or lost to a newer change. Either way it must not apply
+      // now; the outcome is the Space as it is.
+      if (inspected.entry && failure.code === "space_revision_conflict") {
+        const current = await this.env.SPACES.getByName(intent.spaceId).fetch(
+          forwarded(request, "/internal/space/read", { space_id: intent.spaceId }),
+        );
+        if (!current.ok) return current;
+        intent.receipt = { superseded: true, applied: false, space: await current.json() };
+        intent.pending = false;
+        await storage.put(key, intent);
+        await storage.sync();
+        return json(intent.receipt);
+      }
+      // Otherwise the Space rejected input, access or a stale fence before
+      // changing anything; the key is free for a corrected request.
       await storage.delete(key);
       await storage.sync();
-      return response;
+      return json(failure, response.status);
     }
     if (!response.ok) return response;
     intent.receipt = await response.json();
@@ -2584,24 +2536,15 @@ export class Page {
     if (recorded) return this.lifecycleResponse(recorded.receipt);
     if (state === "deleted") throw new HttpError(404, "Page not found");
     if (this.superseded(args)) return this.supersededResponse();
-    // Set only by the owner's Catalog when this Page moves with an ancestor.
-    const cascadeRoot = args.cascade_root;
-    if (
-      cascadeRoot !== undefined &&
-      (!validPageId(cascadeRoot) || cascadeRoot === this.metadata.pageId)
-    )
-      throw new HttpError(400, "Invalid cascade_root");
     let receipt = this.metadata.trash?.receipt;
     if (state === "active") {
-      if (pagePlacement(this.metadata).home && cascadeRoot === undefined)
+      if (pagePlacement(this.metadata).home)
         throw new HttpError(
           409,
           "A Space's home Page stays with its Space; it can't move to Trash on its own",
           "home_page_protected",
         );
-      // A descendant follows its root's guarded request; it has no heads of
-      // its own from the caller.
-      if (cascadeRoot === undefined) requireHeads(this.handle.doc(), args.base_heads);
+      requireHeads(this.handle.doc(), args.base_heads);
       const now = new Date().toISOString();
       const pageId = this.metadata.pageId;
       receipt = {
@@ -2611,20 +2554,14 @@ export class Page {
         title: catalogTitle(this.handle.doc().title),
         trashed_at: now,
         trashed_by: identity.principal,
-        trash_root_id: cascadeRoot ?? pageId,
+        trash_root_id: pageId,
       };
       // No await between the head guard and the policy-visible record.
       this.metadata = {
         ...this.metadata,
         deleted: true,
         lifecycleRevision: revision + 1,
-        trash: trashRecord({
-          pageId,
-          rootId: cascadeRoot,
-          principal: identity.principal,
-          now,
-          receipt,
-        }),
+        trash: trashRecord({ pageId, principal: identity.principal, now, receipt }),
         // Builds that predate Trash read only `deletion`: their delete retry
         // conflicts, and a fresh key completes an ordinary permanent deletion.
         deletion: { key, fingerprint: digest, receipt: { page_id: pageId, deleted: true } },

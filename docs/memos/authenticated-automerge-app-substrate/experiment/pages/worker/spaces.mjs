@@ -21,8 +21,6 @@ import { validPageId } from "./registration.mjs";
 export const SPACE_LIMIT = 50;
 /** Deepest allowed nesting; a top-level Page is at depth 1. */
 export const MAX_DEPTH = 8;
-/** Most Pages one subtree trash or restore may move. */
-export const SUBTREE_LIMIT = 500;
 export const SPACE_TITLE_LIMIT = 200;
 export const SPACE_DESCRIPTION_LIMIT = 2000;
 const RECEIPT_LIMIT = 64;
@@ -80,11 +78,8 @@ export function validateSpaceInput(args, { creating }) {
     requireSpaceIdArgument(args.space_id);
     if (title === undefined && description === undefined)
       throw new HttpError(400, "Provide title or description to update");
-    if (
-      args.expected_revision !== undefined &&
-      (!Number.isSafeInteger(args.expected_revision) || args.expected_revision < 0)
-    )
-      throw new HttpError(400, "expected_revision must be a non-negative integer");
+    if (!Number.isSafeInteger(args.expected_revision) || args.expected_revision < 0)
+      throw new HttpError(400, "expected_revision is required: pass revision from get_space");
   }
   return { title: title?.trim(), description };
 }
@@ -144,31 +139,6 @@ export function validatePlacement(placement) {
     placement_epoch: placement.placement_epoch,
     ...(placement.home && { home: true }),
   };
-}
-
-/** Pages in `entries` below `rootId`, parents before children. `entries` maps
- * page_id to a Catalog entry. Each Page appears once even if the stored
- * parent links were to loop. */
-export function descendants(entries, rootId) {
-  const children = new Map();
-  for (const [pageId, entry] of entries) {
-    const parent = entryPlacement(entry).parent_id;
-    if (!parent) continue;
-    if (!children.has(parent)) children.set(parent, []);
-    children.get(parent).push(pageId);
-  }
-  const ordered = [];
-  const seen = new Set([rootId]);
-  const queue = [rootId];
-  while (queue.length) {
-    for (const child of (children.get(queue.shift()) ?? []).sort()) {
-      if (seen.has(child)) continue;
-      seen.add(child);
-      ordered.push(child);
-      queue.push(child);
-    }
-  }
-  return ordered;
 }
 
 export function publicSpace(record) {
@@ -269,7 +239,8 @@ export class Space {
         throw new HttpError(409, "idempotency_key was used for a different request");
       return json(recorded.receipt);
     }
-    if (args.expected_revision !== undefined && args.expected_revision !== record.revision)
+    // The fence: a request applies only at the revision its caller read.
+    if (args.expected_revision !== record.revision)
       throw new HttpError(
         409,
         "Space changed; get_space again and retry with its revision",
