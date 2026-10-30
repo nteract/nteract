@@ -1,17 +1,9 @@
 import * as A from "@automerge/automerge/slim";
-import {
-  RICH_FORMAT,
-  setRichMarkdown,
-  setRichImage,
-  projectedBlock,
-  blockMarkdown,
-  isRich,
-  markdownReproduces,
-} from "./richtext.mjs";
+import { RICH_FORMAT, setRichMarkdown, setRichImage, projectedBlock } from "./richtext.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
 import { applyComment, projectComments } from "./comments.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
-import { replaceMatch } from "./replace-match.mjs";
+import { formatMatch, replaceMatch } from "./replace-match.mjs";
 export { orderedBlockIds } from "./order.mjs";
 const block = (id = crypto.randomUUID(), position = positionForInsertion()) => ({
   id,
@@ -91,27 +83,9 @@ function applyEdit(doc, op) {
     return;
   }
   if (op.op === "replace_match") return replaceMatch(doc, id, op);
+  if (op.op === "format_match") return formatMatch(doc, id, op);
   if (op.op === "replace_block_markdown") setRichMarkdown(doc, id, String(op.markdown ?? ""));
-  else if (op.op === "patch_block_markdown") {
-    let source = blockMarkdown(doc.blocks[id]);
-    if (!Array.isArray(op.replacements) || op.replacements.length > 100)
-      throw Error("Provide up to 100 replacements");
-    if (isRich(doc.blocks[id]) && !markdownReproduces(doc.blocks[id], source))
-      throw Error(
-        "patch_block_markdown would change this block's structure: its Markdown cannot represent all of it (for example an empty paragraph). Use replace_match to edit text in place, or replace_block_markdown to replace the whole block.",
-      );
-    for (const replacement of op.replacements) {
-      const old = replacement.old,
-        value = replacement.new;
-      if (typeof old !== "string" || !old || typeof value !== "string")
-        throw Error("Replacement requires nonempty old and string new");
-      const at = source.indexOf(old);
-      if (at < 0 || source.indexOf(old, at + 1) >= 0)
-        throw Error("Replacement text must occur exactly once");
-      source = source.slice(0, at) + value + source.slice(at + old.length);
-    }
-    setRichMarkdown(doc, id, source);
-  } else if (op.op === "delete_block") {
+  else if (op.op === "delete_block") {
     delete doc.blocks[id];
   } else throw Error("Unsupported edit operation");
 }

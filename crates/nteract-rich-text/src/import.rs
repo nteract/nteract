@@ -35,9 +35,17 @@ pub fn markdown_to_spans(source: &str, options: &ImportOptions<'_>) -> Result<Ve
     let mut builder = Builder {
         source,
         spans: Vec::new(),
+        tags: Vec::new(),
+        next_tag: 0,
+        highlight: None,
+        highlighted_image: false,
     };
     for node in &root.children {
         builder.block(node, &[], root.children.len() == 1)?;
+    }
+    // An image marker cannot carry a highlight, as with links and emphasis.
+    if builder.highlighted_image {
+        return opaque(source, options);
     }
     validate_spans(&builder.spans)?;
     Ok(builder.spans)
@@ -166,6 +174,7 @@ fn list_prefix_len(source: &str) -> usize {
 fn unsupported_syntax(source: &str) -> Result<bool> {
     static TASK_PREFIX: OnceLock<Regex> = OnceLock::new();
     static UNSUPPORTED: OnceLock<Regex> = OnceLock::new();
+    static LINE_HTML: OnceLock<Regex> = OnceLock::new();
     // Omit bullet task prefixes before checking for reference links. Unlike
     // scanning decoded text, this keeps escaped brackets literal.
     let task = expression(
@@ -173,11 +182,23 @@ fn unsupported_syntax(source: &str) -> Result<bool> {
         r"(?m)^(\s*(?:>\s*)*[-+*][ \t]+)\[[ xX]\]([ \t]+|$)",
     )?;
     let syntax = task.replace_all(source, "${1}${2}");
-    Ok(expression(
+    if expression(
         &UNSUPPORTED,
-        r"(?m)(^|\n)\s*(<|\$\$|---\s*$)|\$[^\n$]+\$|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~",
+        r"(?m)(^|\n)\s*(\$\$|---\s*$)|\$[^\n$]+\$|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~",
     )?
-    .is_match(&syntax))
+    .is_match(&syntax)
+    {
+        return Ok(true);
+    }
+    // A line that starts with HTML is opaque, except a highlight tag. The
+    // JavaScript gate is `<(?!\/?mark[ \t\r\n>])`: the tag name must be
+    // followed by ASCII whitespace or `>`, so `<marker>`, `<mark:x>` and
+    // `<mark\u{a0}>` stay opaque. Any line-start `<` without that tag matches.
+    Ok(
+        expression(&LINE_HTML, r"(?m)(?:^|\n)\s*<(?i:(/?mark)[ \t\r\n>])?")?
+            .captures_iter(&syntax)
+            .any(|captures| captures.get(1).is_none()),
+    )
 }
 
 fn opaque(source: &str, options: &ImportOptions<'_>) -> Result<Vec<Span>> {
@@ -242,9 +263,78 @@ fn needs_opaque(node: &Node, depth: usize, inside_marks: bool) -> Result<bool> {
     Ok(false)
 }
 
+/// How one inline HTML node imports. Only highlight tags are markup.
+#[derive(Clone, Debug, PartialEq)]
+enum Tag {
+    Literal,
+    Open(String),
+    Close,
+}
+
+/// Classify one inline HTML node. Pages recognizes exactly `<mark>`,
+/// `<mark data-color="…">` (either quote style) and `</mark>`. A color that
+/// the registry rejects leaves the tag as literal text.
+fn highlight_tag(html: &str) -> Result<Tag> {
+    static OPEN: OnceLock<Regex> = OnceLock::new();
+    static CLOSE: OnceLock<Regex> = OnceLock::new();
+    if expression(&CLOSE, r"(?i)^</mark\s*>$")?.is_match(html) {
+        return Ok(Tag::Close);
+    }
+    let open = expression(
+        &OPEN,
+        r#"(?i)^<mark(?:\s+data-color\s*=\s*(?:"([^"<>]*)"|'([^'<>]*)'))?\s*>$"#,
+    )?;
+    let Some(captures) = open.captures(html) else {
+        return Ok(Tag::Literal);
+    };
+    let color = match captures.get(1).or_else(|| captures.get(2)) {
+        Some(color) => crate::marks::normalize_highlight(color.as_str()),
+        None => Some(crate::marks::default_highlight()?.to_owned()),
+    };
+    Ok(color.map_or(Tag::Literal, Tag::Open))
+}
+
+/// Highlight roles for every inline HTML node of one inline container, in
+/// document order. Like the JavaScript balance pass, this works on the flat
+/// token sequence: a nested open, an unopened close and an unclosed open are
+/// literal text. Strong, emphasis and link boundaries do not scope a tag.
+fn highlight_tags(children: &[Node]) -> Result<Vec<Tag>> {
+    fn collect(nodes: &[Node], tags: &mut Vec<Tag>) -> Result<()> {
+        for node in nodes {
+            if let Node::Html(html) = node {
+                tags.push(highlight_tag(&html.value)?);
+            } else if let Some(children) = node.children() {
+                collect(children, tags)?;
+            }
+        }
+        Ok(())
+    }
+    let mut tags = Vec::new();
+    collect(children, &mut tags)?;
+    let mut open = None;
+    for (index, tag) in tags.iter_mut().enumerate() {
+        match tag {
+            Tag::Open(_) if open.is_some() => *tag = Tag::Literal,
+            Tag::Open(_) => open = Some(index),
+            Tag::Close if open.take().is_none() => *tag = Tag::Literal,
+            Tag::Close | Tag::Literal => {}
+        }
+    }
+    if let Some(index) = open {
+        tags[index] = Tag::Literal;
+    }
+    Ok(tags)
+}
+
 struct Builder<'a> {
     source: &'a str,
     spans: Vec<Span>,
+    /// Highlight roles of the current inline container's HTML nodes.
+    tags: Vec<Tag>,
+    next_tag: usize,
+    /// The open highlight color while walking the current inline container.
+    highlight: Option<String>,
+    highlighted_image: bool,
 }
 
 impl Builder<'_> {
@@ -290,10 +380,9 @@ impl Builder<'_> {
                 if !implicit {
                     self.marker("paragraph", parents, Attributes::new(), false);
                 }
-                self.inlines(
+                self.inline_container(
                     &paragraph.children,
                     &with_parent(parents, "paragraph"),
-                    &Marks::new(),
                     false,
                 )?;
             }
@@ -304,12 +393,7 @@ impl Builder<'_> {
                     Attributes::from([("level".into(), json!(heading.depth))]),
                     false,
                 );
-                self.inlines(
-                    &heading.children,
-                    &with_parent(parents, "heading"),
-                    &Marks::new(),
-                    false,
-                )?;
+                self.inline_container(&heading.children, &with_parent(parents, "heading"), false)?;
             }
             Node::Code(code) => {
                 let params = self.code_params(node);
@@ -375,10 +459,9 @@ impl Builder<'_> {
                         });
                         self.marker(kind, &row_parents, attrs, false);
                         if let Some(Node::TableCell(cell)) = row.children.get(column) {
-                            self.inlines(
+                            self.inline_container(
                                 &cell.children,
                                 &with_parent(&row_parents, kind),
-                                &Marks::new(),
                                 true,
                             )?;
                         }
@@ -510,11 +593,44 @@ impl Builder<'_> {
         if let Some(children) = parsed.children() {
             if let Some(Node::Paragraph(paragraph)) = children.first() {
                 if let Some(Node::Link(link)) = paragraph.children.first() {
-                    return Ok(link.children.iter().map(inline_plain_text).collect());
+                    // Balanced highlight tags are markup in alt text too, so
+                    // they leave no text, as in the JavaScript alt flattener.
+                    let tags = highlight_tags(&link.children)?;
+                    let mut next = 0;
+                    return Ok(link
+                        .children
+                        .iter()
+                        .map(|child| inline_plain_text(child, &tags, &mut next))
+                        .collect());
                 }
             }
         }
         Ok(image.alt.clone())
+    }
+
+    /// Import one paragraph, heading or table cell. Highlight tags balance
+    /// within this container, never across blocks.
+    fn inline_container(
+        &mut self,
+        children: &[Node],
+        parents: &[String],
+        in_table: bool,
+    ) -> Result<()> {
+        self.tags = highlight_tags(children)?;
+        self.next_tag = 0;
+        self.highlight = None;
+        self.inlines(children, parents, &Marks::new(), in_table)?;
+        self.highlight = None;
+        Ok(())
+    }
+
+    /// Text marks plus the currently open highlight, if any.
+    fn text_marks(&self, marks: &Marks) -> Marks {
+        let mut marks = marks.clone();
+        if let Some(color) = &self.highlight {
+            marks.insert("highlight".into(), Value::String(color.clone()));
+        }
+        marks
     }
 
     fn inlines(
@@ -527,12 +643,15 @@ impl Builder<'_> {
         static TABLE_BREAK: OnceLock<Regex> = OnceLock::new();
         for node in children {
             match node {
-                Node::Text(text) => self.text(
-                    &text.value.replace("\r\n", "\n").replace(['\n', '\r'], " "),
-                    marks,
-                ),
+                Node::Text(text) => {
+                    let marks = self.text_marks(marks);
+                    self.text(
+                        &text.value.replace("\r\n", "\n").replace(['\n', '\r'], " "),
+                        &marks,
+                    );
+                }
                 Node::InlineCode(code) => {
-                    let mut nested = marks.clone();
+                    let mut nested = self.text_marks(marks);
                     nested.insert("code".into(), Value::Bool(true));
                     self.text(&code.value, &nested);
                 }
@@ -557,6 +676,7 @@ impl Builder<'_> {
                     self.inlines(&link.children, parents, &nested, in_table)?;
                 }
                 Node::Image(image) => {
+                    self.highlighted_image |= self.highlight.is_some();
                     self.marker(
                         "image",
                         parents,
@@ -570,12 +690,21 @@ impl Builder<'_> {
                 }
                 Node::Break(_) => self.marker("hard-break", parents, Attributes::new(), true),
                 Node::Html(html) => {
-                    if in_table
-                        && expression(&TABLE_BREAK, r"(?i)^<br\s*/?\s*>$")?.is_match(&html.value)
-                    {
-                        self.marker("hard-break", parents, Attributes::new(), true);
-                    } else {
-                        self.text(&html.value, marks);
+                    let tag = self.tags.get(self.next_tag).cloned();
+                    self.next_tag += 1;
+                    match tag {
+                        Some(Tag::Open(color)) => self.highlight = Some(color),
+                        Some(Tag::Close) => self.highlight = None,
+                        _ if in_table
+                            && expression(&TABLE_BREAK, r"(?i)^<br\s*/?\s*>$")?
+                                .is_match(&html.value) =>
+                        {
+                            self.marker("hard-break", parents, Attributes::new(), true);
+                        }
+                        _ => {
+                            let marks = self.text_marks(marks);
+                            self.text(&html.value, &marks);
+                        }
                     }
                 }
                 _ => {
@@ -589,13 +718,26 @@ impl Builder<'_> {
     }
 }
 
-fn inline_plain_text(node: &Node) -> String {
+fn inline_plain_text(node: &Node, tags: &[Tag], next: &mut usize) -> String {
     match node {
         Node::Break(_) => "\n".into(),
         Node::Image(image) => image.alt.clone(),
+        Node::Html(html) => {
+            let tag = tags.get(*next);
+            *next += 1;
+            match tag {
+                Some(Tag::Open(_) | Tag::Close) => String::new(),
+                _ => html.value.replace("\r\n", "\n").replace('\r', "\n"),
+            }
+        }
         _ => node.children().map_or_else(
             || node.to_string().replace("\r\n", "\n").replace('\r', "\n"),
-            |children| children.iter().map(inline_plain_text).collect(),
+            |children| {
+                children
+                    .iter()
+                    .map(|child| inline_plain_text(child, tags, next))
+                    .collect()
+            },
         ),
     }
 }
@@ -808,6 +950,160 @@ mod tests {
             let spans = import(source);
             assert_eq!(spans.iter().filter(|span| matches!(span, Span::Block { value } if value.kind == kind && value.parents.is_empty())).count(), 2, "{source}");
         }
+    }
+
+    fn text(value: &str, marks: Value) -> Span {
+        Span::Text {
+            value: value.into(),
+            marks: serde_json::from_value(marks).unwrap(),
+        }
+    }
+
+    #[test]
+    fn highlight_tags_import_as_registry_marks() {
+        assert_eq!(
+            import(r#"Set the **<mark data-color="green">launch date</mark>** today."#),
+            vec![
+                text("Set the ", json!({})),
+                text("launch date", json!({"strong": true, "highlight": "green"})),
+                text(" today.", json!({})),
+            ]
+        );
+        assert_eq!(
+            import("<mark>Bare</mark> <MARK Data-Color = ' #ABCDEF ' >hex</mark >"),
+            vec![
+                text("Bare", json!({"highlight": "yellow"})),
+                text(" ", json!({})),
+                text("hex", json!({"highlight": "#abcdef"})),
+            ]
+        );
+        // Tags are flat tokens: they need not nest with emphasis.
+        assert_eq!(
+            import("<mark>a **b</mark> c**"),
+            vec![
+                text("a ", json!({"highlight": "yellow"})),
+                text("b", json!({"highlight": "yellow", "strong": true})),
+                text(" c", json!({"strong": true})),
+            ]
+        );
+        assert_eq!(
+            import("<mark>see `code`</mark>"),
+            vec![
+                text("see ", json!({"highlight": "yellow"})),
+                text("code", json!({"highlight": "yellow", "code": true})),
+            ]
+        );
+    }
+
+    #[test]
+    fn highlight_works_inside_table_cells() {
+        let spans = import("| A |\n| --- |\n| x<br><mark data-color=\"blue\">y</mark> |");
+        assert!(spans
+            .iter()
+            .any(|span| matches!(span, Span::Block { value } if value.kind == "hard-break")));
+        assert_eq!(spans.last(), Some(&text("y", json!({"highlight": "blue"}))));
+    }
+
+    #[test]
+    fn unbalanced_nested_and_invalid_highlight_tags_stay_literal() {
+        for (source, expected) in [
+            (
+                r#"<mark>a <mark data-color="pink">b</mark> c</mark>"#,
+                vec![
+                    text(
+                        r#"a <mark data-color="pink">b"#,
+                        json!({"highlight": "yellow"}),
+                    ),
+                    text(" c</mark>", json!({})),
+                ],
+            ),
+            (
+                "Close </mark> first, then <mark>never closed.",
+                vec![text(
+                    "Close </mark> first, then <mark>never closed.",
+                    json!({}),
+                )],
+            ),
+            (
+                r#"An <mark data-color="red">invalid</mark> color."#,
+                vec![text(
+                    r#"An <mark data-color="red">invalid</mark> color."#,
+                    json!({}),
+                )],
+            ),
+            (
+                r#"<mark data-color="">empty</mark>"#,
+                vec![text(r#"<mark data-color="">empty</mark>"#, json!({}))],
+            ),
+            (
+                "Write \\<mark> tags as text.",
+                vec![text("Write <mark> tags as text.", json!({}))],
+            ),
+            // Highlights balance within one block, never across blocks.
+            (
+                "<mark>first\n\nsecond</mark>",
+                vec![
+                    text("<mark>first", json!({})),
+                    Span::Block {
+                        value: Block {
+                            kind: "paragraph".into(),
+                            parents: vec![],
+                            attrs: Attributes::new(),
+                            is_embed: false,
+                        },
+                    },
+                    text("second</mark>", json!({})),
+                ],
+            ),
+        ] {
+            let mut actual = import(source);
+            // The first paragraph marker is implicit only for a sole block.
+            if matches!(actual.first(), Some(Span::Block { value }) if value.kind == "paragraph") {
+                actual.remove(0);
+            }
+            assert_eq!(actual, expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn line_start_html_gate_admits_only_highlight_tags() {
+        for source in [
+            "<mark>a</mark>",
+            "</mark> b",
+            "  <MARK>c",
+            "<mark data-color=\"blue\">d",
+        ] {
+            assert!(!unsupported_syntax(source).unwrap(), "{source}");
+        }
+        for source in [
+            "<marker>x</marker>",
+            "<markä>d",
+            "<mark:x>",
+            "<mark\u{a0}>x</mark>",
+            "<b>y</b>",
+            "text\n<mark_up>",
+            "<span><mark>",
+        ] {
+            assert!(unsupported_syntax(source).unwrap(), "{source}");
+        }
+    }
+
+    #[test]
+    fn highlighted_images_preserve_whole_source() {
+        let options = ImportOptions {
+            import_id: "image-import",
+            kind: "markdown",
+        };
+        let source = "Text <mark>and ![caption](image.png)</mark>";
+        assert_eq!(
+            markdown_to_spans(source, &options).unwrap(),
+            opaque(source, &options).unwrap()
+        );
+        // Balanced tags inside alt text are markup, not alt characters.
+        let spans = import("![<mark>x</mark> y](cat.png)");
+        assert!(
+            matches!(&spans[0], Span::Block { value } if value.attrs.get("alt") == Some(&json!("x y")))
+        );
     }
 
     #[test]

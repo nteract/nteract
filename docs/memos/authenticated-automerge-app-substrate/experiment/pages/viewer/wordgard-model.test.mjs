@@ -12,6 +12,8 @@ import {
   PagesLink,
   OpaqueBlock,
   PagesImage,
+  PagesHighlight,
+  PagesForeignMarks,
   Heading,
   Blockquote,
   BulletList,
@@ -78,14 +80,14 @@ test("native positions preserve paragraph ends and opaque leaf endpoints", () =>
   assert.deepEqual(table.map.wgToAm, [0, 1]);
   assert.deepEqual(table.map.amToWg, [0, 1]);
 });
-test("unsupported schema and unsafe links fail explicitly; code blocks need no language mark", () => {
+test("unsupported blocks and unsafe links fail explicitly; code blocks need no language mark", () => {
   assert.throws(
     () => decode([{ type: "block", value: { type: "mystery", parents: [], attrs: {} } }]),
     /Unsupported/,
   );
   assert.throws(
-    () => decode([{ type: "text", value: "x", marks: { unknown: true } }]),
-    /Unsupported/,
+    () => decode([{ type: "text", value: "x", marks: { highlight: "red" } }]),
+    /Invalid/,
   );
   assert.throws(
     () =>
@@ -135,4 +137,32 @@ test("an empty first paragraph keeps its own native marker when content follows 
     encode(schema.doc([Blockquote.create([empty])])).map((span) => String(span.value.type)),
     ["blockquote"],
   );
+});
+
+test("marks this build doesn't know decode as plain text and encode back unchanged", () => {
+  const spans = [
+    { type: "text", value: "a", marks: {} },
+    { type: "text", value: "future", marks: { strong: true, underline: true, color: "red" } },
+  ];
+  const { doc } = decode(spans);
+  const text = doc.content[0].content[1];
+  assert.ok(text.marks.some((mark) => mark.type === PagesForeignMarks));
+  assert.deepEqual(encode(doc), spans);
+  // An edit to the same block keeps the foreign marks on untouched text.
+  const native = A.change(fixture(""), (d) => A.updateSpans(d, textPath("one"), spans));
+  const rewritten = A.change(native, (d) =>
+    A.updateSpans(d, textPath("one"), encode(decode(A.spans(native, textPath("one"))).doc)),
+  );
+  assert.deepEqual(A.spans(rewritten, textPath("one")), A.spans(native, textPath("one")));
+});
+
+test("highlights decode to palette or custom colors and round trip", () => {
+  for (const color of ["yellow", "green", "blue", "pink", "#1f6feb"]) {
+    const spans = [{ type: "text", value: "lit", marks: { highlight: color } }];
+    const { doc } = decode(spans);
+    assert.equal(PagesHighlight.isInSet(doc.content[0].content[0].marks).value, color);
+    assert.deepEqual(encode(doc), spans);
+  }
+  for (const color of ["red", "#ABCDEF", "#abc", true])
+    assert.throws(() => decode([{ type: "text", value: "x", marks: { highlight: color } }]));
 });

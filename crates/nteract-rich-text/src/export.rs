@@ -503,37 +503,67 @@ fn title_suffix(value: Option<&serde_json::Value>) -> String {
 struct Mark {
     open: String,
     close: String,
+    /// Markdown delimiters must not open or close beside whitespace. HTML tags
+    /// such as `<mark>` keep boundary whitespace as ordinary text.
+    delimiter: bool,
 }
 
+impl Mark {
+    fn delimiter(open: &str, close: String) -> Self {
+        Self {
+            open: open.into(),
+            close,
+            delimiter: true,
+        }
+    }
+}
+
+/// Markdown projections for a text run's marks, outermost first. Registry
+/// order is the nesting order; inline code is written innermost by
+/// `render_inline` because a code span cannot contain other syntax.
 fn marks_for(marks: &Marks) -> Result<Vec<Mark>> {
     let mut result = Vec::new();
-    if let Some(link) = marks.get("link").and_then(serde_json::Value::as_str) {
-        let link: serde_json::Value =
-            serde_json::from_str(link).map_err(|error| CodecError(error.to_string()))?;
-        let href = link
-            .get("href")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| CodecError("A link needs href".into()))?;
-        result.push(Mark {
-            open: "[".into(),
-            close: format!(
-                "]({}{})",
-                destination(href),
-                title_suffix(link.get("title"))
-            ),
-        });
-    }
-    if marks.get("strong").is_some() {
-        result.push(Mark {
-            open: "**".into(),
-            close: "**".into(),
-        });
-    }
-    if marks.get("em").is_some() {
-        result.push(Mark {
-            open: "*".into(),
-            close: "*".into(),
-        });
+    for spec in crate::marks::mark_specs()? {
+        let Some(value) = marks.get(&spec.name) else {
+            continue;
+        };
+        match spec.name.as_str() {
+            "link" => {
+                let link: serde_json::Value =
+                    serde_json::from_str(value.as_str().unwrap_or_default())
+                        .map_err(|error| CodecError(error.to_string()))?;
+                let href = link
+                    .get("href")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| CodecError("A link needs href".into()))?;
+                result.push(Mark::delimiter(
+                    "[",
+                    format!(
+                        "]({}{})",
+                        destination(href),
+                        title_suffix(link.get("title"))
+                    ),
+                ));
+            }
+            "em" => result.push(Mark::delimiter("*", "*".into())),
+            "strong" => result.push(Mark::delimiter("**", "**".into())),
+            "highlight" => {
+                let color = value
+                    .as_str()
+                    .ok_or_else(|| CodecError("Invalid rich highlight".into()))?;
+                result.push(Mark {
+                    open: format!("<mark data-color=\"{color}\">"),
+                    close: "</mark>".into(),
+                    delimiter: false,
+                });
+            }
+            "code" => {}
+            name => {
+                return Err(CodecError(format!(
+                    "No Markdown projection for mark {name}"
+                )))
+            }
+        }
     }
     Ok(result)
 }
@@ -556,13 +586,29 @@ fn ordered_marks(marks: &Marks, active: &[Mark]) -> Result<Vec<Mark>> {
     Ok(result)
 }
 
-fn transition(output: &mut String, active: &mut Vec<Mark>, desired: &[Mark]) {
-    let common = active
+/// The marks a transition closes, innermost first, and how many leading
+/// `desired` marks stay open. HTML tags are flat tokens rather than nested
+/// delimiters: a tag that ends closes in place, without closing and reopening
+/// the delimiters opened inside it. Otherwise marks close in stack order.
+fn changes<'a>(active: &'a [Mark], desired: &[Mark]) -> (Vec<&'a Mark>, usize) {
+    let ended = |mark: &Mark| !mark.delimiter && !desired.contains(mark);
+    let kept: Vec<&Mark> = active.iter().filter(|mark| !ended(mark)).collect();
+    let common = kept
         .iter()
         .zip(desired)
-        .take_while(|(a, b)| a == b)
+        .take_while(|(a, b)| **a == *b)
         .count();
-    for mark in active[common..].iter().rev() {
+    let closed = active
+        .iter()
+        .rev()
+        .filter(|mark| ended(mark) || kept[common..].iter().any(|kept| std::ptr::eq(*kept, *mark)))
+        .collect();
+    (closed, common)
+}
+
+fn transition(output: &mut String, active: &mut Vec<Mark>, desired: &[Mark]) {
+    let (closed, common) = changes(active, desired);
+    for mark in closed {
         output.push_str(&mark.close);
     }
     for mark in &desired[common..] {
@@ -581,11 +627,7 @@ fn render_inline(parts: &[Inline], table: bool) -> Result<String> {
                     continue;
                 }
                 let desired = ordered_marks(marks, &active)?;
-                let common_before = active
-                    .iter()
-                    .zip(&desired)
-                    .take_while(|(a, b)| a == b)
-                    .count();
+                let (_, common_before) = changes(&active, &desired);
                 let next_marks = match parts[index + 1..]
                     .iter()
                     .find(|part| !matches!(part, Inline::Text(value, _) if value.is_empty()))
@@ -593,13 +635,12 @@ fn render_inline(parts: &[Inline], table: bool) -> Result<String> {
                     Some(Inline::Text(_, marks)) => ordered_marks(marks, &desired)?,
                     _ => Vec::new(),
                 };
-                let common_after = desired
-                    .iter()
-                    .zip(&next_marks)
-                    .take_while(|(a, b)| a == b)
-                    .count();
-                if (value.starts_with(char::is_whitespace) && common_before < desired.len())
-                    || (value.ends_with(char::is_whitespace) && common_after < desired.len())
+                let (closed_after, _) = changes(&desired, &next_marks);
+                // Delimiters cannot open or close beside whitespace. HTML tags can.
+                if (value.starts_with(char::is_whitespace)
+                    && desired[common_before..].iter().any(|mark| mark.delimiter))
+                    || (value.ends_with(char::is_whitespace)
+                        && closed_after.iter().any(|mark| mark.delimiter))
                 {
                     return Err(CodecError(
                         "Markdown cannot preserve marks on boundary whitespace".into(),
@@ -747,6 +788,69 @@ mod tests {
             let before = value.clone();
             assert!(spans_to_markdown(&value).is_err(), "{value:?}");
             assert_eq!(value, before);
+        }
+    }
+
+    #[test]
+    fn highlight_exports_as_a_fixed_tag_in_registry_order() {
+        for (native, markdown) in [
+            (
+                json!([{ "type":"text", "value":"launch date", "marks":{"strong":true,"highlight":"green"} }]),
+                r#"**<mark data-color="green">launch date</mark>**"#,
+            ),
+            (
+                json!([{ "type":"text", "value":"both", "marks":{"em":true,"strong":true,"highlight":"#00ff00","code":true} }]),
+                r##"***<mark data-color="#00ff00">`both`</mark>***"##,
+            ),
+            (
+                json!([{ "type":"text", "value":"linked", "marks":{"highlight":"pink","link":"{\"href\":\"/a\",\"title\":null}"} }]),
+                r#"[<mark data-color="pink">linked</mark>](</a>)"#,
+            ),
+            // Boundary whitespace is ordinary text inside an HTML tag.
+            (
+                json!([{ "type":"text", "value":" padded ", "marks":{"highlight":"blue"} }]),
+                r#"<mark data-color="blue">&#32;padded&#32;</mark>"#,
+            ),
+            // A tag that ends closes in place; the strong run continues.
+            (
+                json!([
+                    { "type":"text", "value":"a ", "marks":{"highlight":"yellow"} },
+                    { "type":"text", "value":"b", "marks":{"highlight":"yellow","strong":true} },
+                    { "type":"text", "value":" c", "marks":{"strong":true} }
+                ]),
+                r#"<mark data-color="yellow">a&#32;**b</mark>&#32;c**"#,
+            ),
+        ] {
+            let value = spans(native);
+            let exported = spans_to_markdown(&value).expect("export");
+            assert_eq!(exported, markdown);
+            assert_eq!(
+                crate::markdown_to_spans(&exported, &crate::ImportOptions::default())
+                    .expect("reimport"),
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn literal_highlight_tags_export_escaped() {
+        let value = spans(
+            json!([{ "type":"text", "value":"use <mark> tags and </MARK> too", "marks":{} }]),
+        );
+        let exported = spans_to_markdown(&value).expect("export");
+        assert!(exported.starts_with("use \\<mark"), "{exported}");
+        assert_eq!(
+            crate::markdown_to_spans(&exported, &crate::ImportOptions::default())
+                .expect("reimport"),
+            value
+        );
+    }
+
+    #[test]
+    fn invalid_highlight_values_fail_export() {
+        for color in [json!("red"), json!("#ABCDEF"), json!(true)] {
+            let value = spans(json!([{ "type":"text", "value":"x", "marks":{"highlight":color} }]));
+            assert!(spans_to_markdown(&value).is_err(), "{color}");
         }
     }
 

@@ -417,7 +417,7 @@ empty result does not prove a Page is absent.
 - report_page_progress: page_id and a short message; optional targets and expected_heads.
   Updates/clear require the returned progress_id and private lease_token. See progress below.
 - read_page_changes: complete net changes since previous heads, with current passage addresses and retry authority.
-- patch_page: replace_match for literal visible-text edits, optionally scoped by node_index; patch_block_markdown for Markdown syntax edits.
+- patch_page: replace_match for literal visible-text edits, optionally scoped by node_index; format_match to add or remove formatting over a literal range.
 - edit_page: set_title, replace_block_markdown, insert_markdown, insert_image,
   move_block, or delete_block operations.
 - manage_page_comment: add, reply, resolve, reopen, edit, or delete_message.
@@ -701,11 +701,34 @@ Changes arriving during persistence still merge through Automerge. Exact retries
 return the original receipt, including its captured concurrency metadata, without
 matching or applying the text again.
 
-For formatting or structural edits, use patch_block_markdown with replacements
-[{"old":"exact Markdown","new":"replacement Markdown"}]. Each old string must
-occur exactly once in that block's Markdown. Regex replacement is not supported.
-It refuses a block whose Markdown can't reproduce it, such as one with an empty
-paragraph; use replace_match for text in that block.
+For formatting, use format_match. It finds one literal visible-text range the
+same way replace_match does (match_text, context_before/context_after,
+node_index) and changes only its marks:
+
+\`\`\`json
+{
+  "op": "format_match",
+  "block_id": "<block ID from read_page>",
+  "match_text": "launch date",
+  "add": { "highlight": "green", "strong": true },
+  "remove": ["em"]
+}
+\`\`\`
+
+add maps mark names to values: strong, em and code take true; highlight takes
+yellow, green, blue, pink or a #rrggbb color; link takes {"href": "...",
+"title": "..."} with an http, https, mailto, tel or relative destination.
+Adding a mark the text already has replaces its value across the range, so
+add {"highlight": "blue"} recolors a highlight. remove lists mark names to
+clear. Text, comment anchors and CRDT identity are unchanged. Receipts include
+matched: 1 for each format_match.
+
+Markdown is a projection of the rich text, not its storage. Highlights read as
+<mark data-color="green">text</mark>; insert_markdown, replace_block_markdown and
+create_page accept that tag. Other HTML stays literal text.
+
+To restructure a block (headings, lists, tables), replace it with
+edit_page replace_block_markdown, or insert, move and delete whole blocks.
 Copy the whole heads array, even when it has more than one entry. On a stale-revision error,
 read again, reconsider the edit, and use a new key. After a timeout or unknown
 outcome, retry the exact request body, key, token, account, and driver label.

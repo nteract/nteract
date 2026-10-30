@@ -434,6 +434,58 @@
     min-height: 44px;
   }
 }
+.pages-highlight-menu {
+  position: fixed;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--popover);
+  box-shadow: 0 8px 28px #00000014;
+  color: var(--popover-foreground);
+}
+.pages-highlight-menu button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.pages-highlight-menu .highlight-swatch::before {
+  content: "";
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--pages-highlight) 75%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--foreground) 15%, transparent);
+}
+.pages-highlight-menu button:hover,
+.pages-highlight-menu button:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+.pages-highlight-menu .highlight-swatch[aria-checked="true"] {
+  box-shadow: inset 0 0 0 2px var(--ring);
+}
+.pages-highlight-menu button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+@media (max-width: 600px) {
+  .pages-highlight-menu button {
+    width: 44px;
+    height: 44px;
+  }
+}
 .wordgard-table-convert {
   display: block;
   margin: 8px 0 0 auto;

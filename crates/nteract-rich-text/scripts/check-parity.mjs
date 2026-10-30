@@ -157,6 +157,8 @@ for (const [index, { fixture, doc }] of wordgardCases.entries()) {
 const invalid = [
   { op: "export", spans: [{ type: "text", value: "bad mark", marks: { unknown: true } }] },
   { op: "export", spans: [{ type: "text", value: "bad link", marks: { link: "not JSON" } }] },
+  { op: "export", spans: [{ type: "text", value: "bad color", marks: { highlight: "red" } }] },
+  { op: "export", spans: [{ type: "text", value: "bad case", marks: { highlight: "#ABCDEF" } }] },
   { op: "export", spans: [{ type: "block", value: { type: "mystery", parents: [], attrs: {}, isEmbed: false } }] },
   { op: "import", markdown: "a".repeat(262_145) },
 ];

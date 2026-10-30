@@ -12,17 +12,59 @@ import {
   defaultMarkdownParser,
   defaultMarkdownSerializer,
 } from "prosemirror-markdown";
+import {
+  DEFAULT_HIGHLIGHT,
+  MARK_REGISTRY,
+  markSpec,
+  normalizeHighlight,
+  safeUrl,
+  updateSpansConfig,
+  validateMarkValue,
+} from "./marks.mjs";
 
-// Shared rich-text schema used by the editor, tool exports, and ingress validation.
+export { safeUrl } from "./marks.mjs";
+
+// Shared rich-text schema used by tool exports and ingress validation. Mark
+// names, order and expand rules come from the registry in marks.json.
 const nodes = {},
-  marks = {};
+  baseMarks = {};
 basicSchemaAdapter.schema.spec.nodes.forEach((name, spec) => {
   if (name !== "unknownLeaf") nodes[name] = { ...spec };
 });
 basicSchemaAdapter.schema.spec.marks.forEach((name, spec) => {
-  if (name !== "unknownMark") marks[name] = { ...spec };
+  if (name !== "unknownMark") baseMarks[name] = { ...spec };
 });
-marks.code.automerge = { markName: "code" };
+baseMarks.code.automerge = { markName: "code" };
+baseMarks.highlight = {
+  attrs: { color: { default: DEFAULT_HIGHLIGHT } },
+  parseDOM: [
+    {
+      tag: "mark",
+      getAttrs: (dom) => {
+        try {
+          return {
+            color: normalizeHighlight(dom.getAttribute("data-highlight") ?? DEFAULT_HIGHLIGHT),
+          };
+        } catch {
+          return false;
+        }
+      },
+    },
+  ],
+  toDOM: (mark) => ["mark", { "data-highlight": mark.attrs.color }, 0],
+  automerge: {
+    markName: "highlight",
+    parsers: {
+      fromAutomerge: (value) => ({ color: String(value) }),
+      fromProsemirror: (mark) => mark.attrs.color,
+    },
+  },
+};
+const marks = {};
+for (const { name, expand } of MARK_REGISTRY.marks) {
+  if (!baseMarks[name]) throw Error(`The ProseMirror schema has no spec for mark ${name}`);
+  marks[name] = { ...baseMarks[name], inclusive: expand !== "none" };
+}
 nodes.task_list = {
   content: "list_item+",
   group: "block",
@@ -251,6 +293,58 @@ tokenizer.inline.ruler.before("html_inline", "table_break", (state, silent) => {
   state.pos += match[0].length;
   return true;
 });
+// Highlights have no Markdown syntax. Pages reads and writes exactly
+// `<mark data-color="…">` and `</mark>`; other HTML stays literal text. The
+// tokenizer emits every tag it recognizes, and the balance pass below turns
+// nested, unopened or unclosed tags back into their source text.
+// Tag whitespace is ASCII only, matching the Rust codec.
+const HIGHLIGHT_OPEN =
+  /^<mark(?:[ \t\r\n]+data-color[ \t\r\n]*=[ \t\r\n]*(?:"([^"<>]*)"|'([^'<>]*)'))?[ \t\r\n]*>/i;
+const HIGHLIGHT_CLOSE = /^<\/mark[ \t\r\n]*>/i;
+tokenizer.inline.ruler.before("html_inline", "pages_highlight", (state, silent) => {
+  if (state.src.charCodeAt(state.pos) !== 0x3c) return false;
+  const rest = state.src.slice(state.pos);
+  const close = HIGHLIGHT_CLOSE.exec(rest);
+  const open = close ? null : HIGHLIGHT_OPEN.exec(rest);
+  const match = close ?? open;
+  if (!match) return false;
+  let color;
+  if (open) {
+    try {
+      color = normalizeHighlight(open[1] ?? open[2] ?? DEFAULT_HIGHLIGHT);
+    } catch {
+      return false;
+    }
+  }
+  if (!silent) {
+    // Nesting 0: markdown-it's delimiter stack must not see these tags, since
+    // the balance pass may turn either one back into text.
+    const token = state.push(open ? "pages_highlight_open" : "pages_highlight_close", "mark", 0);
+    token.markup = match[0];
+    if (open) token.attrSet("color", color);
+  }
+  state.pos += match[0].length;
+  return true;
+});
+tokenizer.inline.ruler2.push("pages_highlight_balance", (state) => {
+  let open = null;
+  const literal = (token) => {
+    token.type = "text";
+    token.tag = "";
+    token.content = token.markup;
+    token.attrs = null;
+  };
+  for (const token of state.tokens) {
+    if (token.type === "pages_highlight_open") {
+      if (open) literal(token);
+      else open = token;
+    } else if (token.type === "pages_highlight_close") {
+      if (open) open = null;
+      else literal(token);
+    }
+  }
+  if (open) literal(open);
+});
 // Markdown-it's ordinary inline pass, with context scoped to the current cell.
 tokenizer.core.ruler.at("inline", (state) => {
   let inCell = false;
@@ -304,12 +398,31 @@ const parser = new MarkdownParser(schema, tokenizer, {
   tr: { block: "table_row", attrs: { isAmgBlock: true } },
   th: { block: "table_header", getAttrs: cellAttrs },
   td: { block: "table_cell", getAttrs: cellAttrs },
+  pages_highlight: { mark: "highlight", getAttrs: (token) => ({ color: token.attrGet("color") }) },
 });
 const plainImportParser = new MarkdownParser(
   schema,
   new MarkdownIt("commonmark", { html: false, linkify: false }),
   { ...defaultMarkdownParser.tokens, image: imageToken },
 );
+// Marks with "markdown": "html" in the registry project as their one fixed tag.
+// A mark this build doesn't know projects as its plain text. Edit it through
+// replace_match and format_match, which work on native spans.
+const markSerializers = {
+  ...defaultMarkdownSerializer.marks,
+  highlight: {
+    open: (_state, mark) => `<mark data-color="${mark.attrs.color}">`,
+    close: "</mark>",
+    // Not mixable: strong and em always open outside a highlight. Reordering
+    // them inside it makes a strong run reopen after </mark> with a leading
+    // space, which Markdown reads as literal asterisks.
+  },
+  unknownMark: { open: "", close: "", mixable: true },
+};
+for (const { name } of MARK_REGISTRY.marks)
+  if (!markSerializers[name]) throw Error(`No Markdown projection for mark ${name}`);
+// Literal text that looks like a highlight tag is escaped so it reads back as text.
+const literalHighlightTag = /<(?=\/?mark\b)/gi;
 const serializer = new MarkdownSerializer(
   {
     ...defaultMarkdownSerializer.nodes,
@@ -366,7 +479,8 @@ const serializer = new MarkdownSerializer(
       state.closeBlock(node);
     },
   },
-  defaultMarkdownSerializer.marks,
+  markSerializers,
+  { escapeExtraCharacters: literalHighlightTag },
 );
 
 const tableCellSerializer = new MarkdownSerializer(
@@ -376,7 +490,7 @@ const tableCellSerializer = new MarkdownSerializer(
       state.write("<br>");
     },
   },
-  defaultMarkdownSerializer.marks,
+  markSerializers,
   { escapeExtraCharacters: /</g },
 );
 
@@ -387,7 +501,9 @@ export function parseMarkdown(source, importId = "", kind = "markdown") {
   const syntax = source.replace(/^(\s*(?:>\s*)*[-+*][ \t]+)\[[ xX]\](?=[ \t]|$)/gm, "$1");
   const unsupported =
     kind !== "markdown" ||
-    /(^|\n)\s*(<|\$\$|---\s*$)|\$[^\n$]+\$|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~/m.test(syntax);
+    /(^|\n)\s*(<(?!\/?mark[ \t\r\n>])|\$\$|---\s*$)|\$[^\n$]+\$|!?\[[^\]]*\]\s*\[|^\s*\[[^\]]+\]:|~~/im.test(
+      syntax,
+    );
   return unsupported
     ? schema.node("doc", null, [schema.node("raw", { source, importId, kind })])
     : parser.parse(source);
@@ -435,19 +551,6 @@ export function blockMarkdown(block) {
     return block.markdown;
   return current;
 }
-// Whether parsing `source` reproduces the block's current native structure.
-// Markdown edits reparse the whole block, so they must not run when the export
-// is lossy (an empty paragraph, for example). `isAmgBlock` only records whether
-// a paragraph had its own marker; both encoders' spans decode the same way, so
-// it is not structure.
-const structure = (node) =>
-  JSON.stringify(node.toJSON(), (key, value) => (key === "isAmgBlock" ? undefined : value));
-export function markdownReproduces(block, source = blockMarkdown(block)) {
-  return (
-    structure(richDoc(block)) ===
-    structure(pmDocFromSpans(adapter, pmNodeToSpans(adapter, parseMarkdown(source))))
-  );
-}
 export function richSize(block) {
   return isRich(block)
     ? new TextEncoder().encode(JSON.stringify(A.spans(block, ["richText"]))).length
@@ -469,7 +572,7 @@ export function setRichMarkdown(doc, id, source) {
     doc,
     textPath(id),
     pmNodeToSpans(adapter, parseMarkdown(source)),
-    adapter.updateSpansConfig(),
+    updateSpansConfig,
   );
 }
 export function setRichImage(doc, id, { src, alt }) {
@@ -477,7 +580,7 @@ export function setRichImage(doc, id, { src, alt }) {
   const tree = schema.node("doc", null, [
     schema.node("paragraph", null, [schema.node("image", { src, alt, title: null })]),
   ]);
-  A.updateSpans(doc, textPath(id), pmNodeToSpans(adapter, tree), adapter.updateSpansConfig());
+  A.updateSpans(doc, textPath(id), pmNodeToSpans(adapter, tree), updateSpansConfig);
 }
 export function projectedBlock(block) {
   const { richText: _rich, ...result } = block;
@@ -491,11 +594,12 @@ export function validateRich(block) {
   for (const span of spans) {
     if (span.type === "text") {
       for (const [name, value] of Object.entries(span.marks ?? {})) {
-        if (!["strong", "em", "code", "link"].includes(name)) throw Error("Unsupported rich mark");
-        if (name === "link") {
-          const href = typeof value === "string" ? JSON.parse(value).href : null;
-          if (typeof href !== "string" || !safeUrl(href)) throw Error("Invalid rich link");
-        } else if (value !== true) throw Error("Invalid rich mark value");
+        markSpec(name);
+        try {
+          validateMarkValue(name, value);
+        } catch {
+          throw Error(name === "link" ? "Invalid rich link" : "Invalid rich mark value");
+        }
       }
     } else if (span.type === "block") {
       const value = span.value;
@@ -529,11 +633,4 @@ export function validateRich(block) {
       if (mark.type.name === "link" && !safeUrl(mark.attrs.href)) throw Error("Invalid rich link");
   });
   exportMarkdown(tree);
-}
-export function safeUrl(value) {
-  return (
-    typeof value === "string" &&
-    ![...value].some((c) => c.charCodeAt(0) <= 32 || c.charCodeAt(0) === 127) &&
-    !/^[a-z][a-z0-9+.-]*:/i.test(value.replace(/^(https?|mailto|tel):/i, ""))
-  );
 }

@@ -15,7 +15,7 @@ function page(markdown = "Hello 🌊 people") {
   return A.change(doc, (d) => initializePage(d, markdown));
 }
 const identity = { principal: "account:one", displayName: "Kyle Kelley", driver: "Browser" };
-test("targeted Markdown edits preserve unknown document fields and rich text identity", () => {
+test("targeted text edits preserve unknown document fields and rich text identity", () => {
   let doc = page();
   const id = orderedBlockIds(doc)[0];
   doc = A.change(doc, (d) => {
@@ -28,11 +28,7 @@ test("targeted Markdown edits preserve unknown document fields and rich text ide
       operation: "patch_page",
       arguments: {
         operations: [
-          {
-            op: "patch_block_markdown",
-            block_id: id,
-            replacements: [{ old: "people", new: "collaborators" }],
-          },
+          { op: "replace_match", block_id: id, match_text: "people", replacement: "collaborators" },
         ],
       },
     }),
@@ -53,16 +49,12 @@ test("ambiguous literal patch rejects atomically with no partially applied sibli
           arguments: {
             operations: [
               { op: "set_title", title: "Changed" },
-              {
-                op: "patch_block_markdown",
-                block_id: id,
-                replacements: [{ old: "one", new: "two" }],
-              },
+              { op: "replace_match", block_id: id, match_text: "one", replacement: "two" },
             ],
           },
         }),
       ),
-    /exactly once/,
+    /exactly one is required/,
   );
   assert.equal(doc.title, "Test");
   assert.equal(projectPage(doc).blocks[0].markdown, "one one");
@@ -91,11 +83,7 @@ test("anchored Unicode comments follow concurrent text and detach after the sele
       operation: "patch_page",
       arguments: {
         operations: [
-          {
-            op: "patch_block_markdown",
-            block_id: id,
-            replacements: [{ old: "🌊 passage", new: "" }],
-          },
+          { op: "replace_match", block_id: id, match_text: "🌊 passage", replacement: "" },
         ],
       },
     }),
@@ -138,15 +126,8 @@ test("Markdown export omits the blank line Markdown can't turn back into an empt
   assert.equal(richDoc(doc.blocks[id]).childCount, 2);
   assert.equal(projectPage(doc).blocks[0].markdown, "Hope you can edit this.");
 });
-test("patch_block_markdown refuses a block its Markdown can't reproduce and points to replace_match", () => {
+test("replace_match keeps an empty paragraph Markdown can't represent", () => {
   const { doc, id } = leadingEmptyParagraph();
-  for (const replacements of [[{ old: "Hope", new: "Hope" }], [{ old: "edit", new: "change" }]])
-    assert.throws(
-      () => edit(doc, [{ op: "patch_block_markdown", block_id: id, replacements }]),
-      /replace_match/,
-    );
-  assert.equal(richDoc(doc.blocks[id]).childCount, 2, "the rejected batch changed nothing");
-  // replace_match splices native text and keeps the empty paragraph.
   const matched = edit(doc, [
     { op: "replace_match", block_id: id, match_text: "edit", replacement: "change" },
   ]);
@@ -161,48 +142,4 @@ test("replace_block_markdown replaces the block with exactly the Markdown it is 
   // Markdown has no empty paragraph, so the replacement has one paragraph.
   assert.equal(richDoc(replaced.blocks[id]).childCount, 1);
   assert.equal(projectPage(replaced).blocks[0].markdown, "Hope you can edit this.");
-});
-test("patch_block_markdown still edits blocks the browser editor wrote", async () => {
-  const { enableRich, textPath } = await import("./richtext.mjs");
-  const { decode, encode } = await import("../viewer/wordgard-model.mjs");
-  for (const source of [
-    '# Heading\n\nText with **bold** and [a link](https://example.com "Title")',
-    "- One\n- Two\n  - Three\n\nTail",
-    "1. First\n2. Second",
-    "- [x] Done\n- [ ] Open",
-    "> Quoted\n>\n> Next",
-    "First  \nSecond",
-    "```mermaid\ngraph LR\nA-->B\n```",
-    "```\nplain\n```",
-    "| Name | Status |\n| :--- | ---: |\n| Pages | Ready |",
-    "![cat](/api/pages/page_fixture/assets/" + "a".repeat(64) + ")\n\nAfter",
-  ]) {
-    let doc = A.change(
-      A.from({ blocks: { one: { id: "one", kind: "markdown", markdown: source } } }),
-      (d) => enableRich(d, "one"),
-    );
-    // Re-encode through the editor's encoder, as a structural browser edit does.
-    doc = A.change(doc, (d) =>
-      A.updateSpans(d, textPath("one"), encode(decode(A.spans(d, textPath("one"))).doc)),
-    );
-    const projection = (current) => decode(A.spans(current, textPath("one"))).doc,
-      before = projection(doc),
-      word = source.match(/[A-Za-z]{4,}/g).find((w) => source.split(w).length === 2);
-    doc = A.change(doc, (d) =>
-      applyPageOperation(d, {
-        operation: "patch_page",
-        arguments: {
-          operations: [
-            {
-              op: "patch_block_markdown",
-              block_id: "one",
-              replacements: [{ old: word, new: word }],
-            },
-          ],
-        },
-      }),
-    );
-    // The editor sees the same document after a no-op patch.
-    assert.ok(projection(doc).eq(before), source);
-  }
 });

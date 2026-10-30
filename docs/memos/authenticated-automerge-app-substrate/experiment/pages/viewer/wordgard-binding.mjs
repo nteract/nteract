@@ -8,12 +8,13 @@ import {
   encode,
   expand,
   toMarks,
-  markName,
+  markNames,
   CodeBlock,
   LineBreak,
   OrderedList,
 } from "./wordgard-model.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
+import { MARK_NAMES, markExpand } from "../model/marks.mjs";
 
 // Enter inserts LineBreak leaves, while Wordgard's code clipboard parser can
 // insert text containing newlines. Keep one editor representation before local
@@ -161,7 +162,7 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
               formats.push(
                 "add" in mod
                   ? { from, to, add: toMarks([mod.add]) }
-                  : { from, to, remove: markName(mod.remove) },
+                  : { from, to, remove: markNames(mod.remove) },
               );
             } catch {
               structural = true;
@@ -190,19 +191,18 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
             for (const token of range.inserted) {
               const length = String(token.param).length,
                 desired = toMarks(token.marks);
-              for (const name of ["strong", "em", "code", "link"]) {
-                const range = {
-                  start: pos,
-                  end: pos + length,
-                  expand: name === "link" || name === "code" ? "none" : "both",
-                };
+              const present = A.marks(d, path).filter(
+                (mark) => mark.start < pos + length && mark.end > pos,
+              );
+              const names = new Set([
+                ...MARK_NAMES,
+                ...Object.keys(desired),
+                ...present.map((mark) => mark.name),
+              ]);
+              for (const name of names) {
+                const range = { start: pos, end: pos + length, expand: markExpand(name) };
                 if (desired[name] !== undefined) A.mark(d, path, range, name, desired[name]);
-                else if (
-                  A.marks(d, path).some(
-                    (mark) => mark.name === name && mark.start < pos + length && mark.end > pos,
-                  )
-                )
-                  A.unmark(d, path, range, name);
+                else if (present.some((mark) => mark.name === name)) A.unmark(d, path, range, name);
               }
               pos += length;
             }
@@ -211,15 +211,10 @@ export function createWordgardBinding(replica, id, { encodeSpans = encode } = {}
             const start = next.wgToAm[format.from],
               end = next.wgToAm[format.to];
             if (end <= start) continue;
-            if (format.remove) A.unmark(d, path, { start, end, expand: "both" }, format.remove);
+            for (const name of format.remove ?? [])
+              A.unmark(d, path, { start, end, expand: "both" }, name);
             for (const [name, value] of Object.entries(format.add ?? {}))
-              A.mark(
-                d,
-                path,
-                { start, end, expand: name === "link" || name === "code" ? "none" : "both" },
-                name,
-                value,
-              );
+              A.mark(d, path, { start, end, expand: markExpand(name) }, name, value);
           }
         }
         if (!decode(A.spans(d, path)).doc.eq(tr.newDoc))

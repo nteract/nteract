@@ -23,12 +23,16 @@ import {
   HeaderCell,
 } from "wordgard/types";
 
-const safeUrl = (value) =>
-  typeof value === "string" &&
-  // Reject whitespace/control characters that can obscure a URL scheme.
-  // eslint-disable-next-line no-control-regex
-  !/[\u0000-\u0020\u007f]/.test(value) &&
-  !/^[a-z][a-z0-9+.-]*:/i.test(value.replace(/^(https?|mailto|tel):/i, ""));
+import {
+  DEFAULT_HIGHLIGHT,
+  MARK_NAMES,
+  decodeMarkValue,
+  encodeMarkValue,
+  isKnownMark,
+  normalizeHighlight,
+  safeUrl,
+  updateSpansConfig,
+} from "../model/marks.mjs";
 // The Pages table format stores physical alignment. Wordgard's stock mark
 // uses logical values and does not round-trip a physical `right` clipboard style.
 const validCellAlignment = (value) => ["left", "center", "right"].includes(value);
@@ -72,6 +76,48 @@ export const PagesLink = Mark.Type.define("PagesLink", {
             rel: "noopener noreferrer",
           }
         : {},
+  },
+});
+// Palette highlights render through theme tokens. A custom color is a raw hex
+// value the stylesheet tints, so text keeps the theme's foreground color.
+export const PagesHighlight = Mark.Type.define("PagesHighlight", {
+  validate(value) {
+    decodeMarkValue("highlight", value);
+  },
+  shape: {
+    element: "mark",
+    selector: "mark",
+    attributes: (value) =>
+      value.startsWith("#")
+        ? { "data-highlight": "custom", style: `--pages-highlight-custom: ${value}` }
+        : { "data-highlight": value },
+    readElement(element) {
+      try {
+        const named = element.getAttribute("data-highlight");
+        const custom = element.style?.getPropertyValue("--pages-highlight-custom");
+        return normalizeHighlight(named === "custom" ? custom : (named ?? DEFAULT_HIGHLIGHT));
+      } catch {
+        return parse.Reject;
+      }
+    },
+  },
+});
+// Marks a newer build wrote, keyed by name with their stored values. They
+// render as plain text and are written back unchanged, so this build can edit
+// a block that carries them without erasing them.
+export const PagesForeignMarks = Mark.Type.define("PagesForeignMarks", {
+  validate(value) {
+    if (
+      !value ||
+      typeof value !== "object" ||
+      !Object.keys(value).length ||
+      Object.keys(value).some(isKnownMark)
+    )
+      throw Error("Invalid foreign Pages marks");
+  },
+  shape: {
+    element: "span",
+    attributes: (value) => ({ "data-pages-foreign-marks": Object.keys(value).sort().join(" ") }),
   },
 });
 export const OpaqueBlock = Leaf.Type.define("PagesOpaque", {
@@ -161,6 +207,8 @@ export const elements = [
   Emphasis,
   Code,
   PagesLink,
+  PagesHighlight,
+  PagesForeignMarks,
   Blockquote,
   ListItem,
   OrderedList,
@@ -175,7 +223,9 @@ export const elements = [
   Cell,
   HeaderCell,
   Alignment,
-  ...[Strong, Emphasis, Code, PagesLink].map((mark) => Schema.Override.markTarget(mark, Leaf.Text)),
+  ...[Strong, Emphasis, Code, PagesLink, PagesHighlight, PagesForeignMarks].map((mark) =>
+    Schema.Override.markTarget(mark, Leaf.Text),
+  ),
 ];
 export const schema = Schema.define(elements);
 export {
@@ -196,39 +246,64 @@ export {
   Cell,
   HeaderCell,
 };
-export const expand = { defaultExpand: "both", perMarkExpand: { link: "none", code: "none" } };
-const markTypes = { strong: Strong, em: Emphasis, code: Code };
+export const expand = updateSpansConfig;
+// Registry mark name -> Wordgard mark type and value codec.
+const markTypes = {
+  strong: { type: Strong, of: () => Strong, value: () => true },
+  em: { type: Emphasis, of: () => Emphasis, value: () => true },
+  code: { type: Code, of: () => Code, value: () => true },
+  link: {
+    type: PagesLink,
+    of: (link) => PagesLink.of({ href: link.href, title: link.title ?? null }),
+    value: (mark) => encodeMarkValue("link", mark.value),
+  },
+  highlight: {
+    type: PagesHighlight,
+    of: (color) => PagesHighlight.of(color),
+    value: (mark) => encodeMarkValue("highlight", mark.value),
+  },
+};
+for (const name of MARK_NAMES)
+  if (!markTypes[name]) throw Error(`The Wordgard schema has no type for mark ${name}`);
 export function fromMarks(marks = {}) {
-  return Object.entries(marks)
-    .map(([name, value]) => {
-      if (Object.hasOwn(markTypes, name) && value === true) return markTypes[name];
-      if (name === "link" && typeof value === "string") {
-        const parsed = JSON.parse(value);
-        if (
-          !parsed ||
-          !safeUrl(parsed.href) ||
-          (parsed.title != null && typeof parsed.title !== "string")
-        )
-          throw Error("Invalid Pages link");
-        return PagesLink.of({ href: parsed.href, title: parsed.title ?? null });
-      }
-      throw Error(`Unsupported Pages rich mark: ${name}`);
-    })
-    .reduce((set, mark) => mark.addToSet(set), Mark.none);
+  const set = [];
+  const foreign = {};
+  for (const [name, value] of Object.entries(marks)) {
+    if (!isKnownMark(name)) {
+      foreign[name] = value;
+      continue;
+    }
+    let decoded;
+    try {
+      decoded = decodeMarkValue(name, value);
+    } catch {
+      throw Error(name === "link" ? "Invalid Pages link" : `Invalid Pages ${name} mark`);
+    }
+    set.push(markTypes[name].of(decoded));
+  }
+  if (Object.keys(foreign).length) set.push(PagesForeignMarks.of(foreign));
+  return set.reduce((result, mark) => mark.addToSet(result), Mark.none);
 }
 export function toMarks(marks) {
   const result = {};
   for (const mark of marks) {
-    const name = Object.keys(markTypes).find((name) => markTypes[name].type === mark.type);
-    if (name) result[name] = true;
-    else if (mark.type === PagesLink) {
-      if (!safeUrl(mark.value.href)) throw Error("Invalid Pages link");
-      result.link = JSON.stringify({ href: mark.value.href, title: mark.value.title ?? null });
-    } else throw Error(`Unsupported Wordgard inline mark: ${mark.name}`);
+    if (mark.type === PagesForeignMarks) {
+      Object.assign(result, mark.value);
+      continue;
+    }
+    const name = Object.keys(markTypes).find(
+      (key) => markTypes[key].type === mark.type || markTypes[key].type.type === mark.type,
+    );
+    if (!name) throw Error(`Unsupported Wordgard inline mark: ${mark.name}`);
+    try {
+      result[name] = markTypes[name].value(mark);
+    } catch {
+      throw Error(name === "link" ? "Invalid Pages link" : `Invalid Pages ${name} mark`);
+    }
   }
   return result;
 }
-export const markName = (mark) => Object.keys(toMarks([mark]))[0];
+export const markNames = (mark) => Object.keys(toMarks([mark]));
 const strings = (attrs = {}) =>
   Object.fromEntries(
     Object.entries(attrs).map(([k, v]) => [k, A.isImmutableString(v) ? String(v) : v]),

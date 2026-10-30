@@ -22,10 +22,40 @@
   --error-soft: color-mix(in srgb, var(--destructive) 10%, var(--surface));
   --success: #22734a;
   --page-header-height: 64px;
+  /* Highlight palette (marks.json). Highlights are a tint over the page, so
+     text keeps --foreground in both themes; dark mode uses a lighter tint. */
+  --highlight-yellow: #f5c400;
+  --highlight-green: #34c26b;
+  --highlight-blue: #4b9cf5;
+  --highlight-pink: #f0609e;
+  --highlight-strength: 38%;
 }
 :root.dark {
   --warning: #dec179;
   --success: #8bcba9;
+  --highlight-strength: 30%;
+}
+[data-highlight="yellow"] {
+  --pages-highlight: var(--highlight-yellow);
+}
+[data-highlight="green"] {
+  --pages-highlight: var(--highlight-green);
+}
+[data-highlight="blue"] {
+  --pages-highlight: var(--highlight-blue);
+}
+[data-highlight="pink"] {
+  --pages-highlight: var(--highlight-pink);
+}
+[data-highlight="custom"] {
+  --pages-highlight: var(--pages-highlight-custom);
+}
+mark[data-highlight] {
+  color: inherit;
+  background: color-mix(in oklab, var(--pages-highlight) var(--highlight-strength), transparent);
+  border-radius: 2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 * {
   box-sizing: border-box;
@@ -601,6 +631,11 @@ details.document-actions > div button {
   color: var(--foreground);
   box-shadow: inset 0 0 0 1px var(--border);
 }
+.highlight-button[data-highlight] {
+  box-shadow:
+    inset 0 -3px 0 color-mix(in oklab, var(--pages-highlight) 80%, transparent),
+    inset 0 0 0 1px var(--border);
+}
 .toolbar-button[aria-pressed="mixed"] {
   background: var(--accent);
   color: var(--foreground);
@@ -919,6 +954,9 @@ dialog::backdrop {
   border-bottom: 2px solid var(--warning);
   animation: illumination 2s ease-out;
 }
+/* Comment anchors and highlights are both translucent fills. Wherever they
+   overlap, the two tints composite, so each stays visible; the underline
+   marks the comment's extent when it sits inside a highlight. */
 .comment-passage {
   background: color-mix(in srgb, var(--warning) 12%, transparent);
   border-bottom: 1px solid var(--warning);
