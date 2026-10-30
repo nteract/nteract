@@ -86,62 +86,77 @@
     [
       "trashing",
       "trash",
-      "the host settles a pending commit before it handles a request: commitOk, then the request"
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
     ],
     [
       "trashing",
       "restore",
-      "the host settles a pending commit before it handles a request: commitOk, then the request"
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
     ],
     [
       "trashing",
       "purgePreview",
-      "the host settles a pending commit before it handles a request: commitOk, then the request"
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
     ],
     [
       "trashing",
       "purgeConfirm",
-      "the host settles a pending commit before it handles a request: commitOk, then the request"
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "trashing",
+      "tombstone",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
     ],
     [
       "restoring",
       "trash",
-      "the host settles a pending commit before it handles a request: commitOk, then the request"
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
     ],
     [
       "restoring",
       "restore",
-      "the host settles a pending commit before it handles a request: commitOk, then the request"
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
     ],
     [
       "restoring",
       "purgePreview",
-      "the host settles a pending commit before it handles a request: commitOk, then the request"
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
     ],
     [
       "restoring",
       "purgeConfirm",
-      "the host settles a pending commit before it handles a request: commitOk, then the request"
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "restoring",
+      "tombstone",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
     ],
     [
       "purging",
       "trash",
-      "the host settles a pending commit before it handles a request: commitOk, then the request"
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
     ],
     [
       "purging",
       "restore",
-      "the host settles a pending commit before it handles a request: commitOk, then the request"
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
     ],
     [
       "purging",
       "purgePreview",
-      "the host settles a pending commit before it handles a request: commitOk, then the request"
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
     ],
     [
       "purging",
       "purgeConfirm",
-      "the host settles a pending commit before it handles a request: commitOk, then the request"
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
+    ],
+    [
+      "purging",
+      "tombstone",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event"
     ]
   ],
   "cases": {
@@ -984,7 +999,7 @@
     {
       "state": {
         "name": "active",
-        "revision": 0
+        "revision": 2
       },
       "event": {
         "type": "tombstone"
@@ -992,7 +1007,7 @@
       "expect": {
         "state": {
           "name": "active",
-          "revision": 0
+          "revision": 2
         },
         "effects": [],
         "response": {
@@ -1829,47 +1844,6 @@
       }
     },
     {
-      "note": "Current behavior: the tombstone applies to the in-memory record without settling the pending trash; commitOk then writes the trash record over it.",
-      "state": {
-        "name": "trashing",
-        "revision": 1
-      },
-      "event": {
-        "type": "tombstone"
-      },
-      "expect": {
-        "state": {
-          "name": "trashing",
-          "revision": 1
-        },
-        "effects": [
-          {
-            "type": "withdrawAccess",
-            "record": "deleted"
-          },
-          {
-            "type": "dropDocument"
-          },
-          {
-            "type": "putRecord",
-            "receipt": false,
-            "record": true
-          },
-          {
-            "type": "sync"
-          },
-          {
-            "type": "retireIndex"
-          }
-        ],
-        "response": {
-          "status": 200,
-          "reply": "state",
-          "state": "deleted"
-        }
-      }
-    },
-    {
       "case": "unwritten",
       "state": {
         "name": "trashing",
@@ -1983,47 +1957,6 @@
         "response": {
           "status": 503,
           "error": "Page lifecycle is settling"
-        }
-      }
-    },
-    {
-      "note": "Current behavior: the tombstone applies to the in-memory trashed record without settling the pending restore; commitOk then restores a Page whose document an earlier build deleted.",
-      "state": {
-        "name": "restoring",
-        "revision": 2
-      },
-      "event": {
-        "type": "tombstone"
-      },
-      "expect": {
-        "state": {
-          "name": "restoring",
-          "revision": 2
-        },
-        "effects": [
-          {
-            "type": "withdrawAccess",
-            "record": "deleted"
-          },
-          {
-            "type": "dropDocument"
-          },
-          {
-            "type": "putRecord",
-            "receipt": false,
-            "record": true
-          },
-          {
-            "type": "sync"
-          },
-          {
-            "type": "retireIndex"
-          }
-        ],
-        "response": {
-          "status": 200,
-          "reply": "state",
-          "state": "deleted"
         }
       }
     },
@@ -2142,28 +2075,6 @@
           "status": 503,
           "error": "Page lifecycle is settling"
         }
-      }
-    },
-    {
-      "state": {
-        "name": "purging",
-        "revision": 2
-      },
-      "event": {
-        "type": "tombstone"
-      },
-      "expect": {
-        "state": {
-          "name": "purging",
-          "revision": 2
-        },
-        "effects": [],
-        "response": {
-          "status": 200,
-          "reply": "state",
-          "state": "deleted"
-        },
-        "rejected": "not_trashed"
       }
     },
     {

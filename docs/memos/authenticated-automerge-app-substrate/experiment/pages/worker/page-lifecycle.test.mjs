@@ -23,14 +23,14 @@ test("the page-lifecycle table covers every pair and case and drives the Page ho
   const summary = await runTable(pageLifecycleSpec, s.table, {
     drive: async (state, event) => (await drive(s, state, event)).result,
   });
-  assert.deepEqual(summary, { rows: s.table.rows.length, pairs: 48, unreachable: 24, cases: 42 });
+  assert.deepEqual(summary, { rows: s.table.rows.length, pairs: 45, unreachable: 27, cases: 42 });
 });
 
-test("a request in a pending phase settles it first, then runs as in the settled state", async (t) => {
+test("a request or tombstone in a pending phase settles it first, then runs as in the settled state", async (t) => {
   const s = await suite(t);
   let checked = 0;
   for (const settle of s.table.rows.filter((row) => row.event.type === "commitOk")) {
-    for (const type of ["trash", "restore", "purgePreview", "purgeConfirm"]) {
+    for (const type of ["trash", "restore", "purgePreview", "purgeConfirm", "tombstone"]) {
       // A preview token for a trashed Page comes from a preview, which settles.
       if (type === "purgeConfirm" && settle.expect.state.name === "trashed") continue;
       const row = s.table.rows.find(
@@ -51,7 +51,7 @@ test("a request in a pending phase settles it first, then runs as in the settled
       checked++;
     }
   }
-  assert.equal(checked, 9);
+  assert.equal(checked, 12);
 });
 
 /** Keys whose durable values differ between two snapshots. */
@@ -124,25 +124,15 @@ function judge(run, reference, row, tally) {
  *   again, so the revision falls back.
  * - purge (trashed × purgeConfirm, purging × commitOk): the document is
  *   deleted before the record's sync.
- * - tombstone during a pending commit (trashing, restoring, purging): the
- *   tombstone does not settle the commit first.
  * - trashed × tombstone: the next tombstone does not repeat a failed write. */
 const CUT_INCONSISTENCIES = [
   "active × boot [leftover-intent] uncut: the lifecycle revision fell back",
   "active × boot [leftover-intent]: the lifecycle revision fell back",
   "purging × commitOk: a trashed record without its document",
-  "purging × tombstone uncut: reported success lost: told deleted, booted trashed",
-  "restoring × tombstone: replay differs at index access",
-  "restoring × tombstone: replay differs at index page",
-  "restoring × tombstone: reported success lost: told deleted, booted trashed",
   "trashed × purgeConfirm [preview-valid]: a trashed record without its document",
   "trashed × tombstone: replay differs at index access",
   "trashed × tombstone: replay differs at index page",
   "trashed × tombstone: reported success lost: told deleted, booted trashed",
-  "trashing × tombstone: replay differs at index access",
-  "trashing × tombstone: replay differs at index page",
-  "trashing × tombstone: replay differs at page host/document",
-  "trashing × tombstone: reported success lost: told deleted, booted active",
 ];
 
 test("every mutation the lifecycle makes can reject before or after it applies, and restart then replay converges", async (t) => {
@@ -179,6 +169,6 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
   assert.deepEqual([...found].sort(), CUT_INCONSISTENCIES);
   assert.deepEqual(
     { cuts, runs, ...tally },
-    { cuts: 154, runs: 576, tail: 50, prune: 20, index: 22 },
+    { cuts: 142, runs: 528, tail: 44, prune: 20, index: 18 },
   );
 });

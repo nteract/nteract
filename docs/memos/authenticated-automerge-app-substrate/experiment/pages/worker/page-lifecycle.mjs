@@ -73,10 +73,10 @@ const unreachable = [
     ]),
   ),
   ...PENDING.flatMap((state) =>
-    REQUESTS.map((event) => [
+    [...REQUESTS, "tombstone"].map((event) => [
       state,
       event,
-      "the host settles a pending commit before it handles a request: commitOk, then the request",
+      "the host settles a pending commit before it handles a request or a tombstone: commitOk, then the event",
     ]),
   ),
 ];
@@ -558,10 +558,6 @@ function tombstone(state) {
         effects: TOMBSTONE,
         response: answer("deleted"),
       };
-    // The in-memory record is still trashed while these settle.
-    case "trashing":
-    case "restoring":
-      return { state, effects: TOMBSTONE, response: answer("deleted") };
     default:
       return reject(state, "not_trashed", { response: answer("deleted") });
   }

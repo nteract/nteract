@@ -2426,7 +2426,12 @@ export class Page {
         }
         return json(this.metadata ? this.lifecycleCurrent() : { state: "missing" });
       }
-      if (url.pathname === "/internal/tombstone") return await this.acceptTombstone();
+      if (url.pathname === "/internal/tombstone") {
+        // A pending trash or restore would otherwise rewrite its record over
+        // the tombstone when it settles.
+        if (this.pendingLifecycle) await this.settleLifecycle();
+        return await this.acceptTombstone();
+      }
       identity = await authenticate(request, this.env);
       // An ambiguous storage failure retains the exact proposed ACL/receipt.
       // Normal HTTP work retries that barrier before reading or changing it.
@@ -3160,9 +3165,7 @@ export class Page {
    * like a missing one instead of retrying an absent document.
    */
   async acceptTombstone() {
-    // The tombstone reads the installed record and ignores a pending phase.
-    const state = hostState({ metadata: this.metadata, deletionFinished: this.deletionFinished });
-    const result = pageLifecycle.step(state, { type: "tombstone" });
+    const result = pageLifecycle.step(this.lifecycleState(), { type: "tombstone" });
     const context = {};
     if (result.effects.length)
       context.next = {
