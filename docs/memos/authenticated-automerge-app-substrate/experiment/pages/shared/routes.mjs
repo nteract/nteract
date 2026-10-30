@@ -58,3 +58,25 @@ export function mergePageListings(remote, local) {
   }
   return [...pages.values()];
 }
+
+// One catalog refresh's listing. The remote result and the local snapshot each
+// replace their previous value whole, in whichever order they arrive, and the
+// listing is recomputed from both. An entry the newer snapshot no longer holds
+// (moved to Trash, deleted, forgotten) leaves the listing.
+export function pageListing(remote, local) {
+  let remotePages = remote,
+    localPages = local;
+  return {
+    get pages() {
+      return mergePageListings(remotePages, localPages);
+    },
+    remote(value) {
+      remotePages = value;
+      return this.pages;
+    },
+    local(value) {
+      localPages = value;
+      return this.pages;
+    },
+  };
+}

@@ -24,6 +24,14 @@ const rows = (page) => table(page).locator("tr");
 const cell = (page, row, column) => rows(page).nth(row).locator("th,td").nth(column);
 const saved = (page) =>
   expect(page.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible({ timeout: 20000 });
+// A collapsed caret hides contextual formatting. Alt+F10 pins the full dock
+// (Undo, lists, table options) and moves focus into it on the next frame; the
+// editor selection stays. Wait for that focus so it cannot land mid-interaction.
+async function showFormatting(page) {
+  await page.keyboard.press("Alt+F10");
+  await expect(page.locator("#page-formatting .rich-toolbar.is-pinned")).toBeVisible();
+  await expect(page.locator("#page-formatting .rich-toolbar :focus")).toHaveCount(1);
+}
 function checkpoint() {
   report.completed.push(stage);
   console.log("PASS " + stage);
@@ -62,6 +70,7 @@ async function selectCell(page, row, column, collapse = false) {
   await page.waitForTimeout(50);
 }
 async function action(page, name) {
+  await showFormatting(page);
   await page.getByRole("button", { name: "Table options", exact: true }).click();
   await page.getByRole("menuitem", { name, exact: true }).click();
 }
@@ -183,6 +192,7 @@ try {
   await selectCell(a, 0, 0, true);
   await action(a, "Insert row above");
   for (const page of [a, b]) await shape(page, 4, 3);
+  await showFormatting(a);
   await a.getByRole("button", { name: "Undo", exact: true }).click();
   for (const page of [a, b]) {
     await shape(page, 3, 3);
@@ -199,6 +209,7 @@ try {
     await expect(cell(page, 0, 0).locator("strong")).toHaveText("Pages A");
     await expect(cell(page, 1, 0)).toHaveText("Notebook");
   }
+  await showFormatting(a);
   await a.getByRole("button", { name: "Undo", exact: true }).click();
   for (const page of [a, b]) {
     await shape(page, 3, 3);
@@ -282,6 +293,7 @@ try {
   await expect(cell(a, 3, 1)).toContainText("A second line stays in the same cell.");
   await a.setViewportSize({ width: 1280, height: 900 });
   await selectCell(a, 1, 0, true);
+  await showFormatting(a);
   await a.getByRole("button", { name: "Table options", exact: true }).click();
   await expect(a.getByRole("menu", { name: "Table options", exact: true })).toBeVisible();
   await expect(a.getByRole("menuitem", { name: "Insert row above", exact: true })).toBeFocused();
@@ -344,7 +356,10 @@ try {
   await content(a).first().click();
   await a.keyboard.press("ControlOrMeta+End");
   await a.keyboard.press("Enter");
+  await showFormatting(a);
   await a.getByRole("button", { name: "Insert table", exact: true }).click();
+  // The dialog focuses Columns on its next frame; type only after that lands.
+  await expect(a.getByLabel("Columns", { exact: true })).toBeFocused();
   await a.getByLabel("Columns", { exact: true }).fill("");
   await expect(a.getByLabel("Columns", { exact: true })).toHaveValue("");
   await a.getByLabel("Columns", { exact: true }).fill("3");

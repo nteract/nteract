@@ -190,7 +190,11 @@ export async function listLocalPages(identity, { pendingOnly = false } = {}) {
   return pages
     .filter(
       (page) =>
-        page?.principal === identity.principal && !page.deleted && (!pendingOnly || page.pending),
+        page?.principal === identity.principal &&
+        !page.deleted &&
+        // A local replica of a trashed Page is kept for restore; Trash lists it.
+        !page.access?.trashed &&
+        (!pendingOnly || page.pending),
     )
     .map(({ page_id, title, created_at, updated_at, pending, registered }) => ({
       page_id,

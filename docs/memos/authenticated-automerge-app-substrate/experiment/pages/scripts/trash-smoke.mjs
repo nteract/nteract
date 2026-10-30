@@ -165,7 +165,12 @@ try {
   const preview = owner.getByText("This Page is in Trash.");
   const reload = owner.getByRole("button", { name: "Reload current Page" });
   await expect(preview.or(reload)).toBeVisible({ timeout: 30000 });
-  if (await reload.isVisible()) await reload.click();
+  // The prompt disappears on its own once the preview takes over, so a click
+  // can race its removal; the preview is what this step needs.
+  if (await reload.isVisible())
+    await reload.click({ timeout: 5000 }).catch(async (error) => {
+      if (!(await preview.isVisible())) throw error;
+    });
   await expect(preview).toBeVisible({ timeout: 30000 });
   await expect(content(owner)).toContainText("Trash keeps this sentence.");
   await expect(content(owner)).not.toHaveAttribute("contenteditable", "true");
