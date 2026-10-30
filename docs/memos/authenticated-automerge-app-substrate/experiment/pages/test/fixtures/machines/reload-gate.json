@@ -1,0 +1,2669 @@
+{
+  "machine": "reload-gate",
+  "description": "The tab's reload gate and the banner's outcome. viewer/reload-gate-machine.test.mjs drives each row through ReloadGate with fake sessions.",
+  "states": ["idle", "waiting", "blocked", "reloading", "cancelled"],
+  "events": ["reload", "sessionPhase", "navigate", "draft", "timeout"],
+  "unreachable": [
+    ["idle", "timeout", "only a waiting attempt arms the timer"],
+    ["waiting", "reload", "the banner disables Reload while an attempt waits"],
+    ["blocked", "timeout", "leaving waiting cancels the timer"],
+    ["cancelled", "timeout", "leaving waiting cancels the timer"],
+    [
+      "reloading",
+      "reload",
+      "after reload() the banner keeps Reload disabled while the tab unloads"
+    ],
+    ["reloading", "timeout", "leaving waiting cancels the timer"]
+  ],
+  "cases": {
+    "idle/reload": [
+      "nothing-to-wait",
+      "drafts",
+      "wait",
+      "stalled-retries",
+      "blocked-at-once",
+      "closing",
+      "unsaved",
+      "checkpointed",
+      "accept-checkpoints",
+      "discard",
+      "receipt-acknowledges"
+    ],
+    "idle/sessionPhase": [
+      "held-new",
+      "held-supersedes",
+      "held-keeps-failed",
+      "held-update",
+      "leaves",
+      "closed-saved",
+      "closed-checkpointed",
+      "closed-checkpointed-reopened",
+      "closed-failed",
+      "closed-failed-again",
+      "closed-other-account",
+      "closed-acknowledged",
+      "closed-archive",
+      "closed-held",
+      "deleted",
+      "archive-fails"
+    ],
+    "idle/draft": ["present", "absent"],
+    "waiting/sessionPhase": [
+      "saved-completes",
+      "saved-others-wait",
+      "blocked-mid-wait",
+      "closing-closes",
+      "closing-records",
+      "navigated-completes",
+      "drafts-at-end",
+      "archive-fails",
+      "held-new",
+      "left-mid-wait"
+    ],
+    "waiting/timeout": ["live-waiting", "closing-still", "none-waiting"]
+  },
+  "rows": [
+    {
+      "case": "nothing-to-wait",
+      "state": { "name": "idle", "sessions": [], "records": [], "drafts": false },
+      "event": { "type": "reload", "acceptCheckpoints": false, "discard": [] },
+      "expect": {
+        "state": { "name": "reloading", "sessions": [], "records": [], "drafts": false },
+        "effects": [{ "type": "reload" }]
+      }
+    },
+    {
+      "label": "idle × reload with an unsent comment draft (including on a resolved thread)",
+      "case": "drafts",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": true
+      },
+      "event": { "type": "reload", "acceptCheckpoints": false, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "blocked",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": true,
+          "outcome": {
+            "message": "You have an unsent comment. Send or discard it before reloading."
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "note": "no new edits race the flush",
+      "case": "wait",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": { "type": "reload", "acceptCheckpoints": false, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": false,
+            "navigated": false,
+            "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+            "closing": []
+          }
+        },
+        "effects": [
+          { "type": "pauseEdits", "ids": ["a"] },
+          { "type": "requestSave", "id": "a", "retry": false },
+          { "type": "startTimer", "ms": 15000 }
+        ]
+      }
+    },
+    {
+      "note": "offline or unsaved: the same retry as the Retry button",
+      "case": "stalled-retries",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "stalled",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": { "type": "reload", "acceptCheckpoints": false, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "stalled",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": false,
+            "navigated": false,
+            "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+            "closing": []
+          }
+        },
+        "effects": [
+          { "type": "pauseEdits", "ids": ["a"] },
+          { "type": "requestSave", "id": "a", "retry": true },
+          { "type": "startTimer", "ms": 15000 }
+        ]
+      }
+    },
+    {
+      "case": "blocked-at-once",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": [],
+            "reason": "access"
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": { "type": "reload", "acceptCheckpoints": false, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "blocked",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": [],
+              "reason": "access"
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "outcome": {
+            "message": "Your latest edits can't be saved to this Page. Download the local draft before reloading."
+          }
+        },
+        "effects": [
+          { "type": "pauseEdits", "ids": ["a"] },
+          { "type": "resumeEdits", "ids": ["a"] }
+        ]
+      }
+    },
+    {
+      "label": "idle × reload waits for a Page still closing (session dropped mid-switch)",
+      "note": "a closing session is not safe until its checkpoint lands",
+      "case": "closing",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "b",
+            "key": "dev:page-b",
+            "phase": "closing",
+            "drain": true,
+            "alive": false,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": { "type": "reload", "acceptCheckpoints": false, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "b",
+              "key": "dev:page-b",
+              "phase": "closing",
+              "drain": true,
+              "alive": false,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": false,
+            "navigated": false,
+            "live": [],
+            "closing": ["b"]
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "case": "unsaved",
+      "state": {
+        "name": "idle",
+        "sessions": [],
+        "records": [
+          {
+            "key": "dev:page-lost",
+            "account": "dev",
+            "pageId": "page-lost",
+            "title": "Garden notes",
+            "checkpointWritten": false,
+            "heads": ["h1"],
+            "markdown": "# Garden notes\n\nUnsent edit\n"
+          }
+        ],
+        "drafts": false
+      },
+      "event": { "type": "reload", "acceptCheckpoints": false, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "blocked",
+          "sessions": [],
+          "records": [
+            {
+              "key": "dev:page-lost",
+              "account": "dev",
+              "pageId": "page-lost",
+              "title": "Garden notes",
+              "checkpointWritten": false,
+              "heads": ["h1"],
+              "markdown": "# Garden notes\n\nUnsent edit\n"
+            }
+          ],
+          "drafts": false,
+          "outcome": {
+            "reason": "unsaved",
+            "pages": [
+              {
+                "key": "dev:page-lost",
+                "account": "dev",
+                "pageId": "page-lost",
+                "title": "Garden notes",
+                "checkpointWritten": false,
+                "heads": ["h1"],
+                "markdown": "# Garden notes\n\nUnsent edit\n"
+              }
+            ],
+            "message": "Edits on Garden notes couldn't be saved in this browser and haven't reached the server. Download them before reloading, or they'll be lost."
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "case": "checkpointed",
+      "state": {
+        "name": "idle",
+        "sessions": [],
+        "records": [
+          {
+            "key": "dev:page-left",
+            "account": "dev",
+            "pageId": "page-left",
+            "title": "Garden notes",
+            "checkpointWritten": true
+          },
+          {
+            "key": "dev:page-two",
+            "account": "dev",
+            "pageId": "page-two",
+            "title": "Plans",
+            "checkpointWritten": true
+          }
+        ],
+        "drafts": false
+      },
+      "event": { "type": "reload", "acceptCheckpoints": false, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "blocked",
+          "sessions": [],
+          "records": [
+            {
+              "key": "dev:page-left",
+              "account": "dev",
+              "pageId": "page-left",
+              "title": "Garden notes",
+              "checkpointWritten": true
+            },
+            {
+              "key": "dev:page-two",
+              "account": "dev",
+              "pageId": "page-two",
+              "title": "Plans",
+              "checkpointWritten": true
+            }
+          ],
+          "drafts": false,
+          "outcome": {
+            "reason": "checkpointed",
+            "pages": [
+              {
+                "key": "dev:page-left",
+                "account": "dev",
+                "pageId": "page-left",
+                "title": "Garden notes",
+                "checkpointWritten": true
+              },
+              {
+                "key": "dev:page-two",
+                "account": "dev",
+                "pageId": "page-two",
+                "title": "Plans",
+                "checkpointWritten": true
+              }
+            ],
+            "message": "Edits on Garden notes and Plans haven't reached the server yet. They're saved in this browser and sync when you open those Pages again."
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "case": "accept-checkpoints",
+      "state": {
+        "name": "idle",
+        "sessions": [],
+        "records": [
+          {
+            "key": "dev:page-left",
+            "account": "dev",
+            "pageId": "page-left",
+            "title": "Garden notes",
+            "checkpointWritten": true
+          }
+        ],
+        "drafts": false
+      },
+      "event": { "type": "reload", "acceptCheckpoints": true, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "reloading",
+          "sessions": [],
+          "records": [
+            {
+              "key": "dev:page-left",
+              "account": "dev",
+              "pageId": "page-left",
+              "title": "Garden notes",
+              "checkpointWritten": true
+            }
+          ],
+          "drafts": false
+        },
+        "effects": [{ "type": "reload" }]
+      }
+    },
+    {
+      "case": "discard",
+      "state": {
+        "name": "idle",
+        "sessions": [],
+        "records": [
+          {
+            "key": "dev:page-lost",
+            "account": "dev",
+            "pageId": "page-lost",
+            "title": "Garden notes",
+            "checkpointWritten": false,
+            "heads": ["h1"],
+            "markdown": "# Garden notes\n\nUnsent edit\n"
+          },
+          {
+            "key": "dev:page-kept",
+            "account": "dev",
+            "pageId": "page-kept",
+            "title": "Garden notes",
+            "checkpointWritten": true
+          }
+        ],
+        "drafts": false
+      },
+      "event": { "type": "reload", "acceptCheckpoints": false, "discard": ["dev:page-lost"] },
+      "expect": {
+        "state": {
+          "name": "blocked",
+          "sessions": [],
+          "records": [
+            {
+              "key": "dev:page-kept",
+              "account": "dev",
+              "pageId": "page-kept",
+              "title": "Garden notes",
+              "checkpointWritten": true
+            }
+          ],
+          "drafts": false,
+          "outcome": {
+            "reason": "checkpointed",
+            "pages": [
+              {
+                "key": "dev:page-kept",
+                "account": "dev",
+                "pageId": "page-kept",
+                "title": "Garden notes",
+                "checkpointWritten": true
+              }
+            ],
+            "message": "Edits on Garden notes haven't reached the server yet. They're saved in this browser and sync when you open that Page again."
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "note": "a receipt covering every recorded head clears the record",
+      "case": "receipt-acknowledges",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-lost",
+            "phase": "held",
+            "alive": true,
+            "pending": false,
+            "save": "saving",
+            "savedHeads": ["lost-1", "lost-2"]
+          }
+        ],
+        "records": [
+          {
+            "key": "dev:page-lost",
+            "account": "dev",
+            "pageId": "page-lost",
+            "title": "Garden notes",
+            "checkpointWritten": false,
+            "heads": ["lost-1", "lost-2"],
+            "markdown": "# Garden notes\n\nUnsent edit\n"
+          }
+        ],
+        "drafts": false
+      },
+      "event": { "type": "reload", "acceptCheckpoints": false, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "reloading",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-lost",
+              "phase": "held",
+              "alive": true,
+              "pending": false,
+              "save": "saving",
+              "savedHeads": ["lost-1", "lost-2"]
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": [{ "type": "pauseEdits", "ids": ["a"] }, { "type": "reload" }]
+      }
+    },
+    {
+      "case": "held-new",
+      "state": { "name": "idle", "sessions": [], "records": [], "drafts": false },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": true,
+        "save": "saving",
+        "savedHeads": []
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "note": "the open Page loads the checkpoint and owns its receipt",
+      "case": "held-supersedes",
+      "state": {
+        "name": "idle",
+        "sessions": [],
+        "records": [
+          {
+            "key": "dev:page-a",
+            "account": "dev",
+            "pageId": "page-a",
+            "title": "Garden notes",
+            "checkpointWritten": true
+          }
+        ],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": true,
+        "save": "saving",
+        "savedHeads": []
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "note": "reopening never clears a failed checkpoint",
+      "case": "held-keeps-failed",
+      "state": {
+        "name": "idle",
+        "sessions": [],
+        "records": [
+          {
+            "key": "dev:page-a",
+            "account": "dev",
+            "pageId": "page-a",
+            "title": "Garden notes",
+            "checkpointWritten": false,
+            "heads": ["h1"],
+            "markdown": "# Garden notes\n\nUnsent edit\n"
+          }
+        ],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": true,
+        "save": "saving",
+        "savedHeads": []
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [
+            {
+              "key": "dev:page-a",
+              "account": "dev",
+              "pageId": "page-a",
+              "title": "Garden notes",
+              "checkpointWritten": false,
+              "heads": ["h1"],
+              "markdown": "# Garden notes\n\nUnsent edit\n"
+            }
+          ],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "case": "held-update",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": false,
+        "save": "saving",
+        "savedHeads": ["h1"]
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": false,
+              "save": "saving",
+              "savedHeads": ["h1"]
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "case": "leaves",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "closing",
+        "drain": true,
+        "alive": true,
+        "pending": true,
+        "save": "saving",
+        "savedHeads": []
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "closing",
+              "drain": true,
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "case": "closed-saved",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "closing",
+            "drain": true,
+            "alive": false,
+            "pending": false,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "closed",
+        "saved": true,
+        "checkpointWritten": true,
+        "savedHeads": ["h1"],
+        "account": "dev",
+        "pageId": "page-a",
+        "title": "Garden notes"
+      },
+      "expect": {
+        "state": { "name": "idle", "sessions": [], "records": [], "drafts": false },
+        "effects": []
+      }
+    },
+    {
+      "case": "closed-checkpointed",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "closing",
+            "drain": true,
+            "alive": false,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "closed",
+        "saved": false,
+        "checkpointWritten": true,
+        "savedHeads": [],
+        "account": "dev",
+        "pageId": "page-a",
+        "title": "Garden notes",
+        "recovery": { "markdown": "# Garden notes\n\nUnsent edit\n", "heads": ["h1"] }
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sessions": [],
+          "records": [
+            {
+              "key": "dev:page-a",
+              "account": "dev",
+              "pageId": "page-a",
+              "title": "Garden notes",
+              "checkpointWritten": true
+            }
+          ],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "case": "closed-checkpointed-reopened",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "closing",
+            "drain": true,
+            "alive": false,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          },
+          {
+            "id": "c",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "closed",
+        "saved": false,
+        "checkpointWritten": true,
+        "savedHeads": [],
+        "account": "dev",
+        "pageId": "page-a",
+        "title": "Garden notes",
+        "recovery": { "markdown": "# Garden notes\n\nUnsent edit\n", "heads": ["h1"] }
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sessions": [
+            {
+              "id": "c",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "idle × sessionPhase keeps a failed checkpoint's recovery export",
+      "case": "closed-failed",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "closing",
+            "drain": true,
+            "alive": false,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "closed",
+        "saved": false,
+        "checkpointWritten": false,
+        "savedHeads": [],
+        "account": "dev",
+        "pageId": "page-a",
+        "title": "Garden notes",
+        "recovery": { "markdown": "# Garden notes\n\nUnsent edit\n", "heads": ["h1"] }
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sessions": [],
+          "records": [
+            {
+              "key": "dev:page-a",
+              "account": "dev",
+              "pageId": "page-a",
+              "title": "Garden notes",
+              "checkpointWritten": false,
+              "heads": ["h1"],
+              "markdown": "# Garden notes\n\nUnsent edit\n"
+            }
+          ],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "note": "a second failed checkpoint adds its copy",
+      "case": "closed-failed-again",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "closing",
+            "drain": true,
+            "alive": false,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [
+          {
+            "key": "dev:page-a",
+            "account": "dev",
+            "pageId": "page-a",
+            "title": "Garden notes",
+            "checkpointWritten": false,
+            "heads": ["lost-1", "lost-2"],
+            "markdown": "# Garden notes\n\nUnsent edit\n"
+          }
+        ],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "closed",
+        "saved": false,
+        "checkpointWritten": false,
+        "savedHeads": [],
+        "account": "dev",
+        "pageId": "page-a",
+        "title": "Garden notes",
+        "recovery": { "markdown": "# Garden notes\n\nUnsent edit\n", "heads": ["lost-3"] }
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sessions": [],
+          "records": [
+            {
+              "key": "dev:page-a",
+              "account": "dev",
+              "pageId": "page-a",
+              "title": "Garden notes",
+              "checkpointWritten": false,
+              "heads": ["lost-1", "lost-2", "lost-3"],
+              "markdown": "# Garden notes\n\nUnsent edit\n\n---\n\n# Garden notes\n\nUnsent edit\n"
+            }
+          ],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "idle × sessionPhase keys records by account:pageId",
+      "case": "closed-other-account",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "o",
+            "key": "other:page-shared",
+            "phase": "closing",
+            "drain": true,
+            "alive": false,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [
+          {
+            "key": "dev:page-shared",
+            "account": "dev",
+            "pageId": "page-shared",
+            "title": "Garden notes",
+            "checkpointWritten": false,
+            "heads": ["h1"],
+            "markdown": "# Garden notes\n\nUnsent edit\n"
+          }
+        ],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "o",
+        "key": "other:page-shared",
+        "phase": "closed",
+        "saved": false,
+        "checkpointWritten": false,
+        "savedHeads": [],
+        "account": "other",
+        "pageId": "page-shared",
+        "title": "Garden notes",
+        "recovery": { "markdown": "# Garden notes\n\nUnsent edit\n", "heads": ["h1"] }
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sessions": [],
+          "records": [
+            {
+              "key": "dev:page-shared",
+              "account": "dev",
+              "pageId": "page-shared",
+              "title": "Garden notes",
+              "checkpointWritten": false,
+              "heads": ["h1"],
+              "markdown": "# Garden notes\n\nUnsent edit\n"
+            },
+            {
+              "key": "other:page-shared",
+              "account": "other",
+              "pageId": "page-shared",
+              "title": "Garden notes",
+              "checkpointWritten": false,
+              "heads": ["h1"],
+              "markdown": "# Garden notes\n\nUnsent edit\n"
+            }
+          ],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "case": "closed-acknowledged",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "closing",
+            "drain": true,
+            "alive": false,
+            "pending": false,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [
+          {
+            "key": "dev:page-a",
+            "account": "dev",
+            "pageId": "page-a",
+            "title": "Garden notes",
+            "checkpointWritten": false,
+            "heads": ["lost-1"],
+            "markdown": "# Garden notes\n\nUnsent edit\n"
+          }
+        ],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "closed",
+        "saved": true,
+        "checkpointWritten": true,
+        "savedHeads": ["lost-1"],
+        "account": "dev",
+        "pageId": "page-a",
+        "title": "Garden notes"
+      },
+      "expect": {
+        "state": { "name": "idle", "sessions": [], "records": [], "drafts": false },
+        "effects": []
+      }
+    },
+    {
+      "case": "closed-archive",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "closing",
+            "drain": false,
+            "alive": false,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": [],
+            "reason": "reload"
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "closed",
+        "saved": false,
+        "checkpointWritten": true,
+        "savedHeads": [],
+        "account": "dev",
+        "pageId": "page-a",
+        "title": "Garden notes"
+      },
+      "expect": {
+        "state": { "name": "idle", "sessions": [], "records": [], "drafts": false },
+        "effects": []
+      }
+    },
+    {
+      "case": "closed-held",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": false,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "closed",
+        "saved": false,
+        "checkpointWritten": true,
+        "savedHeads": [],
+        "account": "dev",
+        "pageId": "page-a",
+        "title": "Garden notes"
+      },
+      "expect": {
+        "state": { "name": "idle", "sessions": [], "records": [], "drafts": false },
+        "effects": []
+      }
+    },
+    {
+      "case": "deleted",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "closing",
+            "drain": true,
+            "alive": false,
+            "pending": false,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "deleted",
+        "savedHeads": []
+      },
+      "expect": {
+        "state": { "name": "idle", "sessions": [], "records": [], "drafts": false },
+        "effects": []
+      }
+    },
+    {
+      "label": "idle × sessionPhase returns a failed access reload to the held set",
+      "case": "archive-fails",
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "closing",
+            "drain": false,
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": [],
+            "reason": "reload"
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": true,
+        "save": "saving",
+        "savedHeads": [],
+        "reason": "reload"
+      },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": [],
+              "reason": "reload"
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": {
+        "name": "idle",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": { "type": "navigate" },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "case": "present",
+      "state": { "name": "idle", "sessions": [], "records": [], "drafts": false },
+      "event": { "type": "draft", "present": true },
+      "expect": {
+        "state": { "name": "idle", "sessions": [], "records": [], "drafts": true },
+        "effects": []
+      }
+    },
+    {
+      "case": "absent",
+      "state": { "name": "idle", "sessions": [], "records": [], "drafts": true },
+      "event": { "type": "draft", "present": false },
+      "expect": {
+        "state": { "name": "idle", "sessions": [], "records": [], "drafts": false },
+        "effects": []
+      }
+    },
+    {
+      "case": "saved-completes",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": false,
+        "save": "saving",
+        "savedHeads": ["h1"]
+      },
+      "expect": {
+        "state": {
+          "name": "reloading",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": false,
+              "save": "saving",
+              "savedHeads": ["h1"]
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": [{ "type": "reload" }]
+      }
+    },
+    {
+      "case": "saved-others-wait",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          },
+          {
+            "id": "b",
+            "key": "dev:page-b",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [
+            { "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] },
+            { "id": "b", "key": "dev:page-b", "result": null, "savedHeads": [] }
+          ],
+          "closing": []
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": false,
+        "save": "saving",
+        "savedHeads": ["h1"]
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": false,
+              "save": "saving",
+              "savedHeads": ["h1"]
+            },
+            {
+              "id": "b",
+              "key": "dev:page-b",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": false,
+            "navigated": false,
+            "live": [
+              { "id": "a", "key": "dev:page-a", "result": "ok", "savedHeads": ["h1"] },
+              { "id": "b", "key": "dev:page-b", "result": null, "savedHeads": [] }
+            ],
+            "closing": []
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "case": "blocked-mid-wait",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": true,
+        "save": "failed",
+        "savedHeads": []
+      },
+      "expect": {
+        "state": {
+          "name": "blocked",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "failed",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "outcome": {
+            "message": "Your latest edits couldn't be saved on this device, so Pages won't reload."
+          }
+        },
+        "effects": [{ "type": "resumeEdits", "ids": ["a"] }]
+      }
+    },
+    {
+      "case": "closing-closes",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": false,
+            "save": "saving",
+            "savedHeads": []
+          },
+          {
+            "id": "b",
+            "key": "dev:page-b",
+            "phase": "closing",
+            "drain": true,
+            "alive": false,
+            "pending": false,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": "ok", "savedHeads": [] }],
+          "closing": ["b"]
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "b",
+        "key": "dev:page-b",
+        "phase": "closed",
+        "saved": true,
+        "checkpointWritten": true,
+        "savedHeads": [],
+        "account": "dev",
+        "pageId": "page-b",
+        "title": "Garden notes"
+      },
+      "expect": {
+        "state": {
+          "name": "reloading",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": false,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": [{ "type": "reload" }]
+      }
+    },
+    {
+      "case": "closing-records",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "b",
+            "key": "dev:page-b",
+            "phase": "closing",
+            "drain": true,
+            "alive": false,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": { "acceptCheckpoints": false, "navigated": false, "live": [], "closing": ["b"] }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "b",
+        "key": "dev:page-b",
+        "phase": "closed",
+        "saved": false,
+        "checkpointWritten": true,
+        "savedHeads": [],
+        "account": "dev",
+        "pageId": "page-b",
+        "title": "Garden notes",
+        "recovery": { "markdown": "# Garden notes\n\nUnsent edit\n", "heads": ["h1"] }
+      },
+      "expect": {
+        "state": {
+          "name": "blocked",
+          "sessions": [],
+          "records": [
+            {
+              "key": "dev:page-b",
+              "account": "dev",
+              "pageId": "page-b",
+              "title": "Garden notes",
+              "checkpointWritten": true
+            }
+          ],
+          "drafts": false,
+          "outcome": {
+            "reason": "checkpointed",
+            "pages": [
+              {
+                "key": "dev:page-b",
+                "account": "dev",
+                "pageId": "page-b",
+                "title": "Garden notes",
+                "checkpointWritten": true
+              }
+            ],
+            "message": "Edits on Garden notes haven't reached the server yet. They're saved in this browser and sync when you open that Page again."
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "case": "navigated-completes",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": true,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": false,
+        "save": "saving",
+        "savedHeads": []
+      },
+      "expect": {
+        "state": {
+          "name": "cancelled",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": false,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": [{ "type": "resumeEdits", "ids": ["a"] }]
+      }
+    },
+    {
+      "label": "waiting × sessionPhase checks drafts again at the end (including on a resolved thread)",
+      "case": "drafts-at-end",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": true,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": false,
+        "save": "saving",
+        "savedHeads": []
+      },
+      "expect": {
+        "state": {
+          "name": "blocked",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": false,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": true,
+          "outcome": {
+            "message": "You have an unsent comment. Send or discard it before reloading."
+          }
+        },
+        "effects": [{ "type": "resumeEdits", "ids": ["a"] }]
+      }
+    },
+    {
+      "label": "waiting × sessionPhase cancels when a failed access reload returns its session",
+      "note": "its unsent edits must block the next attempt, not ride this one",
+      "case": "archive-fails",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "b",
+            "key": "dev:page-b",
+            "phase": "closing",
+            "drain": false,
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": [],
+            "reason": "reload"
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": { "acceptCheckpoints": false, "navigated": false, "live": [], "closing": ["b"] }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "b",
+        "key": "dev:page-b",
+        "phase": "held",
+        "alive": true,
+        "pending": true,
+        "save": "saving",
+        "savedHeads": [],
+        "reason": "reload"
+      },
+      "expect": {
+        "state": {
+          "name": "cancelled",
+          "sessions": [
+            {
+              "id": "b",
+              "key": "dev:page-b",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": [],
+              "reason": "reload"
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "case": "held-new",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "c",
+        "key": "dev:page-c",
+        "phase": "held",
+        "alive": true,
+        "pending": true,
+        "save": "saving",
+        "savedHeads": []
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            },
+            {
+              "id": "c",
+              "key": "dev:page-c",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": false,
+            "navigated": true,
+            "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+            "closing": []
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "waiting × sessionPhase notes a Page left mid-wait",
+      "note": "the left Page keeps saving; the attempt is cancelled once it settles",
+      "case": "left-mid-wait",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "closing",
+        "drain": true,
+        "alive": true,
+        "pending": true,
+        "save": "saving",
+        "savedHeads": []
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "closing",
+              "drain": true,
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": false,
+            "navigated": true,
+            "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+            "closing": []
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": { "type": "navigate" },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": false,
+            "navigated": true,
+            "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+            "closing": []
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": { "type": "draft", "present": true },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": true,
+          "attempt": {
+            "acceptCheckpoints": false,
+            "navigated": false,
+            "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+            "closing": []
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "case": "live-waiting",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": { "type": "timeout" },
+      "expect": {
+        "state": {
+          "name": "blocked",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "outcome": {
+            "message": "Your latest edits haven't saved yet, so Pages won't reload. Check your connection and try again."
+          }
+        },
+        "effects": [{ "type": "resumeEdits", "ids": ["a"] }]
+      }
+    },
+    {
+      "case": "closing-still",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          },
+          {
+            "id": "b",
+            "key": "dev:page-b",
+            "phase": "closing",
+            "drain": true,
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": ["b"]
+        }
+      },
+      "event": { "type": "timeout" },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            },
+            {
+              "id": "b",
+              "key": "dev:page-b",
+              "phase": "closing",
+              "drain": true,
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": false,
+            "navigated": false,
+            "live": [
+              {
+                "id": "a",
+                "key": "dev:page-a",
+                "result": "Your latest edits haven't saved yet, so Pages won't reload. Check your connection and try again.",
+                "savedHeads": []
+              }
+            ],
+            "closing": ["b"]
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "case": "none-waiting",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": false,
+            "save": "saving",
+            "savedHeads": []
+          },
+          {
+            "id": "b",
+            "key": "dev:page-b",
+            "phase": "closing",
+            "drain": true,
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": "ok", "savedHeads": [] }],
+          "closing": ["b"]
+        }
+      },
+      "event": { "type": "timeout" },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": false,
+              "save": "saving",
+              "savedHeads": []
+            },
+            {
+              "id": "b",
+              "key": "dev:page-b",
+              "phase": "closing",
+              "drain": true,
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "attempt": {
+            "acceptCheckpoints": false,
+            "navigated": false,
+            "live": [{ "id": "a", "key": "dev:page-a", "result": "ok", "savedHeads": [] }],
+            "closing": ["b"]
+          }
+        },
+        "effects": [],
+        "rejected": "No held Page is still saving"
+      }
+    },
+    {
+      "note": "Reload anyway: the checkpoint stays in IndexedDB for the next open",
+      "state": {
+        "name": "blocked",
+        "sessions": [],
+        "records": [
+          {
+            "key": "dev:page-left",
+            "account": "dev",
+            "pageId": "page-left",
+            "title": "Garden notes",
+            "checkpointWritten": true
+          }
+        ],
+        "drafts": false,
+        "outcome": {
+          "reason": "checkpointed",
+          "pages": [
+            {
+              "key": "dev:page-left",
+              "account": "dev",
+              "pageId": "page-left",
+              "title": "Garden notes",
+              "checkpointWritten": true
+            }
+          ],
+          "message": "Edits on Garden notes haven't reached the server yet. They're saved in this browser and sync when you open that Page again."
+        }
+      },
+      "event": { "type": "reload", "acceptCheckpoints": true, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "reloading",
+          "sessions": [],
+          "records": [
+            {
+              "key": "dev:page-left",
+              "account": "dev",
+              "pageId": "page-left",
+              "title": "Garden notes",
+              "checkpointWritten": true
+            }
+          ],
+          "drafts": false
+        },
+        "effects": [{ "type": "reload" }]
+      }
+    },
+    {
+      "state": {
+        "name": "blocked",
+        "sessions": [],
+        "records": [],
+        "drafts": false,
+        "outcome": {
+          "message": "Your latest edits can't be saved to this Page. Download the local draft before reloading."
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": true,
+        "save": "saving",
+        "savedHeads": []
+      },
+      "expect": {
+        "state": {
+          "name": "blocked",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false,
+          "outcome": {
+            "message": "Your latest edits can't be saved to this Page. Download the local draft before reloading."
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "note": "opening another Page clears the banner's answer",
+      "state": {
+        "name": "blocked",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "outcome": {
+          "message": "You have an unsent comment. Send or discard it before reloading."
+        }
+      },
+      "event": { "type": "navigate" },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": {
+        "name": "blocked",
+        "sessions": [],
+        "records": [],
+        "drafts": true,
+        "outcome": {
+          "message": "You have an unsent comment. Send or discard it before reloading."
+        }
+      },
+      "event": { "type": "draft", "present": false },
+      "expect": {
+        "state": {
+          "name": "blocked",
+          "sessions": [],
+          "records": [],
+          "drafts": false,
+          "outcome": {
+            "message": "You have an unsent comment. Send or discard it before reloading."
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": {
+        "name": "cancelled",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": false,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": { "type": "reload", "acceptCheckpoints": false, "discard": [] },
+      "expect": {
+        "state": {
+          "name": "reloading",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": false,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": [{ "type": "pauseEdits", "ids": ["a"] }, { "type": "reload" }]
+      }
+    },
+    {
+      "state": { "name": "cancelled", "sessions": [], "records": [], "drafts": false },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": true,
+        "save": "saving",
+        "savedHeads": []
+      },
+      "expect": {
+        "state": {
+          "name": "cancelled",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": {
+        "name": "cancelled",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": { "type": "navigate" },
+      "expect": {
+        "state": {
+          "name": "idle",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": { "name": "cancelled", "sessions": [], "records": [], "drafts": false },
+      "event": { "type": "draft", "present": true },
+      "expect": {
+        "state": { "name": "cancelled", "sessions": [], "records": [], "drafts": true },
+        "effects": []
+      }
+    },
+    {
+      "state": {
+        "name": "reloading",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "held",
+        "alive": true,
+        "pending": false,
+        "save": "saving",
+        "savedHeads": []
+      },
+      "expect": {
+        "state": {
+          "name": "reloading",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "held",
+              "alive": true,
+              "pending": false,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": { "name": "reloading", "sessions": [], "records": [], "drafts": false },
+      "event": { "type": "navigate" },
+      "expect": {
+        "state": { "name": "reloading", "sessions": [], "records": [], "drafts": false },
+        "effects": []
+      }
+    },
+    {
+      "state": { "name": "reloading", "sessions": [], "records": [], "drafts": false },
+      "event": { "type": "draft", "present": true },
+      "expect": {
+        "state": { "name": "reloading", "sessions": [], "records": [], "drafts": true },
+        "effects": []
+      }
+    }
+  ]
+}
