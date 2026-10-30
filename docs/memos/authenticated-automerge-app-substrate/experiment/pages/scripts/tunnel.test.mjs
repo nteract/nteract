@@ -4,7 +4,12 @@ import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { accountId, installTunnelFiles, provisionTunnel } from "./deployment/tunnel.mjs";
+import {
+  accountId,
+  installTunnelFiles,
+  provisionTunnel,
+  removeOwnedFiles,
+} from "./deployment/tunnel.mjs";
 
 const tunnelId = "8e7399d8-7fcf-463a-b2b1-18f5512bedbd";
 
@@ -26,14 +31,20 @@ function cloudflare(tunnels = []) {
   return { calls, fetchImpl };
 }
 
-/** Runs each remote script locally against `root` standing in for /etc. */
-function host(root, { failInstall = false } = {}) {
+/**
+ * Runs each remote script locally against `root` standing in for /etc.
+ * `install` changes the install call: "lost" runs it and then reports an SSH
+ * failure; "between" fails it after the credentials move.
+ */
+function host(root, { install } = {}) {
   const runs = [];
   const run = (target, command, input) => {
-    const script = command.at(-1).replaceAll("/etc/", root + "/");
+    let script = command.at(-1).replaceAll("/etc/", root + "/");
     runs.push(script);
-    if (failInstall && script.includes("mktemp")) throw new Error("ssh: connection lost");
+    const installing = script.includes("mktemp");
+    if (installing && install === "between") script = script.replace(/mv -n "\$r"[^;]*;/, "false;");
     execFileSync("sh", ["-ec", script], { input: input ?? "", stdio: ["pipe", "ignore", "pipe"] });
+    if (installing && install === "lost") throw new Error("ssh: connection lost");
   };
   return { run, runs };
 }
@@ -108,7 +119,7 @@ test("apply creates the tunnel and installs private credentials and a receipt", 
   });
 });
 
-test("a failed install deletes the tunnel it just created", async () => {
+test("a failure between the two moves removes the stranded file and the new tunnel", async () => {
   const root = etc();
   const cf = cloudflare();
   await assert.rejects(
@@ -117,9 +128,9 @@ test("a failed install deletes the tunnel it just created", async () => {
       target: "page9",
       apply: true,
       fetchImpl: cf.fetchImpl,
-      run: host(root, { failInstall: true }).run,
+      run: host(root, { install: "between" }).run,
     }),
-    /new tunnel was deleted/,
+    /tunnel and its partial files were removed/,
   );
   assert.deepEqual(
     cf.calls.map(({ method }) => method),
@@ -127,6 +138,41 @@ test("a failed install deletes the tunnel it just created", async () => {
   );
   assert.equal(cf.calls.at(-1).pathname.endsWith(`/cfd_tunnel/${tunnelId}`), true);
   assert.deepEqual(readdirSync(path.join(root, "nteract-page9")), []);
+  // A rerun starts clean.
+  const rerun = await provisionTunnel({
+    token: "t",
+    target: "page9",
+    apply: true,
+    fetchImpl: cloudflare().fetchImpl,
+    run: host(root).run,
+  });
+  assert.equal(rerun.installed, true);
+});
+
+test("a lost acknowledgement after both files land keeps the tunnel", async () => {
+  const root = etc();
+  const cf = cloudflare();
+  const result = await provisionTunnel({
+    token: "t",
+    target: "page9",
+    apply: true,
+    fetchImpl: cf.fetchImpl,
+    run: host(root, { install: "lost" }).run,
+  });
+  assert.deepEqual(result, { name: "nteract-page9", tunnelId, created: true, installed: true });
+  assert.ok(cf.calls.every(({ method }) => method !== "DELETE"));
+  assert.deepEqual(readdirSync(path.join(root, "nteract-page9")).sort(), [
+    "tunnel-provisioning.json",
+    "tunnel.json",
+  ]);
+});
+
+test("cleanup leaves files that name another tunnel", () => {
+  const root = etc();
+  const d = path.join(root, "nteract-page9");
+  writeFileSync(path.join(d, "tunnel.json"), '{"TunnelID":"00000000-0000-4000-8000-000000000000"}');
+  removeOwnedFiles("page9", tunnelId, { run: host(root).run });
+  assert.deepEqual(readdirSync(d), ["tunnel.json"]);
 });
 
 test("a host that isn't ready stops before Cloudflare creates anything", async () => {

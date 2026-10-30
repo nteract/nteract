@@ -117,6 +117,24 @@ export function checkHostInstalled(target, tunnelId, { run = runRemote } = {}) {
   ]);
 }
 
+/** Remove each tunnel file only if it names `tunnelId`. Files that name
+ * another tunnel, or that are absent, are left alone. */
+export function removeOwnedFiles(target, tunnelId, { run = runRemote } = {}) {
+  if (!uuid.test(tunnelId ?? "")) throw new Error("Tunnel UUID required");
+  const d = directoryOf(target);
+  run(hostOf(target), [
+    "sudo",
+    "sh",
+    "-ec",
+    [
+      `if grep -Eq '"TunnelID": ?"${tunnelId}"' ${d}/tunnel.json 2>/dev/null; then rm -f ${d}/tunnel.json; fi`,
+      `if grep -Eq '"tunnel_id": ?"${tunnelId}"' ${d}/tunnel-provisioning.json 2>/dev/null; then rm -f ${d}/tunnel-provisioning.json; fi`,
+      `test ! -e ${d}/tunnel.json || ! grep -q '${tunnelId}' ${d}/tunnel.json`,
+      `test ! -e ${d}/tunnel-provisioning.json || ! grep -q '${tunnelId}' ${d}/tunnel-provisioning.json`,
+    ].join("; "),
+  ]);
+}
+
 /**
  * Write the credentials (mode 0600) and receipt (mode 0644) in one call.
  * Each goes to its own new temporary file first, then moves into place only if
@@ -178,12 +196,30 @@ export async function provisionTunnel({
   try {
     installTunnelFiles(target, created, { run });
   } catch (error) {
+    // The SSH call may have failed after the files landed, or between them.
+    // Reconcile before undoing anything.
+    try {
+      checkHostInstalled(target, created.tunnelId, { run });
+      return { name: api.name, tunnelId: created.tunnelId, created: true, installed: true };
+    } catch {}
+    const stranded = `Installing credentials for tunnel ${created.tunnelId} failed`;
+    try {
+      removeOwnedFiles(target, created.tunnelId, { run });
+    } catch {
+      throw new Error(
+        `${stranded} and its files on the host could not be checked. Remove any tunnel file that names it, delete the tunnel in Cloudflare, then rerun.`,
+        { cause: error },
+      );
+    }
     await api.remove(created.tunnelId).catch(() => {
       throw new Error(
-        `Installing credentials failed and tunnel ${created.tunnelId} could not be deleted; delete it in Cloudflare, then rerun.`,
+        `${stranded} and it could not be deleted; delete it in Cloudflare, then rerun.`,
+        {
+          cause: error,
+        },
       );
     });
-    throw new Error("Installing tunnel credentials failed; the new tunnel was deleted", {
+    throw new Error(`${stranded}; the tunnel and its partial files were removed`, {
       cause: error,
     });
   }
