@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
 import worker from "./index.mjs";
+import { catalogIndexTimeouts } from "./catalog-index.mjs";
 import { TOOL_REQUEST_TIMEOUT_MS } from "./tool-deadline.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
@@ -125,4 +126,131 @@ test("a tool request whose host never answers returns a retryable timeout", asyn
   assert.equal(body.code, "request_timeout");
   assert.equal(body.retryable, true);
   assert.match(body.error, /same idempotency_key/);
+});
+
+const parentId = "44444444-4444-4444-8444-444444444444";
+const spaceId = "55555555-5555-4555-8555-555555555555";
+
+/** A body that sends `prefix` and then stalls; `state.cancelled` records a
+ * reader cancelling it. */
+function stalledBody(prefix, state) {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(prefix));
+    },
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+}
+
+/** A read_page result with a private placement the gateway must replace. */
+const placedPage = () =>
+  JSON.stringify({
+    page_id: pageId,
+    title: "Placed",
+    _placement: { space_id: spaceId, parent_id: parentId, home: false },
+  });
+
+function readPage(auth, env) {
+  return worker.fetch(
+    new Request("http://127.0.0.1:9477/api/tools", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${auth.apiKey()}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ operation: "read_page", arguments: { page_id: pageId } }),
+    }),
+    env,
+  );
+}
+
+const answer = (fetch) => ({ getByName: (name) => ({ fetch: (request) => fetch(name, request) }) });
+
+test("a stalled read_page body times out and cancels its reader", async (t) => {
+  const auth = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", auth.fetch);
+  const stalled = {};
+  let reached;
+  const called = new Promise((resolve) => {
+    reached = resolve;
+  });
+  const env = {
+    ...auth.env,
+    PAGES: answer(() => {
+      reached();
+      return new Response(stalledBody('{"page_id":', stalled));
+    }),
+  };
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending = readPage(auth, env);
+  await called;
+  t.mock.timers.tick(TOOL_REQUEST_TIMEOUT_MS);
+  const response = await pending;
+  assert.equal(response.status, 504);
+  assert.equal((await response.json()).code, "request_timeout");
+  assert.equal(stalled.cancelled, true, "the Page body reader is cancelled");
+});
+
+test("stalled breadcrumb and Space bodies end their reads and keep the placement private", async (t) => {
+  const auth = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", auth.fetch);
+  t.mock.method(console, "error", () => {});
+  const verify = catalogIndexTimeouts.verify;
+  catalogIndexTimeouts.verify = 50;
+  t.after(() => {
+    catalogIndexTimeouts.verify = verify;
+  });
+  const parent = {};
+  const space = {};
+  const env = {
+    ...auth.env,
+    PAGES: answer((name) =>
+      name === pageId ? new Response(placedPage()) : new Response(stalledBody('{"title":', parent)),
+    ),
+    SPACES: answer(() => new Response(stalledBody('{"space_id":', space))),
+  };
+  const response = await readPage(auth, env);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body._placement, undefined);
+  assert.deepEqual(body.breadcrumbs, []);
+  assert.equal(body.space_id, undefined, "an unreadable Space stays hidden");
+  assert.equal(body.parent_id, undefined, "an unreadable parent stays hidden");
+  assert.equal(JSON.stringify(body).includes(spaceId), false);
+  assert.equal(JSON.stringify(body).includes(parentId), false);
+  assert.equal(parent.cancelled, true);
+  assert.equal(space.cancelled, true);
+});
+
+test("a placement walk that outlasts the tool deadline returns 504, not the raw placement", async (t) => {
+  const auth = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", auth.fetch);
+  const verify = catalogIndexTimeouts.verify;
+  catalogIndexTimeouts.verify = TOOL_REQUEST_TIMEOUT_MS * 2;
+  t.after(() => {
+    catalogIndexTimeouts.verify = verify;
+  });
+  let reached;
+  const walking = new Promise((resolve) => {
+    reached = resolve;
+  });
+  const env = {
+    ...auth.env,
+    PAGES: answer((name) => {
+      if (name === pageId) return new Response(placedPage());
+      // The parent answers slowly: later than the whole request may take.
+      reached();
+      return new Promise(() => {});
+    }),
+  };
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending = readPage(auth, env);
+  await walking;
+  t.mock.timers.tick(TOOL_REQUEST_TIMEOUT_MS);
+  const response = await pending;
+  assert.equal(response.status, 504);
+  const text = await response.text();
+  assert.match(text, /request_timeout/);
+  assert.equal(text.includes(spaceId), false);
+  assert.equal(text.includes(parentId), false);
+  assert.equal(text.includes("Placed"), false);
 });

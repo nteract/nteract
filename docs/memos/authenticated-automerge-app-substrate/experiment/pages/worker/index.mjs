@@ -71,7 +71,12 @@ import {
 import { ADMISSION_CAPABILITY } from "../shared/admission.mjs";
 import { buildAdvertisement } from "../shared/build-identity.mjs";
 import { advertiseBuild } from "./build-advertisement.mjs";
-import { withinToolDeadline } from "./tool-deadline.mjs";
+import {
+  bufferedResponse,
+  readResponseJson,
+  untilAborted,
+  withinToolDeadline,
+} from "./tool-deadline.mjs";
 
 const unifiedMissing = (request) =>
   request.headers.get(ADMISSION_CAPABILITY.header) === ADMISSION_CAPABILITY.value;
@@ -346,9 +351,16 @@ async function invoke(request, env, operation, args = {}) {
       operation,
     )
   ) {
-    return withinToolDeadline(
-      env.CATALOGS.getByName(identity.principal).fetch(
-        forwarded(request, "/internal/catalog", { operation, arguments: args }),
+    return withinToolDeadline(async (signal) =>
+      bufferedResponse(
+        await untilAborted(
+          env.CATALOGS.getByName(identity.principal).fetch(
+            forwarded(request, "/internal/catalog", { operation, arguments: args }),
+            { signal },
+          ),
+          signal,
+        ),
+        signal,
       ),
     );
   }
@@ -363,15 +375,21 @@ async function invoke(request, env, operation, args = {}) {
       authorize: (write) => authorizeImage(request, env, args.page_id, write),
     });
   }
-  const response = await withinToolDeadline(
-    env.PAGES.getByName(args.page_id).fetch(
-      forwarded(request, "/internal/tool", { operation, arguments: args }),
-    ),
-  );
-  if (operation !== "read_page" || !response.ok) return response;
-  const body = await response.json();
-  await placementView(request, env, body);
-  return json(body, response.status);
+  // One deadline covers the Page fetch, its body and read_page's placement
+  // sanitation, so a timeout never returns an unsanitized body.
+  return withinToolDeadline(async (signal) => {
+    const response = await untilAborted(
+      env.PAGES.getByName(args.page_id).fetch(
+        forwarded(request, "/internal/tool", { operation, arguments: args }),
+        { signal },
+      ),
+      signal,
+    );
+    if (operation !== "read_page" || !response.ok) return bufferedResponse(response, signal);
+    const body = await readResponseJson(response, signal);
+    await placementView(request, env, body, signal);
+    return json(body, response.status);
+  });
 }
 
 /**
@@ -382,7 +400,7 @@ async function invoke(request, env, operation, args = {}) {
  * when the Space is readable. Direct access to a Page never reveals its Space.
  * This runs in the stateless gateway, so a Page never calls another object.
  */
-async function placementView(request, env, body) {
+async function placementView(request, env, body, signal) {
   const placement = body._placement;
   delete body._placement;
   body.kind = "page";
@@ -393,16 +411,34 @@ async function placementView(request, env, body) {
     body.parent_id = null;
     return;
   }
+  // Each read, body included, is bounded by its own timeout and by the
+  // request's deadline. Only the request deadline ends the whole walk.
   const readable = async (stub, path, payload) => {
+    const controller = new AbortController();
+    const abort = () => controller.abort(signal.reason);
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+    const timer = setTimeout(
+      () => controller.abort(new Error("Placement read timed out")),
+      catalogIndexTimeouts.verify,
+    );
     try {
-      const response = await withTimeout(
-        stub.fetch(forwarded(request, path, payload)),
-        catalogIndexTimeouts.verify,
+      const response = await untilAborted(
+        stub.fetch(forwarded(request, path, payload), { signal: controller.signal }),
+        controller.signal,
       );
-      return response.ok ? await response.json() : null;
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => {});
+        return null;
+      }
+      return await readResponseJson(response, controller.signal);
     } catch (error) {
+      if (signal.aborted) throw signal.reason;
       logFailure(error, "breadcrumbs");
       return null;
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
     }
   };
   const chain = [];

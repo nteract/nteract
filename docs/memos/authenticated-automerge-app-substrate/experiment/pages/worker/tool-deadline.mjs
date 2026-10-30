@@ -1,28 +1,88 @@
 import { HttpError } from "./auth.mjs";
 
-/** Bound on one tool request to a Catalog or Page host. A host keeps running
- * work it accepted; a retry with the same idempotency_key and retry_token
- * returns that work's receipt. */
+/** Bound on one tool request to a Catalog or Page host, from the first fetch
+ * through the last body byte and any gateway post-processing. A host keeps
+ * running work it accepted; a retry with the same idempotency_key and
+ * retry_token returns that work's receipt. */
 export const TOOL_REQUEST_TIMEOUT_MS = 60_000;
 
-export async function withinToolDeadline(pending, ms = TOOL_REQUEST_TIMEOUT_MS) {
+const requestTimeout = () =>
+  new HttpError(
+    504,
+    "Pages did not answer this request in time. It may still complete: retry with the same idempotency_key and retry_token to get its result.",
+    "request_timeout",
+  );
+
+/**
+ * Run `work(signal)` under one deadline. At the deadline the signal aborts,
+ * which cancels the stub fetches and body readers that `work` started with
+ * it, and the call rejects with a retryable 504. Nothing `work` produces
+ * after that is returned, so a partly processed result never escapes.
+ */
+export async function withinToolDeadline(work, ms = TOOL_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
   let timer;
   const deadline = new Promise((_, reject) => {
-    timer = setTimeout(
-      () =>
-        reject(
-          new HttpError(
-            504,
-            "Pages did not answer this request in time. It may still complete: retry with the same idempotency_key and retry_token to get its result.",
-            "request_timeout",
-          ),
-        ),
-      ms,
-    );
+    timer = setTimeout(() => {
+      const error = requestTimeout();
+      reject(error);
+      controller.abort(error);
+    }, ms);
   });
+  const running = Promise.resolve().then(() => work(controller.signal));
+  running.catch(() => {});
   try {
-    return await Promise.race([pending, deadline]);
+    return await Promise.race([running, deadline]);
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Settle with `promise`, or reject with the signal's reason when it aborts.
+ * celld honors a stub fetch's AbortSignal; this also bounds stubs that don't. */
+export function untilAborted(promise, signal) {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  let abort;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      abort = () => reject(signal.reason);
+      signal.addEventListener("abort", abort, { once: true });
+    }),
+  ]).finally(() => signal.removeEventListener("abort", abort));
+}
+
+/** Read a whole body through a reader that `signal` cancels. An abort after
+ * the headers does not interrupt `response.json()`, so bodies are never read
+ * that way under a deadline. */
+export async function readBody(response, signal) {
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const cancel = () => reader.cancel(signal.reason).catch(() => {});
+  if (signal.aborted) cancel();
+  else signal.addEventListener("abort", cancel, { once: true });
+  try {
+    const chunks = [];
+    for (;;) {
+      const { done, value } = await untilAborted(reader.read(), signal);
+      if (done) break;
+      chunks.push(value);
+    }
+    return new Uint8Array(await new Blob(chunks).arrayBuffer());
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
+}
+
+export async function readResponseJson(response, signal) {
+  return JSON.parse(new TextDecoder().decode(await readBody(response, signal)));
+}
+
+/** The same response with its body fully read under `signal`. */
+export async function bufferedResponse(response, signal) {
+  const body = await readBody(response, signal);
+  return new Response(body.byteLength ? body : null, {
+    status: response.status,
+    headers: response.headers,
+  });
 }
