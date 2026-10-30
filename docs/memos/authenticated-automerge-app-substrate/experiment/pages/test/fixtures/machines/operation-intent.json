@@ -899,7 +899,11 @@
           "page_id": "33333333-3333-4333-8333-333333333333",
           "state": "active",
           "revision": 2,
-          "title": "Launch plan"
+          "title": "Launch plan",
+          "space_id": null,
+          "parent_id": null,
+          "position": "a0",
+          "placement_epoch": 1
         },
         "known": 1
       },
@@ -919,7 +923,11 @@
               "page_id": "33333333-3333-4333-8333-333333333333",
               "state": "active",
               "revision": 2,
-              "title": "Launch plan"
+              "title": "Launch plan",
+              "space_id": null,
+              "parent_id": null,
+              "position": "a0",
+              "placement_epoch": 1
             }
           }
         ]
@@ -1105,7 +1113,11 @@
           "page_id": "33333333-3333-4333-8333-333333333333",
           "state": "active",
           "revision": 2,
-          "title": "Launch plan"
+          "title": "Launch plan",
+          "space_id": null,
+          "parent_id": null,
+          "position": "a0",
+          "placement_epoch": 1
         },
         "known": 1
       },
@@ -1126,7 +1138,11 @@
               "page_id": "33333333-3333-4333-8333-333333333333",
               "state": "active",
               "revision": 2,
-              "title": "Launch plan"
+              "title": "Launch plan",
+              "space_id": null,
+              "parent_id": null,
+              "position": "a0",
+              "placement_epoch": 1
             }
           }
         ]
@@ -1514,7 +1530,11 @@
           "title": "Launch plan",
           "trashed_at": "2026-10-29T12:00:00.000Z",
           "trashed_by": "user:anaconda-fixture:fixture-user",
-          "trash_root_id": "33333333-3333-4333-8333-333333333333"
+          "trash_root_id": "33333333-3333-4333-8333-333333333333",
+          "space_id": null,
+          "parent_id": "22222222-2222-4222-8222-222222222222",
+          "position": "a1",
+          "placement_epoch": 0
         },
         "known": 0
       },
@@ -1542,7 +1562,11 @@
               "title": "Launch plan",
               "trashed_at": "2026-10-29T12:00:00.000Z",
               "trashed_by": "user:anaconda-fixture:fixture-user",
-              "trash_root_id": "33333333-3333-4333-8333-333333333333"
+              "trash_root_id": "33333333-3333-4333-8333-333333333333",
+              "space_id": null,
+              "parent_id": "22222222-2222-4222-8222-222222222222",
+              "position": "a1",
+              "placement_epoch": 0
             }
           },
           {
@@ -1602,7 +1626,11 @@
           "page_id": "33333333-3333-4333-8333-333333333333",
           "state": "active",
           "revision": 2,
-          "title": "Launch plan"
+          "title": "Launch plan",
+          "space_id": null,
+          "parent_id": null,
+          "position": "a0",
+          "placement_epoch": 1
         },
         "known": 1
       },
@@ -1625,7 +1653,11 @@
               "page_id": "33333333-3333-4333-8333-333333333333",
               "state": "active",
               "revision": 2,
-              "title": "Launch plan"
+              "title": "Launch plan",
+              "space_id": null,
+              "parent_id": null,
+              "position": "a0",
+              "placement_epoch": 1
             }
           },
           {
@@ -2361,7 +2393,11 @@
           "page_id": "33333333-3333-4333-8333-333333333333",
           "state": "active",
           "revision": 2,
-          "title": "Launch plan"
+          "title": "Launch plan",
+          "space_id": null,
+          "parent_id": null,
+          "position": "a0",
+          "placement_epoch": 1
         },
         "known": 1
       },
@@ -2382,7 +2418,11 @@
               "page_id": "33333333-3333-4333-8333-333333333333",
               "state": "active",
               "revision": 2,
-              "title": "Launch plan"
+              "title": "Launch plan",
+              "space_id": null,
+              "parent_id": null,
+              "position": "a0",
+              "placement_epoch": 1
             }
           }
         ],
@@ -2449,7 +2489,7 @@
     {
       "label": "counting never projects over a newer observation",
       "case": "count-fenced",
-      "note": "The fence keeps the reservation, which then goes uncounted. Revisions only grow, so a Page reporting an older revision than an entry observed needs a rollback.",
+      "note": "Current behavior, fixed in a later commit: the fence keeps the reservation, which then goes uncounted. A lifecycle read that completes late, or a projection that failed partway, can leave a reservation beside a newer entry.",
       "state": {
         "name": "forwarded",
         "operation": "restore_page",

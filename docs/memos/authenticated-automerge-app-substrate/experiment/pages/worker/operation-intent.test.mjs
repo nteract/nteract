@@ -12,6 +12,7 @@ import { lifecycleSlot, lifecycleSlotKey } from "./catalog.mjs";
 import { fingerprint } from "./mutations.mjs";
 import { RETRY_LIFETIME_MS } from "./operation-journal.mjs";
 import { operationIntent, operationIntentAlphabet } from "./operation-intent.mjs";
+import { CrashStorage, assertProjected, describe, normalize } from "./operation-intent-fixture.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/operation-intent.json", import.meta.url);
 const auth = await createAuthFixture();
@@ -72,41 +73,6 @@ class Pause extends Error {
   }
 }
 
-class Storage {
-  values = new Map();
-  constructor(onMutation) {
-    this.onMutation = onMutation;
-  }
-  async get(name) {
-    return structuredClone(this.values.get(name));
-  }
-  // One put is one write, as a Durable Object's multi-key put is.
-  async put(name, value) {
-    const entries = typeof name === "object" ? name : { [name]: value };
-    this.onMutation({ op: "put", entries });
-    for (const [entry, item] of Object.entries(entries))
-      this.values.set(entry, structuredClone(item));
-  }
-  async delete(name) {
-    this.onMutation({ op: "delete", key: name });
-    return this.values.delete(name);
-  }
-  async sync() {
-    this.onMutation({ op: "sync" });
-  }
-  async list({ prefix = "", limit = Infinity, startAfter } = {}) {
-    return new Map(
-      [...this.values]
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .filter(
-          ([name]) => name.startsWith(prefix) && (startAfter === undefined || name > startAfter),
-        )
-        .slice(0, limit)
-        .map(([name, item]) => [name, structuredClone(item)]),
-    );
-  }
-}
-
 /** The intent and slot as a restarted Catalog would load them from storage. */
 function persisted(values, operation) {
   const row = values.get(key);
@@ -158,7 +124,7 @@ const catalogEntry = (prefix, revision) => ({
  * from the first write the Catalog makes), as a crash would.
  */
 class Drive {
-  constructor(state, event, { failAt, page } = {}) {
+  constructor(state, event, { failAt } = {}) {
     this.state = state;
     this.event = event;
     this.failAt = failAt;
@@ -177,15 +143,16 @@ class Drive {
       ["request", "tombstone"].includes(event.type) && state.name === "absent"
         ? event.type === "request"
         : state.retarget === true;
-    this.page = page;
     this.mutations = 0;
     this.effects = [];
-    this.before = [];
+    this.writes = [];
+    this.projections = 0;
+    this.problems = [];
     this.forwards = 0;
     this.replayOnly = false;
     this.inProject = false;
     this.recording = !(this.mode === "reply" || this.mode === "lifecycle" || this.continuesFresh);
-    this.storage = new Storage((mutation) => this.mutate(mutation));
+    this.storage = new CrashStorage((mutation) => this.mutate(mutation));
     this.catalog = new Catalog(
       { id: { name: owner }, storage: this.storage },
       {
@@ -290,9 +257,13 @@ class Drive {
 
   mutate(mutation) {
     const index = this.mutations++;
-    // A retry after a crash runs freely: no boundaries, nothing recorded.
-    if (this.page) return;
-    this.before[index] = persisted(this.storage.values, this.operation);
+    // What a crash at this write leaves, for the crash sweep.
+    if (this.recording)
+      this.writes.push({
+        index,
+        label: describe(mutation, pageId),
+        before: normalize(this.storage.committed),
+      });
     if (index === this.failAt) throw new Error("injected storage failure");
     if (this.stopAtNext) {
       this.paused = true;
@@ -308,15 +279,30 @@ class Drive {
     }
   }
 
+  /** A projection's writes are one `project` effect. When it ends, the
+   * Page's entries must be the projection of what the Page reported. */
+  endProjection() {
+    if (!this.inProject) return;
+    this.inProject = false;
+    this.projections++;
+    // The check runs inside a storage call, where the Catalog would turn a
+    // throw into a reply; keep it for the row's result.
+    try {
+      assertProjected(this.storage.values, pageId, this.projected, this.projectedOver);
+    } catch (error) {
+      this.problems.push(error);
+    }
+  }
+
   classify(mutation) {
     const projection = new Set([`page/${pageId}`, `trash/${pageId}`, `host/deleted/${pageId}`]);
     if (mutation.op === "sync") {
-      this.inProject = false;
+      this.endProjection();
       return { type: "sync" };
     }
     if (mutation.op === "delete") {
       if (this.inProject && projection.has(mutation.key)) return undefined;
-      this.inProject = false;
+      this.endProjection();
       if (mutation.key === key) return { type: "delete_intent" };
       if (this.mode === "tombstone" && mutation.key === `trash/${pageId}`)
         return { type: "forget_trash" };
@@ -324,8 +310,15 @@ class Drive {
       return { type: "unexpected", op: "delete", key: mutation.key };
     }
     const names = Object.keys(mutation.entries);
-    if (names.length === 1 && names[0] === "host/index/dirty") {
+    if (names.includes("host/index/dirty")) {
+      this.endProjection();
       this.inProject = true;
+      this.projectedOver = {
+        page: structuredClone(this.storage.values.get(`page/${pageId}`)),
+        trash: structuredClone(this.storage.values.get(`trash/${pageId}`)),
+      };
+      if (names.some((name) => name !== "host/index/dirty" && !projection.has(name)))
+        return { type: "unexpected", op: "put", keys: names };
       return { type: "project", current: this.projected };
     }
     if (
@@ -334,7 +327,7 @@ class Drive {
       !names.some((name) => mutation.entries[name]?.reservation)
     )
       return undefined;
-    this.inProject = false;
+    this.endProjection();
     if (names.includes(key)) {
       const before = this.storage.values.get(key);
       const after = mutation.entries[key];
@@ -367,7 +360,6 @@ class Drive {
 
   async respond(request) {
     const path = new URL(request.url).pathname;
-    if (this.page) return this.page(request, this);
     if (path === "/internal/lifecycle-state") return this.lifecycleRead();
     if (path === "/internal/tombstone") {
       this.record({ type: "notify_tombstone" });
@@ -490,6 +482,8 @@ class Drive {
   /** The row's result: storage read back, plus what lives in memory. */
   result({ response, failure }) {
     if (failure && !this.paused) throw failure;
+    this.endProjection();
+    if (this.problems.length) throw this.problems[0];
     const state = persisted(this.snapshot ?? this.storage.values, this.operation);
     if (state.name === "absent" && this.hadIntent)
       return this.wrap({ name: "released", operation: this.operation }, response);
@@ -523,6 +517,8 @@ async function drive(state, event) {
 }
 
 const SUMMARY = { rows: 65, pairs: 21, unreachable: 15, cases: 42 };
+/** Every storage write the table's rows make, and the projections among them. */
+const SWEEP = { points: 117, projections: 19 };
 
 test("the operation-intent machine gives every row's result", async () => {
   assert.deepEqual(await runTable(operationIntent, loadTable(TABLE)), SUMMARY);
@@ -534,84 +530,40 @@ test("the Catalog interprets every row as the machine does", async (t) => {
   assert.deepEqual(await runTable(operationIntent, loadTable(TABLE), { drive }), SUMMARY);
 });
 
-/** A Page that applies whatever reaches it, for resuming after a crash. */
-function cooperativePage(operation) {
-  return async (request, run) => {
-    const path = new URL(request.url).pathname;
-    const intent = run.storage.values.get(key);
-    const revision = intent?.expectedRevision ?? baseRevision[operation];
-    if (path === "/internal/lifecycle-state")
-      return Response.json({
-        page_id: pageId,
-        state: operation === "delete_page" ? "active" : "trashed",
-        revision,
-      });
-    if (path === "/internal/tombstone") return Response.json({ state: "deleted" });
-    if (run.storage.values.get(`host/deleted/${pageId}`))
-      return Response.json(pageErrors[404], { status: 404 });
-    const next = revision + 1;
-    const outcome = {
-      delete_page: {
-        receipt: { page_id: pageId, state: "trashed", trashed: true },
-        current: { page_id: pageId, state: "trashed", revision: next },
-      },
-      restore_page: {
-        receipt: { page_id: pageId, state: "active", restored: true },
-        current: { page_id: pageId, state: "active", revision: next },
-      },
-      purge_page: {
-        receipt: { page_id: pageId, deleted: true, purged: true },
-        current: { page_id: pageId, state: "deleted", revision: next },
-      },
-    }[operation];
-    return Response.json(outcome);
-  };
-}
-
-test("a crash after any effect leaves the state before it, and a retry resumes from there", async (t) => {
+test("a crash at any Catalog write leaves exactly the storage before it", async (t) => {
   t.mock.method(globalThis, "fetch", auth.fetch);
   t.mock.method(console, "error", () => {});
   let points = 0;
+  let projections = 0;
   for (const row of loadTable(TABLE).rows) {
     const first = new Drive(row.state, row.event);
-    await first.run();
-    for (const { effect, first: index } of first.effects) {
-      if (index === undefined) continue;
+    first.result(await first.run());
+    projections += first.projections;
+    for (const write of first.writes) {
       points++;
-      const where = `${row.label}: crash at ${effect.type} (write ${index})`;
-      const crashed = new Drive(row.state, row.event, { failAt: index });
+      const where = `${row.label}: crash at ${write.label} (write ${write.index})`;
+      const crashed = new Drive(row.state, row.event, { failAt: write.index });
       const outcome = await crashed.run();
       // No success is reported for work that did not finish.
       if (outcome.response?.status !== undefined)
         assert.ok(outcome.response.status >= 500, `${where}: replied ${outcome.response.status}`);
       else assert.ok(outcome.failure, `${where}: the crash surfaced`);
-      const state = persisted(crashed.storage.values, crashed.operation);
-      assert.deepEqual(state, first.before[index], `${where}: storage holds the prior state`);
-      operationIntentAlphabet.assertState(state);
-      // A retry from the persisted state finishes.
-      const retry = new Drive(row.state, row.event, { page: cooperativePage(crashed.operation) });
-      retry.storage.values = structuredClone(crashed.storage.values);
-      const resumed = await retry.deliver().catch((error) => error);
-      if (resumed instanceof Error)
-        assert.equal(resumed.code, "lifecycle_unsettled", `${where}: ${resumed.message}`);
-      else if (resumed?.status !== undefined)
-        assert.ok(resumed.status < 500, `${where}: retry replied ${resumed.status}`);
-      const after = persisted(retry.storage.values, retry.operation);
-      if (!["count", "settle"].includes(retry.reader))
-        assert.ok(
-          ["completed", "superseded", "absent"].includes(after.name),
-          `${where}: retry ended ${after.name}`,
-        );
+      assert.equal(crashed.storage.depth, 0, `${where}: no transaction is left open`);
+      assert.deepEqual(normalize(crashed.storage.values), write.before, where);
+      operationIntentAlphabet.assertState(persisted(crashed.storage.values, crashed.operation));
     }
   }
-  assert.equal(points, 71, "crash points");
+  assert.deepEqual(
+    { points, projections },
+    { points: SWEEP.points, projections: SWEEP.projections },
+  );
 });
 
 test("a retargeted Trash keeps its slot, so its lost reply can't overfill Trash", async (t) => {
   t.mock.method(globalThis, "fetch", auth.fetch);
   t.mock.method(console, "error", () => {});
   const otherId = "55555555-5555-4555-8555-555555555555";
-  const storage = new Storage(() => {});
+  const storage = new CrashStorage();
   // Trash holds 99 Pages. The Catalog last saw this Page active at revision
   // 0; the Page has since been trashed and restored without it.
   for (let index = 0; index < LIMIT - 1; index++) {
