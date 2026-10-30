@@ -390,6 +390,100 @@ receipts retain the latest 256 results; older retries must still pass the revisi
 guard, and receipt capacity never prevents revocation. Comment author labels are
 editable document data, not an audit log; author-only comment editing is not implemented.
 
+## Authorization
+
+Every access decision goes through one function in [authz.mjs](worker/authz.mjs):
+
+```text
+decide(principal, actor_chain, object, now)
+  -> { capabilities, valid_until, revision, authority_token, basis }
+```
+
+It is pure and synchronous. It reads only what the item host already holds:
+the Page record's ACL, the leased copy of its project's ACL, and the Page's
+lifecycle. The celld policy hooks call it on every frame, so it never awaits,
+fetches, or reads a clock. `pageAccess`, the native lease bound, the Space read
+check, and deletion disclosure are projections of it. `pageGrant` still reports
+grant identity (role and signing-key generation), which Trash keeps.
+
+Capabilities are named: `read`, `comment`, `edit`, `share`, `administer`,
+`trash`, `restore`, `purge`, `create_items`, `manage_members`, `move_within`,
+`move_out`. A Page never gets `manage_members`, and a project never gets
+`comment`. Nothing checks the `move_*` capabilities yet, because moves don't
+exist yet. Execute is out of scope for Pages.
+
+The model is [schema.zed](authz/schema.zed), written in SpiceDB's schema
+language. A host's relationship service can load it as is. It defines
+`organization`, `group`, `project` and `page`, and the proposal's rewrites:
+`project.contribute`, `project.read_items`, and the item's `administer`, `edit`,
+`read` and `share`. An item has a `project` or an `owner`, never both. Agents
+hold no grants. They act for a person, and their credential can only narrow
+that person's capabilities.
+
+decide() runs three steps, in this order:
+
+1. **Relations.** The paths through the item's relations and the project copy
+   that reach the principal. A Page in a Space reaches its owner through the
+   project relation. Spaces are owner-only, so the copy names that owner and
+   nobody else. Company view is the `organization#member` userset. Built-in
+   mode has no tenants, so membership is proven by the verified email-domain
+   lease rather than by a stored relationship. A removal tombstone is the
+   `removed` relation. It subtracts from the item's own viewer path, so it
+   beats company view.
+2. **Lifecycle overlay.** Lifecycle belongs to nteract, not to the
+   relationship model. A trashed item keeps `read`, `administer`, `restore` and
+   `purge`, and only for principals who may restore it. A deleted or missing
+   item grants nothing. The overlay runs after every relation, so no grant can
+   reopen a trashed item.
+3. **Credential ceiling.** A credential without write keeps only `read`.
+
+The result keeps two fences apart:
+
+- `revision` is nteract's own ACL revision. It only increases, and every ACL
+  write compares `expected_revision` against it.
+- `authority_token` is an opaque consistency token from a host's relationship
+  service, such as a SpiceDB ZedToken. The built-in implementation returns
+  null. Code stores it and hands it back to the host. Nothing compares it for
+  ordering.
+
+`valid_until` is the credential's expiry, or the first earlier lease whose
+loss would change the capabilities. The email-domain proof and a leased
+project copy are such leases. Native sockets use it as their lease bound.
+`basis` names the strongest relation that survived the lifecycle overlay, and
+the path that supplied it. It feeds labels only: the `role` field, and
+`source: "domain"` for company view.
+
+A hosting platform supplies authorization by implementing `decide` with the
+same signature over a leased copy of its own relations. Only step 1 changes.
+The lifecycle overlay and the credential ceiling stay with nteract, and no call
+site changes:
+
+- The copy holds the item's relations and its project's. The host's change
+  feed (a watch stream) refreshes it, and pushes deliver revocations quickly.
+  The lease bounds how stale the copy can be. Batch checks against the host
+  run when the copy refreshes, never inside a policy hook. decide() reads the
+  copy only.
+- When the lease expires and the host can't be reached, inherited access fails
+  closed. The built-in already does this for a project copy whose
+  `valid_until` has passed. The decision's `valid_until` reports the lease, so
+  sockets end at the revocation bound.
+- `authority_token` carries the token the copy was read at. `revision` stays
+  nteract's.
+- A refresh that removes access goes through `installAccess`, which closes
+  affected sockets the same way a built-in ACL change does.
+
+[fixtures.json](authz/fixtures.json) lists relationship tuples, a lifecycle and
+each principal's expected capabilities. The `modes` field marks which rows only
+a host can produce: groups, organizations on projects, and project editors and
+viewers. [authz.test.mjs](worker/authz.test.mjs) runs every row through
+decide(). When `zed` is installed, it also checks the same tuples against
+schema.zed with `zed validate`, so SpiceDB and the built-in agree on every
+relation decision. [authz-equivalence.test.mjs](worker/authz-equivalence.test.mjs)
+compares decide() with the rules it replaced, frozen in
+[access-legacy-fixture.mjs](worker/access-legacy-fixture.mjs), over 63,000 combinations of
+lifecycle, placement, company setting, member row, credential expiry, write
+scope and domain proof.
+
 ## Private images
 
 Browser upload, screenshot paste, and file drop send PNG, JPEG, or static WebP to

@@ -90,6 +90,7 @@ import {
 
 import { claimInvitation, proposeSharingMutation, sharingProjection } from "./sharing.mjs";
 import { pageAccess, pageState, restrictAccessDuringCommit } from "./access.mjs";
+import { heldRelation, pageObject } from "./authz.mjs";
 
 import {
   CATALOG_LIMIT,
@@ -2779,16 +2780,10 @@ export class Page {
 
   /** Owner or a valid viewer/editor grant on the deleted metadata. A role
    * "none" row is a deny tombstone, which an owner can create for a principal
-   * who never had access, so it discloses nothing. */
+   * who never had access, so it discloses nothing. Company view discloses
+   * nothing either. */
   disclosesDeletion(principal) {
-    if (principal === this.metadata?.owner) return true;
-    const members = this.metadata?.acl?.members;
-    const member = members && Object.hasOwn(members, principal) ? members[principal] : undefined;
-    return (
-      ["viewer", "editor"].includes(member?.role) &&
-      Number.isSafeInteger(member.generation) &&
-      member.generation >= 1
-    );
+    return heldRelation(pageObject(this.metadata), principal) !== "none";
   }
 
   /** A trashed Page is disclosed like a deleted one: only to its owner and
@@ -2834,7 +2829,7 @@ export class Page {
    */
   async lifecycle(request, identity, route) {
     requireWrite(identity);
-    const owner = this.metadata.owner === identity.principal;
+    const owner = heldRelation(pageObject(this.metadata), identity.principal) === "owner";
     const actor = owner
       ? "owner"
       : this.disclosesDeletion(identity.principal)

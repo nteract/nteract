@@ -17,6 +17,7 @@
 import { HttpError, authenticate, json, readJson, requireWrite, errorResponse } from "./auth.mjs";
 import { fingerprint, mutationKey } from "./mutations.mjs";
 import { validPageId } from "./registration.mjs";
+import { NO_ACTOR_CHAIN, decide, heldRelation, principalOf, projectObject } from "./authz.mjs";
 
 export const SPACE_LIMIT = 50;
 /** Deepest allowed nesting; a top-level Page is at depth 1. */
@@ -154,9 +155,15 @@ export function publicSpace(record) {
   };
 }
 
-/** Owner-only in this build. The next slice adds members and their roles. */
-function canRead(record, identity) {
-  return record.owner === identity.principal;
+/** Owner-only in this build: projectObject lists the owner as the only
+ * relation. The next slice adds members and their roles. */
+function can(capability, record, identity) {
+  return decide(
+    principalOf(identity),
+    NO_ACTOR_CHAIN,
+    projectObject(record),
+    Date.now(),
+  ).capabilities.includes(capability);
 }
 
 /** Authority for one Space's record and ACL. Only the host reaches these
@@ -184,7 +191,7 @@ export class Space {
       const record = await this.ctx.storage.get(RECORD);
       if (path === "/internal/space/create") return await this.create(identity, args, record);
       // A Space the caller cannot read looks exactly like a missing one.
-      if (!record || !canRead(record, identity)) throw spaceNotFound();
+      if (!record || !can("read", record, identity)) throw spaceNotFound();
       if (path === "/internal/space/read") return json(publicSpace(record));
       if (path === "/internal/space/update") return await this.update(identity, args, record);
       throw new HttpError(404, "Not found");
@@ -200,7 +207,8 @@ export class Space {
     const { title, description } = validateSpaceInput(args, { creating: true });
     if (!validPageId(args.home_page_id)) throw new HttpError(400, "Invalid home_page_id");
     if (record) {
-      if (record.owner !== identity.principal) throw spaceNotFound();
+      if (heldRelation(projectObject(record), identity.principal) !== "owner")
+        throw spaceNotFound();
       if (record.home_page_id !== args.home_page_id)
         throw new HttpError(409, "Space already exists");
       return json(publicSpace(record));
