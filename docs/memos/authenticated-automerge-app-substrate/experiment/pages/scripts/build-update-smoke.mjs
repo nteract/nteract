@@ -80,6 +80,36 @@ async function reloadFromBanner(page) {
 const content = (page) => page.locator(".page-block wg-content");
 const saved = (page) => page.locator(".save-status--saved");
 const banner = (page) => page.locator(".build-update");
+/** Focus the Page text with the caret after its last character.
+ *
+ * focus() puts the DOM caret at the start, and Wordgard reads that caret on its
+ * next animation frame. A key pressed before then acts on Wordgard's own
+ * selection, which sits at the end when the text arrived after the editor
+ * mounted, so Mod-End does nothing and typed text lands at the DOM caret. Wait
+ * a frame before the key, then wait for the DOM caret to reach the end. */
+async function caretToEnd(page) {
+  await content(page).focus();
+  await expect(async () => {
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    );
+    await page.keyboard.press("ControlOrMeta+End");
+    await expect
+      .poll(
+        () =>
+          content(page).evaluate((root) => {
+            const selection = getSelection();
+            if (!selection?.isCollapsed || !root.contains(selection.focusNode)) return false;
+            const after = document.createRange();
+            after.selectNodeContents(root);
+            after.setStart(selection.focusNode, selection.focusOffset);
+            return after.toString() === "";
+          }),
+        { timeout: 2000 },
+      )
+      .toBe(true);
+  }).toPass({ timeout: 15000 });
+}
 
 try {
   owner = await signIn("dev@localhost");
@@ -105,8 +135,7 @@ try {
   pageId = report.pageId = created.body.page_id;
   await owner.goto(`${origin}/p/${pageId}`);
   await expect(content(owner)).toContainText("Deploy garden.");
-  await content(owner).focus();
-  await owner.keyboard.press("ControlOrMeta+End");
+  await caretToEnd(owner);
   await owner.keyboard.insertText(" Before deploy.");
   await expect(saved(owner)).toBeVisible({ timeout: 30000 });
   await expect(banner(owner)).toHaveCount(0);
@@ -156,8 +185,7 @@ try {
   report.completed.push(
     "Left a Page without its receipt: Reload named it and asked first; Open restored the checkpoint and saved it",
   );
-  await content(owner).focus();
-  await owner.keyboard.press("ControlOrMeta+End");
+  await caretToEnd(owner);
 
   // Leave the Page while its receipt is in flight, then Reload from the
   // library. The left Page keeps syncing, and Reload waits for its receipt.
@@ -229,6 +257,7 @@ try {
   await expect(reply).toBeFocused();
   await reply.pressSequentially("Unsent reply");
   await expect(content(owner)).toHaveAttribute("contenteditable", "true", { timeout: 15000 });
+  await caretToEnd(owner);
   await owner.route(
     (url) => url.pathname.startsWith("/api/") || url.pathname === "/health",
     async (route) => {
@@ -239,8 +268,6 @@ try {
       });
     },
   );
-  await content(owner).focus();
-  await owner.keyboard.press("ControlOrMeta+End");
   await owner.keyboard.insertText(" Floor raised.");
   await expect(banner(owner)).toContainText(
     "Pages changed on the server. This tab can't edit until you reload.",
