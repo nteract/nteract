@@ -52,8 +52,7 @@ export function BuildUpdate({ session, principal, onOpenPage }) {
     }
   }
   function discardAndReload() {
-    for (const page of outcome.pages) reloadGate.discard(page);
-    void reload();
+    void reload({ discard: outcome.pages.map((page) => page.key) });
   }
   const pages = outcome?.pages ?? [];
   const canDiscard =

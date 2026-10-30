@@ -1,7 +1,8 @@
-// The viewer-session table, driven through PageSession and the reload gate's
-// drain. Each row builds a session in the row's phase from flags and calls,
-// delivers the event through the method that handles it today, and reads the
-// phase back from the same flags.
+// The viewer-session table, run through the pure machine and driven through
+// PageSession. The drive builds a real session in each row's phase, delivers
+// the event through the method that handles it, and reads `phase$` back. It
+// observes effects on the instance methods they call, never on the machine's
+// own effect list.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { isDeepStrictEqual } from "node:util";
@@ -9,12 +10,17 @@ import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { PageSession } from "./session.mjs";
-import { ReloadGate } from "./build-freshness.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { encodeSnapshot, writeLocalPage } from "./local-pages.mjs";
 import { reject } from "../shared/machine.mjs";
 import { loadTable, runTable } from "../shared/machine-test.mjs";
-import { viewerSessionSpec } from "./session-machine.mjs";
+import {
+  REJECT,
+  isLive,
+  pauseOf,
+  viewerSessionMachine,
+  viewerSessionSpec,
+} from "./session-machine.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/viewer-session.json", import.meta.url);
 
@@ -22,18 +28,6 @@ const DENIED = "You no longer have access to this Page. Your local copy is kept 
 const TRASHED = "This Page is in its owner's Trash. Your local copy is kept on this device.";
 const CHANGED =
   "Your permissions changed. Reload the current Page; unsynced edits remain available as a local draft.";
-
-// Guard names for calls that change nothing today.
-const REJECT = {
-  noReload: "No access reload is pending",
-  restorePaused: "Restore needs a preview whose access isn't paused",
-  closing: "The session is closing",
-  closed: "The session is closed",
-  deleted: "The Page is deleted",
-  alreadyClosing: "The session is already closing",
-  alreadyClosed: "The session is already closed",
-  archiving: "An access reload is already archiving this replica",
-};
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() {
@@ -44,18 +38,6 @@ function deferred() {
   });
   promise.catch(() => {});
   return { promise, resolve, reject: fail };
-}
-function manualTimers() {
-  const pending = new Set();
-  return {
-    pending,
-    setTimeout: (fn, ms) => {
-      const timer = { fn, ms };
-      pending.add(timer);
-      return timer;
-    },
-    clearTimeout: (timer) => pending.delete(timer),
-  };
 }
 const access = (role = "editor", generation = 1) => ({
   role,
@@ -102,16 +84,7 @@ async function fixture({ opening = false, startable = false, role = "editor" } =
     authentication: auth,
     refreshSession: async () => auth,
   });
-  const ctx = {
-    session,
-    auth,
-    doc,
-    raw: [],
-    gate: new ReloadGate({ timers: manualTimers() }),
-    flush: deferred(),
-    persist: deferred(),
-    opening: opening || startable,
-  };
+  const ctx = { session, auth, doc, raw: [], flush: deferred(), persist: deferred() };
   current = ctx;
   const handle = { doc: () => doc, documentId, on() {} };
   const repo = {
@@ -121,6 +94,15 @@ async function fixture({ opening = false, startable = false, role = "editor" } =
     },
     find: async () => handle,
   };
+  const record = (name, method) => {
+    const original = method.bind(session);
+    return (...args) => {
+      ctx.raw.push(name);
+      return original(...args);
+    };
+  };
+  session.drainBeforeClose = record("drain", session.drainBeforeClose);
+  session.forgetLocal = record("forget", session.forgetLocal);
   session.disconnectSockets = () => {
     ctx.raw.push("disconnect");
     return Promise.resolve();
@@ -147,29 +129,6 @@ async function fixture({ opening = false, startable = false, role = "editor" } =
     };
   };
   session.retryConnection = async () => {};
-  const close = session.close.bind(session);
-  session.close = () => {
-    const first = !ctx.closeCalled;
-    if (first) {
-      ctx.closeCalled = true;
-      if (ctx.drainCalled) {
-        try {
-          ctx.savedAtClose = !!session.deleted || !session.recoveryPending;
-        } catch {
-          ctx.savedAtClose = false;
-        }
-      }
-    }
-    const promise = close();
-    if (first) {
-      ctx.pending = promise;
-      promise.then(
-        () => (ctx.closeSettled = true),
-        () => (ctx.closeSettled = true),
-      );
-    }
-    return promise;
-  };
   if (!startable) {
     session.acceptAuthentication(auth);
     session.access = access(role);
@@ -179,36 +138,22 @@ async function fixture({ opening = false, startable = false, role = "editor" } =
     if (!opening) {
       session.handle = handle;
       session.localPage = { ...localPage };
+      session.dispatch({ type: "opened", denied: false });
     }
     session.updateCapabilities();
   }
   return ctx;
 }
 
-/** Leave through the reload gate, as the app does when navigating away. */
-function leaveThroughGate(ctx) {
-  if (ctx.closeCalled || ctx.drainCalled) return;
-  ctx.drainCalled = true;
-  ctx.raw.push("drain");
-  ctx.gate.hold(ctx.session);
-  void ctx.gate.drainAndClose(ctx.session).catch(() => {});
-}
-
-function reloadForAccess(ctx) {
-  const reloading = ctx.session.reloadForAccess();
-  ctx.archiving = true;
-  ctx.pending = reloading;
-  reloading.then(
-    () => (ctx.archiving = false),
-    () => (ctx.archiving = false),
-  );
-  return reloading;
+function track(ctx, promise) {
+  ctx.pending = Promise.resolve(promise);
+  ctx.pending.catch(() => {});
 }
 
 function applyPause(ctx, { reason, auth }) {
   const session = ctx.session;
   if (reason === "access") session.pauseForAccess(DENIED, { denied: true });
-  else if (reason === "trash") session.pauseForAccess(TRASHED, { denied: true });
+  else if (reason === "trash") session.pauseForAccess(TRASHED, { trashed: true });
   else if (reason === "reload") session.pauseForAccess(CHANGED);
   if (reason === "auth" || auth) session.requireSignIn();
 }
@@ -240,30 +185,29 @@ async function prepare(state, event) {
       applyPause(ctx, state);
       break;
     case "draining":
-      leaveThroughGate(ctx);
+      track(ctx, session.leave({ drain: true }));
       if (state.reason) finish = () => applyPause(ctx, state);
       break;
     case "checkpointing":
       if (state.archive) {
         applyPause(ctx, { reason: "reload", auth: state.auth });
-        void reloadForAccess(ctx).catch(() => {});
+        track(ctx, session.reloadForAccess());
         await settle();
-        if (state.reason !== "reload") applyPause(ctx, state);
       } else if (state.drained) {
-        leaveThroughGate(ctx);
+        track(ctx, session.leave({ drain: true }));
         endDrain(ctx, state.saved);
         await settle();
-      } else void session.close();
+      } else track(ctx, session.close());
       break;
     case "closed":
       if (state.archived) {
         applyPause(ctx, { reason: "reload" });
-        void reloadForAccess(ctx).catch(() => {});
+        track(ctx, session.reloadForAccess());
       } else if (state.drained) {
-        leaveThroughGate(ctx);
+        track(ctx, session.leave({ drain: true }));
         endDrain(ctx, state.saved);
         await settle();
-      } else void session.close();
+      } else track(ctx, session.close());
       ctx.flush.resolve();
       if (state.checkpointWritten) ctx.persist.resolve();
       else ctx.persist.reject(Error("disk"));
@@ -278,7 +222,6 @@ async function prepare(state, event) {
   return () => {
     finish();
     ctx.raw.length = 0;
-    ctx.wasDeleted = !!session.deleted;
     return ctx;
   };
 }
@@ -291,19 +234,19 @@ function grantFor(session, grant) {
   return access("editor", generation);
 }
 
-/** Deliver the event through today's handler. Returns a promise to await
- * before reading back, or nothing when the phase must be read in the same
- * tick: a drain in flight reacts to a pause on the next microtask. */
+/** Deliver the event through its handler. Returns a promise to await before
+ * reading back, or nothing when the phase must be read in the same tick: a
+ * drain in flight reacts to a pause on the next microtask. */
 function deliver(ctx, event) {
   const session = ctx.session;
-  const sync = ctx.drainCalled && !ctx.closeCalled;
+  const sync = session.phase$.snapshot().name === "draining";
   switch (event.type) {
     case "opened":
       return session.start().then(() => clearInterval(session.presenceTimer));
     case "accessChanged": {
       if (event.grant === "deleted") {
         void session.markDeleted().catch(() => {});
-        return;
+        return undefined;
       }
       if (event.tab) {
         const next = grantFor(session, event.grant);
@@ -317,29 +260,27 @@ function deliver(ctx, event) {
     }
     case "signIn":
       session.acceptAuthentication(event.ok ? ctx.auth : { identity: null });
-      return;
+      return undefined;
     case "trash":
       // The /api/connect 403 page_trashed handler in openConnection.
-      session.pauseForAccess(TRASHED, { denied: true });
-      return;
-    case "restore":
-      // The preview's Restore button, shown when canRestore, reopens the Page;
-      // the app leaves the preview through the gate first.
-      if (session.canRestore) leaveThroughGate(ctx);
-      return;
+      session.pauseForAccess(TRASHED, { trashed: true });
+      return undefined;
+    case "restore": {
+      const closing = session.restore();
+      if (closing) track(ctx, closing);
+      return undefined;
+    }
     case "reloadAccess": {
-      const before = ctx.raw.length;
-      reloadForAccess(ctx).catch(() => {});
-      return settle().then(() => {
-        if (ctx.raw.length === before) ctx.archiving = false;
-      });
+      const reloading = session.reloadForAccess();
+      reloading.catch(() => {});
+      if (session.phase$.snapshot().name === "checkpointing") track(ctx, reloading);
+      return settle();
     }
     case "leave":
-      if (event.drain) leaveThroughGate(ctx);
-      else void session.close().catch(() => {});
-      return;
+      track(ctx, session.leave({ drain: event.drain }));
+      return undefined;
     case "drained":
-      if (!session.accessDenied && !session.accessReloadRequired && !session.authRequired)
+      if (!pauseOf(session.phase$.snapshot()).auth && !session.phase$.snapshot().reason)
         endDrain(ctx, event.saved);
       return settle();
     case "checkpointOk":
@@ -355,45 +296,24 @@ function deliver(ctx, event) {
       );
       return ctx.pending.catch(() => {}).then(settle);
   }
+  return undefined;
 }
 
-function pauseFromFlags(session) {
-  let reason;
-  if (session.accessDenied) reason = session.accessProblem === TRASHED ? "trash" : "access";
-  else if (session.accessReloadRequired) reason = "reload";
-  if (reason) return session.authRequired ? { reason, auth: true } : { reason };
-  return session.authRequired ? { reason: "auth" } : {};
-}
-
-/** Today's phase, spread across PageSession flags and the gate's membership. */
-function phaseOf(ctx) {
-  const session = ctx.session;
-  if (session.deleted)
-    return ctx.closeCalled ? { name: "deleted", closing: true } : { name: "deleted" };
-  if (ctx.closeCalled) {
-    const leaving = ctx.drainCalled
-      ? { drained: true, saved: ctx.savedAtClose }
-      : { drained: false };
-    if (!ctx.closeSettled) return { name: "checkpointing", ...leaving };
-    return {
-      name: "closed",
-      checkpointWritten: session.checkpointWritten === true,
-      ...leaving,
-      ...(session.skipCloseCheckpoint ? { archived: true } : {}),
-    };
-  }
-  const pause = pauseFromFlags(session);
-  if (ctx.archiving) return { name: "checkpointing", drained: false, archive: true, ...pause };
-  if (ctx.drainCalled) return { name: "draining", ...pause };
-  if (ctx.opening && !pause.reason && !session.handle) return { name: "opening" };
-  return pause.reason ? { name: "paused", ...pause } : { name: "open" };
+/** The flags PageSession still exposes must agree with its phase. */
+function assertFlags(session, phase) {
+  const pause = pauseOf(phase);
+  assert.equal(session.alive, isLive(phase));
+  assert.equal(session.deleted, phase.name === "deleted");
+  assert.equal(session.authRequired, pause.auth);
+  assert.equal(session.accessReloadRequired, pause.access === "reload");
+  if (phase.name !== "opening")
+    assert.equal(session.accessDenied, pause.access === "access" || pause.access === "trash");
+  assert.equal(session.checkpointWritten, phase.name === "closed" && phase.checkpointWritten);
 }
 
 function effectsOf(ctx, event) {
   const checkpointResult = event.type === "checkpointOk" || event.type === "checkpointFail";
   const effects = [];
-  if (event.type === "accessChanged" && event.grant === "deleted" && !ctx.wasDeleted)
-    effects.push("forget");
   for (const call of ctx.raw) {
     if (call === "flush") {
       if (!checkpointResult) effects.push(event.type === "reloadAccess" ? "archive" : "checkpoint");
@@ -406,6 +326,7 @@ function effectsOf(ctx, event) {
   return effects.map((type) => ({ type }));
 }
 
+/** Calls that change nothing name the guard that refused them. */
 function guardFor(state, event) {
   switch (state.name) {
     case "deleted":
@@ -427,7 +348,8 @@ async function drive(state, event) {
   const ctx = finish();
   const pending = deliver(ctx, event);
   if (pending) await pending;
-  const next = phaseOf(ctx);
+  const next = ctx.session.phase$.snapshot();
+  assertFlags(ctx.session, next);
   const effects = effectsOf(ctx, event);
   const reason = guardFor(state, event);
   if (reason && effects.length === 0 && isDeepStrictEqual(next, state))
@@ -435,7 +357,14 @@ async function drive(state, event) {
   return { state: next, effects };
 }
 
-test("the viewer-session table drives PageSession and the reload gate's drain", async (t) => {
+const table = loadTable(TABLE);
+const COUNTS = { rows: 76, pairs: 38, unreachable: 32, cases: 58 };
+
+test("the viewer-session table runs through the pure machine", async () => {
+  assert.deepEqual(await runTable(viewerSessionMachine, table), COUNTS);
+});
+
+test("the viewer-session table drives PageSession and its drain", async (t) => {
   PageSession.open = async () => {
     current.raw.push("reopen");
     return {};
@@ -443,6 +372,5 @@ test("the viewer-session table drives PageSession and the reload gate's drain", 
   t.after(() => {
     PageSession.open = openReplacement;
   });
-  const result = await runTable(viewerSessionSpec, loadTable(TABLE), { drive });
-  assert.deepEqual(result, { rows: 76, pairs: 38, unreachable: 32, cases: 58 });
+  assert.deepEqual(await runTable(viewerSessionSpec, table, { drive }), COUNTS);
 });

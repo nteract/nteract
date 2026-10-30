@@ -40,7 +40,7 @@
  * stalled save like the Retry button); `startTimer` arms the attempt's
  * timeout; `reload` reloads the tab.
  */
-import { defineAlphabet } from "../shared/machine.mjs";
+import { defineMachine, reject } from "../shared/machine.mjs";
 
 const PHASES = new Set(["held", "closing"]);
 const SAVES = new Set(["saving", "stalled", "failed"]);
@@ -273,4 +273,228 @@ export const reloadGateSpec = Object.freeze({
   },
 });
 
-export const reloadGateAlphabet = defineAlphabet(reloadGateSpec);
+export const SAVE_BEFORE_RELOAD_MS = 15_000;
+export const UNSENT_COMMENT = "You have an unsent comment. Send or discard it before reloading.";
+export const SAVE_TIMEOUT =
+  "Your latest edits haven't saved yet, so Pages won't reload. Check your connection and try again.";
+export const BLOCKED = Object.freeze({
+  auth: "Sign in again so your latest edits can save, then reload.",
+  access:
+    "Your latest edits can't be saved to this Page. Download the local draft before reloading.",
+  failed: "Your latest edits couldn't be saved on this device, so Pages won't reload.",
+});
+export const NOTHING_SAVING = "No held Page is still saving";
+
+const names = (pages) => {
+  const titles = pages.map((page) => page.title);
+  return titles.length === 1 ? titles[0] : `${titles.slice(0, -1).join(", ")} and ${titles.at(-1)}`;
+};
+export const checkpointedMessage = (pages) =>
+  `Edits on ${names(pages)} haven't reached the server yet. They're saved in this browser and sync when you open ${pages.length === 1 ? "that Page" : "those Pages"} again.`;
+export const unsavedMessage = (pages) =>
+  `Edits on ${names(pages)} couldn't be saved in this browser and haven't reached the server. Download them before reloading, or they'll be lost.`;
+
+function blockedMessage(entry) {
+  if (entry.save === "failed") return BLOCKED.failed;
+  if (entry.reason === "auth") return BLOCKED.auth;
+  if (entry.reason) return BLOCKED.access;
+  return undefined;
+}
+const resultFor = (entry) =>
+  !entry.alive || !entry.pending ? "ok" : (blockedMessage(entry) ?? null);
+
+function entryOf(event) {
+  const { type: _, ...entry } = event;
+  return entry;
+}
+
+const acknowledge = (records, key, savedHeads) =>
+  records.filter(
+    (record) =>
+      !(
+        record.key === key &&
+        !record.checkpointWritten &&
+        record.heads.length > 0 &&
+        record.heads.every((head) => savedHeads.includes(head))
+      ),
+  );
+
+function recordClosed(records, sessions, event) {
+  const { key, account, pageId } = event;
+  const previous = records.find((record) => record.key === key);
+  const title = event.title.trim() || "Untitled";
+  if (event.checkpointWritten) {
+    // A newer session superseded this checkpoint; a failed record stays.
+    if (previous || sessions.some((s) => s.phase === "held" && s.key === key)) return records;
+    return [...records, { key, account, pageId, title, checkpointWritten: true }];
+  }
+  // Each failed checkpoint is its own lost copy: keep every one.
+  const lost = previous && !previous.checkpointWritten ? previous : undefined;
+  const next = {
+    key,
+    account,
+    pageId,
+    title,
+    checkpointWritten: false,
+    heads: [...(lost?.heads ?? []), ...(event.recovery?.heads ?? [])],
+    markdown: [lost?.markdown, event.recovery?.markdown ?? ""]
+      .filter((part) => part !== undefined)
+      .join("\n---\n\n"),
+  };
+  return previous
+    ? records.map((record) => (record.key === key ? next : record))
+    : [...records, next];
+}
+
+/** Track a session's phase. Returns whether the held/closing set moved. */
+function bookkeep(state, event) {
+  let { sessions, records } = state;
+  const index = sessions.findIndex((s) => s.id === event.id);
+  const previous = sessions[index];
+  if (event.phase === "held" || event.phase === "closing") {
+    const entry = entryOf(event);
+    if (!previous) {
+      if (entry.phase === "held")
+        records = records.filter((r) => !(r.key === entry.key && r.checkpointWritten));
+      return { sessions: [...sessions, entry], records, moved: true };
+    }
+    return {
+      sessions: sessions.map((s, i) => (i === index ? entry : s)),
+      records,
+      moved: previous.phase !== entry.phase,
+    };
+  }
+  if (previous) sessions = sessions.filter((_, i) => i !== index);
+  if (previous?.phase === "closing" && previous.drain) {
+    records = acknowledge(records, event.key, event.savedHeads);
+    if (event.phase === "closed" && !event.saved) records = recordClosed(records, sessions, event);
+  }
+  return { sessions, records, moved: false };
+}
+
+const base = ({ sessions, records, drafts }) => ({ sessions, records, drafts });
+
+function complete(state, effects) {
+  const { attempt } = state;
+  const ids = attempt.live.map((entry) => entry.id);
+  const resume = ids.length ? [{ type: "resumeEdits", ids }] : [];
+  const blocked = (outcome, records = state.records) => ({
+    state: { name: "blocked", ...base({ ...state, records }), outcome },
+    effects: [...effects, ...resume],
+  });
+  if (attempt.navigated)
+    return { state: { name: "cancelled", ...base(state) }, effects: [...effects, ...resume] };
+  if (state.drafts) return blocked({ message: UNSENT_COMMENT });
+  const failed = attempt.live.find((entry) => entry.result !== "ok");
+  if (failed) return blocked({ message: failed.result });
+  let records = state.records;
+  for (const entry of attempt.live) records = acknowledge(records, entry.key, entry.savedHeads);
+  const unsaved = records.filter((record) => !record.checkpointWritten);
+  if (unsaved.length)
+    return blocked(
+      { reason: "unsaved", pages: unsaved, message: unsavedMessage(unsaved) },
+      records,
+    );
+  if (records.length && !attempt.acceptCheckpoints)
+    return blocked(
+      { reason: "checkpointed", pages: records, message: checkpointedMessage(records) },
+      records,
+    );
+  return {
+    state: { name: "reloading", ...base({ ...state, records }) },
+    effects: [...effects, { type: "reload" }],
+  };
+}
+
+function settleAttempt(state, effects = []) {
+  const { attempt } = state;
+  if (attempt.closing.length || attempt.live.some((entry) => entry.result === null))
+    return { state, effects };
+  return complete(state, effects);
+}
+
+function start(state, event) {
+  const records = state.records.filter((record) => !event.discard.includes(record.key));
+  const next = { ...base(state), records };
+  if (state.drafts)
+    return {
+      state: { name: "blocked", ...next, outcome: { message: UNSENT_COMMENT } },
+      effects: [],
+    };
+  const live = state.sessions.filter((s) => s.phase === "held" && s.alive);
+  const effects = [];
+  if (live.length) effects.push({ type: "pauseEdits", ids: live.map((s) => s.id) });
+  const entries = live.map((s) => ({
+    id: s.id,
+    key: s.key,
+    result: resultFor(s),
+    savedHeads: s.savedHeads,
+  }));
+  for (const s of live)
+    if (resultFor(s) === null)
+      effects.push({ type: "requestSave", id: s.id, retry: s.save === "stalled" });
+  if (entries.some((entry) => entry.result === null))
+    effects.push({ type: "startTimer", ms: SAVE_BEFORE_RELOAD_MS });
+  const attempt = {
+    acceptCheckpoints: event.acceptCheckpoints,
+    navigated: false,
+    live: entries,
+    closing: state.sessions.filter((s) => s.phase === "closing").map((s) => s.id),
+  };
+  return settleAttempt({ name: "waiting", ...next, attempt }, effects);
+}
+
+function transition(state, event) {
+  switch (event.type) {
+    case "reload":
+      return start(state, event);
+    case "draft":
+      return { state: { ...state, drafts: event.present }, effects: [] };
+    case "navigate":
+      if (state.name === "waiting")
+        return { state: { ...state, attempt: { ...state.attempt, navigated: true } }, effects: [] };
+      if (state.name === "reloading") return { state, effects: [] };
+      return { state: { name: "idle", ...base(state) }, effects: [] };
+    case "sessionPhase": {
+      const { sessions, records, moved } = bookkeep(state, event);
+      if (state.name !== "waiting") return { state: { ...state, sessions, records }, effects: [] };
+      const entry = sessions.find((s) => s.id === event.id);
+      const live = state.attempt.live.map((item) => {
+        if (item.id !== event.id) return item;
+        const savedHeads = event.savedHeads;
+        if (item.result !== null) return { ...item, savedHeads };
+        return { ...item, result: entry ? resultFor(entry) : "ok", savedHeads };
+      });
+      const closing =
+        entry?.phase === "closing"
+          ? state.attempt.closing
+          : state.attempt.closing.filter((id) => id !== event.id);
+      return settleAttempt({
+        ...state,
+        sessions,
+        records,
+        attempt: {
+          ...state.attempt,
+          navigated: state.attempt.navigated || moved,
+          live,
+          closing,
+        },
+      });
+    }
+    case "timeout": {
+      if (!state.attempt.live.some((entry) => entry.result === null))
+        return reject(state, NOTHING_SAVING);
+      const live = state.attempt.live.map((entry) =>
+        entry.result === null ? { ...entry, result: SAVE_TIMEOUT } : entry,
+      );
+      return settleAttempt({ ...state, attempt: { ...state.attempt, live } });
+    }
+  }
+  throw new Error(`unknown event ${event.type}`);
+}
+
+export const reloadGateMachine = defineMachine({
+  ...reloadGateSpec,
+  initial: { name: "idle", sessions: [], records: [], drafts: false },
+  transition,
+});

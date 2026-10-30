@@ -2,15 +2,18 @@
 // and a reload waiting for its receipt. Inputs and expected outputs are
 // marbles; times are milliseconds (TestScheduler run mode).
 //
-// The harness below drives today's ReloadGate and PageSession on a virtual
-// clock: it injects the gate's timers, applies each input at its frame, and
-// lets promise continuations run before the clock moves on.
+// Each spec runs under TestScheduler.run: PageSession's drain and the reload
+// gate's timeout use RxJS schedulers, so the whole sequence plays on virtual
+// time and the phases they publish are the observed output.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { filter, map } from "rxjs";
 import { TestScheduler } from "rxjs/testing";
 import * as A from "@automerge/automerge";
-import { PageSession } from "./session.mjs";
-import { CLOSE_DRAIN_MS, ReloadGate } from "./build-freshness.mjs";
+import { CLOSE_DRAIN_MS, PageSession } from "./session.mjs";
+import { ReloadGate } from "./build-freshness.mjs";
+import { SessionHost } from "./session-host.mjs";
+import { FakeSession } from "./session-fixture.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 
 const SAVE_TIMEOUT =
@@ -21,44 +24,15 @@ const OUTCOMES = {
   t: { ok: false, message: SAVE_TIMEOUT },
 };
 
-const settle = () => new Promise((resolve) => setImmediate(resolve));
-const marbles = (spec, values) =>
-  TestScheduler.parseMarbles(spec, values, undefined, undefined, true).map(
-    ({ frame, notification }) => ({ frame, value: notification.value }),
-  );
-
-/** Run `inputs` (name -> marbles) against `actions` on a virtual clock and
- * return what `record` saw, as frames and values. */
-async function runOnClock({ inputs, values = {}, start }) {
-  let now = 0;
-  const timers = new Set();
-  const clock = {
-    setTimeout: (fn, ms) => {
-      const timer = { fn, due: now + ms };
-      timers.add(timer);
-      return timer;
-    },
-    clearTimeout: (timer) => timers.delete(timer),
-  };
-  const seen = [];
-  const actions = await start({ clock, record: (value) => seen.push({ frame: now, value }) });
-  const steps = Object.entries(inputs)
-    .flatMap(([name, spec]) =>
-      marbles(spec, values).map(({ frame, value }) => ({ frame, run: () => actions[name](value) })),
-    )
-    .sort((a, b) => a.frame - b.frame);
-  for (;;) {
-    const due = Math.min(steps[0]?.frame ?? Infinity, ...[...timers].map((t) => t.due));
-    if (due === Infinity) break;
-    now = due;
-    for (const timer of [...timers].filter((t) => t.due === now)) {
-      timers.delete(timer);
-      timer.fn();
-    }
-    while (steps[0]?.frame === now) steps.shift().run();
-    await settle();
-  }
-  return seen;
+/** Run `inputs` (name -> marbles) as calls on `actions` and compare what
+ * `output$` emits with `expected`. */
+function runMarbles({ inputs, expected, values, start }) {
+  const scheduler = new TestScheduler((actual, wanted) => assert.deepStrictEqual(actual, wanted));
+  scheduler.run(({ cold, expectObservable }) => {
+    const { actions, output$ } = start();
+    for (const [name, spec] of Object.entries(inputs)) cold(spec).subscribe(() => actions[name]());
+    expectObservable(output$).toBe(expected, values);
+  });
 }
 
 /** A PageSession whose storage and sockets are recorders. It is saving an
@@ -75,6 +49,7 @@ function savingSession() {
   session.releaseLocal = async () => {};
   session.disconnectSockets = async () => {};
   session.status = "Saving";
+  session.dispatch({ type: "opened", denied: false });
   const receipt = () => {
     session.savedHeads = A.getHeads(doc);
     session.localPage = { pending: false };
@@ -89,110 +64,87 @@ function savingSession() {
 }
 
 /** Leave a saving Page; `c` marks the frame its close starts. */
-function drain(inputs) {
-  return runOnClock({
+function drain(inputs, expected) {
+  runMarbles({
     inputs,
-    async start({ clock, record }) {
+    expected,
+    start() {
       const { session, receipt, offline } = savingSession();
-      const gate = new ReloadGate({ timers: clock });
-      gate.hold(session);
-      const close = session.close.bind(session);
-      session.close = () => {
-        if (!session.closing) record("c");
-        return close();
+      return {
+        actions: { leave: () => void session.leave({ drain: true }), receipt, offline },
+        output$: session.phase$
+          .select((phase) => phase.name)
+          .pipe(
+            filter((name) => name === "checkpointing"),
+            map(() => "c"),
+          ),
       };
-      return { leave: () => void gate.drainAndClose(session), receipt, offline };
     },
   });
 }
 
-test("a left Page closes at its receipt, when it goes offline, or after CLOSE_DRAIN_MS", async () => {
+test("a left Page closes at its receipt, when it goes offline, or after CLOSE_DRAIN_MS", () => {
   assert.equal(CLOSE_DRAIN_MS, 10_000);
-  assert.deepEqual(await drain({ leave: "a" }), marbles("10s c"));
-  assert.deepEqual(await drain({ leave: "a", receipt: "4s r" }), marbles("4s c"));
-  assert.deepEqual(await drain({ leave: "a", offline: "2s f" }), marbles("2s c"));
+  drain({ leave: "a" }, "10s c");
+  drain({ leave: "a", receipt: "4s r" }, "4s c");
+  drain({ leave: "a", offline: "2s f" }, "2s c");
   // A receipt after the drain gave up changes nothing.
-  assert.deepEqual(await drain({ leave: "a", receipt: "12s r" }), marbles("10s c"));
+  drain({ leave: "a", receipt: "12s r" }, "10s c");
 });
 
-class FakeSession {
-  alive = true;
-  deleted = false;
-  pending = true;
-  status = "Saving";
-  savedHeads = [];
-  listeners = new Set();
-  pauses = new Set();
-  doc = { title: "Garden notes" };
-  constructor(pageId) {
-    this.pageId = pageId;
-    this.identity = { principal: "dev" };
-  }
-  get recoveryPending() {
-    return this.pending;
-  }
-  subscribe(fn) {
-    this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
-  }
-  set(patch) {
-    Object.assign(this, patch);
-    for (const fn of this.listeners) fn();
-  }
-  pauseEdits(reason, paused = true) {
-    if (paused) this.pauses.add(reason);
-    else this.pauses.delete(reason);
-  }
-  retryConnection() {}
-  queueSaved() {}
-  exportRecovery() {
-    return { markdown: "", heads: [] };
-  }
-  async close() {
-    this.alive = false;
-    this.checkpointWritten = true;
-  }
+function outcomeOf(state) {
+  if (state.name === "reloading") return OUTCOMES.o;
+  if (state.name === "cancelled") return OUTCOMES.x;
+  return { ok: false, ...state.outcome };
 }
 
 /** Reload while Page A saves. `leave` drains A, `open` installs B, `receipt`
  * acknowledges A's edits. The reload's answer is recorded at its frame. */
-function reloadWith(inputs) {
-  return runOnClock({
+function reloadWith(inputs, expected) {
+  runMarbles({
     inputs,
-    async start({ clock, record }) {
-      const gate = new ReloadGate({ timers: clock });
+    expected,
+    values: OUTCOMES,
+    start() {
+      const host = new SessionHost();
+      const gate = new ReloadGate();
+      gate.watch(host);
       const a = new FakeSession("page-a");
-      gate.hold(a);
+      host.install(a, host.generation, "dev");
       return {
-        reload: () =>
-          void gate.reload({ reload() {} }).then((result) => {
-            record(result);
-          }),
-        leave: () => void gate.drainAndClose(a),
-        open: () => gate.hold(Object.assign(new FakeSession("page-b"), { pending: false })),
-        receipt: () => a.set({ pending: false, status: "Saved", savedHeads: ["h1"] }),
+        actions: {
+          reload: () => void gate.reload({ reload() {} }),
+          leave: () => void host.release(),
+          open: () =>
+            host.install(
+              Object.assign(new FakeSession("page-b"), { pending: false, status: "Saved" }),
+              host.generation,
+              "dev",
+            ),
+          receipt: () => a.set({ pending: false, status: "Saved", savedHeads: ["h1"] }),
+        },
+        output$: gate.store
+          .select((state) => state.name)
+          .pipe(
+            filter((name) => name !== "idle" && name !== "waiting"),
+            map(() => outcomeOf(gate.store.snapshot())),
+          ),
       };
     },
   });
 }
 
-test("a reload waits for the held Page's receipt, or gives up after SAVE_BEFORE_RELOAD_MS", async () => {
-  assert.deepEqual(await reloadWith({ reload: "a", receipt: "3s r" }), marbles("3s o", OUTCOMES));
-  assert.deepEqual(await reloadWith({ reload: "a" }), marbles("15s t", OUTCOMES));
+test("a reload waits for the held Page's receipt, or gives up after SAVE_BEFORE_RELOAD_MS", () => {
+  reloadWith({ reload: "a", receipt: "3s r" }, "3s o");
+  reloadWith({ reload: "a" }, "15s t");
 });
 
-test("navigation during the wait cancels the reload once everything settles", async () => {
+test("navigation during the wait cancels the reload once everything settles", () => {
   // Leaving A keeps it saving; the attempt ends with A's receipt, cancelled.
-  assert.deepEqual(
-    await reloadWith({ reload: "a", leave: "2s l", receipt: "5s r" }),
-    marbles("5s x", OUTCOMES),
-  );
+  reloadWith({ reload: "a", leave: "2s l", receipt: "5s r" }, "5s x");
   // Opening B while A saves cancels too.
-  assert.deepEqual(
-    await reloadWith({ reload: "a", open: "1s b", receipt: "4s r" }),
-    marbles("4s x", OUTCOMES),
-  );
+  reloadWith({ reload: "a", open: "1s b", receipt: "4s r" }, "4s x");
   // A Page left mid-wait that never saves: the attempt waits on it as a held
   // save, so its timeout ends the attempt, cancelled, while the Page drains.
-  assert.deepEqual(await reloadWith({ reload: "a", leave: "6s l" }), marbles("15s x", OUTCOMES));
+  reloadWith({ reload: "a", leave: "6s l" }, "15s x");
 });

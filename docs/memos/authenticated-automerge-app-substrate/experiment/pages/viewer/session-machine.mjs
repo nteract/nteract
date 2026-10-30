@@ -47,7 +47,7 @@
  * the replacement session; `forget` deletes the local copy; `rekey` moves an
  * opening session to the replica key the host's grant names.
  */
-import { defineAlphabet } from "../shared/machine.mjs";
+import { defineMachine, reject } from "../shared/machine.mjs";
 
 export const PAUSE_REASONS = Object.freeze(["auth", "access", "trash", "reload"]);
 const ACCESS_PAUSES = new Set(["access", "trash", "reload"]);
@@ -299,4 +299,165 @@ export const viewerSessionSpec = Object.freeze({
   },
 });
 
-export const viewerSessionAlphabet = defineAlphabet(viewerSessionSpec);
+export const REJECT = Object.freeze({
+  noReload: "No access reload is pending",
+  restorePaused: "Restore needs a preview whose access isn't paused",
+  closing: "The session is closing",
+  closed: "The session is closed",
+  deleted: "The Page is deleted",
+  alreadyClosing: "The session is already closing",
+  alreadyClosed: "The session is already closed",
+  archiving: "An access reload is already archiving this replica",
+});
+
+/** The pause a state carries, as the access pause and whether sign-in is
+ * also required. Only paused, draining and archiving states carry one. */
+export function pauseOf(state) {
+  const carries =
+    state.name === "paused" ||
+    state.name === "draining" ||
+    (state.name === "checkpointing" && state.archive);
+  const reason = carries ? state.reason : undefined;
+  if (!reason) return { access: "none", auth: false };
+  if (reason === "auth") return { access: "none", auth: true };
+  return { access: reason, auth: state.auth === true };
+}
+
+/** The pause a phase reports, strongest first, or undefined. */
+export const pauseReason = (state) => {
+  const { access, auth } = pauseOf(state);
+  if (access !== "none") return access;
+  return auth ? "auth" : undefined;
+};
+
+/** Whether the session still owns a live replica: it can receive changes,
+ * write checkpoints and be paused. */
+export const isLive = (state) =>
+  state.name === "opening" ||
+  state.name === "open" ||
+  state.name === "paused" ||
+  state.name === "draining" ||
+  (state.name === "checkpointing" && state.archive === true);
+
+function fields({ access, auth }) {
+  if (access !== "none") return auth ? { reason: access, auth: true } : { reason: access };
+  return auth ? { reason: "auth" } : {};
+}
+/** Shape a live state: `open` becomes paused when a pause remains. */
+function liveState(name, pause) {
+  const f = fields(pause);
+  if (name === "open") return f.reason ? { name: "paused", ...f } : { name: "open" };
+  if (name === "archive") return { name: "checkpointing", drained: false, archive: true, ...f };
+  return { name, ...f };
+}
+const ok = (state, ...effects) => ({ state, effects: effects.map((type) => ({ type })) });
+
+/** Access and sign-in answers on a live session, shaped as `name`. */
+function pauseStep(event, name, pause) {
+  switch (event.type) {
+    case "accessChanged": {
+      if (event.grant === "deleted") return ok({ name: "deleted" }, "forget");
+      if (event.grant === "same") return ok(liveState(name, { ...pause, access: "none" }));
+      const access = event.grant === "denied" ? "access" : "reload";
+      // Another tab already wrote the fact; recovery stays in its checkpoint.
+      const effects = event.tab ? ["disconnect"] : ["disconnect", "persistLocal"];
+      return ok(liveState(name, { ...pause, access }), ...effects);
+    }
+    case "trash":
+      return ok(liveState(name, { ...pause, access: "trash" }), "disconnect", "persistLocal");
+    case "signIn":
+      return event.ok
+        ? ok(liveState(name, { ...pause, auth: false }))
+        : ok(liveState(name, { ...pause, auth: true }), "disconnect");
+  }
+  return undefined;
+}
+
+function closedState(state, checkpointWritten) {
+  const closed = { name: "closed", checkpointWritten, drained: state.drained };
+  if (state.drained) closed.saved = state.saved;
+  return closed;
+}
+
+function transition(state, event) {
+  switch (state.name) {
+    case "opening": {
+      if (event.type === "opened")
+        return ok(event.denied ? { name: "paused", reason: "access" } : { name: "open" });
+      // First remote opening: no history exists yet, so pick the grant's key.
+      if (event.type === "accessChanged" && event.grant === "changed" && !event.tab)
+        return ok(state, "rekey");
+      if (event.type === "accessChanged" && event.grant === "same") return ok(state);
+      if (event.type === "signIn" && event.ok) return ok(state);
+      const paused = pauseStep(event, "open", pauseOf(state));
+      if (paused) return paused;
+      // leave: a failed start() closes at once.
+      return ok({ name: "checkpointing", drained: false }, "checkpoint");
+    }
+    case "open":
+    case "paused": {
+      const pause = pauseOf(state);
+      const paused = pauseStep(event, "open", pause);
+      if (paused) return paused;
+      if (event.type === "restore")
+        return pause.access === "none"
+          ? ok(liveState("draining", pause), "drain")
+          : reject(state, REJECT.restorePaused);
+      if (event.type === "reloadAccess")
+        return pause.access === "reload"
+          ? ok(liveState("archive", pause), "archive")
+          : reject(state, REJECT.noReload);
+      return event.drain
+        ? ok(liveState("draining", pause), "drain")
+        : ok({ name: "checkpointing", drained: false }, "checkpoint");
+    }
+    case "draining": {
+      const paused = pauseStep(event, "draining", pauseOf(state));
+      if (paused) return paused;
+      return ok({ name: "checkpointing", drained: true, saved: event.saved }, "checkpoint");
+    }
+    case "checkpointing": {
+      if (event.type === "checkpointOk")
+        return state.archive
+          ? ok(
+              { name: "closed", checkpointWritten: true, drained: false, archived: true },
+              "release",
+              "reopen",
+            )
+          : ok(closedState(state, true), "release");
+      if (event.type === "checkpointFail") {
+        // A failed archive leaves the replica live, still blocking Reload.
+        if (state.archive) return ok(liveState("open", pauseOf(state)));
+        if (event.deleted) return ok({ name: "deleted", closing: true }, "release");
+        return ok(closedState(state, false), "release");
+      }
+      if (state.archive) {
+        const paused = pauseStep(event, "archive", pauseOf(state));
+        if (paused) return paused;
+        return reject(state, event.type === "reloadAccess" ? REJECT.archiving : REJECT.closing);
+      }
+      // A late 404 still forgets the local copy; the release follows.
+      if (event.type === "accessChanged" && event.grant === "deleted")
+        return ok({ name: "deleted" }, "forget");
+      return reject(state, event.type === "leave" ? REJECT.alreadyClosing : REJECT.closing);
+    }
+    case "closed":
+      if (event.type === "accessChanged" && event.grant === "deleted")
+        return ok({ name: "deleted", closing: true }, "forget");
+      if (event.type === "reloadAccess")
+        return state.archived ? ok(state, "reopen") : reject(state, REJECT.closed);
+      return reject(state, event.type === "leave" ? REJECT.alreadyClosed : REJECT.closed);
+    case "deleted":
+      if (event.type !== "leave") return reject(state, REJECT.deleted);
+      return state.closing
+        ? reject(state, REJECT.alreadyClosing)
+        : ok({ name: "deleted", closing: true }, "release");
+  }
+  throw new Error(`unknown state ${state.name}`);
+}
+
+export const viewerSessionMachine = defineMachine({
+  ...viewerSessionSpec,
+  initial: "opening",
+  transition,
+});

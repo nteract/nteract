@@ -12,11 +12,14 @@ async function catalogAuthority(tool) {
   };
 }
 
-/** Close every session of a Page that just moved to Trash through the
- * reload gate. Reload then waits for their checkpoints, and a failed
- * checkpoint leaves its recovery export, as when leaving any Page. */
-export function closeTrashedSessions(gate, sessions) {
-  return Promise.all([...new Set(sessions.filter(Boolean))].map((s) => gate.drainAndClose(s)));
+/** Leave every session of a Page that just moved to Trash through the
+ * session host's drain. The reload gate then waits for their checkpoints,
+ * and a failed checkpoint leaves its recovery export, as when leaving any
+ * Page. */
+export function closeTrashedSessions(host, sessions, options) {
+  return Promise.all(
+    [...new Set(sessions.filter(Boolean))].map((session) => host.leave(session, options)),
+  );
 }
 
 /** A superseded result was not applied; the Page changed since the request. */

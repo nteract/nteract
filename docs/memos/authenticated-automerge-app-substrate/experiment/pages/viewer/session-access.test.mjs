@@ -141,7 +141,7 @@ test("a Page in its owner's Trash keeps the local copy instead of forgetting it"
   t.after(() => session.close());
   await session.retryConnection();
   await session.cacheTail;
-  assert.equal(session.deleted, undefined);
+  assert.equal(session.deleted, false);
   assert.equal(session.accessDenied, true);
   assert.match(session.accessProblem, /owner's Trash/);
   const checkpoint = await readLocalPage(session.identity, session.pageId);
@@ -166,7 +166,7 @@ test("a trashed owner previews on a reader replica and restore reloads without a
   // The preview replica is a reader replica; its key never authors history.
   session.replicaKey = "1:reader";
   session.localPage.pending = true;
-  session.accessReloadRequired = false;
+  session.phase$.update(() => ({ name: "open" }));
   await assert.rejects(session.acceptPageAccess(access("owner")), { code: "PAGE_ACCESS_CHANGED" });
   assert.equal(session.accessReloadRequired, true);
   assert.equal(session.recoveryPending, false);
