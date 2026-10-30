@@ -1066,11 +1066,15 @@ export async function scenario(
     retry = crashed
       ? () => h.f.request(h.f.tokens.owner, crashed.route, crashed.body)
       : prepared.request;
+    h.trace.start();
     const response = await send(h, row.event, prepared.request());
     outcome.status = response.status;
     outcome.told.push(await reported(response));
     await settle(h);
+    h.trace.stop();
   }
+  // The effects that completed before the cut, in order.
+  outcome.effects = h.trace.effects.map((effect) => effect.type);
   h.cuts.disarm();
   outcome.mutations = h.cuts.log.map(({ kind, detail }) => `${kind} ${detail}`.trim());
   if (mode === "retry" && retry) {

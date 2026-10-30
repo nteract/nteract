@@ -773,6 +773,10 @@ write or sync fails, the next tombstone repeats it.
 increase, then returns the same ID, content, comments, and ACL. Grants and key
 generations are untouched by Trash, so collaborators reconnect with their
 previous role and keys. Restored titles are projected back into member catalogs.
+That projection runs after the restore commits. If the process dies in between,
+a restart forgets it and a retried restore replays its receipt without
+projecting, so members may not find the Page until its title projects again
+([#4553](https://github.com/nteract/nteract/issues/4553)).
 
 `purge_page` is a two-step owner operation on a trashed Page. `action:"preview"`
 returns the title, comment count, collaborators who lose access, pending

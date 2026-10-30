@@ -17,6 +17,7 @@ import {
   reach,
   STALE_KEY,
   scenario,
+  settle,
   suite,
   walk,
 } from "./page-lifecycle-drive.mjs";
@@ -122,24 +123,45 @@ function differences(actual, expected) {
   return found;
 }
 
+/** Effects that follow a lifecycle commit, and the durable keys each one
+ * writes. A process that dies after the commit skips them; the memory-only
+ * phase forgets them, and an exact retry replays the receipt without running
+ * them (https://github.com/nteract/nteract/issues/4553). */
+const POST_COMMIT = {
+  retireIndex: {
+    name: "indexRetirement",
+    writes: (key) => key.startsWith("index "),
+  },
+  projectTitle: {
+    name: "titleProjection",
+    writes: (key) =>
+      key.startsWith("index ") || key.startsWith("owner page/") || key.startsWith("member shared/"),
+  },
+  refreshAccess: {
+    name: "bindingRetirement",
+    writes: (key) => key === `page host/binding/${STALE_KEY}`,
+  },
+};
+
 /** Where a replayed run may differ from its uncut reference, and why:
- * - tail: the process died after the record committed, and the memory-only
- *   phase forgot the rest of the sequence. Index rows, title projections and
- *   a revoked key's retirement lag until something repeats them. Grant
- *   generations keep that key from writing meanwhile.
+ * - indexRetirement, titleProjection, bindingRetirement: the process died
+ *   after the record committed and before that post-commit effect ran. Only
+ *   the keys that effect writes may differ. Grant generations keep a revoked
+ *   key from writing while its retirement is missing.
  * - index: a D1 write rejected. Index writes are best-effort; a failed report
  *   stores the repair marker, and listings verify rows with the Page.
  * - prune: a receipt landed but its prune did not. The store holds one
  *   receipt over the limit until the next receipt write prunes it. */
-function allowance(key, run, committed) {
+function allowance(key, run, row, committed) {
   const cutD1 = run.cut && run.mutations[run.cut.index]?.startsWith("d1 ");
-  const tail = run.mode === "crash" && committed;
-  if (key.startsWith("index ")) return cutD1 ? "index" : tail ? "tail" : undefined;
+  if (key.startsWith("index ") && cutD1) return "index";
   if (key === "page host/index/report-pending") return cutD1 ? "index" : undefined;
   if (key.startsWith("page host/lifecycle/seed-")) return "prune";
-  if (key.startsWith("owner page/") || key.startsWith("member shared/"))
-    return tail ? "tail" : undefined;
-  if (key === `page host/binding/${STALE_KEY}`) return tail ? "tail" : undefined;
+  if (run.mode !== "crash" || !committed) return undefined;
+  for (const [type, effect] of Object.entries(POST_COMMIT)) {
+    const owed = row.expect.effects.some((entry) => entry.type === type);
+    if (owed && !run.effects.includes(type) && effect.writes(key)) return effect.name;
+  }
   return undefined;
 }
 
@@ -163,7 +185,7 @@ function judge(run, reference, row, tally) {
   const committed = isDeepStrictEqual(run.booted, reference.booted);
   const reasons = new Set();
   for (const key of differences(run.final, reference.final)) {
-    const reason = allowance(key, run, committed);
+    const reason = allowance(key, run, row, committed);
     if (reason) reasons.add(reason);
     else problems.push(`replay differs at ${key}`);
   }
@@ -208,7 +230,15 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
   assert.deepEqual([...found].sort(), CUT_INCONSISTENCIES);
   assert.deepEqual(
     { cuts, runs, ...tally },
-    { cuts: 150, runs: 560, tail: 35, prune: 22, index: 16 },
+    {
+      cuts: 150,
+      runs: 560,
+      indexRetirement: 14,
+      titleProjection: 21,
+      bindingRetirement: 30,
+      prune: 22,
+      index: 16,
+    },
   );
 });
 
@@ -228,3 +258,57 @@ test("a tombstone whose write or sync rejected repeats its barrier on retry, so 
     assert.equal(run.document, false);
   }
 });
+
+/** Owner Trash, a member listing while it is trashed, then a restore through
+ * the owner's Catalog. `interrupt` makes the restore's process die after its
+ * record and receipt are durable and before it projects its title; the Page
+ * then restarts and the client repeats the restore exactly. */
+async function restoreDiscovery(t, { interrupt }) {
+  const s = await suite(t);
+  const h = await host(s);
+  await walk(h, 0);
+  const { f } = h;
+  const listed = async () => {
+    const response = await f.catalogCall("member", "list_pages");
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    return response.body.pages.some((page) => page.page_id === pageId);
+  };
+  assert.equal(await listed(), true, "the member lists the active Page");
+  const trashed = await f.catalogCall("owner", "delete_page", {
+    page_id: pageId,
+    base_heads: f.heads(),
+    idempotency_key: "discovery-trash",
+  });
+  assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
+  await settle(h);
+  assert.equal(await listed(), false, "the member's listing drops the trashed Page");
+  const restore = { page_id: pageId, idempotency_key: "discovery-restore" };
+  if (interrupt) {
+    h.trace.start({ crash: (effect) => effect.type === "refreshAccess" });
+    const failed = await f.catalogCall("owner", "restore_page", restore);
+    h.trace.stop();
+    assert.ok(failed.status >= 500, JSON.stringify(failed.body));
+    const record = await f.storage.get("host/document");
+    assert.equal(pageState(record), "active", "the restored record is durable");
+    assert.ok(f.storage.values.has("host/lifecycle/discovery-restore"), "its receipt is durable");
+    await boot(h, { type: "boot" }, { check: false });
+  }
+  const restored = await f.catalogCall("owner", "restore_page", restore);
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  await settle(h);
+  return listed();
+}
+
+test("a member finds a restored Page", async (t) => {
+  assert.equal(await restoreDiscovery(t, { interrupt: false }), true);
+});
+
+// A pending phase lives only in memory, so a restart forgets the projection a
+// committed restore still owes, and an exact retry replays the receipt.
+test(
+  "a member finds a restored Page after a restart interrupted its title projection",
+  { todo: "https://github.com/nteract/nteract/issues/4553" },
+  async (t) => {
+    assert.equal(await restoreDiscovery(t, { interrupt: true }), true);
+  },
+);
