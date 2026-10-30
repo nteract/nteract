@@ -4,6 +4,7 @@ import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { PageSession } from "./session.mjs";
+import { REFUSAL_LIMIT, backoffStep } from "./reconnect-machine.mjs";
 
 const drain = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() {
@@ -17,12 +18,13 @@ function deferred() {
 
 // Exercise the real discovery, authentication, socket lifecycle and receipt
 // methods. Only external I/O and time are controlled; no receipt methods are mocked.
-function fixture(t) {
+function fixture(t, { random } = {}) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let doc = A.from({ text: "Pending edit" });
   const identity = { principal: "fixture-owner", displayName: "Fixture owner" };
   const session = new PageSession("receipt-reconnect", {
     refreshSession: async () => ({ identity, canWrite: true }),
+    random,
   });
   const documentId = interpretAsDocumentId(generateAutomergeUrl());
   session.identity = identity;
@@ -83,14 +85,17 @@ function fixture(t) {
   });
   t.mock.method(globalThis, "fetch", async (url, options) => {
     if (url.startsWith("/api/connect?"))
-      return Response.json({
-        identity,
-        documentId,
-        access: { role: "owner", generation: 0, revision: 0, canRead: true, canWrite: true },
-        serverPeerId: "00".repeat(32),
-        serverSenderId: "fixture-host",
-        peerProfiles: {},
-      });
+      return (
+        hooks.connect?.() ??
+        Response.json({
+          identity,
+          documentId,
+          access: { role: "owner", generation: 0, revision: 0, canRead: true, canWrite: true },
+          serverPeerId: "00".repeat(32),
+          serverSenderId: "fixture-host",
+          peerProfiles: {},
+        })
+      );
     assert.ok(url.startsWith("/api/saved?"), `unexpected fixture request: ${url}`);
     const pending = { ...deferred(), heads: JSON.parse(options.body).heads };
     requests.push(pending);
@@ -542,5 +547,189 @@ test("transient and mismatched close outcomes keep normal backoff", async (t) =>
     assert.ok(f.session.retryTimer, `${code} ${reason} reconnects`);
     assert.equal(f.session.nativeRefused, false);
     await f.advance(10_000);
+  }
+});
+
+test("jittered reconnect delays stay within [step / 2, step] up to a 60 s ceiling", async (t) => {
+  // random() = 0 retries at exactly half the step; just under 1 at the step.
+  for (const [label, random, share] of [
+    ["lower bound", () => 0, 0.5],
+    ["upper bound", () => 0.999_999, 1],
+  ]) {
+    await t.test(label, async (t) => {
+      const f = fixture(t, { random });
+      await f.start();
+      // Transient: the native connection fails without an admission close.
+      f.hooks.setup = () => {
+        throw Error("Native connection unavailable");
+      };
+      f.session.socketDisconnected(f.sockets.at(-1));
+      const steps = [];
+      for (let attempts = 0; attempts < 10; attempts++) {
+        const step = backoffStep(attempts);
+        steps.push(step);
+        const delay = step * share;
+        const before = f.sockets.length;
+        await f.advance(delay - 1);
+        assert.equal(f.sockets.length, before, `no retry before ${delay} ms`);
+        await f.advance(1);
+        assert.equal(f.sockets.length, before + 1, `a retry at ${delay} ms`);
+        assert.equal(f.session.retryAttempts, attempts + 2);
+        assert.ok(f.session.retryTimer, "transient failures keep backing off");
+      }
+      assert.deepEqual(steps.slice(-3), [60_000, 60_000, 60_000]);
+      assert.equal(f.session.syncPaused, false);
+      assert.equal(f.session.reconnect$.snapshot().refusals, 0);
+      assert.equal(f.session.status, "Offline");
+      assert.equal(f.session.connectionProblem, "Native connection unavailable");
+    });
+  }
+});
+
+/** Refuse native admission with `code` until sync pauses. `handshake`
+ * refuses during the native handshake; otherwise each retry is admitted
+ * and the host closes it before it proves stable. Returns the refusals. */
+async function refuseUntilPaused(f, code, reason, { handshake }) {
+  if (handshake)
+    f.hooks.setup = () => {
+      hostClose(f.sockets.at(-1), code, reason);
+      throw Error("Native handshake failed");
+    };
+  // The live socket is the first refusal; each retry adds one.
+  let refusals = 0;
+  for (;;) {
+    if (refusals === 0 || !handshake) {
+      const socket = f.sockets.at(-1);
+      hostClose(socket, code, reason);
+      f.session.socketDisconnected(socket);
+    }
+    refusals++;
+    assert.equal(f.session.reconnect$.snapshot().refusals, refusals);
+    if (refusals === REFUSAL_LIMIT) return refusals;
+    assert.equal(f.session.syncPaused, false);
+    assert.ok(f.session.retryTimer);
+    await f.advance(backoffStep(f.session.retryAttempts - 1));
+  }
+}
+
+test("repeated admission refusals pause sync until Retry or online", async (t) => {
+  for (const [code, reason, handshake] of [
+    [4409, "access_changed", true],
+    [4503, "temporarily_unavailable", false],
+  ]) {
+    await t.test(`${code} ${handshake ? "during the handshake" : "after admission"}`, async (t) => {
+      const f = fixture(t);
+      const online = new EventTarget();
+      globalThis.addEventListener = online.addEventListener.bind(online);
+      globalThis.removeEventListener = online.removeEventListener.bind(online);
+      t.after(() => {
+        delete globalThis.addEventListener;
+        delete globalThis.removeEventListener;
+      });
+      await f.start();
+      f.session.watchOnline();
+      await refuseUntilPaused(f, code, reason, { handshake });
+      assert.equal(f.sockets.length, REFUSAL_LIMIT, "one socket per attempt");
+      assert.equal(f.session.syncPaused, true);
+      assert.equal(f.session.retryTimer, undefined);
+      assert.match(f.session.problem, /^Sync paused/);
+      assert.match(f.session.problem, /Retry to reconnect/);
+      assert.equal(f.session.status, "Offline", "the Retry control is shown");
+      await f.advance(3_600_000);
+      assert.equal(f.sockets.length, REFUSAL_LIMIT, "no automatic retries while paused");
+
+      // Retry clears the pause and attempts at once.
+      await f.session.retryConnection({ retryReceipt: true });
+      if (!handshake) {
+        const socket = f.sockets.at(-1);
+        hostClose(socket, code, reason);
+        f.session.socketDisconnected(socket);
+      }
+      assert.equal(f.sockets.length, REFUSAL_LIMIT + 1);
+      assert.equal(f.session.syncPaused, false);
+      assert.equal(f.session.reconnect$.snapshot().refusals, 1, "Retry starts a fresh count");
+      assert.equal(f.session.retryAttempts, 1, "and a fresh backoff");
+      assert.ok(f.session.retryTimer);
+      await f.advance(backoffStep(0));
+
+      // Pause again; coming back online resumes.
+      let refusals = 1;
+      for (; refusals < REFUSAL_LIMIT; refusals++) {
+        if (!handshake) {
+          const socket = f.sockets.at(-1);
+          hostClose(socket, code, reason);
+          f.session.socketDisconnected(socket);
+        }
+        if (refusals + 1 < REFUSAL_LIMIT) await f.advance(backoffStep(refusals));
+      }
+      assert.equal(f.session.syncPaused, true);
+      const paused = f.sockets.length;
+      f.hooks.setup = undefined;
+      online.dispatchEvent(new Event("online"));
+      await drain();
+      assert.equal(f.sockets.length, paused + 1);
+      assert.equal(f.session.syncPaused, false);
+      assert.equal(f.session.retryTimer, undefined, "the host admitted the new socket");
+      assert.equal(f.session.connectionProblem, "");
+      assert.doesNotMatch(f.session.problem, /Sync paused/);
+    });
+  }
+});
+
+test("a connection admitted past the stability threshold clears both counters", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  f.hooks.setup = () => {
+    hostClose(f.sockets.at(-1), 4409, "access_changed");
+    throw Error("Native handshake failed");
+  };
+  const first = f.sockets.at(-1);
+  hostClose(first, 4409, "access_changed");
+  f.session.socketDisconnected(first);
+  for (const delay of [500, 1000]) await f.advance(delay);
+  assert.equal(f.session.reconnect$.snapshot().refusals, 3);
+  assert.equal(f.session.retryAttempts, 3);
+
+  // The host admits the next socket and keeps it longer than the threshold.
+  f.hooks.setup = undefined;
+  await f.advance(2000);
+  assert.equal(f.session.retryTimer, undefined);
+  const stable = f.sockets.at(-1);
+  f.session.socketAdmittedAt.set(stable, Date.now() - 20_000);
+  hostClose(stable, 1006, "");
+  f.session.socketDisconnected(stable);
+  assert.deepEqual(f.session.reconnect$.snapshot(), { name: "waiting", attempts: 1, refusals: 0 });
+
+  // The same admission close on a stable socket is not a refusal either.
+  await f.advance(500);
+  const proven = f.sockets.at(-1);
+  f.session.socketAdmittedAt.set(proven, Date.now() - 20_000);
+  hostClose(proven, 4409, "access_changed");
+  f.session.socketDisconnected(proven);
+  assert.deepEqual(f.session.reconnect$.snapshot(), { name: "waiting", attempts: 1, refusals: 0 });
+});
+
+test("a refusal the next discovery answers with 401 or 403 stops there", async (t) => {
+  for (const [code, reason, status] of [
+    [4401, "sign_in_required", 401],
+    [4403, "page_access_denied", 403],
+  ]) {
+    await t.test(String(code), async (t) => {
+      const f = fixture(t);
+      await f.start();
+      const socket = f.sockets.at(-1);
+      hostClose(socket, code, reason);
+      f.session.socketDisconnected(socket);
+      assert.equal(f.session.reconnect$.snapshot().refusals, 1);
+      f.hooks.connect = () => Response.json({ error: "Stopped" }, { status });
+      await f.advance(500);
+      assert.equal(f.sockets.length, 1, "discovery stopped before another socket");
+      assert.equal(f.session.retryTimer, undefined);
+      if (status === 401) assert.equal(f.session.authRequired, true);
+      else assert.equal(f.session.accessDenied, true);
+      assert.equal(f.session.syncPaused, false);
+      await f.advance(3_600_000);
+      assert.equal(f.sockets.length, 1);
+    });
   }
 });

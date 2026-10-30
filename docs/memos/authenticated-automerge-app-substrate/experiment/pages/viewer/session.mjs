@@ -36,6 +36,7 @@ import { activitySnapshot } from "./activity.mjs";
 import { checkpointRecords } from "./checkpoint-records.mjs";
 import { Store } from "./store.mjs";
 import { REJECT, isLive, pauseOf, viewerSessionMachine } from "./session-machine.mjs";
+import { reconnectDelay, viewerReconnectMachine } from "./reconnect-machine.mjs";
 export { request } from "./request.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const ownerAccess = () => ({
@@ -60,7 +61,8 @@ const accessFailure = () =>
   });
 const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 16));
 // Longer than the host's 10-second native admission deadline. A socket that
-// closes sooner never proved admission, so it must not reset reconnect backoff.
+// closes sooner never proved admission, so it must not reset reconnect backoff,
+// and an admission close code on it counts as a refusal.
 export const STABLE_CONNECTION_MS = 15_000;
 // A Page being left keeps syncing this long for its receipt before closing.
 export const CLOSE_DRAIN_MS = 10_000;
@@ -81,6 +83,8 @@ const allSettledThen = (...promises) =>
 export const drainingStatus = (status) => DRAINING_STATES.has(status);
 const SIGNING_KEY_REFUSED =
   "This Page refused this tab's signing key. Your edits stay on this device. Retry, or open the Page in a new tab.";
+const SYNC_PAUSED =
+  "Sync paused: the host kept refusing this connection. Your edits stay on this device. Retry to reconnect.";
 const admissionHeaders = { [ADMISSION_CAPABILITY.header]: ADMISSION_CAPABILITY.value };
 // Not retryable by openPageWithRetry: the same tab key cannot succeed.
 export const signingKeyRefused = (admission, cause) =>
@@ -144,13 +148,16 @@ export class PageSession {
   sockets = new Set();
   socketOutcomes = new WeakMap();
   socketAdmittedAt = new WeakMap();
-  nativeRefused = false;
   // Reasons edits are held while the session keeps syncing: the reload gate's
   // "reload" and the build floor's "protocol". They are not lifecycle phases.
   editPauses = new Set();
   /** The session's phase (see session-machine.mjs). Every lifecycle flag
    * below derives from it, and effects run from its transitions. */
   phase$ = new Store(viewerSessionMachine.initial);
+  /** Automatic reconnects (see reconnect-machine.mjs): backoff, a refused
+   * signing key, or a pause after repeated admission refusals. `retryTimer`
+   * is pending exactly while it is `waiting`. */
+  reconnect$ = new Store(viewerReconnectMachine.initial);
   // The close's work: checkpoint, release, and a late deletion's forget. It
   // can grow while it runs, so only closeSettled() waits on it.
   #closing;
@@ -189,12 +196,14 @@ export class PageSession {
       refreshSession = () => request("/api/auth/session"),
       authentication,
       scheduler = asyncScheduler,
+      random = Math.random,
     } = {},
   ) {
     this.pageId = pageId;
     this.refreshSession = refreshSession;
     this.authentication = authentication;
     this.scheduler = scheduler;
+    this.random = random;
   }
   get doc() {
     return this.handle?.doc();
@@ -226,6 +235,19 @@ export class PageSession {
    * still saving. */
   get saveState() {
     return saveStateOf(this.status);
+  }
+  /** The host refused this tab's signing key; only an explicit attempt
+   * retries. */
+  get nativeRefused() {
+    return this.reconnect$.snapshot().name === "refused";
+  }
+  /** Repeated admission refusals paused automatic reconnects. */
+  get syncPaused() {
+    return this.reconnect$.snapshot().name === "paused";
+  }
+  /** Retries scheduled since the last stable connection or resume. */
+  get retryAttempts() {
+    return this.reconnect$.snapshot().attempts;
   }
   /** An IndexedDB record holds every edit this replica accepted, so
    * reopening the Page imports it. An access reload wrote its own. */
@@ -281,6 +303,7 @@ export class PageSession {
             authentication: { identity: this.identity, canWrite: this.credentialCanWrite },
             refreshSession: this.refreshSession,
             scheduler: this.scheduler,
+            random: this.random,
           }),
         );
       case "forget": {
@@ -357,7 +380,7 @@ export class PageSession {
     this.clearPresence();
     this.cancelReceiptRetry();
     clearTimeout(this.savedTimer);
-    clearTimeout(this.retryTimer);
+    this.reconnect({ type: "halt" });
     clearInterval(this.presenceTimer);
     globalThis.removeEventListener?.("online", this.onlineListener);
   }
@@ -472,8 +495,7 @@ export class PageSession {
       this.receiptRevision = (this.receiptRevision ?? 0) + 1;
       this.authProblem = message;
       this.status = "Sign in to sync";
-      clearTimeout(this.retryTimer);
-      this.retryTimer = undefined;
+      this.reconnect({ type: "halt" });
     });
     if (!rejected) this.emit();
   }
@@ -539,34 +561,67 @@ export class PageSession {
     if (!this.sockets.delete(socket)) return;
     this.clearPresence();
     const admittedAt = this.socketAdmittedAt.get(socket);
-    if (admittedAt !== undefined && Date.now() - admittedAt >= STABLE_CONNECTION_MS)
-      this.retryAttempts = 0;
+    const stable = admittedAt !== undefined && Date.now() - admittedAt >= STABLE_CONNECTION_MS;
+    if (stable) this.reconnect({ type: "stable" });
     if (!this.alive || this.authRequired || this.accessDenied || this.accessReloadRequired) return;
     const outcome = this.socketOutcomes.get(socket);
     if (outcome?.retry === "stop") {
       this.refuseNative(outcome);
       return;
     }
+    // The host's admission closes a socket that never proved stable: count it,
+    // so a host that keeps refusing pauses instead of retrying forever.
+    if (this.scheduleReconnect({ refused: !!outcome && !stable }) === "paused") return;
     this.status = "Reconnecting";
     this.emit();
-    this.scheduleReconnect();
   }
-  /** The host refused this tab's signing key. Reconnecting with the same key
-   * cannot succeed, so wait for an explicit Retry or a new tab. */
-  refuseNative(admission) {
-    this.nativeRefused = true;
-    this.refusal = admission;
-    // A first open may still be waiting for the document over this socket.
-    this.rejectLookup?.(signingKeyRefused(admission));
-    clearTimeout(this.retryTimer);
-    this.retryTimer = undefined;
-    this.connectionProblem = SIGNING_KEY_REFUSED;
-    if (!this.localProblem) this.problem = SIGNING_KEY_REFUSED;
+  /** Step the reconnect machine and run its effects. A rejected event
+   * changes nothing. */
+  reconnect(event) {
+    const result = viewerReconnectMachine.step(this.reconnect$.snapshot(), event);
+    if (result.rejected) return result;
+    this.reconnect$.update(() => result.state);
+    for (const effect of result.effects) {
+      switch (effect.type) {
+        case "schedule":
+          this.retryTimer = setTimeout(
+            () => {
+              this.retryTimer = undefined;
+              if (!this.reconnect({ type: "timer" }).rejected) void this.attemptConnection();
+            },
+            reconnectDelay(effect.step, this.random()),
+          );
+          break;
+        case "cancel":
+          clearTimeout(this.retryTimer);
+          this.retryTimer = undefined;
+          break;
+        case "pauseSync":
+          this.showConnectionProblem(SYNC_PAUSED);
+          break;
+      }
+    }
+    return result;
+  }
+  /** Show a connection failure in the receipt status, keeping a local save
+   * failure in front of it. */
+  showConnectionProblem(message) {
+    this.connectionProblem = message;
+    if (!this.localProblem) this.problem = message;
     if (this.receiptState) this.showReceiptState();
     else {
       this.status = this.localPage ? "Saved locally" : "Offline";
       this.emit();
     }
+  }
+  /** The host refused this tab's signing key. Reconnecting with the same key
+   * cannot succeed, so wait for an explicit Retry or a new tab. */
+  refuseNative(admission) {
+    this.reconnect({ type: "keyRefused" });
+    this.refusal = admission;
+    // A first open may still be waiting for the document over this socket.
+    this.rejectLookup?.(signingKeyRefused(admission));
+    this.showConnectionProblem(SIGNING_KEY_REFUSED);
   }
   /** Stop syncing while keeping the local draft. `denied` removes access,
    * `trashed` says the Page is in its owner's Trash, and otherwise the
@@ -597,8 +652,7 @@ export class PageSession {
       this.updateCapabilities();
       this.cancelReceiptRetry();
       this.receiptRevision = (this.receiptRevision ?? 0) + 1;
-      clearTimeout(this.retryTimer);
-      this.retryTimer = undefined;
+      this.reconnect({ type: "halt" });
       this.status = denied || trashed ? "Access removed" : "Access changed";
     });
     if (!rejected) this.emit();
@@ -835,8 +889,7 @@ export class PageSession {
     this.presenceTimer = setInterval(() => {
       if (this.presenceValue) this.publishPresence(this.presenceValue);
     }, 10000);
-    this.onlineListener = () => void this.retryConnection();
-    globalThis.addEventListener?.("online", this.onlineListener);
+    this.watchOnline();
     if (this.connection) this.queueSaved();
     else {
       // Reopening a denied local copy must check the host once: the owner may
@@ -844,6 +897,13 @@ export class PageSession {
       // until acceptPageAccess verifies the new grant and replica generation.
       void this.retryConnection({ recheckDeniedAccess: this.accessDenied });
     }
+  }
+  /** Coming back online resumes reconnects, even after a refusal or a
+   * pause. Closing the session removes the listener. */
+  watchOnline() {
+    globalThis.removeEventListener?.("online", this.onlineListener);
+    this.onlineListener = () => void this.retryConnection();
+    globalThis.addEventListener?.("online", this.onlineListener);
   }
   async initializeLocal(key = replicaKey(this.access, this.canWrite)) {
     this.replicaKey = key;
@@ -1158,29 +1218,22 @@ export class PageSession {
       expected.free();
     }
   }
-  scheduleReconnect() {
-    if (
-      !this.alive ||
-      this.authRequired ||
-      this.accessDenied ||
-      this.accessReloadRequired ||
-      this.nativeRefused ||
-      this.retryTimer
-    )
-      return;
-    const delay = Math.min(10000, 500 * 2 ** (this.retryAttempts ?? 0));
-    this.retryAttempts = (this.retryAttempts ?? 0) + 1;
-    this.retryTimer = setTimeout(() => {
-      this.retryTimer = undefined;
-      void this.retryConnection();
-    }, delay);
+  /** Retry after a failed attempt or socket, unless the phase stops sync.
+   * `refused` says the host's admission closed a socket that never proved
+   * stable. Returns the reconnect state's name. */
+  scheduleReconnect({ refused = false } = {}) {
+    if (this.alive && !this.authRequired && !this.accessDenied && !this.accessReloadRequired)
+      this.reconnect({ type: "failed", refused });
+    return this.reconnect$.snapshot().name;
   }
-  async retryConnection({ recheckDeniedAccess = false, retryReceipt = false } = {}) {
-    clearTimeout(this.retryTimer);
-    this.retryTimer = undefined;
-    // Automatic backoff never runs while refused; this call is an explicit
-    // Retry, an online event, or a returning tab, each worth one attempt.
-    this.nativeRefused = false;
+  /** An explicit Retry, an online event, a re-authentication or a first
+   * open: clear the backoff and any refusal or pause, then attempt now. */
+  retryConnection(options) {
+    this.reconnect({ type: "resume" });
+    return this.attemptConnection(options);
+  }
+  /** One connection attempt. A failure that may pass schedules the next. */
+  async attemptConnection({ recheckDeniedAccess = false, retryReceipt = false } = {}) {
     try {
       await this.connect(true, recheckDeniedAccess);
     } catch (error) {
@@ -1197,14 +1250,11 @@ export class PageSession {
           { denied: true },
         );
       else {
-        this.connectionProblem = error.message;
-        if (!this.localProblem) this.problem = error.message;
-        if (this.receiptState) this.showReceiptState();
-        else {
-          this.status = this.localPage ? "Saved locally" : "Offline";
-          this.emit();
-        }
-        if (!error.status || error.status >= 500) this.scheduleReconnect();
+        this.showConnectionProblem(error.message);
+        // An admission close during the handshake is a refusal; the next
+        // attempt's discovery still stops on 401, 403 or 404.
+        if (!error.status || error.status >= 500)
+          this.scheduleReconnect({ refused: !!error.admission });
       }
     } finally {
       // HTTP receipts can recover even if native sync still cannot reconnect.

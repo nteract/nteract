@@ -1,0 +1,682 @@
+{
+  "machine": "viewer-reconnect",
+  "description": "Automatic reconnects for one viewer PageSession: exponential backoff with a 60 s cap for transient failures, a stop on a refused signing key, and a pause after six admission refusals in a row. Runs against viewer/reconnect-machine.mjs in viewer/reconnect-machine.test.mjs.",
+  "states": [
+    "ready",
+    "waiting",
+    "refused",
+    "paused"
+  ],
+  "events": [
+    "failed",
+    "keyRefused",
+    "stable",
+    "timer",
+    "resume",
+    "halt"
+  ],
+  "unreachable": [],
+  "cases": {
+    "ready/failed": [
+      "transient",
+      "refusal",
+      "last-refusal"
+    ]
+  },
+  "rows": [
+    {
+      "label": "the first retry waits about half a second",
+      "case": "transient",
+      "state": {
+        "name": "ready",
+        "attempts": 0,
+        "refusals": 0
+      },
+      "event": {
+        "type": "failed",
+        "refused": false
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 1,
+          "refusals": 0
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "step": 500
+          }
+        ]
+      }
+    },
+    {
+      "label": "the step doubles past the old 10 s ceiling",
+      "case": "transient",
+      "state": {
+        "name": "ready",
+        "attempts": 4,
+        "refusals": 0
+      },
+      "event": {
+        "type": "failed",
+        "refused": false
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 5,
+          "refusals": 0
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "step": 8000
+          }
+        ]
+      }
+    },
+    {
+      "label": "a transient failure neither counts nor clears refusals",
+      "case": "transient",
+      "state": {
+        "name": "ready",
+        "attempts": 5,
+        "refusals": 2
+      },
+      "event": {
+        "type": "failed",
+        "refused": false
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 6,
+          "refusals": 2
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "step": 16000
+          }
+        ]
+      }
+    },
+    {
+      "case": "transient",
+      "state": {
+        "name": "ready",
+        "attempts": 6,
+        "refusals": 0
+      },
+      "event": {
+        "type": "failed",
+        "refused": false
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 7,
+          "refusals": 0
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "step": 32000
+          }
+        ]
+      }
+    },
+    {
+      "label": "the step reaches its 60 s cap",
+      "case": "transient",
+      "state": {
+        "name": "ready",
+        "attempts": 7,
+        "refusals": 0
+      },
+      "event": {
+        "type": "failed",
+        "refused": false
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 8,
+          "refusals": 0
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "step": 60000
+          }
+        ]
+      }
+    },
+    {
+      "label": "the step stays at its cap",
+      "case": "transient",
+      "state": {
+        "name": "ready",
+        "attempts": 40,
+        "refusals": 0
+      },
+      "event": {
+        "type": "failed",
+        "refused": false
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 41,
+          "refusals": 0
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "step": 60000
+          }
+        ]
+      }
+    },
+    {
+      "label": "a refusal counts and backs off like any failure",
+      "case": "refusal",
+      "state": {
+        "name": "ready",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "failed",
+        "refused": true
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "step": 2000
+          }
+        ]
+      }
+    },
+    {
+      "label": "the sixth refusal in a row pauses instead of retrying",
+      "case": "last-refusal",
+      "state": {
+        "name": "ready",
+        "attempts": 5,
+        "refusals": 5
+      },
+      "event": {
+        "type": "failed",
+        "refused": true
+      },
+      "expect": {
+        "state": {
+          "name": "paused",
+          "attempts": 5,
+          "refusals": 6
+        },
+        "effects": [
+          {
+            "type": "pauseSync"
+          }
+        ]
+      }
+    },
+    {
+      "state": {
+        "name": "ready",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "keyRefused"
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a stable connection clears both counters",
+      "state": {
+        "name": "ready",
+        "attempts": 4,
+        "refusals": 3
+      },
+      "event": {
+        "type": "stable"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 0,
+          "refusals": 0
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": {
+        "name": "ready",
+        "attempts": 1,
+        "refusals": 0
+      },
+      "event": {
+        "type": "timer"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 1,
+          "refusals": 0
+        },
+        "effects": [],
+        "rejected": "No reconnect is scheduled"
+      }
+    },
+    {
+      "state": {
+        "name": "ready",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "resume"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 0,
+          "refusals": 0
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": {
+        "name": "ready",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "halt"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": [],
+        "rejected": "No reconnect is scheduled"
+      }
+    },
+    {
+      "note": "Two callers sharing one failed attempt count it once.",
+      "state": {
+        "name": "waiting",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "failed",
+        "refused": true
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "A reconnect is already scheduled"
+      }
+    },
+    {
+      "state": {
+        "name": "waiting",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "keyRefused"
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [
+          {
+            "type": "cancel"
+          }
+        ]
+      }
+    },
+    {
+      "state": {
+        "name": "waiting",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "stable"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "No socket stayed admitted"
+      }
+    },
+    {
+      "label": "the timer fires and the next attempt starts",
+      "state": {
+        "name": "waiting",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "timer"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": {
+        "name": "waiting",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "resume"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 0,
+          "refusals": 0
+        },
+        "effects": [
+          {
+            "type": "cancel"
+          }
+        ]
+      }
+    },
+    {
+      "label": "sign-in, an access pause or a close drops the pending retry",
+      "state": {
+        "name": "waiting",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "halt"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [
+          {
+            "type": "cancel"
+          }
+        ]
+      }
+    },
+    {
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "failed",
+        "refused": false
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": [],
+        "rejected": "The host refused this tab's signing key"
+      }
+    },
+    {
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "keyRefused"
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": [],
+        "rejected": "The host refused this tab's signing key"
+      }
+    },
+    {
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "stable"
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": [],
+        "rejected": "No socket stayed admitted"
+      }
+    },
+    {
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "timer"
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": [],
+        "rejected": "No reconnect is scheduled"
+      }
+    },
+    {
+      "label": "an explicit Retry tries a refused key once more",
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "resume"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 0,
+          "refusals": 0
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "halt"
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": [],
+        "rejected": "No reconnect is scheduled"
+      }
+    },
+    {
+      "state": {
+        "name": "paused",
+        "attempts": 5,
+        "refusals": 6
+      },
+      "event": {
+        "type": "failed",
+        "refused": true
+      },
+      "expect": {
+        "state": {
+          "name": "paused",
+          "attempts": 5,
+          "refusals": 6
+        },
+        "effects": [],
+        "rejected": "Sync is paused until Retry"
+      }
+    },
+    {
+      "state": {
+        "name": "paused",
+        "attempts": 5,
+        "refusals": 6
+      },
+      "event": {
+        "type": "keyRefused"
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 5,
+          "refusals": 6
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": {
+        "name": "paused",
+        "attempts": 5,
+        "refusals": 6
+      },
+      "event": {
+        "type": "stable"
+      },
+      "expect": {
+        "state": {
+          "name": "paused",
+          "attempts": 5,
+          "refusals": 6
+        },
+        "effects": [],
+        "rejected": "No socket stayed admitted"
+      }
+    },
+    {
+      "state": {
+        "name": "paused",
+        "attempts": 5,
+        "refusals": 6
+      },
+      "event": {
+        "type": "timer"
+      },
+      "expect": {
+        "state": {
+          "name": "paused",
+          "attempts": 5,
+          "refusals": 6
+        },
+        "effects": [],
+        "rejected": "No reconnect is scheduled"
+      }
+    },
+    {
+      "label": "Retry, online or a re-authentication resumes a paused session",
+      "state": {
+        "name": "paused",
+        "attempts": 5,
+        "refusals": 6
+      },
+      "event": {
+        "type": "resume"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 0,
+          "refusals": 0
+        },
+        "effects": []
+      }
+    },
+    {
+      "state": {
+        "name": "paused",
+        "attempts": 5,
+        "refusals": 6
+      },
+      "event": {
+        "type": "halt"
+      },
+      "expect": {
+        "state": {
+          "name": "paused",
+          "attempts": 5,
+          "refusals": 6
+        },
+        "effects": [],
+        "rejected": "No reconnect is scheduled"
+      }
+    }
+  ]
+}
