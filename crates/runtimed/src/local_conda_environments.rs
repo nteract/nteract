@@ -26,7 +26,8 @@ const MAX_PYTHON_RECORDS: usize = 16;
 const MAX_ENVIRONMENTS: usize = 250;
 pub(crate) const MAX_INSTALLED_CONDA_PACKAGES: usize = 20_000;
 const MAX_INSTALLED_CONDA_DIRECTORY_ENTRIES: usize = 32_768;
-const MAX_CONDA_RECORD_BYTES: u64 = 256 * 1024;
+/// Conda records list every installed file, so large packages can exceed a few MiB.
+const MAX_CONDA_RECORD_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TOTAL_CONDA_RECORD_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_WARNINGS: usize = 32;
 
@@ -329,6 +330,113 @@ mod installed_package_tests {
         let result = read_limited_conda_record(EndlessReader, 32).unwrap();
         assert!(result.is_none());
     }
+
+    fn write_record(metadata: &Path, name: &str, version: &str, build: &str, padding: usize) {
+        let record = format!(
+            r#"{{"name":"{name}","version":"{version}","build":"{build}","files":["{}"]}}"#,
+            "x".repeat(padding)
+        );
+        std::fs::write(
+            metadata.join(format!("{name}-{version}-{build}.json")),
+            record,
+        )
+        .unwrap();
+    }
+
+    fn package_triples(inventory: &InstalledCondaPackageInventory) -> Vec<(&str, &str, &str)> {
+        inventory
+            .packages
+            .iter()
+            .map(|p| (p.name.as_str(), p.version.as_str(), p.build.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn installed_records_larger_than_the_old_cap_are_read_with_later_records() {
+        let temp = TempDir::new().unwrap();
+        let prefix = temp.path().join("borrowed");
+        let metadata = prefix.join("conda-meta");
+        std::fs::create_dir_all(&metadata).unwrap();
+        // ~300 KiB, above the former 256 KiB cap, and sorted before the others.
+        write_record(
+            &metadata,
+            "debugpy",
+            "1.8.21",
+            "py314h50f4ffc_0",
+            300 * 1024,
+        );
+        write_record(&metadata, "pandas", "3.0.6", "py314h_0", 0);
+        write_record(&metadata, "python", "3.14.0", "h123_0", 0);
+
+        let inventory = read_installed_conda_packages(&prefix).unwrap();
+        assert_eq!(
+            package_triples(&inventory),
+            [
+                ("debugpy", "1.8.21", "py314h50f4ffc_0"),
+                ("pandas", "3.0.6", "py314h_0"),
+                ("python", "3.14.0", "h123_0"),
+            ]
+        );
+        assert!(!inventory.truncated);
+        assert!(inventory.warnings.is_empty());
+    }
+
+    #[test]
+    fn installed_records_over_the_cap_use_the_filename_and_do_not_stop_the_scan() {
+        let temp = TempDir::new().unwrap();
+        let prefix = temp.path().join("borrowed");
+        let metadata = prefix.join("conda-meta");
+        std::fs::create_dir_all(&metadata).unwrap();
+        write_record(&metadata, "ca-certificates", "2026.1.1", "hca03da5_0", 4096);
+        write_record(&metadata, "debugpy", "1.8.21", "py314h50f4ffc_0", 0);
+        // Oversized body with a non-canonical filename: skipped, no invented package.
+        std::fs::write(metadata.join("bogus.json"), "x".repeat(4096)).unwrap();
+        write_record(&metadata, "numpy-base", "2.1.0", "py312_0", 4096);
+        write_record(&metadata, "zlib", "1.3.1", "h5eee18b_0", 0);
+
+        let inventory = read_installed_conda_packages_with_limits(&prefix, 64, 1024).unwrap();
+        assert_eq!(
+            package_triples(&inventory),
+            [
+                ("ca-certificates", "2026.1.1", "hca03da5_0"),
+                ("debugpy", "1.8.21", "py314h50f4ffc_0"),
+                ("numpy-base", "2.1.0", "py312_0"),
+                ("zlib", "1.3.1", "h5eee18b_0"),
+            ]
+        );
+        assert!(!inventory.truncated);
+        for name in ["ca-certificates", "numpy-base"] {
+            assert!(
+                inventory.warnings.iter().any(|w| w.contains(name)),
+                "missing warning for {name}: {:?}",
+                inventory.warnings
+            );
+        }
+        assert!(inventory
+            .warnings
+            .iter()
+            .any(|w| w.contains("unrecognized filename")));
+    }
+
+    #[test]
+    fn record_filename_parsing_keeps_hyphenated_names_and_rejects_malformed_names() {
+        let parsed = package_from_record_filename(Path::new("numpy-base-2.1.0-py312_0.json"))
+            .expect("canonical filename");
+        assert_eq!(
+            (
+                parsed.name.as_str(),
+                parsed.version.as_str(),
+                parsed.build.as_str()
+            ),
+            ("numpy-base", "2.1.0", "py312_0")
+        );
+        for bad in ["bogus.json", "a-b.json", "-1.0-0.json", "name--0.json"] {
+            assert!(
+                package_from_record_filename(Path::new(bad)).is_none(),
+                "{bad}"
+            );
+        }
+    }
 }
 
 fn read_installed_conda_packages(prefix: &Path) -> Result<InstalledCondaPackageInventory, String> {
@@ -338,6 +446,54 @@ fn read_installed_conda_packages(prefix: &Path) -> Result<InstalledCondaPackageI
 fn read_installed_conda_packages_with_entry_limit(
     prefix: &Path,
     max_directory_entries: usize,
+) -> Result<InstalledCondaPackageInventory, String> {
+    read_installed_conda_packages_with_limits(prefix, max_directory_entries, MAX_CONDA_RECORD_BYTES)
+}
+
+/// Build a package from a canonical `<name>-<version>-<build>.json` record filename.
+/// Names may contain hyphens, so the split happens at the last two hyphens.
+fn package_from_record_filename(record_path: &Path) -> Option<InstalledCondaPackage> {
+    let stem = record_path.file_stem()?.to_str()?;
+    let mut parts = stem.rsplitn(3, '-');
+    let build = parts.next()?;
+    let version = parts.next()?;
+    let name = parts.next()?;
+    if [name, version, build].iter().any(|part| part.is_empty()) {
+        return None;
+    }
+    Some(InstalledCondaPackage {
+        name: name.to_string(),
+        version: version.to_string(),
+        build: build.to_string(),
+    })
+}
+
+/// Record a package for a record too large to read, or warn that it was skipped.
+fn add_oversized_record(
+    record_path: &Path,
+    packages: &mut Vec<InstalledCondaPackage>,
+    warnings: &mut Vec<String>,
+) {
+    let warning = match package_from_record_filename(record_path) {
+        Some(package) => {
+            let warning = format!(
+                "Large Conda record for {} was read from its filename",
+                package.name
+            );
+            packages.push(package);
+            warning
+        }
+        None => "Skipped a large Conda package record with an unrecognized filename".into(),
+    };
+    if warnings.len() < MAX_WARNINGS {
+        warnings.push(warning);
+    }
+}
+
+fn read_installed_conda_packages_with_limits(
+    prefix: &Path,
+    max_directory_entries: usize,
+    max_record_bytes: u64,
 ) -> Result<InstalledCondaPackageInventory, String> {
     let canonical_prefix = std::fs::canonicalize(prefix)
         .map_err(|error| format!("Cannot access running Conda prefix: {error}"))?;
@@ -400,9 +556,11 @@ fn read_installed_conda_packages_with_entry_limit(
                 continue;
             }
         };
-        if metadata.len() > MAX_CONDA_RECORD_BYTES
-            || metadata.len() > MAX_TOTAL_CONDA_RECORD_BYTES.saturating_sub(total_record_bytes)
-        {
+        if metadata.len() > max_record_bytes {
+            add_oversized_record(&record_path, &mut packages, &mut warnings);
+            continue;
+        }
+        if metadata.len() > MAX_TOTAL_CONDA_RECORD_BYTES.saturating_sub(total_record_bytes) {
             truncated = true;
             if warnings.len() < MAX_WARNINGS {
                 warnings.push("Conda package record byte budget reached".into());
@@ -419,14 +577,12 @@ fn read_installed_conda_packages_with_entry_limit(
                 continue;
             }
         };
-        let bytes = match read_limited_conda_record(file, MAX_CONDA_RECORD_BYTES) {
+        let bytes = match read_limited_conda_record(file, max_record_bytes) {
             Ok(Some(bytes)) => bytes,
             Ok(None) => {
-                truncated = true;
-                if warnings.len() < MAX_WARNINGS {
-                    warnings.push("Conda package record grew beyond its read limit".into());
-                }
-                break;
+                // The record grew after `stat`; treat it like any other oversized record.
+                add_oversized_record(&record_path, &mut packages, &mut warnings);
+                continue;
             }
             Err(error) => {
                 if warnings.len() < MAX_WARNINGS {
