@@ -157,7 +157,7 @@ import {
 export { Space } from "./spaces.mjs";
 import { spaceCreationEffect, spaceCreationTransition } from "./space-lifecycle.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
-import { serialQueue } from "./serial-queue.mjs";
+import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { readTool } from "./tool-reads.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
 import { PageActivity } from "./page-activity.mjs";
@@ -2245,17 +2245,23 @@ export class Page {
     this.cachedTitle = title;
     const observedAt = new Date().toISOString();
     if (titleChanged) this.titleObservedAt = observedAt;
+    // A projection that times out clears the cached title below, so the next
+    // request to this Page sends it again.
     const tasks = recipients.map((principal) =>
-      this.env.CATALOGS.getByName(principal).fetch(
-        new Request("https://pages.internal/internal/projection", {
-          method: "POST",
-          body: JSON.stringify({
-            page_id: this.metadata.pageId,
-            title,
-            observed_at: observedAt,
-            shared: principal !== this.metadata.owner,
+      withTimeout(
+        this.env.CATALOGS.getByName(principal).fetch(
+          new Request("https://pages.internal/internal/projection", {
+            method: "POST",
+            body: JSON.stringify({
+              page_id: this.metadata.pageId,
+              title,
+              observed_at: observedAt,
+              shared: principal !== this.metadata.owner,
+            }),
           }),
-        }),
+        ),
+        serialQueueBounds.projectionMs,
+        "Catalog projection timed out",
       ),
     );
     if (catalogIndexEpoch(this.env)) {

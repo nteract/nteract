@@ -20,9 +20,12 @@ import { logFailure } from "./auth.mjs";
  * from a restart through their stored operation intents.
  */
 
-/** Mutable so tests can shorten it. A request still running at `runMs` has
- * outlived its caller's 60 s tool deadline twice. */
-export const serialQueueBounds = { runMs: 120_000 };
+/** Mutable so tests can shorten them. A request still running at `runMs` has
+ * outlived its caller's 60 s tool deadline twice. `projectionMs` bounds how
+ * long a Page waits for its owner's or a member's Catalog to apply a title
+ * projection. A caller without its own deadline needs one, because a reset
+ * instance never answers the requests queued on it. */
+export const serialQueueBounds = { runMs: 120_000, projectionMs: 10_000 };
 
 const stuckError = () =>
   Object.assign(new Error("A queued request did not settle"), {

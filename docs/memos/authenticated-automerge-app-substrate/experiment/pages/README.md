@@ -1038,7 +1038,9 @@ resets through `ctx.abort()`, which celld 0.6.3 supports, and the next request
 reaches a fresh instance. The running request's timer catches it, and so does
 the next request to arrive, which checks the running request's age. Requests
 already queued on the reset instance never settle, and their callers' 60 s
-deadlines answer them. Reset is safe here because Catalog and Space state is
+deadlines answer them. A Page's title projection has no gateway deadline, so
+the Page gives it 10 s. On a timeout the Page forgets the title it sent, and
+the next request to the Page sends it again. Reset is safe here because Catalog and Space state is
 all in durable storage, and their operations recover from a restart through
 stored operation intents. The log line has stage `catalog-queue` or
 `space-queue`, status 503 and reason `request_timeout`. Pages don't use this

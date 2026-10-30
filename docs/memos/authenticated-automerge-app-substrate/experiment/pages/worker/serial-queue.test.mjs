@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAuthFixture } from "../../auth-fixtures.mjs";
-import { Catalog } from "./index.mjs";
+import { Catalog, Page } from "./index.mjs";
 import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { Space } from "./spaces.mjs";
 
@@ -159,6 +159,38 @@ test("a Catalog stuck on a Page fetch resets, and listings queued behind it do n
   assert.equal(ctx.aborts.length, 1);
   await turns();
   assert.equal(listed, false, "the reset instance answers no queued request");
+});
+
+test("a title projection stranded on a reset Catalog is sent again", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pageId = "44444444-4444-4444-8444-444444444444";
+  const sent = [];
+  let answer = never;
+  const jobs = [];
+  const page = Object.assign(Object.create(Page.prototype), {
+    env: {
+      CATALOGS: {
+        getByName: (principal) => ({
+          fetch: (request) => (sent.push(principal), answer(request)),
+        }),
+      },
+    },
+    ctx: { waitUntil: (promise) => jobs.push(promise) },
+    metadata: { pageId, owner: "user:owner", deleted: false, acl: { revision: 0, members: {} } },
+    handle: { doc: () => ({ title: "Renamed" }) },
+  });
+  page.cacheTitle();
+  assert.deepEqual(sent, ["user:owner"]);
+  page.cacheTitle();
+  assert.deepEqual(sent, ["user:owner"], "a pending projection is not repeated");
+  t.mock.timers.tick(serialQueueBounds.projectionMs);
+  await Promise.all(jobs);
+  assert.equal(page.cachedTitle, undefined, "the timed-out projection clears the cache");
+  answer = async () => Response.json({ ok: true });
+  page.cacheTitle();
+  await Promise.all(jobs);
+  assert.deepEqual(sent, ["user:owner", "user:owner"]);
+  assert.equal(page.cachedTitle, "Renamed");
 });
 
 test("a Space queue resets the same way", async (t) => {
