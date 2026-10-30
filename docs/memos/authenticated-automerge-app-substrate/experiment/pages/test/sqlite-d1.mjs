@@ -9,12 +9,15 @@ import { DatabaseSync } from "node:sqlite";
 export class SqliteD1 {
   mode = "ok";
   calls = 0;
+  /** `Date.now()` at the start of each call, for deadline assertions. */
+  callStarts = [];
   delay = 0;
   constructor(path) {
     this.sqlite = new DatabaseSync(path);
   }
   async #gate() {
     this.calls++;
+    this.callStarts.push(Date.now());
     if (this.delay) await new Promise((resolve) => setTimeout(resolve, this.delay));
     if (this.mode === "fail") throw new Error("injected D1 outage");
     if (this.mode === "hang") await new Promise(() => {});
