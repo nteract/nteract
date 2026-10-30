@@ -155,33 +155,70 @@ test("unauthenticated MCP discovers OAuth without Origin, DB, or provider traffi
     }
 });
 
+/** A credential-free MCP POST that declares its body length, as HTTP clients do. */
+function anonymous(body, headers = {}) {
+  const text = typeof body === "string" ? body : JSON.stringify(body);
+  return new Request(`http://127.0.0.1:9477/mcp`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      "Content-Length": String(new TextEncoder().encode(text).byteLength),
+      ...headers,
+    },
+    body: text,
+  });
+}
+
 test("tools/list and ping answer without a credential; other methods still challenge", async (t) => {
   t.mock.method(globalThis, "fetch", () => assert.fail("tool discovery must remain local"));
   const env = environment();
-  const listed = await worker.fetch(request(), env);
+  const listed = await worker.fetch(
+    anonymous({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    env,
+  );
   assert.equal(listed.status, 200, await listed.clone().text());
   const names = (await listed.json()).result.tools.map((tool) => tool.name);
   for (const name of ["list_pages", "read_page", "patch_page", "delete_page", "restore_page"])
     assert.ok(names.includes(name), name);
-  const pinged = await worker.fetch(
-    request("/mcp", undefined, {}, "POST", { jsonrpc: "2.0", id: 2, method: "ping" }),
-    env,
-  );
+  const pinged = await worker.fetch(anonymous({ jsonrpc: "2.0", id: 2, method: "ping" }), env);
   assert.equal(pinged.status, 200);
+  const challenged = async (req, label) => {
+    const response = await worker.fetch(req, env);
+    assert.equal(response.status, 401, label);
+    assert.ok(response.headers.get("www-authenticate"), label);
+  };
   for (const body of [
     initialize,
     { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_pages", arguments: {} } },
     [{ jsonrpc: "2.0", id: 4, method: "tools/list" }],
     { jsonrpc: "2.0", id: 5, method: "resources/list" },
-  ]) {
-    const challenged = await worker.fetch(request("/mcp", undefined, {}, "POST", body), env);
-    assert.equal(challenged.status, 401, JSON.stringify(body));
-    assert.ok(challenged.headers.get("www-authenticate"));
-  }
-  // A presented but unusable credential still gets the reconnect challenge.
-  const stale = await worker.fetch(request("/mcp", "pages_not-a-real-token"), env);
-  assert.equal(stale.status, 401);
-  assert.ok(stale.headers.get("www-authenticate"));
+  ])
+    await challenged(anonymous(body), JSON.stringify(body));
+  const list = { jsonrpc: "2.0", id: 6, method: "tools/list" };
+  // Without a declared length, or with a large one, the body is never read.
+  await challenged(request(), "no Content-Length");
+  await challenged(
+    anonymous(JSON.stringify(list) + " ".repeat(5000)),
+    "declared body over the anonymous limit",
+  );
+  // A body longer than its declaration stops at the limit.
+  const padded = JSON.stringify(list) + " ".repeat(8000);
+  await challenged(
+    new Request(`http://127.0.0.1:9477/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": "64" },
+      body: padded,
+    }),
+    "body longer than declared",
+  );
+  // A presented credential that fails still gets the reconnect challenge.
+  await challenged(request("/mcp", "pages_not-a-real-token"), "stale bearer");
+  const withCookie = await worker.fetch(
+    anonymous(list, { Origin: origin, Cookie: "nteract_session=expired" }),
+    env,
+  );
+  assert.notEqual(withCookie.status, 200, "a cookie takes the authenticated path");
 });
 
 test("Pages-issued tokens authenticate MCP and each host-only forwarding hop locally", async (t) => {
