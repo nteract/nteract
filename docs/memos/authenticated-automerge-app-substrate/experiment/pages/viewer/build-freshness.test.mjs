@@ -1,15 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import "fake-indexeddb/auto";
+import { VirtualTimeScheduler, filter, firstValueFrom } from "rxjs";
 import {
   BUILD_CHECK_INTERVAL_MS,
   BuildMonitor,
   VISIBLE_RECHECK_MS,
   ReloadGate,
   UNSENT_COMMENT,
-  saveBeforeReload,
 } from "./build-freshness.mjs";
+import * as Automerge from "@automerge/automerge";
 import { observeResponses, request } from "./request.mjs";
-import { PageSession } from "./session.mjs";
+import { CLOSE_DRAIN_MS, PageSession } from "./session.mjs";
+import { createPageData, initializePage } from "../model/page.mjs";
+import { SessionHost } from "./session-host.mjs";
+import { FakeSession, deferred, manualTimers } from "./session-fixture.mjs";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { closeTrashedSessions } from "./trash.mjs";
@@ -161,91 +166,37 @@ test("headers on ordinary requests are compared without another request", async 
   }
 });
 
-class FakeSession {
-  alive = true;
-  deleted = false;
-  pending = true;
-  status = "Saving";
-  listeners = new Set();
-  pauses = new Set();
-  calls = [];
-  constructor(pageId = crypto.randomUUID()) {
-    this.pageId = pageId;
-    this.identity = { principal: "dev" };
-  }
-  get recoveryPending() {
-    return this.pending;
-  }
-  get editsPaused() {
-    return this.pauses.size > 0;
-  }
-  subscribe(fn) {
-    this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
-  }
-  set(patch) {
-    Object.assign(this, patch);
-    for (const fn of this.listeners) fn();
-  }
-  pauseEdits(reason, paused = true) {
-    if (paused) this.pauses.add(reason);
-    else this.pauses.delete(reason);
-  }
-  retryConnection(options) {
-    this.calls.push(["retry", options]);
-  }
-  queueSaved() {
-    this.calls.push("queueSaved");
-  }
-  doc = { title: "Garden notes" };
-  heads = ["h1"];
-  savedHeads = [];
-  exportRecovery() {
-    return { markdown: `# ${this.doc.title}\n\nUnsent edit\n`, heads: [...this.heads] };
-  }
-  checkpointFails = false;
-  async close() {
-    this.calls.push("close");
-    this.alive = false;
-    this.checkpointWritten = !this.checkpointFails;
-  }
-}
-
-function manualTimers() {
-  const pending = new Set();
-  return {
-    pending,
-    setTimeout: (fn, ms) => {
-      const timer = { fn, ms };
-      pending.add(timer);
-      return timer;
-    },
-    clearTimeout: (timer) => pending.delete(timer),
-    fire() {
-      for (const timer of pending) {
-        pending.delete(timer);
-        timer.fn();
-      }
-    },
-  };
-}
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+/** A reload gate following a SessionHost. Fake sessions drain on `timers`;
+ * the gate's own timeout runs on `scheduler`. */
 function gate() {
   const timers = manualTimers();
+  const scheduler = new VirtualTimeScheduler();
+  const host = new SessionHost();
+  const reloadGate = new ReloadGate({ scheduler });
+  reloadGate.watch(host);
   let reloaded = 0;
-  const reloadGate = new ReloadGate({ timers });
   return {
     timers,
+    scheduler,
+    host,
     reloadGate,
     reloaded: () => reloaded,
-    reload: () => reloadGate.reload({ reload: () => reloaded++ }),
+    reload: (options) => reloadGate.reload({ reload: () => reloaded++, ...options }),
+    session: (pageId, options) => new FakeSession(pageId, { timers, ...options }),
+    hold: (session) => host.install(session, host.generation, session.identity.principal),
+    records: () => reloadGate.store.snapshot().records,
+    record: (key) => reloadGate.store.snapshot().records.find((record) => record.key === key),
+    owned: () => reloadGate.store.snapshot().sessions,
   };
 }
+const timeouts = (scheduler) => scheduler.actions.map((action) => action.delay);
 
 test("reload waits for accepted edits to be saved on the host", async () => {
   const g = gate();
-  const session = new FakeSession();
-  g.reloadGate.hold(session);
+  const session = g.session();
+  g.hold(session);
   const result = g.reload();
   assert.deepEqual([...session.pauses], ["reload"], "no new edits race the flush");
   assert.deepEqual(session.calls, ["queueSaved"]);
@@ -256,43 +207,45 @@ test("reload waits for accepted edits to be saved on the host", async () => {
   session.set({ status: "Saved", pending: false });
   assert.deepEqual(await result, { ok: true });
   assert.equal(g.reloaded(), 1);
-  assert.equal(g.timers.pending.size, 0);
-  assert.equal(session.listeners.size, 0);
+  assert.deepEqual(timeouts(g.scheduler), []);
 });
 
 test("reload is immediate with nothing to save, and retries a stalled save", async () => {
+  assert.deepEqual(await gate().reload(), { ok: true });
   const g = gate();
-  assert.deepEqual(await g.reload(), { ok: true });
-  const saved = new FakeSession();
+  const saved = g.session();
   saved.set({ pending: false, status: "Saved" });
-  g.reloadGate.hold(saved);
+  g.hold(saved);
   assert.deepEqual(await g.reload(), { ok: true });
-  assert.equal(g.reloaded(), 2);
+  assert.equal(g.reloaded(), 1);
 
-  const offline = new FakeSession();
+  const h = gate();
+  const offline = h.session();
   offline.status = "Offline";
-  const result = saveBeforeReload(offline, manualTimers());
+  h.hold(offline);
+  const result = h.reload();
   assert.deepEqual(offline.calls, [["retry", { retryReceipt: true }]]);
   offline.set({ status: "Saved", pending: false });
   assert.deepEqual(await result, { ok: true });
 });
 
 test("edits that can't be saved block the reload and say why", async () => {
-  for (const status of ["Sign in to sync", "Access removed", "Local save failed"]) {
+  for (const reason of ["auth", "access", "failed"]) {
     const g = gate();
-    const session = new FakeSession();
-    session.status = status;
-    g.reloadGate.hold(session);
+    const session = g.session();
+    if (reason === "failed") session.status = "Local save failed";
+    else session.pause(reason);
+    g.hold(session);
     const result = await g.reload();
-    assert.equal(result.ok, false, status);
+    assert.equal(result.ok, false, reason);
     assert.match(result.message, /edits/);
     assert.equal(g.reloaded(), 0);
     assert.equal(session.editsPaused, false, "editing resumes after a voluntary attempt");
   }
   // A save that fails mid-wait stops the attempt too.
   const g = gate();
-  const session = new FakeSession();
-  g.reloadGate.hold(session);
+  const session = g.session();
+  g.hold(session);
   const failing = g.reload();
   session.set({ status: "Local save failed" });
   assert.equal((await failing).ok, false);
@@ -301,48 +254,47 @@ test("edits that can't be saved block the reload and say why", async () => {
 
 test("a raised floor during a failed reload keeps edits paused", async () => {
   const g = gate();
-  const session = new FakeSession();
-  g.reloadGate.hold(session);
+  const session = g.session();
+  g.hold(session);
   const result = g.reload();
   // The floor rises while the optional reload is waiting for its receipt.
   session.pauseEdits("protocol");
-  assert.equal([...g.timers.pending][0].ms, 15_000);
-  g.timers.fire();
+  assert.deepEqual(timeouts(g.scheduler), [15_000]);
+  g.scheduler.flush();
   const { ok, message } = await result;
   assert.equal(ok, false);
   assert.match(message, /haven't saved yet/);
   assert.deepEqual([...session.pauses], ["protocol"], "only the reload's pause is released");
   assert.equal(session.editsPaused, true);
-  assert.equal(session.listeners.size, 0);
 });
 
 test("unsent comment drafts block the reload until sent or discarded", async () => {
   const g = gate();
-  let draft = "Half a thought";
-  const stop = g.reloadGate.watchDrafts(() => Boolean(draft));
+  const drafts = g.reloadGate.watchDrafts();
+  drafts.set(true);
   assert.deepEqual(await g.reload(), { ok: false, message: UNSENT_COMMENT });
   // A draft typed while edits wait to save also blocks.
-  draft = "";
-  const session = new FakeSession();
-  g.reloadGate.hold(session);
+  drafts.set(false);
+  const session = g.session();
+  g.hold(session);
   const waiting = g.reload();
-  draft = "Typed during the wait";
+  drafts.set(true);
   session.set({ status: "Saved", pending: false });
   assert.deepEqual(await waiting, { ok: false, message: UNSENT_COMMENT });
   assert.equal(session.editsPaused, false);
-  draft = "";
+  drafts.set(false);
   assert.deepEqual(await g.reload(), { ok: true });
-  stop();
+  drafts.stop();
   assert.equal(g.reloadGate.hasDrafts(), false);
 });
 
 test("a Page being left keeps saving, and Reload waits for its receipt", async () => {
   const g = gate();
-  const left = new FakeSession();
-  g.reloadGate.hold(left);
-  const closed = g.reloadGate.drainAndClose(left);
+  const left = g.session();
+  g.hold(left);
+  const closed = g.host.release();
   assert.deepEqual(left.calls, [], "still open while its receipt is in flight");
-  assert.equal([...g.timers.pending][0].ms, 10_000);
+  assert.equal([...g.timers.pending][0].ms, CLOSE_DRAIN_MS);
   const result = g.reload();
   await settle();
   assert.equal(g.reloaded(), 0);
@@ -350,15 +302,15 @@ test("a Page being left keeps saving, and Reload waits for its receipt", async (
   await closed;
   assert.deepEqual(left.calls, ["close"]);
   assert.deepEqual(await result, { ok: true });
-  assert.equal(g.reloadGate.draining.size, 0);
-  assert.equal(g.reloadGate.closed.size, 0);
+  assert.deepEqual(g.owned(), []);
+  assert.deepEqual(g.records(), []);
 });
 
 /** Leave a Page that goes offline before its receipt: the drain ends and
  * close writes the IndexedDB checkpoint (or fails to). */
 async function leaveUnsaved(g, session) {
-  g.reloadGate.hold(session);
-  const closed = g.reloadGate.drainAndClose(session);
+  g.hold(session);
+  const closed = g.host.release();
   session.set({ status: "Offline" });
   await closed;
   await settle();
@@ -366,24 +318,21 @@ async function leaveUnsaved(g, session) {
 
 test("a closed Page keeps only metadata, never its session", async () => {
   const g = gate();
-  const left = new FakeSession("page-left");
+  const left = g.session("page-left");
   await leaveUnsaved(g, left);
   assert.deepEqual(left.calls, ["close"]);
   assert.equal(left.listeners.size, 0, "no listener keeps the session alive");
-  assert.equal(g.reloadGate.draining.size, 0);
-  assert.equal(g.reloadGate.sessions.size, 0);
-  assert.deepEqual(
-    [...g.reloadGate.closed.values()],
-    [
-      {
-        key: "dev:page-left",
-        account: "dev",
-        pageId: "page-left",
-        title: "Garden notes",
-        checkpointWritten: true,
-      },
-    ],
-  );
+  assert.deepEqual(g.owned(), []);
+  assert.deepEqual(g.host.store.snapshot().owned, []);
+  assert.deepEqual(g.records(), [
+    {
+      key: "dev:page-left",
+      account: "dev",
+      pageId: "page-left",
+      title: "Garden notes",
+      checkpointWritten: true,
+    },
+  ]);
   // Plain data only: nothing the gate retains reaches the session or its doc.
   const seen = new Set();
   (function walk(value) {
@@ -391,37 +340,34 @@ test("a closed Page keeps only metadata, never its session", async () => {
     assert.notEqual(value, left);
     assert.notEqual(value, left.doc);
     seen.add(value);
-    for (const child of value instanceof Map || value instanceof Set
-      ? [...value.values(), ...(value instanceof Map ? value.keys() : [])]
-      : Object.values(value))
-      walk(child);
-  })({ ...g.reloadGate });
+    for (const child of Object.values(value)) walk(child);
+  })(g.reloadGate.store.snapshot());
   // A saved leave keeps nothing at all.
-  const saved = new FakeSession();
-  g.reloadGate.hold(saved);
-  const closing = g.reloadGate.drainAndClose(saved);
+  const saved = g.session();
+  g.hold(saved);
+  const closing = g.host.release();
   saved.set({ status: "Saved", pending: false });
   await closing;
   await settle();
-  assert.equal(g.reloadGate.closed.size, 1);
+  assert.equal(g.records().length, 1);
 });
 
 test("the gate releases a closed session for garbage collection", async () => {
   const g = gate();
-  let left = new FakeSession("page-gc");
+  let left = g.session("page-gc");
   const ref = new WeakRef(left);
   await leaveUnsaved(g, left);
   left = null;
   await settle();
   gc();
   assert.equal(ref.deref(), undefined);
-  assert.equal(g.reloadGate.closed.size, 1);
+  assert.equal(g.records().length, 1);
 });
 
 test("Reload names closed Pages waiting in IndexedDB and asks before reloading", async () => {
   const g = gate();
-  await leaveUnsaved(g, new FakeSession("page-left"));
-  const second = new FakeSession("page-two");
+  await leaveUnsaved(g, g.session("page-left"));
+  const second = g.session("page-two");
   second.doc = { title: "Plans" };
   await leaveUnsaved(g, second);
   const result = await g.reload();
@@ -437,8 +383,8 @@ test("Reload names closed Pages waiting in IndexedDB and asks before reloading",
   );
   assert.equal(g.reloaded(), 0);
   // Opening one of them supersedes its record; the new session owns the receipt.
-  const reopened = new FakeSession("page-left");
-  g.reloadGate.hold(reopened);
+  const reopened = g.session("page-left");
+  g.hold(reopened);
   const waiting = g.reload();
   reopened.set({ status: "Saved", pending: false });
   const again = await waiting;
@@ -447,17 +393,15 @@ test("Reload names closed Pages waiting in IndexedDB and asks before reloading",
     "Edits on Plans haven't reached the server yet. They're saved in this browser and sync when you open that Page again.",
   );
   // Reload anyway: the checkpoints stay in IndexedDB for the next open.
-  assert.deepEqual(await g.reloadGate.reload({ reload: () => {}, acceptCheckpoints: true }), {
-    ok: true,
-  });
+  assert.deepEqual(await g.reload({ acceptCheckpoints: true }), { ok: true });
 });
 
 test("a failed checkpoint blocks Reload until its Markdown is downloaded or discarded", async () => {
   const g = gate();
-  const left = new FakeSession("page-lost");
+  const left = g.session("page-lost");
   left.checkpointFails = true;
   await leaveUnsaved(g, left);
-  await leaveUnsaved(g, new FakeSession("page-kept"));
+  await leaveUnsaved(g, g.session("page-kept"));
   const result = await g.reload();
   assert.equal(result.reason, "unsaved");
   assert.deepEqual(result.pages, [
@@ -473,56 +417,53 @@ test("a failed checkpoint blocks Reload until its Markdown is downloaded or disc
   ]);
   assert.match(result.message, /^Edits on Garden notes couldn't be saved in this browser/);
   // Reload anyway does not cover edits that exist nowhere else.
-  assert.equal(
-    (await g.reloadGate.reload({ acceptCheckpoints: true, reload() {} })).reason,
-    "unsaved",
-  );
+  assert.equal((await g.reload({ acceptCheckpoints: true })).reason, "unsaved");
   assert.equal(g.reloaded(), 0);
-  g.reloadGate.discard(result.pages[0]);
-  assert.equal((await g.reload()).reason, "checkpointed");
+  // Discard and reload drops only that record.
+  assert.equal((await g.reload({ discard: [result.pages[0].key] })).reason, "checkpointed");
   // A close that throws keeps the export too.
-  const broken = new FakeSession("page-broken");
-  broken.close = async () => {
-    throw new Error("disk");
-  };
-  g.reloadGate.hold(broken);
-  const closing = g.reloadGate.drainAndClose(broken);
+  const broken = g.session("page-broken");
+  broken.checkpointFails = true;
+  broken.closeError = new Error("disk");
+  const errors = [];
+  g.hold(broken);
+  const closing = g.host.release({ onError: (error) => errors.push(error.message) });
   broken.set({ status: "Offline" });
-  await assert.rejects(closing, /disk/);
+  await closing;
   await settle();
-  assert.equal(g.reloadGate.closed.get("dev:page-broken").checkpointWritten, false);
+  assert.deepEqual(errors, ["disk"]);
+  assert.equal(g.record("dev:page-broken").checkpointWritten, false);
 });
 
 test("reopening never clears a failed checkpoint; only a covering receipt or discard does", async () => {
   const g = gate();
-  const left = new FakeSession("page-lost");
+  const left = g.session("page-lost");
   left.checkpointFails = true;
   left.heads = ["lost-1", "lost-2"];
   await leaveUnsaved(g, left);
   // The reopened replica lacks the lost edits, so its receipt covers other heads.
-  const reopened = new FakeSession("page-lost");
+  const reopened = g.session("page-lost");
   reopened.heads = ["server"];
-  g.reloadGate.hold(reopened);
-  assert.equal(g.reloadGate.closed.get("dev:page-lost").checkpointWritten, false);
+  g.hold(reopened);
+  assert.equal(g.record("dev:page-lost").checkpointWritten, false);
   let waiting = g.reload();
   reopened.set({ status: "Saved", pending: false, savedHeads: ["server"] });
   assert.equal((await waiting).reason, "unsaved", "a receipt for other heads keeps the record");
   // Leaving again with a written checkpoint, or fully saved, keeps it too.
-  const closing = g.reloadGate.drainAndClose(reopened);
-  await closing;
+  await g.host.release();
   await settle();
-  assert.equal(g.reloadGate.closed.get("dev:page-lost").checkpointWritten, false);
+  assert.equal(g.record("dev:page-lost").checkpointWritten, false);
   // A second failed checkpoint adds its copy instead of replacing the first.
-  const again = new FakeSession("page-lost");
+  const again = g.session("page-lost");
   again.checkpointFails = true;
   again.heads = ["lost-3"];
   await leaveUnsaved(g, again);
-  const record = g.reloadGate.closed.get("dev:page-lost");
+  const record = g.record("dev:page-lost");
   assert.deepEqual(record.heads, ["lost-1", "lost-2", "lost-3"]);
   assert.equal(record.markdown.split("# Garden notes").length, 3);
   // A receipt that includes every recorded head clears it.
-  const synced = new FakeSession("page-lost");
-  g.reloadGate.hold(synced);
+  const synced = g.session("page-lost");
+  g.hold(synced);
   waiting = g.reload();
   synced.set({ status: "Saved", pending: false, savedHeads: ["lost-1", "lost-2", "lost-3"] });
   assert.deepEqual(await waiting, { ok: true });
@@ -530,11 +471,10 @@ test("reopening never clears a failed checkpoint; only a covering receipt or dis
 
 test("closed records are keyed by account and Page id", async () => {
   const g = gate();
-  const first = new FakeSession("shared-page");
+  const first = g.session("shared-page");
   first.checkpointFails = true;
   await leaveUnsaved(g, first);
-  const other = new FakeSession("shared-page");
-  other.identity = { principal: "other" };
+  const other = g.session("shared-page", { principal: "other" });
   other.checkpointFails = true;
   await leaveUnsaved(g, other);
   const { pages } = await g.reload();
@@ -542,45 +482,43 @@ test("closed records are keyed by account and Page id", async () => {
     pages.map((page) => page.key),
     ["dev:shared-page", "other:shared-page"],
   );
-  g.reloadGate.discard(pages[0]);
   assert.deepEqual(
-    (await g.reload()).pages.map((page) => page.key),
+    (await g.reload({ discard: [pages[0].key] })).pages.map((page) => page.key),
     ["other:shared-page"],
   );
 });
 
 test("a closed Page whose access was removed never traps Reload", async () => {
   const g = gate();
-  const left = new FakeSession("page-revoked");
-  g.reloadGate.hold(left);
+  const left = g.session("page-revoked");
+  g.hold(left);
   // Access removal stops the drain at once; close still writes the checkpoint.
-  left.set({ status: "Access removed" });
-  await g.reloadGate.drainAndClose(left);
+  left.pause("access");
+  await g.host.release();
   await settle();
   const result = await g.reload();
   assert.equal(result.reason, "checkpointed");
-  assert.deepEqual(await g.reloadGate.reload({ acceptCheckpoints: true, reload() {} }), {
-    ok: true,
-  });
+  assert.deepEqual(await g.reload({ acceptCheckpoints: true }), { ok: true });
   // A deleted Page has nothing to keep.
-  const deleted = new FakeSession("page-deleted");
-  g.reloadGate.hold(deleted);
-  const closing = g.reloadGate.drainAndClose(deleted);
-  deleted.set({ deleted: true });
+  const h = gate();
+  const deleted = h.session("page-deleted");
+  h.hold(deleted);
+  const closing = h.host.release();
+  void deleted.markDeleted();
   await closing;
   await settle();
-  assert.equal(g.reloadGate.closed.has("dev:page-deleted"), false);
+  assert.equal(h.record("dev:page-deleted"), undefined);
 });
 
 test("navigation during the wait cancels the reload", async () => {
   const g = gate();
-  const first = new FakeSession();
-  g.reloadGate.hold(first);
+  const first = g.session();
+  g.hold(first);
   const result = g.reload();
-  void g.reloadGate.drainAndClose(first);
-  const second = new FakeSession();
+  void g.host.release();
+  const second = g.session();
   second.set({ pending: false, status: "Saved" });
-  g.reloadGate.hold(second);
+  g.hold(second);
   first.set({ status: "Saved", pending: false });
   assert.deepEqual(await result, { ok: false, cancelled: true });
   assert.equal(g.reloaded(), 0);
@@ -614,23 +552,19 @@ test("paused edits need every reason released and survive capability refreshes",
   assert.equal(emitted, 4);
 });
 
-test("moving a Page to Trash closes it through the gate: a held checkpoint blocks Reload", async () => {
+test("moving a Page to Trash closes it through the host: a held checkpoint blocks Reload", async () => {
   const g = gate();
-  const trashed = new FakeSession("page-trashed");
-  g.reloadGate.hold(trashed);
-  let release;
-  const close = trashed.close.bind(trashed);
-  trashed.close = () =>
-    new Promise((resolve) => {
-      release = () => close().then(resolve);
-    });
-  const closing = closeTrashedSessions(g.reloadGate, [trashed, trashed]);
+  const trashed = g.session("page-trashed");
+  g.hold(trashed);
+  trashed.closeGate = deferred();
+  g.host.detach();
+  const closing = closeTrashedSessions(g.host, [trashed, trashed]);
   trashed.set({ status: "Saved", pending: false });
   const result = g.reload();
   await settle();
-  assert.equal(typeof release, "function", "the checkpoint close is in flight");
+  assert.deepEqual(trashed.calls, ["close"], "the checkpoint close is in flight");
   assert.equal(g.reloaded(), 0, "Reload waits for the held checkpoint");
-  release();
+  trashed.closeGate.resolve();
   await closing;
   assert.deepEqual(await result, { ok: true });
   assert.equal(g.reloaded(), 1);
@@ -638,10 +572,11 @@ test("moving a Page to Trash closes it through the gate: a held checkpoint block
 
 test("a failed checkpoint while moving a Page to Trash offers its recovery export", async () => {
   const g = gate();
-  const trashed = new FakeSession("page-trash-lost");
+  const trashed = g.session("page-trash-lost");
   trashed.checkpointFails = true;
-  g.reloadGate.hold(trashed);
-  const closing = closeTrashedSessions(g.reloadGate, [trashed]);
+  g.hold(trashed);
+  g.host.detach();
+  const closing = closeTrashedSessions(g.host, [trashed]);
   trashed.set({ status: "Offline" });
   await closing;
   await settle();
@@ -653,30 +588,261 @@ test("a failed checkpoint while moving a Page to Trash offers its recovery expor
 
 test("Reload waits for an access reload that closes its old replica", async () => {
   const g = gate();
-  const reader = new FakeSession("page-restored");
-  g.reloadGate.hold(reader);
-  let finish;
-  const reloading = new Promise((resolve) => {
-    finish = resolve;
-  });
-  g.reloadGate.track(reader, reloading);
+  const reader = g.session("page-restored");
+  reader.pause("reload");
+  g.hold(reader);
+  const reloading = g.host.reloadAccess(reader, { install: async () => false });
   const result = g.reload();
   await settle();
   assert.equal(g.reloaded(), 0);
-  finish();
+  reader.finishArchive(undefined, g.session("page-restored"));
+  await reloading;
   assert.deepEqual(await result, { ok: true });
 });
 
 test("a failed access reload keeps its live session blocking Reload", async () => {
   const g = gate();
-  const writer = new FakeSession("page-switch-failed");
-  g.reloadGate.hold(writer);
-  await g.reloadGate.track(writer, Promise.reject(Error("checkpoint failed"))).catch(() => {});
+  const writer = g.session("page-switch-failed");
+  writer.pause("reload");
+  g.hold(writer);
+  const errors = [];
+  const reloading = g.host.reloadAccess(writer, {
+    install: async () => true,
+    onError: (error) => errors.push(error.message),
+  });
+  writer.finishArchive(new Error("checkpoint failed"));
+  await reloading;
   await settle();
+  assert.deepEqual(errors, ["checkpoint failed"]);
   const result = g.reload();
   await settle();
   assert.equal(g.reloaded(), 0, "unsent edits on the live session still block Reload");
-  writer.set({ status: "Saved", pending: false });
+  assert.match((await result).message, /can't be saved/);
+});
+
+/** A real PageSession saving an unacknowledged edit, whose final checkpoint
+ * waits for `flush` and `persist`, and whose backend release waits for
+ * `release`. */
+function closingSession() {
+  const pageId = crypto.randomUUID();
+  const doc = Automerge.change(
+    Automerge.from(createPageData({ pageId, title: "Garden notes" })),
+    initializePage,
+  );
+  const session = new PageSession(pageId);
+  const flush = deferred();
+  const persist = deferred();
+  session.identity = { principal: "dev" };
+  session.handle = { doc: () => doc };
+  session.repo = { flush: () => flush.promise };
+  session.localPage = { pending: true };
+  session.persistLocal = (_, options) =>
+    options?.allowClosed ? persist.promise : Promise.resolve();
+  const release = deferred();
+  release.resolve();
+  const released = { ...release };
+  session.releaseLocal = () => released.promise;
+  session.disconnectSockets = async () => {};
+  session.queueSaved = () => {};
+  session.status = "Saving";
+  session.dispatch({ type: "opened", denied: false });
+  /** Hold the backend release until the returned function runs. */
+  const holdRelease = () => {
+    const held = deferred();
+    released.promise = held.promise;
+    return held.resolve;
+  };
+  return { session, flush, persist, holdRelease };
+}
+
+test("a direct close during Reload never reloads before its final checkpoint", async () => {
+  const g = gate();
+  const { session, flush, persist } = closingSession();
+  g.hold(session);
+  const waiting = g.reload();
+  // Sign-out and unmount close at once, without the drain.
+  const closed = g.host.close(session);
+  assert.equal(session.phase$.snapshot().name, "checkpointing");
+  assert.deepEqual(await waiting, { ok: false, cancelled: true });
+  assert.equal(g.reloaded(), 0);
+  // A new attempt waits for the checkpoint, then names the Page.
+  const again = g.reload();
+  await settle();
+  assert.equal(g.reloaded(), 0, "Reload waits for the final checkpoint");
+  flush.resolve();
+  persist.resolve();
+  await closed;
+  const outcome = await again;
+  assert.equal(outcome.reason, "checkpointed");
+  assert.deepEqual(
+    outcome.pages.map((page) => page.pageId),
+    [session.pageId],
+  );
+  assert.equal(g.reloaded(), 0);
+});
+
+test("a direct close whose checkpoint fails keeps its recovery export", async () => {
+  const g = gate();
+  const { session, flush, persist } = closingSession();
+  g.hold(session);
+  const closed = g.host.close(session);
+  const result = g.reload();
+  await settle();
+  assert.equal(g.reloaded(), 0, "Reload waits while the checkpoint is in flight");
+  flush.resolve();
+  persist.reject(new Error("disk"));
+  await closed;
+  const outcome = await result;
+  assert.equal(outcome.reason, "unsaved");
+  const [page] = outcome.pages;
+  assert.equal(page.pageId, session.pageId);
+  assert.equal(page.checkpointWritten, false);
+  assert.match(page.markdown, /Garden notes/);
+  assert.ok(page.heads.length > 0, "the export names the heads it holds");
+  assert.equal(g.reloaded(), 0);
+});
+
+test("Reload waits for a deleted Page to forget its copy and release its backend", async () => {
+  const g = gate();
+  const { session, holdRelease } = closingSession();
+  const finishRelease = holdRelease();
+  g.hold(session);
+  // The open Page is deleted: it forgets its local copy, then closes.
+  const deleting = session.markDeleted();
+  assert.deepEqual(session.phase$.snapshot(), { name: "deleted" });
+  const result = g.reload();
+  await firstValueFrom(session.phase$.state$.pipe(filter((phase) => phase.closing)));
+  await settle();
+  assert.equal(g.reloaded(), 0, "Reload waits for the backend release");
+  assert.equal(g.host.store.snapshot().owned.length, 1, "the host still owns the session");
+  finishRelease();
+  await deleting;
   assert.deepEqual(await result, { ok: true });
   assert.equal(g.reloaded(), 1);
+  assert.deepEqual(g.records(), [], "a deleted Page keeps nothing");
+});
+
+test("a failed checkpoint's record waits for the backend release too", async () => {
+  const g = gate();
+  const { session, flush, persist, holdRelease } = closingSession();
+  const finishRelease = holdRelease();
+  g.hold(session);
+  const closed = g.host.close(session);
+  const result = g.reload();
+  flush.resolve();
+  persist.reject(new Error("disk"));
+  await settle();
+  assert.equal(session.phase$.snapshot().name, "closed", "the checkpoint settled");
+  assert.equal(g.reloaded(), 0, "Reload waits for the backend release");
+  finishRelease();
+  await closed;
+  const outcome = await result;
+  assert.equal(outcome.reason, "unsaved");
+  assert.equal(outcome.pages[0].pageId, session.pageId);
+  assert.match(outcome.pages[0].markdown, /Garden notes/);
+});
+
+test("a late deletion whose forget fails still holds Reload until the release settles", async () => {
+  const g = gate();
+  const { session, flush, persist, holdRelease } = closingSession();
+  const finishRelease = holdRelease();
+  // Another path answers 404 as the close lands, before any watcher reads
+  // the close.
+  let deleting;
+  session.phase$.state$.subscribe((phase) => {
+    if (phase.name === "closed" && !deleting) deleting = session.markDeleted();
+  });
+  session.forgetLocal = async () => {
+    throw new Error("IndexedDB unavailable");
+  };
+  g.hold(session);
+  const closed = g.host.close(session);
+  flush.resolve();
+  persist.resolve();
+  await firstValueFrom(session.phase$.state$.pipe(filter((phase) => phase.name === "deleted")));
+  const result = g.reload();
+  await settle();
+  assert.deepEqual(session.phase$.snapshot(), { name: "deleted", closing: true });
+  assert.equal(g.reloaded(), 0, "a failed forget doesn't end the wait for the release");
+  assert.equal(g.host.store.snapshot().owned.length, 1, "the host still owns the session");
+  finishRelease();
+  await assert.rejects(deleting, /IndexedDB unavailable/);
+  await closed;
+  assert.deepEqual(await result, { ok: true });
+  assert.equal(g.reloaded(), 1);
+});
+
+test("leave() bookkeeping holds until a late deletion's forget settles after the release", async () => {
+  const g = gate();
+  const { session, flush, persist, holdRelease } = closingSession();
+  const finishRelease = holdRelease();
+  const forget = deferred();
+  session.forgetLocal = () => forget.promise;
+  g.hold(session);
+  const closed = g.host.close(session);
+  flush.resolve();
+  persist.resolve();
+  await firstValueFrom(session.phase$.state$.pipe(filter((phase) => phase.name === "closed")));
+  // A late 404 lands while the release runs; the release then finishes first.
+  void session.markDeleted().catch(() => {});
+  finishRelease();
+  for (let i = 0; i < 3; i++) await settle();
+  assert.equal(g.host.store.snapshot().owned.length, 1, "the host still owns the session");
+  assert.ok(g.host.closingFor("dev", session.pageId), "a reopen still waits for this close");
+  assert.equal(g.owned().length, 1, "the gate still waits for it");
+  forget.resolve();
+  await closed;
+  await settle();
+  assert.equal(g.host.store.snapshot().owned.length, 0);
+  assert.equal(g.host.closingFor("dev", session.pageId), undefined);
+  assert.equal(g.owned().length, 0);
+});
+
+function* permutations(items) {
+  if (items.length <= 1) return yield items;
+  for (const [index, item] of items.entries())
+    for (const rest of permutations(items.filter((_, i) => i !== index))) yield [item, ...rest];
+}
+
+test("a close's ownership ends only after its last step, in every settling order", async () => {
+  let runs = 0;
+  for (const forgetFails of [false, true])
+    for (const order of permutations(["flush", "persist", "release", "forget"])) {
+      const g = gate();
+      const { session, flush, persist, holdRelease } = closingSession();
+      const finishRelease = holdRelease();
+      const forget = deferred();
+      session.forgetLocal = () => forget.promise;
+      // A late deletion lands as the checkpoint settles.
+      let deleting;
+      session.phase$.state$.subscribe((phase) => {
+        if (phase.name !== "closed" || deleting) return;
+        deleting = session.markDeleted();
+        deleting.catch(() => {});
+      });
+      g.hold(session);
+      const closed = g.host.close(session);
+      const steps = {
+        flush: () => flush.resolve(),
+        persist: () => persist.resolve(),
+        release: finishRelease,
+        forget: () =>
+          forgetFails ? forget.reject(new Error("IndexedDB unavailable")) : forget.resolve(),
+      };
+      const held = () => [
+        g.host.store.snapshot().owned.length,
+        !!g.host.closingFor("dev", session.pageId),
+        g.owned().length,
+      ];
+      for (const step of order) {
+        assert.deepEqual(held(), [1, true, 1], `${order.join(" > ")}: held before ${step}`);
+        steps[step]();
+        for (let i = 0; i < 3; i++) await settle();
+      }
+      await closed;
+      await settle();
+      assert.deepEqual(held(), [0, false, 0], `${order.join(" > ")}: released after the last step`);
+      runs++;
+    }
+  assert.equal(runs, 48);
 });

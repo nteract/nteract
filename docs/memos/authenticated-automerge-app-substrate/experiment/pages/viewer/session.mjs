@@ -1,5 +1,17 @@
 import * as A from "@automerge/automerge";
 import * as N from "@automerge/subduction";
+import {
+  asapScheduler,
+  asyncScheduler,
+  filter,
+  firstValueFrom,
+  fromEventPattern,
+  merge,
+  observeOn,
+  race,
+  take,
+  timer,
+} from "rxjs";
 import { Repo, documentIdToBinary } from "@automerge/automerge-repo";
 import { SubductionBackend, IndexedDBByteStore } from "@automerge/automerge-repo-subduction";
 import { applyComment } from "../model/comments.mjs";
@@ -22,6 +34,8 @@ import { ADMISSION_CAPABILITY, admissionCloseOutcome } from "../shared/admission
 import { request } from "./request.mjs";
 import { activitySnapshot } from "./activity.mjs";
 import { checkpointRecords } from "./checkpoint-records.mjs";
+import { Store } from "./store.mjs";
+import { REJECT, isLive, pauseOf, viewerSessionMachine } from "./session-machine.mjs";
 export { request } from "./request.mjs";
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const ownerAccess = () => ({
@@ -48,6 +62,23 @@ const bytes = (value) => Uint8Array.from(value.match(/../g), (v) => parseInt(v, 
 // Longer than the host's 10-second native admission deadline. A socket that
 // closes sooner never proved admission, so it must not reset reconnect backoff.
 export const STABLE_CONNECTION_MS = 15_000;
+// A Page being left keeps syncing this long for its receipt before closing.
+export const CLOSE_DRAIN_MS = 10_000;
+// Receipt states in which a Page being left may still save.
+const DRAINING_STATES = new Set(["Connecting", "Reconnecting", "Saving"]);
+const STALLED_STATES = new Set(["Unsaved", "Offline", "Saved locally"]);
+/** A receipt status as the reload gate reads it. */
+export const saveStateOf = (status) =>
+  status === "Local save failed" ? "failed" : STALLED_STATES.has(status) ? "stalled" : "saving";
+/** Settles once every promise has settled, then rejects with the first
+ * failure. Later work never starts before earlier work finishes. */
+const allSettledThen = (...promises) =>
+  Promise.allSettled(promises).then((results) => {
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed) throw failed.reason;
+  });
+/** Whether a Page being left may still save in this receipt state. */
+export const drainingStatus = (status) => DRAINING_STATES.has(status);
 const SIGNING_KEY_REFUSED =
   "This Page refused this tab's signing key. Your edits stay on this device. Retry, or open the Page in a new tab.";
 const admissionHeaders = { [ADMISSION_CAPABILITY.header]: ADMISSION_CAPABILITY.value };
@@ -103,22 +134,28 @@ export class PageSession {
   profiles = {};
   actorNames = new Map();
   toolHints = [];
-  alive = true;
   composing = 0;
   localDepth = 0;
   status = "Connecting";
   problem = "";
   savedHeads = [];
-  authRequired = false;
   authProblem = "";
   accessProblem = "";
-  accessDenied = false;
-  accessReloadRequired = false;
   sockets = new Set();
   socketOutcomes = new WeakMap();
   socketAdmittedAt = new WeakMap();
   nativeRefused = false;
+  // Reasons edits are held while the session keeps syncing: the reload gate's
+  // "reload" and the build floor's "protocol". They are not lifecycle phases.
   editPauses = new Set();
+  /** The session's phase (see session-machine.mjs). Every lifecycle flag
+   * below derives from it, and effects run from its transitions. */
+  phase$ = new Store(viewerSessionMachine.initial);
+  // The close's work: checkpoint, release, and a late deletion's forget. It
+  // can grow while it runs, so only closeSettled() waits on it.
+  #closing;
+  #released;
+  #archiving;
   static async open(pageId, options) {
     const session = new PageSession(pageId, options);
     try {
@@ -148,14 +185,257 @@ export class PageSession {
   }
   constructor(
     pageId,
-    { refreshSession = () => request("/api/auth/session"), authentication } = {},
+    {
+      refreshSession = () => request("/api/auth/session"),
+      authentication,
+      scheduler = asyncScheduler,
+    } = {},
   ) {
     this.pageId = pageId;
     this.refreshSession = refreshSession;
     this.authentication = authentication;
+    this.scheduler = scheduler;
   }
   get doc() {
     return this.handle?.doc();
+  }
+  get alive() {
+    return isLive(this.phase$.snapshot());
+  }
+  get deleted() {
+    return this.phase$.snapshot().name === "deleted";
+  }
+  get authRequired() {
+    return pauseOf(this.phase$.snapshot()).auth;
+  }
+  get accessDenied() {
+    const phase = this.phase$.snapshot();
+    // While opening, the cached access fact decides; a host answer pauses.
+    if (phase.name === "opening") return this.access?.role === "none";
+    const { access } = pauseOf(phase);
+    return access === "access" || access === "trash";
+  }
+  /** A reload-required pause, or an archived replica whose replacement has
+   * not installed yet: Reload current Page stays available to retry it. */
+  get accessReloadRequired() {
+    const phase = this.phase$.snapshot();
+    return pauseOf(phase).access === "reload" || (phase.name === "closed" && !!phase.archived);
+  }
+  /** The receipt as the reload gate reads it: a failed local save blocks a
+   * reload, a stalled save retries like the Retry button, anything else is
+   * still saving. */
+  get saveState() {
+    return saveStateOf(this.status);
+  }
+  /** An IndexedDB record holds every edit this replica accepted, so
+   * reopening the Page imports it. An access reload wrote its own. */
+  get checkpointWritten() {
+    const phase = this.phase$.snapshot();
+    return phase.name === "closed" && phase.checkpointWritten;
+  }
+  /** Step the phase machine. A rejected event changes nothing. Otherwise the
+   * new phase is committed, `apply` updates what the effects and listeners
+   * read, and the effects start in order. `done` settles with the last one. */
+  dispatch(event, apply, context) {
+    const result = viewerSessionMachine.step(this.phase$.snapshot(), event);
+    if (result.rejected) return result;
+    this.phase$.update(() => result.state);
+    apply?.();
+    let done = Promise.resolve();
+    for (const effect of result.effects) done = Promise.resolve(this.#perform(effect, context));
+    done.catch(() => {});
+    return { ...result, done };
+  }
+  #perform(effect, context) {
+    switch (effect.type) {
+      case "disconnect":
+        void this.disconnectSockets();
+        return undefined;
+      case "persistLocal":
+        // Recovery stays local, even when the host no longer permits publication.
+        void this.persistLocal({ access: this.access, pending: this.recoveryPending }).catch(
+          (error) => {
+            this.localProblem = this.problem = error.message;
+            this.emit();
+          },
+        );
+        return undefined;
+      case "drain":
+        return this.drainBeforeClose();
+      case "checkpoint":
+        return this.#checkpoint();
+      case "archive":
+        return (this.#archiving = this.#archive());
+      case "release":
+        this.#released = this.#release();
+        this.#closing ??= this.#released;
+        return this.#released;
+      case "reopen":
+        // Opening can fail while offline. A retry reuses the prepared reset
+        // marker without touching the released backend or archiving again.
+        // It waits for the release step, assigned once per session, not the
+        // whole close: leaving during an access reload makes the close wait
+        // for this open. A failed release doesn't block the open or its retry.
+        return Promise.allSettled([this.#released]).then(() =>
+          PageSession.open(this.pageId, {
+            authentication: { identity: this.identity, canWrite: this.credentialCanWrite },
+            refreshSession: this.refreshSession,
+            scheduler: this.scheduler,
+          }),
+        );
+      case "forget": {
+        const forgetting = this.forgetLocal();
+        // Deleted after its release started: the close settles only once both
+        // the forget and the release have, whichever fails.
+        if (!this.phase$.snapshot().closing) return forgetting;
+        this.#closing = allSettledThen(forgetting, this.#closing);
+        return this.#closing;
+      }
+      case "rekey":
+        return this.#rekey(context);
+    }
+    throw new Error(`unknown effect ${effect.type}`);
+  }
+  #saved() {
+    if (this.deleted) return true;
+    try {
+      return !this.recoveryPending;
+    } catch {
+      return false;
+    }
+  }
+  /** The drain effect. Keep syncing while a Page being left may still save:
+   * until its receipt, a pause or a non-saving receipt state, or
+   * CLOSE_DRAIN_MS. Offline or failed states end the wait; the final
+   * checkpoint keeps the edits. */
+  drainBeforeClose() {
+    const settled = () => {
+      const phase = this.phase$.snapshot();
+      if (phase.name !== "draining" || phase.reason) return true;
+      return this.#saved() || !drainingStatus(this.status);
+    };
+    const changes$ = merge(
+      this.phase$.state$,
+      fromEventPattern(
+        (handler) => this.subscribe(handler),
+        (_, unsubscribe) => unsubscribe(),
+      ),
+    );
+    // The drain ends after the change that settled it, never inside it: a
+    // pause or receipt finishes its own update before the close begins.
+    return new Promise((resolve) => {
+      race(changes$.pipe(filter(settled)), timer(CLOSE_DRAIN_MS, this.scheduler))
+        .pipe(take(1), observeOn(asapScheduler))
+        .subscribe(() => resolve(this.#drained()));
+    });
+  }
+  #drained() {
+    if (this.phase$.snapshot().name !== "draining") return this.#whenReleased();
+    return this.dispatch({ type: "drained", saved: this.#saved() }, () => this.#recordLeave()).done;
+  }
+  /** What the reload gate keeps if the final checkpoint fails, read while the
+   * document is still live: at the end of the drain, or when a close skips
+   * it. */
+  #recordLeave() {
+    const saved = this.#saved();
+    this.leaveRecord = { saved };
+    if (!saved)
+      try {
+        this.leaveRecord.title = this.doc?.title;
+        this.leaveRecord.recovery = this.exportRecovery();
+      } catch {}
+  }
+  /** Settles once the backend is released, whichever path closed it. */
+  #whenReleased() {
+    return firstValueFrom(
+      this.phase$.state$.pipe(
+        filter((phase) => phase.name === "closed" || (phase.name === "deleted" && phase.closing)),
+      ),
+    ).then(() => this.#released);
+  }
+  #stop() {
+    this.clearPresence();
+    this.cancelReceiptRetry();
+    clearTimeout(this.savedTimer);
+    clearTimeout(this.retryTimer);
+    clearInterval(this.presenceTimer);
+    globalThis.removeEventListener?.("online", this.onlineListener);
+  }
+  async #checkpoint() {
+    this.#stop();
+    let written = false;
+    let deleted = false;
+    try {
+      // skipCloseCheckpoint: the caller already keeps its own recovery record.
+      if (this.skipCloseCheckpoint) written = true;
+      else {
+        await this.repo?.flush();
+        await this.persistLocal({ pending: this.status !== "Saved" }, { allowClosed: true });
+        written = !!this.localPage && !!this.handle;
+      }
+    } catch (error) {
+      if (error.code === "LOCAL_PAGE_DELETED") deleted = true;
+      else if (error.code !== "LOCAL_PAGE_ACCESS_CHANGED") {
+        this.problem = error.message;
+        this.status = "Local save failed";
+      }
+    }
+    if (this.phase$.snapshot().name !== "checkpointing") return this.#whenReleased();
+    const event = written ? { type: "checkpointOk" } : { type: "checkpointFail", deleted };
+    return this.dispatch(event, () => {
+      if (!deleted) return;
+      this.canWrite = false;
+      this.status = "Deleted";
+      this.problem = "This Page was deleted.";
+    }).done;
+  }
+  /** Keep a separate account-scoped recovery record before retiring a key.
+   * The replacement fetches server history; it never re-signs this draft. */
+  async #archive() {
+    const archiving = () => {
+      const phase = this.phase$.snapshot();
+      return phase.name === "checkpointing" && phase.archive === true;
+    };
+    try {
+      await this.repo.flush();
+      await this.persistLocal({ pending: this.recoveryPending });
+      await prepareLocalPageReload(
+        this.identity,
+        this.localPage,
+        this.access,
+        replicaKey(this.access, this.credentialCanWrite && this.access.canWrite),
+      );
+      this.closedRecovery = this.exportRecovery();
+    } catch (error) {
+      if (archiving()) this.dispatch({ type: "checkpointFail", deleted: false });
+      throw error;
+    }
+    if (!archiving()) throw Error("Page closed");
+    return this.dispatch({ type: "checkpointOk" }).done;
+  }
+  #release() {
+    this.#stop();
+    this.checkpointSnapshot = this.checkpointHeads = undefined;
+    return this.releaseLocal();
+  }
+  /** The forget effect: drop the local copy of a deleted Page, then close. */
+  async forgetLocal() {
+    const releasing = this.phase$.snapshot().closing === true;
+    try {
+      await forgetLocalPage(this.identity, this.pageId);
+    } finally {
+      if (!releasing) await this.close();
+    }
+  }
+  async #rekey({ access, key }) {
+    if (this.localPage?.resetReplica) {
+      // Another grant change can race the replacement's fetch. Advance only
+      // its empty reset marker, never import retired history into this key.
+      this.localPage = await prepareLocalPageReload(this.identity, this.localPage, access, key);
+    }
+    await this.releaseLocal();
+    if (!this.alive) return;
+    await this.initializeLocal(key);
   }
   subscribe(fn) {
     this.listeners.add(fn);
@@ -187,16 +467,15 @@ export class PageSession {
     return this.doc ? projectPage(this.doc) : null;
   }
   requireSignIn(message = "Sign in again to sync this Page. Keep it open while you sign in.") {
-    if (this.deleted || !this.alive) return;
-    this.authRequired = true;
-    void this.disconnectSockets();
-    this.cancelReceiptRetry();
-    this.receiptRevision = (this.receiptRevision ?? 0) + 1;
-    this.authProblem = message;
-    this.status = "Sign in to sync";
-    clearTimeout(this.retryTimer);
-    this.retryTimer = undefined;
-    this.emit();
+    const { rejected } = this.dispatch({ type: "signIn", ok: false }, () => {
+      this.cancelReceiptRetry();
+      this.receiptRevision = (this.receiptRevision ?? 0) + 1;
+      this.authProblem = message;
+      this.status = "Sign in to sync";
+      clearTimeout(this.retryTimer);
+      this.retryTimer = undefined;
+    });
+    if (!rejected) this.emit();
   }
   acceptAuthentication(result) {
     if (!this.alive) return false;
@@ -212,7 +491,7 @@ export class PageSession {
     }
     if (this.authRequired && !this.accessDenied && !this.accessReloadRequired)
       this.status = "Reconnecting";
-    this.authRequired = false;
+    this.dispatch({ type: "signIn", ok: true });
     this.authProblem = "";
     this.identity = result.identity;
     this.credentialCanWrite = !!result.canWrite;
@@ -289,37 +568,40 @@ export class PageSession {
       this.emit();
     }
   }
-  pauseForAccess(message, { denied = false, checkpoint = true } = {}) {
-    if (!this.alive || this.deleted) return;
-    this.accessDenied = denied;
-    this.accessReloadRequired = !denied;
-    this.accessProblem = message;
-    if (denied)
-      this.access = {
-        ...this.access,
-        role: "none",
-        canRead: false,
-        canWrite: false,
-        canComment: false,
-        canManageAccess: false,
-        canDelete: false,
-      };
-    this.updateCapabilities();
-    this.cancelReceiptRetry();
-    this.receiptRevision = (this.receiptRevision ?? 0) + 1;
-    clearTimeout(this.retryTimer);
-    this.retryTimer = undefined;
-    this.status = denied ? "Access removed" : "Access changed";
-    void this.disconnectSockets();
-    // Recovery stays local, even when the host no longer permits publication.
-    if (checkpoint)
-      void this.persistLocal({ access: this.access, pending: this.recoveryPending }).catch(
-        (error) => {
-          this.localProblem = this.problem = error.message;
-          this.emit();
-        },
-      );
-    this.emit();
+  /** Stop syncing while keeping the local draft. `denied` removes access,
+   * `trashed` says the Page is in its owner's Trash, and otherwise the
+   * replica must be archived and reloaded. `checkpoint: false` when another
+   * tab already wrote the access fact. */
+  pauseForAccess(message, { denied = false, checkpoint = true, trashed = false } = {}) {
+    // An opening replica has no checkpoint yet, so a changed grant only pauses.
+    const local = !checkpoint || (!denied && this.phase$.snapshot().name === "opening");
+    const event = trashed
+      ? { type: "trash" }
+      : {
+          type: "accessChanged",
+          grant: denied ? "denied" : "changed",
+          ...(local && { tab: true }),
+        };
+    const { rejected } = this.dispatch(event, () => {
+      this.accessProblem = message;
+      if (denied || trashed)
+        this.access = {
+          ...this.access,
+          role: "none",
+          canRead: false,
+          canWrite: false,
+          canComment: false,
+          canManageAccess: false,
+          canDelete: false,
+        };
+      this.updateCapabilities();
+      this.cancelReceiptRetry();
+      this.receiptRevision = (this.receiptRevision ?? 0) + 1;
+      clearTimeout(this.retryTimer);
+      this.retryTimer = undefined;
+      this.status = denied || trashed ? "Access removed" : "Access changed";
+    });
+    if (!rejected) this.emit();
   }
   async localAccessChanged() {
     const latest = await readLocalPage(this.identity, this.pageId);
@@ -360,22 +642,14 @@ export class PageSession {
         );
         throw accessFailure();
       }
-      if (this.localPage?.resetReplica) {
-        // Another grant change can race the replacement's fetch. Advance only
-        // its empty reset marker, never import retired history into this key.
-        this.localPage = await prepareLocalPageReload(
-          this.identity,
-          this.localPage,
-          access,
-          nextKey,
-        );
-      }
-      await this.releaseLocal();
+      const { rejected, done } = this.dispatch(
+        { type: "accessChanged", grant: "changed" },
+        undefined,
+        { access, key: nextKey },
+      );
+      if (!rejected) await done;
       if (!this.alive) return;
-      await this.initializeLocal(nextKey);
-    }
-    this.accessDenied = false;
-    this.accessReloadRequired = false;
+    } else this.dispatch({ type: "accessChanged", grant: "same" });
     this.accessProblem = "";
     this.updateCapabilities();
   }
@@ -406,30 +680,15 @@ export class PageSession {
       if (record) A.free(doc);
     }
   }
+  /** Archive this reload-required replica, release it and open the
+   * replacement. Resolves with the replacement session. */
   async reloadForAccess() {
-    if (!this.accessReloadRequired || !this.access?.canRead) throw accessFailure();
-    if (!this.skipCloseCheckpoint) {
-      if (!this.alive) throw Error("Page closed");
-      // Keep a separate account-scoped recovery record before retiring any key.
-      // The replacement fetches server history; it never re-signs this draft.
-      await this.repo.flush();
-      await this.persistLocal({ pending: this.recoveryPending });
-      await prepareLocalPageReload(
-        this.identity,
-        this.localPage,
-        this.access,
-        replicaKey(this.access, this.credentialCanWrite && this.access.canWrite),
-      );
-      this.closedRecovery = this.exportRecovery();
-      this.skipCloseCheckpoint = true;
-      await this.close();
-    }
-    // Opening can fail while offline. Retry against the already-prepared reset
-    // marker without touching the drained old backend or archiving again.
-    return PageSession.open(this.pageId, {
-      authentication: { identity: this.identity, canWrite: this.credentialCanWrite },
-      refreshSession: this.refreshSession,
-    });
+    const phase = this.phase$.snapshot().name;
+    if (phase === "opening" || phase === "draining" || !this.access?.canRead) throw accessFailure();
+    const { rejected, done } = this.dispatch({ type: "reloadAccess" });
+    if (rejected === REJECT.noReload) throw accessFailure();
+    if (rejected) throw Error("Page closed");
+    return done;
   }
   async refreshAuthentication() {
     try {
@@ -454,7 +713,6 @@ export class PageSession {
     if (creation && !this.credentialCanWrite) throw Error("This account cannot create Pages");
     this.access =
       this.localPage?.access ?? (creation || this.localPage ? ownerAccess() : undefined);
-    this.accessDenied = this.access?.role === "none";
     this.updateCapabilities();
     await this.initializeLocal(
       this.localPage?.replicaKey ?? replicaKey(this.access, this.canWrite),
@@ -571,6 +829,9 @@ export class PageSession {
       : this.connection
         ? "Connected"
         : "Saved locally";
+    // A pause while opening has already failed start().
+    if (this.phase$.snapshot().name === "opening")
+      this.dispatch({ type: "opened", denied: this.access?.role === "none" });
     this.presenceTimer = setInterval(() => {
       if (this.presenceValue) this.publishPresence(this.presenceValue);
     }, 10000);
@@ -751,20 +1012,17 @@ export class PageSession {
       });
     return { page_id: this.pageId, document_id: connection.documentId };
   }
+  /** The Page is gone: forget the local copy, then close. */
   async markDeleted() {
-    if (this.deleted) return;
-    this.deleted = true;
-    this.canWrite = false;
-    this.authRequired = false;
-    this.status = "Deleted";
-    this.problem = "This Page was deleted.";
-    this.cancelReceiptRetry();
+    const { rejected, done } = this.dispatch({ type: "accessChanged", grant: "deleted" }, () => {
+      this.canWrite = false;
+      this.status = "Deleted";
+      this.problem = "This Page was deleted.";
+      this.cancelReceiptRetry();
+    });
+    if (rejected) return;
     this.emit();
-    try {
-      await forgetLocalPage(this.identity, this.pageId);
-    } finally {
-      await this.close();
-    }
+    await done;
   }
   clearConnectionProblem() {
     if (this.problem === this.connectionProblem) this.problem = "";
@@ -824,7 +1082,7 @@ export class PageSession {
           error.code === "page_trashed"
             ? "This Page is in its owner's Trash. Your local copy is kept on this device."
             : "You no longer have access to this Page. Your local copy is kept on this device.",
-          { denied: true },
+          error.code === "page_trashed" ? { trashed: true } : { denied: true },
         );
       throw error;
     }
@@ -1436,41 +1694,60 @@ export class PageSession {
       }
     }
   }
-  close() {
-    this.closing ??= this.finishClose();
-    return this.closing;
-  }
-  async finishClose() {
-    this.alive = false;
-    this.clearPresence();
-    this.cancelReceiptRetry();
-    clearTimeout(this.savedTimer);
-    clearTimeout(this.retryTimer);
-    clearInterval(this.presenceTimer);
-    globalThis.removeEventListener?.("online", this.onlineListener);
-    // checkpointWritten: an IndexedDB record holds every edit this replica
-    // accepted, so reopening the Page imports it. The flow that sets
-    // skipCloseCheckpoint has already written its own recovery record.
-    this.checkpointWritten = !!this.skipCloseCheckpoint;
-    try {
-      if (!this.deleted && !this.skipCloseCheckpoint) {
-        await this.repo?.flush();
-        await this.persistLocal({ pending: this.status !== "Saved" }, { allowClosed: true });
-        this.checkpointWritten = !!this.localPage && !!this.handle;
-      }
-    } catch (error) {
-      if (error.code === "LOCAL_PAGE_DELETED") {
-        this.deleted = true;
-        this.canWrite = false;
-        this.status = "Deleted";
-        this.problem = "This Page was deleted.";
-      } else if (error.code !== "LOCAL_PAGE_ACCESS_CHANGED") {
-        this.problem = error.message;
-        this.status = "Local save failed";
-      }
+  /** Settles once the close and everything later added to it have settled,
+   * then rejects with the close's failure, if any. This is the only way to
+   * wait for a close: a late deletion can extend it after it starts, so it
+   * reads the close again after each settle until the close stops changing.
+   * Settles at once when nothing is closing. */
+  async closeSettled() {
+    for (;;) {
+      const closing = this.#closing;
+      const [result] = await Promise.allSettled([closing]);
+      if (this.#closing !== closing) continue;
+      if (result.status === "rejected") throw result.reason;
+      return;
     }
-    this.checkpointSnapshot = this.checkpointHeads = undefined;
-    await this.releaseLocal();
+  }
+  /** Leave the session. Through the drain it keeps syncing until its
+   * receipt or CLOSE_DRAIN_MS; otherwise it writes its final checkpoint at
+   * once. Either way it then releases the backend. Returns closeSettled(). */
+  leave({ drain = true } = {}) {
+    const phase = this.phase$.snapshot();
+    // An access reload owns this close: it ends after archiving and the
+    // replacement open. If archiving fails, the replica is live again, so
+    // leave it then.
+    if (phase.name === "checkpointing" && phase.archive)
+      this.#closing = this.#archiving.then(
+        () => this.#released,
+        () => {
+          // This leave replaces #closing, so closeSettled() callers see its
+          // failure. The returned promise is a second handle on it.
+          if (this.alive) this.leave({ drain }).catch(() => {});
+        },
+      );
+    // The host leaves a session once; a draining session is already leaving.
+    else if (phase.name !== "draining") {
+      const { rejected, done } = this.dispatch(
+        { type: "leave", drain },
+        drain ? undefined : () => this.#recordLeave(),
+      );
+      if (!rejected) this.#closing = done;
+    }
+    return this.closeSettled();
+  }
+  close() {
+    return this.leave({ drain: false });
+  }
+  /** The owner restored this previewed Page: the reader preview leaves
+   * through the drain so the writer replica can open. Returns the close, or
+   * undefined when a paused preview can't restore. */
+  restore() {
+    const phase = this.phase$.snapshot().name;
+    if (phase !== "open" && phase !== "paused") return undefined;
+    const { rejected, done } = this.dispatch({ type: "restore" });
+    if (rejected) return undefined;
+    this.#closing = done;
+    return this.closeSettled();
   }
   async releaseLocal() {
     await this.disconnectSockets();

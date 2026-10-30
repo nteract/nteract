@@ -49,6 +49,13 @@ import "./formatting-toolbar.css";
 import { focusCreatedPageTitle, titleHandsOffToBody } from "./title-navigation.mjs";
 import { BuildUpdate } from "./BuildUpdate.jsx";
 import { reloadGate } from "./build-freshness.mjs";
+import { SessionHost } from "./session-host.mjs";
+import { useStore } from "./store.mjs";
+
+// The sessions this tab owns. The reload gate follows them from here.
+const host = new SessionHost();
+reloadGate.watch(host);
+const installedSession = (state) => state.current;
 
 function App() {
   const accountDisclosure = useDismissibleDisclosure(),
@@ -56,7 +63,6 @@ function App() {
     activityDisclosure = useDismissibleDisclosure();
   const [account, setAccount] = useState(undefined),
     [pages, setPages] = useState([]),
-    [session, setSession] = useState(null),
     [, paint] = useState(0),
     [error, setError] = useState(""),
     [authError, setAuthError] = useState(""),
@@ -79,20 +85,16 @@ function App() {
     [focusBlock, setFocusBlock] = useState(null),
     [titleFocusRequest, setTitleFocusRequest] = useState(null),
     [localRecoveries, setLocalRecoveries] = useState([]);
-  const current = useRef(null),
-    auth = useRef(null),
-    closingPages = useRef(new Map()),
+  const session = useStore(host.store, installedSession);
+  const auth = useRef(null),
     authentication = useRef(null),
     catalogRevision = useRef(0),
     lastRemote = useRef(null),
     creationPending = useRef(false),
-    generation = useRef(0),
-    openingRequest = useRef(null),
     composerId = useRef(null),
     article = useRef(null),
     titleInput = useRef(null),
-    commentsButton = useRef(null),
-    reloadingAccess = useRef(null);
+    commentsButton = useRef(null);
   const refresh = async () => {
     const identity = authentication.current?.identity;
     if (!identity) return [];
@@ -101,7 +103,7 @@ function App() {
       (value) => ({ value }),
       (error) => ({ error }),
     );
-    const closing = [...closingPages.current.values()];
+    const closing = host.closingPages();
     const local = await listLocalPages(identity).catch(() => []);
     const stillCurrent = () =>
       identity.principal === authentication.current?.identity?.principal &&
@@ -164,11 +166,6 @@ function App() {
       showFormatting(true, true);
     }
   }
-  function nextGeneration() {
-    openingRequest.current?.abort();
-    openingRequest.current = null;
-    return ++generation.current;
-  }
   function resetDocumentUI() {
     setActive(null);
     setToolbarOpen(false);
@@ -180,48 +177,29 @@ function App() {
     setTitleFocusRequest(null);
     setLocalRecoveries([]);
   }
-  /** Close a Page being left through the reload gate and track the close. */
-  function drainSession(old, close = (session) => reloadGate.drainAndClose(session)) {
-    old.publishPresence(null);
-    const key = old.identity.principal + ":" + old.pageId;
-    // Keep syncing until its receipt (bounded) so leaving never drops a save.
-    const closing = Promise.resolve(close(old))
-      .catch((error) => setError(error.message))
-      .finally(() => {
-        if (closingPages.current.get(key) === closing) closingPages.current.delete(key);
-      });
-    closingPages.current.set(key, closing);
-    return closing;
-  }
-  function releaseCurrent() {
-    const old = current.current;
-    current.current = null;
-    setSession(null);
+  const showError = (error) => setError(error.message);
+  /** Leave the installed Page. It keeps syncing until its receipt (bounded)
+   * so leaving never drops a save; the host tracks the close. */
+  function releaseCurrent(options) {
+    host.release({ ...options, onError: showError });
     resetDocumentUI();
-    if (old) drainSession(old);
   }
   async function install(next, revision, { focus = false } = {}) {
-    if (
-      revision !== generation.current ||
-      next.identity.principal !== authentication.current?.identity?.principal
-    ) {
+    if (!host.install(next, revision, authentication.current?.identity?.principal)) {
       await next.close();
       return false;
     }
-    current.current = next;
-    reloadGate.hold(next);
-    setSession(next);
     setSpaceOpen(null);
     setCrumbs([]);
     // Breadcrumbs show only the Space and parents this account can open.
     void pageBreadcrumbs(tool, next.pageId).then(
       (value) => {
-        if (current.current === next) setCrumbs(value);
+        if (host.current === next) setCrumbs(value);
       },
       () => {},
     );
     next.subscribe(() => {
-      if (current.current === next) {
+      if (host.current === next) {
         paint((n) => n + 1);
         if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
       }
@@ -229,7 +207,7 @@ function App() {
     void next
       .listRecoveries()
       .then((records) => {
-        if (current.current === next) setLocalRecoveries(records);
+        if (host.current === next) setLocalRecoveries(records);
       })
       .catch(() => {});
     if (next.accessReloadRequired && !next.recoveryPending) void reloadAccess(next);
@@ -238,23 +216,13 @@ function App() {
     if (focus) setFocusBlock(first);
     return true;
   }
-  async function reloadAccess(previous = current.current) {
-    if (!previous || current.current !== previous || reloadingAccess.current === previous) return;
-    reloadingAccess.current = previous;
-    const revision = nextGeneration();
-    try {
-      // Reload waits while the old replica archives and closes, e.g. when a
-      // restored Page moves from its reader replica to the writer replica.
-      const next = await reloadGate.track(previous, previous.reloadForAccess());
-      await install(next, revision);
-    } catch (error) {
-      if (current.current === previous) setError(error.message);
-    } finally {
-      if (reloadingAccess.current === previous) reloadingAccess.current = null;
-    }
+  function reloadAccess(previous = host.current) {
+    // Reload waits while the old replica archives and closes, e.g. when a
+    // restored Page moves from its reader replica to the writer replica.
+    return host.reloadAccess(previous, { install, onError: showError });
   }
   function downloadDraft(record) {
-    const draft = current.current?.exportRecovery(record);
+    const draft = host.current?.exportRecovery(record);
     if (!draft) return;
     const url = URL.createObjectURL(
       new Blob([JSON.stringify(draft, null, 2)], { type: "application/json" }),
@@ -269,18 +237,17 @@ function App() {
     if (historyMode !== "none") writePageRoute(id, { replace: historyMode === "replace" });
     setPickerOpen(false);
     setNotice("");
-    if (current.current?.pageId === id) return;
-    const revision = nextGeneration();
+    if (host.current?.pageId === id) return;
     const controller = new AbortController();
-    openingRequest.current = controller;
+    const revision = host.navigate(controller);
     setError("");
     setOpening(true);
     releaseCurrent();
     try {
       // A quick Back may revisit a replica whose final local checkpoint is
       // still flushing. Wait only for that same Page, never an unrelated one.
-      await closingPages.current.get(authentication.current?.identity?.principal + ":" + id);
-      if (revision !== generation.current) return;
+      await host.closingFor(authentication.current?.identity?.principal, id);
+      if (!host.isCurrent(revision)) return;
       const next = await openPageWithRetry(
         () =>
           PageSession.open(id, {
@@ -291,10 +258,10 @@ function App() {
       );
       await install(next, revision, { focus });
     } catch (error) {
-      if (revision === generation.current) setError(error.message);
+      if (host.isCurrent(revision)) setError(error.message);
     } finally {
-      if (openingRequest.current === controller) openingRequest.current = null;
-      if (revision === generation.current) setOpening(false);
+      host.finishRequest(controller);
+      if (host.isCurrent(revision)) setOpening(false);
     }
   }
   function home(event, { historyMode = "push", refreshCatalog = true } = {}) {
@@ -302,7 +269,7 @@ function App() {
       if (!isPlainNavigation(event)) return;
       event.preventDefault();
     }
-    nextGeneration();
+    host.navigate();
     releaseCurrent();
     setAccount(authentication.current?.identity ?? null);
     setError("");
@@ -323,18 +290,18 @@ function App() {
     home(null, { refreshCatalog: false });
     setTrashOpen(true);
   }
-  async function reopen(id) {
+  async function reopen(id, { restore = false } = {}) {
     // Access changed on the host; open a fresh session for the current grant.
-    nextGeneration();
-    releaseCurrent();
+    host.navigate();
+    releaseCurrent({ restore });
     await open(id, { historyMode: "none" });
   }
   async function restoreCurrent() {
-    const restoring = current.current;
+    const restoring = host.current;
     if (!restoring) return;
     try {
       await restorePage(tool, restoring.pageId, restoring.identity.principal);
-      await reopen(restoring.pageId);
+      await reopen(restoring.pageId, { restore: true });
       setNotice("Page restored");
       void refresh().catch(() => {});
     } catch (error) {
@@ -347,13 +314,13 @@ function App() {
     else if (route.kind === "space") openSpace(route.spaceId, { historyMode: "none" });
     else if (route.kind === "home") home(null, { historyMode: "none", refreshCatalog: false });
     else {
-      nextGeneration();
+      host.navigate();
       releaseCurrent();
       setOpening(false);
       setError("This Page link is not valid.");
     }
     void refresh().catch((error) => {
-      if (!current.current) setError(error.message);
+      if (!host.current) setError(error.message);
     });
   }
   useEffect(() => {
@@ -365,13 +332,13 @@ function App() {
         setAuthError("");
         const changed = authentication.current?.identity?.principal !== result.identity?.principal;
         if (changed) {
-          nextGeneration();
+          host.navigate();
           catalogRevision.current++;
           setPages([]);
           setOpening(false);
         }
         authentication.current = result;
-        const live = current.current;
+        const live = host.current;
         if (!live) {
           setAccount(result.identity);
           if (changed && result.identity) followRoute();
@@ -403,8 +370,8 @@ function App() {
       maintenance.stop();
       window.removeEventListener("popstate", onPopState);
       catalogRevision.current++;
-      nextGeneration();
-      void current.current?.close();
+      host.navigate();
+      void host.close(host.current);
     };
   }, []);
   const page = session?.snapshot(),
@@ -412,7 +379,7 @@ function App() {
   useEffect(() => {
     if (!titleFocusRequest) return;
     const frame = requestAnimationFrame(() => {
-      focusCreatedPageTitle(titleInput.current, titleFocusRequest, current.current);
+      focusCreatedPageTitle(titleInput.current, titleFocusRequest, host.current);
       setTitleFocusRequest((request) => (request === titleFocusRequest ? null : request));
     });
     return () => cancelAnimationFrame(frame);
@@ -420,7 +387,7 @@ function App() {
   useEffect(() => {
     if (!focusBlock || !session?.canWrite) return;
     const frame = requestAnimationFrame(() => {
-      if (current.current !== session || !session.canWrite) return;
+      if (host.current !== session || !session.canWrite) return;
       const element = article.current?.querySelector(
         `[data-block-id="${CSS.escape(focusBlock)}"] wg-content`,
       );
@@ -433,12 +400,12 @@ function App() {
     return () => cancelAnimationFrame(frame);
   }, [focusBlock, session, page?.blocks.length]);
   async function create() {
-    if (creationPending.current || current.current?.authRequired) return;
+    if (creationPending.current || host.current?.authRequired) return;
     creationPending.current = true;
     setCreating(true);
     setError("");
     setPickerError("");
-    const revision = nextGeneration();
+    const revision = host.navigate();
     try {
       const next = await PageSession.create(
         { title: "Untitled" },
@@ -447,7 +414,7 @@ function App() {
           refreshSession: () => auth.current.refresh(),
         },
       );
-      if (revision !== generation.current) {
+      if (!host.isCurrent(revision)) {
         await next.close();
         return;
       }
@@ -459,7 +426,7 @@ function App() {
       if (await install(next, revision)) setTitleFocusRequest(next);
       void refresh().catch(() => {});
     } catch (error) {
-      if (revision === generation.current) {
+      if (host.isCurrent(revision)) {
         setError(error.message);
         setPickerError(error.message);
       }
@@ -468,7 +435,7 @@ function App() {
       setCreating(false);
     }
   }
-  async function copyLink(pageId = current.current?.pageId) {
+  async function copyLink(pageId = host.current?.pageId) {
     if (!pageId) return;
     try {
       await navigator.clipboard.writeText(new URL(pagePath(pageId), location.origin).href);
@@ -476,14 +443,14 @@ function App() {
       if (documentDisclosure.current) documentDisclosure.current.open = false;
     } catch {
       setError(
-        pageId === current.current?.pageId
+        pageId === host.current?.pageId
           ? "Couldn't copy the link. You can copy it from the address bar."
           : "Couldn't copy the link. Open the page and copy its address.",
       );
     }
   }
   async function remove() {
-    const deleting = current.current;
+    const deleting = host.current;
     if (!deleting) return;
     if (
       deleting.authRequired ||
@@ -511,25 +478,24 @@ function App() {
       });
       if (trashed?.superseded)
         throw Error("This Page changed before it could move to Trash. Try again.");
-      const activeDeletion = current.current?.pageId === deleting.pageId ? current.current : null;
+      const activeDeletion = host.current?.pageId === deleting.pageId ? host.current : null;
       if (activeDeletion || readPageRoute(location.href).pageId === deleting.pageId) {
-        nextGeneration();
-        current.current = null;
+        host.navigate();
+        host.detach();
         resetDocumentUI();
-        setSession(null);
         setOpening(false);
         writePageRoute(null, { replace: true });
       }
-      // Close through the reload gate so Reload waits for the checkpoint and
-      // a failed one keeps its recovery export.
-      const closing = [...new Set([deleting, activeDeletion].filter(Boolean))].map((leaving) =>
-        drainSession(leaving, (session) => closeTrashedSessions(reloadGate, [session])),
-      );
+      // Leave through the host so Reload waits for the checkpoint and a
+      // failed one keeps its recovery export.
+      const closing = closeTrashedSessions(host, [deleting, activeDeletion], {
+        onError: showError,
+      });
       // Keep the local replica: the Page can be restored from Trash. A draft
       // the host never registered has no Trash entry, so discard it instead of
       // leaving it listed as saved locally.
       if (!deleting.localPage?.registered) {
-        await Promise.all(closing);
+        await closing;
         await forgetLocalPage(deleting.identity, deleting.pageId);
       }
       setNotice("Moved to Trash");
@@ -541,7 +507,9 @@ function App() {
   async function signout() {
     try {
       await request("/api/auth/logout", { method: "POST" });
-      await current.current?.close();
+      let failed;
+      await host.close(host.current, { onError: (error) => (failed = error) });
+      if (failed) throw failed;
       location.href = "/";
     } catch (error) {
       setError(error.message);
@@ -586,10 +554,10 @@ function App() {
         ?.scrollIntoView({ block: "center" });
   }
   function continueWriting() {
-    if (!session || current.current !== session) return;
+    if (!session || host.current !== session) return;
     try {
       const id = writingContinuation(session);
-      if (!id || current.current !== session) return;
+      if (!id || host.current !== session) return;
       activateBlock(id);
       setFocusBlock(id);
     } catch (error) {

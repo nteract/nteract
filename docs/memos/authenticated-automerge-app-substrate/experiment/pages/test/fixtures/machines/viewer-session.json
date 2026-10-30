@@ -1,0 +1,829 @@
+{
+  "machine": "viewer-session",
+  "description": "A viewer's Page session in this tab. viewer/session-machine.test.mjs drives each row through PageSession and its drain.",
+  "states": ["opening", "open", "paused", "draining", "checkpointing", "closed", "deleted"],
+  "events": [
+    "opened",
+    "accessChanged",
+    "signIn",
+    "trash",
+    "restore",
+    "reloadAccess",
+    "leave",
+    "drained",
+    "checkpointOk",
+    "checkpointFail"
+  ],
+  "unreachable": [
+    ["opening", "restore", "Restore is offered only on an installed session"],
+    ["opening", "reloadAccess", "Reload current Page is offered only on an installed session"],
+    ["opening", "drained", "the interpreter delivers drained only while draining"],
+    [
+      "opening",
+      "checkpointOk",
+      "the interpreter delivers a checkpoint result only while checkpointing"
+    ],
+    [
+      "opening",
+      "checkpointFail",
+      "the interpreter delivers a checkpoint result only while checkpointing"
+    ],
+    ["open", "opened", "start() reports opened once, before the session is installed"],
+    ["open", "drained", "the interpreter delivers drained only while draining"],
+    [
+      "open",
+      "checkpointOk",
+      "the interpreter delivers a checkpoint result only while checkpointing"
+    ],
+    [
+      "open",
+      "checkpointFail",
+      "the interpreter delivers a checkpoint result only while checkpointing"
+    ],
+    ["paused", "opened", "a pause while opening aborts start(), which then closes the session"],
+    ["paused", "drained", "the interpreter delivers drained only while draining"],
+    [
+      "paused",
+      "checkpointOk",
+      "the interpreter delivers a checkpoint result only while checkpointing"
+    ],
+    [
+      "paused",
+      "checkpointFail",
+      "the interpreter delivers a checkpoint result only while checkpointing"
+    ],
+    ["draining", "opened", "start() reports opened once, before the session is installed"],
+    [
+      "draining",
+      "restore",
+      "the host released a draining session; Restore acts on the installed one"
+    ],
+    [
+      "draining",
+      "reloadAccess",
+      "the host released a draining session; Reload acts on the installed one"
+    ],
+    ["draining", "leave", "the host leaves a session once; deletion closes through accessChanged"],
+    [
+      "draining",
+      "checkpointOk",
+      "the interpreter delivers a checkpoint result only while checkpointing"
+    ],
+    [
+      "draining",
+      "checkpointFail",
+      "the interpreter delivers a checkpoint result only while checkpointing"
+    ],
+    ["checkpointing", "opened", "start() reports opened once, before the session is installed"],
+    ["checkpointing", "restore", "Restore is hidden while closing or while access is paused"],
+    ["checkpointing", "drained", "the interpreter delivers drained only while draining"],
+    ["closed", "opened", "start() reports opened once, before the session is installed"],
+    ["closed", "restore", "a closed session is no longer installed"],
+    ["closed", "drained", "the interpreter delivers drained only while draining"],
+    [
+      "closed",
+      "checkpointOk",
+      "the interpreter delivers a checkpoint result only while checkpointing"
+    ],
+    [
+      "closed",
+      "checkpointFail",
+      "the interpreter delivers a checkpoint result only while checkpointing"
+    ],
+    ["deleted", "opened", "start() reports opened once, before the session is installed"],
+    ["deleted", "restore", "the host can't restore a deleted Page"],
+    ["deleted", "drained", "the interpreter delivers drained only while draining"],
+    [
+      "deleted",
+      "checkpointOk",
+      "the interpreter delivers a checkpoint result only while checkpointing"
+    ],
+    [
+      "deleted",
+      "checkpointFail",
+      "the interpreter delivers a checkpoint result only while checkpointing"
+    ]
+  ],
+  "cases": {
+    "opening/opened": ["readable", "denied"],
+    "opening/accessChanged": ["same", "changed", "denied", "deleted"],
+    "opening/signIn": ["ok", "failed"],
+    "open/accessChanged": ["same", "changed", "denied", "deleted", "tab"],
+    "open/signIn": ["ok", "failed"],
+    "open/leave": ["drain", "close"],
+    "paused/accessChanged": [
+      "same-clears-access",
+      "same-keeps-sign-in",
+      "same-clears-reload",
+      "changed",
+      "denied-keeps-sign-in",
+      "deleted",
+      "tab"
+    ],
+    "paused/signIn": ["ok-resumes", "ok-keeps-access", "failed-repeats", "failed-adds-sign-in"],
+    "paused/restore": ["sign-in", "access-paused"],
+    "paused/reloadAccess": ["reload", "reload-with-sign-in", "not-reload"],
+    "paused/leave": ["drain", "close"],
+    "draining/accessChanged": ["same", "changed", "denied", "deleted"],
+    "draining/signIn": ["ok", "failed"],
+    "draining/drained": ["saved", "unsaved", "paused"],
+    "checkpointing/accessChanged": ["closing", "archiving", "deleted"],
+    "checkpointing/signIn": ["closing", "archiving"],
+    "checkpointing/checkpointOk": ["close", "drained", "archive"],
+    "checkpointing/checkpointFail": ["error", "deleted", "archive"],
+    "closed/accessChanged": ["late-answer", "deleted"],
+    "closed/reloadAccess": ["archived", "not-archived"],
+    "deleted/leave": ["release", "already-closing"]
+  },
+  "rows": [
+    {
+      "note": "start() loaded a readable local copy",
+      "case": "readable",
+      "state": { "name": "opening" },
+      "event": { "type": "opened", "denied": false },
+      "expect": { "state": { "name": "open" }, "effects": [] }
+    },
+    {
+      "note": "the cached access fact denies reading; the draft stays read-only",
+      "case": "denied",
+      "state": { "name": "opening" },
+      "event": { "type": "opened", "denied": true },
+      "expect": { "state": { "name": "paused", "reason": "access" }, "effects": [] }
+    },
+    {
+      "case": "same",
+      "state": { "name": "opening" },
+      "event": { "type": "accessChanged", "grant": "same" },
+      "expect": { "state": { "name": "opening" }, "effects": [] }
+    },
+    {
+      "note": "first remote opening picks the grant's replica key before creating history",
+      "case": "changed",
+      "state": { "name": "opening" },
+      "event": { "type": "accessChanged", "grant": "changed" },
+      "expect": { "state": { "name": "opening" }, "effects": [{ "type": "rekey" }] }
+    },
+    {
+      "case": "denied",
+      "state": { "name": "opening" },
+      "event": { "type": "accessChanged", "grant": "denied" },
+      "expect": {
+        "state": { "name": "paused", "reason": "access" },
+        "effects": [{ "type": "disconnect" }, { "type": "persistLocal" }]
+      }
+    },
+    {
+      "case": "deleted",
+      "state": { "name": "opening" },
+      "event": { "type": "accessChanged", "grant": "deleted" },
+      "expect": { "state": { "name": "deleted" }, "effects": [{ "type": "forget" }] }
+    },
+    {
+      "case": "ok",
+      "state": { "name": "opening" },
+      "event": { "type": "signIn", "ok": true },
+      "expect": { "state": { "name": "opening" }, "effects": [] }
+    },
+    {
+      "case": "failed",
+      "state": { "name": "opening" },
+      "event": { "type": "signIn", "ok": false },
+      "expect": {
+        "state": { "name": "paused", "reason": "auth" },
+        "effects": [{ "type": "disconnect" }]
+      }
+    },
+    {
+      "note": "the first /api/connect answers page_trashed",
+      "state": { "name": "opening" },
+      "event": { "type": "trash" },
+      "expect": {
+        "state": { "name": "paused", "reason": "trash" },
+        "effects": [{ "type": "disconnect" }, { "type": "persistLocal" }]
+      }
+    },
+    {
+      "note": "a failed start() closes the session",
+      "state": { "name": "opening" },
+      "event": { "type": "leave", "drain": false },
+      "expect": {
+        "state": { "name": "checkpointing", "drained": false },
+        "effects": [{ "type": "checkpoint" }]
+      }
+    },
+    {
+      "case": "same",
+      "state": { "name": "open" },
+      "event": { "type": "accessChanged", "grant": "same" },
+      "expect": { "state": { "name": "open" }, "effects": [] }
+    },
+    {
+      "note": "the grant's replica key changed: archive and reload",
+      "case": "changed",
+      "state": { "name": "open" },
+      "event": { "type": "accessChanged", "grant": "changed" },
+      "expect": {
+        "state": { "name": "paused", "reason": "reload" },
+        "effects": [{ "type": "disconnect" }, { "type": "persistLocal" }]
+      }
+    },
+    {
+      "case": "denied",
+      "state": { "name": "open" },
+      "event": { "type": "accessChanged", "grant": "denied" },
+      "expect": {
+        "state": { "name": "paused", "reason": "access" },
+        "effects": [{ "type": "disconnect" }, { "type": "persistLocal" }]
+      }
+    },
+    {
+      "label": "open × accessChanged deletes while open",
+      "note": "the local copy is forgotten before the close starts, so the session is not released yet",
+      "case": "deleted",
+      "state": { "name": "open" },
+      "event": { "type": "accessChanged", "grant": "deleted" },
+      "expect": { "state": { "name": "deleted" }, "effects": [{ "type": "forget" }] }
+    },
+    {
+      "note": "another tab wrote the denial; it already persisted the fact",
+      "case": "tab",
+      "state": { "name": "open" },
+      "event": { "type": "accessChanged", "grant": "denied", "tab": true },
+      "expect": {
+        "state": { "name": "paused", "reason": "access" },
+        "effects": [{ "type": "disconnect" }]
+      }
+    },
+    {
+      "case": "ok",
+      "state": { "name": "open" },
+      "event": { "type": "signIn", "ok": true },
+      "expect": { "state": { "name": "open" }, "effects": [] }
+    },
+    {
+      "case": "failed",
+      "state": { "name": "open" },
+      "event": { "type": "signIn", "ok": false },
+      "expect": {
+        "state": { "name": "paused", "reason": "auth" },
+        "effects": [{ "type": "disconnect" }]
+      }
+    },
+    {
+      "state": { "name": "open" },
+      "event": { "type": "trash" },
+      "expect": {
+        "state": { "name": "paused", "reason": "trash" },
+        "effects": [{ "type": "disconnect" }, { "type": "persistLocal" }]
+      }
+    },
+    {
+      "note": "the owner restored the previewed Page; the reader preview leaves through the drain",
+      "state": { "name": "open" },
+      "event": { "type": "restore" },
+      "expect": { "state": { "name": "draining" }, "effects": [{ "type": "drain" }] }
+    },
+    {
+      "state": { "name": "open" },
+      "event": { "type": "reloadAccess" },
+      "expect": {
+        "state": { "name": "open" },
+        "effects": [],
+        "rejected": "No access reload is pending"
+      }
+    },
+    {
+      "label": "open × leave through the drain (session dropped mid-switch)",
+      "note": "leaving keeps the session syncing until its receipt",
+      "case": "drain",
+      "state": { "name": "open" },
+      "event": { "type": "leave", "drain": true },
+      "expect": { "state": { "name": "draining" }, "effects": [{ "type": "drain" }] }
+    },
+    {
+      "case": "close",
+      "state": { "name": "open" },
+      "event": { "type": "leave", "drain": false },
+      "expect": {
+        "state": { "name": "checkpointing", "drained": false },
+        "effects": [{ "type": "checkpoint" }]
+      }
+    },
+    {
+      "note": "a reopened denied copy rechecks once and the grant is back",
+      "case": "same-clears-access",
+      "state": { "name": "paused", "reason": "access" },
+      "event": { "type": "accessChanged", "grant": "same" },
+      "expect": { "state": { "name": "open" }, "effects": [] }
+    },
+    {
+      "case": "same-keeps-sign-in",
+      "state": { "name": "paused", "reason": "access", "auth": true },
+      "event": { "type": "accessChanged", "grant": "same" },
+      "expect": { "state": { "name": "paused", "reason": "auth" }, "effects": [] }
+    },
+    {
+      "note": "the host confirmed this replica's key",
+      "case": "same-clears-reload",
+      "state": { "name": "paused", "reason": "reload" },
+      "event": { "type": "accessChanged", "grant": "same" },
+      "expect": { "state": { "name": "open" }, "effects": [] }
+    },
+    {
+      "case": "changed",
+      "state": { "name": "paused", "reason": "access" },
+      "event": { "type": "accessChanged", "grant": "changed" },
+      "expect": {
+        "state": { "name": "paused", "reason": "reload" },
+        "effects": [{ "type": "disconnect" }, { "type": "persistLocal" }]
+      }
+    },
+    {
+      "case": "denied-keeps-sign-in",
+      "state": { "name": "paused", "reason": "auth" },
+      "event": { "type": "accessChanged", "grant": "denied" },
+      "expect": {
+        "state": { "name": "paused", "reason": "access", "auth": true },
+        "effects": [{ "type": "disconnect" }, { "type": "persistLocal" }]
+      }
+    },
+    {
+      "case": "deleted",
+      "state": { "name": "paused", "reason": "access" },
+      "event": { "type": "accessChanged", "grant": "deleted" },
+      "expect": { "state": { "name": "deleted" }, "effects": [{ "type": "forget" }] }
+    },
+    {
+      "case": "tab",
+      "state": { "name": "paused", "reason": "auth" },
+      "event": { "type": "accessChanged", "grant": "changed", "tab": true },
+      "expect": {
+        "state": { "name": "paused", "reason": "reload", "auth": true },
+        "effects": [{ "type": "disconnect" }]
+      }
+    },
+    {
+      "case": "ok-resumes",
+      "state": { "name": "paused", "reason": "auth" },
+      "event": { "type": "signIn", "ok": true },
+      "expect": { "state": { "name": "open" }, "effects": [] }
+    },
+    {
+      "case": "ok-keeps-access",
+      "state": { "name": "paused", "reason": "access", "auth": true },
+      "event": { "type": "signIn", "ok": true },
+      "expect": { "state": { "name": "paused", "reason": "access" }, "effects": [] }
+    },
+    {
+      "case": "failed-repeats",
+      "state": { "name": "paused", "reason": "auth" },
+      "event": { "type": "signIn", "ok": false },
+      "expect": {
+        "state": { "name": "paused", "reason": "auth" },
+        "effects": [{ "type": "disconnect" }]
+      }
+    },
+    {
+      "case": "failed-adds-sign-in",
+      "state": { "name": "paused", "reason": "reload" },
+      "event": { "type": "signIn", "ok": false },
+      "expect": {
+        "state": { "name": "paused", "reason": "reload", "auth": true },
+        "effects": [{ "type": "disconnect" }]
+      }
+    },
+    {
+      "note": "the recheck answers page_trashed",
+      "state": { "name": "paused", "reason": "access" },
+      "event": { "type": "trash" },
+      "expect": {
+        "state": { "name": "paused", "reason": "trash" },
+        "effects": [{ "type": "disconnect" }, { "type": "persistLocal" }]
+      }
+    },
+    {
+      "case": "sign-in",
+      "state": { "name": "paused", "reason": "auth" },
+      "event": { "type": "restore" },
+      "expect": {
+        "state": { "name": "draining", "reason": "auth" },
+        "effects": [{ "type": "drain" }]
+      }
+    },
+    {
+      "case": "access-paused",
+      "state": { "name": "paused", "reason": "access" },
+      "event": { "type": "restore" },
+      "expect": {
+        "state": { "name": "paused", "reason": "access" },
+        "effects": [],
+        "rejected": "Restore needs a preview whose access isn't paused"
+      }
+    },
+    {
+      "note": "archive before retiring the key",
+      "case": "reload",
+      "state": { "name": "paused", "reason": "reload" },
+      "event": { "type": "reloadAccess" },
+      "expect": {
+        "state": { "name": "checkpointing", "drained": false, "archive": true, "reason": "reload" },
+        "effects": [{ "type": "archive" }]
+      }
+    },
+    {
+      "case": "reload-with-sign-in",
+      "state": { "name": "paused", "reason": "reload", "auth": true },
+      "event": { "type": "reloadAccess" },
+      "expect": {
+        "state": {
+          "name": "checkpointing",
+          "drained": false,
+          "archive": true,
+          "reason": "reload",
+          "auth": true
+        },
+        "effects": [{ "type": "archive" }]
+      }
+    },
+    {
+      "case": "not-reload",
+      "state": { "name": "paused", "reason": "access" },
+      "event": { "type": "reloadAccess" },
+      "expect": {
+        "state": { "name": "paused", "reason": "access" },
+        "effects": [],
+        "rejected": "No access reload is pending"
+      }
+    },
+    {
+      "note": "a paused session has nothing to wait for; the drain ends at once",
+      "case": "drain",
+      "state": { "name": "paused", "reason": "trash" },
+      "event": { "type": "leave", "drain": true },
+      "expect": {
+        "state": { "name": "draining", "reason": "trash" },
+        "effects": [{ "type": "drain" }]
+      }
+    },
+    {
+      "case": "close",
+      "state": { "name": "paused", "reason": "access", "auth": true },
+      "event": { "type": "leave", "drain": false },
+      "expect": {
+        "state": { "name": "checkpointing", "drained": false },
+        "effects": [{ "type": "checkpoint" }]
+      }
+    },
+    {
+      "case": "same",
+      "state": { "name": "draining" },
+      "event": { "type": "accessChanged", "grant": "same" },
+      "expect": { "state": { "name": "draining" }, "effects": [] }
+    },
+    {
+      "case": "changed",
+      "state": { "name": "draining" },
+      "event": { "type": "accessChanged", "grant": "changed" },
+      "expect": {
+        "state": { "name": "draining", "reason": "reload" },
+        "effects": [{ "type": "disconnect" }, { "type": "persistLocal" }]
+      }
+    },
+    {
+      "case": "denied",
+      "state": { "name": "draining" },
+      "event": { "type": "accessChanged", "grant": "denied" },
+      "expect": {
+        "state": { "name": "draining", "reason": "access" },
+        "effects": [{ "type": "disconnect" }, { "type": "persistLocal" }]
+      }
+    },
+    {
+      "case": "deleted",
+      "state": { "name": "draining" },
+      "event": { "type": "accessChanged", "grant": "deleted" },
+      "expect": { "state": { "name": "deleted" }, "effects": [{ "type": "forget" }] }
+    },
+    {
+      "case": "ok",
+      "state": { "name": "draining" },
+      "event": { "type": "signIn", "ok": true },
+      "expect": { "state": { "name": "draining" }, "effects": [] }
+    },
+    {
+      "case": "failed",
+      "state": { "name": "draining" },
+      "event": { "type": "signIn", "ok": false },
+      "expect": {
+        "state": { "name": "draining", "reason": "auth" },
+        "effects": [{ "type": "disconnect" }]
+      }
+    },
+    {
+      "state": { "name": "draining" },
+      "event": { "type": "trash" },
+      "expect": {
+        "state": { "name": "draining", "reason": "trash" },
+        "effects": [{ "type": "disconnect" }, { "type": "persistLocal" }]
+      }
+    },
+    {
+      "case": "saved",
+      "state": { "name": "draining" },
+      "event": { "type": "drained", "saved": true },
+      "expect": {
+        "state": { "name": "checkpointing", "drained": true, "saved": true },
+        "effects": [{ "type": "checkpoint" }]
+      }
+    },
+    {
+      "note": "offline or CLOSE_DRAIN_MS: the checkpoint keeps the edits",
+      "case": "unsaved",
+      "state": { "name": "draining" },
+      "event": { "type": "drained", "saved": false },
+      "expect": {
+        "state": { "name": "checkpointing", "drained": true, "saved": false },
+        "effects": [{ "type": "checkpoint" }]
+      }
+    },
+    {
+      "case": "paused",
+      "state": { "name": "draining", "reason": "access" },
+      "event": { "type": "drained", "saved": false },
+      "expect": {
+        "state": { "name": "checkpointing", "drained": true, "saved": false },
+        "effects": [{ "type": "checkpoint" }]
+      }
+    },
+    {
+      "note": "a late answer cannot pause a closing session",
+      "case": "closing",
+      "state": { "name": "checkpointing", "drained": false },
+      "event": { "type": "accessChanged", "grant": "denied" },
+      "expect": {
+        "state": { "name": "checkpointing", "drained": false },
+        "effects": [],
+        "rejected": "The session is closing"
+      }
+    },
+    {
+      "note": "a late 404 forgets the local copy; the release follows the forget",
+      "case": "deleted",
+      "state": { "name": "checkpointing", "drained": false },
+      "event": { "type": "accessChanged", "grant": "deleted" },
+      "expect": { "state": { "name": "deleted" }, "effects": [{ "type": "forget" }] }
+    },
+    {
+      "note": "an archiving replica is still live; a failed archive returns to the new pause",
+      "case": "archiving",
+      "state": { "name": "checkpointing", "drained": false, "archive": true, "reason": "reload" },
+      "event": { "type": "accessChanged", "grant": "denied" },
+      "expect": {
+        "state": { "name": "checkpointing", "drained": false, "archive": true, "reason": "access" },
+        "effects": [{ "type": "disconnect" }, { "type": "persistLocal" }]
+      }
+    },
+    {
+      "case": "closing",
+      "state": { "name": "checkpointing", "drained": true, "saved": false },
+      "event": { "type": "signIn", "ok": false },
+      "expect": {
+        "state": { "name": "checkpointing", "drained": true, "saved": false },
+        "effects": [],
+        "rejected": "The session is closing"
+      }
+    },
+    {
+      "case": "archiving",
+      "state": { "name": "checkpointing", "drained": false, "archive": true, "reason": "reload" },
+      "event": { "type": "signIn", "ok": false },
+      "expect": {
+        "state": {
+          "name": "checkpointing",
+          "drained": false,
+          "archive": true,
+          "reason": "reload",
+          "auth": true
+        },
+        "effects": [{ "type": "disconnect" }]
+      }
+    },
+    {
+      "state": { "name": "checkpointing", "drained": false },
+      "event": { "type": "trash" },
+      "expect": {
+        "state": { "name": "checkpointing", "drained": false },
+        "effects": [],
+        "rejected": "The session is closing"
+      }
+    },
+    {
+      "state": { "name": "checkpointing", "drained": false },
+      "event": { "type": "reloadAccess" },
+      "expect": {
+        "state": { "name": "checkpointing", "drained": false },
+        "effects": [],
+        "rejected": "The session is closing"
+      }
+    },
+    {
+      "note": "close() is idempotent",
+      "state": { "name": "checkpointing", "drained": false },
+      "event": { "type": "leave", "drain": false },
+      "expect": {
+        "state": { "name": "checkpointing", "drained": false },
+        "effects": [],
+        "rejected": "The session is already closing"
+      }
+    },
+    {
+      "case": "close",
+      "state": { "name": "checkpointing", "drained": false },
+      "event": { "type": "checkpointOk" },
+      "expect": {
+        "state": { "name": "closed", "checkpointWritten": true, "drained": false },
+        "effects": [{ "type": "release" }]
+      }
+    },
+    {
+      "case": "drained",
+      "state": { "name": "checkpointing", "drained": true, "saved": false },
+      "event": { "type": "checkpointOk" },
+      "expect": {
+        "state": { "name": "closed", "checkpointWritten": true, "drained": true, "saved": false },
+        "effects": [{ "type": "release" }]
+      }
+    },
+    {
+      "note": "the replacement opens after the old backend is released",
+      "case": "archive",
+      "state": { "name": "checkpointing", "drained": false, "archive": true, "reason": "reload" },
+      "event": { "type": "checkpointOk" },
+      "expect": {
+        "state": {
+          "name": "closed",
+          "checkpointWritten": true,
+          "drained": false,
+          "archived": true
+        },
+        "effects": [{ "type": "release" }, { "type": "reopen" }]
+      }
+    },
+    {
+      "label": "checkpointing × checkpointFail keeps the drained record (failed checkpoint)",
+      "note": "the reload gate keeps the recovery export",
+      "case": "error",
+      "state": { "name": "checkpointing", "drained": true, "saved": false },
+      "event": { "type": "checkpointFail", "deleted": false },
+      "expect": {
+        "state": { "name": "closed", "checkpointWritten": false, "drained": true, "saved": false },
+        "effects": [{ "type": "release" }]
+      }
+    },
+    {
+      "note": "another tab deleted the Page",
+      "case": "deleted",
+      "state": { "name": "checkpointing", "drained": false },
+      "event": { "type": "checkpointFail", "deleted": true },
+      "expect": {
+        "state": { "name": "deleted", "closing": true },
+        "effects": [{ "type": "release" }]
+      }
+    },
+    {
+      "label": "checkpointing × checkpointFail returns a failed access reload to its pause",
+      "note": "the session stays live and keeps blocking Reload",
+      "case": "archive",
+      "state": { "name": "checkpointing", "drained": false, "archive": true, "reason": "reload" },
+      "event": { "type": "checkpointFail", "deleted": false },
+      "expect": { "state": { "name": "paused", "reason": "reload" }, "effects": [] }
+    },
+    {
+      "case": "late-answer",
+      "state": { "name": "closed", "checkpointWritten": true, "drained": true, "saved": false },
+      "event": { "type": "accessChanged", "grant": "denied" },
+      "expect": {
+        "state": { "name": "closed", "checkpointWritten": true, "drained": true, "saved": false },
+        "effects": [],
+        "rejected": "The session is closed"
+      }
+    },
+    {
+      "note": "a late 404 still forgets the local copy; the release already ran",
+      "case": "deleted",
+      "state": { "name": "closed", "checkpointWritten": true, "drained": true, "saved": false },
+      "event": { "type": "accessChanged", "grant": "deleted" },
+      "expect": {
+        "state": { "name": "deleted", "closing": true },
+        "effects": [{ "type": "forget" }]
+      }
+    },
+    {
+      "state": { "name": "closed", "checkpointWritten": true, "drained": false },
+      "event": { "type": "signIn", "ok": false },
+      "expect": {
+        "state": { "name": "closed", "checkpointWritten": true, "drained": false },
+        "effects": [],
+        "rejected": "The session is closed"
+      }
+    },
+    {
+      "state": { "name": "closed", "checkpointWritten": false, "drained": true, "saved": false },
+      "event": { "type": "trash" },
+      "expect": {
+        "state": { "name": "closed", "checkpointWritten": false, "drained": true, "saved": false },
+        "effects": [],
+        "rejected": "The session is closed"
+      }
+    },
+    {
+      "note": "a failed replacement open retries without archiving again",
+      "case": "archived",
+      "state": { "name": "closed", "checkpointWritten": true, "drained": false, "archived": true },
+      "event": { "type": "reloadAccess" },
+      "expect": {
+        "state": {
+          "name": "closed",
+          "checkpointWritten": true,
+          "drained": false,
+          "archived": true
+        },
+        "effects": [{ "type": "reopen" }]
+      }
+    },
+    {
+      "case": "not-archived",
+      "state": { "name": "closed", "checkpointWritten": true, "drained": false },
+      "event": { "type": "reloadAccess" },
+      "expect": {
+        "state": { "name": "closed", "checkpointWritten": true, "drained": false },
+        "effects": [],
+        "rejected": "The session is closed"
+      }
+    },
+    {
+      "state": { "name": "closed", "checkpointWritten": true, "drained": false },
+      "event": { "type": "leave", "drain": false },
+      "expect": {
+        "state": { "name": "closed", "checkpointWritten": true, "drained": false },
+        "effects": [],
+        "rejected": "The session is already closed"
+      }
+    },
+    {
+      "state": { "name": "deleted" },
+      "event": { "type": "accessChanged", "grant": "deleted" },
+      "expect": {
+        "state": { "name": "deleted" },
+        "effects": [],
+        "rejected": "The Page is deleted"
+      }
+    },
+    {
+      "state": { "name": "deleted" },
+      "event": { "type": "signIn", "ok": false },
+      "expect": {
+        "state": { "name": "deleted" },
+        "effects": [],
+        "rejected": "The Page is deleted"
+      }
+    },
+    {
+      "state": { "name": "deleted" },
+      "event": { "type": "trash" },
+      "expect": {
+        "state": { "name": "deleted" },
+        "effects": [],
+        "rejected": "The Page is deleted"
+      }
+    },
+    {
+      "state": { "name": "deleted" },
+      "event": { "type": "reloadAccess" },
+      "expect": {
+        "state": { "name": "deleted" },
+        "effects": [],
+        "rejected": "The Page is deleted"
+      }
+    },
+    {
+      "case": "release",
+      "state": { "name": "deleted" },
+      "event": { "type": "leave", "drain": false },
+      "expect": {
+        "state": { "name": "deleted", "closing": true },
+        "effects": [{ "type": "release" }]
+      }
+    },
+    {
+      "case": "already-closing",
+      "state": { "name": "deleted", "closing": true },
+      "event": { "type": "leave", "drain": false },
+      "expect": {
+        "state": { "name": "deleted", "closing": true },
+        "effects": [],
+        "rejected": "The session is already closing"
+      }
+    }
+  ]
+}

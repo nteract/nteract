@@ -784,7 +784,7 @@ test("native catch-up cannot publish a stale receipt after either asynchronous b
         else if (invalidate === "account")
           session.acceptAuthentication({ identity: { principal: "other" }, canWrite: true });
         else if (invalidate === "deleted") {
-          session.deleted = true;
+          session.phase$.update(() => ({ name: "deleted" }));
           session.status = "Deleted";
         } else await session.close();
         if (invalidate === "deleted") fail(Error("Stale native failure"));

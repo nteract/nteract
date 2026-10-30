@@ -38,13 +38,21 @@ test("an opening timeout is visible while native cleanup drains and retains its 
   );
   await tick();
   assert.equal(outcome, failure, "the original timeout must not wait for storage cleanup");
-  assert.equal(outcome.cleanupPromise, session.closing, "retry receives the actual native drain");
   assert.equal(session.alive, false, "stale session callbacks are disabled immediately");
   assert.deepEqual(calls, ["flush"], "the identity stays owned while native I/O is pending");
-  assert.equal(session.close(), session.closing, "repeated cleanup shares the same drain");
+  // Retry waits for the actual native drain; repeated cleanup waits for the
+  // same close instead of starting another.
+  let cleaned = 0;
+  void outcome.cleanupPromise.then(() => cleaned++);
+  void session.close().then(() => cleaned++);
+  await tick();
+  assert.equal(cleaned, 0, "cleanup is still waiting for the flush");
+  assert.deepEqual(calls, ["flush"], "a repeated close starts no second drain");
   finishFlush();
   await opening;
-  await session.closing;
+  await outcome.cleanupPromise;
+  await session.closeSettled();
+  assert.equal(cleaned, 2);
   assert.deepEqual(calls, [
     "flush",
     "shutdown",

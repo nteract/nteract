@@ -667,6 +667,38 @@ Page, since the reopened replica can't contain what its checkpoint failed to
 write. It clears only when a host receipt includes all of its heads, or when the
 person confirms Discard unsaved edits. Records are keyed by account and Page id.
 
+Each Page session moves through the
+[viewer-session machine](viewer/session-machine.mjs): opening, open, paused
+(sign-in, access, Trash or access reload), draining while it is left, then
+checkpointing, closed or deleted. `PageSession.phase$` is that state in a
+[Store](viewer/store.mjs), and every lifecycle flag derives from it. A close
+can grow while it runs (a late deletion adds its forget), so the close itself
+is private and `closeSettled()` is the only way to wait for it. The
+[SessionHost](viewer/session-host.mjs) owns the installed session and every
+session still closing. The [reload gate](viewer/reload-gate-machine.mjs) follows
+the host and each owned session's phase, so no caller registers a session with
+it, and keeps its records as plain data. Their tables,
+[viewer-session](test/fixtures/machines/viewer-session.json) and
+[reload-gate](test/fixtures/machines/reload-gate.json), run against both
+transitions and through PageSession and ReloadGate.
+
+Deliberate differences from the earlier flag-based sessions:
+
+- Closed means the final checkpoint settled; backend release may still be
+  running. Reload waits for the release.
+- A Page closed without the drain (sign-out, unmount) is closing until its
+  release settles, like a Page left through the drain, and keeps the same
+  record if its edits never reached the server. Closing a held Page cancels a
+  waiting Reload.
+- A deleted Page forgets its local copy before it starts closing. It counts as
+  closing, and Reload waits for it, until that close releases its backend.
+- Leaving during access reload waits for archiving and the replacement-open
+  attempt.
+- If the replacement fails to open, the archived Page stays installed with
+  Reload current Page, which retries the open without archiving again.
+- A second Reload while one waits joins it. Reload after the tab started
+  reloading repeats the reload.
+
 An unsent comment or reply, on an open or resolved thread, blocks Reload until
 it is sent or discarded. A draft that can't be sent (edits paused, write access
 gone, or the thread resolved) stays visible read-only with Copy and Discard.

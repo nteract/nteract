@@ -111,11 +111,19 @@ export function CommentsPanel({
   // Drafts exist only here, so a reload asks about every draft that still has
   // a place in this panel: the composer and a reply on any thread, open or
   // resolved. Each of those stays reachable to copy or discard.
-  const unsent = useRef(false);
-  unsent.current = [composer?.key, ...threads.map((t) => t.id)]
+  const unsent = [composer?.key, ...threads.map((t) => t.id)]
     .filter(Boolean)
     .some((id) => hasDraft(drafts[id]));
-  useEffect(() => reloadGate.watchDrafts(() => unsent.current), []);
+  const draftSource = useRef(null);
+  useEffect(() => {
+    const source = reloadGate.watchDrafts();
+    draftSource.current = source;
+    return () => {
+      draftSource.current = null;
+      source.stop();
+    };
+  }, []);
+  useEffect(() => draftSource.current?.set(unsent), [unsent]);
   const resolvedDraft = threads.some((t) => t.state === "resolved" && hasDraft(drafts[t.id]));
   useEffect(() => {
     if (resolvedDraft && resolvedDisclosure.current) resolvedDisclosure.current.open = true;
