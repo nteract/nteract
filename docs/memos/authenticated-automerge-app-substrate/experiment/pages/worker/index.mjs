@@ -157,6 +157,7 @@ import {
 export { Space } from "./spaces.mjs";
 import { spaceCreationEffect, spaceCreationTransition } from "./space-lifecycle.mjs";
 import { handleImportPageImage } from "./import-image.mjs";
+import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { readTool } from "./tool-reads.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
 import { PageActivity } from "./page-activity.mjs";
@@ -606,8 +607,20 @@ const gateway = {
         const identity = await authenticate(request, env);
         requireWrite(identity);
         const args = await readJson(request);
-        return env.CATALOGS.getByName(identity.principal).fetch(
-          forwarded(request, "/internal/catalog", { operation: "register_page", arguments: args }),
+        return await withinToolDeadline(async (signal) =>
+          bufferedResponse(
+            await untilAborted(
+              env.CATALOGS.getByName(identity.principal).fetch(
+                forwarded(request, "/internal/catalog", {
+                  operation: "register_page",
+                  arguments: args,
+                }),
+                { signal },
+              ),
+              signal,
+            ),
+            signal,
+          ),
         );
       }
       if (url.pathname === "/api/tools" && request.method === "POST") {
@@ -671,12 +684,10 @@ export class Catalog {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
-    this.tail = Promise.resolve();
+    this.queue = serialQueue(ctx, "catalog-queue");
   }
   fetch(request) {
-    const next = this.tail.then(() => this.run(request));
-    this.tail = next.catch(() => {});
-    return next;
+    return this.queue(() => this.run(request));
   }
   async countEntries(prefix) {
     return countCapacity(this.ctx.storage, prefix, {
@@ -2246,17 +2257,23 @@ export class Page {
     this.cachedTitle = title;
     const observedAt = new Date().toISOString();
     if (titleChanged) this.titleObservedAt = observedAt;
+    // A projection that times out clears the cached title below, so the next
+    // request to this Page sends it again.
     const tasks = recipients.map((principal) =>
-      this.env.CATALOGS.getByName(principal).fetch(
-        new Request("https://pages.internal/internal/projection", {
-          method: "POST",
-          body: JSON.stringify({
-            page_id: this.metadata.pageId,
-            title,
-            observed_at: observedAt,
-            shared: principal !== this.metadata.owner,
+      withTimeout(
+        this.env.CATALOGS.getByName(principal).fetch(
+          new Request("https://pages.internal/internal/projection", {
+            method: "POST",
+            body: JSON.stringify({
+              page_id: this.metadata.pageId,
+              title,
+              observed_at: observedAt,
+              shared: principal !== this.metadata.owner,
+            }),
           }),
-        }),
+        ),
+        serialQueueBounds.projectionMs,
+        "Catalog projection timed out",
       ),
     );
     if (catalogIndexEpoch(this.env)) {
