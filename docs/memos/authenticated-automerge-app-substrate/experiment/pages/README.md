@@ -90,8 +90,7 @@ E2E state and credentials are temporary; existing `dist/.dev.vars` and
 
 Run targeted browser checks from `pages`. `npm run e2e` runs all of these by
 default except the latency check, which records timings rather than gating
-on them, and the build-update check, which is opt-in until restored text keeps
-paragraph order on Linux ([#4547](https://github.com/nteract/nteract/issues/4547)):
+on them:
 
 | Check | Command | Server lifecycle |
 | --- | --- | --- |

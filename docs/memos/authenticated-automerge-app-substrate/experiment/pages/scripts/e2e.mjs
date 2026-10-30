@@ -50,9 +50,7 @@ const SUITES = Object.freeze([
   { name: "sharing", harness: sharing(), timeout: 4 * minute },
   { name: "admission", harness: sharing("--admission"), timeout: 4 * minute },
   { name: "domain-view", harness: sharing("--domain-view"), timeout: 4 * minute },
-  // Opt-in until restored text keeps paragraph order on Linux:
-  // https://github.com/nteract/nteract/issues/4547
-  { name: "build-update", harness: sharing("--build-update"), timeout: 4 * minute, optIn: true },
+  { name: "build-update", harness: sharing("--build-update"), timeout: 4 * minute },
   { name: "trash", harness: sharing("--trash"), timeout: 4 * minute },
   { name: "spaces", harness: sharing("--spaces"), timeout: 4 * minute },
   { name: "oauth", harness: ["scripts/local-oauth-e2e.mjs"], timeout: 4 * minute },
