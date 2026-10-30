@@ -680,6 +680,21 @@ it, and keeps its records as plain data. Their tables,
 [reload-gate](test/fixtures/machines/reload-gate.json), run against both
 transitions and through PageSession and ReloadGate.
 
+Deliberate differences from the earlier flag-based sessions:
+
+- Closed means the final checkpoint settled; backend release may still be
+  running. Reload waits for the release.
+- A Page closed without the drain (sign-out, unmount) is closing until its
+  release settles, like a Page left through the drain, and keeps the same
+  record if its edits never reached the server. Closing a held Page cancels a
+  waiting Reload.
+- Leaving during access reload waits for archiving and the replacement-open
+  attempt.
+- If the replacement fails to open, the archived Page stays installed with
+  Reload current Page, which retries the open without archiving again.
+- A second Reload while one waits joins it. Reload after the tab started
+  reloading repeats the reload.
+
 An unsent comment or reply, on an open or resolved thread, blocks Reload until
 it is sent or discarded. A draft that can't be sent (edits paused, write access
 gone, or the thread resolved) stays visible read-only with Copy and Discard.
