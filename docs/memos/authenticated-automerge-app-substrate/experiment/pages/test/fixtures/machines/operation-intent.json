@@ -1,0 +1,2860 @@
+{
+  "machine": "operation-intent",
+  "description": "One Catalog operation intent (delete_page, restore_page, purge_page confirm) and its destination slot. Rows run against the transition, the Catalog interpreter, and the Catalog before extraction.",
+  "states": [
+    "absent",
+    "reserved",
+    "forwarded",
+    "completed",
+    "superseded",
+    "released"
+  ],
+  "events": [
+    "request",
+    "tombstone",
+    "page_reply",
+    "count",
+    "settle",
+    "lifecycle"
+  ],
+  "unreachable": [
+    [
+      "absent",
+      "page_reply",
+      "nothing is forwarded before the intent is reserved"
+    ],
+    [
+      "absent",
+      "lifecycle",
+      "only a pending intent's reservation is read against its Page"
+    ],
+    [
+      "reserved",
+      "page_reply",
+      "an intent is marked forwarded before the Page sees it"
+    ],
+    [
+      "completed",
+      "tombstone",
+      "a completed intent replays its receipt before any other check"
+    ],
+    [
+      "completed",
+      "page_reply",
+      "a completed intent forwards nothing"
+    ],
+    [
+      "completed",
+      "lifecycle",
+      "a completed intent's stale slot is removed without a read"
+    ],
+    [
+      "superseded",
+      "tombstone",
+      "a superseded intent replays its receipt before any other check"
+    ],
+    [
+      "superseded",
+      "page_reply",
+      "a superseded intent forwards nothing"
+    ],
+    [
+      "superseded",
+      "lifecycle",
+      "a superseded intent's stale slot is removed without a read"
+    ],
+    [
+      "released",
+      "request",
+      "release deletes the row; the next request reads absent"
+    ],
+    [
+      "released",
+      "tombstone",
+      "release deletes the row; the next request reads absent"
+    ],
+    [
+      "released",
+      "page_reply",
+      "the release answered the Page's reply"
+    ],
+    [
+      "released",
+      "count",
+      "release removes the slot before the row"
+    ],
+    [
+      "released",
+      "settle",
+      "release removes the slot before the row"
+    ],
+    [
+      "released",
+      "lifecycle",
+      "release removes the slot before the row"
+    ]
+  ],
+  "cases": {
+    "absent/request": [
+      "room",
+      "entry",
+      "taken",
+      "full",
+      "unslotted"
+    ],
+    "reserved/request": [
+      "held",
+      "lost-room",
+      "lost-full",
+      "leaf-refused"
+    ],
+    "reserved/count": [
+      "unexpired",
+      "expired"
+    ],
+    "reserved/lifecycle": [
+      "missing",
+      "moved-here",
+      "moved-away",
+      "unchanged",
+      "unavailable"
+    ],
+    "forwarded/request": [
+      "held",
+      "lost-room",
+      "lost-full",
+      "leaf-refused"
+    ],
+    "forwarded/page_reply": [
+      "applied",
+      "retarget",
+      "superseded",
+      "rejected",
+      "missing",
+      "failed",
+      "unavailable"
+    ],
+    "forwarded/count": [
+      "unexpired",
+      "expired"
+    ],
+    "forwarded/lifecycle": [
+      "count-missing",
+      "count-moved-here",
+      "count-moved-away",
+      "count-fenced",
+      "count-unchanged",
+      "count-unavailable",
+      "settle-missing",
+      "settle-moved-here",
+      "settle-moved-away",
+      "settle-unchanged",
+      "settle-unavailable"
+    ],
+    "completed/request": [
+      "receipt",
+      "deleted"
+    ]
+  },
+  "rows": [
+    {
+      "label": "a new Trash request reserves its intent and Trash slot in one write",
+      "case": "room",
+      "state": {
+        "name": "absent"
+      },
+      "event": {
+        "type": "request",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "destination": "room",
+        "revision": 0
+      },
+      "expect": {
+        "state": {
+          "name": "reserved",
+          "operation": "delete_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 0,
+          "slot": "live",
+          "retarget": true
+        },
+        "effects": [
+          {
+            "type": "persist",
+            "state": "reserved",
+            "expectedRevision": 0,
+            "slot": true
+          }
+        ]
+      }
+    },
+    {
+      "label": "a new restore whose destination already holds the Page's entry reserves no slot",
+      "case": "entry",
+      "state": {
+        "name": "absent"
+      },
+      "event": {
+        "type": "request",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "destination": "entry",
+        "revision": 2
+      },
+      "expect": {
+        "state": {
+          "name": "reserved",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 2,
+          "slot": "entry",
+          "retarget": true
+        },
+        "effects": [
+          {
+            "type": "persist",
+            "state": "reserved",
+            "expectedRevision": 2
+          }
+        ]
+      }
+    },
+    {
+      "label": "a new Trash request whose slot another intent holds reserves only its intent",
+      "case": "taken",
+      "state": {
+        "name": "absent"
+      },
+      "event": {
+        "type": "request",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "destination": "taken",
+        "revision": 0
+      },
+      "expect": {
+        "state": {
+          "name": "reserved",
+          "operation": "delete_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 0,
+          "slot": "lapsed",
+          "retarget": true
+        },
+        "effects": [
+          {
+            "type": "persist",
+            "state": "reserved",
+            "expectedRevision": 0
+          }
+        ]
+      }
+    },
+    {
+      "label": "a new Trash request is refused when Trash is full",
+      "case": "full",
+      "state": {
+        "name": "absent"
+      },
+      "event": {
+        "type": "request",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "destination": "full",
+        "revision": 0
+      },
+      "expect": {
+        "state": {
+          "name": "absent"
+        },
+        "effects": [],
+        "rejected": "full",
+        "response": {
+          "status": 409,
+          "body": {
+            "error": "Trash is full. Permanently delete Pages from Trash before moving more Pages there.",
+            "code": "trash_capacity"
+          }
+        }
+      }
+    },
+    {
+      "label": "a new restore is refused at the Page quota",
+      "case": "full",
+      "state": {
+        "name": "absent"
+      },
+      "event": {
+        "type": "request",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "destination": "full",
+        "revision": 1
+      },
+      "expect": {
+        "state": {
+          "name": "absent"
+        },
+        "effects": [],
+        "rejected": "full",
+        "response": {
+          "status": 409,
+          "body": {
+            "error": "This prototype permits 100 pages per account"
+          }
+        }
+      }
+    },
+    {
+      "label": "a new purge confirmation reserves its intent; purge holds no slot",
+      "case": "unslotted",
+      "state": {
+        "name": "absent"
+      },
+      "event": {
+        "type": "request",
+        "operation": "purge_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "destination": "none",
+        "revision": 1
+      },
+      "expect": {
+        "state": {
+          "name": "reserved",
+          "operation": "purge_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "none",
+          "retarget": true
+        },
+        "effects": [
+          {
+            "type": "persist",
+            "state": "reserved",
+            "expectedRevision": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "a new request for a tombstoned Page drops its Trash entry, tells the Page and answers 404",
+      "state": {
+        "name": "absent"
+      },
+      "event": {
+        "type": "tombstone"
+      },
+      "expect": {
+        "state": {
+          "name": "absent"
+        },
+        "effects": [
+          {
+            "type": "forget_trash"
+          },
+          {
+            "type": "notify_tombstone"
+          }
+        ],
+        "response": {
+          "status": 404,
+          "body": {
+            "error": "Page not found"
+          }
+        }
+      }
+    },
+    {
+      "label": "counting removes a slot whose intent row is gone",
+      "state": {
+        "name": "absent"
+      },
+      "event": {
+        "type": "count",
+        "expired": false
+      },
+      "expect": {
+        "state": {
+          "name": "absent"
+        },
+        "effects": [
+          {
+            "type": "release_slot"
+          }
+        ],
+        "response": {
+          "counted": false
+        }
+      }
+    },
+    {
+      "label": "a placement check removes a slot whose intent row is gone",
+      "state": {
+        "name": "absent"
+      },
+      "event": {
+        "type": "settle"
+      },
+      "expect": {
+        "state": {
+          "name": "absent"
+        },
+        "effects": [
+          {
+            "type": "release_slot"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a new request marks itself forwarded, then forwards with its expected revision",
+      "case": "held",
+      "state": {
+        "name": "reserved",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "live",
+        "retarget": true
+      },
+      "event": {
+        "type": "request",
+        "expired": false
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "delete_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 0,
+          "slot": "live",
+          "retarget": true,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "persist",
+            "state": "forwarded"
+          },
+          {
+            "type": "forward",
+            "expectedRevision": 0
+          }
+        ]
+      }
+    },
+    {
+      "label": "a resumed reserved request still holding its slot is forwarded",
+      "case": "held",
+      "state": {
+        "name": "reserved",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "live",
+        "retarget": false
+      },
+      "event": {
+        "type": "request",
+        "expired": false
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "live",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "persist",
+            "state": "forwarded"
+          },
+          {
+            "type": "forward",
+            "expectedRevision": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "a resumed purge confirmation needs no slot",
+      "case": "held",
+      "state": {
+        "name": "reserved",
+        "operation": "purge_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "none",
+        "retarget": false
+      },
+      "event": {
+        "type": "request",
+        "expired": false
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "purge_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "none",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "persist",
+            "state": "forwarded"
+          },
+          {
+            "type": "forward",
+            "expectedRevision": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "a resumed request that lost its slot takes another while there is room",
+      "case": "lost-room",
+      "state": {
+        "name": "reserved",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "lapsed",
+        "retarget": false
+      },
+      "event": {
+        "type": "request",
+        "expired": false,
+        "capacity": true
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "live",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "reserve_slot"
+          },
+          {
+            "type": "persist",
+            "state": "forwarded"
+          },
+          {
+            "type": "forward",
+            "expectedRevision": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "a new Trash request whose slot was taken passes the leaf guard and takes the slot",
+      "case": "lost-room",
+      "state": {
+        "name": "reserved",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "lapsed",
+        "retarget": true
+      },
+      "event": {
+        "type": "request",
+        "expired": false,
+        "capacity": true,
+        "leaf": "ok"
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "delete_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 0,
+          "slot": "live",
+          "retarget": true,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "reserve_slot"
+          },
+          {
+            "type": "persist",
+            "state": "forwarded"
+          },
+          {
+            "type": "forward",
+            "expectedRevision": 0
+          }
+        ]
+      }
+    },
+    {
+      "label": "a resumed request without a slot or room may only replay",
+      "case": "lost-full",
+      "state": {
+        "name": "reserved",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "lapsed",
+        "retarget": false
+      },
+      "event": {
+        "type": "request",
+        "expired": false,
+        "capacity": false
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "delete_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 0,
+          "slot": "lapsed",
+          "retarget": false,
+          "replayOnly": true
+        },
+        "effects": [
+          {
+            "type": "persist",
+            "state": "forwarded"
+          },
+          {
+            "type": "forward",
+            "expectedRevision": 0,
+            "replayOnly": true
+          }
+        ]
+      }
+    },
+    {
+      "label": "a resumed Trash request that gained a sub-page is released",
+      "case": "leaf-refused",
+      "state": {
+        "name": "reserved",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "lapsed",
+        "retarget": false
+      },
+      "event": {
+        "type": "request",
+        "expired": false,
+        "capacity": true,
+        "leaf": "refused",
+        "refusal": {
+          "status": 409,
+          "body": {
+            "error": "This Page has sub-pages. Trash its sub-pages first; subtree Trash is not available yet.",
+            "code": "page_has_children"
+          }
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "released",
+          "operation": "delete_page"
+        },
+        "effects": [
+          {
+            "type": "delete_intent"
+          },
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "status": 409,
+          "body": {
+            "error": "This Page has sub-pages. Trash its sub-pages first; subtree Trash is not available yet.",
+            "code": "page_has_children"
+          }
+        }
+      }
+    },
+    {
+      "label": "a resumed Trash request for a tombstoned Page loses its Trash slot with the entry",
+      "state": {
+        "name": "reserved",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "live",
+        "retarget": false
+      },
+      "event": {
+        "type": "tombstone"
+      },
+      "expect": {
+        "state": {
+          "name": "reserved",
+          "operation": "delete_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 0,
+          "slot": "lapsed",
+          "retarget": false
+        },
+        "effects": [
+          {
+            "type": "forget_trash"
+          },
+          {
+            "type": "notify_tombstone"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a resumed restore for a tombstoned Page keeps its Page slot",
+      "state": {
+        "name": "reserved",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "live",
+        "retarget": false
+      },
+      "event": {
+        "type": "tombstone"
+      },
+      "expect": {
+        "state": {
+          "name": "reserved",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "live",
+          "retarget": false
+        },
+        "effects": [
+          {
+            "type": "forget_trash"
+          },
+          {
+            "type": "notify_tombstone"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a reserved slot within its lifetime counts",
+      "case": "unexpired",
+      "state": {
+        "name": "reserved",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "live",
+        "retarget": false
+      },
+      "event": {
+        "type": "count",
+        "expired": false
+      },
+      "expect": {
+        "state": {
+          "name": "reserved",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "live",
+          "retarget": false
+        },
+        "effects": [],
+        "response": {
+          "counted": true
+        }
+      }
+    },
+    {
+      "label": "a reserved slot never forwarded expires when counted",
+      "case": "expired",
+      "state": {
+        "name": "reserved",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "live",
+        "retarget": false
+      },
+      "event": {
+        "type": "count",
+        "expired": true
+      },
+      "expect": {
+        "state": {
+          "name": "reserved",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "lapsed",
+          "retarget": false
+        },
+        "effects": [
+          {
+            "type": "release_slot"
+          }
+        ],
+        "response": {
+          "counted": false
+        }
+      }
+    },
+    {
+      "label": "a placement check reads the Page for a reserved slot",
+      "state": {
+        "name": "reserved",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "live",
+        "retarget": false
+      },
+      "event": {
+        "type": "settle"
+      },
+      "expect": {
+        "state": {
+          "name": "reserved",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "reconciling",
+          "retarget": false,
+          "check": "settle"
+        },
+        "effects": [
+          {
+            "type": "read_lifecycle"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a placement check projects a missing Page as deleted (reserved)",
+      "case": "missing",
+      "state": {
+        "name": "reserved",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "reconciling",
+        "retarget": false,
+        "check": "settle"
+      },
+      "event": {
+        "type": "lifecycle",
+        "current": {
+          "state": "missing"
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "reserved",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "lapsed",
+          "retarget": false
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "state": "deleted"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "a placement check projects a restore that already applied (reserved)",
+      "case": "moved-here",
+      "state": {
+        "name": "reserved",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "reconciling",
+        "retarget": false,
+        "check": "settle"
+      },
+      "event": {
+        "type": "lifecycle",
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "active",
+          "revision": 2,
+          "title": "Launch plan"
+        },
+        "known": 1
+      },
+      "expect": {
+        "state": {
+          "name": "reserved",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "entry",
+          "retarget": false
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "active",
+              "revision": 2,
+              "title": "Launch plan"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "a placement check projects a later Trash, which drops the slot (reserved)",
+      "case": "moved-away",
+      "state": {
+        "name": "reserved",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "reconciling",
+        "retarget": false,
+        "check": "settle"
+      },
+      "event": {
+        "type": "lifecycle",
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "trashed",
+          "revision": 3,
+          "title": "Launch plan",
+          "trashed_at": "2026-10-29T12:00:00.000Z",
+          "trashed_by": "user:anaconda-fixture:fixture-user",
+          "trash_root_id": "33333333-3333-4333-8333-333333333333"
+        },
+        "known": 1
+      },
+      "expect": {
+        "state": {
+          "name": "reserved",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "lapsed",
+          "retarget": false
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "trashed",
+              "revision": 3,
+              "title": "Launch plan",
+              "trashed_at": "2026-10-29T12:00:00.000Z",
+              "trashed_by": "user:anaconda-fixture:fixture-user",
+              "trash_root_id": "33333333-3333-4333-8333-333333333333"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "a placement check keeps an unapplied reservation (reserved)",
+      "case": "unchanged",
+      "state": {
+        "name": "reserved",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "reconciling",
+        "retarget": false,
+        "check": "settle"
+      },
+      "event": {
+        "type": "lifecycle",
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "trashed",
+          "revision": 1,
+          "title": "Launch plan",
+          "trashed_at": "2026-10-29T12:00:00.000Z",
+          "trashed_by": "user:anaconda-fixture:fixture-user",
+          "trash_root_id": "33333333-3333-4333-8333-333333333333"
+        },
+        "known": 1
+      },
+      "expect": {
+        "state": {
+          "name": "reserved",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "live",
+          "retarget": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a placement check refuses as retryable when the Page can't answer (reserved)",
+      "case": "unavailable",
+      "state": {
+        "name": "reserved",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "reconciling",
+        "retarget": false,
+        "check": "settle"
+      },
+      "event": {
+        "type": "lifecycle",
+        "unavailable": true
+      },
+      "expect": {
+        "state": {
+          "name": "reserved",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "live",
+          "retarget": false
+        },
+        "effects": [],
+        "response": {
+          "status": 409,
+          "body": {
+            "error": "A Page's Trash or restore is still settling. Retry shortly.",
+            "code": "lifecycle_unsettled"
+          }
+        }
+      }
+    },
+    {
+      "label": "a placement check projects a missing Page as deleted (forwarded)",
+      "case": "settle-missing",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "reconciling",
+        "retarget": false,
+        "replayOnly": false,
+        "check": "settle"
+      },
+      "event": {
+        "type": "lifecycle",
+        "current": {
+          "state": "missing"
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "lapsed",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "state": "deleted"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "a placement check projects a restore that already applied (forwarded)",
+      "case": "settle-moved-here",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "reconciling",
+        "retarget": false,
+        "replayOnly": false,
+        "check": "settle"
+      },
+      "event": {
+        "type": "lifecycle",
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "active",
+          "revision": 2,
+          "title": "Launch plan"
+        },
+        "known": 1
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "entry",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "active",
+              "revision": 2,
+              "title": "Launch plan"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "a placement check projects a later Trash, which drops the slot (forwarded)",
+      "case": "settle-moved-away",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "reconciling",
+        "retarget": false,
+        "replayOnly": false,
+        "check": "settle"
+      },
+      "event": {
+        "type": "lifecycle",
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "trashed",
+          "revision": 3,
+          "title": "Launch plan",
+          "trashed_at": "2026-10-29T12:00:00.000Z",
+          "trashed_by": "user:anaconda-fixture:fixture-user",
+          "trash_root_id": "33333333-3333-4333-8333-333333333333"
+        },
+        "known": 1
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "lapsed",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "trashed",
+              "revision": 3,
+              "title": "Launch plan",
+              "trashed_at": "2026-10-29T12:00:00.000Z",
+              "trashed_by": "user:anaconda-fixture:fixture-user",
+              "trash_root_id": "33333333-3333-4333-8333-333333333333"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "a placement check keeps an unapplied reservation (forwarded)",
+      "case": "settle-unchanged",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "reconciling",
+        "retarget": false,
+        "replayOnly": false,
+        "check": "settle"
+      },
+      "event": {
+        "type": "lifecycle",
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "trashed",
+          "revision": 1,
+          "title": "Launch plan",
+          "trashed_at": "2026-10-29T12:00:00.000Z",
+          "trashed_by": "user:anaconda-fixture:fixture-user",
+          "trash_root_id": "33333333-3333-4333-8333-333333333333"
+        },
+        "known": 1
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "live",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a placement check refuses as retryable when the Page can't answer (forwarded)",
+      "case": "settle-unavailable",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "reconciling",
+        "retarget": false,
+        "replayOnly": false,
+        "check": "settle"
+      },
+      "event": {
+        "type": "lifecycle",
+        "unavailable": true
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "live",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [],
+        "response": {
+          "status": 409,
+          "body": {
+            "error": "A Page's Trash or restore is still settling. Retry shortly.",
+            "code": "lifecycle_unsettled"
+          }
+        }
+      }
+    },
+    {
+      "label": "a forwarded slot never expires, so a resumed request forwards again",
+      "case": "held",
+      "state": {
+        "name": "forwarded",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "live",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "request",
+        "expired": true
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "delete_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 0,
+          "slot": "live",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "forward",
+            "expectedRevision": 0
+          }
+        ]
+      }
+    },
+    {
+      "label": "a destination that already holds the Page's entry needs no slot",
+      "case": "held",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "entry",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "request",
+        "expired": false
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "entry",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "forward",
+            "expectedRevision": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "a forwarded request whose slot was reconciled away takes another while there is room",
+      "case": "lost-room",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "lapsed",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "request",
+        "expired": false,
+        "capacity": true
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "live",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "reserve_slot"
+          },
+          {
+            "type": "forward",
+            "expectedRevision": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "a forwarded request without a slot or room may only replay",
+      "case": "lost-full",
+      "state": {
+        "name": "forwarded",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "lapsed",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "request",
+        "expired": false,
+        "capacity": false
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "delete_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 0,
+          "slot": "lapsed",
+          "retarget": false,
+          "replayOnly": true
+        },
+        "effects": [
+          {
+            "type": "forward",
+            "expectedRevision": 0,
+            "replayOnly": true
+          }
+        ]
+      }
+    },
+    {
+      "label": "a forwarded Trash request that gained a sub-page is released",
+      "case": "leaf-refused",
+      "state": {
+        "name": "forwarded",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "lapsed",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "request",
+        "expired": false,
+        "capacity": true,
+        "leaf": "refused",
+        "refusal": {
+          "status": 409,
+          "body": {
+            "error": "This Page has sub-pages. Trash its sub-pages first; subtree Trash is not available yet.",
+            "code": "page_has_children"
+          }
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "released",
+          "operation": "delete_page"
+        },
+        "effects": [
+          {
+            "type": "delete_intent"
+          },
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "status": 409,
+          "body": {
+            "error": "This Page has sub-pages. Trash its sub-pages first; subtree Trash is not available yet.",
+            "code": "page_has_children"
+          }
+        }
+      }
+    },
+    {
+      "label": "a forwarded Trash request for a tombstoned Page loses its Trash slot with the entry",
+      "state": {
+        "name": "forwarded",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "live",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "tombstone"
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "delete_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 0,
+          "slot": "lapsed",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "forget_trash"
+          },
+          {
+            "type": "notify_tombstone"
+          }
+        ]
+      }
+    },
+    {
+      "label": "an applied Trash projects the Page's state and completes",
+      "case": "applied",
+      "state": {
+        "name": "forwarded",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "live",
+        "retarget": true,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "page_reply",
+        "status": 200,
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "trashed",
+          "trashed": true,
+          "title": "Launch plan",
+          "trashed_at": "2026-10-29T12:00:00.000Z",
+          "trashed_by": "user:anaconda-fixture:fixture-user",
+          "trash_root_id": "33333333-3333-4333-8333-333333333333"
+        },
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "trashed",
+          "revision": 1,
+          "title": "Launch plan",
+          "trashed_at": "2026-10-29T12:00:00.000Z",
+          "trashed_by": "user:anaconda-fixture:fixture-user",
+          "trash_root_id": "33333333-3333-4333-8333-333333333333"
+        },
+        "known": 0
+      },
+      "expect": {
+        "state": {
+          "name": "completed",
+          "operation": "delete_page",
+          "receipt": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "state": "trashed",
+            "trashed": true,
+            "title": "Launch plan",
+            "trashed_at": "2026-10-29T12:00:00.000Z",
+            "trashed_by": "user:anaconda-fixture:fixture-user",
+            "trash_root_id": "33333333-3333-4333-8333-333333333333"
+          }
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "trashed",
+              "revision": 1,
+              "title": "Launch plan",
+              "trashed_at": "2026-10-29T12:00:00.000Z",
+              "trashed_by": "user:anaconda-fixture:fixture-user",
+              "trash_root_id": "33333333-3333-4333-8333-333333333333"
+            }
+          },
+          {
+            "type": "persist",
+            "state": "completed",
+            "receipt": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "trashed",
+              "trashed": true,
+              "title": "Launch plan",
+              "trashed_at": "2026-10-29T12:00:00.000Z",
+              "trashed_by": "user:anaconda-fixture:fixture-user",
+              "trash_root_id": "33333333-3333-4333-8333-333333333333"
+            }
+          },
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "body": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "state": "trashed",
+            "trashed": true,
+            "title": "Launch plan",
+            "trashed_at": "2026-10-29T12:00:00.000Z",
+            "trashed_by": "user:anaconda-fixture:fixture-user",
+            "trash_root_id": "33333333-3333-4333-8333-333333333333"
+          }
+        }
+      }
+    },
+    {
+      "label": "an applied restore projects the Page's state and completes",
+      "case": "applied",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "live",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "page_reply",
+        "status": 200,
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "active",
+          "restored": true,
+          "title": "Launch plan",
+          "restored_at": "2026-10-29T13:00:00.000Z"
+        },
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "active",
+          "revision": 2,
+          "title": "Launch plan"
+        },
+        "known": 1
+      },
+      "expect": {
+        "state": {
+          "name": "completed",
+          "operation": "restore_page",
+          "receipt": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "state": "active",
+            "restored": true,
+            "title": "Launch plan",
+            "restored_at": "2026-10-29T13:00:00.000Z"
+          }
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "active",
+              "revision": 2,
+              "title": "Launch plan"
+            }
+          },
+          {
+            "type": "persist",
+            "state": "completed",
+            "receipt": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "active",
+              "restored": true,
+              "title": "Launch plan",
+              "restored_at": "2026-10-29T13:00:00.000Z"
+            }
+          },
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "body": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "state": "active",
+            "restored": true,
+            "title": "Launch plan",
+            "restored_at": "2026-10-29T13:00:00.000Z"
+          }
+        }
+      }
+    },
+    {
+      "label": "an applied purge projects the deletion and completes",
+      "case": "applied",
+      "state": {
+        "name": "forwarded",
+        "operation": "purge_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "none",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "page_reply",
+        "status": 200,
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "deleted": true,
+          "purged": true
+        },
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "deleted",
+          "revision": 2
+        },
+        "known": 1
+      },
+      "expect": {
+        "state": {
+          "name": "completed",
+          "operation": "purge_page",
+          "receipt": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "deleted": true,
+            "purged": true
+          }
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "deleted",
+              "revision": 2
+            }
+          },
+          {
+            "type": "persist",
+            "state": "completed",
+            "receipt": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "deleted": true,
+              "purged": true
+            }
+          },
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "body": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "deleted": true,
+            "purged": true
+          }
+        }
+      }
+    },
+    {
+      "label": "a new request reserved against a stale index retargets once at the Page's revision",
+      "case": "retarget",
+      "state": {
+        "name": "forwarded",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "live",
+        "retarget": true,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "page_reply",
+        "status": 200,
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "superseded": true,
+          "applied": false,
+          "state": "trashed"
+        },
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "trashed",
+          "revision": 1,
+          "title": "Launch plan",
+          "trashed_at": "2026-10-29T12:00:00.000Z",
+          "trashed_by": "user:anaconda-fixture:fixture-user",
+          "trash_root_id": "33333333-3333-4333-8333-333333333333"
+        },
+        "known": 0
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "delete_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "entry",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "trashed",
+              "revision": 1,
+              "title": "Launch plan",
+              "trashed_at": "2026-10-29T12:00:00.000Z",
+              "trashed_by": "user:anaconda-fixture:fixture-user",
+              "trash_root_id": "33333333-3333-4333-8333-333333333333"
+            }
+          },
+          {
+            "type": "persist",
+            "state": "forwarded",
+            "expectedRevision": 1
+          },
+          {
+            "type": "forward",
+            "expectedRevision": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "a retarget whose projection moved the Page away forwards without its slot",
+      "case": "retarget",
+      "note": "Current behavior, fixed in a later commit: projecting an active Page deletes this intent's Trash slot, and the retargeted request is forwarded without one. If its reply is lost, another request can take the freed slot and the replay overfills Trash.",
+      "state": {
+        "name": "forwarded",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "live",
+        "retarget": true,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "page_reply",
+        "status": 200,
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "superseded": true,
+          "applied": false,
+          "state": "active"
+        },
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "active",
+          "revision": 2,
+          "title": "Launch plan"
+        },
+        "known": 0
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "delete_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 2,
+          "slot": "lapsed",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "active",
+              "revision": 2,
+              "title": "Launch plan"
+            }
+          },
+          {
+            "type": "persist",
+            "state": "forwarded",
+            "expectedRevision": 2
+          },
+          {
+            "type": "forward",
+            "expectedRevision": 2
+          }
+        ]
+      }
+    },
+    {
+      "label": "a resumed request the Page reports superseded completes with that receipt",
+      "case": "superseded",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "live",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "page_reply",
+        "status": 200,
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "superseded": true,
+          "applied": false,
+          "state": "active"
+        },
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "active",
+          "revision": 2,
+          "title": "Launch plan"
+        },
+        "known": 1
+      },
+      "expect": {
+        "state": {
+          "name": "superseded",
+          "operation": "restore_page",
+          "receipt": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "superseded": true,
+            "applied": false,
+            "state": "active"
+          }
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "active",
+              "revision": 2,
+              "title": "Launch plan"
+            }
+          },
+          {
+            "type": "persist",
+            "state": "superseded",
+            "receipt": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "superseded": true,
+              "applied": false,
+              "state": "active"
+            }
+          },
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "body": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "superseded": true,
+            "applied": false,
+            "state": "active"
+          }
+        }
+      }
+    },
+    {
+      "label": "a replay-only request the Page never applied completes superseded",
+      "case": "superseded",
+      "state": {
+        "name": "forwarded",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "lapsed",
+        "retarget": false,
+        "replayOnly": true
+      },
+      "event": {
+        "type": "page_reply",
+        "status": 200,
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "superseded": true,
+          "applied": false,
+          "state": "active"
+        },
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "active",
+          "revision": 2,
+          "title": "Launch plan"
+        },
+        "known": 0
+      },
+      "expect": {
+        "state": {
+          "name": "superseded",
+          "operation": "delete_page",
+          "receipt": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "superseded": true,
+            "applied": false,
+            "state": "active"
+          }
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "active",
+              "revision": 2,
+              "title": "Launch plan"
+            }
+          },
+          {
+            "type": "persist",
+            "state": "superseded",
+            "receipt": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "superseded": true,
+              "applied": false,
+              "state": "active"
+            }
+          },
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "body": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "superseded": true,
+            "applied": false,
+            "state": "active"
+          }
+        }
+      }
+    },
+    {
+      "label": "a request the Page refused before changing anything releases its slot and row",
+      "case": "rejected",
+      "state": {
+        "name": "forwarded",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "live",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "page_reply",
+        "status": 409,
+        "rejected": "before-change"
+      },
+      "expect": {
+        "state": {
+          "name": "released",
+          "operation": "delete_page"
+        },
+        "effects": [
+          {
+            "type": "release_slot"
+          },
+          {
+            "type": "delete_intent"
+          },
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "source": "page",
+          "status": 409
+        }
+      }
+    },
+    {
+      "label": "a refused purge has no slot to release",
+      "case": "rejected",
+      "state": {
+        "name": "forwarded",
+        "operation": "purge_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "none",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "page_reply",
+        "status": 409,
+        "rejected": "before-change"
+      },
+      "expect": {
+        "state": {
+          "name": "released",
+          "operation": "purge_page"
+        },
+        "effects": [
+          {
+            "type": "delete_intent"
+          },
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "source": "page",
+          "status": 409
+        }
+      }
+    },
+    {
+      "label": "a missing Page completes the request as permanently deleted",
+      "case": "missing",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "live",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "page_reply",
+        "status": 404
+      },
+      "expect": {
+        "state": {
+          "name": "completed",
+          "operation": "restore_page",
+          "receipt": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "deleted": true
+          }
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "state": "deleted"
+            }
+          },
+          {
+            "type": "persist",
+            "state": "completed",
+            "receipt": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "deleted": true
+            }
+          },
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "body": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "deleted": true
+          }
+        }
+      }
+    },
+    {
+      "label": "any other failure keeps the forwarded intent and passes the Page's reply through",
+      "case": "failed",
+      "state": {
+        "name": "forwarded",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "live",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "page_reply",
+        "status": 503
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "delete_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 0,
+          "slot": "live",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [],
+        "response": {
+          "source": "page",
+          "status": 503
+        }
+      }
+    },
+    {
+      "label": "a Page that can't be reached keeps the forwarded intent",
+      "case": "unavailable",
+      "state": {
+        "name": "forwarded",
+        "operation": "delete_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 0,
+        "slot": "live",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "page_reply",
+        "unavailable": true
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "delete_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 0,
+          "slot": "live",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [],
+        "response": {
+          "status": 500,
+          "body": {
+            "error": "Pages request failed"
+          }
+        }
+      }
+    },
+    {
+      "label": "a forwarded slot within its lifetime counts",
+      "case": "unexpired",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "live",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "count",
+        "expired": false
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "live",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [],
+        "response": {
+          "counted": true
+        }
+      }
+    },
+    {
+      "label": "a forwarded slot past its lifetime is read against the Page",
+      "case": "expired",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "live",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "count",
+        "expired": true
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "reconciling",
+          "retarget": false,
+          "replayOnly": false,
+          "check": "count"
+        },
+        "effects": [
+          {
+            "type": "read_lifecycle"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a placement check reads the Page for a forwarded slot",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "live",
+        "retarget": false,
+        "replayOnly": false
+      },
+      "event": {
+        "type": "settle"
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "reconciling",
+          "retarget": false,
+          "replayOnly": false,
+          "check": "settle"
+        },
+        "effects": [
+          {
+            "type": "read_lifecycle"
+          }
+        ]
+      }
+    },
+    {
+      "label": "counting projects a missing Page as deleted and stops counting the slot",
+      "case": "count-missing",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "reconciling",
+        "retarget": false,
+        "replayOnly": false,
+        "check": "count"
+      },
+      "event": {
+        "type": "lifecycle",
+        "current": {
+          "state": "missing"
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "lapsed",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "state": "deleted"
+            }
+          }
+        ],
+        "response": {
+          "counted": false
+        }
+      }
+    },
+    {
+      "label": "counting turns an applied restore's slot into the Page's entry",
+      "case": "count-moved-here",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "reconciling",
+        "retarget": false,
+        "replayOnly": false,
+        "check": "count"
+      },
+      "event": {
+        "type": "lifecycle",
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "active",
+          "revision": 2,
+          "title": "Launch plan"
+        },
+        "known": 1
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "entry",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "active",
+              "revision": 2,
+              "title": "Launch plan"
+            }
+          }
+        ],
+        "response": {
+          "counted": true
+        }
+      }
+    },
+    {
+      "label": "counting projects a later Trash, which drops the slot",
+      "case": "count-moved-away",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "reconciling",
+        "retarget": false,
+        "replayOnly": false,
+        "check": "count"
+      },
+      "event": {
+        "type": "lifecycle",
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "trashed",
+          "revision": 3,
+          "title": "Launch plan",
+          "trashed_at": "2026-10-29T12:00:00.000Z",
+          "trashed_by": "user:anaconda-fixture:fixture-user",
+          "trash_root_id": "33333333-3333-4333-8333-333333333333"
+        },
+        "known": 1
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "lapsed",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "trashed",
+              "revision": 3,
+              "title": "Launch plan",
+              "trashed_at": "2026-10-29T12:00:00.000Z",
+              "trashed_by": "user:anaconda-fixture:fixture-user",
+              "trash_root_id": "33333333-3333-4333-8333-333333333333"
+            }
+          }
+        ],
+        "response": {
+          "counted": false
+        }
+      }
+    },
+    {
+      "label": "counting never projects over a newer observation",
+      "case": "count-fenced",
+      "note": "The fence keeps the reservation, which then goes uncounted. Revisions only grow, so a Page reporting an older revision than an entry observed needs a rollback.",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "reconciling",
+        "retarget": false,
+        "replayOnly": false,
+        "check": "count"
+      },
+      "event": {
+        "type": "lifecycle",
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "active",
+          "revision": 2,
+          "title": "Launch plan"
+        },
+        "known": 5
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "live",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "page_id": "33333333-3333-4333-8333-333333333333",
+              "state": "active",
+              "revision": 2,
+              "title": "Launch plan"
+            }
+          }
+        ],
+        "response": {
+          "counted": false
+        }
+      }
+    },
+    {
+      "label": "counting releases an expired slot the Page never applied",
+      "case": "count-unchanged",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "reconciling",
+        "retarget": false,
+        "replayOnly": false,
+        "check": "count"
+      },
+      "event": {
+        "type": "lifecycle",
+        "current": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "trashed",
+          "revision": 1,
+          "title": "Launch plan",
+          "trashed_at": "2026-10-29T12:00:00.000Z",
+          "trashed_by": "user:anaconda-fixture:fixture-user",
+          "trash_root_id": "33333333-3333-4333-8333-333333333333"
+        },
+        "known": 1
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "lapsed",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [
+          {
+            "type": "release_slot"
+          }
+        ],
+        "response": {
+          "counted": false
+        }
+      }
+    },
+    {
+      "label": "counting keeps the slot when the Page can't answer",
+      "case": "count-unavailable",
+      "state": {
+        "name": "forwarded",
+        "operation": "restore_page",
+        "pageId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": 1,
+        "slot": "reconciling",
+        "retarget": false,
+        "replayOnly": false,
+        "check": "count"
+      },
+      "event": {
+        "type": "lifecycle",
+        "unavailable": true
+      },
+      "expect": {
+        "state": {
+          "name": "forwarded",
+          "operation": "restore_page",
+          "pageId": "33333333-3333-4333-8333-333333333333",
+          "expectedRevision": 1,
+          "slot": "live",
+          "retarget": false,
+          "replayOnly": false
+        },
+        "effects": [],
+        "response": {
+          "counted": true
+        }
+      }
+    },
+    {
+      "label": "a completed request replays its receipt after a durability barrier",
+      "case": "receipt",
+      "state": {
+        "name": "completed",
+        "operation": "delete_page",
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "trashed",
+          "trashed": true,
+          "title": "Launch plan",
+          "trashed_at": "2026-10-29T12:00:00.000Z",
+          "trashed_by": "user:anaconda-fixture:fixture-user",
+          "trash_root_id": "33333333-3333-4333-8333-333333333333"
+        }
+      },
+      "event": {
+        "type": "request"
+      },
+      "expect": {
+        "state": {
+          "name": "completed",
+          "operation": "delete_page",
+          "receipt": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "state": "trashed",
+            "trashed": true,
+            "title": "Launch plan",
+            "trashed_at": "2026-10-29T12:00:00.000Z",
+            "trashed_by": "user:anaconda-fixture:fixture-user",
+            "trash_root_id": "33333333-3333-4333-8333-333333333333"
+          }
+        },
+        "effects": [
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "body": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "state": "trashed",
+            "trashed": true,
+            "title": "Launch plan",
+            "trashed_at": "2026-10-29T12:00:00.000Z",
+            "trashed_by": "user:anaconda-fixture:fixture-user",
+            "trash_root_id": "33333333-3333-4333-8333-333333333333"
+          }
+        }
+      }
+    },
+    {
+      "label": "a completed permanent deletion projects the deletion again before replaying",
+      "case": "deleted",
+      "state": {
+        "name": "completed",
+        "operation": "purge_page",
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "deleted": true,
+          "purged": true
+        }
+      },
+      "event": {
+        "type": "request"
+      },
+      "expect": {
+        "state": {
+          "name": "completed",
+          "operation": "purge_page",
+          "receipt": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "deleted": true,
+            "purged": true
+          }
+        },
+        "effects": [
+          {
+            "type": "project",
+            "current": {
+              "state": "deleted"
+            }
+          },
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "body": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "deleted": true,
+            "purged": true
+          }
+        }
+      }
+    },
+    {
+      "label": "counting removes a completed intent's leftover slot",
+      "state": {
+        "name": "completed",
+        "operation": "restore_page",
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "active",
+          "restored": true,
+          "title": "Launch plan",
+          "restored_at": "2026-10-29T13:00:00.000Z"
+        }
+      },
+      "event": {
+        "type": "count",
+        "expired": false
+      },
+      "expect": {
+        "state": {
+          "name": "completed",
+          "operation": "restore_page",
+          "receipt": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "state": "active",
+            "restored": true,
+            "title": "Launch plan",
+            "restored_at": "2026-10-29T13:00:00.000Z"
+          }
+        },
+        "effects": [
+          {
+            "type": "release_slot"
+          }
+        ],
+        "response": {
+          "counted": false
+        }
+      }
+    },
+    {
+      "label": "a placement check removes a completed intent's leftover slot",
+      "state": {
+        "name": "completed",
+        "operation": "restore_page",
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "state": "active",
+          "restored": true,
+          "title": "Launch plan",
+          "restored_at": "2026-10-29T13:00:00.000Z"
+        }
+      },
+      "event": {
+        "type": "settle"
+      },
+      "expect": {
+        "state": {
+          "name": "completed",
+          "operation": "restore_page",
+          "receipt": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "state": "active",
+            "restored": true,
+            "title": "Launch plan",
+            "restored_at": "2026-10-29T13:00:00.000Z"
+          }
+        },
+        "effects": [
+          {
+            "type": "release_slot"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a superseded request replays its receipt after a durability barrier",
+      "state": {
+        "name": "superseded",
+        "operation": "delete_page",
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "superseded": true,
+          "applied": false,
+          "state": "active"
+        }
+      },
+      "event": {
+        "type": "request"
+      },
+      "expect": {
+        "state": {
+          "name": "superseded",
+          "operation": "delete_page",
+          "receipt": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "superseded": true,
+            "applied": false,
+            "state": "active"
+          }
+        },
+        "effects": [
+          {
+            "type": "sync"
+          }
+        ],
+        "response": {
+          "status": 200,
+          "body": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "superseded": true,
+            "applied": false,
+            "state": "active"
+          }
+        }
+      }
+    },
+    {
+      "label": "counting removes a superseded intent's leftover slot",
+      "state": {
+        "name": "superseded",
+        "operation": "restore_page",
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "superseded": true,
+          "applied": false,
+          "state": "trashed"
+        }
+      },
+      "event": {
+        "type": "count",
+        "expired": false
+      },
+      "expect": {
+        "state": {
+          "name": "superseded",
+          "operation": "restore_page",
+          "receipt": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "superseded": true,
+            "applied": false,
+            "state": "trashed"
+          }
+        },
+        "effects": [
+          {
+            "type": "release_slot"
+          }
+        ],
+        "response": {
+          "counted": false
+        }
+      }
+    },
+    {
+      "label": "a placement check removes a superseded intent's leftover slot",
+      "state": {
+        "name": "superseded",
+        "operation": "restore_page",
+        "receipt": {
+          "page_id": "33333333-3333-4333-8333-333333333333",
+          "superseded": true,
+          "applied": false,
+          "state": "trashed"
+        }
+      },
+      "event": {
+        "type": "settle"
+      },
+      "expect": {
+        "state": {
+          "name": "superseded",
+          "operation": "restore_page",
+          "receipt": {
+            "page_id": "33333333-3333-4333-8333-333333333333",
+            "superseded": true,
+            "applied": false,
+            "state": "trashed"
+          }
+        },
+        "effects": [
+          {
+            "type": "release_slot"
+          }
+        ]
+      }
+    }
+  ]
+}
