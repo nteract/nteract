@@ -373,6 +373,18 @@ export const CREATION_COMMIT = Object.freeze([
   effectOf("deleteCreation"),
   effectOf("sync"),
 ]);
+/** A creation intent left beside an installed record. The record wins: later
+ * Trash, restores and ACL changes stay. The recorded bytes are imported again
+ * in case the first flush failed, the installed record is rewritten in case
+ * its put did, and the intent is dropped. */
+export const CREATION_REPLAY = Object.freeze([
+  effectOf("importDocument"),
+  put(false, true),
+  effectOf("flush"),
+  effectOf("sync"),
+  effectOf("deleteCreation"),
+  effectOf("sync"),
+]);
 
 const DELETED = new Set(["deleting", "deleted"]);
 const PUBLIC_STATE = {
@@ -570,13 +582,19 @@ function tombstone(state) {
  * and any creation intent decide the state. */
 function boot(_state, event) {
   const { record, creation } = event;
-  // A completed deletion or Trash wins over an earlier interrupted creation.
-  if (creation && (!record || record.state === "active"))
+  if (creation && !record)
     return {
       state: { name: "active", revision: creation.revision, ...withPlacement(creation.placement) },
       effects: [...CREATION_COMMIT],
     };
+  if (creation && record.state === "active")
+    return {
+      state: { name: "active", revision: record.revision, ...withPlacement(record.placement) },
+      effects: [...CREATION_REPLAY, effectOf("loadDocument")],
+    };
   if (!record) return { state: { name: "missing" }, effects: [] };
+  // A completed deletion or Trash keeps an earlier interrupted creation's
+  // intent, and never imports it.
   const intent = creation ? { intent: true } : {};
   if (record.state === "deleted")
     return {

@@ -169,6 +169,7 @@ import {
 } from "./trash.mjs";
 import {
   CREATION_COMMIT,
+  CREATION_REPLAY,
   hostState,
   isSuperseded,
   pageLifecycle,
@@ -2150,9 +2151,10 @@ export class Page {
     return attempt;
   }
 
-  /** Install a recorded creation intent (page-lifecycle CREATION_COMMIT). */
+  /** Finish a recorded creation intent. An installed record wins over it, so
+   * a replay never undoes a later Trash, restore or ACL change. */
   async finishCreation(intent) {
-    await this.applyLifecycle(CREATION_COMMIT, { intent });
+    await this.applyLifecycle(this.metadata ? CREATION_REPLAY : CREATION_COMMIT, { intent });
   }
 
   profiles() {
@@ -3094,6 +3096,8 @@ export class Page {
         this.handle = await this.repo.import(context.intent.bytes, {
           docId: context.intent.metadata.documentId,
         });
+        // Before its record is installed, `install` starts presence instead.
+        if (this.metadata) this.observeActivity();
         return;
       case "deleteCreation":
         await this.ctx.storage.delete("host/creation");

@@ -1,15 +1,22 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
+import { pageState } from "./access.mjs";
 import { runTable } from "../shared/machine-test.mjs";
 import { pageLifecycle, pageLifecycleSpec } from "./page-lifecycle.mjs";
+import { pageId } from "./trash-fixture.mjs";
 import {
+  call,
+  creationIntent,
   drive,
+  host,
+  readState,
   rowLabel,
   lostSuccess,
   STALE_KEY,
   scenario,
   suite,
+  walk,
 } from "./page-lifecycle-drive.mjs";
 
 test("the page-lifecycle machine passes its table", async (t) => {
@@ -52,6 +59,22 @@ test("a request or tombstone in a pending phase settles it first, then runs as i
     }
   }
   assert.equal(checked, 12);
+});
+
+test("a creation replay after Trash keeps the trashed record", async (t) => {
+  const s = await suite(t);
+  const h = await host(s);
+  await walk(h, 1);
+  // A creation whose flush failed leaves its intent beside the record.
+  await h.f.storage.put("host/creation", creationIntent(h));
+  const replay = await call(h, "owner", "/internal/create", {
+    page_id: pageId,
+    title: "Launch plan",
+  });
+  assert.equal(replay.status, 200, JSON.stringify(replay.body));
+  assert.deepEqual(readState(h), { name: "trashed", revision: 1 });
+  assert.equal(pageState(await h.f.storage.get("host/document")), "trashed");
+  assert.equal(h.f.storage.values.has("host/creation"), false);
 });
 
 /** Keys whose durable values differ between two snapshots. */
@@ -120,12 +143,8 @@ function judge(run, reference, row, tally) {
 }
 
 /** Inconsistencies the cuts find in the current host:
- * - leftover-intent boot: a creation intent beside the record is installed
- *   again, so the revision falls back.
  * - trashed × tombstone: the next tombstone does not repeat a failed write. */
 const CUT_INCONSISTENCIES = [
-  "active × boot [leftover-intent] uncut: the lifecycle revision fell back",
-  "active × boot [leftover-intent]: the lifecycle revision fell back",
   "trashed × tombstone: replay differs at index access",
   "trashed × tombstone: replay differs at index page",
   "trashed × tombstone: reported success lost: told deleted, booted trashed",

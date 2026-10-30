@@ -1045,7 +1045,6 @@
       }
     },
     {
-      "note": "Current behavior: a creation intent left beside an installed record is installed again at boot, so the revision falls back to 0 and later changes are lost.",
       "case": "leftover-intent",
       "state": {
         "name": "active",
@@ -1066,14 +1065,11 @@
       "expect": {
         "state": {
           "name": "active",
-          "revision": 0
+          "revision": 2
         },
         "effects": [
           {
             "type": "importDocument"
-          },
-          {
-            "type": "install"
           },
           {
             "type": "putRecord",
@@ -1091,6 +1087,9 @@
           },
           {
             "type": "sync"
+          },
+          {
+            "type": "loadDocument"
           }
         ]
       }
