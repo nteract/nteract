@@ -1095,7 +1095,6 @@
       }
     },
     {
-      "note": "Current behavior: a repeated trash with a new key reruns the whole trash commit; a repeated restore on an active Page only records its receipt.",
       "case": "owner",
       "state": {
         "name": "trashed",
@@ -1115,29 +1114,12 @@
         },
         "effects": [
           {
-            "type": "begin",
-            "phase": "trashing",
-            "revision": 1
-          },
-          {
-            "type": "restrictIndex"
-          },
-          {
             "type": "putRecord",
             "receipt": true,
-            "record": true
+            "record": false
           },
           {
             "type": "sync"
-          },
-          {
-            "type": "refreshAccess"
-          },
-          {
-            "type": "retireIndex"
-          },
-          {
-            "type": "end"
           }
         ],
         "response": {

@@ -2931,34 +2931,35 @@ export class Page {
     const pageId = metadata.pageId;
     const revision = metadata.lifecycleRevision ?? 0;
     if (type === "trash") {
-      let next = metadata;
-      let receipt = metadata.trash?.receipt;
-      if (state.name === "active") {
-        const now = new Date().toISOString();
-        receipt = {
-          page_id: pageId,
-          state: "trashed",
-          trashed: true,
-          title: catalogTitle(this.handle.doc().title),
-          trashed_at: now,
-          trashed_by: identity.principal,
-          trash_root_id: pageId,
-        };
-        next = {
-          ...metadata,
-          deleted: true,
-          lifecycleRevision: revision + 1,
-          trash: trashRecord({ pageId, principal: identity.principal, now, receipt }),
-          // Builds that predate Trash read only `deletion`: their delete retry
-          // conflicts, and a fresh key completes an ordinary permanent deletion.
-          deletion: { key, fingerprint: digest, receipt: { page_id: pageId, deleted: true } },
-        };
+      if (state.name === "trashed") {
+        context.record = this.lifecycleRecord("trash_page", digest, metadata.trash.receipt);
+        context.receipt = context.record.receipt;
+        return;
       }
+      const now = new Date().toISOString();
+      const receipt = {
+        page_id: pageId,
+        state: "trashed",
+        trashed: true,
+        title: catalogTitle(this.handle.doc().title),
+        trashed_at: now,
+        trashed_by: identity.principal,
+        trash_root_id: pageId,
+      };
+      const next = {
+        ...metadata,
+        deleted: true,
+        lifecycleRevision: revision + 1,
+        trash: trashRecord({ pageId, principal: identity.principal, now, receipt }),
+        // Builds that predate Trash read only `deletion`: their delete retry
+        // conflicts, and a fresh key completes an ordinary permanent deletion.
+        deletion: { key, fingerprint: digest, receipt: { page_id: pageId, deleted: true } },
+      };
       context.next = next;
       context.pending = {
         operation: "trash_page",
         key,
-        record: this.lifecycleRecord("trash_page", digest, receipt, next.lifecycleRevision ?? 0),
+        record: this.lifecycleRecord("trash_page", digest, receipt, revision + 1),
         metadata: next,
       };
       context.receipt = receipt;

@@ -213,6 +213,6 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
   assert.deepEqual([...found].sort(), CUT_INCONSISTENCIES);
   assert.deepEqual(
     { cuts, runs, ...tally },
-    { cuts: 150, runs: 560, tail: 44, prune: 20, index: 18 },
+    { cuts: 144, runs: 536, tail: 38, prune: 22, index: 18 },
   );
 });

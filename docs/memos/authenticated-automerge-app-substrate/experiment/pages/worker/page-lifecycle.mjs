@@ -444,14 +444,12 @@ function trash(state, event) {
   const refusal = settledRequest(state, event);
   if (refusal) return refusal;
   const trashed = { state: "trashed" };
-  // A new key on a trashed Page records a receipt for the original trash.
+  // A new key on a trashed Page records a receipt for the original trash,
+  // as a new key on an active Page does for restore.
   if (state.name === "trashed")
     return {
       state,
-      effects: [
-        effectOf("begin", { phase: "trashing", revision: state.revision }),
-        ...TRASH_COMMIT,
-      ],
+      effects: [put(true, false), effectOf("sync")],
       response: receiptReply("receipt", trashed, state),
     };
   if (state.placement?.home) return reject(state, "home_page_protected", { response: HOME_PAGE });
