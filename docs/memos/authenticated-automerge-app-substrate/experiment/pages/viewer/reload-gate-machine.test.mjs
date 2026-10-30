@@ -57,7 +57,7 @@ function apply(session, entry) {
 }
 
 /** Own a session the way the app does: install it, then leave it through
- * the host's drain or reload it for access. Its final checkpoint, and an
+ * the host's drain, close it directly or reload it for access. Its final checkpoint, and an
  * access reload's replacement, wait for the event that closes it. */
 function own(ctx, entry, event, { install = true } = {}) {
   const split = entry.key.indexOf(":");
@@ -90,22 +90,17 @@ function own(ctx, entry, event, { install = true } = {}) {
       ...state,
       owned: [...state.owned, { session, held: true }],
     }));
-  if (entry.phase === "held") {
-    if (!entry.alive) void session.close();
-  } else if (entry.drain) {
-    const before = new Set(ctx.timers.pending);
-    leave(ctx, session);
-    // A closing session that is no longer alive drained for CLOSE_DRAIN_MS.
-    if (!entry.alive)
-      for (const timer of ctx.timers.pending)
-        if (!before.has(timer)) {
-          ctx.timers.pending.delete(timer);
-          timer.fn();
-        }
-  } else {
-    ctx.install = deferred();
-    void ctx.host.reloadAccess(session, { install: () => ctx.install.promise });
-    if (!entry.alive) session.finishArchive(undefined, null);
+  if (entry.phase === "closing") {
+    // A closing session with a reload pause belongs to an access reload,
+    // another live one is draining, and one no longer alive is writing its
+    // final checkpoint after a direct close.
+    if (entry.reason === "reload") {
+      ctx.install = deferred();
+      void ctx.host.reloadAccess(session, { install: () => ctx.install.promise });
+      // Archived and waiting for its release.
+      if (!entry.alive) session.finishArchive(undefined, null);
+    } else if (entry.alive) leave(ctx, session);
+    else void ctx.host.close(session);
   }
   return session;
 }
@@ -175,12 +170,10 @@ async function deliver(ctx, event) {
       const phase = session?.phase$.snapshot();
       if (event.phase === "held" || event.phase === "closing") {
         if (!session) own(ctx, event, undefined, { install: false });
-        else if (
-          event.phase === "closing" &&
-          ctx.host.store.snapshot().owned.some((entry) => entry.session === session && entry.held)
-        ) {
+        else if (event.phase === "closing" && phase.name === "open") {
           apply(session, event);
-          leave(ctx, session);
+          if (event.alive) leave(ctx, session);
+          else void ctx.host.close(session);
         } else if (event.phase === "held" && phase.archive)
           session.finishArchive(new Error("archive failed"));
         else apply(session, event);
@@ -241,7 +234,7 @@ async function drive(state, event) {
 }
 
 const table = loadTable(TABLE);
-const COUNTS = { rows: 56, pairs: 19, unreachable: 6, cases: 42 };
+const COUNTS = { rows: 58, pairs: 19, unreachable: 6, cases: 44 };
 
 test("the reload-gate table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(reloadGateMachine, table), COUNTS);

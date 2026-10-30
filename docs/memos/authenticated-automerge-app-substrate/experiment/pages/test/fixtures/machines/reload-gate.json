@@ -1,6 +1,6 @@
 {
   "machine": "reload-gate",
-  "description": "The tab's reload gate and the banner's outcome. viewer/reload-gate-machine.test.mjs drives each row through ReloadGate with fake sessions.",
+  "description": "The tab's reload gate and the banner's outcome. viewer/reload-gate-machine.test.mjs runs each row through the transition and drives it through ReloadGate following a SessionHost.",
   "states": ["idle", "waiting", "blocked", "reloading", "cancelled"],
   "events": ["reload", "sessionPhase", "navigate", "draft", "timeout"],
   "unreachable": [
@@ -43,7 +43,7 @@
       "closed-other-account",
       "closed-acknowledged",
       "closed-archive",
-      "closed-held",
+      "closed-direct",
       "deleted",
       "archive-fails"
     ],
@@ -58,7 +58,9 @@
       "drafts-at-end",
       "archive-fails",
       "held-new",
-      "left-mid-wait"
+      "left-mid-wait",
+      "direct-close",
+      "direct-close-failed"
     ],
     "waiting/timeout": ["live-waiting", "closing-still", "none-waiting"]
   },
@@ -273,7 +275,6 @@
             "id": "b",
             "key": "dev:page-b",
             "phase": "closing",
-            "drain": true,
             "alive": false,
             "pending": true,
             "save": "saving",
@@ -292,7 +293,6 @@
               "id": "b",
               "key": "dev:page-b",
               "phase": "closing",
-              "drain": true,
               "alive": false,
               "pending": true,
               "save": "saving",
@@ -786,7 +786,6 @@
         "id": "a",
         "key": "dev:page-a",
         "phase": "closing",
-        "drain": true,
         "alive": true,
         "pending": true,
         "save": "saving",
@@ -800,7 +799,6 @@
               "id": "a",
               "key": "dev:page-a",
               "phase": "closing",
-              "drain": true,
               "alive": true,
               "pending": true,
               "save": "saving",
@@ -822,7 +820,6 @@
             "id": "a",
             "key": "dev:page-a",
             "phase": "closing",
-            "drain": true,
             "alive": false,
             "pending": false,
             "save": "saving",
@@ -858,7 +855,6 @@
             "id": "a",
             "key": "dev:page-a",
             "phase": "closing",
-            "drain": true,
             "alive": false,
             "pending": true,
             "save": "saving",
@@ -908,7 +904,6 @@
             "id": "a",
             "key": "dev:page-a",
             "phase": "closing",
-            "drain": true,
             "alive": false,
             "pending": true,
             "save": "saving",
@@ -970,7 +965,6 @@
             "id": "a",
             "key": "dev:page-a",
             "phase": "closing",
-            "drain": true,
             "alive": false,
             "pending": true,
             "save": "saving",
@@ -1023,7 +1017,6 @@
             "id": "a",
             "key": "dev:page-a",
             "phase": "closing",
-            "drain": true,
             "alive": false,
             "pending": true,
             "save": "saving",
@@ -1086,7 +1079,6 @@
             "id": "o",
             "key": "other:page-shared",
             "phase": "closing",
-            "drain": true,
             "alive": false,
             "pending": true,
             "save": "saving",
@@ -1157,7 +1149,6 @@
             "id": "a",
             "key": "dev:page-a",
             "phase": "closing",
-            "drain": true,
             "alive": false,
             "pending": false,
             "save": "saving",
@@ -1195,6 +1186,7 @@
       }
     },
     {
+      "note": "an access reload keeps its own recovery, so it reports saved",
       "case": "closed-archive",
       "state": {
         "name": "idle",
@@ -1203,7 +1195,6 @@
             "id": "a",
             "key": "dev:page-a",
             "phase": "closing",
-            "drain": false,
             "alive": false,
             "pending": true,
             "save": "saving",
@@ -1219,7 +1210,7 @@
         "id": "a",
         "key": "dev:page-a",
         "phase": "closed",
-        "saved": false,
+        "saved": true,
         "checkpointWritten": true,
         "savedHeads": [],
         "account": "dev",
@@ -1232,14 +1223,16 @@
       }
     },
     {
-      "case": "closed-held",
+      "label": "idle × sessionPhase keeps a direct close's recovery export",
+      "note": "sign-out and account switches close without the drain; their records hold the same way",
+      "case": "closed-direct",
       "state": {
         "name": "idle",
         "sessions": [
           {
             "id": "a",
             "key": "dev:page-a",
-            "phase": "held",
+            "phase": "closing",
             "alive": false,
             "pending": true,
             "save": "saving",
@@ -1255,14 +1248,30 @@
         "key": "dev:page-a",
         "phase": "closed",
         "saved": false,
-        "checkpointWritten": true,
+        "checkpointWritten": false,
         "savedHeads": [],
         "account": "dev",
         "pageId": "page-a",
-        "title": "Garden notes"
+        "title": "Garden notes",
+        "recovery": { "markdown": "# Garden notes\n\nUnsent edit\n", "heads": ["h1"] }
       },
       "expect": {
-        "state": { "name": "idle", "sessions": [], "records": [], "drafts": false },
+        "state": {
+          "name": "idle",
+          "sessions": [],
+          "records": [
+            {
+              "key": "dev:page-a",
+              "account": "dev",
+              "pageId": "page-a",
+              "title": "Garden notes",
+              "checkpointWritten": false,
+              "heads": ["h1"],
+              "markdown": "# Garden notes\n\nUnsent edit\n"
+            }
+          ],
+          "drafts": false
+        },
         "effects": []
       }
     },
@@ -1275,7 +1284,6 @@
             "id": "a",
             "key": "dev:page-a",
             "phase": "closing",
-            "drain": true,
             "alive": false,
             "pending": false,
             "save": "saving",
@@ -1307,7 +1315,6 @@
             "id": "a",
             "key": "dev:page-a",
             "phase": "closing",
-            "drain": false,
             "alive": true,
             "pending": true,
             "save": "saving",
@@ -1619,7 +1626,6 @@
             "id": "b",
             "key": "dev:page-b",
             "phase": "closing",
-            "drain": true,
             "alive": false,
             "pending": false,
             "save": "saving",
@@ -1676,7 +1682,6 @@
             "id": "b",
             "key": "dev:page-b",
             "phase": "closing",
-            "drain": true,
             "alive": false,
             "pending": true,
             "save": "saving",
@@ -1854,7 +1859,6 @@
             "id": "b",
             "key": "dev:page-b",
             "phase": "closing",
-            "drain": false,
             "alive": true,
             "pending": true,
             "save": "saving",
@@ -1998,7 +2002,6 @@
         "id": "a",
         "key": "dev:page-a",
         "phase": "closing",
-        "drain": true,
         "alive": true,
         "pending": true,
         "save": "saving",
@@ -2012,7 +2015,6 @@
               "id": "a",
               "key": "dev:page-a",
               "phase": "closing",
-              "drain": true,
               "alive": true,
               "pending": true,
               "save": "saving",
@@ -2026,6 +2028,130 @@
             "navigated": true,
             "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
             "closing": []
+          }
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "waiting × sessionPhase cancels when a held Page closes directly (direct close while waiting)",
+      "note": "its checkpoint has not landed; the next attempt waits for its release",
+      "case": "direct-close",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "a",
+            "key": "dev:page-a",
+            "phase": "held",
+            "alive": true,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": {
+          "acceptCheckpoints": false,
+          "navigated": false,
+          "live": [{ "id": "a", "key": "dev:page-a", "result": null, "savedHeads": [] }],
+          "closing": []
+        }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "a",
+        "key": "dev:page-a",
+        "phase": "closing",
+        "alive": false,
+        "pending": true,
+        "save": "saving",
+        "savedHeads": []
+      },
+      "expect": {
+        "state": {
+          "name": "cancelled",
+          "sessions": [
+            {
+              "id": "a",
+              "key": "dev:page-a",
+              "phase": "closing",
+              "alive": false,
+              "pending": true,
+              "save": "saving",
+              "savedHeads": []
+            }
+          ],
+          "records": [],
+          "drafts": false
+        },
+        "effects": [{ "type": "resumeEdits", "ids": ["a"] }]
+      }
+    },
+    {
+      "label": "waiting × sessionPhase names a direct close whose checkpoint failed",
+      "case": "direct-close-failed",
+      "state": {
+        "name": "waiting",
+        "sessions": [
+          {
+            "id": "b",
+            "key": "dev:page-b",
+            "phase": "closing",
+            "alive": false,
+            "pending": true,
+            "save": "saving",
+            "savedHeads": []
+          }
+        ],
+        "records": [],
+        "drafts": false,
+        "attempt": { "acceptCheckpoints": false, "navigated": false, "live": [], "closing": ["b"] }
+      },
+      "event": {
+        "type": "sessionPhase",
+        "id": "b",
+        "key": "dev:page-b",
+        "phase": "closed",
+        "saved": false,
+        "checkpointWritten": false,
+        "savedHeads": [],
+        "account": "dev",
+        "pageId": "page-b",
+        "title": "Garden notes",
+        "recovery": { "markdown": "# Garden notes\n\nUnsent edit\n", "heads": ["h1"] }
+      },
+      "expect": {
+        "state": {
+          "name": "blocked",
+          "sessions": [],
+          "records": [
+            {
+              "key": "dev:page-b",
+              "account": "dev",
+              "pageId": "page-b",
+              "title": "Garden notes",
+              "checkpointWritten": false,
+              "heads": ["h1"],
+              "markdown": "# Garden notes\n\nUnsent edit\n"
+            }
+          ],
+          "drafts": false,
+          "outcome": {
+            "reason": "unsaved",
+            "pages": [
+              {
+                "key": "dev:page-b",
+                "account": "dev",
+                "pageId": "page-b",
+                "title": "Garden notes",
+                "checkpointWritten": false,
+                "heads": ["h1"],
+                "markdown": "# Garden notes\n\nUnsent edit\n"
+              }
+            ],
+            "message": "Edits on Garden notes couldn't be saved in this browser and haven't reached the server. Download them before reloading, or they'll be lost."
           }
         },
         "effects": []
@@ -2197,7 +2323,6 @@
             "id": "b",
             "key": "dev:page-b",
             "phase": "closing",
-            "drain": true,
             "alive": true,
             "pending": true,
             "save": "saving",
@@ -2231,7 +2356,6 @@
               "id": "b",
               "key": "dev:page-b",
               "phase": "closing",
-              "drain": true,
               "alive": true,
               "pending": true,
               "save": "saving",
@@ -2275,7 +2399,6 @@
             "id": "b",
             "key": "dev:page-b",
             "phase": "closing",
-            "drain": true,
             "alive": true,
             "pending": true,
             "save": "saving",
@@ -2309,7 +2432,6 @@
               "id": "b",
               "key": "dev:page-b",
               "phase": "closing",
-              "drain": true,
               "alive": true,
               "pending": true,
               "save": "saving",

@@ -118,8 +118,17 @@ export class FakeSession {
   leave({ drain = true } = {}) {
     if (this.phase$.snapshot().name === "draining") return this.closing;
     if (this.step({ type: "leave", drain }).rejected) return this.closing ?? Promise.resolve();
+    if (!drain) this.#recordLeave();
     this.closing = drain ? this.#drain() : this.#checkpoint();
     return this.closing;
+  }
+  #recordLeave() {
+    const saved = this.deleted || !this.pending;
+    this.leaveRecord = { saved };
+    if (!saved) {
+      this.leaveRecord.title = this.doc.title;
+      this.leaveRecord.recovery = this.exportRecovery();
+    }
   }
   close() {
     return this.leave({ drain: false });
@@ -144,6 +153,8 @@ export class FakeSession {
     return this.archive.promise.then(
       (replacement) => {
         this.step({ type: "checkpointOk" });
+        // The backend release settles when the test opens closeGate.
+        this.closing = Promise.resolve(this.closeGate?.promise);
         return replacement;
       },
       (error) => {
@@ -183,13 +194,8 @@ export class FakeSession {
       timer = this.timers?.setTimeout(finish, CLOSE_DRAIN_MS);
     }).then(() => {
       if (this.phase$.snapshot().name !== "draining") return undefined;
-      const saved = this.deleted || !this.pending;
-      this.leaveRecord = { saved };
-      if (!saved) {
-        this.leaveRecord.title = this.doc.title;
-        this.leaveRecord.recovery = this.exportRecovery();
-      }
-      this.step({ type: "drained", saved });
+      this.#recordLeave();
+      this.step({ type: "drained", saved: this.leaveRecord.saved });
       return this.#checkpoint();
     });
   }

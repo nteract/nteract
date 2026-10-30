@@ -371,7 +371,7 @@ function App() {
       window.removeEventListener("popstate", onPopState);
       catalogRevision.current++;
       host.navigate();
-      void host.current?.close();
+      void host.close(host.current);
     };
   }, []);
   const page = session?.snapshot(),
@@ -507,7 +507,9 @@ function App() {
   async function signout() {
     try {
       await request("/api/auth/logout", { method: "POST" });
-      await host.current?.close();
+      let failed;
+      await host.close(host.current, { onError: (error) => (failed = error) });
+      if (failed) throw failed;
       location.href = "/";
     } catch (error) {
       setError(error.message);

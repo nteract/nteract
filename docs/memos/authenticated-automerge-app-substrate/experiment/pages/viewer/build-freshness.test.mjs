@@ -8,8 +8,10 @@ import {
   ReloadGate,
   UNSENT_COMMENT,
 } from "./build-freshness.mjs";
+import * as Automerge from "@automerge/automerge";
 import { observeResponses, request } from "./request.mjs";
 import { CLOSE_DRAIN_MS, PageSession } from "./session.mjs";
+import { createPageData, initializePage } from "../model/page.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { FakeSession, deferred, manualTimers } from "./session-fixture.mjs";
 import { setFlagsFromString } from "node:v8";
@@ -615,4 +617,76 @@ test("a failed access reload keeps its live session blocking Reload", async () =
   await settle();
   assert.equal(g.reloaded(), 0, "unsent edits on the live session still block Reload");
   assert.match((await result).message, /can't be saved/);
+});
+
+/** A real PageSession saving an unacknowledged edit, whose final checkpoint
+ * waits for `flush` and `persist`. */
+function closingSession() {
+  const pageId = crypto.randomUUID();
+  const doc = Automerge.change(
+    Automerge.from(createPageData({ pageId, title: "Garden notes" })),
+    initializePage,
+  );
+  const session = new PageSession(pageId);
+  const flush = deferred();
+  const persist = deferred();
+  session.identity = { principal: "dev" };
+  session.handle = { doc: () => doc };
+  session.repo = { flush: () => flush.promise };
+  session.localPage = { pending: true };
+  session.persistLocal = (_, options) =>
+    options?.allowClosed ? persist.promise : Promise.resolve();
+  session.releaseLocal = async () => {};
+  session.disconnectSockets = async () => {};
+  session.queueSaved = () => {};
+  session.status = "Saving";
+  session.dispatch({ type: "opened", denied: false });
+  return { session, flush, persist };
+}
+
+test("a direct close during Reload never reloads before its final checkpoint", async () => {
+  const g = gate();
+  const { session, flush, persist } = closingSession();
+  g.hold(session);
+  const waiting = g.reload();
+  // Sign-out and unmount close at once, without the drain.
+  const closed = g.host.close(session);
+  assert.equal(session.phase$.snapshot().name, "checkpointing");
+  assert.deepEqual(await waiting, { ok: false, cancelled: true });
+  assert.equal(g.reloaded(), 0);
+  // A new attempt waits for the checkpoint, then names the Page.
+  const again = g.reload();
+  await settle();
+  assert.equal(g.reloaded(), 0, "Reload waits for the final checkpoint");
+  flush.resolve();
+  persist.resolve();
+  await closed;
+  const outcome = await again;
+  assert.equal(outcome.reason, "checkpointed");
+  assert.deepEqual(
+    outcome.pages.map((page) => page.pageId),
+    [session.pageId],
+  );
+  assert.equal(g.reloaded(), 0);
+});
+
+test("a direct close whose checkpoint fails keeps its recovery export", async () => {
+  const g = gate();
+  const { session, flush, persist } = closingSession();
+  g.hold(session);
+  const closed = g.host.close(session);
+  const result = g.reload();
+  await settle();
+  assert.equal(g.reloaded(), 0, "Reload waits while the checkpoint is in flight");
+  flush.resolve();
+  persist.reject(new Error("disk"));
+  await closed;
+  const outcome = await result;
+  assert.equal(outcome.reason, "unsaved");
+  const [page] = outcome.pages;
+  assert.equal(page.pageId, session.pageId);
+  assert.equal(page.checkpointWritten, false);
+  assert.match(page.markdown, /Garden notes/);
+  assert.ok(page.heads.length > 0, "the export names the heads it holds");
+  assert.equal(g.reloaded(), 0);
 });

@@ -19,10 +19,13 @@
  * - cancelled: navigation changed what the last attempt covered.
  * - reloading: the gate asked the browser to reload.
  *
- * Session entries: `phase` is `held` (installed) or `closing` (left; `drain`
- * says it left through the drain rather than an access reload). `alive`,
+ * Session entries: `phase` comes from the session's lifecycle, whoever started
+ * the close. `held` sessions are opening, open or paused. `closing` sessions
+ * are draining, checkpointing, or closed but not yet released. `alive`,
  * `pending`, `reason` (the session's pause), `save` (`saving`, `stalled` or
- * `failed`) and `savedHeads` come from the session's phase and receipt.
+ * `failed`) and `savedHeads` come from the session's phase and receipt. A
+ * closing session's final `sessionPhase` (`closed` or `deleted`) arrives once
+ * its backend release settles; until then every attempt waits for it.
  *
  * Records are keyed `account:pageId`. A record with `checkpointWritten` waits
  * in IndexedDB and syncs on the next open, which supersedes it. A failed
@@ -63,11 +66,14 @@ const strings = (value, field) =>
 
 function sessionEntry(entry) {
   check(isObject(entry), "a session entry is an object");
-  only(entry, ["id", "key", "phase", "drain", "alive", "pending", "save", "reason", "savedHeads"]);
+  only(entry, ["id", "key", "phase", "alive", "pending", "save", "reason", "savedHeads"]);
   check(isString(entry.id) && isString(entry.key), "id and key are required");
   check(PHASES.has(entry.phase), "phase must be held or closing");
-  check((entry.phase === "closing") === isBoolean(entry.drain), "drain marks a closing entry");
   check(isBoolean(entry.alive) && isBoolean(entry.pending), "alive and pending are booleans");
+  check(
+    entry.phase === "closing" || entry.alive,
+    "a held session is live; a closed one is closing",
+  );
   check(SAVES.has(entry.save), "save must be saving, stalled or failed");
   check(entry.reason === undefined || REASONS.has(entry.reason), "reason must be a pause reason");
   strings(entry.savedHeads, "savedHeads");
@@ -204,7 +210,7 @@ export const reloadGateSpec = Object.freeze({
       "closed-other-account",
       "closed-acknowledged",
       "closed-archive",
-      "closed-held",
+      "closed-direct",
       "deleted",
       "archive-fails",
     ],
@@ -220,6 +226,8 @@ export const reloadGateSpec = Object.freeze({
       "archive-fails",
       "held-new",
       "left-mid-wait",
+      "direct-close",
+      "direct-close-failed",
     ],
     "waiting/timeout": ["live-waiting", "closing-still", "none-waiting"],
   },
@@ -365,7 +373,9 @@ function bookkeep(state, event) {
     };
   }
   if (previous) sessions = sessions.filter((_, i) => i !== index);
-  if (previous?.phase === "closing" && previous.drain) {
+  // Every close keeps its record until release, a direct close included. An
+  // access reload reports saved: it keeps its own recovery.
+  if (previous?.phase === "closing") {
     records = acknowledge(records, event.key, event.savedHeads);
     if (event.phase === "closed" && !event.saved) records = recordClosed(records, sessions, event);
   }

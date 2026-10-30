@@ -115,31 +115,38 @@ function pendingOf(session) {
   }
 }
 
-/** What the gate keeps about an owned session, from its phase and receipt. */
-function summarize(id, session, held) {
+const HELD = new Set(["opening", "open", "paused"]);
+// The release has started: the checkpoint settled, or a deleted Page's local
+// copy is forgotten.
+const releasing = (phase) =>
+  phase.name === "closed" || (phase.name === "deleted" && phase.closing === true);
+
+/** What the gate keeps about an owned session, from its phase and receipt.
+ * Membership follows the lifecycle, not who started the close: a session
+ * closed directly is closing exactly like one left through the drain. */
+function summarize(id, session) {
   const phase = session.phase$.snapshot();
   const entry = {
     id,
     key: keyOf(session),
-    phase: held ? "held" : "closing",
+    phase: HELD.has(phase.name) ? "held" : "closing",
     alive: session.alive,
     pending: pendingOf(session),
     save: session.saveState,
     savedHeads: [...(session.savedHeads ?? [])],
   };
-  // An access reload archives its own recovery; any other leave drained.
-  if (!held) entry.drain = !(phase.archive || phase.archived);
   const reason = pauseReason(phase);
   if (reason) entry.reason = reason;
   return entry;
 }
 
-/** A session the host released: how it closed, and what a failed final
- * checkpoint left to recover. */
+/** A session whose backend release settled: how it closed, and what a failed
+ * final checkpoint left to recover. An access reload reports saved: it keeps
+ * its own recovery record. */
 function released(id, session) {
   const savedHeads = [...(session.savedHeads ?? [])];
   if (session.deleted) return { id, key: keyOf(session), phase: "deleted", savedHeads };
-  const left = session.leaveRecord ?? { saved: true };
+  const left = (!session.phase$.snapshot().archived && session.leaveRecord) || { saved: true };
   const event = {
     id,
     key: keyOf(session),
@@ -170,7 +177,9 @@ function outcomeOf(state) {
  *
  * The gate watches a SessionHost: each owned session's phase and receipt
  * become `sessionPhase` events, and a change of the installed Page is
- * `navigate`. It keeps sessions only while the host owns them. Records for
+ * `navigate`. A closed or deleted session's final event waits for its backend
+ * release to settle; the gate drops a session at that point or when the host
+ * stops owning it, whichever comes first. Records for
  * Pages left with unsaved edits are plain data in the machine's state: a
  * checkpointed record waits in IndexedDB and a failed one keeps its recovery
  * Markdown and heads until a covering receipt or "Discard unsaved edits".
@@ -178,6 +187,7 @@ function outcomeOf(state) {
 export class ReloadGate {
   store = new Store(reloadGateMachine.initial);
   #tracked = new Map();
+  #released = new WeakSet();
   #byId = new Map();
   #ids = 0;
   #current = null;
@@ -199,11 +209,14 @@ export class ReloadGate {
   }
   #observe({ current, owned }) {
     const seen = new Set();
-    for (const { session, held } of owned) {
+    for (const { session } of owned) {
       seen.add(session);
+      // The host can still own a released session, e.g. while its access
+      // reload opens the replacement; its final event was already sent.
+      if (this.#released.has(session)) continue;
       let tracked = this.#tracked.get(session);
       if (!tracked) {
-        tracked = { id: this.idOf(session), held };
+        tracked = { id: this.idOf(session) };
         this.#tracked.set(session, tracked);
         this.#byId.set(tracked.id, session);
         tracked.subscription = merge(
@@ -214,16 +227,9 @@ export class ReloadGate {
           ),
         ).subscribe(() => this.#report(session));
       }
-      tracked.held = held;
       this.#report(session);
     }
-    for (const [session, tracked] of this.#tracked) {
-      if (seen.has(session)) continue;
-      tracked.subscription.unsubscribe();
-      this.#tracked.delete(session);
-      this.#byId.delete(tracked.id);
-      this.#dispatch({ type: "sessionPhase", ...released(tracked.id, session) });
-    }
+    for (const session of this.#tracked.keys()) if (!seen.has(session)) this.#release(session);
     if (current !== this.#current) {
       this.#current = current;
       this.#dispatch({ type: "navigate" });
@@ -232,11 +238,30 @@ export class ReloadGate {
   #report(session) {
     const tracked = this.#tracked.get(session);
     if (!tracked) return;
-    const summary = summarize(tracked.id, session, tracked.held);
+    const summary = summarize(tracked.id, session);
     const text = JSON.stringify(summary);
-    if (text === tracked.last) return;
-    tracked.last = text;
-    this.#dispatch({ type: "sessionPhase", ...summary });
+    if (text !== tracked.last) {
+      tracked.last = text;
+      this.#dispatch({ type: "sessionPhase", ...summary });
+    }
+    if (!tracked.releasing && releasing(session.phase$.snapshot())) {
+      tracked.releasing = true;
+      // Read the close after the transition's effects have started it.
+      void Promise.resolve()
+        .then(() => session.closing)
+        .catch(() => {})
+        .then(() => this.#release(session));
+    }
+  }
+  /** Report a session's final phase once and stop following it. */
+  #release(session) {
+    const tracked = this.#tracked.get(session);
+    if (!tracked) return;
+    tracked.subscription.unsubscribe();
+    this.#tracked.delete(session);
+    this.#byId.delete(tracked.id);
+    this.#released.add(session);
+    this.#dispatch({ type: "sessionPhase", ...released(tracked.id, session) });
   }
   #dispatch(event) {
     const result = reloadGateMachine.step(this.store.snapshot(), event);

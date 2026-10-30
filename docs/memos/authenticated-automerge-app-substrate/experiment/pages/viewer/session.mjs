@@ -309,17 +309,19 @@ export class PageSession {
   }
   #drained() {
     if (this.phase$.snapshot().name !== "draining") return this.#whenReleased();
+    return this.dispatch({ type: "drained", saved: this.#saved() }, () => this.#recordLeave()).done;
+  }
+  /** What the reload gate keeps if the final checkpoint fails, read while the
+   * document is still live: at the end of the drain, or when a close skips
+   * it. */
+  #recordLeave() {
     const saved = this.#saved();
-    return this.dispatch({ type: "drained", saved }, () => {
-      // What the reload gate keeps if the final checkpoint fails, read while
-      // the document is still live.
-      this.leaveRecord = { saved };
-      if (!saved)
-        try {
-          this.leaveRecord.title = this.doc?.title;
-          this.leaveRecord.recovery = this.exportRecovery();
-        } catch {}
-    }).done;
+    this.leaveRecord = { saved };
+    if (!saved)
+      try {
+        this.leaveRecord.title = this.doc?.title;
+        this.leaveRecord.recovery = this.exportRecovery();
+      } catch {}
   }
   /** Settles once the backend is released, whichever path closed it. */
   #whenReleased() {
@@ -1683,7 +1685,10 @@ export class PageSession {
         () => this.closing,
         () => this.leave({ drain }),
       );
-    const { rejected, done } = this.dispatch({ type: "leave", drain });
+    const { rejected, done } = this.dispatch(
+      { type: "leave", drain },
+      drain ? undefined : () => this.#recordLeave(),
+    );
     if (!rejected) this.closing = done;
     return this.closing ?? Promise.resolve();
   }

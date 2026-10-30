@@ -98,6 +98,14 @@ export class SessionHost {
     return closing;
   }
 
+  /** Close a session at once, without the drain (sign-out, unmount). It is
+   * tracked like any leave, so Reload waits for its checkpoint and keeps a
+   * record if its edits never reached the server. */
+  close(session, { onError } = {}) {
+    if (!session) return Promise.resolve();
+    return this.leave(session, { onError, leaving: (left) => left.close() });
+  }
+
   /** The close of a Page this tab is leaving, if any. A quick Back waits for
    * it before opening the same Page again. */
   closingFor(principal, pageId) {
