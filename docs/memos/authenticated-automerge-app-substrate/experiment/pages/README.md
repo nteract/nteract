@@ -605,6 +605,27 @@ within 60 seconds; a slower one returns a retryable `504 request_timeout` while
 the host finishes the work it accepted. Both responses tell the caller to retry
 with the same `idempotency_key` and `retry_token`.
 
+No gateway request awaits a promise that another request may still be settling.
+celld 0.6.3 resumes a promise continuation under the request whose I/O settled
+the promise. A request that awaits another request's pending promise runs inside
+it, including the Page fetch it forwards, and loses its timers and I/O when the
+other request responds. Continuations inside Durable Objects keep their own
+context. Without this rule, a tab's concurrent `/api/saved` and `/api/connect`
+after a restart can leave a stuck `/api/connect` holding the Page's serialized
+HTTP queue, and the tab stays at "Saved locally". Nothing in that queue bounds a
+request, so it stays held until the object is discarded.
+
+[isolate-setup.mjs](worker/isolate-setup.mjs) applies the rule. The gateway
+sets up each D1 schema (server sessions, MCP OAuth) once per isolate. Work in
+front of the API-key verifier's cache, which shares pending lookups, runs one
+lookup per token at a time. The request that starts the work awaits it; others
+wait on their own timers. Either side gives up with a retryable `503` after 10
+seconds. A key stays held until its lookup settles, or for 65 seconds, past the
+cache's 60-second lifetime for an entry. The OIDC libraries' discovery,
+signing-key and UserInfo caches, the ChatGPT client metadata check and the
+loopback issuer's key still share pending promises across requests (#4567). Remove it when celld keeps request context across shared
+promises; [celld-context-probe.mjs](scripts/celld-context-probe.mjs) then exits 0.
+
 The storage backend keeps one representation per record key, but a fragment's
 bundle orders concurrent changes in each peer's application order. Stored
 history is never re-encoded. An API edit reserves and stores only the records
