@@ -710,6 +710,34 @@ export function hostState({ metadata, pending, deletionFinished }) {
   return { name: state, revision, ...placementOf(metadata) };
 }
 
+const INTENT_FIELDS = [
+  "lifecycleRevision",
+  "acl",
+  "deleted",
+  "trash",
+  "purged",
+  "deletion",
+  "placement",
+];
+const canonical = (value) => {
+  if (value === null || typeof value !== "object") return JSON.stringify(value ?? null);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  return `{${Object.keys(value)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`)
+    .join(",")}}`;
+};
+
+/** The revision, ACL and lifecycle fields where a creation intent disagrees
+ * with the installed record. Names only, never values. */
+export function creationIntentConflict(intent, installed) {
+  return INTENT_FIELDS.filter((field) => {
+    const value = (record) =>
+      field === "lifecycleRevision" ? (record?.[field] ?? 0) : record?.[field];
+    return canonical(value(intent)) !== canonical(value(installed));
+  });
+}
+
 /** A receipt as page-lifecycle events and responses summarize it. */
 export function summarizeReceipt(receipt) {
   if (receipt.superseded) return { superseded: true, state: receipt.state };

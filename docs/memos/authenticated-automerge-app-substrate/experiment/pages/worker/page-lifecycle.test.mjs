@@ -6,6 +6,7 @@ import { runTable } from "../shared/machine-test.mjs";
 import { pageLifecycle, pageLifecycleSpec } from "./page-lifecycle.mjs";
 import { pageId } from "./trash-fixture.mjs";
 import {
+  boot,
   call,
   creationIntent,
   drive,
@@ -13,6 +14,7 @@ import {
   readState,
   rowLabel,
   lostSuccess,
+  reach,
   STALE_KEY,
   scenario,
   suite,
@@ -75,6 +77,33 @@ test("a creation replay after Trash keeps the trashed record", async (t) => {
   assert.deepEqual(readState(h), { name: "trashed", revision: 1 });
   assert.equal(pageState(await h.f.storage.get("host/document")), "trashed");
   assert.equal(h.f.storage.values.has("host/creation"), false);
+});
+
+test("a boot logs a creation intent that disagrees with the installed record and keeps the record", async (t) => {
+  const s = await suite(t);
+  const h = await host(s);
+  const event = {
+    type: "boot",
+    record: { state: "active", revision: 2 },
+    creation: { state: "active", revision: 0 },
+  };
+  await reach(h, { name: "active", revision: 2, intent: true }, event);
+  const warn = t.mock.method(console, "warn", () => {});
+  await boot(h, event);
+  const lines = warn.mock.calls
+    .map((call) => call.arguments[0])
+    .filter((line) => typeof line === "string" && line.includes("page.creation_intent_conflict"));
+  assert.equal(lines.length, 1);
+  assert.deepEqual(JSON.parse(lines[0]), {
+    service: "nteract-pages-native",
+    event: "page.creation_intent_conflict",
+    page_id: pageId,
+    fields: ["lifecycleRevision", "acl"],
+    timestamp: new Date().toISOString(),
+  });
+  // Field names only: no principal, role or revision value.
+  assert.doesNotMatch(lines[0], /member-user|editor|"revision"/);
+  assert.deepEqual(readState(h), { name: "active", revision: 2 });
 });
 
 /** Keys whose durable values differ between two snapshots. */

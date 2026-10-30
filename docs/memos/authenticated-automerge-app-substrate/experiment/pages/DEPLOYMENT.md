@@ -146,6 +146,47 @@ cell celld resumes. On Cloudflare, removing a Durable Object class takes a
 `deleted_classes` migration that erases its storage, so a Cloudflare rollback
 must keep exporting `Space` and its binding instead.
 
+### Creation intent conflicts
+
+A Page writes `host/creation` before it imports a new document and deletes it
+once the new record is durable. Earlier builds installed that intent's metadata
+again whenever it was still present, at boot or on a create or register replay.
+If a creation's flush failed and the Page changed afterwards (an ACL grant,
+Trash, a restore), that reinstall dropped the change and reset
+`lifecycleRevision` to 0. This build always keeps the installed record.
+
+At boot, a Page that holds both an intent and an installed record that disagree
+logs one line:
+
+```json
+{"service":"nteract-pages-native","event":"page.creation_intent_conflict","page_id":"…","fields":["lifecycleRevision","acl"],"timestamp":"…"}
+```
+
+`fields` names which of `lifecycleRevision`, `acl`, `deleted`, `trash`,
+`purged`, `deletion` and `placement` differ, never their values. Such a Page was
+at risk, not damaged: this build keeps its installed record. An active Page then
+finishes the creation and drops the intent; a trashed or deleted Page keeps the
+intent and logs again on each cold start. After a deploy, search the Page8 logs
+for `page.creation_intent_conflict` to see whether any Page is affected.
+
+A Page that an earlier build already reinstalled has no intent left, because the
+reinstall deleted it, so it never logs this line. Its record shows a
+`lifecycleRevision` below the highest `revision` in its `host/lifecycle/*`
+receipts, or below the owner Catalog entry's `lifecycle_revision`, or it is
+active while the owner's Catalog lists it in Trash.
+
+There is no repair tool. To repair a Page:
+
+1. Copy the Page's Durable Object storage before changing anything.
+2. Restore the record from the newest backup taken before the reinstall. If
+   there is none, rebuild the lifecycle fields by hand. Set `lifecycleRevision`
+   to the larger of the highest receipt revision and the Catalog's
+   `lifecycle_revision`. Then set `deleted`, `trash` and `deletion` to match the
+   newest receipt.
+3. Never infer an ACL from the creation intent, the Catalog's shared entries or
+   the receipts. Restore it from a backup, or ask the owner to grant access
+   again.
+
 ## Tunnel and DNS provisioning
 
 This is first-publication setup, not a step to repeat for each release. Page8's

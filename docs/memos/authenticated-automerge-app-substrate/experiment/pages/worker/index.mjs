@@ -170,6 +170,7 @@ import {
 import {
   CREATION_COMMIT,
   CREATION_REPLAY,
+  creationIntentConflict,
   hostState,
   isSuperseded,
   pageLifecycle,
@@ -252,6 +253,22 @@ const INDEX_REPORT_PENDING = "host/index/report-pending";
 const LIFECYCLE_RECEIPT_LIMIT = 256;
 const lifecycleReceiptKey = (operationKey) =>
   `host/lifecycle/${operationKey.slice("host/operation/".length)}`;
+/** One structured line when a creation intent disagrees with the installed
+ * record. The installed record wins; DEPLOYMENT.md describes the audit. It
+ * names the fields that differ, never their values. */
+function logCreationIntentConflict(intent, installed) {
+  const fields = creationIntentConflict(intent, installed);
+  if (!fields.length) return;
+  console.warn(
+    JSON.stringify({
+      service: "nteract-pages-native",
+      event: "page.creation_intent_conflict",
+      page_id: installed.pageId,
+      fields,
+      timestamp: new Date().toISOString(),
+    }),
+  );
+}
 /** Journal operation names for the Catalog's lifecycle routes. */
 const LIFECYCLE_OPERATIONS = { trash: "trash_page", restore: "restore_page", purge: "purge_page" };
 /** A request's base_heads as requireHeads judges them. */
@@ -2003,6 +2020,7 @@ export class Page {
       const creation = await ctx.storage.get("host/creation");
       // Looking up an unknown page must not create a persisted signer or repo.
       if (!this.metadata && !creation) return;
+      if (creation && this.metadata) logCreationIntentConflict(creation.metadata, this.metadata);
       await this.initializeRepo(this.metadata ?? creation?.metadata);
       // The commit phase lived only in memory: the durable record and any
       // creation intent decide what boot installs or loads.
