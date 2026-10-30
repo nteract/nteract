@@ -2397,7 +2397,6 @@
       }
     },
     {
-      "note": "Current behavior: a tombstone on a deleted record answers without repeating its write. When an earlier tombstone write or sync failed, the record is deleted only in memory, and a restart boots it trashed with its document gone.",
       "state": {
         "name": "deleting",
         "revision": 2
@@ -2410,13 +2409,24 @@
           "name": "deleting",
           "revision": 2
         },
-        "effects": [],
+        "effects": [
+          {
+            "type": "putRecord",
+            "receipt": false,
+            "record": true
+          },
+          {
+            "type": "sync"
+          },
+          {
+            "type": "retireIndex"
+          }
+        ],
         "response": {
           "status": 200,
           "reply": "state",
           "state": "deleted"
-        },
-        "rejected": "not_trashed"
+        }
       }
     },
     {

@@ -766,7 +766,8 @@ transition and through the Catalog, which interprets it.
 A trashed document that fails to load answers `503` and is retried on the next
 request. Only a deleted record, or the owner Catalog's tombstone delivered to
 the Page, makes the absence permanent; the Page then answers like a missing
-Page.
+Page. A tombstone answers only after its deleted record is durable. If that
+write or sync fails, the next tombstone repeats it.
 
 `restore_page` waits for the restored record to be durable, like an access
 increase, then returns the same ID, content, comments, and ACL. Grants and key

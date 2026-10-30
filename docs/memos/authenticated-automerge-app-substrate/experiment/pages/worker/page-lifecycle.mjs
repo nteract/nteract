@@ -13,8 +13,8 @@ import { pageState } from "./access.mjs";
  *   and has not finished. `revision` is the target record's. The phase lives
  *   only in memory (`pendingLifecycle`), so a restart forgets it and boots from
  *   whatever record is durable.
- * - deleting: a durable deleted record whose deletion barriers have not run in
- *   this process. A purge request runs them.
+ * - deleting: a deleted record whose deletion barriers have not run in this
+ *   process. A purge request runs them; a tombstone repeats its own write.
  * - deleted: the barriers finished in this process, or the record predates
  *   deletion receipts.
  *
@@ -356,12 +356,13 @@ const deletionBarriers = (receipt) => [
   effectOf("finishDeletion"),
 ];
 const PURGE_COMMIT = [...deletionBarriers(true), effectOf("end")];
+/** Record an earlier build's deletion and make it durable. A record whose
+ * barrier may not have finished repeats the write on the next tombstone. */
+const TOMBSTONE_BARRIER = [put(false, true), effectOf("sync"), effectOf("retireIndex")];
 const TOMBSTONE = [
   effectOf("withdrawAccess", { record: "deleted" }),
   effectOf("dropDocument"),
-  put(false, true),
-  effectOf("sync"),
-  effectOf("retireIndex"),
+  ...TOMBSTONE_BARRIER,
 ];
 /** Install a recorded creation: import its bytes, then persist its record. */
 export const CREATION_COMMIT = Object.freeze([
@@ -571,6 +572,10 @@ function tombstone(state) {
         effects: TOMBSTONE,
         response: answer("deleted"),
       };
+    // The deleted record may be in memory only: an earlier tombstone's write
+    // or sync can have failed. Repeat it, then answer.
+    case "deleting":
+      return { state, effects: TOMBSTONE_BARRIER, response: answer("deleted") };
     default:
       return reject(state, "not_trashed", { response: answer("deleted") });
   }

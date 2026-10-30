@@ -171,13 +171,8 @@ function judge(run, reference, row, tally) {
   return problems;
 }
 
-/** Inconsistencies the cuts find in the current host:
- * - trashed × tombstone: the next tombstone does not repeat a failed write. */
-const CUT_INCONSISTENCIES = [
-  "trashed × tombstone: replay differs at index access",
-  "trashed × tombstone: replay differs at index page",
-  "trashed × tombstone: reported success lost: told deleted, booted trashed",
-];
+/** Inconsistencies the cuts find in the current host. */
+const CUT_INCONSISTENCIES = [];
 
 test("every mutation the lifecycle makes can reject before or after it applies, and restart then replay converges", async (t) => {
   const s = await suite(t);
@@ -213,6 +208,23 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
   assert.deepEqual([...found].sort(), CUT_INCONSISTENCIES);
   assert.deepEqual(
     { cuts, runs, ...tally },
-    { cuts: 144, runs: 536, tail: 38, prune: 22, index: 18 },
+    { cuts: 150, runs: 560, tail: 35, prune: 22, index: 16 },
   );
+});
+
+test("a tombstone whose write or sync rejected repeats its barrier on retry, so a restart boots the deletion", async (t) => {
+  const s = await suite(t);
+  const row = s.table.rows.find((r) => r.state.name === "trashed" && r.event.type === "tombstone");
+  const options = { view: "synced", mode: "retry", documentAbsent: true };
+  const reference = await scenario(s, row, options);
+  assert.deepEqual(reference.mutations.slice(0, 2), ["put host/document", "sync"]);
+  // The record write rejects before it lands; then the sync itself fails.
+  for (const index of [0, 1]) {
+    const run = await scenario(s, row, { ...options, cut: { index, outcome: "before" } });
+    assert.equal(run.status, 500);
+    assert.equal(run.retried, 200);
+    assert.deepEqual(run.told.at(-1), { state: "deleted" });
+    assert.deepEqual(run.booted, { name: "deleting", revision: 2 });
+    assert.equal(run.document, false);
+  }
 });
