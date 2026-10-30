@@ -1117,3 +1117,33 @@ test("Space tools are concise and keep the untrusted-content rule", () => {
     assert.ok(byName.get("list_pages").inputSchema.properties[name], name);
   assert.match(byName.get("read_page").description, /breadcrumbs/);
 });
+
+test("a credential that expires while the Space reads its record is refused", async (t) => {
+  const w = await world(t);
+  const space = await w.createSpace("Expiring");
+  const host = w.spaces.get(space.space_id);
+  const read = () =>
+    host.fetch(
+      new Request("https://pages.invalid/internal/space/read", {
+        method: "POST",
+        headers: { authorization: `Bearer ${w.auth.apiKey()}` },
+        body: JSON.stringify({ space_id: space.space_id }),
+      }),
+    );
+  assert.equal((await read()).status, 200);
+  // API-key credentials last 60 s from authentication. Advance the clock past
+  // that while the Space awaits its record, after authenticate() returned.
+  const start = Date.now();
+  let elapsed = 0;
+  t.mock.method(Date, "now", () => start + elapsed);
+  const storage = host.ctx.storage;
+  const get = storage.get.bind(storage);
+  t.mock.method(storage, "get", async (key) => {
+    const value = await get(key);
+    if (key === "space/record") elapsed = 60_001;
+    return value;
+  });
+  const refused = await read();
+  assert.equal(refused.status, 404);
+  assert.equal((await refused.json()).code, "space_not_found");
+});

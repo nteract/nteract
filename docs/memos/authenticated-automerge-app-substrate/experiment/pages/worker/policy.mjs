@@ -1,4 +1,4 @@
-import { pageAccess, pageGrant, pageState } from "./access.mjs";
+import { pageAccess, pageDecision, pageGrant, pageState } from "./access.mjs";
 import { withAdmissionReason } from "./admission-reasons.mjs";
 
 export const hex = (bytes) => [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -98,11 +98,11 @@ export class DocumentPolicy {
     );
   }
 
+  /** The decision's own bound: the credential's expiry, or an earlier lease
+   * (company view's email-domain proof) whose loss would change access. */
   leaseExpiresAt(identity) {
-    const access = this.account(identity);
-    return access.source === "domain"
-      ? Math.min(identity.expiresAt, identity.domainAccess.expiresAt)
-      : identity.expiresAt;
+    this.account(identity);
+    return pageDecision(this.metadata(), identity, { now: this.now() }).valid_until;
   }
 
   bindingGeneration(binding) {

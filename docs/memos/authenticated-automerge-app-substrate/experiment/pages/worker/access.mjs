@@ -1,4 +1,19 @@
-/** Host-owned Page grants. Document content and driver labels grant no access. */
+/** Host-owned Page grants. Document content and driver labels grant no access.
+ * Capability checks use decide() in authz.mjs. Grant identity (pageGrant) and
+ * deletion disclosure (pageRelation) use separate projections of the same
+ * relation model. */
+import {
+  NO_ACTOR_CHAIN,
+  decide,
+  heldRelation,
+  memberRow,
+  pageObject,
+  pageState,
+  principalOf,
+} from "./authz.mjs";
+
+export { pageState };
+
 export class AccessError extends Error {
   constructor(status, message) {
     super(message);
@@ -23,90 +38,68 @@ export function validateAccessPrincipal(principal) {
   return principal;
 }
 
-/** Host lifecycle state of a Page record.
- *
- * A trashed record keeps `deleted: true` so builds that predate Trash treat it
- * as unavailable to every caller. It is distinguished from a permanent
- * deletion by its `trash` entry and the absence of `purged`. Records deleted
- * before Trash existed have neither field and remain permanently deleted.
- */
-export function pageState(metadata) {
-  if (!metadata) return "missing";
-  if (!metadata.deleted) return "active";
-  return metadata.trash && !metadata.purged ? "trashed" : "deleted";
-}
-
 /** Stable grant identity, independent of a particular credential's lifetime.
  * Trash retains every grant and generation: restoring a Page must not revive
- * or retire signing keys, so only `pageAccess` withholds access while trashed.
+ * or retire signing keys, so only the lifecycle overlay in decide() withholds
+ * access while trashed.
  */
 export function pageGrant(metadata, principal) {
   const revision = revisionOf(metadata);
   if (!metadata || pageState(metadata) === "deleted" || typeof principal !== "string")
     return { role: "none", revision, generation: 0 };
   if (principal === metadata.owner) return { role: "owner", revision, generation: 0 };
-  const members = metadata.acl?.members;
-  const member = own(members, principal) ? members[principal] : undefined;
-  if (
-    !member ||
-    !roles.has(member.role) ||
-    !Number.isSafeInteger(member.generation) ||
-    member.generation < 1
-  )
-    return { role: "none", revision, generation: 0 };
+  const member = memberRow(metadata.acl?.members, principal);
+  if (!member) return { role: "none", revision, generation: 0 };
   return { role: member.role, revision, generation: member.generation };
 }
 
-export function pageAccess(metadata, identity, { now = Date.now() } = {}) {
+/** The decide() result for one identity on one Page record. */
+export function pageDecision(metadata, identity, { now = Date.now() } = {}) {
+  const principal = principalOf(identity);
+  return decide(principal, NO_ACTOR_CHAIN, pageObject(metadata, principal.id), now);
+}
+
+/** The relation a principal holds on a Page record before the lifecycle
+ * overlay: what deletion disclosure and the lifecycle owner check read. */
+export function pageRelation(metadata, principal) {
+  return heldRelation(pageObject(metadata, principal), principal);
+}
+
+/** decide() projected onto the access flags the host and viewer read. The
+ * role is the decision's basis, so a read-only credential still reports the
+ * role it holds. Grant revision and generation come from pageGrant.
+ */
+export function pageAccess(metadata, identity, options) {
   const grant = pageGrant(metadata, identity?.principal);
-  const authenticated = Number.isFinite(identity?.expiresAt) && identity.expiresAt > now;
+  const decision = pageDecision(metadata, identity, options);
+  const can = (capability) => decision.capabilities.includes(capability);
+  const role = decision.basis.relation ?? "none";
   if (pageState(metadata) === "trashed") {
-    // Only the owner can see a trashed Page, read-only. Members keep their
-    // grant generation for restore, but have no current role.
-    const owner = authenticated && grant.role === "owner";
-    const canRestore = owner && !!identity?.canWrite;
+    // Only someone who may restore a trashed Page sees it, read-only. Members
+    // keep their grant generation for restore, but have no current role.
     return {
       ...grant,
-      role: owner ? "owner" : "none",
-      canRead: owner,
-      canWrite: false,
-      canComment: false,
-      canManageAccess: false,
-      canDelete: false,
-      canRestore,
-      canPurge: canRestore,
+      role,
+      canRead: can("read"),
+      canWrite: can("edit"),
+      canComment: can("comment"),
+      canManageAccess: can("share"),
+      canDelete: can("trash"),
+      canRestore: can("restore"),
+      canPurge: can("purge"),
       trashed: true,
     };
   }
-  const domain = metadata?.acl?.domainView;
-  const evidence = identity?.domainAccess;
-  // Explicit grants, invalid member rows and removal tombstones all take
-  // precedence. Domain viewing never creates a durable principal membership.
-  const domainViewer =
-    authenticated &&
-    !metadata?.deleted &&
-    grant.role === "none" &&
-    !own(metadata?.acl?.members, identity.principal) &&
-    domain &&
-    evidence &&
-    domain.domain === evidence.domain &&
-    domain.namespace === evidence.namespace &&
-    identity.namespace === evidence.namespace &&
-    Number.isFinite(evidence.expiresAt) &&
-    evidence.expiresAt > now;
-  const role = authenticated ? (domainViewer ? "viewer" : grant.role) : "none";
-  const canRead = role !== "none";
-  const canWrite = !!identity?.canWrite && (role === "owner" || role === "editor");
-  const canManageAccess = canWrite && role === "owner";
   return {
     ...grant,
     role,
-    ...(domainViewer && { source: "domain" }),
-    canRead,
-    canWrite,
-    canComment: canWrite,
-    canManageAccess,
-    canDelete: canManageAccess,
+    // Company viewing never creates a durable principal membership.
+    ...(decision.basis.via === "organization" && { source: "domain" }),
+    canRead: can("read"),
+    canWrite: can("edit"),
+    canComment: can("comment"),
+    canManageAccess: can("share"),
+    canDelete: can("trash"),
   };
 }
 

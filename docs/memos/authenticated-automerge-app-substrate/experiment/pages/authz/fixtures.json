@@ -1,0 +1,453 @@
+{
+  "description": "Relationship tuples plus nteract's lifecycle overlay, and the capabilities decide() returns for each principal. Tuples use SpiceDB's resource#relation@subject syntax against schema.zed. modes lists who can produce the case: built-in (today's Page and Space records) or external (a host's relationship service; groups, organizations and project roles beyond owner exist only there). Organization and group membership tuples are leases on the principal: they expire at now + membership_lease_ms. Credentials expire at now + credential_ms; a read credential keeps only read. worker/authz.test.mjs runs every case through decide(), and checks the same tuples against SpiceDB with zed when zed is installed.",
+  "now": 1000000,
+  "credential_ms": 7200000,
+  "membership_lease_ms": 3600000,
+  "cases": [
+    {
+      "name": "owner of a personal Page",
+      "modes": ["built-in", "external"],
+      "object": "page:personal",
+      "lifecycle": "active",
+      "revision": 0,
+      "relationships": ["page:personal#owner@user:alice"],
+      "principals": [
+        {
+          "subject": "user:alice",
+          "credential": "write",
+          "capabilities": [
+            "read",
+            "comment",
+            "edit",
+            "share",
+            "administer",
+            "trash",
+            "restore",
+            "purge",
+            "create_items",
+            "move_within",
+            "move_out"
+          ],
+          "basis": { "relation": "owner", "via": "direct" },
+          "valid_until": 8200000
+        },
+        {
+          "subject": "user:alice",
+          "credential": "read",
+          "capabilities": ["read"],
+          "basis": { "relation": "owner", "via": "direct" }
+        },
+        { "subject": "user:mallory", "credential": "write", "capabilities": [] }
+      ]
+    },
+    {
+      "name": "direct editor and viewer grants",
+      "modes": ["built-in", "external"],
+      "object": "page:shared",
+      "lifecycle": "active",
+      "revision": 3,
+      "relationships": [
+        "page:shared#owner@user:alice",
+        "page:shared#editor@user:bob",
+        "page:shared#viewer@user:carol"
+      ],
+      "principals": [
+        {
+          "subject": "user:bob",
+          "credential": "write",
+          "capabilities": ["read", "comment", "edit"],
+          "basis": { "relation": "editor", "via": "direct" }
+        },
+        {
+          "subject": "user:bob",
+          "credential": "read",
+          "capabilities": ["read"],
+          "basis": { "relation": "editor", "via": "direct" }
+        },
+        {
+          "subject": "user:carol",
+          "credential": "write",
+          "capabilities": ["read"],
+          "basis": { "relation": "viewer", "via": "direct" }
+        },
+        { "subject": "user:mallory", "credential": "write", "capabilities": [] }
+      ]
+    },
+    {
+      "name": "company view: today's verified email-domain rule as organization membership",
+      "modes": ["built-in", "external"],
+      "object": "page:company",
+      "lifecycle": "active",
+      "revision": 5,
+      "relationships": [
+        "page:company#owner@user:alice",
+        "page:company#editor@user:bob",
+        "page:company#viewer@organization:anaconda#member",
+        "organization:anaconda#member@user:bob",
+        "organization:anaconda#member@user:dana"
+      ],
+      "principals": [
+        {
+          "subject": "user:dana",
+          "credential": "write",
+          "capabilities": ["read"],
+          "basis": { "relation": "viewer", "via": "organization" },
+          "valid_until": 4600000
+        },
+        {
+          "subject": "user:bob",
+          "credential": "write",
+          "capabilities": ["read", "comment", "edit"],
+          "basis": { "relation": "editor", "via": "direct" },
+          "valid_until": 8200000
+        },
+        {
+          "subject": "user:frank",
+          "credential": "write",
+          "expired_memberships": ["organization:anaconda"],
+          "capabilities": []
+        },
+        { "subject": "user:erin", "credential": "write", "capabilities": [] }
+      ]
+    },
+    {
+      "name": "a removal tombstone beats company view",
+      "modes": ["built-in", "external"],
+      "object": "page:removed",
+      "lifecycle": "active",
+      "revision": 7,
+      "relationships": [
+        "page:removed#owner@user:alice",
+        "page:removed#viewer@organization:anaconda#member",
+        "page:removed#removed@user:gail",
+        "organization:anaconda#member@user:gail",
+        "organization:anaconda#member@user:dana"
+      ],
+      "principals": [
+        { "subject": "user:gail", "credential": "write", "capabilities": [] },
+        {
+          "subject": "user:dana",
+          "credential": "write",
+          "capabilities": ["read"],
+          "basis": { "relation": "viewer", "via": "organization" }
+        }
+      ]
+    },
+    {
+      "name": "Trash: the lifecycle overlay keeps read, restore and purge for the owner only",
+      "modes": ["built-in", "external"],
+      "object": "page:trashed",
+      "lifecycle": "trashed",
+      "revision": 3,
+      "relationships": [
+        "page:trashed#owner@user:alice",
+        "page:trashed#editor@user:bob",
+        "page:trashed#viewer@user:carol",
+        "page:trashed#viewer@organization:anaconda#member",
+        "organization:anaconda#member@user:dana"
+      ],
+      "principals": [
+        {
+          "subject": "user:alice",
+          "credential": "write",
+          "capabilities": ["read", "administer", "restore", "purge"],
+          "basis": { "relation": "owner", "via": "direct" }
+        },
+        {
+          "subject": "user:alice",
+          "credential": "read",
+          "capabilities": ["read"],
+          "basis": { "relation": "owner", "via": "direct" }
+        },
+        { "subject": "user:bob", "credential": "write", "capabilities": [] },
+        { "subject": "user:carol", "credential": "write", "capabilities": [] },
+        { "subject": "user:dana", "credential": "write", "capabilities": [] }
+      ]
+    },
+    {
+      "name": "a deleted Page grants nothing to anyone",
+      "modes": ["built-in", "external"],
+      "object": "page:deleted",
+      "lifecycle": "deleted",
+      "revision": 3,
+      "relationships": ["page:deleted#owner@user:alice", "page:deleted#editor@user:bob"],
+      "principals": [
+        { "subject": "user:alice", "credential": "write", "capabilities": [] },
+        { "subject": "user:bob", "credential": "write", "capabilities": [] }
+      ]
+    },
+    {
+      "name": "a Page in an owner-only Space reaches its owner through the project",
+      "modes": ["built-in", "external"],
+      "object": "page:in_space",
+      "lifecycle": "active",
+      "revision": 1,
+      "relationships": [
+        "page:in_space#project@project:space",
+        "project:space#owner@user:alice",
+        "page:in_space#viewer@user:carol"
+      ],
+      "principals": [
+        {
+          "subject": "user:alice",
+          "credential": "write",
+          "capabilities": [
+            "read",
+            "comment",
+            "edit",
+            "share",
+            "administer",
+            "trash",
+            "restore",
+            "purge",
+            "create_items",
+            "move_within",
+            "move_out"
+          ],
+          "basis": { "relation": "owner", "via": "project" }
+        },
+        {
+          "subject": "user:carol",
+          "credential": "write",
+          "capabilities": ["read"],
+          "basis": { "relation": "viewer", "via": "direct" }
+        },
+        { "subject": "user:mallory", "credential": "write", "capabilities": [] }
+      ]
+    },
+    {
+      "name": "the Space itself is owner-only",
+      "modes": ["built-in", "external"],
+      "object": "project:space",
+      "lifecycle": "active",
+      "revision": 0,
+      "relationships": ["project:space#owner@user:alice"],
+      "principals": [
+        {
+          "subject": "user:alice",
+          "credential": "write",
+          "capabilities": [
+            "read",
+            "edit",
+            "share",
+            "administer",
+            "trash",
+            "restore",
+            "purge",
+            "create_items",
+            "manage_members",
+            "move_within",
+            "move_out"
+          ],
+          "basis": { "relation": "owner", "via": "direct" }
+        },
+        { "subject": "user:mallory", "credential": "write", "capabilities": [] }
+      ]
+    },
+    {
+      "name": "an agent acting for a person gets the person's decision, narrowed by its credential",
+      "note": "Built-in callers always pass NO_ACTOR_CHAIN. This row checks only that a non-empty chain leaves the decision unchanged; the read credential narrows it.",
+      "modes": ["built-in", "external"],
+      "object": "page:agent",
+      "lifecycle": "active",
+      "revision": 0,
+      "relationships": ["page:agent#owner@user:alice"],
+      "principals": [
+        {
+          "subject": "user:alice",
+          "actor_chain": ["agent:kilo"],
+          "credential": "read",
+          "capabilities": ["read"],
+          "basis": { "relation": "owner", "via": "direct" }
+        },
+        {
+          "subject": "user:alice",
+          "actor_chain": ["agent:kilo"],
+          "credential": "write",
+          "capabilities": [
+            "read",
+            "comment",
+            "edit",
+            "share",
+            "administer",
+            "trash",
+            "restore",
+            "purge",
+            "create_items",
+            "move_within",
+            "move_out"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "project roles reach an item through the project",
+      "modes": ["external"],
+      "object": "page:in_project",
+      "lifecycle": "active",
+      "revision": 0,
+      "relationships": [
+        "page:in_project#project@project:team",
+        "project:team#owner@user:alice",
+        "project:team#editor@user:bob",
+        "project:team#viewer@user:carol"
+      ],
+      "principals": [
+        {
+          "subject": "user:bob",
+          "credential": "write",
+          "capabilities": [
+            "read",
+            "comment",
+            "edit",
+            "trash",
+            "restore",
+            "create_items",
+            "move_within"
+          ],
+          "basis": { "relation": "editor", "via": "project" }
+        },
+        {
+          "subject": "user:carol",
+          "credential": "write",
+          "capabilities": ["read"],
+          "basis": { "relation": "viewer", "via": "project" }
+        }
+      ]
+    },
+    {
+      "name": "project roles on the project itself",
+      "modes": ["external"],
+      "object": "project:team",
+      "lifecycle": "active",
+      "revision": 0,
+      "relationships": [
+        "project:team#owner@user:alice",
+        "project:team#editor@user:bob",
+        "project:team#viewer@user:carol"
+      ],
+      "principals": [
+        {
+          "subject": "user:bob",
+          "credential": "write",
+          "capabilities": ["read", "trash", "restore", "create_items", "move_within"],
+          "basis": { "relation": "editor", "via": "direct" }
+        },
+        {
+          "subject": "user:carol",
+          "credential": "write",
+          "capabilities": ["read"],
+          "basis": { "relation": "viewer", "via": "direct" }
+        }
+      ]
+    },
+    {
+      "name": "a group and an organization share a project",
+      "modes": ["external"],
+      "object": "page:group_item",
+      "lifecycle": "active",
+      "revision": 0,
+      "relationships": [
+        "page:group_item#project@project:groups",
+        "project:groups#owner@user:alice",
+        "project:groups#editor@group:eng#member",
+        "project:groups#viewer@organization:acme#member",
+        "group:eng#member@user:hana",
+        "organization:acme#member@user:ivan"
+      ],
+      "principals": [
+        {
+          "subject": "user:hana",
+          "credential": "write",
+          "capabilities": [
+            "read",
+            "comment",
+            "edit",
+            "trash",
+            "restore",
+            "create_items",
+            "move_within"
+          ],
+          "basis": { "relation": "editor", "via": "project" },
+          "valid_until": 4600000
+        },
+        {
+          "subject": "user:ivan",
+          "credential": "write",
+          "capabilities": ["read"],
+          "basis": { "relation": "viewer", "via": "project" }
+        },
+        { "subject": "user:mallory", "credential": "write", "capabilities": [] }
+      ]
+    },
+    {
+      "name": "Trash keeps restore for a project editor, and nothing for a project viewer",
+      "modes": ["external"],
+      "object": "page:trashed_in_project",
+      "lifecycle": "trashed",
+      "revision": 0,
+      "relationships": [
+        "page:trashed_in_project#project@project:team",
+        "project:team#owner@user:alice",
+        "project:team#editor@user:bob",
+        "project:team#viewer@user:carol"
+      ],
+      "principals": [
+        {
+          "subject": "user:alice",
+          "credential": "write",
+          "capabilities": ["read", "administer", "restore", "purge"],
+          "basis": { "relation": "owner", "via": "project" }
+        },
+        {
+          "subject": "user:bob",
+          "credential": "write",
+          "capabilities": ["read", "restore"],
+          "basis": { "relation": "editor", "via": "project" }
+        },
+        { "subject": "user:carol", "credential": "write", "capabilities": [] }
+      ]
+    },
+    {
+      "name": "an expired project lease fails inherited access closed and leaves direct grants",
+      "modes": ["external"],
+      "object": "page:stale_lease",
+      "lifecycle": "active",
+      "revision": 0,
+      "container_valid_until": 999999,
+      "relationships": [
+        "page:stale_lease#project@project:team",
+        "page:stale_lease#viewer@user:carol",
+        "project:team#owner@user:alice",
+        "project:team#editor@user:bob"
+      ],
+      "principals": [
+        { "subject": "user:alice", "credential": "write", "capabilities": [] },
+        { "subject": "user:bob", "credential": "write", "capabilities": [] },
+        {
+          "subject": "user:carol",
+          "credential": "write",
+          "capabilities": ["read"],
+          "basis": { "relation": "viewer", "via": "direct" }
+        }
+      ]
+    },
+    {
+      "name": "an item with both a project and an owner is malformed and grants nothing",
+      "modes": ["external"],
+      "spicedb": "SpiceDB can't express exclusive relations; writers keep project and owner exclusive, and decide() refuses a copy that has both.",
+      "object": "page:malformed",
+      "lifecycle": "active",
+      "revision": 0,
+      "relationships": [
+        "page:malformed#owner@user:alice",
+        "page:malformed#project@project:team",
+        "project:team#owner@user:bob"
+      ],
+      "principals": [
+        { "subject": "user:alice", "credential": "write", "capabilities": [] },
+        { "subject": "user:bob", "credential": "write", "capabilities": [] }
+      ]
+    }
+  ]
+}

@@ -390,6 +390,126 @@ receipts retain the latest 256 results; older retries must still pass the revisi
 guard, and receipt capacity never prevents revocation. Comment author labels are
 editable document data, not an audit log; author-only comment editing is not implemented.
 
+## Authorization
+
+### Current behavior
+
+Capability checks use `decide()`. Grant identity and deletion disclosure use separate projections of the same relation model. The function lives in [authz.mjs](worker/authz.mjs):
+
+```text
+decide(principal, actor_chain, object, now)
+  -> { capabilities, valid_until, revision, authority_token, basis }
+```
+
+It is pure and synchronous, and the celld policy hooks call it on every frame.
+It reads what the Page host already holds: the Page record's ACL and lifecycle.
+`pageAccess`, the native lease bound and the Space read check are projections
+of its result. `pageGrant` reports grant identity (role and signing-key
+generation), which Trash keeps. `pageRelation` answers deletion disclosure and
+the lifecycle owner check. It reads the same relations without the lifecycle
+overlay.
+
+The adapter builds a view scoped to one principal. It holds the owner (or the
+project), company view, and only that principal's member row. A decision
+therefore costs one member lookup, however many grants and removal tombstones
+the ACL has collected.
+
+Capabilities are named: `read`, `comment`, `edit`, `share`, `administer`,
+`trash`, `restore`, `purge`, `create_items`, `manage_members`, `move_within`,
+`move_out`. A Page never gets `manage_members`, and a project never gets
+`comment`. Nothing checks the `move_*` capabilities, because moves don't exist
+yet. Execute is out of scope for Pages.
+
+decide() runs three steps, in this order:
+
+1. **Relations.** A viewer or editor member row grants, and a removal
+   tombstone becomes `removed`. Company view is the `organization#member`
+   userset. Built-in mode has no tenants, so the verified email-domain lease
+   stands in for organization membership. A tombstone subtracts from the
+   item's own viewer path, so it beats company view. A Page placed in a Space
+   has the `project` relation instead of `owner`.
+2. **Lifecycle overlay.** A trashed item keeps `read`, `administer`, `restore`
+   and `purge`, and only for principals who may restore it. A deleted or
+   missing item grants nothing. The overlay runs after every relation, so no
+   grant can reopen a trashed item.
+3. **Credential ceiling.** A credential without write keeps only `read`.
+
+`revision` is nteract's own ACL revision, which only increases and which every
+`expected_revision` write compares. `valid_until` is the credential's expiry,
+or the first earlier lease whose loss would change the capabilities. The
+email-domain proof is such a lease. Native sockets use it as their lease
+bound. `basis` names the strongest relation that survived the lifecycle
+overlay and the path that supplied it. It feeds the `role` label and
+`source: "domain"`. `authority_token` is always null in this build.
+
+Built-in project ownership is synthesized from the Page owner. External leases
+and token round-tripping are not wired. Spaces are owner-only, and only a
+Space's owner places Pages in it, so a Page's project copy names the Page
+record's owner. `decide()` already drops inherited paths when a project copy
+carries a `valid_until` in the past, but no built-in copy carries one.
+
+Built-in callers always pass `NO_ACTOR_CHAIN`. This build has no verified
+delegation, and driver labels (`x-operator`, `x-pages-driver`) are attribution
+only. An agent's API key or OAuth token authenticates as the person, and its
+scope is the credential ceiling.
+
+One timing difference from the rules decide() replaced: the Space read check
+now requires an unexpired credential, as Page checks always have.
+`authenticate()` returns an unexpired credential, but the Space then reads the
+request body and its record before it checks access against a fresh clock. A
+credential that expires during those reads is refused as `space_not_found`.
+Before, the owner was admitted.
+
+### Schema invariants
+
+[schema.zed](authz/schema.zed) is the model, written in SpiceDB's schema
+language. It defines `user` (a person), `organization`, `group`, `project` and
+`page`, and the proposal's rewrites: `project.contribute`, `project.read_items`,
+and the item's `administer`, `edit`, `read` and `share`. Each capability is a
+permission of the same name. Agents hold no grants and never appear as
+subjects. An item has a `project` or an `owner`, never both. SpiceDB can't
+express that, so writers must keep the two exclusive. decide() refuses a copy
+that holds both.
+
+[fixtures.json](authz/fixtures.json) lists relationship tuples, a lifecycle and
+each principal's expected capabilities. [authz.test.mjs](worker/authz.test.mjs)
+runs every row through decide(). The `modes` field marks rows only a host could
+produce: groups, organizations on projects, project editors and viewers, and a
+leased project copy. The agent row checks only that a non-empty actor chain
+leaves the person's decision unchanged.
+
+SpiceDB matches 14 fixture cases after removing local overlays. Writers enforce
+owner/project exclusivity; the malformed case tests JavaScript rejection only.
+When `zed` is installed, the test runs `zed validate` with the lifecycle,
+credential ceiling and project lease removed, so SpiceDB computes the same
+relation decision as decide() for every principal. Without `zed`, the test
+parses the schema structurally.
+
+[authz-equivalence.test.mjs](worker/authz-equivalence.test.mjs) compares
+decide() with the rules it replaced, frozen in
+[access-legacy-fixture.mjs](worker/access-legacy-fixture.mjs). It covers 63,000
+combinations of lifecycle, placement, company setting, member row, credential
+expiry, write scope and domain proof. It also counts member inspections with a
+1000-tombstone ACL, to check that a decision stays O(1).
+
+### Proposed host integration
+
+None of this is wired. A hosting platform would implement `decide` with the
+same signature over a leased copy of its own relations, and only step 1 would
+change. The lifecycle overlay and the credential ceiling stay with nteract:
+
+- The copy would hold the item's relations and its project's. The host's
+  change feed (a watch stream) would refresh it, with pushes for quick
+  revocation and a lease to bound staleness. Batch checks would run when the
+  copy refreshes, never inside a policy hook.
+- When the lease expires and the host can't be reached, inherited access
+  would fail closed, and `valid_until` would report the lease.
+- `authority_token` would carry the token the copy was read at, such as a
+  SpiceDB ZedToken. Nothing would compare it for ordering. `revision` stays
+  nteract's.
+- A refresh that removes access would go through `installAccess`, which closes
+  affected sockets as a built-in ACL change does.
+
 ## Private images
 
 Browser upload, screenshot paste, and file drop send PNG, JPEG, or static WebP to
