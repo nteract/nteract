@@ -4,6 +4,10 @@ import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { readAccessToken } from "./oauth-store.mjs";
 import { domainAccessForIdentity } from "./domain-access.mjs";
 import { withAdmissionReason } from "./admission-reasons.mjs";
+import { isolateSingleFlight } from "./isolate-setup.mjs";
+
+// The API-key verifier caches one pending provider lookup per key; see isolate-setup.mjs.
+const apiKeyLookup = isolateSingleFlight();
 
 export class HttpError extends Error {
   constructor(status, message, code) {
@@ -112,16 +116,18 @@ export async function authenticate(request, env) {
     }
     // Caller identity/scope/operator headers are never forwarded to the verifier.
     const verify = (scope) =>
-      authenticateAnacondaApiKeyRequest(
-        new Request(request.url, {
-          headers: {
-            Authorization: authorization,
-            "X-Notebook-Cloud-Auth-Provider": "anaconda-api-key",
-            "x-scope": scope,
-            "x-operator": "pages-api",
-          },
-        }),
-        env,
+      apiKeyLookup(authorization, () =>
+        authenticateAnacondaApiKeyRequest(
+          new Request(request.url, {
+            headers: {
+              Authorization: authorization,
+              "X-Notebook-Cloud-Auth-Provider": "anaconda-api-key",
+              "x-scope": scope,
+              "x-operator": "pages-api",
+            },
+          }),
+          env,
+        ),
       );
     let identity;
     try {

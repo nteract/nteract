@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { randomSecret, SERVER_SESSION_COOKIE } from "@cloud/oidc-session-store.ts";
-import { isolateSetup, isolateSetupTimeouts } from "./isolate-setup.mjs";
+import { createAuthFixture } from "../../auth-fixtures.mjs";
+import { authenticate } from "./auth.mjs";
+import { isolateSetup, isolateSetupTimeouts, isolateSingleFlight } from "./isolate-setup.mjs";
 import worker from "./index.mjs";
 
 // Real I/O turns. Tests mock only setTimeout, so these still advance.
@@ -96,6 +98,55 @@ test("each key has its own setup", async () => {
   const right = {};
   await Promise.all([ready(left), ready(right)]);
   assert.deepEqual(keys, [left, right]);
+});
+
+test("a single-flight caller starts its work only after the earlier call settles", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const flight = isolateSingleFlight();
+  const first = deferred();
+  const started = [];
+  const owner = flight("key", () => (started.push("owner"), first.promise));
+  const waiter = flight("key", async () => (started.push("waiter"), "waited"));
+  const other = flight("other", async () => (started.push("other"), "other"));
+  assert.equal(await other, "other", "another key does not wait");
+  await turns();
+  assert.deepEqual(started, ["owner", "other"]);
+  first.resolve("owned");
+  assert.equal(await owner, "owned");
+  await turns();
+  assert.deepEqual(started, ["owner", "other"], "settling does not resume the waiter");
+  t.mock.timers.tick(isolateSetupTimeouts.poll);
+  assert.equal(await waiter, "waited");
+  assert.deepEqual(started, ["owner", "other", "waiter"]);
+});
+
+test("concurrent requests with one API key do not share a pending provider lookup", async (t) => {
+  const fixture = await createAuthFixture();
+  const lookup = deferred();
+  let lookups = 0;
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    lookups++;
+    await lookup.promise;
+    return fixture.fetch(url, options);
+  });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const token = fixture.apiKey();
+  const request = () =>
+    new Request("https://pages.invalid/api/connect?page=test", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  const first = authenticate(request(), fixture.env);
+  const second = authenticate(request(), fixture.env);
+  const waiting = track(second);
+  await turns();
+  assert.equal(lookups, 1);
+  lookup.resolve();
+  await first;
+  await turns();
+  assert.equal(waiting.settled, false, "the second request waits on its own timer");
+  t.mock.timers.tick(isolateSetupTimeouts.poll);
+  assert.equal((await second).principal, (await first).principal);
+  assert.equal(lookups, 1, "the second request reads the settled cache entry");
 });
 
 /** A D1 binding over SQLite whose first session-schema statement waits for `release`. */

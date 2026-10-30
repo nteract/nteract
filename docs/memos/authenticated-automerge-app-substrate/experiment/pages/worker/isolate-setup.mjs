@@ -1,14 +1,34 @@
 import { oidcDatabase } from "@cloud/oidc-session-store.ts";
 import { withAdmissionReason } from "./admission-reasons.mjs";
 
+/*
+ * Shared work in a stateless Worker isolate, for celld 0.6.3.
+ *
+ * celld 0.6.3 resumes a promise continuation under the request whose I/O
+ * settled that promise. If gateway request B awaits a module-level promise
+ * that request A created, the rest of B runs inside A, including the Durable
+ * Object fetch that B forwards. When A responds, celld drops the timers and
+ * I/O that B started, and B never settles. A Page's serialized HTTP queue then
+ * waits behind B. Continuations inside Durable Objects keep their own context,
+ * so caches used only by objects don't need these helpers.
+ *
+ * So no gateway request awaits a promise that another request may still be
+ * settling. The request that starts the work awaits it. Others wait on their
+ * own timers until it settles and then run in their own context. A waiter
+ * fails with a retryable 503 after `isolateSetupTimeouts.wait`.
+ *
+ * Remove these helpers when celld keeps request context across shared
+ * promises: `scripts/celld-context-probe.mjs` then exits 0 on the new celld.
+ */
+
 /** Mutable so tests can shorten them. `wait` bounds how long a request waits
- * for another request's setup; `poll` is the interval of its own timer. */
+ * for another request's work; `poll` is the interval of its own timer. */
 export const isolateSetupTimeouts = { wait: 10_000, poll: 5 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Plain fields, not HttpError: auth.mjs imports a module that uses this one.
-const setupTimeout = () =>
+const waitTimeout = () =>
   withAdmissionReason(
     Object.assign(new Error("Pages is starting. Try again."), {
       status: 503,
@@ -17,30 +37,23 @@ const setupTimeout = () =>
     "credential_unverified",
   );
 
+// One poll of a waiter's own timer. Callers re-check and claim their key in
+// the same synchronous step after it returns.
+async function pause(deadline) {
+  if (Date.now() >= deadline) throw waitTimeout();
+  await sleep(isolateSetupTimeouts.poll);
+}
+
 /**
  * One-time setup per key for this isolate, such as a D1 schema per binding.
- *
- * celld 0.6.3 resumes a promise continuation under the request whose I/O
- * settled that promise. If request B awaits a module-level promise that
- * request A created, the rest of B runs inside A, including the Durable Object
- * fetch that B forwards. When A responds, celld drops the timers and I/O that
- * B started, and B never settles. A Page's serialized HTTP queue then waits
- * behind B forever.
- *
- * Only the request that starts a setup awaits it. Any other request waits on
- * its own timer until the setup settles, so it keeps running in its own
- * context. A failed setup lets the next request start it again. A waiter
- * fails with a retryable 503 after `isolateSetupTimeouts.wait`.
+ * A failed setup lets the next request start it again.
  */
 export function isolateSetup(run) {
   const pending = new WeakSet();
   const ready = new WeakSet();
   return async (key, ...args) => {
     const deadline = Date.now() + isolateSetupTimeouts.wait;
-    while (pending.has(key)) {
-      if (Date.now() >= deadline) throw setupTimeout();
-      await sleep(isolateSetupTimeouts.poll);
-    }
+    while (pending.has(key)) await pause(deadline);
     if (ready.has(key)) return;
     pending.add(key);
     try {
@@ -48,6 +61,26 @@ export function isolateSetup(run) {
       ready.add(key);
     } finally {
       pending.delete(key);
+    }
+  };
+}
+
+/**
+ * Run `work` for one key at a time in this isolate. Use it in front of a
+ * library cache that hands every caller the same pending promise: a later
+ * caller reaches the cache only after the earlier call settles, so it gets a
+ * settled entry or starts its own lookup.
+ */
+export function isolateSingleFlight() {
+  const running = new Set();
+  return async (key, work) => {
+    const deadline = Date.now() + isolateSetupTimeouts.wait;
+    while (running.has(key)) await pause(deadline);
+    running.add(key);
+    try {
+      return await work();
+    } finally {
+      running.delete(key);
     }
   };
 }
