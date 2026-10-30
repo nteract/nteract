@@ -50,8 +50,12 @@ const SUITES = Object.freeze([
   { name: "sharing", harness: sharing(), timeout: 4 * minute },
   { name: "admission", harness: sharing("--admission"), timeout: 4 * minute },
   { name: "domain-view", harness: sharing("--domain-view"), timeout: 4 * minute },
-  // Opt-in until restored text keeps paragraph order on Linux:
+  // Opt-in until a Page reopened after a celld restart reliably reaches Saved;
+  // under load it can stall at "The request timed out" (fix in progress on
+  // fix/pages-restart-saved-stall). Its text order no longer flakes: #4547 was
+  // a caret race in the smoke, and the editor side is #4552.
   // https://github.com/nteract/nteract/issues/4547
+  // https://github.com/nteract/nteract/issues/4552
   { name: "build-update", harness: sharing("--build-update"), timeout: 4 * minute, optIn: true },
   { name: "trash", harness: sharing("--trash"), timeout: 4 * minute },
   { name: "spaces", harness: sharing("--spaces"), timeout: 4 * minute },
